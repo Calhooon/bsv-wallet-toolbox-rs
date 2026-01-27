@@ -59,10 +59,9 @@ pub mod error;
 pub mod storage;
 pub mod chaintracks;
 pub mod services;
-// pub mod signer;    // TODO: Phase 3
+pub mod wallet;
 // pub mod monitor;   // TODO: Phase 4
 // pub mod managers;  // TODO: Phase 5
-// pub mod wallet;    // TODO: Phase 3
 
 pub use error::{Error, Result};
 
@@ -111,3 +110,6 @@ pub use services::{
     Arc, ArcConfig,
     Bitails, BitailsConfig,
 };
+
+// Re-export Wallet types
+pub use wallet::{Wallet, WalletOptions, WalletSigner};

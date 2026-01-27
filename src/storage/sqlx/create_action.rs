@@ -11,7 +11,7 @@ use crate::storage::traits::{
     FindOutputBasketsArgs, StorageCreateActionResult, StorageCreateTransactionInput,
     StorageCreateTransactionOutput, StorageProvidedBy,
 };
-use bsv_sdk::transaction::{Beef, MerklePath};
+use bsv_sdk::transaction::{Beef, ChainTracker, MerklePath};
 use chrono::Utc;
 use sqlx::Row;
 use std::collections::HashSet;
@@ -351,8 +351,15 @@ fn random_reference() -> String {
 // =============================================================================
 
 /// Internal implementation of create_action.
+///
+/// # Arguments
+/// * `storage` - The storage backend
+/// * `chain_tracker` - Optional chain tracker for BEEF verification. If None, skips verification.
+/// * `user_id` - The user ID
+/// * `args` - The create action arguments
 pub async fn create_action_internal(
     storage: &StorageSqlx,
+    chain_tracker: Option<&dyn ChainTracker>,
     user_id: i64,
     args: bsv_sdk::wallet::CreateActionArgs,
 ) -> Result<StorageCreateActionResult> {
@@ -630,8 +637,10 @@ pub async fn create_action_internal(
         .unwrap_or_default();
 
     // Build input BEEF containing all input transactions with their merkle proofs
+    // Verify BEEF against ChainTracker if provided (matches TypeScript/Go behavior)
     let input_beef = build_input_beef(
         storage,
+        chain_tracker,
         &extended_inputs,
         &change_result.allocated_change_inputs,
         args.input_beef.as_deref(),
@@ -1406,10 +1415,12 @@ struct BeefTxData {
 /// This matches the TypeScript/Go `validateRequiredInputs` and `getBeefForTransaction` behavior:
 /// 1. First merges user-provided inputBEEF (contains proofs for external inputs)
 /// 2. Then adds storage transactions for known inputs
-/// 3. Finally trims known_txids to txid-only format to reduce BEEF size
+/// 3. Verifies BEEF against ChainTracker (merkle roots match block headers)
+/// 4. Finally trims known_txids to txid-only format to reduce BEEF size
 ///
 /// # Arguments
 /// * `storage` - The storage backend to query
+/// * `chain_tracker` - Optional chain tracker for merkle root verification (if None, skips verification)
 /// * `extended_inputs` - User-provided inputs
 /// * `change_inputs` - Allocated change inputs from storage
 /// * `user_input_beef` - Optional user-provided BEEF with proofs for external inputs
@@ -1419,8 +1430,12 @@ struct BeefTxData {
 /// # Returns
 /// * `Ok(Some(beef_bytes))` - BEEF binary data if there are inputs
 /// * `Ok(None)` - If there are no inputs or return_txid_only is true
+///
+/// # Errors
+/// * `ValidationError` - If BEEF structure is invalid or merkle roots don't match chain
 async fn build_input_beef(
     storage: &StorageSqlx,
+    chain_tracker: Option<&dyn ChainTracker>,
     extended_inputs: &[ExtendedInput],
     change_inputs: &[AllocatedChangeInput],
     user_input_beef: Option<&[u8]>,
@@ -1531,6 +1546,49 @@ async fn build_input_beef(
         // for user-provided inputs, but OK for ancestors (they might be proven elsewhere)
 
         depth += 1;
+    }
+
+    // Verify BEEF against ChainTracker before trimming known_txids
+    // This matches TypeScript/Go behavior: verify after building, before returning
+    if let Some(tracker) = chain_tracker {
+        let beef_bytes = beef.to_binary();
+        // Only verify if BEEF has content beyond the header (4 bytes)
+        // AND there are merkle proofs (bumps) to verify
+        if beef_bytes.len() > 4 && !beef.bumps.is_empty() {
+            // Verify BEEF structure is valid (allow txid-only entries)
+            let validation = beef.verify_valid(true);
+            if !validation.valid {
+                return Err(Error::ValidationError(
+                    "inputBEEF: BEEF structure is invalid".to_string(),
+                ));
+            }
+
+            // Verify each merkle root against the ChainTracker
+            for (height, root) in &validation.roots {
+                match tracker.is_valid_root_for_height(root, *height).await {
+                    Ok(true) => {
+                        // Root is valid, continue
+                    }
+                    Ok(false) => {
+                        return Err(Error::ValidationError(format!(
+                            "inputBEEF: invalid merkle root {} at height {}",
+                            root, height
+                        )));
+                    }
+                    Err(e) => {
+                        // ChainTracker error (network, block not found, etc.)
+                        // Match Go/TypeScript behavior: treat as validation failure
+                        return Err(Error::ValidationError(format!(
+                            "inputBEEF: failed to verify merkle root at height {}: {}",
+                            height, e
+                        )));
+                    }
+                }
+            }
+        }
+        // Note: If BEEF has no bumps (only unproven transactions), we skip verification
+        // since there are no merkle roots to verify against the chain.
+        // This is consistent with TypeScript/Go which only verify when there are proofs.
     }
 
     // Gap #2: Trim known_txids to txid-only format
@@ -2143,7 +2201,7 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, user.user_id, args).await;
+        let result = create_action_internal(&storage, None, user.user_id, args).await;
 
         // Should fail due to insufficient funds (no change inputs available)
         assert!(result.is_err());
@@ -2182,7 +2240,7 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
 
         assert!(!result.reference.is_empty());
         assert_eq!(result.version, 1);
@@ -2221,7 +2279,7 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
 
         // Verify the output has the basket and tags
         assert!(!result.outputs.is_empty());
@@ -2271,7 +2329,7 @@ mod tests {
             }),
         };
 
-        let result = create_action_internal(&storage, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
 
         // For noSend, we should get change vouts
         assert!(result.no_send_change_output_vouts.is_some());
@@ -2325,7 +2383,7 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
 
         // Should have at least 3 outputs (user outputs) + change
         assert!(result.outputs.len() >= 3);
@@ -2366,7 +2424,7 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
 
         assert_eq!(result.version, 2);
         assert_eq!(result.lock_time, 500000);
@@ -2458,6 +2516,7 @@ mod tests {
 
         let result = build_input_beef(
             &storage,
+            None,           // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
             None,           // user_input_beef
@@ -2504,6 +2563,7 @@ mod tests {
 
         let result = build_input_beef(
             &storage,
+            None,           // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
             None,           // user_input_beef
@@ -2565,7 +2625,7 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        let result = build_input_beef(&storage, &extended_inputs, &change_inputs, None, &[], false)
+        let result = build_input_beef(&storage, None, &extended_inputs, &change_inputs, None, &[], false)
             .await
             .unwrap();
 
@@ -2626,7 +2686,7 @@ mod tests {
             derivation_suffix: None,
         }];
 
-        let result = build_input_beef(&storage, &extended_inputs, &change_inputs, None, &[], false)
+        let result = build_input_beef(&storage, None, &extended_inputs, &change_inputs, None, &[], false)
             .await
             .unwrap();
 
@@ -2856,7 +2916,7 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        let result = build_input_beef(&storage, &extended_inputs, &change_inputs, None, &[], false)
+        let result = build_input_beef(&storage, None, &extended_inputs, &change_inputs, None, &[], false)
             .await
             .unwrap();
 
@@ -2894,6 +2954,7 @@ mod tests {
         // With return_txid_only = true, should return None regardless of inputs
         let result = build_input_beef(
             &storage,
+            None,           // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
             None,
@@ -2937,6 +2998,7 @@ mod tests {
         // Build BEEF with the txid marked as known
         let result = build_input_beef(
             &storage,
+            None,           // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
             None,
@@ -2990,6 +3052,7 @@ mod tests {
         // Build BEEF with user-provided inputBEEF
         let result = build_input_beef(
             &storage,
+            None,           // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
             Some(&user_beef_bytes), // User provides BEEF for external input
@@ -3035,6 +3098,7 @@ mod tests {
 
         let result = build_input_beef(
             &storage,
+            None,           // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
             Some(&invalid_beef),
@@ -3050,6 +3114,183 @@ mod tests {
             err.to_string().contains("inputBEEF"),
             "Error should mention inputBEEF"
         );
+    }
+
+    // =============================================================================
+    // Tests for BEEF Verification against ChainTracker (Gap #4)
+    // =============================================================================
+
+    #[tokio::test]
+    async fn test_build_input_beef_with_valid_chain_tracker() {
+        use bsv_sdk::transaction::AlwaysValidChainTracker;
+
+        // Test that BEEF verification passes with AlwaysValidChainTracker
+        // We use unproven transactions (no merkle path) to avoid structural validation issues
+        // with fake merkle paths in test data
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage.find_or_insert_user("02abcd").await.unwrap();
+
+        // Create an unproven transaction (no merkle path needed)
+        let now = Utc::now();
+        let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+        let raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
+            VALUES (?, 'unproven', 'ref123', 0, 5000000000, 1, 0, 'Test tx', ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(txid)
+        .bind(&raw_tx)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: txid.to_string(),
+            vout: 0,
+            satoshis: 5000000000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        // Use AlwaysValidChainTracker - BEEF with unproven txs has no roots to verify
+        // This tests that the verification code path completes successfully
+        let tracker = AlwaysValidChainTracker::new(100000);
+
+        let result = build_input_beef(
+            &storage,
+            Some(&tracker),
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Should return Some BEEF data (verification passes)
+        assert!(result.is_some());
+        let beef_bytes = result.unwrap();
+        assert!(beef_bytes.len() > 4);
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_skips_verification_when_no_bumps() {
+        use bsv_sdk::transaction::MockChainTracker;
+
+        // Test that BEEF verification is SKIPPED when there are no bumps (merkle proofs)
+        // This is because there are no merkle roots to verify against the chain.
+        //
+        // When the merkle path in storage is malformed (cannot be parsed), the BEEF is built
+        // without a bump, and verification is skipped. This is correct behavior - we can't
+        // verify what we don't have.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        // Sample raw transaction with a fake merkle path (will fail to parse, no bump added)
+        let raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+        let merkle_path = hex::decode("a086010001020002").unwrap(); // Invalid/incomplete merkle path
+        let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
+
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: txid.to_string(),
+            vout: 0,
+            satoshis: 5000000000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        // Use MockChainTracker with NO valid roots
+        // But since the merkle path can't be parsed, no bump is added to BEEF,
+        // so verification will be skipped entirely
+        let tracker = MockChainTracker::new(100000);
+
+        let result = build_input_beef(
+            &storage,
+            Some(&tracker),
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+        )
+        .await;
+
+        // Should succeed because there are no bumps to verify
+        // The malformed merkle path means no bump was added to BEEF
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some()); // BEEF is built, just without a proof
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_no_verification_without_tracker() {
+        // Test that BEEF is built successfully without verification when no tracker is provided
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        // Sample raw transaction
+        let raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+        let merkle_path = hex::decode("a086010001020002").unwrap();
+        let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
+
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: txid.to_string(),
+            vout: 0,
+            satoshis: 5000000000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        // With chain_tracker = None, verification is skipped
+        let result = build_input_beef(
+            &storage,
+            None,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Should return Some BEEF data (no verification attempted)
+        assert!(result.is_some());
+        let beef_bytes = result.unwrap();
+        assert!(beef_bytes.len() > 4);
     }
 }
 

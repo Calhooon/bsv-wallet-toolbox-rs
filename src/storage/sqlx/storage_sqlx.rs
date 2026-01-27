@@ -6,12 +6,14 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
-use std::sync::RwLock;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
+use bsv_sdk::transaction::ChainTracker;
 use bsv_sdk::wallet::{
     AbortActionArgs, AbortActionResult, InternalizeActionArgs,
     ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
@@ -30,11 +32,14 @@ pub struct StorageSqlx {
     /// Database connection pool.
     pool: Pool<Sqlite>,
     /// Cached settings (loaded on make_available).
-    settings: RwLock<Option<TableSettings>>,
+    settings: std::sync::RwLock<Option<TableSettings>>,
     /// Storage identity key (set during migration).
-    storage_identity_key: RwLock<String>,
+    storage_identity_key: std::sync::RwLock<String>,
     /// Storage name (set during migration).
-    storage_name: RwLock<String>,
+    storage_name: std::sync::RwLock<String>,
+    /// Optional ChainTracker for BEEF verification.
+    /// When set, create_action will verify BEEF merkle roots against the chain.
+    chain_tracker: RwLock<Option<Arc<dyn ChainTracker>>>,
 }
 
 impl StorageSqlx {
@@ -54,10 +59,41 @@ impl StorageSqlx {
 
         Ok(Self {
             pool,
-            settings: RwLock::new(None),
-            storage_identity_key: RwLock::new(String::new()),
-            storage_name: RwLock::new(String::new()),
+            settings: std::sync::RwLock::new(None),
+            storage_identity_key: std::sync::RwLock::new(String::new()),
+            storage_name: std::sync::RwLock::new(String::new()),
+            chain_tracker: RwLock::new(None),
         })
+    }
+
+    /// Set the ChainTracker for BEEF verification.
+    ///
+    /// When set, `create_action` will verify BEEF merkle roots against the chain
+    /// before returning. This matches TypeScript/Go behavior.
+    ///
+    /// # Arguments
+    /// * `tracker` - The chain tracker to use for verification
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let storage = StorageSqlx::in_memory().await?;
+    /// storage.set_chain_tracker(Arc::new(my_chaintracks)).await;
+    /// ```
+    pub async fn set_chain_tracker(&self, tracker: Arc<dyn ChainTracker>) {
+        let mut ct = self.chain_tracker.write().await;
+        *ct = Some(tracker);
+    }
+
+    /// Clear the ChainTracker (disable BEEF verification).
+    pub async fn clear_chain_tracker(&self) {
+        let mut ct = self.chain_tracker.write().await;
+        *ct = None;
+    }
+
+    /// Get a reference to the current ChainTracker, if set.
+    async fn get_chain_tracker(&self) -> Option<Arc<dyn ChainTracker>> {
+        let ct = self.chain_tracker.read().await;
+        ct.clone()
     }
 
     /// Open an in-memory SQLite database.
@@ -1935,7 +1971,11 @@ impl WalletStorageWriter for StorageSqlx {
             .user_id
             .ok_or_else(|| Error::AuthenticationRequired)?;
 
-        super::create_action::create_action_internal(self, user_id, args).await
+        // Get the ChainTracker for BEEF verification (if set)
+        let chain_tracker = self.get_chain_tracker().await;
+        let tracker_ref: Option<&dyn ChainTracker> = chain_tracker.as_ref().map(|ct| ct.as_ref());
+
+        super::create_action::create_action_internal(self, tracker_ref, user_id, args).await
     }
 
     async fn process_action(
@@ -1954,14 +1994,13 @@ impl WalletStorageWriter for StorageSqlx {
     async fn internalize_action(
         &self,
         auth: &AuthId,
-        _args: InternalizeActionArgs,
+        args: InternalizeActionArgs,
     ) -> Result<StorageInternalizeActionResult> {
-        // TODO: Implement internalize_action
-        let _ = auth
+        let user_id = auth
             .user_id
             .ok_or_else(|| Error::AuthenticationRequired)?;
 
-        Err(Error::StorageError("Not implemented".to_string()))
+        super::internalize_action::internalize_action_internal(self, user_id, args).await
     }
 
     async fn insert_certificate(
@@ -2096,28 +2135,15 @@ impl WalletStorageSync for StorageSqlx {
     }
 
     async fn get_sync_chunk(&self, args: RequestSyncChunkArgs) -> Result<SyncChunk> {
-        // TODO: Implement get_sync_chunk
-        Ok(SyncChunk {
-            from_storage_identity_key: args.from_storage_identity_key,
-            to_storage_identity_key: args.to_storage_identity_key,
-            user_identity_key: args.identity_key,
-            ..Default::default()
-        })
+        super::sync::get_sync_chunk_internal(self, args).await
     }
 
     async fn process_sync_chunk(
         &self,
-        _args: RequestSyncChunkArgs,
-        _chunk: SyncChunk,
+        args: RequestSyncChunkArgs,
+        chunk: SyncChunk,
     ) -> Result<ProcessSyncChunkResult> {
-        // TODO: Implement process_sync_chunk
-        Ok(ProcessSyncChunkResult {
-            done: true,
-            max_updated_at: None,
-            updates: 0,
-            inserts: 0,
-            error: None,
-        })
+        super::sync::process_sync_chunk_internal(self, args, chunk).await
     }
 }
 
