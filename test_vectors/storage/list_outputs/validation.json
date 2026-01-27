@@ -1,0 +1,310 @@
+{
+  "description": "ListOutputs argument validation test vectors from TypeScript and Go implementations",
+  "source_files": [
+    "wallet-toolbox/test/Wallet/list/listOutputs.test.ts",
+    "go-wallet-toolbox/pkg/internal/validate/validate_list_outputs_args_test.go"
+  ],
+  "test_vectors": [
+    {
+      "id": "ts_invalid_empty_tags_array",
+      "description": "Tags array cannot be empty when provided",
+      "inputs": {
+        "basket": "default",
+        "tags": []
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_empty_basket",
+      "description": "Basket cannot be empty string",
+      "inputs": {
+        "basket": ""
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_whitespace_basket",
+      "description": "Basket cannot be whitespace only",
+      "inputs": {
+        "basket": "   "
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_empty_tag",
+      "description": "Tags cannot contain empty strings",
+      "inputs": {
+        "basket": "default",
+        "tags": [""]
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_zero_limit",
+      "description": "Limit cannot be zero",
+      "inputs": {
+        "basket": "default",
+        "limit": 0
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_negative_limit",
+      "description": "Limit cannot be negative",
+      "inputs": {
+        "basket": "default",
+        "limit": -1
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_limit_too_high",
+      "description": "Limit cannot exceed 10000",
+      "inputs": {
+        "basket": "default",
+        "limit": 10001
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_negative_offset",
+      "description": "Offset cannot be negative (except for special -1 behavior in some implementations)",
+      "inputs": {
+        "basket": "default",
+        "offset": -1
+      },
+      "expected_error": "WERR_INVALID_PARAMETER",
+      "notes": "Some implementations support negative offset for reverse iteration"
+    },
+    {
+      "id": "go_invalid_txid",
+      "description": "KnownTxids must contain valid hex txids",
+      "inputs": {
+        "limit": 10,
+        "knownTxids": ["invalidhex"]
+      },
+      "expected_error": "invalid txid"
+    },
+    {
+      "id": "go_zero_limit",
+      "description": "Limit must be greater than zero",
+      "inputs": {
+        "limit": 0
+      },
+      "expected_error": "invalid limit"
+    },
+    {
+      "id": "go_invalid_tag_query_mode",
+      "description": "TagQueryMode must be 'any' or 'all'",
+      "inputs": {
+        "limit": 10,
+        "tagQueryMode": "invalid"
+      },
+      "expected_error": "invalid tag query mode"
+    }
+  ],
+  "valid_test_vectors": [
+    {
+      "id": "go_valid_paging_only",
+      "description": "Valid args with only paging parameters",
+      "inputs": {
+        "limit": 10
+      },
+      "expected_error": null
+    },
+    {
+      "id": "go_valid_tag_query_all",
+      "description": "Valid args with tagQueryMode 'all'",
+      "inputs": {
+        "limit": 100,
+        "tagQueryMode": "all"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "go_valid_tag_query_any",
+      "description": "Valid args with tagQueryMode 'any'",
+      "inputs": {
+        "limit": 100,
+        "tagQueryMode": "any"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "ts_valid_full_args",
+      "description": "Valid args with all parameters",
+      "inputs": {
+        "basket": "default",
+        "tags": ["tag1", "tag2"],
+        "limit": 10,
+        "offset": 0,
+        "tagQueryMode": "any",
+        "include": "locking scripts",
+        "includeCustomInstructions": false,
+        "includeTags": true,
+        "includeLabels": true,
+        "seekPermission": true
+      },
+      "expected_error": null
+    }
+  ],
+  "query_test_vectors": [
+    {
+      "id": "ts_default_basket",
+      "description": "Query default basket with default parameters",
+      "inputs": {
+        "basket": "default"
+      },
+      "expected_outputs": {
+        "totalOutputs_gte": 0,
+        "outputs_length": 10,
+        "BEEF": null,
+        "outputs_each": {
+          "customInstructions": null,
+          "lockingScript": null,
+          "labels": null,
+          "tags": null
+        }
+      }
+    },
+    {
+      "id": "ts_include_locking_scripts",
+      "description": "Query with locking scripts included",
+      "inputs": {
+        "basket": "default",
+        "include": "locking scripts",
+        "limit": 100
+      },
+      "expected_outputs": {
+        "outputs_each": {
+          "lockingScript": "TRUTHY"
+        }
+      }
+    },
+    {
+      "id": "ts_include_tags_labels",
+      "description": "Query with tags and labels included",
+      "inputs": {
+        "basket": "default",
+        "includeTags": true,
+        "includeLabels": true
+      },
+      "expected_outputs": {
+        "outputs_each": {
+          "tags": "IS_ARRAY",
+          "labels": "IS_ARRAY",
+          "lockingScript": null
+        }
+      }
+    },
+    {
+      "id": "ts_include_beef",
+      "description": "Query with entire transactions (BEEF) included",
+      "inputs": {
+        "basket": "default",
+        "include": "entire transactions"
+      },
+      "expected_outputs": {
+        "BEEF": "TRUTHY"
+      }
+    },
+    {
+      "id": "ts_non_existent_basket",
+      "description": "Query non-existent basket returns zero results",
+      "inputs": {
+        "basket": "admin foo"
+      },
+      "expected_outputs": {
+        "totalOutputs": 0
+      }
+    },
+    {
+      "id": "ts_tags_filter_any",
+      "description": "Query with tags filter using 'any' mode",
+      "inputs": {
+        "basket": "babbage-protocol-permission",
+        "tags": ["babbage_action_originator projectbabbage.com"],
+        "tagQueryMode": "any",
+        "includeTags": true
+      },
+      "expected_outputs": {
+        "outputs_each": {
+          "tags_contains": "babbage_action_originator projectbabbage.com"
+        }
+      }
+    },
+    {
+      "id": "ts_tags_filter_all",
+      "description": "Query with tags filter using 'all' mode (requires all tags)",
+      "inputs": {
+        "basket": "babbage-token-access",
+        "tags": [
+          "babbage_basket todo tokens",
+          "babbage_action_originator projectbabbage.com",
+          "babbage_originator localhost:8088"
+        ],
+        "tagQueryMode": "all",
+        "includeTags": true
+      },
+      "expected_outputs": {
+        "outputs_each": {
+          "tags_contains_all": [
+            "babbage_basket todo tokens",
+            "babbage_action_originator projectbabbage.com",
+            "babbage_originator localhost:8088"
+          ]
+        }
+      }
+    },
+    {
+      "id": "ts_custom_instructions",
+      "description": "Query basket with custom instructions",
+      "inputs": {
+        "basket": "todo tokens",
+        "includeCustomInstructions": true,
+        "limit": 2
+      },
+      "expected_outputs": {
+        "totalOutputs_gte": 1,
+        "outputs_length": 1,
+        "first_output": {
+          "customInstructions": "{ a: 43 }"
+        }
+      }
+    },
+    {
+      "id": "ts_tag_not_found",
+      "description": "Query with non-existent tag returns zero results",
+      "inputs": {
+        "basket": "babbage-token-access",
+        "tags": ["a_tag_that_does_not_exist"],
+        "tagQueryMode": "any"
+      },
+      "expected_outputs": {
+        "totalOutputs": 0
+      }
+    }
+  ],
+  "pagination_test_vectors": [
+    {
+      "id": "ts_offset_pagination",
+      "description": "Pagination with offset returns correct subset",
+      "inputs": {
+        "basket": "default",
+        "offset": 0,
+        "limit": 4
+      },
+      "notes": "Should return first 4 outputs, test by comparing with full list"
+    },
+    {
+      "id": "ts_negative_offset_reverse",
+      "description": "Negative offset iterates from end (implementation-specific)",
+      "inputs": {
+        "basket": "default",
+        "offset": -1,
+        "limit": 4
+      },
+      "notes": "In some implementations, -1 starts from the last item and iterates backwards"
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "description": "Test user credentials from Go and TypeScript implementations",
+  "source_files": [
+    "go-wallet-toolbox/pkg/internal/fixtures/testusers/test_users.go",
+    "go-wallet-toolbox/pkg/internal/fixtures/consts_and_values_fixtures.go",
+    "wallet-toolbox/test/utils/TestUtilsWalletStorage.ts"
+  ],
+  "test_users": [
+    {
+      "name": "Alice",
+      "id": 1,
+      "privateKeyHex": "143ab18a84d3b25e1a13cefa90038411e5d2014590a2a4a57263d1593c8dee1c",
+      "publicKeyHex": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810",
+      "notes": "Primary test user in Go implementation"
+    },
+    {
+      "name": "Bob",
+      "id": 2,
+      "privateKeyHex": "0881208859876fc227d71bfb8b91814462c5164b6fee27e614798f6e85d2547d",
+      "publicKeyHex": null,
+      "notes": "Secondary test user in Go implementation"
+    }
+  ],
+  "storage_configuration": {
+    "storageServerPrivKey": "8143f5ed6c5b41c3d084d39d49e161d8dde4b50b0685a4e4ac23959d3b8a319b",
+    "storageIdentityKey": "028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29",
+    "storageName": "test-storage",
+    "secondStorageServerPrivKey": "57fe31d0d0ae563ec47468106b5ce6fa50b2b38da07254fd1e109a15c43341ac",
+    "secondStorageIdentityKey": "03ee699bfe59c6aa13093360997fa8ad31d43cb798fa3f334aabcb53c1ac396601",
+    "secondStorageName": "test-storage-2",
+    "storageHandlerName": "storage_server"
+  },
+  "common_test_values": {
+    "userIdentityKeyHex": "03f17660f611ce531402a2ce1e070380b6fde57aca211d707bfab27bce42d86beb",
+    "derivationPrefix": "Pg==",
+    "derivationPrefixBytes": "3e",
+    "derivationSuffix": "Sg==",
+    "derivationSuffixBytes": "4a",
+    "customBasket": "custom-basket",
+    "expectedValueToInternalize": 999,
+    "anyoneIdentityKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "reference": "0LFT4CuWAMEgEa7I",
+    "mockOutpoint": "756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6.1",
+    "createActionTestLabel": "test_label=true",
+    "createActionTestTag": "test_tag=true",
+    "createActionTestCustomInstructions": "{\"derivationPrefix\":\"bPRI9FYwsIo=\",\"derivationSuffix\":\"FdjLdpnLnJM=\",\"type\":\"BRC29\"}"
+  },
+  "pagination_defaults": {
+    "limit": 100,
+    "offset": 0,
+    "maxPaginationLimit": 10000
+  },
+  "typescript_key_derivation": {
+    "description": "TypeScript uses _tu.getKeyPair() for key generation",
+    "example": {
+      "input": {
+        "privateKeyHex": "0213547602135476021354760213547602135476021354760213547602135476"
+      },
+      "notes": "Created from root.repeat(8) where root = '02135476'"
+    }
+  },
+  "auth_id_structure": {
+    "description": "Authentication ID structure used in Go implementation",
+    "fields": {
+      "identityKey": "Public key hex string",
+      "userID": "Integer user ID (nullable)",
+      "isActive": "Boolean flag for active status"
+    }
+  }
+}

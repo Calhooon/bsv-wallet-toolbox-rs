@@ -1,0 +1,342 @@
+{
+  "description": "CreateAction argument validation test vectors from TypeScript and Go implementations",
+  "source_files": [
+    "wallet-toolbox/test/Wallet/action/createAction.test.ts",
+    "go-wallet-toolbox/pkg/internal/validate/valid_create_action_args_test.go"
+  ],
+  "test_vectors": [
+    {
+      "id": "ts_invalid_empty_description",
+      "description": "Description is too short (empty string)",
+      "inputs": {
+        "description": ""
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_locking_script_not_hex",
+      "description": "Locking script must be hexadecimal",
+      "inputs": {
+        "description": "12345",
+        "outputs": [
+          {
+            "satoshis": 42,
+            "lockingScript": "fred",
+            "outputDescription": "pay fred"
+          }
+        ]
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "ts_invalid_locking_script_odd_length",
+      "description": "Locking script must be even length (valid hex bytes)",
+      "inputs": {
+        "description": "12345",
+        "outputs": [
+          {
+            "satoshis": 42,
+            "lockingScript": "abc",
+            "outputDescription": "pay fred"
+          }
+        ]
+      },
+      "expected_error": "WERR_INVALID_PARAMETER"
+    },
+    {
+      "id": "go_description_too_short",
+      "description": "Description too short (less than 5 characters)",
+      "inputs": {
+        "description": "sh",
+        "outputs": []
+      },
+      "expected_error": "description length must be between 5 and 2000"
+    },
+    {
+      "id": "go_description_too_long",
+      "description": "Description too long (more than 2000 characters)",
+      "inputs": {
+        "description": "REPEAT_CHAR_A_2001_TIMES",
+        "outputs": []
+      },
+      "expected_error": "description length must be between 5 and 2000"
+    },
+    {
+      "id": "go_label_empty",
+      "description": "Label cannot be empty string",
+      "inputs": {
+        "description": "test transaction",
+        "labels": [""],
+        "outputs": []
+      },
+      "expected_error": "label cannot be empty"
+    },
+    {
+      "id": "go_label_too_long",
+      "description": "Label cannot exceed 300 characters",
+      "inputs": {
+        "description": "test transaction",
+        "labels": ["REPEAT_CHAR_A_301_TIMES"],
+        "outputs": []
+      },
+      "expected_error": "label exceeds maximum length"
+    },
+    {
+      "id": "go_output_locking_script_not_hex",
+      "description": "Output locking script must be valid hex",
+      "inputs": {
+        "description": "test transaction",
+        "outputs": [
+          {
+            "lockingScript": "not-hex",
+            "satoshis": 42000,
+            "outputDescription": "test output"
+          }
+        ]
+      },
+      "expected_error": "locking script not in hex format"
+    },
+    {
+      "id": "go_output_satoshis_too_high",
+      "description": "Output satoshis cannot exceed 21 million BTC",
+      "inputs": {
+        "description": "test transaction",
+        "outputs": [
+          {
+            "lockingScript": "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac",
+            "satoshis": 2100000000000001,
+            "outputDescription": "test output"
+          }
+        ]
+      },
+      "expected_error": "satoshis exceeds maximum value"
+    },
+    {
+      "id": "go_output_description_too_short",
+      "description": "Output description too short",
+      "inputs": {
+        "description": "test transaction",
+        "outputs": [
+          {
+            "lockingScript": "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac",
+            "satoshis": 42000,
+            "outputDescription": "sh"
+          }
+        ]
+      },
+      "expected_error": "output description length must be between 5 and 2000"
+    },
+    {
+      "id": "go_output_basket_empty",
+      "description": "Output basket cannot be empty string when specified",
+      "inputs": {
+        "description": "test transaction",
+        "outputs": [
+          {
+            "lockingScript": "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac",
+            "satoshis": 42000,
+            "outputDescription": "test output",
+            "basket": ""
+          }
+        ]
+      },
+      "expected_error": "basket cannot be empty"
+    },
+    {
+      "id": "go_output_tag_empty",
+      "description": "Output tag cannot be empty string",
+      "inputs": {
+        "description": "test transaction",
+        "outputs": [
+          {
+            "lockingScript": "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac",
+            "satoshis": 42000,
+            "outputDescription": "test output",
+            "tags": [""]
+          }
+        ]
+      },
+      "expected_error": "tag cannot be empty"
+    },
+    {
+      "id": "go_input_missing_unlocking_script",
+      "description": "Input must have unlockingScript or unlockingScriptLength",
+      "inputs": {
+        "description": "test transaction",
+        "inputs": [
+          {
+            "outpoint": {
+              "txid": "756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6",
+              "vout": 0
+            }
+          }
+        ],
+        "outputs": []
+      },
+      "expected_error": "unlockingScript or unlockingScriptLength required"
+    },
+    {
+      "id": "go_input_unlocking_script_not_hex",
+      "description": "Input unlocking script must be valid hex",
+      "inputs": {
+        "description": "test transaction",
+        "inputs": [
+          {
+            "outpoint": {
+              "txid": "756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6",
+              "vout": 0
+            },
+            "unlockingScript": "not-hex"
+          }
+        ],
+        "outputs": []
+      },
+      "expected_error": "unlocking script not in hex format"
+    },
+    {
+      "id": "go_input_unlocking_script_length_mismatch",
+      "description": "Input unlocking script length must match actual length",
+      "inputs": {
+        "description": "test transaction",
+        "inputs": [
+          {
+            "outpoint": {
+              "txid": "756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6",
+              "vout": 0
+            },
+            "unlockingScript": "00",
+            "unlockingScriptLength": 2
+          }
+        ],
+        "outputs": []
+      },
+      "expected_error": "unlocking script length mismatch"
+    },
+    {
+      "id": "go_duplicated_input_outpoints",
+      "description": "Cannot have duplicate outpoints in inputs",
+      "inputs": {
+        "description": "test transaction",
+        "inputs": [
+          {
+            "outpoint": {
+              "txid": "756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6",
+              "vout": 0
+            },
+            "unlockingScript": "00",
+            "inputDescription": "input1"
+          },
+          {
+            "outpoint": {
+              "txid": "756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6",
+              "vout": 0
+            },
+            "unlockingScript": "00",
+            "inputDescription": "input2"
+          }
+        ],
+        "outputs": []
+      },
+      "expected_error": "duplicate outpoint in inputs"
+    },
+    {
+      "id": "go_duplicated_no_send_change",
+      "description": "Cannot have duplicate outpoints in noSendChange",
+      "inputs": {
+        "description": "test transaction",
+        "outputs": [],
+        "options": {
+          "noSend": true,
+          "noSendChange": [
+            "756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6.0",
+            "756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6.0"
+          ]
+        }
+      },
+      "expected_error": "duplicate outpoint in noSendChange"
+    }
+  ],
+  "valid_test_vectors": [
+    {
+      "id": "go_default_valid_args",
+      "description": "Default valid CreateAction arguments from Go fixtures",
+      "inputs": {
+        "description": "test transaction",
+        "inputBEEF": null,
+        "inputs": [],
+        "outputs": [
+          {
+            "lockingScript": "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac",
+            "satoshis": 42000,
+            "outputDescription": "test output",
+            "customInstructions": "{\"derivationPrefix\":\"bPRI9FYwsIo=\",\"derivationSuffix\":\"FdjLdpnLnJM=\",\"type\":\"BRC29\"}",
+            "tags": ["test_tag=true"]
+          }
+        ],
+        "lockTime": 0,
+        "version": 1,
+        "labels": ["test_label=true"],
+        "options": {
+          "acceptDelayedBroadcast": false,
+          "sendWith": [],
+          "signAndProcess": true,
+          "knownTxids": [],
+          "noSendChange": [],
+          "randomizeOutputs": false
+        }
+      },
+      "expected_error": null
+    },
+    {
+      "id": "ts_repeatable_txid",
+      "description": "Transaction with deterministic randomization for repeatable txid",
+      "inputs": {
+        "description": "repeatable",
+        "outputs": [
+          {
+            "satoshis": 45,
+            "lockingScript": "P2PKH_ADDRESS_LOCKING_SCRIPT",
+            "outputDescription": "pay echo"
+          }
+        ],
+        "options": {
+          "randomizeOutputs": false,
+          "signAndProcess": true,
+          "noSend": true
+        }
+      },
+      "notes": {
+        "randomVals": [0.1, 0.2, 0.3, 0.7, 0.8, 0.9],
+        "root": "02135476",
+        "expected_txid": "4f428a93c43c2d120204ecdc06f7916be8a5f4542cc8839a0fd79bd1b44582f3"
+      }
+    },
+    {
+      "id": "ts_multiple_outputs",
+      "description": "Transaction with multiple outputs",
+      "inputs": {
+        "description": "Multiple outputs",
+        "outputs": [
+          {
+            "satoshis": 10,
+            "lockingScript": "P2PKH_ADDRESS_LOCKING_SCRIPT",
+            "outputDescription": "Output 1"
+          },
+          {
+            "satoshis": 20,
+            "lockingScript": "P2PKH_ADDRESS_LOCKING_SCRIPT",
+            "outputDescription": "Output 2"
+          }
+        ],
+        "options": {
+          "signAndProcess": false,
+          "noSend": true
+        }
+      },
+      "expected_outputs": {
+        "signableTransaction_reference": "TRUTHY",
+        "noSendChange_length": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Test artifacts
+*.log
+coverage/

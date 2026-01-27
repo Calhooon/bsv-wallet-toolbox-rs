@@ -1,0 +1,105 @@
+{
+  "description": "Merkle path and proof conversion test vectors from Go implementation",
+  "source_files": [
+    "go-wallet-toolbox/pkg/internal/txutils/proof_for_merkle_path_test.go"
+  ],
+  "tsc_proof_to_merkle_path_test_vectors": [
+    {
+      "id": "success_even_index",
+      "description": "Successfully convert TSC proof with even index",
+      "inputs": {
+        "txid": "4d5e6f7a8b9c0d1e2f30415263748596a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c",
+        "index": 0,
+        "nodes": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "blockHeight": 100
+      },
+      "expected_outputs": {
+        "blockHeight": 100,
+        "path_levels": 3
+      },
+      "expected_error": null
+    },
+    {
+      "id": "success_odd_index",
+      "description": "Successfully convert TSC proof with odd index",
+      "inputs": {
+        "txid": "5e4d3c2b1a0f9e8d7c6b5a4938271615141312110f0e0d0c0b0a090807060504",
+        "index": 1,
+        "nodes": [
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ],
+        "blockHeight": 200
+      },
+      "expected_outputs": {
+        "blockHeight": 200,
+        "path_levels": 3
+      },
+      "expected_error": null
+    },
+    {
+      "id": "success_duplicate_marker",
+      "description": "Successfully convert TSC proof with duplicate node marker (*)",
+      "inputs": {
+        "txid": "11f20e0d0c0b0a090807060504030201ffeeddccbbaa99887766554433221100",
+        "index": 1,
+        "nodes": [
+          "*",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "blockHeight": 300
+      },
+      "expected_outputs": {
+        "blockHeight": 300,
+        "path_levels": 2,
+        "first_level_sibling_is_duplicate": true
+      },
+      "expected_error": null
+    },
+    {
+      "id": "error_empty_nodes",
+      "description": "Error when nodes list is empty",
+      "inputs": {
+        "txid": "4d5e6f7a8b9c0d1e2f30415263748596a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c",
+        "index": 0,
+        "nodes": [],
+        "blockHeight": 100
+      },
+      "expected_error": "empty nodes list"
+    },
+    {
+      "id": "error_invalid_txid",
+      "description": "Error when txid is invalid",
+      "inputs": {
+        "txid": "invalid-txid",
+        "index": 0,
+        "nodes": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "blockHeight": 100
+      },
+      "expected_error": "invalid txid"
+    },
+    {
+      "id": "error_invalid_node_hash",
+      "description": "Error when node hash is invalid",
+      "inputs": {
+        "txid": "4d5e6f7a8b9c0d1e2f30415263748596a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c",
+        "index": 0,
+        "nodes": ["invalid-node-hash"],
+        "blockHeight": 100
+      },
+      "expected_error": "invalid node hash"
+    }
+  ],
+  "notes": {
+    "txid_format": "64-character lowercase hex string (32 bytes)",
+    "node_format": "64-character lowercase hex string, or '*' for duplicate marker",
+    "duplicate_marker": "The '*' character indicates the node at that level is a duplicate of the previous node (used when a tree level has odd number of nodes)",
+    "index_meaning": "The position of the transaction in the block (0-based)",
+    "path_structure": "Array of levels, each level containing nodes needed to compute the merkle root"
+  }
+}

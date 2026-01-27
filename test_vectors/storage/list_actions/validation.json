@@ -1,0 +1,372 @@
+{
+  "description": "ListActions argument validation test vectors from TypeScript and Go implementations",
+  "source_files": [
+    "wallet-toolbox/test/Wallet/list/listActions.test.ts",
+    "go-wallet-toolbox/pkg/internal/validate/validate_list_actions_args_test.go",
+    "go-wallet-toolbox/pkg/storage/provider_list_actions_test.go"
+  ],
+  "test_vectors": [
+    {
+      "id": "ts_invalid_label_too_long",
+      "description": "Label cannot exceed 300 characters",
+      "inputs": {
+        "labels": ["REPEAT_10CHARS_31_TIMES"]
+      },
+      "expected_error": "WERR_INVALID_PARAMETER",
+      "notes": "Label pattern: 'toolong890'.repeat(31) = 310 characters"
+    },
+    {
+      "id": "go_nil_args",
+      "description": "Arguments cannot be nil/null",
+      "inputs": null,
+      "expected_error": "args cannot be nil"
+    },
+    {
+      "id": "go_limit_exceeds_max",
+      "description": "Limit cannot exceed MaxPaginationLimit (10000)",
+      "inputs": {
+        "limit": 10001
+      },
+      "expected_error": "limit exceeds maximum"
+    },
+    {
+      "id": "go_offset_exceeds_max",
+      "description": "Offset cannot exceed MaxPaginationOffset",
+      "inputs": {
+        "offset": 2147483648
+      },
+      "expected_error": "offset exceeds maximum"
+    },
+    {
+      "id": "go_invalid_label_query_mode",
+      "description": "LabelQueryMode must be 'any', 'all', or empty",
+      "inputs": {
+        "labelQueryMode": "unknown"
+      },
+      "expected_error": "invalid labelQueryMode"
+    },
+    {
+      "id": "go_seek_permission_false",
+      "description": "SeekPermission cannot be explicitly set to false",
+      "inputs": {
+        "seekPermission": false
+      },
+      "expected_error": "seekPermission=false is not supported"
+    },
+    {
+      "id": "go_label_too_long",
+      "description": "Label cannot exceed 300 characters",
+      "inputs": {
+        "labels": ["REPEAT_CHAR_X_301_TIMES"]
+      },
+      "expected_error": "label exceeds maximum length"
+    },
+    {
+      "id": "go_label_empty",
+      "description": "Label cannot be empty string",
+      "inputs": {
+        "labels": [""]
+      },
+      "expected_error": "label cannot be empty"
+    },
+    {
+      "id": "go_include_input_source_without_inputs",
+      "description": "Cannot include input source locking scripts without includeInputs",
+      "inputs": {
+        "includeInputSourceLockingScripts": true,
+        "includeInputs": false
+      },
+      "expected_error": "includeInputSourceLockingScripts requires includeInputs"
+    },
+    {
+      "id": "go_include_output_scripts_without_outputs",
+      "description": "Cannot include output locking scripts without includeOutputs",
+      "inputs": {
+        "includeOutputLockingScripts": true,
+        "includeOutputs": false
+      },
+      "expected_error": "includeOutputLockingScripts requires includeOutputs"
+    }
+  ],
+  "valid_test_vectors": [
+    {
+      "id": "go_valid_labels_defaults",
+      "description": "Valid args with labels and default query mode",
+      "inputs": {
+        "labelQueryMode": "any",
+        "labels": ["valid-label"],
+        "seekPermission": true
+      },
+      "expected_error": null
+    },
+    {
+      "id": "go_valid_empty_query_mode",
+      "description": "Empty string is valid for query mode (defaults to 'any')",
+      "inputs": {
+        "labelQueryMode": "",
+        "labels": ["valid-label"],
+        "seekPermission": true
+      },
+      "expected_error": null
+    },
+    {
+      "id": "go_valid_max_pagination",
+      "description": "Maximum pagination values are valid",
+      "inputs": {
+        "limit": 10000,
+        "offset": 1000000,
+        "labelQueryMode": "all",
+        "seekPermission": true
+      },
+      "expected_error": null
+    },
+    {
+      "id": "go_default_wallet_args",
+      "description": "Default wallet ListActions arguments from Go fixtures",
+      "inputs": {
+        "labels": null,
+        "limit": 100,
+        "offset": 0,
+        "labelQueryMode": "any",
+        "seekPermission": true,
+        "includeInputs": false,
+        "includeOutputs": false,
+        "includeLabels": false,
+        "includeInputSourceLockingScripts": false,
+        "includeInputUnlockingScripts": false,
+        "includeOutputLockingScripts": false
+      },
+      "expected_error": null
+    },
+    {
+      "id": "go_default_with_all_includes",
+      "description": "ListActions arguments with all includes enabled",
+      "inputs": {
+        "labels": null,
+        "limit": 10,
+        "offset": 0,
+        "labelQueryMode": "any",
+        "seekPermission": true,
+        "includeInputs": true,
+        "includeOutputs": true,
+        "includeLabels": true,
+        "includeInputSourceLockingScripts": true,
+        "includeInputUnlockingScripts": true,
+        "includeOutputLockingScripts": true
+      },
+      "expected_error": null
+    }
+  ],
+  "query_test_vectors": [
+    {
+      "id": "ts_all_actions",
+      "description": "Query all actions with empty labels",
+      "inputs": {
+        "includeLabels": true,
+        "labels": []
+      },
+      "expected_outputs": {
+        "totalActions": 191,
+        "actions_length": 10,
+        "actions_each": {
+          "inputs": null,
+          "outputs": null,
+          "labels": "IS_ARRAY"
+        }
+      },
+      "notes": "Based on test database walletLegacyTestData.sqlite"
+    },
+    {
+      "id": "ts_non_existing_label",
+      "description": "Query with non-existing label returns zero results",
+      "inputs": {
+        "includeLabels": true,
+        "labels": ["xyzzy"],
+        "labelQueryMode": "any"
+      },
+      "expected_outputs": {
+        "totalActions": 0,
+        "actions_length": 0
+      }
+    },
+    {
+      "id": "ts_specific_label",
+      "description": "Query by specific label",
+      "inputs": {
+        "includeLabels": true,
+        "labels": ["babbage_protocol_perm"]
+      },
+      "expected_outputs": {
+        "totalActions_gte": 10,
+        "actions_length": 10,
+        "actions_each": {
+          "inputs": null,
+          "outputs": null,
+          "labels_contains": "babbage_protocol_perm"
+        }
+      }
+    },
+    {
+      "id": "ts_multiple_labels_or",
+      "description": "Query with multiple labels using OR (any) mode",
+      "inputs": {
+        "includeLabels": true,
+        "labels": ["babbage_protocol_perm", "babbage_basket_access"],
+        "labelQueryMode": "any"
+      },
+      "expected_outputs": {
+        "totalActions_gte": 10,
+        "actions_each": {
+          "labels_contains_any": ["babbage_protocol_perm", "babbage_basket_access"]
+        }
+      }
+    },
+    {
+      "id": "ts_multiple_labels_and",
+      "description": "Query with multiple labels using AND (all) mode",
+      "inputs": {
+        "includeLabels": true,
+        "labels": ["babbage_protocol_perm", "babbage_basket_access"],
+        "labelQueryMode": "all"
+      },
+      "expected_outputs": {
+        "totalActions": 0
+      },
+      "notes": "No actions have both labels, so result is empty"
+    },
+    {
+      "id": "ts_include_outputs",
+      "description": "Query with outputs included",
+      "inputs": {
+        "includeOutputs": true,
+        "labels": ["babbage_protocol_perm"]
+      },
+      "expected_outputs": {
+        "actions_each": {
+          "isOutgoing": "IS_BOOLEAN",
+          "inputs": null,
+          "outputs": "IS_ARRAY",
+          "labels": null,
+          "outputs_each": {
+            "outputIndex_gte": 0,
+            "lockingScript": null
+          }
+        }
+      }
+    },
+    {
+      "id": "ts_include_outputs_with_scripts",
+      "description": "Query with outputs and locking scripts included",
+      "inputs": {
+        "includeOutputs": true,
+        "includeOutputLockingScripts": true,
+        "labels": ["babbage_protocol_perm"]
+      },
+      "expected_outputs": {
+        "actions_each": {
+          "outputs_each": {
+            "lockingScript_length_gt": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "ts_include_inputs",
+      "description": "Query with inputs included",
+      "inputs": {
+        "includeInputs": true,
+        "labels": ["babbage_protocol_perm"]
+      },
+      "expected_outputs": {
+        "actions_each": {
+          "isOutgoing": "IS_BOOLEAN",
+          "outputs": null,
+          "inputs": "IS_ARRAY",
+          "labels": null,
+          "inputs_each": {
+            "sourceLockingScript": null,
+            "unlockingScript": null
+          }
+        }
+      }
+    },
+    {
+      "id": "ts_include_inputs_with_unlocking",
+      "description": "Query with inputs and unlocking scripts included",
+      "inputs": {
+        "includeInputs": true,
+        "includeInputUnlockingScripts": true,
+        "labels": ["babbage_protocol_perm"]
+      },
+      "expected_outputs": {
+        "actions_each": {
+          "inputs_each": {
+            "sourceLockingScript": null,
+            "unlockingScript_length_gt": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "ts_include_inputs_with_source_locking",
+      "description": "Query with inputs and source locking scripts included",
+      "inputs": {
+        "includeInputs": true,
+        "includeInputSourceLockingScripts": true,
+        "labels": ["babbage_protocol_perm"]
+      },
+      "expected_outputs": {
+        "actions_each": {
+          "inputs_each": {
+            "sourceLockingScript_length_gt": 0,
+            "unlockingScript": null
+          }
+        }
+      }
+    }
+  ],
+  "storage_provider_test_vectors": [
+    {
+      "id": "go_happy_path",
+      "description": "ListActions happy path from Go storage provider tests",
+      "inputs": {
+        "limit": 10,
+        "offset": 0,
+        "includeLabels": true,
+        "includeOutputs": true,
+        "includeInputs": true
+      },
+      "expected_outputs": {
+        "totalActions": 2,
+        "actions_length": 2,
+        "first_action": {
+          "labels_contains": "test_label=true",
+          "outputs_first_tags_contains": "test_tag=true"
+        }
+      },
+      "notes": "Based on Go testabilities setup with Alice user"
+    },
+    {
+      "id": "go_invalid_auth",
+      "description": "ListActions with invalid auth returns authorization error",
+      "inputs": {
+        "auth_user_id": null,
+        "limit": 10,
+        "offset": 0
+      },
+      "expected_error": "ErrAuthorization"
+    },
+    {
+      "id": "go_empty_result",
+      "description": "ListActions on empty database returns empty result",
+      "inputs": {
+        "limit": 10,
+        "offset": 0
+      },
+      "expected_outputs": {
+        "totalActions": 0,
+        "actions": []
+      }
+    }
+  ]
+}

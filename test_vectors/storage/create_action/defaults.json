@@ -1,0 +1,99 @@
+{
+  "description": "Default CreateAction arguments and options from Go and TypeScript implementations",
+  "source_files": [
+    "go-wallet-toolbox/pkg/internal/fixtures/default_valid_create_action_args.go"
+  ],
+  "default_wallet_create_action_args": {
+    "description": "SDK-level CreateAction arguments",
+    "args": {
+      "description": "test transaction",
+      "inputBEEF": null,
+      "inputs": null,
+      "outputs": [
+        {
+          "lockingScript": "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac",
+          "satoshis": 42000,
+          "outputDescription": "test output",
+          "customInstructions": "{\"derivationPrefix\":\"bPRI9FYwsIo=\",\"derivationSuffix\":\"FdjLdpnLnJM=\",\"type\":\"BRC29\"}",
+          "tags": ["test_tag=true"]
+        }
+      ],
+      "lockTime": 0,
+      "version": 1,
+      "labels": ["test_label=true"],
+      "options": {
+        "acceptDelayedBroadcast": false,
+        "signAndProcess": true,
+        "randomizeOutputs": false
+      }
+    }
+  },
+  "default_valid_create_action_args": {
+    "description": "Internal validated CreateAction arguments (after validation)",
+    "args": {
+      "description": "test transaction",
+      "inputBEEF": null,
+      "inputs": [],
+      "outputs": [
+        {
+          "lockingScript": "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac",
+          "satoshis": 42000,
+          "outputDescription": "test output",
+          "customInstructions": "{\"derivationPrefix\":\"bPRI9FYwsIo=\",\"derivationSuffix\":\"FdjLdpnLnJM=\",\"type\":\"BRC29\"}",
+          "tags": ["test_tag=true"]
+        }
+      ],
+      "lockTime": 0,
+      "version": 1,
+      "labels": ["test_label=true"],
+      "options": {
+        "acceptDelayedBroadcast": false,
+        "sendWith": [],
+        "signAndProcess": true,
+        "knownTxids": [],
+        "noSendChange": [],
+        "randomizeOutputs": false,
+        "trustSelf": null
+      },
+      "isSendWith": false,
+      "isDelayed": false,
+      "isNoSend": false,
+      "isNewTx": true,
+      "isRemixChange": false,
+      "isSignAction": false,
+      "includeAllSourceTransactions": true
+    }
+  },
+  "default_output_satoshis": 42000,
+  "locking_script_details": {
+    "script": "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac",
+    "type": "P2PKH",
+    "decoded": {
+      "OP_DUP": "76",
+      "OP_HASH160": "a9",
+      "pubKeyHash": "dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa",
+      "OP_EQUALVERIFY": "88",
+      "OP_CHECKSIG": "ac"
+    },
+    "pubKeyHashLength": 20,
+    "notes": "Standard P2PKH locking script"
+  },
+  "custom_instructions_details": {
+    "raw": "{\"derivationPrefix\":\"bPRI9FYwsIo=\",\"derivationSuffix\":\"FdjLdpnLnJM=\",\"type\":\"BRC29\"}",
+    "parsed": {
+      "derivationPrefix": "bPRI9FYwsIo=",
+      "derivationSuffix": "FdjLdpnLnJM=",
+      "type": "BRC29"
+    },
+    "notes": "BRC29 key derivation instructions for output ownership"
+  },
+  "option_flags_explanation": {
+    "isSendWith": "True when options.SendWith has items - bundles multiple transactions for broadcast",
+    "isDelayed": "True when options.AcceptDelayedBroadcast is true - allows deferred broadcast",
+    "isNoSend": "True when options.NoSend is true - creates transaction but doesn't broadcast",
+    "isNewTx": "True when creating a new transaction with inputs/outputs",
+    "isRemixChange": "True when creating a change-only remix transaction (no explicit inputs/outputs)",
+    "isSignAction": "True when signAndProcess is true - signs immediately",
+    "includeAllSourceTransactions": "True to include all ancestor transactions in BEEF"
+  }
+}

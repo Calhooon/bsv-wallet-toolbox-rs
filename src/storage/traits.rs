@@ -1,0 +1,528 @@
+//! Storage provider traits.
+//!
+//! These traits mirror the TypeScript `WalletStorageProvider` interface hierarchy
+//! from `@bsv/wallet-toolbox`.
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use bsv_sdk::wallet::{
+    AbortActionArgs, AbortActionResult, InternalizeActionArgs, InternalizeActionResult,
+    ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
+    ListOutputsArgs, ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs,
+};
+
+use crate::error::Result;
+use crate::storage::entities::*;
+
+// =============================================================================
+// Authentication
+// =============================================================================
+
+/// Authentication identifier for storage operations.
+///
+/// Every storage operation is performed in the context of an authenticated user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthId {
+    /// The identity public key (hex) of the authenticated user.
+    pub identity_key: String,
+    /// The user's ID in the storage system (populated after lookup).
+    pub user_id: Option<i64>,
+    /// Whether this user is the active user for the storage.
+    pub is_active: Option<bool>,
+}
+
+impl AuthId {
+    /// Create a new AuthId with just the identity key.
+    pub fn new(identity_key: impl Into<String>) -> Self {
+        Self {
+            identity_key: identity_key.into(),
+            user_id: None,
+            is_active: None,
+        }
+    }
+
+    /// Create an AuthId with user_id already known.
+    pub fn with_user_id(identity_key: impl Into<String>, user_id: i64) -> Self {
+        Self {
+            identity_key: identity_key.into(),
+            user_id: Some(user_id),
+            is_active: None,
+        }
+    }
+}
+
+// =============================================================================
+// Query Arguments
+// =============================================================================
+
+/// Pagination parameters.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Paged {
+    /// Number of items to skip.
+    pub offset: Option<u32>,
+    /// Maximum number of items to return.
+    pub limit: Option<u32>,
+}
+
+/// Base arguments for paginated queries with optional since filter.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FindSincePagedArgs {
+    /// Only return items updated after this time.
+    pub since: Option<DateTime<Utc>>,
+    /// Pagination parameters.
+    pub paged: Option<Paged>,
+    /// Order results descending by updated_at.
+    pub order_descending: Option<bool>,
+}
+
+/// Arguments for finding certificates.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FindCertificatesArgs {
+    /// Base query parameters.
+    #[serde(flatten)]
+    pub base: FindSincePagedArgs,
+    /// Filter by user ID.
+    pub user_id: Option<i64>,
+    /// Filter by certifier identity keys.
+    pub certifiers: Option<Vec<String>>,
+    /// Filter by certificate types.
+    pub types: Option<Vec<String>>,
+    /// Include certificate field values.
+    pub include_fields: Option<bool>,
+}
+
+/// Arguments for finding output baskets.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FindOutputBasketsArgs {
+    #[serde(flatten)]
+    pub base: FindSincePagedArgs,
+    pub user_id: Option<i64>,
+    pub name: Option<String>,
+}
+
+/// Arguments for finding outputs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FindOutputsArgs {
+    #[serde(flatten)]
+    pub base: FindSincePagedArgs,
+    pub user_id: Option<i64>,
+    pub basket_id: Option<i64>,
+    pub txid: Option<String>,
+    pub vout: Option<u32>,
+    /// Exclude locking script from results (for efficiency).
+    pub no_script: Option<bool>,
+    /// Filter by transaction status.
+    pub tx_status: Option<Vec<TransactionStatus>>,
+}
+
+/// Arguments for finding proven transaction requests.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FindProvenTxReqsArgs {
+    #[serde(flatten)]
+    pub base: FindSincePagedArgs,
+    pub status: Option<Vec<ProvenTxReqStatus>>,
+    pub txids: Option<Vec<String>>,
+}
+
+// =============================================================================
+// Storage Results
+// =============================================================================
+
+/// Result from createAction storage operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageCreateActionResult {
+    /// BEEF data for inputs (if needed).
+    pub input_beef: Option<Vec<u8>>,
+    /// Input details for the transaction.
+    pub inputs: Vec<StorageCreateTransactionInput>,
+    /// Output details for the transaction.
+    pub outputs: Vec<StorageCreateTransactionOutput>,
+    /// Change output vouts for noSend transactions.
+    pub no_send_change_output_vouts: Option<Vec<u32>>,
+    /// Derivation prefix for key derivation.
+    pub derivation_prefix: String,
+    /// Transaction version.
+    pub version: u32,
+    /// Transaction locktime.
+    pub lock_time: u32,
+    /// Unique reference for this action.
+    pub reference: String,
+}
+
+/// Input details from storage for transaction creation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageCreateTransactionInput {
+    pub vin: u32,
+    pub source_txid: String,
+    pub source_vout: u32,
+    pub source_satoshis: u64,
+    pub source_locking_script: String,
+    pub source_transaction: Option<Vec<u8>>,
+    pub unlocking_script_length: u32,
+    pub provided_by: StorageProvidedBy,
+    pub input_type: String,
+    pub spending_description: Option<String>,
+    pub derivation_prefix: Option<String>,
+    pub derivation_suffix: Option<String>,
+    pub sender_identity_key: Option<String>,
+}
+
+/// Output details from storage for transaction creation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageCreateTransactionOutput {
+    pub vout: u32,
+    pub satoshis: u64,
+    pub locking_script: String,
+    pub provided_by: StorageProvidedBy,
+    pub purpose: Option<String>,
+    pub derivation_suffix: Option<String>,
+}
+
+/// Indicates who provided the input/output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StorageProvidedBy {
+    You,
+    Storage,
+    YouAndStorage,
+}
+
+/// Arguments for processAction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageProcessActionArgs {
+    pub is_new_tx: bool,
+    pub is_send_with: bool,
+    pub is_no_send: bool,
+    pub is_delayed: bool,
+    pub reference: Option<String>,
+    pub txid: Option<String>,
+    pub raw_tx: Option<Vec<u8>>,
+    pub send_with: Vec<String>,
+}
+
+/// Results from processAction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageProcessActionResults {
+    pub send_with_results: Option<Vec<SendWithResult>>,
+    pub not_delayed_results: Option<Vec<ReviewActionResult>>,
+    pub log: Option<String>,
+}
+
+/// Result of sending a transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendWithResult {
+    pub txid: String,
+    pub status: String,
+}
+
+/// Result of reviewing an action (non-delayed broadcast).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewActionResult {
+    pub txid: String,
+    pub status: ReviewActionResultStatus,
+    pub competing_txs: Option<Vec<String>>,
+    pub competing_beef: Option<Vec<u8>>,
+}
+
+/// Status of a reviewed action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewActionResultStatus {
+    Success,
+    DoubleSpend,
+    ServiceError,
+    InvalidTx,
+}
+
+/// Result from internalizeAction with storage-specific details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageInternalizeActionResult {
+    /// Base result from SDK.
+    #[serde(flatten)]
+    pub base: InternalizeActionResult,
+    /// True if internalizing outputs on an existing transaction.
+    pub is_merge: bool,
+    /// TXID of the transaction being internalized.
+    pub txid: String,
+    /// Net change in balance for user.
+    pub satoshis: i64,
+    /// SendWith results if applicable.
+    pub send_with_results: Option<Vec<SendWithResult>>,
+    /// Review results if non-delayed broadcast.
+    pub not_delayed_results: Option<Vec<ReviewActionResult>>,
+}
+
+// =============================================================================
+// Sync Types
+// =============================================================================
+
+/// Arguments for requesting a sync chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestSyncChunkArgs {
+    /// Storage identity key of the source.
+    pub from_storage_identity_key: String,
+    /// Storage identity key of the destination.
+    pub to_storage_identity_key: String,
+    /// Identity key of the user being synced.
+    pub identity_key: String,
+    /// Only include items updated after this time.
+    pub since: Option<DateTime<Utc>>,
+    /// Rough size limit for the response.
+    pub max_rough_size: u32,
+    /// Maximum number of items to return.
+    pub max_items: u32,
+    /// Offsets for each entity type.
+    pub offsets: Vec<SyncOffset>,
+}
+
+/// Offset for a specific entity type during sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncOffset {
+    pub name: String,
+    pub offset: u32,
+}
+
+/// A chunk of data for synchronization.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncChunk {
+    pub from_storage_identity_key: String,
+    pub to_storage_identity_key: String,
+    pub user_identity_key: String,
+
+    pub user: Option<TableUser>,
+    pub proven_txs: Option<Vec<TableProvenTx>>,
+    pub proven_tx_reqs: Option<Vec<TableProvenTxReq>>,
+    pub output_baskets: Option<Vec<TableOutputBasket>>,
+    pub tx_labels: Option<Vec<TableTxLabel>>,
+    pub output_tags: Option<Vec<TableOutputTag>>,
+    pub transactions: Option<Vec<TableTransaction>>,
+    pub tx_label_maps: Option<Vec<TableTxLabelMap>>,
+    pub commissions: Option<Vec<TableCommission>>,
+    pub outputs: Option<Vec<TableOutput>>,
+    pub output_tag_maps: Option<Vec<TableOutputTagMap>>,
+    pub certificates: Option<Vec<TableCertificate>>,
+    pub certificate_fields: Option<Vec<TableCertificateField>>,
+}
+
+/// Result of processing a sync chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessSyncChunkResult {
+    /// Whether sync is complete.
+    pub done: bool,
+    /// Maximum updated_at time seen.
+    pub max_updated_at: Option<DateTime<Utc>>,
+    /// Number of records updated.
+    pub updates: u32,
+    /// Number of records inserted.
+    pub inserts: u32,
+    /// Error if any occurred.
+    pub error: Option<String>,
+}
+
+// =============================================================================
+// Wallet Storage Reader
+// =============================================================================
+
+/// Read-only storage operations.
+///
+/// This trait provides all read operations for wallet storage.
+#[async_trait]
+pub trait WalletStorageReader: Send + Sync {
+    /// Check if storage is available and ready.
+    fn is_available(&self) -> bool;
+
+    /// Get current settings.
+    fn get_settings(&self) -> &TableSettings;
+
+    /// Find certificates matching criteria.
+    async fn find_certificates(
+        &self,
+        auth: &AuthId,
+        args: FindCertificatesArgs,
+    ) -> Result<Vec<TableCertificate>>;
+
+    /// Find output baskets matching criteria.
+    async fn find_output_baskets(
+        &self,
+        auth: &AuthId,
+        args: FindOutputBasketsArgs,
+    ) -> Result<Vec<TableOutputBasket>>;
+
+    /// Find outputs matching criteria.
+    async fn find_outputs(&self, auth: &AuthId, args: FindOutputsArgs) -> Result<Vec<TableOutput>>;
+
+    /// Find proven transaction requests.
+    async fn find_proven_tx_reqs(
+        &self,
+        args: FindProvenTxReqsArgs,
+    ) -> Result<Vec<TableProvenTxReq>>;
+
+    /// List actions (transactions) for the user.
+    async fn list_actions(
+        &self,
+        auth: &AuthId,
+        args: ListActionsArgs,
+    ) -> Result<ListActionsResult>;
+
+    /// List certificates for the user.
+    async fn list_certificates(
+        &self,
+        auth: &AuthId,
+        args: ListCertificatesArgs,
+    ) -> Result<ListCertificatesResult>;
+
+    /// List outputs for the user.
+    async fn list_outputs(&self, auth: &AuthId, args: ListOutputsArgs)
+        -> Result<ListOutputsResult>;
+}
+
+// =============================================================================
+// Wallet Storage Writer
+// =============================================================================
+
+/// Write operations for wallet storage.
+///
+/// Extends `WalletStorageReader` with write capabilities.
+#[async_trait]
+pub trait WalletStorageWriter: WalletStorageReader {
+    /// Initialize storage and return settings.
+    async fn make_available(&self) -> Result<TableSettings>;
+
+    /// Run database migrations.
+    async fn migrate(&self, storage_name: &str, storage_identity_key: &str) -> Result<String>;
+
+    /// Destroy the storage (delete all data).
+    async fn destroy(&self) -> Result<()>;
+
+    /// Find or create a user by identity key.
+    async fn find_or_insert_user(
+        &self,
+        identity_key: &str,
+    ) -> Result<(TableUser, bool)>;
+
+    /// Abort an in-progress action.
+    async fn abort_action(
+        &self,
+        auth: &AuthId,
+        args: AbortActionArgs,
+    ) -> Result<AbortActionResult>;
+
+    /// Create a new action (transaction).
+    async fn create_action(
+        &self,
+        auth: &AuthId,
+        args: bsv_sdk::wallet::CreateActionArgs,
+    ) -> Result<StorageCreateActionResult>;
+
+    /// Process an action after signing.
+    async fn process_action(
+        &self,
+        auth: &AuthId,
+        args: StorageProcessActionArgs,
+    ) -> Result<StorageProcessActionResults>;
+
+    /// Internalize an external action.
+    async fn internalize_action(
+        &self,
+        auth: &AuthId,
+        args: InternalizeActionArgs,
+    ) -> Result<StorageInternalizeActionResult>;
+
+    /// Insert a certificate.
+    async fn insert_certificate(
+        &self,
+        auth: &AuthId,
+        certificate: TableCertificate,
+    ) -> Result<i64>;
+
+    /// Relinquish (release) a certificate.
+    async fn relinquish_certificate(
+        &self,
+        auth: &AuthId,
+        args: RelinquishCertificateArgs,
+    ) -> Result<i64>;
+
+    /// Relinquish (release) an output.
+    async fn relinquish_output(
+        &self,
+        auth: &AuthId,
+        args: RelinquishOutputArgs,
+    ) -> Result<i64>;
+}
+
+// =============================================================================
+// Wallet Storage Sync
+// =============================================================================
+
+/// Synchronization operations between storages.
+///
+/// Extends `WalletStorageWriter` with sync capabilities.
+#[async_trait]
+pub trait WalletStorageSync: WalletStorageWriter {
+    /// Find or create a sync state record.
+    async fn find_or_insert_sync_state(
+        &self,
+        auth: &AuthId,
+        storage_identity_key: &str,
+        storage_name: &str,
+    ) -> Result<(TableSyncState, bool)>;
+
+    /// Set the active storage for a user.
+    async fn set_active(
+        &self,
+        auth: &AuthId,
+        new_active_storage_identity_key: &str,
+    ) -> Result<i64>;
+
+    /// Get a chunk of data for synchronization.
+    async fn get_sync_chunk(&self, args: RequestSyncChunkArgs) -> Result<SyncChunk>;
+
+    /// Process a received sync chunk.
+    async fn process_sync_chunk(
+        &self,
+        args: RequestSyncChunkArgs,
+        chunk: SyncChunk,
+    ) -> Result<ProcessSyncChunkResult>;
+}
+
+// =============================================================================
+// Wallet Storage Provider
+// =============================================================================
+
+/// Full storage provider interface.
+///
+/// This is the complete interface that storage implementations must provide.
+/// It combines all read, write, and sync operations.
+#[async_trait]
+pub trait WalletStorageProvider: WalletStorageSync {
+    /// Returns true if this can be extended to the full StorageProvider interface.
+    fn is_storage_provider(&self) -> bool {
+        true
+    }
+
+    /// Get the storage identity key.
+    fn storage_identity_key(&self) -> &str;
+
+    /// Get the storage name.
+    fn storage_name(&self) -> &str;
+}
+
+// =============================================================================
+// Storage Info
+// =============================================================================
+
+/// Information about a configured storage provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletStorageInfo {
+    pub is_active: bool,
+    pub is_enabled: bool,
+    pub is_backup: bool,
+    pub is_conflicting: bool,
+    pub user_id: i64,
+    pub storage_identity_key: String,
+    pub storage_name: String,
+    pub storage_class: String,
+    pub endpoint_url: Option<String>,
+}

@@ -1,0 +1,250 @@
+{
+  "description": "BRC29 key derivation and address generation test vectors from Go implementation",
+  "source_files": [
+    "go-wallet-toolbox/pkg/brc29/fixtures_test.go",
+    "go-wallet-toolbox/pkg/brc29/brc29_address_test.go"
+  ],
+  "constants": {
+    "sender": {
+      "privateKeyHex": "143ab18a84d3b25e1a13cefa90038411e5d2014590a2a4a57263d1593c8dee1c",
+      "publicKeyHex": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810",
+      "wif": "Kwu2vS6fqkd5WnRgB9VXd4vYpL9mwkXePZWtG9Nr5s6JmfHcLsQr"
+    },
+    "recipient": {
+      "privateKeyHex": "0000000000000000000000000000000000000000000000000000000000000001",
+      "publicKeyHex": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "keyId": {
+      "derivationPrefix": "Pr==",
+      "derivationSuffix": "Su=="
+    },
+    "expectedAddress": {
+      "mainnet": "19bxE1pRYYtjZeQm7P8e2Ws5zMkm8NNuxx",
+      "testnet": "mp7uX4uQMaKzLktNpx71rS5QrMMTzDP12u"
+    }
+  },
+  "address_for_self_test_vectors": [
+    {
+      "id": "valid_hex_sender_public_key",
+      "description": "Create address using sender public key hex and recipient private key hex",
+      "inputs": {
+        "senderPublicKey": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPrivateKey": "0000000000000000000000000000000000000000000000000000000000000001",
+        "network": "mainnet"
+      },
+      "expected_outputs": {
+        "address": "19bxE1pRYYtjZeQm7P8e2Ws5zMkm8NNuxx"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "valid_testnet_address",
+      "description": "Create testnet address using BRC29",
+      "inputs": {
+        "senderPublicKey": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPrivateKey": "0000000000000000000000000000000000000000000000000000000000000001",
+        "network": "testnet"
+      },
+      "expected_outputs": {
+        "address": "mp7uX4uQMaKzLktNpx71rS5QrMMTzDP12u"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "error_empty_sender_key",
+      "description": "Error when sender key is empty",
+      "inputs": {
+        "senderPublicKey": "",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPrivateKey": "invalid"
+      },
+      "expected_error": "sender key is empty"
+    },
+    {
+      "id": "error_invalid_sender_key",
+      "description": "Error when sender key parsing fails",
+      "inputs": {
+        "senderPublicKey": "invalid",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPrivateKey": "0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "expected_error": "sender key parsing failed"
+    },
+    {
+      "id": "error_invalid_key_id",
+      "description": "Error when KeyID is invalid (empty derivation parts)",
+      "inputs": {
+        "senderPublicKey": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810",
+        "keyId": {
+          "derivationPrefix": "",
+          "derivationSuffix": ""
+        },
+        "recipientPrivateKey": "0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "expected_error": "invalid KeyID"
+    },
+    {
+      "id": "error_empty_recipient_key",
+      "description": "Error when recipient key is empty",
+      "inputs": {
+        "senderPublicKey": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPrivateKey": ""
+      },
+      "expected_error": "recipient key is empty"
+    },
+    {
+      "id": "error_invalid_recipient_key",
+      "description": "Error when recipient key parsing fails",
+      "inputs": {
+        "senderPublicKey": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPrivateKey": "invalid"
+      },
+      "expected_error": "recipient key parsing failed"
+    }
+  ],
+  "address_for_counterparty_test_vectors": [
+    {
+      "id": "valid_hex_sender_private_key",
+      "description": "Create address using sender private key hex and recipient public key hex",
+      "inputs": {
+        "senderPrivateKey": "143ab18a84d3b25e1a13cefa90038411e5d2014590a2a4a57263d1593c8dee1c",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPublicKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "network": "mainnet"
+      },
+      "expected_outputs": {
+        "address": "19bxE1pRYYtjZeQm7P8e2Ws5zMkm8NNuxx"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "valid_wif_sender_key",
+      "description": "Create address using sender WIF and recipient public key hex",
+      "inputs": {
+        "senderWIF": "Kwu2vS6fqkd5WnRgB9VXd4vYpL9mwkXePZWtG9Nr5s6JmfHcLsQr",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPublicKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "network": "mainnet"
+      },
+      "expected_outputs": {
+        "address": "19bxE1pRYYtjZeQm7P8e2Ws5zMkm8NNuxx"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "valid_testnet_counterparty_address",
+      "description": "Create testnet address for counterparty",
+      "inputs": {
+        "senderPrivateKey": "143ab18a84d3b25e1a13cefa90038411e5d2014590a2a4a57263d1593c8dee1c",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPublicKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "network": "testnet"
+      },
+      "expected_outputs": {
+        "address": "mp7uX4uQMaKzLktNpx71rS5QrMMTzDP12u"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "error_empty_sender_private_key",
+      "description": "Error when sender private key is empty",
+      "inputs": {
+        "senderPrivateKey": "",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPublicKey": "invalid"
+      },
+      "expected_error": "sender key is empty"
+    },
+    {
+      "id": "error_invalid_sender_private_key",
+      "description": "Error when sender private key parsing fails",
+      "inputs": {
+        "senderPrivateKey": "invalid",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPublicKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+      },
+      "expected_error": "sender key parsing failed"
+    },
+    {
+      "id": "error_invalid_key_id_counterparty",
+      "description": "Error when KeyID is invalid for counterparty address",
+      "inputs": {
+        "senderPrivateKey": "143ab18a84d3b25e1a13cefa90038411e5d2014590a2a4a57263d1593c8dee1c",
+        "keyId": {
+          "derivationPrefix": "",
+          "derivationSuffix": ""
+        },
+        "recipientPublicKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+      },
+      "expected_error": "invalid KeyID"
+    },
+    {
+      "id": "error_empty_recipient_public_key",
+      "description": "Error when recipient public key is empty",
+      "inputs": {
+        "senderPrivateKey": "143ab18a84d3b25e1a13cefa90038411e5d2014590a2a4a57263d1593c8dee1c",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPublicKey": ""
+      },
+      "expected_error": "recipient key is empty"
+    },
+    {
+      "id": "error_invalid_recipient_public_key",
+      "description": "Error when recipient public key parsing fails",
+      "inputs": {
+        "senderPrivateKey": "143ab18a84d3b25e1a13cefa90038411e5d2014590a2a4a57263d1593c8dee1c",
+        "keyId": {
+          "derivationPrefix": "Pr==",
+          "derivationSuffix": "Su=="
+        },
+        "recipientPublicKey": "invalid"
+      },
+      "expected_error": "recipient key parsing failed"
+    }
+  ],
+  "notes": {
+    "brc29_spec": "BRC29 defines a method for deriving payment addresses using ECDH key exchange",
+    "derivation_prefix_suffix": "Base64-encoded bytes used in key derivation path",
+    "address_symmetry": "AddressForSelf(senderPub, keyId, recipientPriv) == AddressForCounterparty(senderPriv, keyId, recipientPub)"
+  }
+}
