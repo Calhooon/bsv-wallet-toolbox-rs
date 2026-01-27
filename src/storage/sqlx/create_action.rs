@@ -622,11 +622,21 @@ pub async fn create_action_internal(
     // Get the transaction reference
     let reference = get_transaction_reference(storage, transaction_id).await?;
 
+    // Extract BEEF-related options
+    let return_txid_only = options.and_then(|o| o.return_txid_only).unwrap_or(false);
+    let known_txids: Vec<String> = options
+        .and_then(|o| o.known_txids.as_ref())
+        .map(|txids| txids.iter().map(hex::encode).collect())
+        .unwrap_or_default();
+
     // Build input BEEF containing all input transactions with their merkle proofs
     let input_beef = build_input_beef(
         storage,
         &extended_inputs,
         &change_result.allocated_change_inputs,
+        args.input_beef.as_deref(),
+        &known_txids,
+        return_txid_only,
     )
     .await?;
 
@@ -1393,22 +1403,35 @@ struct BeefTxData {
 /// then recursively fetches all ancestor transactions until we reach transactions with
 /// merkle proofs or can't find any more ancestors in storage.
 ///
-/// This matches the TypeScript `getBeefForTransaction` behavior which recursively
-/// traverses the transaction graph to build a complete BEEF.
+/// This matches the TypeScript/Go `validateRequiredInputs` and `getBeefForTransaction` behavior:
+/// 1. First merges user-provided inputBEEF (contains proofs for external inputs)
+/// 2. Then adds storage transactions for known inputs
+/// 3. Finally trims known_txids to txid-only format to reduce BEEF size
 ///
 /// # Arguments
 /// * `storage` - The storage backend to query
 /// * `extended_inputs` - User-provided inputs
 /// * `change_inputs` - Allocated change inputs from storage
+/// * `user_input_beef` - Optional user-provided BEEF with proofs for external inputs
+/// * `known_txids` - TXIDs the recipient already has (will be trimmed to txid-only)
+/// * `return_txid_only` - If true, skip BEEF construction entirely
 ///
 /// # Returns
 /// * `Ok(Some(beef_bytes))` - BEEF binary data if there are inputs
-/// * `Ok(None)` - If there are no inputs
+/// * `Ok(None)` - If there are no inputs or return_txid_only is true
 async fn build_input_beef(
     storage: &StorageSqlx,
     extended_inputs: &[ExtendedInput],
     change_inputs: &[AllocatedChangeInput],
+    user_input_beef: Option<&[u8]>,
+    known_txids: &[String],
+    return_txid_only: bool,
 ) -> Result<Option<Vec<u8>>> {
+    // Gap #3: If return_txid_only, skip BEEF construction entirely
+    if return_txid_only {
+        return Ok(None);
+    }
+
     // Collect unique input txids
     let mut pending_txids: Vec<String> = Vec::new();
     let mut processed_txids: HashSet<String> = HashSet::new();
@@ -1432,6 +1455,28 @@ async fn build_input_beef(
     // Create BEEF structure (V2 format)
     let mut beef = Beef::new();
 
+    // Gap #1: Merge user-provided inputBEEF FIRST
+    // This contains proofs for external inputs not in our storage
+    if let Some(input_beef_bytes) = user_input_beef {
+        if !input_beef_bytes.is_empty() {
+            match Beef::from_binary(input_beef_bytes) {
+                Ok(user_beef) => {
+                    beef.merge_beef(&user_beef);
+                    // Mark txids from user BEEF as already processed
+                    for tx in &user_beef.txs {
+                        processed_txids.insert(tx.txid());
+                    }
+                }
+                Err(e) => {
+                    return Err(Error::ValidationError(format!(
+                        "inputBEEF: invalid BEEF format: {}",
+                        e
+                    )));
+                }
+            }
+        }
+    }
+
     // Process transactions recursively - for each unproven tx, we need to add its ancestors
     let mut depth = 0;
     while !pending_txids.is_empty() && depth < MAX_BEEF_RECURSION_DEPTH {
@@ -1441,6 +1486,11 @@ async fn build_input_beef(
             continue;
         }
         processed_txids.insert(txid.clone());
+
+        // Check if already in BEEF (from user inputBEEF)
+        if beef.find_txid(&txid).is_some() {
+            continue;
+        }
 
         if let Some(tx_data) = get_tx_with_proof(storage, &txid).await? {
             // If we have a merkle proof, add both tx and proof - no need to recurse
@@ -1477,10 +1527,16 @@ async fn build_input_beef(
                 }
             }
         }
-        // If transaction not found in storage, skip it - the caller should have
-        // provided it via input BEEF in CreateActionArgs
+        // If transaction not found in storage AND not in user BEEF, that's an error
+        // for user-provided inputs, but OK for ancestors (they might be proven elsewhere)
 
         depth += 1;
+    }
+
+    // Gap #2: Trim known_txids to txid-only format
+    // This reduces BEEF size when the recipient already has these transactions
+    for known_txid in known_txids {
+        beef.make_txid_only(known_txid);
     }
 
     // Serialize BEEF to binary
@@ -2400,9 +2456,16 @@ mod tests {
         let extended_inputs: Vec<ExtendedInput> = vec![];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        let result = build_input_beef(&storage, &extended_inputs, &change_inputs)
-            .await
-            .unwrap();
+        let result = build_input_beef(
+            &storage,
+            &extended_inputs,
+            &change_inputs,
+            None,           // user_input_beef
+            &[],            // known_txids
+            false,          // return_txid_only
+        )
+        .await
+        .unwrap();
 
         assert!(result.is_none());
     }
@@ -2439,9 +2502,16 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        let result = build_input_beef(&storage, &extended_inputs, &change_inputs)
-            .await
-            .unwrap();
+        let result = build_input_beef(
+            &storage,
+            &extended_inputs,
+            &change_inputs,
+            None,           // user_input_beef
+            &[],            // known_txids
+            false,          // return_txid_only
+        )
+        .await
+        .unwrap();
 
         // Should return Some BEEF data
         assert!(result.is_some());
@@ -2495,7 +2565,7 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        let result = build_input_beef(&storage, &extended_inputs, &change_inputs)
+        let result = build_input_beef(&storage, &extended_inputs, &change_inputs, None, &[], false)
             .await
             .unwrap();
 
@@ -2556,7 +2626,7 @@ mod tests {
             derivation_suffix: None,
         }];
 
-        let result = build_input_beef(&storage, &extended_inputs, &change_inputs)
+        let result = build_input_beef(&storage, &extended_inputs, &change_inputs, None, &[], false)
             .await
             .unwrap();
 
@@ -2786,7 +2856,7 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        let result = build_input_beef(&storage, &extended_inputs, &change_inputs)
+        let result = build_input_beef(&storage, &extended_inputs, &change_inputs, None, &[], false)
             .await
             .unwrap();
 
@@ -2795,6 +2865,191 @@ mod tests {
         let beef_bytes = result.unwrap();
         // BEEF should be larger than just one transaction since it includes the ancestor chain
         assert!(beef_bytes.len() > 4);
+    }
+
+    // =============================================================================
+    // Tests for BEEF Gaps (matching Go tests)
+    // =============================================================================
+
+    #[tokio::test]
+    async fn test_build_input_beef_return_txid_only() {
+        // Gap #3: When return_txid_only is true, should return None
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let txid = "3333333333333333333333333333333333333333333333333333333333333333";
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: txid.to_string(),
+            vout: 0,
+            satoshis: 1000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        // With return_txid_only = true, should return None regardless of inputs
+        let result = build_input_beef(
+            &storage,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            true, // return_txid_only = true
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_with_known_txids() {
+        // Gap #2: Known txids should be trimmed to txid-only format
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        // Sample raw transaction
+        let raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+        let merkle_path = hex::decode("a086010001020002").unwrap();
+        let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
+
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: txid.to_string(),
+            vout: 0,
+            satoshis: 5000000000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        // Build BEEF with the txid marked as known
+        let result = build_input_beef(
+            &storage,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[txid.to_string()], // This txid is known to recipient
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Should still return BEEF (but with txid-only for known tx)
+        assert!(result.is_some());
+        let beef_bytes = result.unwrap();
+
+        // Parse the BEEF and verify the tx is txid-only
+        let beef = Beef::from_binary(&beef_bytes).unwrap();
+        let beef_tx = beef.find_txid(txid).unwrap();
+        assert!(beef_tx.is_txid_only(), "Known txid should be converted to txid-only");
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_with_user_input_beef() {
+        // Gap #1: User-provided inputBEEF should be merged first
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        // Create a user-provided BEEF with a transaction
+        let user_raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+        let user_txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        // Build user's BEEF
+        let mut user_beef = Beef::new();
+        user_beef.merge_raw_tx(user_raw_tx, None);
+        let user_beef_bytes = user_beef.to_binary();
+
+        // Input references the tx from user BEEF (not in storage)
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: user_txid.to_string(),
+            vout: 0,
+            satoshis: 5000000000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        // Build BEEF with user-provided inputBEEF
+        let result = build_input_beef(
+            &storage,
+            &extended_inputs,
+            &change_inputs,
+            Some(&user_beef_bytes), // User provides BEEF for external input
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Should return BEEF containing the user's transaction
+        assert!(result.is_some());
+        let beef_bytes = result.unwrap();
+
+        // Parse and verify the tx is included
+        let beef = Beef::from_binary(&beef_bytes).unwrap();
+        assert!(
+            beef.find_txid(user_txid).is_some(),
+            "User-provided transaction should be in the BEEF"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_user_beef_invalid() {
+        // Gap #1: Invalid user inputBEEF should return error
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: "4444444444444444444444444444444444444444444444444444444444444444".to_string(),
+            vout: 0,
+            satoshis: 1000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        // Provide invalid BEEF bytes
+        let invalid_beef = vec![0x00, 0x01, 0x02, 0x03];
+
+        let result = build_input_beef(
+            &storage,
+            &extended_inputs,
+            &change_inputs,
+            Some(&invalid_beef),
+            &[],
+            false,
+        )
+        .await;
+
+        // Should return error for invalid BEEF
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("inputBEEF"),
+            "Error should mention inputBEEF"
+        );
     }
 }
 

@@ -158,6 +158,35 @@ pub async fn create_action_internal(
 - **Input/output tracking**: Full database state management
 - **Labels and tags**: Support for transaction/output organization
 
+### BEEF Building (1:1 Parity with Go/TypeScript)
+
+The `build_input_beef` function constructs BEEF (Background Evaluation Extended Format) for transaction inputs with full parity to Go/TypeScript implementations:
+
+| Feature | Description |
+|---------|-------------|
+| User inputBEEF merging | Merges user-provided `input_beef` FIRST before adding storage transactions |
+| Recursive ancestor lookup | Fetches ancestor transactions until reaching proven transactions |
+| knownTxids optimization | Trims transactions to txid-only format for known txids |
+| returnTXIDOnly support | Returns None when `return_txid_only` option is set |
+| Invalid BEEF detection | Returns error for malformed user-provided inputBEEF |
+
+**Signature:**
+```rust
+async fn build_input_beef(
+    storage: &StorageSqlx,
+    extended_inputs: &[ExtendedInput],
+    change_inputs: &[AllocatedChangeInput],
+    user_input_beef: Option<&[u8]>,  // Gap #1: User BEEF merged first
+    known_txids: &[String],           // Gap #2: Trimmed to txid-only
+    return_txid_only: bool,           // Gap #3: Skip BEEF if true
+) -> Result<Option<Vec<u8>>>
+```
+
+**Related Go Tests (all ported):**
+- `TestCreateActionWithProvidedUnknownInput` - inputBEEF merging
+- `TestCreateActionWithKnownTxIDs` - knownTxids trimming
+- `TestCreateActionWithProvidedUnknownInputWithoutInputBEEF` - error case
+
 ### Internal Types
 - `ExtendedInput` - Input with associated output context
 - `ExtendedOutput` - Output with basket/tag metadata
@@ -423,7 +452,7 @@ async fn test_list_certificates_with_data() // Certificate with fields
 async fn test_list_certificates_with_filters() // Certifier/type filtering
 ```
 
-### create_action.rs Tests (`create_action.rs:1371-2087`)
+### create_action.rs Tests (`create_action.rs:1371-2900+`)
 ```rust
 #[test]
 fn test_var_int_size()                      // VarInt encoding sizes
@@ -452,6 +481,17 @@ async fn test_create_action_with_tags_and_basket() // Tags and baskets
 async fn test_create_action_no_send()       // NoSend mode
 async fn test_create_action_multiple_outputs() // Multiple outputs
 async fn test_create_action_with_version_and_locktime() // Version/locktime
+
+// BEEF building tests (Gap #1, #2, #3 parity with Go)
+async fn test_build_input_beef_empty()              // Empty inputs
+async fn test_build_input_beef_with_proven_tx()     // Proven transaction
+async fn test_build_input_beef_with_unproven_tx()   // Unproven transaction
+async fn test_build_input_beef_deduplicates_txids() // Dedupe handling
+async fn test_build_input_beef_recursive_ancestor() // Ancestor chain
+async fn test_build_input_beef_return_txid_only()   // Gap #3: returnTXIDOnly
+async fn test_build_input_beef_with_known_txids()   // Gap #2: knownTxids trim
+async fn test_build_input_beef_with_user_input_beef() // Gap #1: inputBEEF merge
+async fn test_build_input_beef_user_beef_invalid()  // Gap #1: invalid inputBEEF
 ```
 
 Run with:
