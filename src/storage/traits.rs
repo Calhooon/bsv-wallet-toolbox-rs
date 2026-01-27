@@ -24,6 +24,7 @@ use crate::storage::entities::*;
 ///
 /// Every storage operation is performed in the context of an authenticated user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AuthId {
     /// The identity public key (hex) of the authenticated user.
     pub identity_key: String,
@@ -59,6 +60,7 @@ impl AuthId {
 
 /// Pagination parameters.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Paged {
     /// Number of items to skip.
     pub offset: Option<u32>,
@@ -68,6 +70,7 @@ pub struct Paged {
 
 /// Base arguments for paginated queries with optional since filter.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FindSincePagedArgs {
     /// Only return items updated after this time.
     pub since: Option<DateTime<Utc>>,
@@ -79,6 +82,7 @@ pub struct FindSincePagedArgs {
 
 /// Arguments for finding certificates.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FindCertificatesArgs {
     /// Base query parameters.
     #[serde(flatten)]
@@ -95,6 +99,7 @@ pub struct FindCertificatesArgs {
 
 /// Arguments for finding output baskets.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FindOutputBasketsArgs {
     #[serde(flatten)]
     pub base: FindSincePagedArgs,
@@ -104,6 +109,7 @@ pub struct FindOutputBasketsArgs {
 
 /// Arguments for finding outputs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FindOutputsArgs {
     #[serde(flatten)]
     pub base: FindSincePagedArgs,
@@ -119,6 +125,7 @@ pub struct FindOutputsArgs {
 
 /// Arguments for finding proven transaction requests.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FindProvenTxReqsArgs {
     #[serde(flatten)]
     pub base: FindSincePagedArgs,
@@ -132,6 +139,7 @@ pub struct FindProvenTxReqsArgs {
 
 /// Result from createAction storage operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageCreateActionResult {
     /// BEEF data for inputs (if needed).
     pub input_beef: Option<Vec<u8>>,
@@ -153,6 +161,7 @@ pub struct StorageCreateActionResult {
 
 /// Input details from storage for transaction creation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageCreateTransactionInput {
     pub vin: u32,
     pub source_txid: String,
@@ -171,6 +180,7 @@ pub struct StorageCreateTransactionInput {
 
 /// Output details from storage for transaction creation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageCreateTransactionOutput {
     pub vout: u32,
     pub satoshis: u64,
@@ -178,6 +188,10 @@ pub struct StorageCreateTransactionOutput {
     pub provided_by: StorageProvidedBy,
     pub purpose: Option<String>,
     pub derivation_suffix: Option<String>,
+    pub basket: Option<String>,
+    pub tags: Vec<String>,
+    pub output_description: Option<String>,
+    pub custom_instructions: Option<String>,
 }
 
 /// Indicates who provided the input/output.
@@ -191,6 +205,7 @@ pub enum StorageProvidedBy {
 
 /// Arguments for processAction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageProcessActionArgs {
     pub is_new_tx: bool,
     pub is_send_with: bool,
@@ -204,6 +219,7 @@ pub struct StorageProcessActionArgs {
 
 /// Results from processAction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageProcessActionResults {
     pub send_with_results: Option<Vec<SendWithResult>>,
     pub not_delayed_results: Option<Vec<ReviewActionResult>>,
@@ -212,6 +228,7 @@ pub struct StorageProcessActionResults {
 
 /// Result of sending a transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SendWithResult {
     pub txid: String,
     pub status: String,
@@ -219,6 +236,7 @@ pub struct SendWithResult {
 
 /// Result of reviewing an action (non-delayed broadcast).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewActionResult {
     pub txid: String,
     pub status: ReviewActionResultStatus,
@@ -238,6 +256,7 @@ pub enum ReviewActionResultStatus {
 
 /// Result from internalizeAction with storage-specific details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StorageInternalizeActionResult {
     /// Base result from SDK.
     #[serde(flatten)]
@@ -260,6 +279,7 @@ pub struct StorageInternalizeActionResult {
 
 /// Arguments for requesting a sync chunk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RequestSyncChunkArgs {
     /// Storage identity key of the source.
     pub from_storage_identity_key: String,
@@ -279,6 +299,7 @@ pub struct RequestSyncChunkArgs {
 
 /// Offset for a specific entity type during sync.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncOffset {
     pub name: String,
     pub offset: u32,
@@ -286,6 +307,7 @@ pub struct SyncOffset {
 
 /// A chunk of data for synchronization.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncChunk {
     pub from_storage_identity_key: String,
     pub to_storage_identity_key: String,
@@ -308,6 +330,7 @@ pub struct SyncChunk {
 
 /// Result of processing a sync chunk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessSyncChunkResult {
     /// Whether sync is complete.
     pub done: bool,
@@ -515,6 +538,7 @@ pub trait WalletStorageProvider: WalletStorageSync {
 
 /// Information about a configured storage provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WalletStorageInfo {
     pub is_active: bool,
     pub is_enabled: bool,

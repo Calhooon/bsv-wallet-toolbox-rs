@@ -70,6 +70,7 @@ pub enum ProvenTxReqStatus {
 
 /// User record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableUser {
     pub user_id: i64,
     pub identity_key: String,
@@ -80,6 +81,7 @@ pub struct TableUser {
 
 /// Wallet settings (singleton).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableSettings {
     pub settings_id: i64,
     pub storage_identity_key: String,
@@ -106,6 +108,7 @@ impl Default for TableSettings {
 
 /// Transaction record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableTransaction {
     pub transaction_id: i64,
     pub user_id: i64,
@@ -126,6 +129,7 @@ pub struct TableTransaction {
 
 /// Output (UTXO) record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableOutput {
     pub output_id: i64,
     pub user_id: i64,
@@ -150,6 +154,7 @@ pub struct TableOutput {
 
 /// Output basket for organizing outputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableOutputBasket {
     pub basket_id: i64,
     pub user_id: i64,
@@ -162,6 +167,7 @@ pub struct TableOutputBasket {
 
 /// Output tag for labeling outputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableOutputTag {
     pub tag_id: i64,
     pub user_id: i64,
@@ -172,6 +178,7 @@ pub struct TableOutputTag {
 
 /// Many-to-many mapping between outputs and tags.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableOutputTagMap {
     pub output_tag_map_id: i64,
     pub output_id: i64,
@@ -182,6 +189,7 @@ pub struct TableOutputTagMap {
 
 /// Transaction label.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableTxLabel {
     pub label_id: i64,
     pub user_id: i64,
@@ -192,6 +200,7 @@ pub struct TableTxLabel {
 
 /// Many-to-many mapping between transactions and labels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableTxLabelMap {
     pub tx_label_map_id: i64,
     pub transaction_id: i64,
@@ -206,6 +215,7 @@ pub struct TableTxLabelMap {
 
 /// Proven transaction with Merkle proof.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableProvenTx {
     pub proven_tx_id: i64,
     pub txid: String,
@@ -221,6 +231,7 @@ pub struct TableProvenTx {
 
 /// Request for a Merkle proof.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableProvenTxReq {
     pub proven_tx_req_id: i64,
     pub txid: String,
@@ -239,6 +250,7 @@ pub struct TableProvenTxReq {
 
 /// Identity certificate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableCertificate {
     pub certificate_id: i64,
     pub user_id: i64,
@@ -255,6 +267,7 @@ pub struct TableCertificate {
 
 /// Certificate field value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableCertificateField {
     pub certificate_field_id: i64,
     pub certificate_id: i64,
@@ -272,6 +285,7 @@ pub struct TableCertificateField {
 
 /// Synchronization state between storages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableSyncState {
     pub sync_state_id: i64,
     pub user_id: i64,
@@ -294,6 +308,7 @@ pub struct TableSyncState {
 
 /// Commission record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableCommission {
     pub commission_id: i64,
     pub user_id: i64,
@@ -308,6 +323,7 @@ pub struct TableCommission {
 
 /// Monitor event record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableMonitorEvent {
     pub event_id: i64,
     pub event_type: String,

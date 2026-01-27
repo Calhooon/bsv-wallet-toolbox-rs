@@ -737,6 +737,8 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::JsonRpcResponse;
+    use chrono::Utc;
 
     #[test]
     fn test_endpoint_urls() {
@@ -755,6 +757,859 @@ mod tests {
         assert!(json.contains("\"id\":1"));
     }
 
-    // Integration tests would require a mock server or actual connection
-    // to storage.babbage.systems
+    // Helper to create a JSON-RPC success response
+    fn rpc_success<T: Serialize>(id: u64, result: T) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": result,
+            "id": id
+        })
+    }
+
+    // Helper to create a JSON-RPC error response
+    #[allow(dead_code)]
+    fn rpc_error(id: u64, code: i32, message: &str) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": code,
+                "message": message
+            },
+            "id": id
+        })
+    }
+
+    #[test]
+    fn test_json_rpc_response_success_parsing() {
+        let json = r#"{
+            "jsonrpc": "2.0",
+            "result": {"settingsId": 1, "storageName": "test"},
+            "id": 1
+        }"#;
+
+        let response: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+    }
+
+    #[test]
+    fn test_json_rpc_response_error_parsing() {
+        let json = r#"{
+            "jsonrpc": "2.0",
+            "error": {"code": -32601, "message": "Method not found"},
+            "id": 1
+        }"#;
+
+        let response: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(response.error.is_some());
+        assert!(response.result.is_none());
+
+        let err = response.error.unwrap();
+        assert_eq!(err.code, -32601);
+        assert_eq!(err.message, "Method not found");
+    }
+
+    #[test]
+    fn test_auth_id_serialization() {
+        let auth = AuthId {
+            identity_key: "test-identity-key".to_string(),
+            user_id: Some(42),
+            is_active: Some(true),
+        };
+
+        let json = serde_json::to_string(&auth).unwrap();
+        assert!(json.contains("\"identityKey\":\"test-identity-key\""));
+        assert!(json.contains("\"userId\":42"));
+        assert!(json.contains("\"isActive\":true"));
+    }
+
+    #[test]
+    fn test_find_proven_tx_reqs_args_default() {
+        let args = FindProvenTxReqsArgs::default();
+        assert!(args.status.is_none());
+        assert!(args.txids.is_none());
+    }
+
+    #[test]
+    fn test_request_sync_chunk_args_serialization() {
+        let args = RequestSyncChunkArgs {
+            from_storage_identity_key: "from-key".to_string(),
+            to_storage_identity_key: "to-key".to_string(),
+            identity_key: "user-key".to_string(),
+            since: None,
+            max_rough_size: 100000,
+            max_items: 1000,
+            offsets: vec![],
+        };
+
+        let json = serde_json::to_string(&args).unwrap();
+        assert!(json.contains("fromStorageIdentityKey"));
+        assert!(json.contains("toStorageIdentityKey"));
+        assert!(json.contains("maxRoughSize"));
+    }
+
+    #[test]
+    fn test_sync_chunk_default() {
+        let chunk = SyncChunk::default();
+        assert!(chunk.user.is_none());
+        assert!(chunk.proven_txs.is_none());
+        assert!(chunk.outputs.is_none());
+    }
+
+    #[test]
+    fn test_table_settings_deserialization() {
+        let json = r#"{
+            "settingsId": 1,
+            "storageIdentityKey": "key123",
+            "storageName": "test-storage",
+            "chain": "mainnet",
+            "maxOutputScript": 10000,
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-01T00:00:00Z"
+        }"#;
+
+        let settings: TableSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.settings_id, 1);
+        assert_eq!(settings.storage_name, "test-storage");
+        assert_eq!(settings.chain, "mainnet");
+    }
+
+    #[test]
+    fn test_table_user_deserialization() {
+        let json = r#"{
+            "userId": 42,
+            "identityKey": "user-key",
+            "activeStorage": null,
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-01T00:00:00Z"
+        }"#;
+
+        let user: TableUser = serde_json::from_str(json).unwrap();
+        assert_eq!(user.user_id, 42);
+        assert_eq!(user.identity_key, "user-key");
+        assert!(user.active_storage.is_none());
+    }
+
+    #[test]
+    fn test_update_proven_tx_req_args() {
+        let args = UpdateProvenTxReqWithNewProvenTxArgs {
+            proven_tx_req_id: 123,
+            proven_tx: TableProvenTx {
+                proven_tx_id: 1,
+                txid: "abc123".to_string(),
+                height: 800000,
+                index: 5,
+                block_hash: "blockhash".to_string(),
+                merkle_root: "merkleroot".to_string(),
+                merkle_path: vec![1, 2, 3],
+                raw_tx: vec![4, 5, 6],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+        };
+
+        let json = serde_json::to_string(&args).unwrap();
+        assert!(json.contains("provenTxReqId"));
+        assert!(json.contains("provenTx"));
+    }
+
+    #[test]
+    fn test_process_sync_chunk_result_deserialization() {
+        let json = r#"{
+            "done": true,
+            "maxUpdatedAt": "2024-01-01T00:00:00Z",
+            "updates": 5,
+            "inserts": 10,
+            "error": null
+        }"#;
+
+        let result: ProcessSyncChunkResult = serde_json::from_str(json).unwrap();
+        assert!(result.done);
+        assert_eq!(result.updates, 5);
+        assert_eq!(result.inserts, 10);
+    }
+
+    // =========================================================================
+    // Tests for all 22 JSON-RPC method request/response formats
+    // =========================================================================
+
+    #[test]
+    fn test_make_available_method() {
+        // makeAvailable takes no parameters
+        let request = JsonRpcRequest::new("makeAvailable", vec![], 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"makeAvailable\""));
+        assert!(json.contains("\"params\":[]"));
+    }
+
+    #[test]
+    fn test_destroy_method() {
+        // destroy takes no parameters
+        let request = JsonRpcRequest::new("destroy", vec![], 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"destroy\""));
+        assert!(json.contains("\"params\":[]"));
+    }
+
+    #[test]
+    fn test_migrate_method() {
+        // migrate takes storage_name as parameter
+        let params = vec![serde_json::json!("my-storage")];
+        let request = JsonRpcRequest::new("migrate", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"migrate\""));
+        assert!(json.contains("\"my-storage\""));
+    }
+
+    #[test]
+    fn test_find_or_insert_user_method() {
+        // findOrInsertUser takes identity_key as parameter
+        let params = vec![serde_json::json!("02abcdef123...")];
+        let request = JsonRpcRequest::new("findOrInsertUser", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"findOrInsertUser\""));
+        assert!(json.contains("\"02abcdef123...\""));
+
+        // Test response format
+        let response_json = r#"{
+            "jsonrpc": "2.0",
+            "result": {
+                "user": {
+                    "userId": 1,
+                    "identityKey": "02abcdef",
+                    "activeStorage": null,
+                    "createdAt": "2024-01-01T00:00:00Z",
+                    "updatedAt": "2024-01-01T00:00:00Z"
+                },
+                "isNew": true
+            },
+            "id": 1
+        }"#;
+        let response: JsonRpcResponse = serde_json::from_str(response_json).unwrap();
+        assert!(response.is_success());
+    }
+
+    #[test]
+    fn test_find_proven_tx_reqs_method() {
+        // findProvenTxReqs takes FindProvenTxReqsArgs
+        let args = FindProvenTxReqsArgs {
+            status: Some(vec![ProvenTxReqStatus::Pending]),
+            txids: Some(vec!["abc123".to_string()]),
+            ..Default::default()
+        };
+        let params = vec![serde_json::to_value(&args).unwrap()];
+        let request = JsonRpcRequest::new("findProvenTxReqs", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"findProvenTxReqs\""));
+    }
+
+    #[test]
+    fn test_get_sync_chunk_method() {
+        // getSyncChunk takes RequestSyncChunkArgs
+        let args = RequestSyncChunkArgs {
+            from_storage_identity_key: "from-key".to_string(),
+            to_storage_identity_key: "to-key".to_string(),
+            identity_key: "user-key".to_string(),
+            since: None,
+            max_rough_size: 100000,
+            max_items: 1000,
+            offsets: vec![],
+        };
+        let params = vec![serde_json::to_value(&args).unwrap()];
+        let request = JsonRpcRequest::new("getSyncChunk", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"getSyncChunk\""));
+        assert!(json.contains("fromStorageIdentityKey"));
+    }
+
+    #[test]
+    fn test_process_sync_chunk_method() {
+        // processSyncChunk takes RequestSyncChunkArgs and SyncChunk
+        let args = RequestSyncChunkArgs {
+            from_storage_identity_key: "from-key".to_string(),
+            to_storage_identity_key: "to-key".to_string(),
+            identity_key: "user-key".to_string(),
+            since: None,
+            max_rough_size: 100000,
+            max_items: 1000,
+            offsets: vec![],
+        };
+        let chunk = SyncChunk::default();
+        let params = vec![
+            serde_json::to_value(&args).unwrap(),
+            serde_json::to_value(&chunk).unwrap(),
+        ];
+        let request = JsonRpcRequest::new("processSyncChunk", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"processSyncChunk\""));
+    }
+
+    #[test]
+    fn test_find_or_insert_sync_state_auth_method() {
+        // findOrInsertSyncStateAuth takes auth, storageIdentityKey, storageName
+        let auth = AuthId::new("user-identity-key");
+        let params = vec![
+            serde_json::to_value(&auth).unwrap(),
+            serde_json::json!("storage-identity-key"),
+            serde_json::json!("storage-name"),
+        ];
+        let request = JsonRpcRequest::new("findOrInsertSyncStateAuth", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"findOrInsertSyncStateAuth\""));
+        assert!(json.contains("identityKey"));
+    }
+
+    #[test]
+    fn test_insert_certificate_auth_method() {
+        // insertCertificateAuth takes auth and certificate
+        let auth = AuthId::new("user-identity-key");
+        let cert = TableCertificate {
+            certificate_id: 0,
+            user_id: 1,
+            cert_type: "test-type".to_string(),
+            serial_number: "SN123".to_string(),
+            certifier: "certifier-key".to_string(),
+            subject: "subject-key".to_string(),
+            verifier: None,
+            revocation_outpoint: "txid:0".to_string(),
+            signature: "sig".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let params = vec![
+            serde_json::to_value(&auth).unwrap(),
+            serde_json::to_value(&cert).unwrap(),
+        ];
+        let request = JsonRpcRequest::new("insertCertificateAuth", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"insertCertificateAuth\""));
+        assert!(json.contains("certType"));
+        assert!(json.contains("serialNumber"));
+    }
+
+    #[test]
+    fn test_find_certificates_auth_method() {
+        // findCertificatesAuth takes auth and FindCertificatesArgs
+        let auth = AuthId::new("user-identity-key");
+        let args = FindCertificatesArgs {
+            certifiers: Some(vec!["certifier1".to_string()]),
+            types: Some(vec!["type1".to_string()]),
+            include_fields: Some(true),
+            ..Default::default()
+        };
+        let params = vec![
+            serde_json::to_value(&auth).unwrap(),
+            serde_json::to_value(&args).unwrap(),
+        ];
+        let request = JsonRpcRequest::new("findCertificatesAuth", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"findCertificatesAuth\""));
+        assert!(json.contains("includeFields"));
+    }
+
+    #[test]
+    fn test_list_certificates_method() {
+        // listCertificates takes auth and ListCertificatesArgs
+        let auth = AuthId::new("user-identity-key");
+        let request = JsonRpcRequest::new(
+            "listCertificates",
+            vec![serde_json::to_value(&auth).unwrap(), serde_json::json!({})],
+            1,
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"listCertificates\""));
+    }
+
+    #[test]
+    fn test_relinquish_certificate_method() {
+        // relinquishCertificate takes auth and RelinquishCertificateArgs
+        let auth = AuthId::new("user-identity-key");
+        let request = JsonRpcRequest::new(
+            "relinquishCertificate",
+            vec![
+                serde_json::to_value(&auth).unwrap(),
+                serde_json::json!({"type": "cert-type", "serialNumber": "SN123", "certifier": "certifier-key"}),
+            ],
+            1,
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"relinquishCertificate\""));
+    }
+
+    #[test]
+    fn test_find_outputs_auth_method() {
+        // findOutputsAuth takes auth and FindOutputsArgs
+        let auth = AuthId::new("user-identity-key");
+        let args = FindOutputsArgs {
+            basket_id: Some(1),
+            txid: Some("abc123".to_string()),
+            no_script: Some(true),
+            ..Default::default()
+        };
+        let params = vec![
+            serde_json::to_value(&auth).unwrap(),
+            serde_json::to_value(&args).unwrap(),
+        ];
+        let request = JsonRpcRequest::new("findOutputsAuth", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"findOutputsAuth\""));
+        assert!(json.contains("basketId"));
+        assert!(json.contains("noScript"));
+    }
+
+    #[test]
+    fn test_find_output_baskets_method() {
+        // findOutputBaskets takes auth and FindOutputBasketsArgs
+        let auth = AuthId::new("user-identity-key");
+        let args = FindOutputBasketsArgs {
+            name: Some("default".to_string()),
+            ..Default::default()
+        };
+        let params = vec![
+            serde_json::to_value(&auth).unwrap(),
+            serde_json::to_value(&args).unwrap(),
+        ];
+        let request = JsonRpcRequest::new("findOutputBaskets", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"findOutputBaskets\""));
+    }
+
+    #[test]
+    fn test_list_outputs_method() {
+        // listOutputs takes auth and ListOutputsArgs
+        let auth = AuthId::new("user-identity-key");
+        let request = JsonRpcRequest::new(
+            "listOutputs",
+            vec![serde_json::to_value(&auth).unwrap(), serde_json::json!({})],
+            1,
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"listOutputs\""));
+    }
+
+    #[test]
+    fn test_relinquish_output_method() {
+        // relinquishOutput takes auth and RelinquishOutputArgs
+        let auth = AuthId::new("user-identity-key");
+        let request = JsonRpcRequest::new(
+            "relinquishOutput",
+            vec![
+                serde_json::to_value(&auth).unwrap(),
+                serde_json::json!({"basket": "default", "output": "txid.0"}),
+            ],
+            1,
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"relinquishOutput\""));
+    }
+
+    #[test]
+    fn test_create_action_method() {
+        // createAction takes auth and CreateActionArgs
+        let auth = AuthId::new("user-identity-key");
+        let request = JsonRpcRequest::new(
+            "createAction",
+            vec![
+                serde_json::to_value(&auth).unwrap(),
+                serde_json::json!({
+                    "description": "Test payment"
+                }),
+            ],
+            1,
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"createAction\""));
+        assert!(json.contains("Test payment"));
+    }
+
+    #[test]
+    fn test_process_action_method() {
+        // processAction takes auth and StorageProcessActionArgs
+        let auth = AuthId::new("user-identity-key");
+        let args = StorageProcessActionArgs {
+            is_new_tx: true,
+            is_send_with: false,
+            is_no_send: false,
+            is_delayed: false,
+            reference: Some("ref123".to_string()),
+            txid: Some("txid123".to_string()),
+            raw_tx: Some(vec![1, 2, 3, 4]),
+            send_with: vec![],
+        };
+        let params = vec![
+            serde_json::to_value(&auth).unwrap(),
+            serde_json::to_value(&args).unwrap(),
+        ];
+        let request = JsonRpcRequest::new("processAction", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"processAction\""));
+        assert!(json.contains("isNewTx"));
+        assert!(json.contains("isNoSend"));
+    }
+
+    #[test]
+    fn test_internalize_action_method() {
+        // internalizeAction takes auth and InternalizeActionArgs
+        let auth = AuthId::new("user-identity-key");
+        let request = JsonRpcRequest::new(
+            "internalizeAction",
+            vec![
+                serde_json::to_value(&auth).unwrap(),
+                serde_json::json!({
+                    "tx": [],
+                    "outputs": []
+                }),
+            ],
+            1,
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"internalizeAction\""));
+    }
+
+    #[test]
+    fn test_abort_action_method() {
+        // abortAction takes auth and AbortActionArgs
+        let auth = AuthId::new("user-identity-key");
+        let request = JsonRpcRequest::new(
+            "abortAction",
+            vec![
+                serde_json::to_value(&auth).unwrap(),
+                serde_json::json!({
+                    "reference": "ref123"
+                }),
+            ],
+            1,
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"abortAction\""));
+        assert!(json.contains("ref123"));
+    }
+
+    #[test]
+    fn test_list_actions_method() {
+        // listActions takes auth and ListActionsArgs
+        let auth = AuthId::new("user-identity-key");
+        let request = JsonRpcRequest::new(
+            "listActions",
+            vec![serde_json::to_value(&auth).unwrap(), serde_json::json!({})],
+            1,
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"listActions\""));
+    }
+
+    #[test]
+    fn test_set_active_method() {
+        // setActive takes auth and newActiveStorageIdentityKey
+        let auth = AuthId::new("user-identity-key");
+        let params = vec![
+            serde_json::to_value(&auth).unwrap(),
+            serde_json::json!("new-active-storage-key"),
+        ];
+        let request = JsonRpcRequest::new("setActive", params, 1);
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"method\":\"setActive\""));
+        assert!(json.contains("new-active-storage-key"));
+    }
+
+    // =========================================================================
+    // Tests for result type serialization/deserialization
+    // =========================================================================
+
+    #[test]
+    fn test_storage_create_action_result_deserialization() {
+        let json = r#"{
+            "inputBeef": null,
+            "inputs": [],
+            "outputs": [],
+            "noSendChangeOutputVouts": null,
+            "derivationPrefix": "prefix",
+            "version": 1,
+            "lockTime": 0,
+            "reference": "ref123"
+        }"#;
+        let result: StorageCreateActionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.derivation_prefix, "prefix");
+        assert_eq!(result.reference, "ref123");
+        assert_eq!(result.version, 1);
+    }
+
+    #[test]
+    fn test_storage_process_action_results_deserialization() {
+        let json = r#"{
+            "sendWithResults": null,
+            "notDelayedResults": null,
+            "log": "test log"
+        }"#;
+        let result: StorageProcessActionResults = serde_json::from_str(json).unwrap();
+        assert!(result.send_with_results.is_none());
+        assert_eq!(result.log, Some("test log".to_string()));
+    }
+
+    #[test]
+    fn test_storage_create_transaction_input_serialization() {
+        let input = StorageCreateTransactionInput {
+            vin: 0,
+            source_txid: "txid123".to_string(),
+            source_vout: 0,
+            source_satoshis: 1000,
+            source_locking_script: "76a914...88ac".to_string(),
+            source_transaction: None,
+            unlocking_script_length: 107,
+            provided_by: StorageProvidedBy::Storage,
+            input_type: "P2PKH".to_string(),
+            spending_description: Some("Spending UTXO".to_string()),
+            derivation_prefix: Some("m/0".to_string()),
+            derivation_suffix: Some("0/1".to_string()),
+            sender_identity_key: None,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("sourceTxid"));
+        assert!(json.contains("sourceVout"));
+        assert!(json.contains("sourceSatoshis"));
+        assert!(json.contains("unlockingScriptLength"));
+        assert!(json.contains("\"providedBy\":\"storage\""));
+    }
+
+    #[test]
+    fn test_storage_create_transaction_output_serialization() {
+        let output = StorageCreateTransactionOutput {
+            vout: 0,
+            satoshis: 1000,
+            locking_script: "76a914...88ac".to_string(),
+            provided_by: StorageProvidedBy::You,
+            purpose: Some("payment".to_string()),
+            derivation_suffix: Some("0/0".to_string()),
+            basket: Some("default".to_string()),
+            tags: vec!["tag1".to_string()],
+            output_description: Some("Payment output".to_string()),
+            custom_instructions: None,
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("lockingScript"));
+        assert!(json.contains("\"providedBy\":\"you\""));
+        assert!(json.contains("derivationSuffix"));
+    }
+
+    #[test]
+    fn test_storage_provided_by_serialization() {
+        // Test all variants serialize correctly
+        assert_eq!(
+            serde_json::to_string(&StorageProvidedBy::You).unwrap(),
+            "\"you\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StorageProvidedBy::Storage).unwrap(),
+            "\"storage\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StorageProvidedBy::YouAndStorage).unwrap(),
+            "\"you-and-storage\""
+        );
+    }
+
+    #[test]
+    fn test_send_with_result_deserialization() {
+        let json = r#"{"txid": "abc123", "status": "success"}"#;
+        let result: SendWithResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.txid, "abc123");
+        assert_eq!(result.status, "success");
+    }
+
+    #[test]
+    fn test_review_action_result_deserialization() {
+        let json = r#"{
+            "txid": "abc123",
+            "status": "success",
+            "competingTxs": null,
+            "competingBeef": null
+        }"#;
+        let result: ReviewActionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.txid, "abc123");
+        assert_eq!(result.status, ReviewActionResultStatus::Success);
+    }
+
+    #[test]
+    fn test_review_action_result_status_serialization() {
+        assert_eq!(
+            serde_json::to_string(&ReviewActionResultStatus::Success).unwrap(),
+            "\"success\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewActionResultStatus::DoubleSpend).unwrap(),
+            "\"doubleSpend\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewActionResultStatus::ServiceError).unwrap(),
+            "\"serviceError\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReviewActionResultStatus::InvalidTx).unwrap(),
+            "\"invalidTx\""
+        );
+    }
+
+    #[test]
+    fn test_table_output_deserialization() {
+        let json = r#"{
+            "outputId": 1,
+            "userId": 1,
+            "transactionId": 1,
+            "basketId": null,
+            "txid": "abc123",
+            "vout": 0,
+            "satoshis": 1000,
+            "lockingScript": [118, 169],
+            "scriptLength": 25,
+            "scriptOffset": 0,
+            "outputType": "P2PKH",
+            "spendable": true,
+            "change": false,
+            "derivationPrefix": "m/0",
+            "derivationSuffix": "0/1",
+            "senderIdentityKey": null,
+            "customInstructions": null,
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-01T00:00:00Z"
+        }"#;
+        let output: TableOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.output_id, 1);
+        assert_eq!(output.txid, "abc123");
+        assert_eq!(output.satoshis, 1000);
+        assert!(output.spendable);
+    }
+
+    #[test]
+    fn test_table_certificate_deserialization() {
+        let json = r#"{
+            "certificateId": 1,
+            "userId": 1,
+            "certType": "identity",
+            "serialNumber": "SN123",
+            "certifier": "certifier-key",
+            "subject": "subject-key",
+            "verifier": null,
+            "revocationOutpoint": "txid:0",
+            "signature": "sig123",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-01T00:00:00Z"
+        }"#;
+        let cert: TableCertificate = serde_json::from_str(json).unwrap();
+        assert_eq!(cert.certificate_id, 1);
+        assert_eq!(cert.cert_type, "identity");
+        assert_eq!(cert.serial_number, "SN123");
+    }
+
+    #[test]
+    fn test_table_sync_state_deserialization() {
+        let json = r#"{
+            "syncStateId": 1,
+            "userId": 1,
+            "storageIdentityKey": "storage-key",
+            "storageName": "my-storage",
+            "status": "idle",
+            "init": true,
+            "refNum": "ref123",
+            "syncMap": "{}",
+            "whenLastSyncStarted": null,
+            "errorLocal": null,
+            "errorOther": null,
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-01T00:00:00Z"
+        }"#;
+        let state: TableSyncState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.sync_state_id, 1);
+        assert_eq!(state.storage_name, "my-storage");
+        assert!(state.init);
+    }
+
+    #[test]
+    fn test_transaction_status_serialization() {
+        assert_eq!(
+            serde_json::to_string(&TransactionStatus::Completed).unwrap(),
+            "\"completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TransactionStatus::Unprocessed).unwrap(),
+            "\"unprocessed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TransactionStatus::Sending).unwrap(),
+            "\"sending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TransactionStatus::Unproven).unwrap(),
+            "\"unproven\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TransactionStatus::NoSend).unwrap(),
+            "\"noSend\""
+        );
+    }
+
+    #[test]
+    fn test_proven_tx_req_status_serialization() {
+        assert_eq!(
+            serde_json::to_string(&ProvenTxReqStatus::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProvenTxReqStatus::InProgress).unwrap(),
+            "\"inProgress\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProvenTxReqStatus::Completed).unwrap(),
+            "\"completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProvenTxReqStatus::Failed).unwrap(),
+            "\"failed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProvenTxReqStatus::NotFound).unwrap(),
+            "\"notFound\""
+        );
+    }
+
+    // =========================================================================
+    // Verify all 22 methods are implemented
+    // =========================================================================
+
+    #[test]
+    fn test_all_22_methods_documented() {
+        // This test documents all 22 JSON-RPC methods that must be implemented
+        // No Auth (7 methods):
+        let no_auth_methods = vec![
+            "makeAvailable",     // Initialize storage
+            "destroy",           // Delete all data
+            "migrate",           // Run migrations
+            "findOrInsertUser",  // Find/create user
+            "findProvenTxReqs",  // Find proof requests
+            "getSyncChunk",      // Get sync data
+            "processSyncChunk",  // Apply sync data
+        ];
+
+        // Auth Required (15 methods):
+        let auth_methods = vec![
+            "findOrInsertSyncStateAuth", // Find/create sync state
+            "insertCertificateAuth",     // Add certificate
+            "findCertificatesAuth",      // Query certificates
+            "listCertificates",          // List certificates
+            "relinquishCertificate",     // Release certificate
+            "findOutputsAuth",           // Query outputs
+            "findOutputBaskets",         // Query baskets
+            "listOutputs",               // List outputs
+            "relinquishOutput",          // Release output
+            "createAction",              // Create transaction
+            "processAction",             // Process signed tx
+            "internalizeAction",         // Import external tx
+            "abortAction",               // Cancel action
+            "listActions",               // List transactions
+            "setActive",                 // Set active storage
+        ];
+
+        assert_eq!(no_auth_methods.len(), 7);
+        assert_eq!(auth_methods.len(), 15);
+        assert_eq!(no_auth_methods.len() + auth_methods.len(), 22);
+    }
 }

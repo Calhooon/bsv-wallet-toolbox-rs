@@ -39,3 +39,24 @@ pub use types::*;
 pub use traits::*;
 pub use storage::*;
 pub use chaintracks::*;
+
+// Re-export ingestor module for convenience
+pub mod ingestor {
+    //! Ingestor implementations
+    pub use super::ingestors::*;
+}
+
+// Also re-export commonly used ingestor types at the top level
+pub use ingestors::{
+    BulkCdnIngestor,
+    BulkCdnOptions,
+    BulkWocIngestor,
+    BulkWocOptions,
+    LivePollingIngestor,
+    LivePollingOptions,
+    LiveWebSocketIngestor,
+    LiveWebSocketOptions,
+};
+
+// Re-export ChainTracker from bsv-sdk for convenience
+pub use bsv_sdk::transaction::ChainTracker;

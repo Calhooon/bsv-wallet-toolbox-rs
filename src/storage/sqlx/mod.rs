@@ -31,6 +31,7 @@
 //! }
 //! ```
 
+mod create_action;
 mod storage_sqlx;
 
 pub use storage_sqlx::{StorageSqlx, DEFAULT_MAX_OUTPUT_SCRIPT};

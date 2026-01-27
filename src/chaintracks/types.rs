@@ -317,22 +317,49 @@ fn compute_block_hash(header_bytes: &[u8; 80]) -> String {
 }
 
 /// Calculate chain work from difficulty bits
+///
+/// This is a simplified implementation that returns a hex representation of work.
+/// For accurate chain work calculations, a big integer library should be used.
 pub fn calculate_work(bits: u32) -> String {
     // Extract exponent and mantissa from compact format
     let exponent = (bits >> 24) as u32;
-    let mantissa = bits & 0x007fffff;
+    let mantissa = (bits & 0x007fffff) as u128;
 
-    // Calculate target
+    if mantissa == 0 {
+        return "0".repeat(64);
+    }
+
+    // The compact target format: target = mantissa * 256^(exponent-3)
+    // For exponent > 3, this would require very large shifts that overflow
+    // We use saturating arithmetic and provide a simplified approximation
+
+    let shift_amount = if exponent >= 3 {
+        8 * (exponent - 3)
+    } else {
+        0
+    };
+
+    // Calculate target with overflow protection
     let target = if exponent <= 3 {
         mantissa >> (8 * (3 - exponent))
+    } else if shift_amount >= 128 {
+        // Target is very large, work is very small
+        return "0".repeat(63) + "1";
     } else {
-        // This is a simplification - full calculation needs big integers
-        mantissa << (8 * (exponent - 3))
+        // Use checked_shl with fallback to MAX for overflow
+        mantissa.checked_shl(shift_amount as u32).unwrap_or(u128::MAX)
     };
 
     // Work = 2^256 / (target + 1)
-    // For now, return simplified hex representation
-    format!("{:064x}", if target == 0 { u128::MAX } else { u128::MAX / (target as u128 + 1) })
+    // Since we can't represent 2^256, we use u128::MAX as a proxy
+    // This gives a relative work value suitable for comparison
+    if target == 0 {
+        format!("{:064x}", u128::MAX)
+    } else if target >= u128::MAX {
+        "0".repeat(63) + "1"
+    } else {
+        format!("{:064x}", u128::MAX / (target + 1))
+    }
 }
 
 #[cfg(test)]

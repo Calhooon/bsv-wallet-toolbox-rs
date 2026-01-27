@@ -937,49 +937,879 @@ impl WalletStorageReader for StorageSqlx {
     async fn list_actions(
         &self,
         auth: &AuthId,
-        _args: ListActionsArgs,
+        args: ListActionsArgs,
     ) -> Result<ListActionsResult> {
-        // TODO: Implement full list_actions
-        let _ = auth
+        use bsv_sdk::wallet::{
+            ActionStatus, Outpoint, QueryMode, WalletAction, WalletActionInput, WalletActionOutput,
+        };
+
+        let user_id = auth
             .user_id
             .ok_or_else(|| Error::AuthenticationRequired)?;
 
+        let limit = args.limit.unwrap_or(10).min(10000);
+        let offset = args.offset.unwrap_or(0);
+        let label_query_mode = args.label_query_mode.unwrap_or(QueryMode::Any);
+        let include_labels = args.include_labels.unwrap_or(false);
+        let include_inputs = args.include_inputs.unwrap_or(false);
+        let include_outputs = args.include_outputs.unwrap_or(false);
+        let include_input_source_locking_scripts =
+            args.include_input_source_locking_scripts.unwrap_or(false);
+        let include_input_unlocking_scripts = args.include_input_unlocking_scripts.unwrap_or(false);
+        let include_output_locking_scripts = args.include_output_locking_scripts.unwrap_or(false);
+
+        // Valid transaction statuses to include
+        let valid_statuses = vec![
+            "completed",
+            "unprocessed",
+            "sending",
+            "unproven",
+            "unsigned",
+            "nosend",
+            "nonfinal",
+        ];
+
+        // If labels are provided, look up their IDs
+        let mut label_ids: Vec<i64> = Vec::new();
+        if !args.labels.is_empty() {
+            let placeholders: Vec<&str> = args.labels.iter().map(|_| "?").collect();
+            let sql = format!(
+                r#"
+                SELECT tx_label_id FROM tx_labels
+                WHERE user_id = ? AND is_deleted = 0 AND label IN ({})
+                "#,
+                placeholders.join(",")
+            );
+
+            let mut query = sqlx::query(&sql).bind(user_id);
+            for label in &args.labels {
+                query = query.bind(label);
+            }
+
+            let rows = query.fetch_all(&self.pool).await?;
+            label_ids = rows
+                .iter()
+                .map(|r| r.get::<i64, _>("tx_label_id"))
+                .collect();
+
+            // If using 'all' mode and not all labels exist, return empty
+            if label_query_mode == QueryMode::All && label_ids.len() < args.labels.len() {
+                return Ok(ListActionsResult {
+                    total_actions: 0,
+                    actions: vec![],
+                });
+            }
+
+            // If using 'any' mode and no labels exist, return empty
+            if label_query_mode == QueryMode::Any && label_ids.is_empty() && !args.labels.is_empty()
+            {
+                return Ok(ListActionsResult {
+                    total_actions: 0,
+                    actions: vec![],
+                });
+            }
+        }
+
+        // Build the main query
+        let (transactions, total_count): (Vec<_>, u32) = if label_ids.is_empty() {
+            // No label filtering - simple query
+            let status_placeholders: Vec<&str> = valid_statuses.iter().map(|_| "?").collect();
+            let sql = format!(
+                r#"
+                SELECT transaction_id, txid, satoshis, status, is_outgoing, description, version, lock_time
+                FROM transactions
+                WHERE user_id = ? AND status IN ({})
+                ORDER BY transaction_id ASC
+                LIMIT ? OFFSET ?
+                "#,
+                status_placeholders.join(",")
+            );
+
+            let mut query = sqlx::query(&sql).bind(user_id);
+            for status in &valid_statuses {
+                query = query.bind(*status);
+            }
+            query = query.bind(limit as i32).bind(offset as i32);
+
+            let rows = query.fetch_all(&self.pool).await?;
+
+            // Get total count
+            let count_sql = format!(
+                r#"
+                SELECT COUNT(*) as total FROM transactions
+                WHERE user_id = ? AND status IN ({})
+                "#,
+                status_placeholders.join(",")
+            );
+            let mut count_query = sqlx::query(&count_sql).bind(user_id);
+            for status in &valid_statuses {
+                count_query = count_query.bind(*status);
+            }
+            let count_row = count_query.fetch_one(&self.pool).await?;
+            let total: i64 = count_row.get("total");
+
+            (rows, total as u32)
+        } else {
+            // Label filtering with CTE
+            let status_placeholders: String = valid_statuses
+                .iter()
+                .map(|s| format!("'{}'", s))
+                .collect::<Vec<_>>()
+                .join(",");
+            let label_id_list: String = label_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            let required_count = if label_query_mode == QueryMode::All {
+                label_ids.len()
+            } else {
+                1
+            };
+
+            let sql = format!(
+                r#"
+                WITH txs_with_labels AS (
+                    SELECT t.transaction_id, t.txid, t.satoshis, t.status, t.is_outgoing,
+                           t.description, t.version, t.lock_time,
+                           (SELECT COUNT(*) FROM tx_labels_map m
+                            WHERE m.transaction_id = t.transaction_id
+                            AND m.tx_label_id IN ({})
+                            AND m.is_deleted = 0) as label_count
+                    FROM transactions t
+                    WHERE t.user_id = ? AND t.status IN ({})
+                )
+                SELECT * FROM txs_with_labels WHERE label_count >= ?
+                ORDER BY transaction_id ASC
+                LIMIT ? OFFSET ?
+                "#,
+                label_id_list, status_placeholders
+            );
+
+            let query = sqlx::query(&sql)
+                .bind(user_id)
+                .bind(required_count as i32)
+                .bind(limit as i32)
+                .bind(offset as i32);
+
+            let rows = query.fetch_all(&self.pool).await?;
+
+            // Get total count
+            let count_sql = format!(
+                r#"
+                WITH txs_with_labels AS (
+                    SELECT t.transaction_id,
+                           (SELECT COUNT(*) FROM tx_labels_map m
+                            WHERE m.transaction_id = t.transaction_id
+                            AND m.tx_label_id IN ({})
+                            AND m.is_deleted = 0) as label_count
+                    FROM transactions t
+                    WHERE t.user_id = ? AND t.status IN ({})
+                )
+                SELECT COUNT(*) as total FROM txs_with_labels WHERE label_count >= ?
+                "#,
+                label_id_list, status_placeholders
+            );
+            let count_query = sqlx::query(&count_sql)
+                .bind(user_id)
+                .bind(required_count as i32);
+            let count_row = count_query.fetch_one(&self.pool).await?;
+            let total: i64 = count_row.get("total");
+
+            (rows, total as u32)
+        };
+
+        // Convert rows to WalletAction
+        let mut actions: Vec<WalletAction> = Vec::new();
+        for row in &transactions {
+            let transaction_id: i64 = row.get("transaction_id");
+            let txid_str: Option<String> = row.get("txid");
+            let satoshis: i64 = row.get("satoshis");
+            let status_str: String = row.get("status");
+            let is_outgoing: i32 = row.get("is_outgoing");
+            let description: String = row.get("description");
+            let version: Option<i32> = row.get("version");
+            let lock_time: Option<i64> = row.get("lock_time");
+
+            // Parse txid to [u8; 32]
+            let txid: [u8; 32] = if let Some(ref txid_hex) = txid_str {
+                let bytes = hex::decode(txid_hex).unwrap_or_else(|_| vec![0u8; 32]);
+                let mut arr = [0u8; 32];
+                if bytes.len() == 32 {
+                    arr.copy_from_slice(&bytes);
+                }
+                arr
+            } else {
+                [0u8; 32]
+            };
+
+            // Parse status
+            let status = match status_str.as_str() {
+                "completed" => ActionStatus::Completed,
+                "unprocessed" => ActionStatus::Unprocessed,
+                "sending" => ActionStatus::Sending,
+                "unproven" => ActionStatus::Unproven,
+                "unsigned" => ActionStatus::Unsigned,
+                "nosend" => ActionStatus::NoSend,
+                "nonfinal" => ActionStatus::NonFinal,
+                "failed" => ActionStatus::Failed,
+                _ => ActionStatus::Unprocessed,
+            };
+
+            let mut action = WalletAction {
+                txid,
+                satoshis: satoshis as u64,
+                status,
+                is_outgoing: is_outgoing != 0,
+                description,
+                labels: None,
+                version: version.unwrap_or(1) as u32,
+                lock_time: lock_time.unwrap_or(0) as u32,
+                inputs: None,
+                outputs: None,
+            };
+
+            // Fetch labels if requested
+            if include_labels {
+                let labels_sql = r#"
+                    SELECT l.label FROM tx_labels l
+                    JOIN tx_labels_map m ON l.tx_label_id = m.tx_label_id
+                    WHERE m.transaction_id = ? AND m.is_deleted = 0 AND l.is_deleted = 0
+                "#;
+                let label_rows = sqlx::query(labels_sql)
+                    .bind(transaction_id)
+                    .fetch_all(&self.pool)
+                    .await?;
+                let labels: Vec<String> = label_rows.iter().map(|r| r.get("label")).collect();
+                action.labels = Some(labels);
+            }
+
+            // Fetch outputs if requested
+            if include_outputs {
+                let outputs_sql = r#"
+                    SELECT o.output_id, o.vout, o.satoshis, o.spendable, o.locking_script,
+                           o.custom_instructions, o.output_description, ob.name as basket_name
+                    FROM outputs o
+                    LEFT JOIN output_baskets ob ON o.basket_id = ob.basket_id
+                    WHERE o.transaction_id = ?
+                    ORDER BY o.vout ASC
+                "#;
+                let output_rows = sqlx::query(outputs_sql)
+                    .bind(transaction_id)
+                    .fetch_all(&self.pool)
+                    .await?;
+
+                let mut wallet_outputs: Vec<WalletActionOutput> = Vec::new();
+                for o_row in output_rows {
+                    let output_id: i64 = o_row.get("output_id");
+                    let vout: i32 = o_row.get("vout");
+                    let o_satoshis: i64 = o_row.get("satoshis");
+                    let spendable: i32 = o_row.get("spendable");
+                    let locking_script: Option<Vec<u8>> = if include_output_locking_scripts {
+                        o_row.get("locking_script")
+                    } else {
+                        None
+                    };
+                    let custom_instructions: Option<String> = o_row.get("custom_instructions");
+                    let output_description: Option<String> = o_row.get("output_description");
+                    let basket_name: Option<String> = o_row.get("basket_name");
+
+                    // Get tags for this output
+                    let tags_sql = r#"
+                        SELECT t.tag FROM output_tags t
+                        JOIN output_tags_map m ON t.output_tag_id = m.output_tag_id
+                        WHERE m.output_id = ? AND m.is_deleted = 0 AND t.is_deleted = 0
+                    "#;
+                    let tag_rows = sqlx::query(tags_sql)
+                        .bind(output_id)
+                        .fetch_all(&self.pool)
+                        .await?;
+                    let tags: Vec<String> = tag_rows.iter().map(|r| r.get("tag")).collect();
+
+                    wallet_outputs.push(WalletActionOutput {
+                        satoshis: o_satoshis as u64,
+                        locking_script,
+                        spendable: spendable != 0,
+                        custom_instructions,
+                        tags,
+                        output_index: vout as u32,
+                        output_description: output_description.unwrap_or_default(),
+                        basket: basket_name.unwrap_or_default(),
+                    });
+                }
+                action.outputs = Some(wallet_outputs);
+            }
+
+            // Fetch inputs if requested
+            if include_inputs {
+                // Inputs are outputs from other transactions spent by this transaction
+                let inputs_sql = r#"
+                    SELECT o.txid, o.vout, o.satoshis, o.locking_script, o.output_description, o.sequence_number
+                    FROM outputs o
+                    WHERE o.spent_by = ?
+                    ORDER BY o.sequence_number ASC
+                "#;
+                let input_rows = sqlx::query(inputs_sql)
+                    .bind(transaction_id)
+                    .fetch_all(&self.pool)
+                    .await?;
+
+                let mut wallet_inputs: Vec<WalletActionInput> = Vec::new();
+
+                // If we need unlocking scripts, we need to parse the raw transaction
+                let _raw_tx: Option<Vec<u8>> = if include_input_unlocking_scripts {
+                    let tx_row =
+                        sqlx::query("SELECT raw_tx FROM transactions WHERE transaction_id = ?")
+                            .bind(transaction_id)
+                            .fetch_optional(&self.pool)
+                            .await?;
+                    tx_row.and_then(|r| r.get("raw_tx"))
+                } else {
+                    None
+                };
+
+                for i_row in input_rows.iter() {
+                    let source_txid: Option<String> = i_row.get("txid");
+                    let source_vout: i32 = i_row.get("vout");
+                    let source_satoshis: i64 = i_row.get("satoshis");
+                    let source_locking_script: Option<Vec<u8>> =
+                        if include_input_source_locking_scripts {
+                            i_row.get("locking_script")
+                        } else {
+                            None
+                        };
+                    let input_description: Option<String> = i_row.get("output_description");
+                    let sequence_number: Option<i32> = i_row.get("sequence_number");
+
+                    // Parse source txid
+                    let source_txid_bytes: [u8; 32] = if let Some(ref txid_hex) = source_txid {
+                        let bytes = hex::decode(txid_hex).unwrap_or_else(|_| vec![0u8; 32]);
+                        let mut arr = [0u8; 32];
+                        if bytes.len() == 32 {
+                            arr.copy_from_slice(&bytes);
+                        }
+                        arr
+                    } else {
+                        [0u8; 32]
+                    };
+
+                    // Get unlocking script from raw tx if available
+                    // Note: Full implementation would parse the raw transaction
+                    let unlocking_script: Option<Vec<u8>> = None;
+
+                    wallet_inputs.push(WalletActionInput {
+                        source_outpoint: Outpoint {
+                            txid: source_txid_bytes,
+                            vout: source_vout as u32,
+                        },
+                        source_satoshis: source_satoshis as u64,
+                        source_locking_script,
+                        unlocking_script,
+                        input_description: input_description.unwrap_or_default(),
+                        sequence_number: sequence_number.unwrap_or(0xffffffff_u32 as i32) as u32,
+                    });
+                }
+                action.inputs = Some(wallet_inputs);
+            }
+
+            actions.push(action);
+        }
+
+        // Calculate total based on whether we hit the limit
+        let total_actions = if (actions.len() as u32) < limit {
+            offset + actions.len() as u32
+        } else {
+            total_count
+        };
+
         Ok(ListActionsResult {
-            total_actions: 0,
-            actions: vec![],
+            total_actions,
+            actions,
         })
     }
 
     async fn list_certificates(
         &self,
         auth: &AuthId,
-        _args: ListCertificatesArgs,
+        args: ListCertificatesArgs,
     ) -> Result<ListCertificatesResult> {
-        // TODO: Implement full list_certificates
-        let _ = auth
+        use bsv_sdk::wallet::CertificateResult;
+        use std::collections::HashMap;
+
+        let user_id = auth
             .user_id
             .ok_or_else(|| Error::AuthenticationRequired)?;
 
+        let limit = args.limit.unwrap_or(10).min(10000);
+        let offset = args.offset.unwrap_or(0);
+
+        // Build query with filters
+        let mut sql = String::from(
+            r#"
+            SELECT certificate_id, type, serial_number, certifier, subject,
+                   verifier, revocation_outpoint, signature
+            FROM certificates
+            WHERE user_id = ? AND is_deleted = 0
+            "#,
+        );
+
+        // Add certifiers filter
+        if !args.certifiers.is_empty() {
+            let placeholders: Vec<&str> = args.certifiers.iter().map(|_| "?").collect();
+            sql.push_str(&format!(" AND certifier IN ({})", placeholders.join(",")));
+        }
+
+        // Add types filter
+        if !args.types.is_empty() {
+            let placeholders: Vec<&str> = args.types.iter().map(|_| "?").collect();
+            sql.push_str(&format!(" AND type IN ({})", placeholders.join(",")));
+        }
+
+        sql.push_str(" ORDER BY certificate_id ASC LIMIT ? OFFSET ?");
+
+        let mut query = sqlx::query(&sql).bind(user_id);
+
+        for certifier in &args.certifiers {
+            query = query.bind(certifier);
+        }
+        for cert_type in &args.types {
+            query = query.bind(cert_type);
+        }
+
+        query = query.bind(limit as i32).bind(offset as i32);
+
+        let rows = query.fetch_all(&self.pool).await?;
+
+        // Get total count
+        let mut count_sql = String::from(
+            r#"
+            SELECT COUNT(*) as total FROM certificates
+            WHERE user_id = ? AND is_deleted = 0
+            "#,
+        );
+
+        if !args.certifiers.is_empty() {
+            let placeholders: Vec<&str> = args.certifiers.iter().map(|_| "?").collect();
+            count_sql.push_str(&format!(" AND certifier IN ({})", placeholders.join(",")));
+        }
+
+        if !args.types.is_empty() {
+            let placeholders: Vec<&str> = args.types.iter().map(|_| "?").collect();
+            count_sql.push_str(&format!(" AND type IN ({})", placeholders.join(",")));
+        }
+
+        let mut count_query = sqlx::query(&count_sql).bind(user_id);
+        for certifier in &args.certifiers {
+            count_query = count_query.bind(certifier);
+        }
+        for cert_type in &args.types {
+            count_query = count_query.bind(cert_type);
+        }
+
+        let count_row = count_query.fetch_one(&self.pool).await?;
+        let total: i64 = count_row.get("total");
+
+        // Build certificate results with fields
+        let mut certificates: Vec<CertificateResult> = Vec::new();
+
+        for row in rows {
+            let certificate_id: i64 = row.get("certificate_id");
+            let cert_type: String = row.get("type");
+            let serial_number: String = row.get("serial_number");
+            let certifier: String = row.get("certifier");
+            let subject: String = row.get("subject");
+            let verifier: Option<String> = row.get("verifier");
+            let revocation_outpoint: String = row.get("revocation_outpoint");
+            let signature: String = row.get("signature");
+
+            // Get certificate fields
+            let fields_sql = r#"
+                SELECT field_name, field_value, master_key
+                FROM certificate_fields
+                WHERE certificate_id = ? AND user_id = ?
+            "#;
+            let field_rows = sqlx::query(fields_sql)
+                .bind(certificate_id)
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await?;
+
+            let mut fields: HashMap<String, String> = HashMap::new();
+            let mut keyring: HashMap<String, String> = HashMap::new();
+
+            for f_row in field_rows {
+                let field_name: String = f_row.get("field_name");
+                let field_value: String = f_row.get("field_value");
+                let master_key: String = f_row.get("master_key");
+
+                fields.insert(field_name.clone(), field_value);
+                if !master_key.is_empty() {
+                    keyring.insert(field_name, master_key);
+                }
+            }
+
+            let wallet_cert = bsv_sdk::wallet::WalletCertificate {
+                certificate_type: cert_type,
+                subject,
+                serial_number,
+                certifier,
+                revocation_outpoint,
+                signature,
+                fields,
+            };
+
+            certificates.push(CertificateResult {
+                certificate: wallet_cert,
+                keyring: if keyring.is_empty() {
+                    None
+                } else {
+                    Some(keyring)
+                },
+                verifier,
+            });
+        }
+
+        // Calculate total based on whether we hit the limit
+        let total_certificates = if (certificates.len() as u32) < limit {
+            offset + certificates.len() as u32
+        } else {
+            total as u32
+        };
+
         Ok(ListCertificatesResult {
-            total_certificates: 0,
-            certificates: vec![],
+            total_certificates,
+            certificates,
         })
     }
 
     async fn list_outputs(
         &self,
         auth: &AuthId,
-        _args: ListOutputsArgs,
+        args: ListOutputsArgs,
     ) -> Result<ListOutputsResult> {
-        // TODO: Implement full list_outputs
-        let _ = auth
+        use bsv_sdk::wallet::{Outpoint, OutputInclude, QueryMode, WalletOutput};
+
+        let user_id = auth
             .user_id
             .ok_or_else(|| Error::AuthenticationRequired)?;
 
+        let limit = args.limit.unwrap_or(10).min(10000);
+        let offset = args.offset.unwrap_or(0);
+        let order_by = if offset < 0 { "DESC" } else { "ASC" };
+        let actual_offset = if offset < 0 {
+            (-offset - 1) as u32
+        } else {
+            offset as u32
+        };
+
+        let tag_query_mode = args.tag_query_mode.unwrap_or(QueryMode::Any);
+        let include_custom_instructions = args.include_custom_instructions.unwrap_or(false);
+        let include_tags = args.include_tags.unwrap_or(false);
+        let include_labels = args.include_labels.unwrap_or(false);
+        let include_locking_scripts = args.include == Some(OutputInclude::LockingScripts);
+        let include_transactions = args.include == Some(OutputInclude::EntireTransactions);
+
+        // Find the basket ID
+        let basket_id: Option<i64> = if !args.basket.is_empty() {
+            let basket_row = sqlx::query(
+                r#"
+                SELECT basket_id FROM output_baskets
+                WHERE user_id = ? AND name = ? AND is_deleted = 0
+                "#,
+            )
+            .bind(user_id)
+            .bind(&args.basket)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            match basket_row {
+                Some(row) => Some(row.get("basket_id")),
+                None => {
+                    // Basket doesn't exist, return empty result
+                    return Ok(ListOutputsResult {
+                        total_outputs: 0,
+                        beef: None,
+                        outputs: vec![],
+                    });
+                }
+            }
+        } else {
+            None
+        };
+
+        // If tags are provided, look up their IDs
+        let mut tag_ids: Vec<i64> = Vec::new();
+        if let Some(ref tags) = args.tags {
+            if !tags.is_empty() {
+                let placeholders: Vec<&str> = tags.iter().map(|_| "?").collect();
+                let sql = format!(
+                    r#"
+                    SELECT output_tag_id FROM output_tags
+                    WHERE user_id = ? AND is_deleted = 0 AND tag IN ({})
+                    "#,
+                    placeholders.join(",")
+                );
+
+                let mut query = sqlx::query(&sql).bind(user_id);
+                for tag in tags {
+                    query = query.bind(tag);
+                }
+
+                let rows = query.fetch_all(&self.pool).await?;
+                tag_ids = rows
+                    .iter()
+                    .map(|r| r.get::<i64, _>("output_tag_id"))
+                    .collect();
+
+                // If using 'all' mode and not all tags exist, return empty
+                if tag_query_mode == QueryMode::All && tag_ids.len() < tags.len() {
+                    return Ok(ListOutputsResult {
+                        total_outputs: 0,
+                        beef: None,
+                        outputs: vec![],
+                    });
+                }
+
+                // If using 'any' mode and no tags exist, return empty
+                if tag_query_mode == QueryMode::Any && tag_ids.is_empty() && !tags.is_empty() {
+                    return Ok(ListOutputsResult {
+                        total_outputs: 0,
+                        beef: None,
+                        outputs: vec![],
+                    });
+                }
+            }
+        }
+
+        // Valid transaction statuses for outputs
+        let valid_statuses = "'completed', 'unproven', 'nosend', 'sending'";
+
+        // Build the main query
+        let (output_rows, total_count): (Vec<_>, u32) = if tag_ids.is_empty() {
+            // No tag filtering
+            let mut sql = format!(
+                r#"
+                SELECT o.output_id, o.transaction_id, o.txid, o.vout, o.satoshis, o.spendable,
+                       o.locking_script, o.custom_instructions
+                FROM outputs o
+                JOIN transactions t ON o.transaction_id = t.transaction_id
+                WHERE o.user_id = ? AND o.spendable = 1 AND t.status IN ({})
+                "#,
+                valid_statuses
+            );
+
+            if let Some(bid) = basket_id {
+                sql.push_str(&format!(" AND o.basket_id = {}", bid));
+            }
+
+            sql.push_str(&format!(
+                " ORDER BY o.output_id {} LIMIT {} OFFSET {}",
+                order_by, limit, actual_offset
+            ));
+
+            let query = sqlx::query(&sql).bind(user_id);
+            let rows = query.fetch_all(&self.pool).await?;
+
+            // Get total count
+            let mut count_sql = format!(
+                r#"
+                SELECT COUNT(*) as total FROM outputs o
+                JOIN transactions t ON o.transaction_id = t.transaction_id
+                WHERE o.user_id = ? AND o.spendable = 1 AND t.status IN ({})
+                "#,
+                valid_statuses
+            );
+
+            if let Some(bid) = basket_id {
+                count_sql.push_str(&format!(" AND o.basket_id = {}", bid));
+            }
+
+            let count_row = sqlx::query(&count_sql)
+                .bind(user_id)
+                .fetch_one(&self.pool)
+                .await?;
+            let total: i64 = count_row.get("total");
+
+            (rows, total as u32)
+        } else {
+            // Tag filtering with CTE
+            let tag_id_list: String = tag_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            let required_count = if tag_query_mode == QueryMode::All {
+                tag_ids.len()
+            } else {
+                1
+            };
+
+            let basket_filter = if let Some(bid) = basket_id {
+                format!(" AND o.basket_id = {}", bid)
+            } else {
+                String::new()
+            };
+
+            let sql = format!(
+                r#"
+                WITH outputs_with_tags AS (
+                    SELECT o.output_id, o.transaction_id, o.txid, o.vout, o.satoshis, o.spendable,
+                           o.locking_script, o.custom_instructions,
+                           (SELECT COUNT(*) FROM output_tags_map m
+                            WHERE m.output_id = o.output_id
+                            AND m.output_tag_id IN ({})
+                            AND m.is_deleted = 0) as tag_count
+                    FROM outputs o
+                    JOIN transactions t ON o.transaction_id = t.transaction_id
+                    WHERE o.user_id = ? AND o.spendable = 1 AND t.status IN ({}){}
+                )
+                SELECT * FROM outputs_with_tags WHERE tag_count >= ?
+                ORDER BY output_id {} LIMIT ? OFFSET ?
+                "#,
+                tag_id_list, valid_statuses, basket_filter, order_by
+            );
+
+            let query = sqlx::query(&sql)
+                .bind(user_id)
+                .bind(required_count as i32)
+                .bind(limit as i32)
+                .bind(actual_offset as i32);
+
+            let rows = query.fetch_all(&self.pool).await?;
+
+            // Get total count
+            let count_sql = format!(
+                r#"
+                WITH outputs_with_tags AS (
+                    SELECT o.output_id,
+                           (SELECT COUNT(*) FROM output_tags_map m
+                            WHERE m.output_id = o.output_id
+                            AND m.output_tag_id IN ({})
+                            AND m.is_deleted = 0) as tag_count
+                    FROM outputs o
+                    JOIN transactions t ON o.transaction_id = t.transaction_id
+                    WHERE o.user_id = ? AND o.spendable = 1 AND t.status IN ({}){}
+                )
+                SELECT COUNT(*) as total FROM outputs_with_tags WHERE tag_count >= ?
+                "#,
+                tag_id_list, valid_statuses, basket_filter
+            );
+
+            let count_query = sqlx::query(&count_sql)
+                .bind(user_id)
+                .bind(required_count as i32);
+            let count_row = count_query.fetch_one(&self.pool).await?;
+            let total: i64 = count_row.get("total");
+
+            (rows, total as u32)
+        };
+
+        // Convert rows to WalletOutput
+        let mut outputs: Vec<WalletOutput> = Vec::new();
+        let mut _txids_for_beef: Vec<String> = Vec::new();
+
+        for row in &output_rows {
+            let output_id: i64 = row.get("output_id");
+            let transaction_id: i64 = row.get("transaction_id");
+            let txid_str: Option<String> = row.get("txid");
+            let vout: i32 = row.get("vout");
+            let satoshis: i64 = row.get("satoshis");
+            let spendable: i32 = row.get("spendable");
+            let locking_script: Option<Vec<u8>> = if include_locking_scripts {
+                row.get("locking_script")
+            } else {
+                None
+            };
+            let custom_instructions: Option<String> = if include_custom_instructions {
+                row.get("custom_instructions")
+            } else {
+                None
+            };
+
+            // Parse txid to [u8; 32]
+            let txid: [u8; 32] = if let Some(ref txid_hex) = txid_str {
+                let bytes = hex::decode(txid_hex).unwrap_or_else(|_| vec![0u8; 32]);
+                let mut arr = [0u8; 32];
+                if bytes.len() == 32 {
+                    arr.copy_from_slice(&bytes);
+                }
+                if include_transactions {
+                    _txids_for_beef.push(txid_hex.clone());
+                }
+                arr
+            } else {
+                [0u8; 32]
+            };
+
+            // Get tags if requested
+            let tags: Option<Vec<String>> = if include_tags {
+                let tags_sql = r#"
+                    SELECT t.tag FROM output_tags t
+                    JOIN output_tags_map m ON t.output_tag_id = m.output_tag_id
+                    WHERE m.output_id = ? AND m.is_deleted = 0 AND t.is_deleted = 0
+                "#;
+                let tag_rows = sqlx::query(tags_sql)
+                    .bind(output_id)
+                    .fetch_all(&self.pool)
+                    .await?;
+                Some(tag_rows.iter().map(|r| r.get("tag")).collect())
+            } else {
+                None
+            };
+
+            // Get labels if requested (from transaction)
+            let labels: Option<Vec<String>> = if include_labels {
+                let labels_sql = r#"
+                    SELECT l.label FROM tx_labels l
+                    JOIN tx_labels_map m ON l.tx_label_id = m.tx_label_id
+                    WHERE m.transaction_id = ? AND m.is_deleted = 0 AND l.is_deleted = 0
+                "#;
+                let label_rows = sqlx::query(labels_sql)
+                    .bind(transaction_id)
+                    .fetch_all(&self.pool)
+                    .await?;
+                Some(label_rows.iter().map(|r| r.get("label")).collect())
+            } else {
+                None
+            };
+
+            outputs.push(WalletOutput {
+                satoshis: satoshis as u64,
+                locking_script,
+                spendable: spendable != 0,
+                custom_instructions,
+                tags,
+                outpoint: Outpoint {
+                    txid,
+                    vout: vout as u32,
+                },
+                labels,
+            });
+        }
+
+        // Build BEEF if requested
+        // Note: Full BEEF implementation would require building a proper BEEF structure
+        // For now, we return None and let the caller construct BEEF if needed
+        let beef: Option<Vec<u8>> = if include_transactions {
+            // TODO: Implement BEEF construction
+            None
+        } else {
+            None
+        };
+
+        // Calculate total based on whether we hit the limit
+        let total_outputs = if (outputs.len() as u32) < limit {
+            actual_offset + outputs.len() as u32
+        } else {
+            total_count
+        };
+
         Ok(ListOutputsResult {
-            total_outputs: 0,
-            beef: None,
-            outputs: vec![],
+            total_outputs,
+            beef,
+            outputs,
         })
     }
 }
@@ -1100,14 +1930,13 @@ impl WalletStorageWriter for StorageSqlx {
     async fn create_action(
         &self,
         auth: &AuthId,
-        _args: bsv_sdk::wallet::CreateActionArgs,
+        args: bsv_sdk::wallet::CreateActionArgs,
     ) -> Result<StorageCreateActionResult> {
-        // TODO: Implement create_action
-        let _ = auth
+        let user_id = auth
             .user_id
             .ok_or_else(|| Error::AuthenticationRequired)?;
 
-        Err(Error::StorageError("Not implemented".to_string()))
+        super::create_action::create_action_internal(self, user_id, args).await
     }
 
     async fn process_action(
@@ -1375,5 +2204,470 @@ mod tests {
             .await
             .unwrap();
         assert!(outputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_actions_empty() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // List actions (should be empty)
+        let result = storage
+            .list_actions(
+                &auth,
+                ListActionsArgs {
+                    labels: vec![],
+                    label_query_mode: None,
+                    include_labels: Some(true),
+                    include_inputs: None,
+                    include_input_source_locking_scripts: None,
+                    include_input_unlocking_scripts: None,
+                    include_outputs: None,
+                    include_output_locking_scripts: None,
+                    limit: Some(10),
+                    offset: Some(0),
+                    seek_permission: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_actions, 0);
+        assert!(result.actions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_actions_with_data() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // Insert a test transaction
+        let txid = "b".repeat(64);
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, description, txid, version, lock_time, created_at, updated_at)
+            VALUES (?, 'completed', 'test-ref-1', 1, 1000, 'Test transaction', ?, 1, 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(&txid)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // List actions
+        let result = storage
+            .list_actions(
+                &auth,
+                ListActionsArgs {
+                    labels: vec![],
+                    label_query_mode: None,
+                    include_labels: Some(true),
+                    include_inputs: Some(true),
+                    include_input_source_locking_scripts: None,
+                    include_input_unlocking_scripts: None,
+                    include_outputs: Some(true),
+                    include_output_locking_scripts: None,
+                    limit: Some(10),
+                    offset: Some(0),
+                    seek_permission: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_actions, 1);
+        assert_eq!(result.actions.len(), 1);
+        assert_eq!(result.actions[0].satoshis, 1000);
+        assert!(result.actions[0].is_outgoing);
+        assert_eq!(result.actions[0].description, "Test transaction");
+    }
+
+    #[tokio::test]
+    async fn test_list_actions_with_labels() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // Insert test transaction
+        let txid = "c".repeat(64);
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, description, txid, version, lock_time, created_at, updated_at)
+            VALUES (?, 'completed', 'test-ref-2', 0, 500, 'Labeled transaction', ?, 1, 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(&txid)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // Get the transaction ID
+        let tx_row = sqlx::query("SELECT transaction_id FROM transactions WHERE reference = 'test-ref-2'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let transaction_id: i64 = tx_row.get("transaction_id");
+
+        // Insert a label
+        sqlx::query(
+            r#"
+            INSERT INTO tx_labels (user_id, label, is_deleted, created_at, updated_at)
+            VALUES (?, 'test_label', 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(user.user_id)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // Get the label ID
+        let label_row = sqlx::query("SELECT tx_label_id FROM tx_labels WHERE label = 'test_label'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let label_id: i64 = label_row.get("tx_label_id");
+
+        // Map label to transaction
+        sqlx::query(
+            r#"
+            INSERT INTO tx_labels_map (tx_label_id, transaction_id, is_deleted, created_at, updated_at)
+            VALUES (?, ?, 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(label_id)
+        .bind(transaction_id)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // List actions with label filter
+        let result = storage
+            .list_actions(
+                &auth,
+                ListActionsArgs {
+                    labels: vec!["test_label".to_string()],
+                    label_query_mode: None,
+                    include_labels: Some(true),
+                    include_inputs: None,
+                    include_input_source_locking_scripts: None,
+                    include_input_unlocking_scripts: None,
+                    include_outputs: None,
+                    include_output_locking_scripts: None,
+                    limit: Some(10),
+                    offset: Some(0),
+                    seek_permission: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_actions, 1);
+        assert_eq!(result.actions.len(), 1);
+        assert!(result.actions[0].labels.as_ref().unwrap().contains(&"test_label".to_string()));
+
+        // Query with non-existing label
+        let result2 = storage
+            .list_actions(
+                &auth,
+                ListActionsArgs {
+                    labels: vec!["nonexistent_label".to_string()],
+                    label_query_mode: None,
+                    include_labels: Some(true),
+                    include_inputs: None,
+                    include_input_source_locking_scripts: None,
+                    include_input_unlocking_scripts: None,
+                    include_outputs: None,
+                    include_output_locking_scripts: None,
+                    limit: Some(10),
+                    offset: Some(0),
+                    seek_permission: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result2.total_actions, 0);
+        assert!(result2.actions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_outputs_empty() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // List outputs from default basket (should be empty)
+        let result = storage
+            .list_outputs(
+                &auth,
+                ListOutputsArgs {
+                    basket: "default".to_string(),
+                    tags: None,
+                    tag_query_mode: None,
+                    include: None,
+                    include_custom_instructions: None,
+                    include_tags: None,
+                    include_labels: None,
+                    limit: Some(10),
+                    offset: Some(0),
+                    seek_permission: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_outputs, 0);
+        assert!(result.outputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_outputs_nonexistent_basket() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // List outputs from non-existent basket
+        let result = storage
+            .list_outputs(
+                &auth,
+                ListOutputsArgs {
+                    basket: "nonexistent_basket".to_string(),
+                    tags: None,
+                    tag_query_mode: None,
+                    include: None,
+                    include_custom_instructions: None,
+                    include_tags: None,
+                    include_labels: None,
+                    limit: Some(10),
+                    offset: Some(0),
+                    seek_permission: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_outputs, 0);
+        assert!(result.outputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_certificates_empty() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // List certificates (should be empty)
+        let result = storage
+            .list_certificates(
+                &auth,
+                ListCertificatesArgs {
+                    certifiers: vec![],
+                    types: vec![],
+                    limit: Some(10),
+                    offset: Some(0),
+                    privileged: None,
+                    privileged_reason: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_certificates, 0);
+        assert!(result.certificates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_certificates_with_data() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // Insert a test certificate
+        sqlx::query(
+            r#"
+            INSERT INTO certificates (user_id, type, serial_number, certifier, subject, revocation_outpoint, signature, is_deleted, created_at, updated_at)
+            VALUES (?, 'test_type', 'serial123', 'certifier_pubkey', 'subject_pubkey', 'outpoint123', 'sig123', 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(user.user_id)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // Get certificate ID
+        let cert_row = sqlx::query("SELECT certificate_id FROM certificates WHERE serial_number = 'serial123'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let cert_id: i64 = cert_row.get("certificate_id");
+
+        // Insert certificate fields
+        sqlx::query(
+            r#"
+            INSERT INTO certificate_fields (user_id, certificate_id, field_name, field_value, master_key, created_at, updated_at)
+            VALUES (?, ?, 'name', 'John Doe', 'master_key_123', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(cert_id)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // List certificates
+        let result = storage
+            .list_certificates(
+                &auth,
+                ListCertificatesArgs {
+                    certifiers: vec![],
+                    types: vec![],
+                    limit: Some(10),
+                    offset: Some(0),
+                    privileged: None,
+                    privileged_reason: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_certificates, 1);
+        assert_eq!(result.certificates.len(), 1);
+        assert_eq!(result.certificates[0].certificate.certificate_type, "test_type");
+        assert_eq!(result.certificates[0].certificate.serial_number, "serial123");
+        assert_eq!(result.certificates[0].certificate.fields.get("name").unwrap(), "John Doe");
+        assert!(result.certificates[0].keyring.is_some());
+        assert_eq!(result.certificates[0].keyring.as_ref().unwrap().get("name").unwrap(), "master_key_123");
+    }
+
+    #[tokio::test]
+    async fn test_list_certificates_with_filters() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // Insert test certificates
+        sqlx::query(
+            r#"
+            INSERT INTO certificates (user_id, type, serial_number, certifier, subject, revocation_outpoint, signature, is_deleted, created_at, updated_at)
+            VALUES (?, 'type_a', 'serial_a', 'certifier_1', 'subject_1', 'outpoint_a', 'sig_a', 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(user.user_id)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO certificates (user_id, type, serial_number, certifier, subject, revocation_outpoint, signature, is_deleted, created_at, updated_at)
+            VALUES (?, 'type_b', 'serial_b', 'certifier_2', 'subject_2', 'outpoint_b', 'sig_b', 0, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(user.user_id)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // Filter by certifier
+        let result = storage
+            .list_certificates(
+                &auth,
+                ListCertificatesArgs {
+                    certifiers: vec!["certifier_1".to_string()],
+                    types: vec![],
+                    limit: Some(10),
+                    offset: Some(0),
+                    privileged: None,
+                    privileged_reason: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_certificates, 1);
+        assert_eq!(result.certificates[0].certificate.certifier, "certifier_1");
+
+        // Filter by type
+        let result2 = storage
+            .list_certificates(
+                &auth,
+                ListCertificatesArgs {
+                    certifiers: vec![],
+                    types: vec!["type_b".to_string()],
+                    limit: Some(10),
+                    offset: Some(0),
+                    privileged: None,
+                    privileged_reason: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result2.total_certificates, 1);
+        assert_eq!(result2.certificates[0].certificate.certificate_type, "type_b");
     }
 }

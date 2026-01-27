@@ -1,0 +1,147 @@
+//! Blockchain services layer for BSV wallet toolbox.
+//!
+//! This module provides service providers for interacting with blockchain APIs:
+//! - WhatsOnChain - UTXO status, raw transactions, merkle proofs
+//! - ARC (TAAL, GorillaPool) - Transaction broadcasting with BEEF
+//! - Bitails - Alternative merkle proof provider
+//!
+//! # Architecture
+//!
+//! The services layer uses a collection-based failover pattern:
+//! - `ServiceCollection` maintains ordered lists of providers for each method
+//! - Providers are tried in order until one succeeds
+//! - Call history is tracked for diagnostics
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use bsv_wallet_toolbox::services::{Services, ServicesOptions, Chain};
+//!
+//! // Create mainnet services with defaults
+//! let services = Services::new(Chain::Main, ServicesOptions::default());
+//!
+//! // Get raw transaction
+//! let raw_tx = services.get_raw_tx("txid...").await?;
+//!
+//! // Post BEEF transaction
+//! let result = services.post_beef(&beef_bytes, &["txid..."]).await?;
+//! ```
+
+pub mod traits;
+pub mod services;
+pub mod collection;
+pub mod providers;
+
+// Re-export Chain from chaintracks for convenience
+pub use crate::chaintracks::Chain;
+
+// Re-export main types
+pub use traits::{
+    WalletServices,
+    GetMerklePathResult,
+    GetRawTxResult,
+    PostBeefResult,
+    PostTxResultForTxid,
+    GetUtxoStatusResult,
+    GetUtxoStatusOutputFormat,
+    GetStatusForTxidsResult,
+    TxStatusDetail,
+    GetScriptHashHistoryResult,
+    ScriptHistoryItem,
+    UtxoDetail,
+    BlockHeader,
+    BsvExchangeRate,
+};
+
+pub use services::Services;
+pub use collection::{ServiceCollection, ServiceToCall, ServiceCall, ServiceCallHistory, ProviderCallHistory};
+pub use providers::{
+    WhatsOnChain, WhatsOnChainConfig,
+    Arc, ArcConfig,
+    Bitails, BitailsConfig,
+};
+
+/// Configuration options for wallet services.
+#[derive(Debug, Clone)]
+pub struct ServicesOptions {
+    /// WhatsOnChain API key (optional)
+    pub whatsonchain_api_key: Option<String>,
+
+    /// Bitails API key (optional)
+    pub bitails_api_key: Option<String>,
+
+    /// ARC URL for TAAL
+    pub arc_url: String,
+
+    /// ARC configuration for TAAL
+    pub arc_config: Option<ArcConfig>,
+
+    /// ARC URL for GorillaPool (optional)
+    pub arc_gorillapool_url: Option<String>,
+
+    /// ARC configuration for GorillaPool
+    pub arc_gorillapool_config: Option<ArcConfig>,
+
+    /// BSV exchange rate cache duration in milliseconds
+    pub bsv_update_msecs: u64,
+
+    /// Fiat exchange rate cache duration in milliseconds
+    pub fiat_update_msecs: u64,
+}
+
+impl Default for ServicesOptions {
+    fn default() -> Self {
+        Self {
+            whatsonchain_api_key: None,
+            bitails_api_key: None,
+            arc_url: "https://arc.taal.com".to_string(),
+            arc_config: None,
+            arc_gorillapool_url: Some("https://arc.gorillapool.io".to_string()),
+            arc_gorillapool_config: None,
+            bsv_update_msecs: 15 * 60 * 1000, // 15 minutes
+            fiat_update_msecs: 15 * 60 * 1000, // 15 minutes
+        }
+    }
+}
+
+impl ServicesOptions {
+    /// Create options for mainnet with defaults.
+    pub fn mainnet() -> Self {
+        Self::default()
+    }
+
+    /// Create options for testnet.
+    pub fn testnet() -> Self {
+        Self {
+            arc_url: "https://arc-test.taal.com".to_string(),
+            arc_gorillapool_url: None, // GorillaPool testnet not commonly used
+            ..Default::default()
+        }
+    }
+
+    /// Set WhatsOnChain API key.
+    pub fn with_woc_api_key(mut self, key: impl Into<String>) -> Self {
+        self.whatsonchain_api_key = Some(key.into());
+        self
+    }
+
+    /// Set Bitails API key.
+    pub fn with_bitails_api_key(mut self, key: impl Into<String>) -> Self {
+        self.bitails_api_key = Some(key.into());
+        self
+    }
+
+    /// Set ARC URL and config.
+    pub fn with_arc(mut self, url: impl Into<String>, config: Option<ArcConfig>) -> Self {
+        self.arc_url = url.into();
+        self.arc_config = config;
+        self
+    }
+
+    /// Set GorillaPool ARC URL and config.
+    pub fn with_gorillapool(mut self, url: impl Into<String>, config: Option<ArcConfig>) -> Self {
+        self.arc_gorillapool_url = Some(url.into());
+        self.arc_gorillapool_config = config;
+        self
+    }
+}

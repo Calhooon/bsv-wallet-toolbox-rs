@@ -1,0 +1,938 @@
+//! Main Services orchestrator.
+//!
+//! The `Services` struct coordinates multiple service providers with failover
+//! support for each method type. It implements the `WalletServices` trait.
+
+use async_trait::async_trait;
+use std::sync::{Arc as StdArc, RwLock};
+
+use crate::chaintracks::Chain;
+use bsv_sdk::transaction::ChainTracker;
+use crate::services::{
+    collection::{ServiceCall, ServiceCollection, ServiceCallHistory},
+    providers::{Arc, Bitails, BitailsConfig, WhatsOnChain, WhatsOnChainConfig},
+    traits::{
+        sha256, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
+        GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
+        GetUtxoStatusResult, PostBeefResult, WalletServices,
+    },
+    ServicesOptions,
+};
+use crate::{Error, Result};
+
+/// Post BEEF mode for handling multiple broadcast services.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PostBeefMode {
+    /// Try services until one succeeds (default).
+    #[default]
+    UntilSuccess,
+    /// Post to all services in parallel.
+    PromiseAll,
+}
+
+/// Services call history for diagnostics.
+#[derive(Debug, Clone, Default)]
+pub struct ServicesCallHistory {
+    pub version: u32,
+    pub get_merkle_path: Option<ServiceCallHistory>,
+    pub get_raw_tx: Option<ServiceCallHistory>,
+    pub post_beef: Option<ServiceCallHistory>,
+    pub get_utxo_status: Option<ServiceCallHistory>,
+    pub get_status_for_txids: Option<ServiceCallHistory>,
+    pub get_script_hash_history: Option<ServiceCallHistory>,
+}
+
+/// Main services orchestrator.
+///
+/// Coordinates multiple blockchain service providers with automatic failover.
+pub struct Services {
+    /// Network chain.
+    pub chain: Chain,
+
+    /// Configuration options.
+    pub options: ServicesOptions,
+
+    /// WhatsOnChain provider.
+    pub whatsonchain: StdArc<WhatsOnChain>,
+
+    /// TAAL ARC provider.
+    pub arc_taal: StdArc<Arc>,
+
+    /// GorillaPool ARC provider (optional).
+    pub arc_gorillapool: Option<StdArc<Arc>>,
+
+    /// Bitails provider.
+    pub bitails: StdArc<Bitails>,
+
+    /// Service collection for getMerklePath.
+    get_merkle_path_services: RwLock<MerklePathServiceCollection>,
+
+    /// Service collection for getRawTx.
+    get_raw_tx_services: RwLock<RawTxServiceCollection>,
+
+    /// Service collection for postBeef.
+    post_beef_services: RwLock<PostBeefServiceCollection>,
+
+    /// Service collection for getUtxoStatus.
+    get_utxo_status_services: RwLock<UtxoStatusServiceCollection>,
+
+    /// Service collection for getStatusForTxids.
+    get_status_for_txids_services: RwLock<StatusForTxidsServiceCollection>,
+
+    /// Service collection for getScriptHashHistory.
+    get_script_hash_history_services: RwLock<ScriptHashHistoryServiceCollection>,
+
+    /// Cached BSV exchange rate.
+    bsv_exchange_rate: RwLock<Option<BsvExchangeRate>>,
+
+    /// Post BEEF mode.
+    pub post_beef_mode: PostBeefMode,
+}
+
+// Type aliases for service collections
+type MerklePathServiceCollection = ServiceCollection<MerklePathProvider>;
+type RawTxServiceCollection = ServiceCollection<RawTxProvider>;
+type PostBeefServiceCollection = ServiceCollection<PostBeefProvider>;
+type UtxoStatusServiceCollection = ServiceCollection<UtxoStatusProvider>;
+type StatusForTxidsServiceCollection = ServiceCollection<StatusForTxidsProvider>;
+type ScriptHashHistoryServiceCollection = ServiceCollection<ScriptHashHistoryProvider>;
+
+// Provider type aliases
+type MerklePathProvider = StdArc<dyn MerklePathService + Send + Sync>;
+type RawTxProvider = StdArc<dyn RawTxService + Send + Sync>;
+type PostBeefProvider = StdArc<dyn PostBeefService + Send + Sync>;
+type UtxoStatusProvider = StdArc<dyn UtxoStatusService + Send + Sync>;
+type StatusForTxidsProvider = StdArc<dyn StatusForTxidsService + Send + Sync>;
+type ScriptHashHistoryProvider = StdArc<dyn ScriptHashHistoryService + Send + Sync>;
+
+// Service traits for each method
+#[async_trait]
+trait MerklePathService {
+    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult>;
+}
+
+#[async_trait]
+trait RawTxService {
+    async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult>;
+}
+
+#[async_trait]
+trait PostBeefService {
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult>;
+}
+
+#[async_trait]
+trait UtxoStatusService {
+    async fn get_utxo_status(
+        &self,
+        output: &str,
+        format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> Result<GetUtxoStatusResult>;
+}
+
+#[async_trait]
+trait StatusForTxidsService {
+    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult>;
+}
+
+#[async_trait]
+trait ScriptHashHistoryService {
+    async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult>;
+}
+
+// Implement service traits for providers
+
+#[async_trait]
+impl MerklePathService for WhatsOnChain {
+    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
+        self.get_merkle_path(txid).await
+    }
+}
+
+#[async_trait]
+impl MerklePathService for Bitails {
+    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
+        self.get_merkle_path(txid).await
+    }
+}
+
+#[async_trait]
+impl MerklePathService for Arc {
+    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
+        self.get_merkle_path(txid).await
+    }
+}
+
+#[async_trait]
+impl RawTxService for WhatsOnChain {
+    async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
+        self.get_raw_tx(txid).await
+    }
+}
+
+#[async_trait]
+impl RawTxService for Bitails {
+    async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
+        self.get_raw_tx(txid).await
+    }
+}
+
+#[async_trait]
+impl PostBeefService for WhatsOnChain {
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
+        self.post_beef(beef, txids).await
+    }
+}
+
+#[async_trait]
+impl PostBeefService for Bitails {
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
+        self.post_beef(beef, txids).await
+    }
+}
+
+#[async_trait]
+impl PostBeefService for Arc {
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
+        self.post_beef(beef, txids).await
+    }
+}
+
+#[async_trait]
+impl UtxoStatusService for WhatsOnChain {
+    async fn get_utxo_status(
+        &self,
+        output: &str,
+        format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> Result<GetUtxoStatusResult> {
+        self.get_utxo_status(output, format, outpoint).await
+    }
+}
+
+#[async_trait]
+impl StatusForTxidsService for WhatsOnChain {
+    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
+        self.get_status_for_txids(txids).await
+    }
+}
+
+#[async_trait]
+impl StatusForTxidsService for Bitails {
+    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
+        self.get_status_for_txids(txids).await
+    }
+}
+
+#[async_trait]
+impl ScriptHashHistoryService for WhatsOnChain {
+    async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
+        self.get_script_hash_history(hash).await
+    }
+}
+
+#[async_trait]
+impl ScriptHashHistoryService for Bitails {
+    async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
+        self.get_script_hash_history(hash).await
+    }
+}
+
+impl Services {
+    /// Create new services for the given chain with default options.
+    pub fn new(chain: Chain) -> Result<Self> {
+        let options = match chain {
+            Chain::Main => ServicesOptions::mainnet(),
+            Chain::Test => ServicesOptions::testnet(),
+        };
+        Self::with_options(chain, options)
+    }
+
+    /// Create new services with custom options.
+    pub fn with_options(chain: Chain, options: ServicesOptions) -> Result<Self> {
+        // Create providers
+        let woc_config = WhatsOnChainConfig {
+            api_key: options.whatsonchain_api_key.clone(),
+            timeout_secs: None,
+        };
+        let whatsonchain = StdArc::new(WhatsOnChain::new(chain, woc_config)?);
+
+        let arc_taal = StdArc::new(Arc::new(
+            options.arc_url.clone(),
+            options.arc_config.clone(),
+            Some("arcTaal"),
+        )?);
+
+        let arc_gorillapool = if let Some(ref url) = options.arc_gorillapool_url {
+            Some(StdArc::new(Arc::new(
+                url.clone(),
+                options.arc_gorillapool_config.clone(),
+                Some("arcGorillaPool"),
+            )?))
+        } else {
+            None
+        };
+
+        let bitails_config = BitailsConfig {
+            api_key: options.bitails_api_key.clone(),
+            timeout_secs: None,
+        };
+        let bitails = StdArc::new(Bitails::new(chain, bitails_config)?);
+
+        // Build service collections
+
+        // getMerklePath: WoC, Bitails
+        let mut merkle_path_services = ServiceCollection::new("getMerklePath");
+        merkle_path_services.add(
+            "WhatsOnChain",
+            StdArc::clone(&whatsonchain) as MerklePathProvider,
+        );
+        merkle_path_services.add("Bitails", StdArc::clone(&bitails) as MerklePathProvider);
+
+        // getRawTx: WoC, Bitails
+        let mut raw_tx_services = ServiceCollection::new("getRawTx");
+        raw_tx_services.add("WhatsOnChain", StdArc::clone(&whatsonchain) as RawTxProvider);
+        raw_tx_services.add("Bitails", StdArc::clone(&bitails) as RawTxProvider);
+
+        // postBeef: GorillaPool (if available), TAAL, Bitails, WoC
+        let mut post_beef_services = ServiceCollection::new("postBeef");
+        if let Some(ref gp) = arc_gorillapool {
+            post_beef_services.add("GorillaPoolArcBeef", StdArc::clone(gp) as PostBeefProvider);
+        }
+        post_beef_services.add("TaalArcBeef", StdArc::clone(&arc_taal) as PostBeefProvider);
+        post_beef_services.add("Bitails", StdArc::clone(&bitails) as PostBeefProvider);
+        post_beef_services.add("WhatsOnChain", StdArc::clone(&whatsonchain) as PostBeefProvider);
+
+        // getUtxoStatus: WoC
+        let mut utxo_status_services = ServiceCollection::new("getUtxoStatus");
+        utxo_status_services.add(
+            "WhatsOnChain",
+            StdArc::clone(&whatsonchain) as UtxoStatusProvider,
+        );
+
+        // getStatusForTxids: WoC, Bitails
+        let mut status_for_txids_services = ServiceCollection::new("getStatusForTxids");
+        status_for_txids_services.add(
+            "WhatsOnChain",
+            StdArc::clone(&whatsonchain) as StatusForTxidsProvider,
+        );
+        status_for_txids_services.add("Bitails", StdArc::clone(&bitails) as StatusForTxidsProvider);
+
+        // getScriptHashHistory: WoC, Bitails
+        let mut script_hash_history_services = ServiceCollection::new("getScriptHashHistory");
+        script_hash_history_services.add(
+            "WhatsOnChain",
+            StdArc::clone(&whatsonchain) as ScriptHashHistoryProvider,
+        );
+        script_hash_history_services
+            .add("Bitails", StdArc::clone(&bitails) as ScriptHashHistoryProvider);
+
+        Ok(Self {
+            chain,
+            options,
+            whatsonchain,
+            arc_taal,
+            arc_gorillapool,
+            bitails,
+            get_merkle_path_services: RwLock::new(merkle_path_services),
+            get_raw_tx_services: RwLock::new(raw_tx_services),
+            post_beef_services: RwLock::new(post_beef_services),
+            get_utxo_status_services: RwLock::new(utxo_status_services),
+            get_status_for_txids_services: RwLock::new(status_for_txids_services),
+            get_script_hash_history_services: RwLock::new(script_hash_history_services),
+            bsv_exchange_rate: RwLock::new(None),
+            post_beef_mode: PostBeefMode::default(),
+        })
+    }
+
+    /// Create mainnet services.
+    pub fn mainnet() -> Result<Self> {
+        Self::new(Chain::Main)
+    }
+
+    /// Create testnet services.
+    pub fn testnet() -> Result<Self> {
+        Self::new(Chain::Test)
+    }
+
+    /// Get services call history.
+    pub fn get_services_call_history(&self, reset: bool) -> ServicesCallHistory {
+        ServicesCallHistory {
+            version: 2,
+            get_merkle_path: Some(
+                self.get_merkle_path_services
+                    .write()
+                    .unwrap()
+                    .get_call_history(reset),
+            ),
+            get_raw_tx: Some(
+                self.get_raw_tx_services
+                    .write()
+                    .unwrap()
+                    .get_call_history(reset),
+            ),
+            post_beef: Some(
+                self.post_beef_services
+                    .write()
+                    .unwrap()
+                    .get_call_history(reset),
+            ),
+            get_utxo_status: Some(
+                self.get_utxo_status_services
+                    .write()
+                    .unwrap()
+                    .get_call_history(reset),
+            ),
+            get_status_for_txids: Some(
+                self.get_status_for_txids_services
+                    .write()
+                    .unwrap()
+                    .get_call_history(reset),
+            ),
+            get_script_hash_history: Some(
+                self.get_script_hash_history_services
+                    .write()
+                    .unwrap()
+                    .get_call_history(reset),
+            ),
+        }
+    }
+
+    /// Get count of merkle path providers.
+    pub fn get_merkle_path_count(&self) -> usize {
+        self.get_merkle_path_services.read().unwrap().count()
+    }
+
+    /// Get count of raw tx providers.
+    pub fn get_raw_tx_count(&self) -> usize {
+        self.get_raw_tx_services.read().unwrap().count()
+    }
+
+    /// Get count of post beef providers.
+    pub fn post_beef_count(&self) -> usize {
+        self.post_beef_services.read().unwrap().count()
+    }
+
+    /// Get count of utxo status providers.
+    pub fn get_utxo_status_count(&self) -> usize {
+        self.get_utxo_status_services.read().unwrap().count()
+    }
+
+    /// Set post beef mode.
+    pub fn set_post_beef_mode(&mut self, mode: PostBeefMode) {
+        self.post_beef_mode = mode;
+    }
+
+    // Helper to run service with failover
+    async fn run_with_failover<T, F, Fut>(
+        services: &RwLock<ServiceCollection<StdArc<T>>>,
+        operation: F,
+    ) -> Result<()>
+    where
+        T: ?Sized + Send + Sync,
+        F: Fn(&StdArc<T>) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        let count = services.read().unwrap().count();
+        if count == 0 {
+            return Err(Error::NoServicesAvailable);
+        }
+
+        for _ in 0..count {
+            let service = {
+                let collection = services.read().unwrap();
+                collection.current_service().cloned()
+            };
+
+            if let Some(svc) = service {
+                match operation(&svc).await {
+                    Ok(()) => return Ok(()),
+                    Err(_) => {
+                        services.write().unwrap().next();
+                    }
+                }
+            }
+        }
+
+        Err(Error::NoServicesAvailable)
+    }
+}
+
+#[async_trait]
+impl WalletServices for Services {
+    async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker> {
+        // In a full implementation, this would return the configured Chaintracks instance
+        Err(Error::ServiceError(
+            "ChainTracker not configured in Services".to_string(),
+        ))
+    }
+
+    async fn get_height(&self) -> Result<u32> {
+        // Use WhatsOnChain for height
+        let info = self.whatsonchain.get_chain_info().await?;
+        Ok(info.blocks)
+    }
+
+    async fn get_header_for_height(&self, _height: u32) -> Result<Vec<u8>> {
+        // This would need Chaintracks integration
+        Err(Error::ServiceError(
+            "get_header_for_height requires Chaintracks".to_string(),
+        ))
+    }
+
+    async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader> {
+        // Try WhatsOnChain first
+        if let Some(header) = self.whatsonchain.get_block_header_by_hash(hash).await? {
+            return Ok(header);
+        }
+
+        // Try Bitails
+        if let Some(header) = self.bitails.get_block_header_by_hash(hash).await? {
+            return Ok(header);
+        }
+
+        Err(Error::NotFound {
+            entity: "BlockHeader".to_string(),
+            id: hash.to_string(),
+        })
+    }
+
+    async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
+        // Get owned copies of services to avoid holding lock across await
+        let all_services: Vec<(String, String, RawTxProvider)> = {
+            let services = self.get_raw_tx_services.read().unwrap();
+            services.all_services_owned()
+        };
+
+        if all_services.is_empty() {
+            return Err(Error::NoServicesAvailable);
+        }
+
+        let mut last_error = None;
+
+        for (_service_name, provider_name, service) in all_services {
+            let mut call = ServiceCall::new();
+            match service.get_raw_tx(txid).await {
+                Ok(result) if result.raw_tx.is_some() => {
+                    call.mark_success(None);
+                    self.get_raw_tx_services
+                        .write()
+                        .unwrap()
+                        .add_call_success(&provider_name, call);
+                    return Ok(result);
+                }
+                Ok(result) => {
+                    call.mark_failure(Some("not found".to_string()));
+                    self.get_raw_tx_services
+                        .write()
+                        .unwrap()
+                        .add_call_failure(&provider_name, call);
+                    last_error = result.error.clone();
+                }
+                Err(e) => {
+                    call.mark_error(&e.to_string(), "ERROR");
+                    self.get_raw_tx_services
+                        .write()
+                        .unwrap()
+                        .add_call_error(&provider_name, call);
+                    last_error = Some(e.to_string());
+                }
+            }
+        }
+
+        Ok(GetRawTxResult {
+            name: "Services".to_string(),
+            txid: txid.to_string(),
+            raw_tx: None,
+            error: last_error,
+        })
+    }
+
+    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
+        // Get owned copies of services to avoid holding lock across await
+        let all_services: Vec<(String, String, MerklePathProvider)> = {
+            let services = self.get_merkle_path_services.read().unwrap();
+            services.all_services_owned()
+        };
+
+        if all_services.is_empty() {
+            return Err(Error::NoServicesAvailable);
+        }
+
+        let mut last_error = None;
+        let mut notes = Vec::new();
+
+        for (_service_name, provider_name, service) in all_services {
+            let mut call = ServiceCall::new();
+            match service.get_merkle_path(txid).await {
+                Ok(result) => {
+                    notes.extend(result.notes.clone());
+                    if result.merkle_path.is_some() {
+                        call.mark_success(None);
+                        self.get_merkle_path_services
+                            .write()
+                            .unwrap()
+                            .add_call_success(&provider_name, call);
+                        return Ok(result);
+                    } else {
+                        call.mark_failure(Some("no proof".to_string()));
+                        self.get_merkle_path_services
+                            .write()
+                            .unwrap()
+                            .add_call_failure(&provider_name, call);
+                        last_error = result.error.clone();
+                    }
+                }
+                Err(e) => {
+                    call.mark_error(&e.to_string(), "ERROR");
+                    self.get_merkle_path_services
+                        .write()
+                        .unwrap()
+                        .add_call_error(&provider_name, call);
+                    last_error = Some(e.to_string());
+                }
+            }
+        }
+
+        Ok(GetMerklePathResult {
+            name: Some("Services".to_string()),
+            merkle_path: None,
+            header: None,
+            error: last_error,
+            notes,
+        })
+    }
+
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>> {
+        // Get owned copies of services to avoid holding lock across await
+        let all_services: Vec<(String, String, PostBeefProvider)> = {
+            let services = self.post_beef_services.read().unwrap();
+            services.all_services_owned()
+        };
+
+        if all_services.is_empty() {
+            return Err(Error::NoServicesAvailable);
+        }
+
+        let mut results = Vec::new();
+
+        match self.post_beef_mode {
+            PostBeefMode::UntilSuccess => {
+                for (_service_name, provider_name, service) in all_services {
+                    let mut call = ServiceCall::new();
+                    match service.post_beef(beef, txids).await {
+                        Ok(result) => {
+                            let is_success = result.is_success();
+                            if is_success {
+                                call.mark_success(None);
+                                self.post_beef_services
+                                    .write()
+                                    .unwrap()
+                                    .add_call_success(&provider_name, call);
+                            } else {
+                                call.mark_failure(Some(result.status.clone()));
+                                self.post_beef_services
+                                    .write()
+                                    .unwrap()
+                                    .add_call_failure(&provider_name, call);
+
+                                // Move failing service to last
+                                if result.txid_results.iter().all(|r| r.service_error) {
+                                    self.post_beef_services
+                                        .write()
+                                        .unwrap()
+                                        .move_to_last(&provider_name);
+                                }
+                            }
+                            results.push(result);
+                            if is_success {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            call.mark_error(&e.to_string(), "ERROR");
+                            self.post_beef_services
+                                .write()
+                                .unwrap()
+                                .add_call_error(&provider_name, call);
+                        }
+                    }
+                }
+            }
+            PostBeefMode::PromiseAll => {
+                // Post to all services in parallel
+                let futures: Vec<_> = all_services
+                    .iter()
+                    .map(|(_service_name, _provider_name, service)| {
+                        let svc = service.clone();
+                        let beef = beef.to_vec();
+                        let txids = txids.to_vec();
+                        async move { svc.post_beef(&beef, &txids).await }
+                    })
+                    .collect();
+
+                let parallel_results = futures::future::join_all(futures).await;
+
+                for ((_service_name, provider_name, _service), result) in all_services.iter().zip(parallel_results) {
+                    let mut call = ServiceCall::new();
+                    match result {
+                        Ok(r) => {
+                            if r.is_success() {
+                                call.mark_success(None);
+                                self.post_beef_services
+                                    .write()
+                                    .unwrap()
+                                    .add_call_success(provider_name, call);
+                            } else {
+                                call.mark_failure(Some(r.status.clone()));
+                                self.post_beef_services
+                                    .write()
+                                    .unwrap()
+                                    .add_call_failure(provider_name, call);
+                            }
+                            results.push(r);
+                        }
+                        Err(e) => {
+                            call.mark_error(&e.to_string(), "ERROR");
+                            self.post_beef_services
+                                .write()
+                                .unwrap()
+                                .add_call_error(provider_name, call);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn get_utxo_status(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> Result<GetUtxoStatusResult> {
+        // Get owned copies of services to avoid holding lock across await
+        let all_services: Vec<(String, String, UtxoStatusProvider)> = {
+            let services = self.get_utxo_status_services.read().unwrap();
+            services.all_services_owned()
+        };
+
+        if all_services.is_empty() {
+            return Err(Error::NoServicesAvailable);
+        }
+
+        let mut last_error = None;
+
+        // Retry loop for transient failures
+        for retry in 0..2 {
+            for (_service_name, provider_name, service) in &all_services {
+                let mut call = ServiceCall::new();
+                match service.get_utxo_status(output, output_format, outpoint).await {
+                    Ok(result) if result.status == "success" => {
+                        call.mark_success(None);
+                        self.get_utxo_status_services
+                            .write()
+                            .unwrap()
+                            .add_call_success(provider_name, call);
+                        return Ok(result);
+                    }
+                    Ok(result) => {
+                        call.mark_failure(result.error.clone());
+                        self.get_utxo_status_services
+                            .write()
+                            .unwrap()
+                            .add_call_failure(provider_name, call);
+                        last_error = result.error.clone();
+                    }
+                    Err(e) => {
+                        call.mark_error(&e.to_string(), "ERROR");
+                        self.get_utxo_status_services
+                            .write()
+                            .unwrap()
+                            .add_call_error(provider_name, call);
+                        last_error = Some(e.to_string());
+                    }
+                }
+            }
+
+            if retry < 1 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        }
+
+        Ok(GetUtxoStatusResult {
+            name: "Services".to_string(),
+            status: "error".to_string(),
+            is_utxo: None,
+            details: Vec::new(),
+            error: last_error,
+        })
+    }
+
+    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
+        // Get owned copies of services to avoid holding lock across await
+        let all_services: Vec<(String, String, StatusForTxidsProvider)> = {
+            let services = self.get_status_for_txids_services.read().unwrap();
+            services.all_services_owned()
+        };
+
+        if all_services.is_empty() {
+            return Err(Error::NoServicesAvailable);
+        }
+
+        let mut last_error = None;
+
+        for (_service_name, provider_name, service) in all_services {
+            let mut call = ServiceCall::new();
+            match service.get_status_for_txids(txids).await {
+                Ok(result) if result.status == "success" => {
+                    call.mark_success(None);
+                    self.get_status_for_txids_services
+                        .write()
+                        .unwrap()
+                        .add_call_success(&provider_name, call);
+                    return Ok(result);
+                }
+                Ok(result) => {
+                    call.mark_failure(result.error.clone());
+                    self.get_status_for_txids_services
+                        .write()
+                        .unwrap()
+                        .add_call_failure(&provider_name, call);
+                    last_error = result.error.clone();
+                }
+                Err(e) => {
+                    call.mark_error(&e.to_string(), "ERROR");
+                    self.get_status_for_txids_services
+                        .write()
+                        .unwrap()
+                        .add_call_error(&provider_name, call);
+                    last_error = Some(e.to_string());
+                }
+            }
+        }
+
+        Ok(GetStatusForTxidsResult {
+            name: "Services".to_string(),
+            status: "error".to_string(),
+            error: last_error,
+            results: Vec::new(),
+        })
+    }
+
+    async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
+        // Get owned copies of services to avoid holding lock across await
+        let all_services: Vec<(String, String, ScriptHashHistoryProvider)> = {
+            let services = self.get_script_hash_history_services.read().unwrap();
+            services.all_services_owned()
+        };
+
+        if all_services.is_empty() {
+            return Err(Error::NoServicesAvailable);
+        }
+
+        let mut last_error = None;
+
+        for (_service_name, provider_name, service) in all_services {
+            let mut call = ServiceCall::new();
+            match service.get_script_hash_history(hash).await {
+                Ok(result) if result.status == "success" => {
+                    call.mark_success(None);
+                    self.get_script_hash_history_services
+                        .write()
+                        .unwrap()
+                        .add_call_success(&provider_name, call);
+                    return Ok(result);
+                }
+                Ok(result) => {
+                    call.mark_failure(result.error.clone());
+                    self.get_script_hash_history_services
+                        .write()
+                        .unwrap()
+                        .add_call_failure(&provider_name, call);
+                    last_error = result.error.clone();
+                }
+                Err(e) => {
+                    call.mark_error(&e.to_string(), "ERROR");
+                    self.get_script_hash_history_services
+                        .write()
+                        .unwrap()
+                        .add_call_error(&provider_name, call);
+                    last_error = Some(e.to_string());
+                }
+            }
+        }
+
+        Ok(GetScriptHashHistoryResult {
+            name: "Services".to_string(),
+            status: "error".to_string(),
+            error: last_error,
+            history: Vec::new(),
+        })
+    }
+
+    async fn get_bsv_exchange_rate(&self) -> Result<f64> {
+        self.whatsonchain
+            .update_bsv_exchange_rate(self.options.bsv_update_msecs)
+            .await
+    }
+
+    fn hash_output_script(&self, script: &[u8]) -> String {
+        let hash = sha256(script);
+        // Return LE hex (default format for getUtxoStatus)
+        hex::encode(&hash)
+    }
+
+    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool> {
+        let hash = self.hash_output_script(locking_script);
+        let outpoint = format!("{}.{}", txid, vout);
+        let result = self
+            .get_utxo_status(&hash, None, Some(&outpoint))
+            .await?;
+        Ok(result.is_utxo.unwrap_or(false))
+    }
+
+    async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool> {
+        const BLOCK_LIMIT: u32 = 500_000_000;
+
+        if n_lock_time >= BLOCK_LIMIT {
+            // Time-based locktime
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32;
+            return Ok(n_lock_time < now);
+        }
+
+        // Block-based locktime
+        let height = self.get_height().await?;
+        Ok(n_lock_time < height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_services_creation() {
+        let services = Services::mainnet();
+        assert!(services.is_ok());
+        let services = services.unwrap();
+        assert!(services.get_merkle_path_count() >= 1);
+        assert!(services.post_beef_count() >= 1);
+    }
+
+    #[test]
+    fn test_services_options() {
+        let options = ServicesOptions::mainnet()
+            .with_woc_api_key("test-key")
+            .with_bitails_api_key("bitails-key");
+
+        assert_eq!(options.whatsonchain_api_key, Some("test-key".to_string()));
+        assert_eq!(options.bitails_api_key, Some("bitails-key".to_string()));
+    }
+}

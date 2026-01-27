@@ -58,7 +58,7 @@
 pub mod error;
 pub mod storage;
 pub mod chaintracks;
-// pub mod services;  // TODO: Phase 2
+pub mod services;
 // pub mod signer;    // TODO: Phase 3
 // pub mod monitor;   // TODO: Phase 4
 // pub mod managers;  // TODO: Phase 5
@@ -93,7 +93,21 @@ pub use bsv_sdk::wallet::{
 
 // Re-export Chaintracks types
 pub use chaintracks::{
-    Chain, Chaintracks, ChaintracksClient, ChaintracksInfo, ChaintracksManagement,
-    ChaintracksOptions, ChaintracksStorage, BlockHeader, BaseBlockHeader, LiveBlockHeader,
+    Chaintracks, ChaintracksClient, ChaintracksInfo, ChaintracksManagement,
+    ChaintracksOptions, ChaintracksStorage, BaseBlockHeader, LiveBlockHeader,
     HeightRange, InsertHeaderResult,
+};
+
+// Re-export Services types
+pub use services::{
+    Chain, Services, ServicesOptions,
+    WalletServices,
+    GetMerklePathResult, GetRawTxResult, PostBeefResult, PostTxResultForTxid,
+    GetUtxoStatusResult, GetUtxoStatusOutputFormat, GetStatusForTxidsResult,
+    GetScriptHashHistoryResult, ScriptHistoryItem, UtxoDetail, TxStatusDetail,
+    BlockHeader, BsvExchangeRate,
+    ServiceCollection, ServiceCallHistory,
+    WhatsOnChain, WhatsOnChainConfig,
+    Arc, ArcConfig,
+    Bitails, BitailsConfig,
 };

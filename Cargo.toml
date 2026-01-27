@@ -53,9 +53,22 @@ async-trait = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 
+# Random generation
+rand = "0.8"
+
+# Base64 encoding
+base64 = "0.22"
+
+# WebSocket support (for live ingestors)
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+futures = "0.3"
+url = "2"
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
+mockito = "1.4"
 
 [[example]]
 name = "basic_wallet"
