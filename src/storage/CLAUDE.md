@@ -99,9 +99,32 @@ pub struct AuthId {
     pub user_id: Option<i64>,      // Database user ID (after lookup)
     pub is_active: Option<bool>,   // Whether user is active
 }
+
+impl AuthId {
+    pub fn new(identity_key: impl Into<String>) -> Self;
+    pub fn with_user_id(identity_key: impl Into<String>, user_id: i64) -> Self;
+}
 ```
 
 Every storage operation requires an `AuthId` to identify the authenticated user.
+
+### Storage Info
+
+```rust
+pub struct WalletStorageInfo {
+    pub is_active: bool,
+    pub is_enabled: bool,
+    pub is_backup: bool,
+    pub is_conflicting: bool,
+    pub user_id: i64,
+    pub storage_identity_key: String,
+    pub storage_name: String,
+    pub storage_class: String,
+    pub endpoint_url: Option<String>,
+}
+```
+
+Provides metadata about a configured storage provider instance.
 
 ### Query Arguments
 
@@ -141,6 +164,12 @@ Every storage operation requires an `AuthId` to identify the authenticated user.
 |------|--------|---------|
 | `StorageProvidedBy` | `You`, `Storage`, `YouAndStorage` | Who provided an input/output |
 | `ReviewActionResultStatus` | `Success`, `DoubleSpend`, `ServiceError`, `InvalidTx` | Broadcast result |
+
+### Storage Info Type
+
+| Type | Purpose |
+|------|---------|
+| `WalletStorageInfo` | Metadata about a configured storage provider (active, enabled, backup status) |
 
 ## Storage Implementations
 

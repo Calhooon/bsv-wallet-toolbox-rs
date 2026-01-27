@@ -40,6 +40,7 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 |--------|---------|
 | `storage/` | Wallet storage layer with traits and implementations (SQLite, MySQL, remote) |
 | `chaintracks/` | Block header tracking system with two-tier bulk/live storage |
+| `services/` | External service providers (WhatsOnChain, ARC, Bitails) for blockchain operations |
 
 ## Key Exports
 
@@ -78,14 +79,12 @@ pub use storage::StorageClient; // Remote storage via JSON-RPC
 
 ```rust
 pub use chaintracks::{
-    Chain,                // Network identifier (Main, Test)
     Chaintracks,          // Main orchestrator
     ChaintracksClient,    // Read-only client trait
     ChaintracksInfo,      // System status information
     ChaintracksManagement,// Management trait (destroy, validate, export)
     ChaintracksOptions,   // Configuration options
     ChaintracksStorage,   // Storage trait for headers
-    BlockHeader,          // Header with height and hash
     BaseBlockHeader,      // Header without height (as from network)
     LiveBlockHeader,      // Header with chain tracking fields
     HeightRange,          // Range of block heights
@@ -93,12 +92,49 @@ pub use chaintracks::{
 };
 ```
 
+### Services Types
+
+```rust
+pub use services::{
+    // Core types
+    Chain,                      // Network identifier (Main, Test)
+    Services,                   // Main services orchestrator
+    ServicesOptions,            // Configuration options
+    WalletServices,             // Service provider trait
+
+    // Result types for blockchain operations
+    GetMerklePathResult,        // Merkle path for transaction proof
+    GetRawTxResult,             // Raw transaction data
+    PostBeefResult,             // BEEF transaction broadcast result
+    PostTxResultForTxid,        // Transaction broadcast result
+    GetUtxoStatusResult,        // UTXO status information
+    GetUtxoStatusOutputFormat,  // Output format for UTXO queries
+    GetStatusForTxidsResult,    // Status for multiple transactions
+    GetScriptHashHistoryResult, // Script hash history
+    ScriptHistoryItem,          // Individual history item
+    UtxoDetail,                 // UTXO details
+    TxStatusDetail,             // Transaction status details
+    BlockHeader,                // Block header with height and hash
+    BsvExchangeRate,            // Exchange rate information
+
+    // Service collection and history
+    ServiceCollection,          // Collection of service providers
+    ServiceCallHistory,         // History of service calls
+
+    // Provider implementations
+    WhatsOnChain, WhatsOnChainConfig,  // WhatsOnChain API provider
+    Arc, ArcConfig,                     // ARC transaction processor
+    Bitails, BitailsConfig,             // Bitails API provider
+};
+```
+
 ### Re-exported bsv-sdk Types
 
 The library re-exports commonly used types from `bsv-sdk::wallet`:
-- Action types: `AbortActionArgs`, `CreateActionArgs`, etc.
+- Action types: `AbortActionArgs`, `CreateActionArgs`, `InternalizeActionArgs`
 - List types: `ListActionsArgs`, `ListOutputsArgs`, `ListCertificatesArgs`
-- Results: `ListActionsResult`, `ListOutputsResult`, `ListCertificatesResult`
+- Results: `ListActionsResult`, `ListOutputsResult`, `ListCertificatesResult`, `AbortActionResult`, `CreateActionResult`, `InternalizeActionResult`
+- Relinquish types: `RelinquishCertificateArgs`, `RelinquishOutputArgs`
 - Core trait: `WalletInterface`
 
 ## Feature Flags
@@ -163,6 +199,34 @@ let tip = chaintracks.find_chain_tip_header().await?;
 println!("Chain tip: {} at height {}", tip.hash, tip.height);
 ```
 
+### Using Services for Blockchain Operations
+
+```rust
+use bsv_wallet_toolbox::{Services, ServicesOptions, Chain, WalletServices};
+
+// Create mainnet services with default providers
+let services = Services::mainnet();
+
+// Or configure with custom options
+let options = ServicesOptions {
+    chain: Chain::Main,
+    ..Default::default()
+};
+let services = Services::new(options);
+
+// Get a raw transaction
+let tx_result = services.get_raw_tx(&txid, false).await?;
+
+// Broadcast a transaction
+let beef_result = services.post_beef(&beef_bytes, &[txid]).await?;
+
+// Get merkle path for SPV verification
+let merkle = services.get_merkle_path(&txid, false).await?;
+
+// Check UTXO status
+let utxo_status = services.get_utxo_status(&output_script, "script", None).await?;
+```
+
 ## Storage Trait Hierarchy
 
 The storage layer uses a trait hierarchy that mirrors the TypeScript implementation:
@@ -181,7 +245,6 @@ WalletStorageProvider   ← Full provider interface with identity/name
 
 The following modules are planned but commented out in `lib.rs`:
 
-- `services` - External service integration (Phase 2)
 - `signer` - Transaction signing with `WalletSigner` (Phase 3)
 - `monitor` - Transaction monitoring (Phase 4)
 - `managers` - Higher-level manager components (Phase 5)
@@ -191,6 +254,7 @@ The following modules are planned but commented out in `lib.rs`:
 
 - [storage/CLAUDE.md](./storage/CLAUDE.md) - Storage layer details, entity definitions, trait implementations
 - [chaintracks/CLAUDE.md](./chaintracks/CLAUDE.md) - Block header tracking system, storage backends, ingestors
+- [services/CLAUDE.md](./services/CLAUDE.md) - External service providers, traits, and blockchain operations
 
 ## Development Notes
 

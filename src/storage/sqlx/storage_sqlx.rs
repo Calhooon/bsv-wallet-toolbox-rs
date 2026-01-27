@@ -1917,14 +1917,13 @@ impl WalletStorageWriter for StorageSqlx {
     async fn abort_action(
         &self,
         auth: &AuthId,
-        _args: AbortActionArgs,
+        args: AbortActionArgs,
     ) -> Result<AbortActionResult> {
-        // TODO: Implement abort_action
-        let _ = auth
+        let user_id = auth
             .user_id
             .ok_or_else(|| Error::AuthenticationRequired)?;
 
-        Ok(AbortActionResult { aborted: false })
+        super::abort_action::abort_action_internal(self, user_id, args).await
     }
 
     async fn create_action(

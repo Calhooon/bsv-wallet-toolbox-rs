@@ -22,23 +22,25 @@ persistent storage without managing local databases.
 
 ## Key Exports
 
-### Constants
-
-| Export | Description |
-|--------|-------------|
-| `MAINNET_URL` | `https://storage.babbage.systems` - Production storage endpoint |
-| `TESTNET_URL` | `https://staging-storage.babbage.systems` - Testnet storage endpoint |
-
 ### Types
 
 | Type | Description |
 |------|-------------|
 | `StorageClient<W>` | Main client, generic over wallet type `W: WalletInterface` |
-| `JsonRpcRequest` | JSON-RPC 2.0 request structure |
-| `JsonRpcResponse` | JSON-RPC 2.0 response with `into_result()` for error handling |
-| `JsonRpcError` | JSON-RPC error with code, message, and optional data |
+| `JsonRpcRequest` | JSON-RPC 2.0 request structure with `new()` constructor |
+| `JsonRpcResponse` | JSON-RPC 2.0 response with `into_result()` and `is_success()` methods |
+| `JsonRpcError` | JSON-RPC error with code, message, optional data, and factory methods |
+| `json_rpc::WalletError` | Wallet-specific error parsed from JSON-RPC error data (code, message, description, stack) |
 | `UpdateProvenTxReqWithNewProvenTxArgs` | Arguments for updating proven tx requests |
-| `UpdateProvenTxReqWithNewProvenTxResult` | Result containing counts of updates performed |
+| `UpdateProvenTxReqWithNewProvenTxResult` | Result containing `txs_updated`, `reqs_updated`, `proven_tx_id` |
+
+### Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `MAINNET_URL` | `https://storage.babbage.systems` | Production storage endpoint |
+| `TESTNET_URL` | `https://staging-storage.babbage.systems` | Testnet storage endpoint |
+| `JSON_RPC_VERSION` | `"2.0"` | JSON-RPC protocol version (in `json_rpc` module) |
 
 ### JSON-RPC Error Codes
 
@@ -65,6 +67,34 @@ Wallet-specific codes in `json_rpc::wallet_error_codes`:
 | `INTERNAL` | `ERR_INTERNAL` |
 | `INSUFFICIENT_FUNDS` | `ERR_INSUFFICIENT_FUNDS` |
 | `INVALID_TX` | `ERR_INVALID_TX` |
+
+### JsonRpcError Factory Methods
+
+`JsonRpcError` provides convenient constructors:
+
+| Method | Creates |
+|--------|---------|
+| `new(code, message)` | Basic error |
+| `with_data(code, message, data)` | Error with additional JSON data |
+| `parse_error(details)` | Parse error (-32700) |
+| `invalid_request(details)` | Invalid request error (-32600) |
+| `method_not_found(method)` | Method not found error (-32601) |
+| `invalid_params(details)` | Invalid params error (-32602) |
+| `internal_error(details)` | Internal error (-32603) |
+| `is_server_error()` | Returns true if code is in server error range |
+
+### WalletError Parsing
+
+`WalletError` can be extracted from JSON-RPC errors:
+
+```rust
+if let Some(wallet_err) = WalletError::from_rpc_error(&rpc_error) {
+    println!("Code: {}, Message: {}", wallet_err.code, wallet_err.message);
+    if let Some(desc) = &wallet_err.description {
+        println!("Description: {}", desc);
+    }
+}
+```
 
 ## Architecture
 
@@ -124,6 +154,26 @@ The client calls these remote methods via `rpc_call()`:
 | `getSyncChunk` | Sync | Get sync data chunk |
 | `processSyncChunk` | Sync | Apply sync data chunk |
 | `updateProvenTxReqWithNewProvenTx` | Helper | Update proven tx request |
+
+### StorageClient Helper Methods
+
+Beyond trait implementations, `StorageClient` provides these convenience methods:
+
+| Method | Description |
+|--------|-------------|
+| `new(wallet, endpoint_url)` | Create client with BRC-31 auth |
+| `new_unauthenticated(wallet, url)` | Create client without auth (testing) |
+| `mainnet(wallet)` | Create client for mainnet |
+| `testnet(wallet)` | Create client for testnet |
+| `endpoint_url()` | Get the server URL |
+| `peer()` | Get reference to BRC-31 Peer |
+| `wallet()` | Get reference to wallet |
+| `get_identity_key()` | Get wallet's identity key (hex) |
+| `get_settings_async()` | Get cached settings or fetch if needed |
+| `is_available_async()` | Check if make_available() has succeeded |
+| `create_auth_id()` | Create AuthId for current wallet |
+| `create_auth_id_with_user(user_id)` | Create AuthId with user ID |
+| `get_storage_info(user_id, is_active)` | Build WalletStorageInfo for this client |
 
 ## Usage
 

@@ -30,6 +30,8 @@ pub enum TransactionStatus {
     NonFinal,
     /// Transaction failed.
     Failed,
+    /// Transaction is marked for unfailing (retry after failure).
+    Unfail,
 }
 
 impl TransactionStatus {
@@ -44,6 +46,7 @@ impl TransactionStatus {
             TransactionStatus::NoSend => "nosend",
             TransactionStatus::NonFinal => "nonfinal",
             TransactionStatus::Failed => "failed",
+            TransactionStatus::Unfail => "unfail",
         }
     }
 }

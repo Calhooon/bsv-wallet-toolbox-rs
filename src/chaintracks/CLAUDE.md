@@ -10,13 +10,17 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module entry point; re-exports all public types and traits |
+| `mod.rs` | Module entry point; re-exports all public types, traits, and ingestors |
 | `types.rs` | Core data structures: `Chain`, `BlockHeader`, `LiveBlockHeader`, `HeightRange`, etc. |
 | `traits.rs` | Trait definitions: `ChaintracksClient`, `ChaintracksStorage`, `BulkIngestor`, `LiveIngestor` |
 | `chaintracks.rs` | Main `Chaintracks` orchestrator implementing client and management interfaces |
-| `storage/mod.rs` | Storage backend module; currently exports `MemoryStorage` |
-| `storage/memory.rs` | In-memory storage implementation (NoDb equivalent) |
-| `ingestors/mod.rs` | Ingestor module (implementations pending) |
+| `storage/mod.rs` | Storage backend module; exports `MemoryStorage` |
+| `storage/memory.rs` | In-memory storage implementation with reorg handling |
+| `ingestors/mod.rs` | Ingestor module; re-exports all bulk and live ingestor implementations |
+| `ingestors/bulk_cdn.rs` | CDN-based bulk header downloads from Babbage Systems |
+| `ingestors/bulk_woc.rs` | WhatsOnChain API bulk header fetching (fallback) |
+| `ingestors/live_polling.rs` | Polling-based live header detection via WOC API |
+| `ingestors/live_websocket.rs` | WebSocket-based real-time header streaming via WOC |
 
 ## Architecture
 
@@ -31,7 +35,7 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
          ▼                   ▼                   ▼
 ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
 │  BulkIngestor   │ │  LiveIngestor   │ │    Storage      │
-│  (CDN, WoC)     │ │  (WebSocket)    │ │ (Memory, SQLite)│
+│  (CDN, WoC)     │ │ (WS, Polling)   │ │    (Memory)     │
 └─────────────────┘ └─────────────────┘ └─────────────────┘
 ```
 
@@ -91,9 +95,39 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 - **`HeaderCallback`**: `Box<dyn Fn(BlockHeader) + Send + Sync>` - New header notification
 - **`ReorgCallback`**: `Box<dyn Fn(ReorgEvent) + Send + Sync>` - Reorg notification
 
+### Re-exported Types
+
+- **`ChainTracker`**: Re-exported from `bsv_sdk::transaction::ChainTracker` for convenience
+
 ### Storage Implementations
 
-- **`MemoryStorage`**: In-memory storage suitable for testing/development/mobile. Data lost on restart.
+- **`MemoryStorage`**: In-memory storage suitable for testing/development/mobile. Data lost on restart. Features reorg handling, hash/height/merkle root indexing, and batch insert support.
+
+### Ingestor Implementations
+
+#### Bulk Ingestors (Historical Data)
+
+| Ingestor | Description |
+|----------|-------------|
+| `BulkCdnIngestor` | Downloads headers from Babbage CDN (`DEFAULT_CDN_URL`). Fast, preferred method. |
+| `BulkWocIngestor` | Uses WhatsOnChain API. Slower but reliable fallback. Supports API key for higher rate limits. |
+
+**Options structs**: `BulkCdnOptions`, `BulkWocOptions` - both have `mainnet()` and `testnet()` constructors.
+
+#### Live Ingestors (Real-time Updates)
+
+| Ingestor | Description |
+|----------|-------------|
+| `LivePollingIngestor` | Polls WOC `/block/headers` at intervals (default: 60s). Simple and reliable. |
+| `LiveWebSocketIngestor` | Connects to WOC WebSocket for instant notifications. Lower latency, requires persistent connection. Auto-reconnects on failure. |
+
+**Options structs**: `LivePollingOptions`, `LiveWebSocketOptions` - configurable poll intervals, timeouts, API keys, and reconnection behavior.
+
+#### Helper Functions
+
+- `woc_header_to_block_header()` - Convert WOC polling API response to `BlockHeader`
+- `ws_header_to_block_header()` - Convert WOC WebSocket message to `BlockHeader`
+- `calculate_work()` - Calculate chain work from difficulty bits
 
 ## Usage
 
@@ -251,12 +285,113 @@ Subscribers receive `ReorgEvent` notifications with full context.
 | Core types and traits | Complete |
 | Chaintracks orchestrator | Complete |
 | MemoryStorage | Complete |
+| BulkCdnIngestor | Complete |
+| BulkWocIngestor | Complete |
+| LivePollingIngestor | Complete |
+| LiveWebSocketIngestor | Complete |
 | SQLite storage | Planned |
-| CDN bulk ingestor | Planned |
-| WhatsOnChain polling ingestor | Planned |
-| WhatsOnChain WebSocket ingestor | Planned |
+
+## Ingestor Usage
+
+### CDN Bulk Ingestor
+
+```rust
+use bsv_wallet_toolbox::chaintracks::{BulkCdnIngestor, BulkCdnOptions};
+
+// Create for mainnet (default CDN URL)
+let ingestor = BulkCdnIngestor::mainnet()?;
+
+// Or with custom options
+let options = BulkCdnOptions {
+    cdn_url: "https://custom-cdn.example.com/".to_string(),
+    timeout_secs: 120,
+    ..BulkCdnOptions::mainnet()
+};
+let ingestor = BulkCdnIngestor::new(options)?;
+
+// Fetch headers for a range
+let headers = ingestor.fetch_headers(0, HeightRange::new(0, 1000), None, &[]).await?;
+```
+
+### WhatsOnChain Bulk Ingestor
+
+```rust
+use bsv_wallet_toolbox::chaintracks::{BulkWocIngestor, BulkWocOptions};
+
+// With API key for higher rate limits
+let ingestor = BulkWocIngestor::new(
+    BulkWocOptions::mainnet().with_api_key("your-api-key")
+)?;
+
+// Get current chain height
+let height = ingestor.get_chain_tip_height().await?;
+```
+
+### Live Polling Ingestor
+
+```rust
+use bsv_wallet_toolbox::chaintracks::{LivePollingIngestor, LivePollingOptions};
+
+let ingestor = LivePollingIngestor::new(
+    LivePollingOptions::mainnet().with_poll_interval(30)  // Poll every 30 seconds
+)?;
+
+// Subscribe to new headers
+let mut receiver = ingestor.subscribe();
+
+// Start listening
+let mut headers = vec![];
+ingestor.start_listening(&mut headers).await?;
+
+// Receive headers asynchronously
+while let Ok(header) = receiver.recv().await {
+    println!("New block: {}", header.height);
+}
+```
+
+### Live WebSocket Ingestor
+
+```rust
+use bsv_wallet_toolbox::chaintracks::{LiveWebSocketIngestor, LiveWebSocketOptions};
+
+let ingestor = LiveWebSocketIngestor::new(
+    LiveWebSocketOptions::mainnet()
+        .with_idle_timeout(60_000)
+        .with_api_key("your-api-key")
+)?;
+
+// Subscribe to headers
+let mut receiver = ingestor.subscribe();
+
+// Start listening (spawns WebSocket connection)
+let mut headers = vec![];
+ingestor.start_listening(&mut headers).await?;
+
+// Handle incoming headers
+tokio::spawn(async move {
+    while let Ok(header) = receiver.recv().await {
+        println!("WebSocket: new block {} at height {}",
+            &header.hash[..16], header.height);
+    }
+});
+
+// Later: stop
+ingestor.stop_listening();
+```
+
+## API Constants
+
+| Constant | Value |
+|----------|-------|
+| `DEFAULT_CDN_URL` | `https://bsv-headers.babbage.systems/` |
+| `LEGACY_CDN_URL` | `https://cdn.projectbabbage.com/blockheaders/` |
+| `WOC_API_URL_MAIN` | `https://api.whatsonchain.com/v1/bsv/main` |
+| `WOC_API_URL_TEST` | `https://api.whatsonchain.com/v1/bsv/test` |
+| `WOC_WS_URL_MAIN` | `wss://socket-v2.whatsonchain.com/websocket/blockHeaders` |
+| `WOC_WS_URL_TEST` | `wss://socket-v2-testnet.whatsonchain.com/websocket/blockHeaders` |
 
 ## Related
 
-- `../CLAUDE.md` - Project root documentation (if exists)
+- `storage/CLAUDE.md` - Storage implementation details
+- `ingestors/CLAUDE.md` - Ingestor implementation details
 - Original TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/`
