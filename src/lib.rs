@@ -60,7 +60,7 @@ pub mod storage;
 pub mod chaintracks;
 pub mod services;
 pub mod wallet;
-// pub mod monitor;   // TODO: Phase 4
+pub mod monitor;
 // pub mod managers;  // TODO: Phase 5
 
 pub use error::{Error, Result};
@@ -113,3 +113,6 @@ pub use services::{
 
 // Re-export Wallet types
 pub use wallet::{Wallet, WalletOptions, WalletSigner};
+
+// Re-export Monitor types
+pub use monitor::{Monitor, MonitorOptions, MonitorTask, TaskConfig, TaskResult};

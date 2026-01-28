@@ -65,6 +65,26 @@ pub enum ProvenTxReqStatus {
     Failed,
     /// Request was not found.
     NotFound,
+    /// Transaction is waiting to be sent.
+    Unsent,
+    /// Transaction is currently being sent.
+    Sending,
+    /// Transaction was sent but not yet mined.
+    Unmined,
+    /// Transaction status is unknown.
+    Unknown,
+    /// Waiting for callback confirmation.
+    Callback,
+    /// Transaction is unconfirmed on chain.
+    Unconfirmed,
+    /// Marked for unfail processing.
+    Unfail,
+    /// Transaction should not be sent.
+    NoSend,
+    /// Transaction is invalid.
+    Invalid,
+    /// Transaction is a double spend.
+    DoubleSpend,
 }
 
 // =============================================================================
@@ -243,6 +263,8 @@ pub struct TableProvenTxReq {
     pub history: String,
     pub notify_txid: Option<String>,
     pub proven_tx_id: Option<i64>,
+    /// Batch identifier for grouping transactions to broadcast together.
+    pub batch: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

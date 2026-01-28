@@ -26,6 +26,10 @@ pub struct Chaintracks {
     listening: Arc<RwLock<bool>>,
     synchronized: Arc<RwLock<bool>>,
 
+    // Ingestor tracking
+    bulk_ingestor_count: Arc<RwLock<usize>>,
+    live_ingestor_count: Arc<RwLock<usize>>,
+
     // Subscriptions
     header_subscribers: Arc<RwLock<Vec<(String, HeaderCallback)>>>,
     reorg_subscribers: Arc<RwLock<Vec<(String, ReorgCallback)>>>,
@@ -47,11 +51,23 @@ impl Chaintracks {
             available: Arc::new(RwLock::new(false)),
             listening: Arc::new(RwLock::new(false)),
             synchronized: Arc::new(RwLock::new(false)),
+            bulk_ingestor_count: Arc::new(RwLock::new(0)),
+            live_ingestor_count: Arc::new(RwLock::new(0)),
             header_subscribers: Arc::new(RwLock::new(vec![])),
             reorg_subscribers: Arc::new(RwLock::new(vec![])),
             base_headers: Arc::new(RwLock::new(vec![])),
             live_headers: Arc::new(RwLock::new(vec![])),
         }
+    }
+
+    /// Set the number of bulk ingestors.
+    pub async fn set_bulk_ingestor_count(&self, count: usize) {
+        *self.bulk_ingestor_count.write().await = count;
+    }
+
+    /// Set the number of live ingestors.
+    pub async fn set_live_ingestor_count(&self, count: usize) {
+        *self.live_ingestor_count.write().await = count;
     }
 
     /// Initialize storage and start ingestors
@@ -84,8 +100,8 @@ impl ChaintracksClient for Chaintracks {
         Ok(ChaintracksInfo {
             chain: self.options.chain,
             storage_type: storage.storage_type().to_string(),
-            bulk_ingestor_count: 0, // TODO: Track ingestors
-            live_ingestor_count: 0,
+            bulk_ingestor_count: *self.bulk_ingestor_count.read().await,
+            live_ingestor_count: *self.live_ingestor_count.read().await,
             chain_tip_height: tip.as_ref().map(|h| h.height),
             live_low_height: live_range.as_ref().map(|r| r.low),
             live_high_height: live_range.as_ref().map(|r| r.high),
@@ -179,8 +195,14 @@ impl ChaintracksClient for Chaintracks {
     }
 
     async fn start_listening(&self) -> Result<()> {
+        // In a full implementation, this would:
+        // 1. Start live ingestor(s) to receive new headers
+        // 2. Set up a processing loop for incoming headers
+        // 3. Notify subscribers of new headers and reorgs
+        //
+        // For now, we set the listening flag and let external code
+        // push headers via add_header().
         *self.listening.write().await = true;
-        // TODO: Start live ingestors
         Ok(())
     }
 
@@ -238,17 +260,113 @@ impl ChaintracksManagement for Chaintracks {
     }
 
     async fn validate(&self) -> Result<bool> {
-        // TODO: Implement full chain validation
+        // Validate that the hash chain is consistent
+        // Each header's previous_hash should match the hash of the previous header
+        let storage = self.storage.read().await;
+        let live_range = storage.find_live_height_range().await?;
+
+        if live_range.is_none() {
+            // No headers to validate
+            return Ok(true);
+        }
+
+        let range = live_range.unwrap();
+        let mut prev_hash: Option<String> = None;
+
+        for height in range.low..=range.high {
+            if let Some(header) = storage.find_header_for_height(height).await? {
+                if let Some(expected_prev) = &prev_hash {
+                    if header.previous_hash != *expected_prev {
+                        tracing::warn!(
+                            height = height,
+                            expected = %expected_prev,
+                            actual = %header.previous_hash,
+                            "Chain validation failed: previous hash mismatch"
+                        );
+                        return Ok(false);
+                    }
+                }
+                prev_hash = Some(header.hash.clone());
+            }
+        }
+
         Ok(true)
     }
 
     async fn export_bulk_headers(
         &self,
-        _folder: &str,
-        _headers_per_file: Option<u32>,
-        _max_height: Option<u32>,
+        folder: &str,
+        headers_per_file: Option<u32>,
+        max_height: Option<u32>,
     ) -> Result<()> {
-        // TODO: Implement bulk export
+        use std::fs::{self, File};
+        use std::io::Write;
+
+        let storage = self.storage.read().await;
+        let tip = storage.find_chain_tip_header().await?;
+
+        if tip.is_none() {
+            return Ok(()); // No headers to export
+        }
+
+        let tip = tip.unwrap();
+        let max_h = max_height.unwrap_or(tip.height);
+        let per_file = headers_per_file.unwrap_or(500);
+
+        // Create output folder
+        fs::create_dir_all(folder).map_err(|e| {
+            crate::Error::StorageError(format!("Failed to create export folder: {}", e))
+        })?;
+
+        let mut file_num = 0;
+        let mut height = 0u32;
+
+        while height <= max_h {
+            let end_height = std::cmp::min(height + per_file - 1, max_h);
+
+            // Collect headers for this file
+            let mut header_bytes = Vec::new();
+            for h in height..=end_height {
+                if let Some(header) = storage.find_header_for_height(h).await? {
+                    // Serialize header to 80 bytes
+                    let base = BaseBlockHeader {
+                        version: header.version,
+                        previous_hash: header.previous_hash,
+                        merkle_root: header.merkle_root,
+                        time: header.time,
+                        bits: header.bits,
+                        nonce: header.nonce,
+                    };
+                    header_bytes.extend_from_slice(&base.to_bytes());
+                }
+            }
+
+            if header_bytes.is_empty() {
+                height = end_height + 1;
+                continue;
+            }
+
+            let filename = format!("{}/headers_{:08}.bin", folder, file_num);
+            let mut file = File::create(&filename).map_err(|e| {
+                crate::Error::StorageError(format!("Failed to create file {}: {}", filename, e))
+            })?;
+
+            file.write_all(&header_bytes).map_err(|e| {
+                crate::Error::StorageError(format!("Failed to write to {}: {}", filename, e))
+            })?;
+
+            tracing::debug!(
+                file = %filename,
+                from_height = height,
+                to_height = end_height,
+                headers = header_bytes.len() / 80,
+                "Exported headers"
+            );
+
+            height = end_height + 1;
+            file_num += 1;
+        }
+
         Ok(())
     }
 }
@@ -269,5 +387,52 @@ mod tests {
         let info = ct.get_info().await.unwrap();
         assert_eq!(info.chain, Chain::Test);
         assert_eq!(info.storage_type, "memory");
+    }
+
+    #[tokio::test]
+    async fn test_ingestor_tracking() {
+        let storage = Box::new(MemoryStorage::new(Chain::Test));
+        let options = ChaintracksOptions::default_testnet();
+        let ct = Chaintracks::new(options, storage);
+
+        ct.make_available().await.unwrap();
+
+        // Initially zero
+        let info = ct.get_info().await.unwrap();
+        assert_eq!(info.bulk_ingestor_count, 0);
+        assert_eq!(info.live_ingestor_count, 0);
+
+        // Set counts
+        ct.set_bulk_ingestor_count(2).await;
+        ct.set_live_ingestor_count(1).await;
+
+        let info = ct.get_info().await.unwrap();
+        assert_eq!(info.bulk_ingestor_count, 2);
+        assert_eq!(info.live_ingestor_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_start_listening() {
+        let storage = Box::new(MemoryStorage::new(Chain::Test));
+        let options = ChaintracksOptions::default_testnet();
+        let ct = Chaintracks::new(options, storage);
+
+        ct.make_available().await.unwrap();
+
+        assert!(!ct.is_listening().await.unwrap());
+        ct.start_listening().await.unwrap();
+        assert!(ct.is_listening().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_validate_empty_storage() {
+        let storage = Box::new(MemoryStorage::new(Chain::Test));
+        let options = ChaintracksOptions::default_testnet();
+        let ct = Chaintracks::new(options, storage);
+
+        ct.make_available().await.unwrap();
+
+        // Empty storage should validate as true
+        assert!(ct.validate().await.unwrap());
     }
 }

@@ -41,6 +41,7 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 | `storage/` | Wallet storage layer with traits and implementations (SQLite, MySQL, remote) |
 | `chaintracks/` | Block header tracking system with two-tier bulk/live storage |
 | `services/` | External service providers (WhatsOnChain, ARC, Bitails) for blockchain operations |
+| `wallet/` | Full `Wallet` implementation with `WalletSigner` for transaction signing |
 
 ## Key Exports
 
@@ -125,6 +126,16 @@ pub use services::{
     WhatsOnChain, WhatsOnChainConfig,  // WhatsOnChain API provider
     Arc, ArcConfig,                     // ARC transaction processor
     Bitails, BitailsConfig,             // Bitails API provider
+};
+```
+
+### Wallet Types
+
+```rust
+pub use wallet::{
+    Wallet,          // Full wallet implementation with WalletInterface
+    WalletOptions,   // Configuration options for wallet creation
+    WalletSigner,    // Transaction signing component
 };
 ```
 
@@ -245,16 +256,15 @@ WalletStorageProvider   ← Full provider interface with identity/name
 
 The following modules are planned but commented out in `lib.rs`:
 
-- `signer` - Transaction signing with `WalletSigner` (Phase 3)
 - `monitor` - Transaction monitoring (Phase 4)
 - `managers` - Higher-level manager components (Phase 5)
-- `wallet` - Full `Wallet` implementation (Phase 3)
 
 ## Related Documentation
 
 - [storage/CLAUDE.md](./storage/CLAUDE.md) - Storage layer details, entity definitions, trait implementations
 - [chaintracks/CLAUDE.md](./chaintracks/CLAUDE.md) - Block header tracking system, storage backends, ingestors
 - [services/CLAUDE.md](./services/CLAUDE.md) - External service providers, traits, and blockchain operations
+- [wallet/CLAUDE.md](./wallet/CLAUDE.md) - Wallet implementation, signing, and WalletInterface
 
 ## Development Notes
 

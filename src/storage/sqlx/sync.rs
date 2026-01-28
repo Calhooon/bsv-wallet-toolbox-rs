@@ -742,6 +742,7 @@ async fn fetch_proven_tx_reqs_for_sync(
                 history: row.get("history"),
                 notify_txid,
                 proven_tx_id: row.get("proven_tx_id"),
+                batch: row.try_get("batch").ok(),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             }

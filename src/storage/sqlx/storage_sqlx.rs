@@ -818,6 +818,7 @@ impl StorageSqlx {
                 history: row.get("history"),
                 notify_txid,
                 proven_tx_id: row.get("proven_tx_id"),
+                batch: row.try_get("batch").ok(),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             });
@@ -1981,14 +1982,13 @@ impl WalletStorageWriter for StorageSqlx {
     async fn process_action(
         &self,
         auth: &AuthId,
-        _args: StorageProcessActionArgs,
+        args: StorageProcessActionArgs,
     ) -> Result<StorageProcessActionResults> {
-        // TODO: Implement process_action
-        let _ = auth
+        let user_id = auth
             .user_id
             .ok_or_else(|| Error::AuthenticationRequired)?;
 
-        Err(Error::StorageError("Not implemented".to_string()))
+        super::process_action::process_action_internal(self, user_id, args).await
     }
 
     async fn internalize_action(

@@ -10,9 +10,12 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (~2673 lines) |
-| `create_action.rs` | Transaction creation implementation (~2088 lines) |
-| `process_action.rs` | Signed transaction processing (~1250 lines) |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (~2698 lines) |
+| `create_action.rs` | Transaction creation implementation (~3296 lines) |
+| `process_action.rs` | Signed transaction processing (~1274 lines) |
+| `abort_action.rs` | Transaction abort/cancellation (~1249 lines) |
+| `internalize_action.rs` | External transaction internalization (~1247 lines) |
+| `sync.rs` | Multi-storage synchronization (~2553 lines) |
 | `migrations/001_initial.sql` | Initial schema with 16 tables |
 
 ## Key Exports
@@ -22,10 +25,11 @@ The main storage provider struct implementing all wallet storage traits.
 
 ```rust
 pub struct StorageSqlx {
-    pool: Pool<Sqlite>,          // SQLx connection pool
-    settings: RwLock<Option<TableSettings>>,
-    storage_identity_key: RwLock<String>,
-    storage_name: RwLock<String>,
+    pool: Pool<Sqlite>,                              // SQLx connection pool
+    settings: std::sync::RwLock<Option<TableSettings>>,
+    storage_identity_key: std::sync::RwLock<String>,
+    storage_name: std::sync::RwLock<String>,
+    chain_tracker: RwLock<Option<Arc<dyn ChainTracker>>>,  // For BEEF verification
 }
 ```
 
@@ -34,8 +38,15 @@ pub struct StorageSqlx {
 - `in_memory()` - Create in-memory database (useful for testing)
 - `open(path: &str)` - Open file-based database (creates if not exists)
 
+**ChainTracker methods:**
+- `set_chain_tracker(tracker)` - Set ChainTracker for BEEF verification
+- `clear_chain_tracker()` - Disable BEEF verification
+
 ### `DEFAULT_MAX_OUTPUT_SCRIPT`
 Constant defining maximum script length stored inline (10,000 bytes). Scripts longer than this are retrieved from raw transactions.
+
+### `entity_names`
+Module containing entity name constants for sync operations (exported from `sync.rs`).
 
 ## Trait Implementations
 
@@ -74,18 +85,46 @@ WalletStorageProvider   - Full provider interface
 | `insert_certificate()` | Insert new certificate |
 | `relinquish_certificate()` | Soft-delete certificate |
 | `relinquish_output()` | Remove output from basket |
-| `abort_action()` | Abort transaction (stub) |
+| `abort_action()` | Abort pending transaction, release locked outputs |
 | `create_action()` | Create new transaction with inputs/outputs |
-| `process_action()` | Process transaction (stub) |
-| `internalize_action()` | Internalize external tx (stub) |
+| `process_action()` | Process signed transaction (partial - delegates to internal) |
+| `internalize_action()` | Internalize external transaction into wallet |
 
 ### WalletStorageSync Methods
 | Method | Description |
 |--------|-------------|
 | `find_or_insert_sync_state()` | Get or create sync state |
 | `set_active()` | Set user's active storage |
-| `get_sync_chunk()` | Get data chunk for sync (stub) |
-| `process_sync_chunk()` | Apply sync chunk (stub) |
+| `get_sync_chunk()` | Get data chunk for synchronization |
+| `process_sync_chunk()` | Apply received sync chunk with upsert logic |
+
+## Abort Action Implementation
+
+The `abort_action.rs` module cancels pending transactions and releases locked UTXOs:
+
+### Core Function
+```rust
+pub async fn abort_action_internal(
+    storage: &StorageSqlx,
+    user_id: i64,
+    args: AbortActionArgs,
+) -> Result<AbortActionResult>
+```
+
+### Functionality
+| Feature | Description |
+|---------|-------------|
+| Transaction lookup | Finds by reference or txid (if 64 hex chars) |
+| Status validation | Only abortable statuses: unsigned, unprocessed, nosend, nonfinal, unfail |
+| Outgoing check | Must be an outgoing transaction |
+| Output protection | Fails if transaction outputs have been spent |
+| UTXO release | Sets `spendable=true`, `spent_by=NULL` for locked outputs |
+| Status update | Sets transaction status to 'failed' |
+
+### Abortable vs Non-Abortable Statuses
+| Abortable | Non-Abortable |
+|-----------|---------------|
+| unsigned, unprocessed, nosend, nonfinal, unfail | completed, failed, sending, unproven |
 
 ## Process Action Implementation
 
@@ -122,9 +161,85 @@ pub async fn process_action_internal(
 | is_delayed | unprocessed | unsent |
 | immediate | unprocessed → unproven | unprocessed → unmined |
 
-### Tests (35 total)
-- 17 unit tests: txid computation, var_int parsing, script offsets, args validation, status determination
-- 18 integration tests: all scenarios from Go's provider_process_action_test.go
+## Internalize Action Implementation
+
+The `internalize_action.rs` module allows a wallet to take ownership of outputs in external transactions:
+
+### Core Function
+```rust
+pub async fn internalize_action_internal(
+    storage: &StorageSqlx,
+    user_id: i64,
+    args: InternalizeActionArgs,
+) -> Result<StorageInternalizeActionResult>
+```
+
+### Protocols
+| Protocol | Description |
+|----------|-------------|
+| `wallet payment` | Adds output to wallet's change balance in "default" basket |
+| `basket insertion` | Custom output in specified basket, no balance effect |
+
+### Functionality
+| Feature | Description |
+|---------|-------------|
+| AtomicBEEF parsing | Parses and validates BEEF format with atomic_txid |
+| Output extraction | Extracts satoshis and locking scripts from transaction |
+| Merge support | Updates existing transaction if txid already exists |
+| Status validation | Only completed/unproven/nosend transactions can be merged |
+| Balance tracking | Calculates net satoshi changes for balance updates |
+| Label support | Adds labels to transaction during internalization |
+| Tag support | Adds tags to outputs for basket insertions |
+| ProvenTxReq creation | Creates proof request if transaction lacks proof |
+
+### Merge Behavior
+| Scenario | Balance Change |
+|----------|---------------|
+| New wallet payment | +satoshis |
+| Existing change output → wallet payment | 0 (ignored) |
+| Existing non-change → wallet payment | +satoshis |
+| Change output → basket insertion | -satoshis |
+
+## Sync Implementation
+
+The `sync.rs` module enables multi-storage synchronization:
+
+### Core Functions
+```rust
+pub async fn get_sync_chunk_internal(
+    storage: &StorageSqlx,
+    args: RequestSyncChunkArgs,
+) -> Result<SyncChunk>
+
+pub async fn process_sync_chunk_internal(
+    storage: &StorageSqlx,
+    args: RequestSyncChunkArgs,
+    chunk: SyncChunk,
+) -> Result<ProcessSyncChunkResult>
+```
+
+### Entity Names
+Constants for sync offsets (exported as `entity_names` module):
+- `outputBasket`, `provenTx`, `provenTxReq`, `txLabel`, `outputTag`
+- `transaction`, `output`, `txLabelMap`, `outputTagMap`
+- `certificate`, `certificateField`, `commission`
+
+### get_sync_chunk Features
+| Feature | Description |
+|---------|-------------|
+| Dependency order | Processes entities in foreign key dependency order |
+| Offset-based resumption | Uses offsets to continue from previous chunk |
+| Size limiting | Tracks rough size to stay under `max_rough_size` |
+| Item limiting | Respects `max_items` constraint |
+| Since filtering | Only includes entities updated after `since` timestamp |
+
+### process_sync_chunk Features
+| Feature | Description |
+|---------|-------------|
+| Upsert logic | INSERT if new, UPDATE if chunk.updated_at > local.updated_at |
+| ID translation | Maps source IDs to local IDs for foreign keys |
+| Empty detection | Returns `done: true` when chunk is empty (sync complete) |
+| Change tracking | Counts inserts and updates for progress reporting |
 
 ## Create Action Implementation
 
@@ -160,79 +275,26 @@ pub async fn create_action_internal(
 
 ### BEEF Building (1:1 Parity with Go/TypeScript)
 
-The `build_input_beef` function constructs BEEF (Background Evaluation Extended Format) for transaction inputs with full parity to Go/TypeScript implementations:
-
-| Feature | Description |
-|---------|-------------|
-| User inputBEEF merging | Merges user-provided `input_beef` FIRST before adding storage transactions |
-| Recursive ancestor lookup | Fetches ancestor transactions until reaching proven transactions |
-| knownTxids optimization | Trims transactions to txid-only format for known txids |
-| returnTXIDOnly support | Returns None when `return_txid_only` option is set |
-| Invalid BEEF detection | Returns error for malformed user-provided inputBEEF |
-
-**Signature:**
-```rust
-async fn build_input_beef(
-    storage: &StorageSqlx,
-    extended_inputs: &[ExtendedInput],
-    change_inputs: &[AllocatedChangeInput],
-    user_input_beef: Option<&[u8]>,  // Gap #1: User BEEF merged first
-    known_txids: &[String],           // Gap #2: Trimmed to txid-only
-    return_txid_only: bool,           // Gap #3: Skip BEEF if true
-) -> Result<Option<Vec<u8>>>
-```
-
-**Related Go Tests (all ported):**
-- `TestCreateActionWithProvidedUnknownInput` - inputBEEF merging
-- `TestCreateActionWithKnownTxIDs` - knownTxids trimming
-- `TestCreateActionWithProvidedUnknownInputWithoutInputBEEF` - error case
+The `build_input_beef` function constructs BEEF with full Go/TypeScript parity:
+- User inputBEEF merging (merged first before storage transactions)
+- Recursive ancestor lookup until proven transactions
+- knownTxids trimming to txid-only format
+- returnTXIDOnly support
 
 ### Internal Types
-- `ExtendedInput` - Input with associated output context
-- `ExtendedOutput` - Output with basket/tag metadata
-- `GenerateChangeParams` - Parameters for change output generation
-- `AllocatedChangeInput` - Selected change input for spending
-- `ChangeOutput` - Generated change output details
+`ExtendedInput`, `ExtendedOutput`, `GenerateChangeParams`, `AllocatedChangeInput`, `ChangeOutput`
 
 ## Database Schema
 
 The module creates 16 tables via `migrations/001_initial.sql`:
 
-### Core Tables
-| Table | Purpose |
-|-------|---------|
-| `settings` | Singleton storage configuration |
-| `users` | Wallet users by identity key |
-| `transactions` | Transaction records |
-| `outputs` | UTXOs and spent outputs |
-| `output_baskets` | Output organization containers |
-
-### Proof Tables
-| Table | Purpose |
-|-------|---------|
-| `proven_txs` | Transactions with merkle proofs |
-| `proven_tx_reqs` | Pending proof requests |
-
-### Certificate Tables
-| Table | Purpose |
-|-------|---------|
-| `certificates` | Identity certificates |
-| `certificate_fields` | Certificate field values |
-
-### Labeling Tables
-| Table | Purpose |
-|-------|---------|
-| `tx_labels` | Transaction labels |
-| `tx_labels_map` | Transaction-to-label mapping |
-| `output_tags` | Output tags |
-| `output_tags_map` | Output-to-tag mapping |
-
-### Other Tables
-| Table | Purpose |
-|-------|---------|
-| `commissions` | Transaction commissions |
-| `sync_states` | Multi-storage sync state |
-| `monitor_events` | System monitoring events |
+| Category | Tables |
+|----------|--------|
+| Core | `settings`, `users`, `transactions`, `outputs`, `output_baskets` |
+| Proofs | `proven_txs`, `proven_tx_reqs` |
+| Certificates | `certificates`, `certificate_fields` |
+| Labels/Tags | `tx_labels`, `tx_labels_map`, `output_tags`, `output_tags_map` |
+| Other | `commissions`, `sync_states`, `monitor_events` |
 
 ## Usage
 
@@ -240,141 +302,47 @@ The module creates 16 tables via `migrations/001_initial.sql`:
 ```rust
 use bsv_wallet_toolbox::storage::sqlx::StorageSqlx;
 
-// File-based storage
-let storage = StorageSqlx::open("wallet.db").await?;
-
-// Run migrations (creates tables)
+let storage = StorageSqlx::open("wallet.db").await?;  // or in_memory()
 storage.migrate("my-wallet", &storage_identity_key).await?;
-
-// Make storage operational
-let settings = storage.make_available().await?;
-
-// Storage is now ready for use
-assert!(storage.is_available());
-```
-
-### Testing with In-Memory Database
-```rust
-let storage = StorageSqlx::in_memory().await?;
-storage.migrate("test", "00000...").await?;
 storage.make_available().await?;
 
-// Use storage...
-
-// Cleanup (optional - memory is freed on drop)
-storage.destroy().await?;
-```
-
-### User Management
-```rust
 let identity_key = "03abc..."; // 66-char hex public key
-
-// Find or create user
 let (user, is_new) = storage.find_or_insert_user(&identity_key).await?;
-
-// User gets a default basket automatically
-```
-
-### Querying Outputs
-```rust
-use bsv_wallet_toolbox::storage::traits::{AuthId, FindOutputsArgs};
-
 let auth = AuthId::with_user_id(&identity_key, user.user_id);
-
-// Find all spendable outputs
-let args = FindOutputsArgs {
-    tx_status: Some(vec![TransactionStatus::Completed]),
-    ..Default::default()
-};
-
-let outputs = storage.find_outputs(&auth, args).await?;
 ```
 
-### Listing Actions (Transactions)
+### Transaction Operations
 ```rust
-use bsv_sdk::wallet::ListActionsArgs;
-
-let result = storage.list_actions(&auth, ListActionsArgs {
-    labels: vec!["payment".to_string()],
-    include_labels: Some(true),
-    include_inputs: Some(true),
-    include_outputs: Some(true),
-    limit: Some(10),
-    offset: Some(0),
-    ..Default::default()
-}).await?;
-
-// Access transactions with full details
-for action in result.actions {
-    println!("Tx: {} satoshis", action.satoshis);
-}
-```
-
-### Listing Outputs
-```rust
-use bsv_sdk::wallet::ListOutputsArgs;
-
-let result = storage.list_outputs(&auth, ListOutputsArgs {
-    basket: "default".to_string(),
-    tags: Some(vec!["payment".to_string()]),
-    include_tags: Some(true),
-    include_locking_scripts: Some(true),
-    limit: Some(10),
-    ..Default::default()
-}).await?;
-```
-
-### Certificate Operations
-```rust
-// Insert certificate
-let cert_id = storage.insert_certificate(&auth, certificate).await?;
-
-// Find certificates by certifier
-let args = FindCertificatesArgs {
-    certifiers: Some(vec!["03certifier_key...".to_string()]),
-    ..Default::default()
-};
-let certs = storage.find_certificates(&auth, args).await?;
-
-// Soft-delete certificate
-storage.relinquish_certificate(&auth, RelinquishCertificateArgs {
-    certificate_type: "...",
-    certifier: "...",
-    serial_number: "...",
-}).await?;
-```
-
-### Creating Transactions
-```rust
-use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput};
-
+// Create transaction
 let result = storage.create_action(&auth, CreateActionArgs {
     description: "Send payment".to_string(),
-    outputs: Some(vec![CreateActionOutput {
-        locking_script: recipient_script,
-        satoshis: 10000,
-        output_description: "Payment to recipient".to_string(),
-        basket: Some("payments".to_string()),
-        tags: Some(vec!["outgoing".to_string()]),
-        ..Default::default()
-    }]),
+    outputs: Some(vec![CreateActionOutput { ... }]),
     labels: Some(vec!["payment".to_string()]),
     ..Default::default()
 }).await?;
 
-// Result contains inputs, outputs, and derivation info for signing
+// Abort pending transaction
+storage.abort_action(&auth, AbortActionArgs { reference: "ref".to_string() }).await?;
+
+// Internalize external transaction
+storage.internalize_action(&auth, InternalizeActionArgs { tx: beef_bytes, ... }).await?;
+```
+
+### Query Operations
+```rust
+// List transactions
+let actions = storage.list_actions(&auth, ListActionsArgs { labels: vec![], ... }).await?;
+
+// List outputs
+let outputs = storage.list_outputs(&auth, ListOutputsArgs { basket: "default".to_string(), ... }).await?;
+
+// Find certificates
+let certs = storage.find_certificates(&auth, FindCertificatesArgs { ... }).await?;
 ```
 
 ## Feature Flags
 
-This module is conditionally compiled:
-
-```toml
-[features]
-default = ["sqlite"]
-sqlite = ["sqlx/sqlite"]
-mysql = ["sqlx/mysql"]  # Planned, not yet implemented
-```
+Feature `sqlite` (default) enables SQLite support. MySQL (`mysql`) is planned but not yet implemented.
 
 ## Implementation Notes
 
@@ -390,109 +358,29 @@ Settings are loaded once via `make_available()` and cached in an `RwLock`. The `
 ### Unsafe Pointer Casts
 The trait signatures require `&self` returns but internal state uses `RwLock`. The implementation uses controlled unsafe pointer casts (`storage_sqlx.rs:895`, `storage_sqlx.rs:2134-2140`) as a workaround. This is safe because settings don't change after `make_available()`.
 
-### Stub Methods
-Several methods return placeholder results marked with `// TODO`:
-- `abort_action()` - Returns `{ aborted: false }`
-- `internalize_action()` - Returns error
-- `get_sync_chunk()`, `process_sync_chunk()` - Return minimal defaults
-
 ### Fully Implemented Methods
 - `list_actions()` - Full support for labels, inputs, outputs, pagination
 - `list_certificates()` - Full support for filters, fields, keyring
 - `list_outputs()` - Full support for baskets, tags, locking scripts
 - `create_action()` - Full transaction creation via `create_action.rs`
-- `process_action()` - Full signed transaction processing via `process_action.rs` (1:1 parity with Go/TypeScript)
+- `process_action()` - Signed transaction processing via `process_action.rs` (1:1 parity with Go/TypeScript)
+- `abort_action()` - Full abort implementation via `abort_action.rs`
+- `internalize_action()` - Full external transaction internalization via `internalize_action.rs`
+- `get_sync_chunk()` - Full sync chunk retrieval via `sync.rs`
+- `process_sync_chunk()` - Full sync chunk processing with upsert logic via `sync.rs`
 
 ## Tests
 
-### process_action.rs Tests (`process_action.rs:538-1250`)
-```rust
-// Unit tests
-#[test] fn test_compute_txid()                    // Double SHA256 txid computation
-#[test] fn test_validate_txid_matches_raw_tx_*()  // txid validation (success/failure)
-#[test] fn test_read_var_int_*()                  // VarInt parsing
-#[test] fn test_parse_tx_script_offsets_*()       // Script offset extraction
-#[test] fn test_validate_process_action_args_*()  // Args validation (all cases)
-#[test] fn test_determine_statuses_*()            // Status determination (4 modes)
-#[test] fn test_generate_batch_id()               // Batch ID generation
+Total: ~130 tests across all modules.
 
-// Integration tests (match Go tests)
-#[tokio::test] async fn test_process_action_missing_reference()           // Reference not found
-#[tokio::test] async fn test_process_action_invalid_txid()                // txid mismatch
-#[tokio::test] async fn test_process_action_with_nosend()                 // NoSend mode
-#[tokio::test] async fn test_process_action_with_delayed()                // Delayed mode
-#[tokio::test] async fn test_process_action_immediate_broadcast()         // Immediate mode
-#[tokio::test] async fn test_process_action_verify_tx_updated()           // DB verification
-#[tokio::test] async fn test_process_action_verify_proven_tx_req_created()// ProvenTxReq creation
-#[tokio::test] async fn test_process_action_already_processed()           // Status error
-#[tokio::test] async fn test_process_action_twice_with_is_new_tx_false()  // Re-broadcast
-#[tokio::test] async fn test_process_action_is_new_tx_false_for_unstored()// Unknown tx
-#[tokio::test] async fn test_process_action_missing_input_beef()          // inputBEEF check
-#[tokio::test] async fn test_process_action_not_outgoing()                // isOutgoing check
-#[tokio::test] async fn test_process_action_with_send_with_batch()        // Batch creation
-#[tokio::test] async fn test_process_action_send_with_overrides_no_send() // SendWith priority
-#[tokio::test] async fn test_process_action_locking_script_mismatch()     // Script validation
-#[tokio::test] async fn test_process_action_outputs_updated_with_offsets()// Output updates
-#[tokio::test] async fn test_process_action_proven_tx_req_status_modes()  // All status modes
-```
-
-### storage_sqlx.rs Tests (`storage_sqlx.rs:2144-2673`)
-```rust
-#[tokio::test]
-async fn test_in_memory_storage()           // Migration and availability
-async fn test_find_or_insert_user()         // User creation and lookup
-async fn test_find_outputs()                // Output querying
-async fn test_list_actions_empty()          // Empty action list
-async fn test_list_actions_with_data()      // Action listing with data
-async fn test_list_actions_with_labels()    // Label filtering
-async fn test_list_outputs_empty()          // Empty output list
-async fn test_list_outputs_nonexistent_basket() // Missing basket handling
-async fn test_list_certificates_empty()     // Empty certificate list
-async fn test_list_certificates_with_data() // Certificate with fields
-async fn test_list_certificates_with_filters() // Certifier/type filtering
-```
-
-### create_action.rs Tests (`create_action.rs:1371-2900+`)
-```rust
-#[test]
-fn test_var_int_size()                      // VarInt encoding sizes
-fn test_calculate_transaction_size()        // TX size calculation
-fn test_random_derivation()                 // Random derivation paths
-fn test_validate_description_too_short()    // Description validation
-fn test_validate_description_too_long()     // Description validation
-fn test_validate_description_valid()        // Description validation
-fn test_validate_empty_label()              // Label validation
-fn test_validate_label_too_long()           // Label validation
-fn test_validate_output_empty_locking_script() // Output validation
-fn test_validate_output_satoshis_too_high() // Satoshi limits
-fn test_validate_output_description_too_short() // Output description
-fn test_validate_output_empty_basket()      // Basket validation
-fn test_validate_output_empty_tag()         // Tag validation
-fn test_validate_valid_output()             // Valid output case
-fn test_validate_max_possible_satoshis()    // Sentinel value
-fn test_validate_input_missing_unlocking_script() // Input validation
-fn test_validate_input_unlocking_script_length_mismatch() // Length check
-fn test_validate_duplicate_input_outpoints() // Duplicate detection
-
-#[tokio::test]
-async fn test_create_action_basic()         // Basic creation (insufficient funds)
-async fn test_create_action_with_labels()   // Labels support
-async fn test_create_action_with_tags_and_basket() // Tags and baskets
-async fn test_create_action_no_send()       // NoSend mode
-async fn test_create_action_multiple_outputs() // Multiple outputs
-async fn test_create_action_with_version_and_locktime() // Version/locktime
-
-// BEEF building tests (Gap #1, #2, #3 parity with Go)
-async fn test_build_input_beef_empty()              // Empty inputs
-async fn test_build_input_beef_with_proven_tx()     // Proven transaction
-async fn test_build_input_beef_with_unproven_tx()   // Unproven transaction
-async fn test_build_input_beef_deduplicates_txids() // Dedupe handling
-async fn test_build_input_beef_recursive_ancestor() // Ancestor chain
-async fn test_build_input_beef_return_txid_only()   // Gap #3: returnTXIDOnly
-async fn test_build_input_beef_with_known_txids()   // Gap #2: knownTxids trim
-async fn test_build_input_beef_with_user_input_beef() // Gap #1: inputBEEF merge
-async fn test_build_input_beef_user_beef_invalid()  // Gap #1: invalid inputBEEF
-```
+| Module | Tests | Key Coverage |
+|--------|-------|--------------|
+| `abort_action.rs` | 19 | Status validation, UTXO release, lookup by txid |
+| `process_action.rs` | 35 | txid computation, VarInt parsing, script offsets, Go test parity |
+| `internalize_action.rs` | 11 | Wallet payment, basket insertion, merge scenarios |
+| `sync.rs` | 9 | Chunk retrieval, upsert logic, ID translation, roundtrip |
+| `storage_sqlx.rs` | 11 | CRUD operations, list methods, certificate filters |
+| `create_action.rs` | 45 | Validation, fee calculation, BEEF building, Go test parity |
 
 Run with:
 ```bash

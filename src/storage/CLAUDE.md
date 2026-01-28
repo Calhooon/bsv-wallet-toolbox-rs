@@ -261,6 +261,7 @@ pub enum TransactionStatus {
     NoSend,       // Intentionally not broadcast
     NonFinal,     // Has future nLockTime
     Failed,       // Failed to process
+    Unfail,       // Marked for retry after failure
 }
 
 pub enum ProvenTxReqStatus {
