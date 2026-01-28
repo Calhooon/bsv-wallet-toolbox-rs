@@ -81,7 +81,7 @@ where
             let txid = &req.txid;
 
             // Try to get merkle path from services
-            match self.services.get_merkle_path(txid).await {
+            match self.services.get_merkle_path(txid, false).await {
                 Ok(merkle_result) => {
                     if merkle_result.merkle_path.is_some() {
                         // We have a proof - the storage layer should update the status

@@ -8,8 +8,78 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use bsv_sdk::transaction::ChainTracker;
+use bsv_sdk::transaction::{ChainTracker, Transaction};
 use crate::{Error, Result};
+
+// =============================================================================
+// nLockTime Input Types
+// =============================================================================
+
+/// Pre-extracted data for nLockTime finality check.
+///
+/// This struct contains the minimal data needed to check transaction finality,
+/// extracted from a Transaction before the async call. This avoids Send/Sync
+/// issues with Transaction's RefCell fields.
+///
+/// Use the `From` implementations to create this from various transaction formats.
+#[derive(Debug, Clone)]
+pub struct NLockTimeInput {
+    /// The nLockTime value from the transaction.
+    pub lock_time: u32,
+    /// Whether all inputs have sequence == 0xFFFFFFFF (max sequence).
+    /// If true, the transaction is immediately final regardless of nLockTime.
+    pub all_sequences_final: bool,
+}
+
+impl NLockTimeInput {
+    /// Create from a raw nLockTime value only.
+    ///
+    /// Since we don't have sequence information, `all_sequences_final` is set to false
+    /// and finality will be determined solely by the lock_time value.
+    pub fn from_lock_time(lock_time: u32) -> Self {
+        Self {
+            lock_time,
+            all_sequences_final: false,
+        }
+    }
+
+    /// Create from a Transaction reference.
+    ///
+    /// Extracts nLockTime and checks if all inputs have final sequences.
+    pub fn from_transaction(tx: &Transaction) -> Self {
+        const MAX_SEQUENCE: u32 = 0xFFFFFFFF;
+        Self {
+            lock_time: tx.lock_time,
+            all_sequences_final: tx.inputs.iter().all(|i| i.sequence == MAX_SEQUENCE),
+        }
+    }
+
+    /// Create from raw transaction bytes.
+    ///
+    /// Parses the transaction and extracts nLockTime and sequence info.
+    ///
+    /// # Errors
+    /// Returns an error if the bytes cannot be parsed as a valid transaction.
+    pub fn from_raw_tx(bytes: &[u8]) -> crate::Result<Self> {
+        let tx = Transaction::from_binary(bytes).map_err(|e| {
+            crate::Error::InvalidArgument(format!("Failed to parse transaction bytes: {}", e))
+        })?;
+        Ok(Self::from_transaction(&tx))
+    }
+
+    /// Create from a hex-encoded transaction string.
+    ///
+    /// Decodes the hex and parses the transaction.
+    ///
+    /// # Errors
+    /// Returns an error if the hex is invalid or cannot be parsed as a transaction.
+    pub fn from_hex_tx(hex: &str) -> crate::Result<Self> {
+        let bytes = hex::decode(hex).map_err(|e| {
+            crate::Error::InvalidArgument(format!("Invalid hex transaction: {}", e))
+        })?;
+        Self::from_raw_tx(&bytes)
+    }
+}
 
 /// Main trait for wallet service operations.
 ///
@@ -34,30 +104,70 @@ pub trait WalletServices: Send + Sync {
     async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader>;
 
     /// Get raw transaction bytes by txid.
-    async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult>;
+    ///
+    /// # Arguments
+    /// * `txid` - Transaction hash for which raw transaction bytes are requested
+    /// * `use_next` - If true, skip to next service before starting service requests cycle
+    async fn get_raw_tx(&self, txid: &str, use_next: bool) -> Result<GetRawTxResult>;
 
     /// Get merkle path proof for a transaction.
-    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult>;
+    ///
+    /// # Arguments
+    /// * `txid` - Transaction hash for which proof is requested
+    /// * `use_next` - If true, skip to next service before starting service requests cycle
+    async fn get_merkle_path(&self, txid: &str, use_next: bool) -> Result<GetMerklePathResult>;
 
     /// Post BEEF transaction to miners.
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>>;
 
     /// Get UTXO status for a script hash.
+    ///
+    /// # Arguments
+    /// * `output` - Script hash or output to check
+    /// * `output_format` - Format of the output parameter
+    /// * `outpoint` - Optional specific outpoint (txid.vout)
+    /// * `use_next` - If true, skip to next service before starting service requests cycle
     async fn get_utxo_status(
         &self,
         output: &str,
         output_format: Option<GetUtxoStatusOutputFormat>,
         outpoint: Option<&str>,
+        use_next: bool,
     ) -> Result<GetUtxoStatusResult>;
 
     /// Get status for multiple transaction IDs.
-    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult>;
+    ///
+    /// # Arguments
+    /// * `txids` - List of transaction IDs to check
+    /// * `use_next` - If true, skip to next service before starting service requests cycle
+    async fn get_status_for_txids(&self, txids: &[String], use_next: bool) -> Result<GetStatusForTxidsResult>;
 
     /// Get transaction history for a script hash.
-    async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult>;
+    ///
+    /// # Arguments
+    /// * `hash` - Script hash to get history for
+    /// * `use_next` - If true, skip to next service before starting service requests cycle
+    async fn get_script_hash_history(&self, hash: &str, use_next: bool) -> Result<GetScriptHashHistoryResult>;
 
     /// Get BSV/USD exchange rate.
     async fn get_bsv_exchange_rate(&self) -> Result<f64>;
+
+    /// Get fiat exchange rate between currencies.
+    ///
+    /// Returns the exchange rate of `currency` per `base`.
+    /// If `base` is not specified, USD is used as the base.
+    ///
+    /// # Arguments
+    /// * `currency` - Target currency (USD, GBP, or EUR)
+    /// * `base` - Base currency (defaults to USD if None)
+    ///
+    /// # Returns
+    /// The exchange rate (units of currency per unit of base), or 0.0 if rate not available.
+    async fn get_fiat_exchange_rate(
+        &self,
+        currency: FiatCurrency,
+        base: Option<FiatCurrency>,
+    ) -> Result<f64>;
 
     /// Hash an output script to the format expected by getUtxoStatus.
     fn hash_output_script(&self, script: &[u8]) -> String;
@@ -65,8 +175,56 @@ pub trait WalletServices: Send + Sync {
     /// Check if a specific output is a UTXO.
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool>;
 
-    /// Check if nLockTime is final.
+    /// Check if nLockTime is final (raw nLockTime value).
+    ///
+    /// This is the simple version that accepts just the raw u32 nLockTime value.
+    /// For Transaction objects or raw bytes, use `n_lock_time_is_final_for_tx`.
+    ///
+    /// # Arguments
+    /// * `n_lock_time` - The raw nLockTime value from a transaction
+    ///
+    /// # Returns
+    /// * `true` if the nLockTime allows the transaction to be mined now
+    /// * `false` if the transaction is locked until a future time/block
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool>;
+
+    /// Check if a transaction's nLockTime is final.
+    ///
+    /// This extended version uses pre-extracted data that includes both the
+    /// nLockTime value and sequence information for BIP 68 finality checks.
+    ///
+    /// Use `NLockTimeInput::from_transaction()`, `NLockTimeInput::from_raw_tx()`,
+    /// or `NLockTimeInput::from_hex_tx()` to create the input from various formats.
+    ///
+    /// # Arguments
+    /// * `input` - Pre-extracted nLockTime data (see `NLockTimeInput`)
+    ///
+    /// # Returns
+    /// * `true` if the transaction can be mined now (final)
+    /// * `false` if the transaction is time-locked
+    ///
+    /// # Finality Rules
+    /// 1. If all inputs have sequence = 0xFFFFFFFF, transaction is immediately final
+    /// 2. If nLockTime >= 500,000,000: it's a Unix timestamp, final if in the past
+    /// 3. If nLockTime < 500,000,000: it's a block height, final if current height > nLockTime
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use bsv_wallet_toolbox::services::{NLockTimeInput, WalletServices};
+    ///
+    /// // From a Transaction
+    /// let input = NLockTimeInput::from_transaction(&tx);
+    /// let is_final = services.n_lock_time_is_final_for_tx(input).await?;
+    ///
+    /// // From raw bytes
+    /// let input = NLockTimeInput::from_raw_tx(&raw_tx_bytes)?;
+    /// let is_final = services.n_lock_time_is_final_for_tx(input).await?;
+    ///
+    /// // From hex
+    /// let input = NLockTimeInput::from_hex_tx("0100000001...")?;
+    /// let is_final = services.n_lock_time_is_final_for_tx(input).await?;
+    /// ```
+    async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool>;
 
     /// Get BEEF for a transaction, building it from raw tx and merkle path.
     ///
@@ -487,6 +645,114 @@ impl BsvExchangeRate {
     pub fn is_stale(&self, max_age_msecs: u64) -> bool {
         let age = Utc::now() - self.timestamp;
         age.num_milliseconds() as u64 > max_age_msecs
+    }
+}
+
+// =============================================================================
+// Fiat Currency Types
+// =============================================================================
+
+/// Supported fiat currencies for exchange rate conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FiatCurrency {
+    /// US Dollar
+    USD,
+    /// British Pound
+    GBP,
+    /// Euro
+    EUR,
+}
+
+impl FiatCurrency {
+    /// Parse a currency string (case-insensitive).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "USD" => Some(FiatCurrency::USD),
+            "GBP" => Some(FiatCurrency::GBP),
+            "EUR" => Some(FiatCurrency::EUR),
+            _ => None,
+        }
+    }
+
+    /// Get the currency code as a string.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FiatCurrency::USD => "USD",
+            FiatCurrency::GBP => "GBP",
+            FiatCurrency::EUR => "EUR",
+        }
+    }
+}
+
+impl std::fmt::Display for FiatCurrency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for FiatCurrency {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        FiatCurrency::parse(s).ok_or_else(|| format!("Invalid currency: {}", s))
+    }
+}
+
+/// Fiat exchange rates with USD as base.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FiatExchangeRates {
+    /// When these rates were fetched.
+    pub timestamp: DateTime<Utc>,
+
+    /// Base currency (always USD).
+    pub base: FiatCurrency,
+
+    /// Exchange rates (currency per base unit).
+    pub rates: HashMap<FiatCurrency, f64>,
+}
+
+impl Default for FiatExchangeRates {
+    fn default() -> Self {
+        let mut rates = HashMap::new();
+        rates.insert(FiatCurrency::USD, 1.0);
+        rates.insert(FiatCurrency::EUR, 0.85);
+        rates.insert(FiatCurrency::GBP, 0.79);
+
+        Self {
+            timestamp: Utc::now(),
+            base: FiatCurrency::USD,
+            rates,
+        }
+    }
+}
+
+impl FiatExchangeRates {
+    /// Create new fiat exchange rates.
+    pub fn new(rates: HashMap<FiatCurrency, f64>) -> Self {
+        Self {
+            timestamp: Utc::now(),
+            base: FiatCurrency::USD,
+            rates,
+        }
+    }
+
+    /// Check if the rates are stale (older than the given milliseconds).
+    pub fn is_stale(&self, max_age_msecs: u64) -> bool {
+        let age = Utc::now() - self.timestamp;
+        age.num_milliseconds() as u64 > max_age_msecs
+    }
+
+    /// Get the exchange rate from one currency to another.
+    /// Returns currency units per base unit.
+    pub fn get_rate(&self, currency: FiatCurrency, base: Option<FiatCurrency>) -> Option<f64> {
+        let base = base.unwrap_or(FiatCurrency::USD);
+
+        // Get both rates relative to USD (our internal base)
+        let currency_rate = self.rates.get(&currency)?;
+        let base_rate = self.rates.get(&base)?;
+
+        // Convert: currency per base = (currency/USD) / (base/USD)
+        Some(currency_rate / base_rate)
     }
 }
 

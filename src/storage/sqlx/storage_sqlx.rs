@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
+use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
@@ -39,7 +40,13 @@ pub struct StorageSqlx {
     storage_name: std::sync::RwLock<String>,
     /// Optional ChainTracker for BEEF verification.
     /// When set, create_action will verify BEEF merkle roots against the chain.
+    /// Note: Prefer using `services` for full functionality. This is kept for
+    /// backward compatibility and cases where only ChainTracker is needed.
     chain_tracker: RwLock<Option<Arc<dyn ChainTracker>>>,
+    /// Optional WalletServices for blockchain operations.
+    /// When set, storage can perform BEEF verification, broadcast transactions,
+    /// validate UTXOs, and look up block headers.
+    services: std::sync::RwLock<Option<Arc<dyn WalletServices>>>,
 }
 
 impl StorageSqlx {
@@ -63,6 +70,7 @@ impl StorageSqlx {
             storage_identity_key: std::sync::RwLock::new(String::new()),
             storage_name: std::sync::RwLock::new(String::new()),
             chain_tracker: RwLock::new(None),
+            services: std::sync::RwLock::new(None),
         })
     }
 
@@ -933,6 +941,13 @@ impl WalletStorageReader for StorageSqlx {
         } else {
             DEFAULT_SETTINGS.get_or_init(TableSettings::default)
         }
+    }
+
+    fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
+        let guard = self.services.read().unwrap();
+        guard.clone().ok_or_else(|| {
+            Error::InvalidOperation("Must setServices first. Services are required for blockchain operations.".to_string())
+        })
     }
 
     async fn find_certificates(
@@ -2201,6 +2216,11 @@ impl WalletStorageProvider for StorageSqlx {
         let guard = self.storage_name.read().unwrap();
         unsafe { &*(&*guard as *const String) }
     }
+
+    fn set_services(&self, services: Arc<dyn WalletServices>) {
+        let mut guard = self.services.write().unwrap();
+        *guard = Some(services);
+    }
 }
 
 // =============================================================================
@@ -3299,5 +3319,88 @@ mod tests {
         // Verify event still exists
         let events = storage.get_monitor_events(10, None).await.unwrap();
         assert_eq!(events.len(), 1);
+    }
+
+    // =============================================================================
+    // Services Integration Tests
+    // =============================================================================
+
+    #[tokio::test]
+    async fn test_get_services_without_set_returns_error() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // get_services without set_services should return error
+        let result = storage.get_services();
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidOperation(msg)) => {
+                assert!(msg.contains("setServices"), "Error message should mention setServices: {}", msg);
+            }
+            Err(e) => panic!("Expected InvalidOperation error, got: {}", e),
+            Ok(_) => panic!("Expected error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_and_get_services() {
+        use crate::services::{Services, Chain};
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // Create a services instance
+        let services = Arc::new(Services::new(Chain::Main).unwrap());
+
+        // Set services
+        storage.set_services(services.clone());
+
+        // Get services should now work
+        let retrieved = storage.get_services();
+        assert!(retrieved.is_ok());
+
+        // Verify we can call a method on the retrieved services
+        let retrieved_services = retrieved.unwrap();
+        let script_hash = retrieved_services.hash_output_script(&[0x76, 0xa9]);
+        assert!(!script_hash.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_set_services_replaces_previous() {
+        use crate::services::{Services, Chain};
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // Set first services instance
+        let services1 = Arc::new(Services::new(Chain::Main).unwrap());
+        storage.set_services(services1);
+
+        // Verify first services
+        let retrieved1 = storage.get_services().unwrap();
+        let hash1 = retrieved1.hash_output_script(&[0x76]);
+
+        // Set second services instance (replaces first)
+        let services2 = Arc::new(Services::new(Chain::Test).unwrap());
+        storage.set_services(services2);
+
+        // Get services again - should still work (services were replaced)
+        let retrieved2 = storage.get_services().unwrap();
+        let hash2 = retrieved2.hash_output_script(&[0x76]);
+
+        // Both should produce the same hash (hash_output_script is deterministic)
+        assert_eq!(hash1, hash2);
     }
 }

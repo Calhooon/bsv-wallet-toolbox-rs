@@ -61,7 +61,12 @@ pub mod chaintracks;
 pub mod services;
 pub mod wallet;
 pub mod monitor;
-// pub mod managers;  // TODO: Phase 5
+// NOTE: managers module not yet implemented. Would include:
+//   - WalletStorageManager (multi-storage sync)
+//   - WalletPermissionsManager (BRC-98/99 permissions)
+//   - SimpleWalletManager / CWIStyleWalletManager
+// See MIGRATION_PLAN.md Phase 5 for details
+// pub mod managers;
 
 pub use error::{Error, Result};
 
@@ -100,11 +105,11 @@ pub use chaintracks::{
 // Re-export Services types
 pub use services::{
     Chain, Services, ServicesOptions,
-    WalletServices,
+    WalletServices, NLockTimeInput,
     GetMerklePathResult, GetRawTxResult, PostBeefResult, PostTxResultForTxid,
     GetUtxoStatusResult, GetUtxoStatusOutputFormat, GetStatusForTxidsResult,
     GetScriptHashHistoryResult, ScriptHistoryItem, UtxoDetail, TxStatusDetail,
-    BlockHeader, BsvExchangeRate,
+    BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates,
     ServiceCollection, ServiceCallHistory,
     WhatsOnChain, WhatsOnChainConfig,
     Arc, ArcConfig,

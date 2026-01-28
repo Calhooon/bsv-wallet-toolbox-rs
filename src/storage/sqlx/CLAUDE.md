@@ -10,7 +10,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (3303 lines) |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (3406 lines) |
 | `create_action.rs` | Transaction creation implementation (3296 lines) |
 | `process_action.rs` | Signed transaction processing (1274 lines) |
 | `abort_action.rs` | Transaction abort/cancellation (1249 lines) |
@@ -31,6 +31,7 @@ pub struct StorageSqlx {
     storage_identity_key: std::sync::RwLock<String>,
     storage_name: std::sync::RwLock<String>,
     chain_tracker: RwLock<Option<Arc<dyn ChainTracker>>>,  // For BEEF verification
+    services: std::sync::RwLock<Option<Arc<dyn WalletServices>>>,  // For blockchain operations
 }
 ```
 
@@ -43,6 +44,10 @@ pub struct StorageSqlx {
 - `set_chain_tracker(tracker)` - Set ChainTracker for BEEF verification
 - `clear_chain_tracker()` - Disable BEEF verification
 - `get_chain_tracker()` - Internal: get current ChainTracker if set
+
+**Services methods:**
+- `set_services(services)` - Set WalletServices for blockchain operations (required before operations needing chain access)
+- `get_services()` - Get WalletServices (returns error if not set via `set_services`)
 
 ### `DEFAULT_MAX_OUTPUT_SCRIPT`
 Constant defining maximum script length stored inline (10,000 bytes). Scripts longer than this are retrieved from raw transactions.
@@ -76,6 +81,7 @@ MonitorStorage          - Background monitoring operations
 |--------|-------------|
 | `is_available()` | Check if storage is initialized |
 | `get_settings()` | Get cached settings |
+| `get_services()` | Get WalletServices instance (error if not set) |
 | `find_certificates()` | Query certificates by certifier/type |
 | `find_output_baskets()` | Query output baskets by name |
 | `find_outputs()` | Query outputs with filters |
@@ -92,6 +98,7 @@ MonitorStorage          - Background monitoring operations
 | `destroy()` | Drop all tables |
 | `find_or_insert_user()` | Get or create user by identity key |
 | `insert_certificate()` | Insert new certificate |
+| `insert_certificate_field()` | Insert certificate field with keyring |
 | `relinquish_certificate()` | Soft-delete certificate |
 | `relinquish_output()` | Remove output from basket |
 | `abort_action()` | Abort pending transaction, release locked outputs |
@@ -107,6 +114,13 @@ MonitorStorage          - Background monitoring operations
 | `get_sync_chunk()` | Get data chunk for synchronization |
 | `process_sync_chunk()` | Apply received sync chunk with upsert logic |
 
+### WalletStorageProvider Methods
+| Method | Description |
+|--------|-------------|
+| `storage_identity_key()` | Get storage identity key |
+| `storage_name()` | Get storage name |
+| `set_services()` | Set WalletServices for blockchain operations |
+
 ### MonitorStorage Methods
 | Method | Description |
 |--------|-------------|
@@ -114,6 +128,26 @@ MonitorStorage          - Background monitoring operations
 | `send_waiting_transactions()` | Find unsent transactions ready for broadcast (unsent, sending status) |
 | `abort_abandoned()` | Abort unsigned/unprocessed transactions older than timeout |
 | `un_fail()` | Process transactions marked for unfail retry |
+
+## Commission Tracking
+
+The storage provides commission tracking for monitoring redeemable outputs:
+
+| Method | Description |
+|--------|-------------|
+| `insert_commission(user_id, transaction_id, satoshis, locking_script, key_offset)` | Record a new commission output |
+| `get_unredeemed_commissions(user_id)` | Query all unredeemed commissions for a user |
+| `redeem_commission(commission_id)` | Mark a commission as redeemed |
+
+## Monitor Events
+
+Event logging for background task monitoring and debugging:
+
+| Method | Description |
+|--------|-------------|
+| `log_monitor_event(event, details)` | Record monitor event with optional JSON data |
+| `get_monitor_events(limit, event_filter)` | Query events by type with limit |
+| `cleanup_monitor_events(older_than)` | Remove events older than retention period |
 
 ## Abort Action Implementation
 
@@ -279,6 +313,7 @@ The `create_action.rs` module provides full transaction creation functionality:
 ```rust
 pub async fn create_action_internal(
     storage: &StorageSqlx,
+    chain_tracker: Option<&dyn ChainTracker>,
     user_id: i64,
     args: CreateActionArgs,
 ) -> Result<StorageCreateActionResult>
@@ -323,11 +358,16 @@ The module creates 16 tables via `migrations/001_initial.sql`:
 
 ```rust
 use bsv_wallet_toolbox::storage::sqlx::StorageSqlx;
+use bsv_wallet_toolbox::services::{Services, Chain};
 
 // Setup
 let storage = StorageSqlx::open("wallet.db").await?;  // or in_memory()
 storage.migrate("my-wallet", &storage_identity_key).await?;
 storage.make_available().await?;
+
+// Set services for blockchain operations (required for BEEF verification, broadcasting, etc.)
+let services = Arc::new(Services::new(Chain::Main)?);
+storage.set_services(services);
 
 let identity_key = "03abc..."; // 66-char hex public key
 let (user, is_new) = storage.find_or_insert_user(&identity_key).await?;
@@ -342,6 +382,16 @@ storage.internalize_action(&auth, InternalizeActionArgs { tx: beef_bytes, ... })
 let actions = storage.list_actions(&auth, ListActionsArgs { ... }).await?;
 let outputs = storage.list_outputs(&auth, ListOutputsArgs { basket: "default".to_string(), ... }).await?;
 let certs = storage.find_certificates(&auth, FindCertificatesArgs { ... }).await?;
+
+// Commission tracking
+let commission_id = storage.insert_commission(user.user_id, tx_id, 500, &script, "offset").await?;
+let unredeemed = storage.get_unredeemed_commissions(user.user_id).await?;
+storage.redeem_commission(commission_id).await?;
+
+// Monitor events
+storage.log_monitor_event("sync_started", Some(r#"{"block": 800000}"#)).await?;
+let events = storage.get_monitor_events(100, Some("sync_started")).await?;
+storage.cleanup_monitor_events(Duration::from_secs(86400)).await?;
 ```
 
 ## Feature Flags
@@ -363,17 +413,10 @@ Settings are loaded once via `make_available()` and cached in an `RwLock`. The `
 The trait signatures require `&self` returns but internal state uses `RwLock`. The implementation uses controlled unsafe pointer casts as a workaround. This is safe because settings don't change after `make_available()`.
 
 ### MonitorStorage Integration
-The `MonitorStorage` trait enables background task integration. Full monitor functionality requires services access, handled externally by monitor tasks.
+The `MonitorStorage` trait enables background task integration. Full monitor functionality requires services access, handled by setting services via `set_services()`.
 
-### Commission Tracking
-- `insert_commission(user_id, transaction_id, satoshis, locking_script, key_offset)` - Record commission
-- `get_unredeemed_commissions(user_id)` - Query unredeemed commissions
-- `redeem_commission(commission_id)` - Mark commission as redeemed
-
-### Monitor Events
-- `log_monitor_event(event, details)` - Record monitor event with optional JSON data
-- `get_monitor_events(event_type, limit)` - Query events by type with limit
-- `cleanup_monitor_events(older_than)` - Remove events older than retention period
+### Services Dependency
+Operations requiring blockchain access (BEEF verification, broadcasting, header lookups) require `WalletServices` to be set via `set_services()`. Calling `get_services()` before setting returns an error.
 
 ## Tests
 
@@ -384,7 +427,7 @@ Total: 142 tests across all modules.
 | `create_action.rs` | 45 | Validation, fee calculation, BEEF building, Go test parity |
 | `process_action.rs` | 35 | txid computation, VarInt parsing, script offsets, Go test parity |
 | `abort_action.rs` | 19 | Status validation, UTXO release, lookup by txid |
-| `storage_sqlx.rs` | 19 | CRUD operations, list methods, certificate filters, monitor ops |
+| `storage_sqlx.rs` | 19 | CRUD operations, list methods, certificate filters, monitor ops, services integration |
 | `internalize_action.rs` | 11 | Wallet payment, basket insertion, merge scenarios |
 | `sync.rs` | 9 | Chunk retrieval, upsert logic, ID translation, roundtrip |
 | `beef_verification.rs` | 4 | Verification modes, empty BEEF handling, mode serialization |

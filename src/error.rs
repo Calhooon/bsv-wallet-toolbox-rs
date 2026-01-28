@@ -80,6 +80,9 @@ pub enum Error {
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
     // ===================
     // Sync errors
     // ===================

@@ -807,3 +807,111 @@ async fn test_services_n_lock_time_finality_integration() {
     assert!(result.is_ok());
     assert!(!result.unwrap()); // 2033 is in the future
 }
+
+// =============================================================================
+// NLockTimeInput Tests
+// =============================================================================
+
+#[test]
+fn test_n_lock_time_input_from_lock_time() {
+    use bsv_wallet_toolbox::services::NLockTimeInput;
+
+    let input = NLockTimeInput::from_lock_time(500);
+    assert_eq!(input.lock_time, 500);
+    assert!(!input.all_sequences_final); // Can't know sequences from just locktime
+}
+
+#[test]
+fn test_n_lock_time_input_from_raw_tx_max_sequence() {
+    use bsv_wallet_toolbox::services::NLockTimeInput;
+
+    // Real BSV transaction from mainnet (txid: ecb7b03ba0d8696548f4479508a69b6d1dedd878b91a54fcdd3752e98dc1bc2b)
+    // Has sequence 0xFFFFFFFF (max) and locktime 0
+    let raw_hex = "0100000001f12a690c788e61163f8404d8eace6483b837a7abd67b5ad7428dc8c07ee04f3c080000006b483045022100ed7b3b0ab8cb689e4cb884b647fb3820ad44a62a36210a4569b22484b3974c5b0220094c682cba5a9c649f0fd0b630a68fca8dd57c8f8b8304f1bf255e0f5a7b730a4121025a1db26875991c9678d1407a0414e15db323e30c69a331729bae1bb99dfef12affffffff0108030000000000001976a9148d4d91d5f0e47cdb44634af89b36a9b5332f6cfb88ac00000000";
+    let result = NLockTimeInput::from_hex_tx(raw_hex);
+    assert!(result.is_ok(), "Failed to parse transaction: {:?}", result.err());
+    let input = result.unwrap();
+    assert_eq!(input.lock_time, 0);
+    assert!(input.all_sequences_final); // All inputs have max sequence (0xFFFFFFFF)
+}
+
+#[test]
+fn test_n_lock_time_input_from_raw_tx_non_max_sequence() {
+    use bsv_wallet_toolbox::services::NLockTimeInput;
+
+    // Same real transaction but with modified sequence (0xFFFFFFFE) and locktime (100)
+    // Original: ecb7b03ba0d8696548f4479508a69b6d1dedd878b91a54fcdd3752e98dc1bc2b
+    // Changed: ffffffff -> feffffff (sequence), 00000000 -> 64000000 (locktime=100)
+    let raw_hex = "0100000001f12a690c788e61163f8404d8eace6483b837a7abd67b5ad7428dc8c07ee04f3c080000006b483045022100ed7b3b0ab8cb689e4cb884b647fb3820ad44a62a36210a4569b22484b3974c5b0220094c682cba5a9c649f0fd0b630a68fca8dd57c8f8b8304f1bf255e0f5a7b730a4121025a1db26875991c9678d1407a0414e15db323e30c69a331729bae1bb99dfef12afeffffff0108030000000000001976a9148d4d91d5f0e47cdb44634af89b36a9b5332f6cfb88ac64000000";
+    let result = NLockTimeInput::from_hex_tx(raw_hex);
+    assert!(result.is_ok(), "Failed to parse transaction: {:?}", result.err());
+    let input = result.unwrap();
+    assert_eq!(input.lock_time, 100);
+    assert!(!input.all_sequences_final); // Not all inputs have max sequence (0xFFFFFFFE)
+}
+
+#[test]
+fn test_n_lock_time_input_from_hex_invalid() {
+    use bsv_wallet_toolbox::services::NLockTimeInput;
+
+    // Invalid hex should error
+    let result = NLockTimeInput::from_hex_tx("not_valid_hex!");
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_n_lock_time_is_final_for_tx_with_final_sequences() {
+    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox::services::traits::WalletServices;
+
+    let services = Services::mainnet().unwrap();
+
+    // Create NLockTimeInput with max sequence (all_sequences_final = true)
+    // This simulates a transaction where all inputs have max sequence
+    let input = NLockTimeInput {
+        lock_time: 2000000000, // Far future timestamp (~2033)
+        all_sequences_final: true, // All inputs have max sequence
+    };
+
+    let result = services.n_lock_time_is_final_for_tx(input).await;
+    assert!(result.is_ok());
+    assert!(result.unwrap()); // Should be final because all sequences are max
+}
+
+#[tokio::test]
+async fn test_n_lock_time_is_final_for_tx_with_non_final_sequences() {
+    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox::services::traits::WalletServices;
+
+    let services = Services::mainnet().unwrap();
+
+    // Create NLockTimeInput with non-max sequence (all_sequences_final = false)
+    let input = NLockTimeInput {
+        lock_time: 2000000000, // Far future timestamp (~2033)
+        all_sequences_final: false, // Not all inputs have max sequence
+    };
+
+    let result = services.n_lock_time_is_final_for_tx(input).await;
+    assert!(result.is_ok());
+    assert!(!result.unwrap()); // Should NOT be final - future locktime with non-max sequence
+}
+
+#[tokio::test]
+async fn test_n_lock_time_is_final_for_tx_from_raw_locktime() {
+    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox::services::traits::WalletServices;
+
+    let services = Services::mainnet().unwrap();
+
+    // Past locktime (block height)
+    let input = NLockTimeInput::from_lock_time(100);
+    let result = services.n_lock_time_is_final_for_tx(input).await;
+    assert!(result.is_ok());
+    assert!(result.unwrap()); // Block 100 is long past
+
+    // Future locktime (timestamp)
+    let input = NLockTimeInput::from_lock_time(2000000000);
+    let result = services.n_lock_time_is_final_for_tx(input).await;
+    assert!(result.is_ok());
+    assert!(!result.unwrap()); // 2033 is in the future
+}

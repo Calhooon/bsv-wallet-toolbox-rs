@@ -29,15 +29,15 @@ The services module provides a unified interface for interacting with BSV blockc
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module root with re-exports, `ServicesOptions` configuration, and `Chain` re-export from chaintracks |
-| `traits.rs` | `WalletServices` trait definition and all result types (`GetRawTxResult`, `PostBeefResult`, `GetBeefResult`, etc.) |
+| `mod.rs` | Module root with re-exports, `ServicesOptions` configuration, fiat currency types, and `Chain` re-export from chaintracks |
+| `traits.rs` | `WalletServices` trait definition, `NLockTimeInput` type, and all result types (`GetRawTxResult`, `PostBeefResult`, `GetBeefResult`, etc.) |
 | `services.rs` | `Services` struct implementing `WalletServices` with multi-provider orchestration |
 | `collection.rs` | `ServiceCollection<S>` generic failover container with call history tracking |
 | `providers/` | Individual provider implementations (WhatsOnChain, ARC, Bitails) |
 
 ## Key Types
 
-### Services (services.rs:48)
+### Services (services.rs:49)
 
 Main orchestrator coordinating all blockchain operations:
 
@@ -51,6 +51,7 @@ pub struct Services {
     pub bitails: Arc<Bitails>,
     pub post_beef_mode: PostBeefMode,
     // Internal RwLock-protected service collections for each operation...
+    // Cached exchange rates (BSV and fiat)...
 }
 ```
 
@@ -61,16 +62,19 @@ pub struct Services {
 - `Services::with_options(chain, options)` - Create with custom options
 
 **Key Methods:**
-- `get_raw_tx(txid)` - Retrieve raw transaction bytes
-- `get_merkle_path(txid)` - Get merkle proof for SPV verification
+- `get_raw_tx(txid, use_next)` - Retrieve raw transaction bytes
+- `get_merkle_path(txid, use_next)` - Get merkle proof for SPV verification
 - `get_beef(txid, known_txids)` - Build BEEF from raw tx and merkle path
 - `post_beef(beef, txids)` - Broadcast BEEF-format transaction
-- `get_utxo_status(output, format, outpoint)` - Check if output is unspent
-- `get_status_for_txids(txids)` - Check confirmation status of transactions
-- `get_script_hash_history(hash)` - Get transaction history for script
+- `get_utxo_status(output, format, outpoint, use_next)` - Check if output is unspent
+- `get_status_for_txids(txids, use_next)` - Check confirmation status of transactions
+- `get_script_hash_history(hash, use_next)` - Get transaction history for script
 - `get_bsv_exchange_rate()` - Get cached USD/BSV rate
+- `get_fiat_exchange_rate(currency, base)` - Get fiat exchange rate between currencies
 - `get_height()` - Get current blockchain height
 - `hash_to_header(hash)` - Get block header by hash
+- `n_lock_time_is_final(n_lock_time)` - Check if raw nLockTime value allows mining
+- `n_lock_time_is_final_for_tx(input)` - Check nLockTime finality with sequence info
 - `get_services_call_history(reset)` - Get diagnostics for all service calls
 - `set_post_beef_mode(mode)` - Configure broadcast behavior
 
@@ -80,7 +84,7 @@ pub struct Services {
 - `post_beef_count()` - Number of post beef providers
 - `get_utxo_status_count()` - Number of UTXO status providers
 
-### WalletServices Trait (traits.rs:23)
+### WalletServices Trait (traits.rs:93)
 
 Core trait that `Services` implements:
 
@@ -91,19 +95,46 @@ pub trait WalletServices: Send + Sync {
     async fn get_height(&self) -> Result<u32>;
     async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>>;
     async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader>;
-    async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult>;
-    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult>;
+    async fn get_raw_tx(&self, txid: &str, use_next: bool) -> Result<GetRawTxResult>;
+    async fn get_merkle_path(&self, txid: &str, use_next: bool) -> Result<GetMerklePathResult>;
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>>;
-    async fn get_utxo_status(&self, output: &str, format: Option<GetUtxoStatusOutputFormat>, outpoint: Option<&str>) -> Result<GetUtxoStatusResult>;
-    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult>;
-    async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult>;
+    async fn get_utxo_status(&self, output: &str, format: Option<GetUtxoStatusOutputFormat>,
+                             outpoint: Option<&str>, use_next: bool) -> Result<GetUtxoStatusResult>;
+    async fn get_status_for_txids(&self, txids: &[String], use_next: bool) -> Result<GetStatusForTxidsResult>;
+    async fn get_script_hash_history(&self, hash: &str, use_next: bool) -> Result<GetScriptHashHistoryResult>;
     async fn get_bsv_exchange_rate(&self) -> Result<f64>;
+    async fn get_fiat_exchange_rate(&self, currency: FiatCurrency, base: Option<FiatCurrency>) -> Result<f64>;
     fn hash_output_script(&self, script: &[u8]) -> String;
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool>;
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool>;
+    async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool>;
     async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult>;
 }
 ```
+
+**`use_next` Parameter:** Several methods accept a `use_next: bool` parameter. When `true`, the service collection skips to the next provider before starting the failover cycle. This is useful for retrying with alternate providers when the current one returned incomplete results.
+
+### NLockTimeInput (traits.rs:26)
+
+Pre-extracted data for nLockTime finality checks:
+
+```rust
+pub struct NLockTimeInput {
+    pub lock_time: u32,
+    pub all_sequences_final: bool,
+}
+```
+
+**Factory Methods:**
+- `NLockTimeInput::from_lock_time(u32)` - From raw nLockTime value
+- `NLockTimeInput::from_transaction(&Transaction)` - From Transaction reference
+- `NLockTimeInput::from_raw_tx(&[u8])` - From raw transaction bytes
+- `NLockTimeInput::from_hex_tx(&str)` - From hex-encoded transaction
+
+**Finality Rules:**
+1. If all inputs have sequence = 0xFFFFFFFF, transaction is immediately final
+2. If nLockTime >= 500,000,000: Unix timestamp, final if in the past
+3. If nLockTime < 500,000,000: block height, final if current height > nLockTime
 
 ### ServiceCollection (collection.rs:21)
 
@@ -131,10 +162,11 @@ pub struct ServiceCollection<S> {
 - `service_to_call()` - Get current service with call metadata
 - `all_services_to_call()` - Get all services for parallel operations
 - `all_services_owned()` - Get owned copies (avoids lock contention)
+- `all_services_from_current()` - Get services in round-robin order from current index
 - `add_call_success/failure/error(provider, call)` - Record call outcome
 - `get_call_history(reset)` - Get statistics, optionally reset counters
 
-### SharedServiceCollection (collection.rs:452)
+### SharedServiceCollection (collection.rs:474)
 
 Thread-safe wrapper for concurrent access:
 
@@ -142,7 +174,7 @@ Thread-safe wrapper for concurrent access:
 pub struct SharedServiceCollection<S>(pub Arc<RwLock<ServiceCollection<S>>>);
 ```
 
-### ServicesOptions (mod.rs:67)
+### ServicesOptions (mod.rs:70)
 
 Configuration for service providers:
 
@@ -154,8 +186,9 @@ pub struct ServicesOptions {
     pub arc_config: Option<ArcConfig>,
     pub arc_gorillapool_url: Option<String>,
     pub arc_gorillapool_config: Option<ArcConfig>,
-    pub bsv_update_msecs: u64,  // 15 min default
-    pub fiat_update_msecs: u64, // 15 min default
+    pub bsv_update_msecs: u64,       // 15 min default
+    pub fiat_update_msecs: u64,      // 24 hour default
+    pub fiat_exchange_rates: FiatExchangeRates,
 }
 ```
 
@@ -165,6 +198,41 @@ pub struct ServicesOptions {
 - `with_bitails_api_key(key)` - Set Bitails API key
 - `with_arc(url, config)` - Set TAAL ARC configuration
 - `with_gorillapool(url, config)` - Set GorillaPool ARC configuration
+
+### FiatCurrency (traits.rs:657)
+
+Supported fiat currencies for exchange rate conversions:
+
+```rust
+pub enum FiatCurrency {
+    USD,
+    GBP,
+    EUR,
+}
+```
+
+**Methods:**
+- `FiatCurrency::parse(s)` - Parse from string (case-insensitive)
+- `as_str()` - Get currency code as string
+- Implements `FromStr` and `Display`
+
+### FiatExchangeRates (traits.rs:703)
+
+Fiat exchange rates with USD as base:
+
+```rust
+pub struct FiatExchangeRates {
+    pub timestamp: DateTime<Utc>,
+    pub base: FiatCurrency,
+    pub rates: HashMap<FiatCurrency, f64>,
+}
+```
+
+**Methods:**
+- `FiatExchangeRates::new(rates)` - Create with given rates
+- `FiatExchangeRates::default()` - Create with default rates (USD=1.0, EUR=0.85, GBP=0.79)
+- `is_stale(max_age_msecs)` - Check if rates need refresh
+- `get_rate(currency, base)` - Get exchange rate between currencies
 
 ## Result Types (traits.rs)
 
@@ -202,12 +270,12 @@ The `Services` constructor sets up provider priority for each operation:
 
 | Operation | Provider Order |
 |-----------|----------------|
-| `get_merkle_path` | WhatsOnChain → Bitails |
-| `get_raw_tx` | WhatsOnChain → Bitails |
-| `post_beef` | GorillaPool ARC → TAAL ARC → Bitails → WhatsOnChain |
+| `get_merkle_path` | WhatsOnChain -> Bitails |
+| `get_raw_tx` | WhatsOnChain -> Bitails |
+| `post_beef` | GorillaPool ARC -> TAAL ARC -> Bitails -> WhatsOnChain |
 | `get_utxo_status` | WhatsOnChain |
-| `get_status_for_txids` | WhatsOnChain → Bitails |
-| `get_script_hash_history` | WhatsOnChain → Bitails |
+| `get_status_for_txids` | WhatsOnChain -> Bitails |
+| `get_script_hash_history` | WhatsOnChain -> Bitails |
 
 ## Providers
 
@@ -261,7 +329,7 @@ pub fn convert_script_hash(output: &str, format: Option<GetUtxoStatusOutputForma
 use bsv_wallet_toolbox::services::{Services, Chain};
 
 let services = Services::mainnet()?;
-let raw_tx = services.get_raw_tx("txid...").await?;
+let raw_tx = services.get_raw_tx("txid...", false).await?;
 ```
 
 ### Custom Configuration
@@ -306,11 +374,43 @@ for result in results {
 
 ```rust
 let script_hash = services.hash_output_script(&locking_script);
-let status = services.get_utxo_status(&script_hash, None, Some("txid.0")).await?;
+let status = services.get_utxo_status(&script_hash, None, Some("txid.0"), false).await?;
 
 if status.is_utxo.unwrap_or(false) {
     println!("Output is unspent!");
 }
+```
+
+### Check nLockTime Finality
+
+```rust
+use bsv_wallet_toolbox::services::{NLockTimeInput, WalletServices};
+
+// From a Transaction
+let input = NLockTimeInput::from_transaction(&tx);
+let is_final = services.n_lock_time_is_final_for_tx(input).await?;
+
+// From raw bytes
+let input = NLockTimeInput::from_raw_tx(&raw_tx_bytes)?;
+let is_final = services.n_lock_time_is_final_for_tx(input).await?;
+
+// Simple check with just the nLockTime value
+let is_final = services.n_lock_time_is_final(500000).await?;
+```
+
+### Get Fiat Exchange Rates
+
+```rust
+use bsv_wallet_toolbox::services::{FiatCurrency, WalletServices};
+
+// Get EUR per USD
+let eur_rate = services.get_fiat_exchange_rate(FiatCurrency::EUR, None).await?;
+
+// Get GBP per EUR
+let gbp_per_eur = services.get_fiat_exchange_rate(
+    FiatCurrency::GBP,
+    Some(FiatCurrency::EUR)
+).await?;
 ```
 
 ### Get Service Diagnostics
@@ -329,7 +429,7 @@ if let Some(raw_tx_history) = &history.get_raw_tx {
 }
 ```
 
-## PostBeefMode (services.rs:25)
+## PostBeefMode (services.rs:26)
 
 Controls broadcast behavior:
 

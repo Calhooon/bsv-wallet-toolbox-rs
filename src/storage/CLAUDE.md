@@ -16,7 +16,7 @@ This module provides the storage layer for the wallet toolbox, defining traits f
 
 | Submodule | Feature Flag | Purpose |
 |-----------|--------------|---------|
-| `entities/` | Always | Database entity structs for the 18-table wallet schema |
+| `entities/` | Always | Database entity structs for the wallet schema (16 table types) |
 | `sqlx/` | `sqlite` or `mysql` | Local database storage using SQLx |
 | `client/` | `remote` | Remote storage via JSON-RPC to storage.babbage.systems |
 
@@ -44,6 +44,7 @@ Read-only operations for querying wallet state:
 |--------|-------------|
 | `is_available()` | Check if storage is ready |
 | `get_settings()` | Get current `TableSettings` |
+| `get_services()` | Get `WalletServices` instance (for BEEF verification, broadcasting, etc.) |
 | `find_certificates()` | Query certificates with filters |
 | `find_output_baskets()` | Query output baskets |
 | `find_outputs()` | Query UTXOs with filters |
@@ -91,6 +92,7 @@ Full provider interface (extends `WalletStorageSync`):
 | `is_storage_provider()` | Always returns `true` |
 | `storage_identity_key()` | Get storage's identity key |
 | `storage_name()` | Get storage's display name |
+| `set_services()` | Set `WalletServices` instance (required before blockchain operations) |
 
 ### MonitorStorage
 
@@ -194,12 +196,6 @@ pub enum BeefVerificationMode {
 
 Controls how BEEF (Background Evaluation Extended Format) transactions are verified against the blockchain when internalizing or creating actions.
 
-### Storage Info Type
-
-| Type | Purpose |
-|------|---------|
-| `WalletStorageInfo` | Metadata about a configured storage provider (active, enabled, backup status) |
-
 ### Monitor Types
 
 | Type | Purpose |
@@ -250,7 +246,7 @@ A future implementation to orchestrate multiple providers with active/backup sem
 
 ## Entities
 
-The `entities` submodule defines structs for the 18-table wallet schema:
+The `entities` submodule defines structs for the wallet schema (16 table types):
 
 ### Core Tables
 

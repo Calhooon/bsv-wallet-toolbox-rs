@@ -78,7 +78,7 @@ where
             let txid = &req.txid;
 
             // Check if transaction has a merkle path on chain
-            match self.services.get_merkle_path(txid).await {
+            match self.services.get_merkle_path(txid, false).await {
                 Ok(merkle_result) => {
                     if merkle_result.merkle_path.is_some() {
                         // Transaction is on chain - recover it

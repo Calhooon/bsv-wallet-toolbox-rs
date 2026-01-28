@@ -31,8 +31,8 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `lib.rs` | 118 | Crate root with module declarations, re-exports, and crate-level documentation |
-| `error.rs` | 124 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
+| `lib.rs` | 123 | Crate root with module declarations, re-exports, and crate-level documentation |
+| `error.rs` | 127 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
 
 ## Modules
 
@@ -103,6 +103,7 @@ pub use services::{
     Services,                   // Main services orchestrator
     ServicesOptions,            // Configuration options
     WalletServices,             // Service provider trait
+    NLockTimeInput,             // Input for nLockTime-based time queries
 
     // Result types for blockchain operations
     GetMerklePathResult,        // Merkle path for transaction proof
@@ -118,6 +119,8 @@ pub use services::{
     TxStatusDetail,             // Transaction status details
     BlockHeader,                // Block header with height and hash
     BsvExchangeRate,            // Exchange rate information
+    FiatCurrency,               // Fiat currency type (USD, EUR, etc.)
+    FiatExchangeRates,          // Collection of fiat exchange rates
 
     // Service collection and history
     ServiceCollection,          // Collection of service providers
@@ -180,7 +183,7 @@ The `Error` enum in `error.rs` organizes errors by category:
 | Authentication | `AuthenticationRequired`, `InvalidIdentityKey`, `UserNotFound`, `AccessDenied` | User authentication |
 | Service | `ServiceError`, `NetworkError`, `BroadcastFailed`, `NoServicesAvailable` | External service calls |
 | Transaction | `TransactionError`, `InvalidTransactionStatus`, `InsufficientFunds` | Transaction processing |
-| Validation | `ValidationError`, `InvalidArgument` | Input validation |
+| Validation | `ValidationError`, `InvalidArgument`, `InvalidOperation` | Input validation and operation errors |
 | Sync | `SyncError`, `SyncConflict` | Multi-storage synchronization |
 | Wrapped | `SdkError`, `JsonError`, `IoError`, `SqlxError` (sqlite feature), `HttpError` | Errors from dependencies (`bsv_sdk`, `serde_json`, `std::io`, `sqlx`, `reqwest`) |
 
@@ -269,7 +272,9 @@ WalletStorageProvider   ← Full provider interface with identity/name
 
 The following modules are planned but commented out in `lib.rs`:
 
-- `managers` - Higher-level manager components (Phase 5, not yet implemented)
+- `managers` - Higher-level manager components:
+  - `WalletStorageManager` - Multi-storage synchronization, handles sync between local and remote storage
+  - `WalletPermissionsManager` - Permission management for wallet operations
 
 ## Related Documentation
 

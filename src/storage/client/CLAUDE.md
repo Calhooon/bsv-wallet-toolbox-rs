@@ -34,6 +34,9 @@ persistent storage without managing local databases.
 | `json_rpc::WalletError` | Wallet-specific error parsed from JSON-RPC error data (code, message, description, stack) |
 | `UpdateProvenTxReqWithNewProvenTxArgs` | Arguments for updating proven tx requests |
 | `UpdateProvenTxReqWithNewProvenTxResult` | Result containing `txs_updated`, `reqs_updated`, `proven_tx_id` |
+| `AuthHeaders` | Authentication headers for a BRC-31 request |
+| `ResponseAuthHeaders` | Parsed auth headers from server response |
+| `AuthVerificationResult` | Result of verifying server response authentication |
 
 ### Constants
 
@@ -42,6 +45,9 @@ persistent storage without managing local databases.
 | `MAINNET_URL` | `https://storage.babbage.systems` | Production storage endpoint |
 | `TESTNET_URL` | `https://staging-storage.babbage.systems` | Testnet storage endpoint |
 | `JSON_RPC_VERSION` | `"2.0"` | JSON-RPC protocol version (in `json_rpc` module) |
+| `AUTH_VERSION` | `"0.1"` | BRC-31 authentication protocol version |
+| `AUTH_PROTOCOL_ID` | `"storage auth"` | Protocol ID for BRC-31 request signatures |
+| `NONCE_PROTOCOL_ID` | `"storage nonce"` | Protocol ID for nonce HMAC computation |
 
 ### JSON-RPC Error Codes
 
@@ -157,6 +163,7 @@ The client calls these remote methods via `rpc_call()`:
 | `getSyncChunk` | Sync | Get sync data chunk |
 | `processSyncChunk` | Sync | Apply sync data chunk |
 | `updateProvenTxReqWithNewProvenTx` | Helper | Update proven tx request |
+| `insertCertificateFieldAuth` | Writer | Add certificate field |
 
 ### StorageClient Helper Methods
 
@@ -350,23 +357,39 @@ Each authenticated request includes these BRC-104 headers:
 The signature covers: `method || path || SHA256(body) || timestamp || nonce`
 
 ```rust
+use bsv_wallet_toolbox::storage::client::auth::{create_signing_data, sign_request};
+
 // Signing data construction
 let signing_data = create_signing_data("POST", "/", &body, timestamp, &nonce);
 
-// Sign with wallet identity key using BRC-42 key derivation
-let signature = wallet.create_signature(CreateSignatureArgs {
-    data: Some(signing_data),
-    protocol_id: Protocol::new(SecurityLevel::Counterparty, "storage auth"),
-    key_id: format!("{} {}", timestamp, nonce),
-    counterparty: server_identity_key.map(|k| Counterparty::Other(k)),
-    ..Default::default()
-}).await?;
+// Sign request using the auth module helper
+let signature = sign_request(
+    &wallet,
+    "POST",
+    "/",
+    &body,
+    timestamp,
+    &nonce,
+    server_identity_key.as_ref(),
+    "my-app",
+).await?;
 ```
+
+### Nonce Creation
+
+Two nonce creation methods are available:
+
+| Method | Use Case |
+|--------|----------|
+| `create_simple_nonce()` | Simple random 32-byte nonce (sync) |
+| `create_nonce()` | HMAC-verified nonce for mutual auth (async) |
+
+The HMAC nonce format is: `base64(random_16_bytes || hmac_16_bytes)` where HMAC uses BRC-42 key derivation.
 
 ### Timestamp Validation
 
 Timestamps are validated to prevent replay attacks:
-- Must be within 5 minutes of current time
+- Must be within 5 minutes of current time (300,000 ms)
 - Slight future timestamps (up to 1 minute) allowed for clock skew
 
 ### Auth Module Exports
@@ -378,14 +401,18 @@ The `auth` module exports these types and functions:
 | `AuthHeaders` | Struct containing all auth header values |
 | `ResponseAuthHeaders` | Parsed auth headers from server response |
 | `AuthVerificationResult` | Result of response verification |
-| `create_auth_headers()` | Create signed auth headers for a request |
+| `create_auth_headers()` | Create signed auth headers for a request (async) |
+| `create_nonce()` | Create HMAC-verified nonce for BRC-31 (async) |
 | `create_simple_nonce()` | Generate random 32-byte nonce (base64) |
 | `current_timestamp_ms()` | Get current Unix timestamp in milliseconds |
 | `validate_timestamp()` | Validate timestamp is within acceptable range |
 | `create_signing_data()` | Create canonical signing data |
-| `verify_response_auth()` | Verify server response signature |
+| `sign_request()` | Sign a request using wallet identity key (async) |
+| `verify_response()` | Verify a response signature from server (async) |
+| `verify_response_auth()` | Full response auth verification with header checking (async) |
 | `AUTH_VERSION` | Protocol version constant ("0.1") |
 | `AUTH_PROTOCOL_ID` | Protocol ID for request signatures |
+| `NONCE_PROTOCOL_ID` | Protocol ID for nonce HMAC computation |
 | `headers::*` | Header name constants |
 
 ## Internal Details
@@ -430,10 +457,10 @@ The module includes comprehensive unit tests:
 | Category | Count | Coverage |
 |----------|-------|----------|
 | JSON-RPC serialization | 4 | Request/response format, error handling |
-| Auth module | 35 | Nonce, timestamp, signing data, headers, replay protection |
+| Auth module | 35+ | Nonce, timestamp, signing data, headers, replay protection |
 | Storage client BRC-31 | 9 | Header names, version, nonce creation, timestamps, signing |
-| Method formats | 22 | All JSON-RPC method request/response formats |
-| Entity types | 15 | Table entity serialization/deserialization |
+| Method formats | 22+ | All JSON-RPC method request/response formats |
+| Entity types | 15+ | Table entity serialization/deserialization |
 
 ### Running Tests
 

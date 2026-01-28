@@ -38,6 +38,7 @@ pub use crate::chaintracks::Chain;
 // Re-export main types
 pub use traits::{
     WalletServices,
+    NLockTimeInput,
     GetBeefResult,
     GetMerklePathResult,
     GetRawTxResult,
@@ -52,6 +53,8 @@ pub use traits::{
     UtxoDetail,
     BlockHeader,
     BsvExchangeRate,
+    FiatCurrency,
+    FiatExchangeRates,
 };
 
 pub use services::Services;
@@ -88,6 +91,9 @@ pub struct ServicesOptions {
 
     /// Fiat exchange rate cache duration in milliseconds
     pub fiat_update_msecs: u64,
+
+    /// Initial fiat exchange rates
+    pub fiat_exchange_rates: FiatExchangeRates,
 }
 
 impl Default for ServicesOptions {
@@ -100,7 +106,8 @@ impl Default for ServicesOptions {
             arc_gorillapool_url: Some("https://arc.gorillapool.io".to_string()),
             arc_gorillapool_config: None,
             bsv_update_msecs: 15 * 60 * 1000, // 15 minutes
-            fiat_update_msecs: 15 * 60 * 1000, // 15 minutes
+            fiat_update_msecs: 24 * 60 * 60 * 1000, // 24 hours (fiat rates change less frequently)
+            fiat_exchange_rates: FiatExchangeRates::default(),
         }
     }
 }

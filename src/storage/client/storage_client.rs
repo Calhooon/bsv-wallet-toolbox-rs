@@ -36,6 +36,7 @@ use bsv_sdk::wallet::{
 };
 
 use crate::error::{Error, Result};
+use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
@@ -416,6 +417,15 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageReader for StorageClient
         panic!("get_settings() requires make_available() to be called first. Use get_settings_async() instead.")
     }
 
+    fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
+        // Remote storage does not offer Services to remote clients.
+        // Services are local definitions - the remote server has its own services.
+        // This matches TypeScript behavior where StorageClient throws WERR_INVALID_OPERATION.
+        Err(Error::InvalidOperation(
+            "getServices() not implemented in remote client. Services are typically local definitions and not shared remotely.".to_string()
+        ))
+    }
+
     async fn find_certificates(
         &self,
         auth: &AuthId,
@@ -758,6 +768,12 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageProvider for StorageClie
     fn storage_name(&self) -> &str {
         // This would need to be fetched from settings
         ""
+    }
+
+    fn set_services(&self, _services: Arc<dyn WalletServices>) {
+        // Ignored. Remote storage cannot share Services with remote clients.
+        // Services are local definitions to the storage - the remote server
+        // manages its own service connections. This matches TypeScript behavior.
     }
 }
 

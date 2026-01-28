@@ -12,9 +12,10 @@ use crate::services::{
     collection::{ServiceCall, ServiceCollection, ServiceCallHistory},
     providers::{Arc, Bitails, BitailsConfig, WhatsOnChain, WhatsOnChainConfig},
     traits::{
-        sha256, BlockHeader, BsvExchangeRate, GetBeefResult, GetMerklePathResult, GetRawTxResult,
-        GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
-        GetUtxoStatusResult, PostBeefResult, WalletServices,
+        sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
+        GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
+        GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult,
+        WalletServices,
     },
     ServicesOptions,
 };
@@ -84,6 +85,9 @@ pub struct Services {
 
     /// Cached BSV exchange rate.
     bsv_exchange_rate: RwLock<Option<BsvExchangeRate>>,
+
+    /// Cached fiat exchange rates.
+    fiat_exchange_rates: RwLock<FiatExchangeRates>,
 
     /// Post BEEF mode.
     pub post_beef_mode: PostBeefMode,
@@ -328,6 +332,8 @@ impl Services {
         script_hash_history_services
             .add("Bitails", StdArc::clone(&bitails) as ScriptHashHistoryProvider);
 
+        let fiat_rates = options.fiat_exchange_rates.clone();
+
         Ok(Self {
             chain,
             options,
@@ -342,6 +348,7 @@ impl Services {
             get_status_for_txids_services: RwLock::new(status_for_txids_services),
             get_script_hash_history_services: RwLock::new(script_hash_history_services),
             bsv_exchange_rate: RwLock::new(None),
+            fiat_exchange_rates: RwLock::new(fiat_rates),
             post_beef_mode: PostBeefMode::default(),
         })
     }
@@ -498,11 +505,15 @@ impl WalletServices for Services {
         })
     }
 
-    async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
+    async fn get_raw_tx(&self, txid: &str, use_next: bool) -> Result<GetRawTxResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, RawTxProvider)> = {
-            let services = self.get_raw_tx_services.read().unwrap();
-            services.all_services_owned()
+            let mut services = self.get_raw_tx_services.write().unwrap();
+            // If use_next, skip to next service before starting
+            if use_next {
+                services.next();
+            }
+            services.all_services_from_current()
         };
 
         if all_services.is_empty() {
@@ -549,11 +560,15 @@ impl WalletServices for Services {
         })
     }
 
-    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
+    async fn get_merkle_path(&self, txid: &str, use_next: bool) -> Result<GetMerklePathResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, MerklePathProvider)> = {
-            let services = self.get_merkle_path_services.read().unwrap();
-            services.all_services_owned()
+            let mut services = self.get_merkle_path_services.write().unwrap();
+            // If use_next, skip to next service before starting
+            if use_next {
+                services.next();
+            }
+            services.all_services_from_current()
         };
 
         if all_services.is_empty() {
@@ -713,11 +728,16 @@ impl WalletServices for Services {
         output: &str,
         output_format: Option<GetUtxoStatusOutputFormat>,
         outpoint: Option<&str>,
+        use_next: bool,
     ) -> Result<GetUtxoStatusResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, UtxoStatusProvider)> = {
-            let services = self.get_utxo_status_services.read().unwrap();
-            services.all_services_owned()
+            let mut services = self.get_utxo_status_services.write().unwrap();
+            // If use_next, skip to next service before starting
+            if use_next {
+                services.next();
+            }
+            services.all_services_from_current()
         };
 
         if all_services.is_empty() {
@@ -772,11 +792,15 @@ impl WalletServices for Services {
         })
     }
 
-    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
+    async fn get_status_for_txids(&self, txids: &[String], use_next: bool) -> Result<GetStatusForTxidsResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, StatusForTxidsProvider)> = {
-            let services = self.get_status_for_txids_services.read().unwrap();
-            services.all_services_owned()
+            let mut services = self.get_status_for_txids_services.write().unwrap();
+            // If use_next, skip to next service before starting
+            if use_next {
+                services.next();
+            }
+            services.all_services_from_current()
         };
 
         if all_services.is_empty() {
@@ -823,11 +847,15 @@ impl WalletServices for Services {
         })
     }
 
-    async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
+    async fn get_script_hash_history(&self, hash: &str, use_next: bool) -> Result<GetScriptHashHistoryResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, ScriptHashHistoryProvider)> = {
-            let services = self.get_script_hash_history_services.read().unwrap();
-            services.all_services_owned()
+            let mut services = self.get_script_hash_history_services.write().unwrap();
+            // If use_next, skip to next service before starting
+            if use_next {
+                services.next();
+            }
+            services.all_services_from_current()
         };
 
         if all_services.is_empty() {
@@ -880,6 +908,30 @@ impl WalletServices for Services {
             .await
     }
 
+    async fn get_fiat_exchange_rate(
+        &self,
+        currency: FiatCurrency,
+        base: Option<FiatCurrency>,
+    ) -> Result<f64> {
+        // Check if we need to update the rates
+        let needs_update = {
+            let rates = self.fiat_exchange_rates.read().unwrap();
+            rates.is_stale(self.options.fiat_update_msecs)
+        };
+
+        // For now, we use the cached rates from configuration
+        // A full implementation would fetch updated rates from an API
+        // (like exchangeratesapi.io or chaintracks fiat endpoint)
+        if needs_update {
+            // In a full implementation, we would fetch new rates here
+            // For now, just use the existing rates
+            tracing::debug!("Fiat rates are stale, but remote fetch not implemented");
+        }
+
+        let rates = self.fiat_exchange_rates.read().unwrap();
+        Ok(rates.get_rate(currency, base).unwrap_or(0.0))
+    }
+
     fn hash_output_script(&self, script: &[u8]) -> String {
         let hash = sha256(script);
         // Return LE hex (default format for getUtxoStatus)
@@ -890,7 +942,7 @@ impl WalletServices for Services {
         let hash = self.hash_output_script(locking_script);
         let outpoint = format!("{}.{}", txid, vout);
         let result = self
-            .get_utxo_status(&hash, None, Some(&outpoint))
+            .get_utxo_status(&hash, None, Some(&outpoint), false)
             .await?;
         Ok(result.is_utxo.unwrap_or(false))
     }
@@ -912,6 +964,16 @@ impl WalletServices for Services {
         Ok(n_lock_time < height)
     }
 
+    async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool> {
+        // BIP 68: If all inputs have max sequence, transaction is immediately final
+        if input.all_sequences_final {
+            return Ok(true);
+        }
+
+        // Check nLockTime finality using the existing logic
+        self.n_lock_time_is_final(input.lock_time).await
+    }
+
     async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult> {
         use bsv_sdk::transaction::{Beef, MerklePath, Transaction};
         use std::collections::HashSet;
@@ -920,7 +982,7 @@ impl WalletServices for Services {
         let known_set: HashSet<&str> = known_txids.iter().map(|s| s.as_str()).collect();
 
         // Get raw transaction
-        let raw_tx_result = self.get_raw_tx(txid).await?;
+        let raw_tx_result = self.get_raw_tx(txid, false).await?;
         let raw_tx = match raw_tx_result.raw_tx {
             Some(bytes) => bytes,
             None => {
@@ -949,7 +1011,7 @@ impl WalletServices for Services {
         };
 
         // Get merkle path for this transaction
-        let merkle_result = self.get_merkle_path(txid).await?;
+        let merkle_result = self.get_merkle_path(txid, false).await?;
         let has_proof = merkle_result.merkle_path.is_some();
 
         // Create BEEF
@@ -1013,5 +1075,58 @@ mod tests {
 
         assert_eq!(options.whatsonchain_api_key, Some("test-key".to_string()));
         assert_eq!(options.bitails_api_key, Some("bitails-key".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_fiat_exchange_rate() {
+        let services = Services::mainnet().unwrap();
+
+        // Test USD to USD (should be 1.0)
+        let rate = services
+            .get_fiat_exchange_rate(FiatCurrency::USD, Some(FiatCurrency::USD))
+            .await
+            .unwrap();
+        assert!((rate - 1.0).abs() < 0.001);
+
+        // Test EUR with USD base (using default rates)
+        let rate = services
+            .get_fiat_exchange_rate(FiatCurrency::EUR, None)
+            .await
+            .unwrap();
+        assert!(rate > 0.0 && rate < 2.0); // Reasonable range for EUR/USD
+
+        // Test GBP with EUR base
+        let rate = services
+            .get_fiat_exchange_rate(FiatCurrency::GBP, Some(FiatCurrency::EUR))
+            .await
+            .unwrap();
+        assert!(rate > 0.0 && rate < 2.0); // Reasonable range for GBP/EUR
+    }
+
+    #[test]
+    fn test_fiat_currency_parse() {
+        assert_eq!(FiatCurrency::parse("USD"), Some(FiatCurrency::USD));
+        assert_eq!(FiatCurrency::parse("usd"), Some(FiatCurrency::USD));
+        assert_eq!(FiatCurrency::parse("EUR"), Some(FiatCurrency::EUR));
+        assert_eq!(FiatCurrency::parse("GBP"), Some(FiatCurrency::GBP));
+        assert_eq!(FiatCurrency::parse("XXX"), None);
+    }
+
+    #[test]
+    fn test_fiat_exchange_rates() {
+        let rates = FiatExchangeRates::default();
+
+        // USD to USD should be 1.0
+        assert_eq!(rates.get_rate(FiatCurrency::USD, Some(FiatCurrency::USD)), Some(1.0));
+
+        // EUR to USD should be the EUR rate
+        let eur_rate = rates.get_rate(FiatCurrency::EUR, Some(FiatCurrency::USD));
+        assert!(eur_rate.is_some());
+        assert!(eur_rate.unwrap() > 0.0);
+
+        // Inverse relationship
+        let eur_per_usd = rates.get_rate(FiatCurrency::EUR, Some(FiatCurrency::USD)).unwrap();
+        let usd_per_eur = rates.get_rate(FiatCurrency::USD, Some(FiatCurrency::EUR)).unwrap();
+        assert!((eur_per_usd * usd_per_eur - 1.0).abs() < 0.001);
     }
 }

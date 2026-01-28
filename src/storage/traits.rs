@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use bsv_sdk::wallet::{
     AbortActionArgs, AbortActionResult, InternalizeActionArgs, InternalizeActionResult,
@@ -14,6 +15,7 @@ use bsv_sdk::wallet::{
 };
 
 use crate::error::Result;
+use crate::services::WalletServices;
 use crate::storage::entities::*;
 
 // =============================================================================
@@ -359,6 +361,16 @@ pub trait WalletStorageReader: Send + Sync {
     /// Get current settings.
     fn get_settings(&self) -> &TableSettings;
 
+    /// Get the wallet services instance.
+    ///
+    /// Returns an error if services have not been set via `set_services`.
+    /// This is required for operations that need blockchain access:
+    /// - BEEF verification via ChainTracker
+    /// - Transaction broadcasting via postBeef
+    /// - UTXO validation via isUtxo
+    /// - Block header lookups
+    fn get_services(&self) -> Result<Arc<dyn WalletServices>>;
+
     /// Find certificates matching criteria.
     async fn find_certificates(
         &self,
@@ -537,6 +549,18 @@ pub trait WalletStorageProvider: WalletStorageSync {
 
     /// Get the storage name.
     fn storage_name(&self) -> &str;
+
+    /// Set the wallet services instance.
+    ///
+    /// This must be called before any operations that require blockchain access:
+    /// - createAction (BEEF verification)
+    /// - processAction (BEEF verification, nLockTime checks)
+    /// - internalizeAction (BEEF verification, header lookups)
+    /// - Network broadcasting
+    ///
+    /// # Arguments
+    /// * `services` - The wallet services to use for blockchain operations
+    fn set_services(&self, services: Arc<dyn WalletServices>);
 }
 
 // =============================================================================

@@ -306,6 +306,28 @@ impl<S> ServiceCollection<S> {
             .collect()
     }
 
+    /// Get all services starting from the current index in round-robin order.
+    /// This respects the current position and returns services rotated accordingly.
+    pub fn all_services_from_current(&self) -> Vec<(String, String, S)>
+    where
+        S: Clone,
+    {
+        if self.services.is_empty() {
+            return Vec::new();
+        }
+
+        let len = self.services.len();
+        let mut result = Vec::with_capacity(len);
+
+        for i in 0..len {
+            let idx = (self.index + i) % len;
+            let s = &self.services[idx];
+            result.push((self.service_name.clone(), s.name.clone(), s.service.clone()));
+        }
+
+        result
+    }
+
     /// Move to the next provider, wrapping around.
     pub fn next(&mut self) -> usize {
         if !self.services.is_empty() {
