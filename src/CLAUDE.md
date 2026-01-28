@@ -29,10 +29,10 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `lib.rs` | Crate root with module declarations, re-exports, and crate-level documentation |
-| `error.rs` | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `lib.rs` | ~120 | Crate root with module declarations, re-exports, and crate-level documentation |
+| `error.rs` | ~125 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
 
 ## Modules
 
@@ -182,7 +182,7 @@ The `Error` enum in `error.rs` organizes errors by category:
 | Transaction | `TransactionError`, `InvalidTransactionStatus`, `InsufficientFunds` | Transaction processing |
 | Validation | `ValidationError`, `InvalidArgument` | Input validation |
 | Sync | `SyncError`, `SyncConflict` | Multi-storage synchronization |
-| Wrapped | `SdkError`, `JsonError`, `IoError`, `SqlxError`, `HttpError` | Errors from dependencies |
+| Wrapped | `SdkError`, `JsonError`, `IoError`, `SqlxError` (sqlite feature), `HttpError` | Errors from dependencies (`bsv_sdk`, `serde_json`, `std::io`, `sqlx`, `reqwest`) |
 
 ## Usage
 
@@ -265,11 +265,11 @@ WalletStorageSync       ← Sync operations (get_sync_chunk, process_sync_chunk)
 WalletStorageProvider   ← Full provider interface with identity/name
 ```
 
-## Planned Modules (Not Yet Implemented)
+## Planned Modules
 
 The following modules are planned but commented out in `lib.rs`:
 
-- `managers` - Higher-level manager components (Phase 5)
+- `managers` - Higher-level manager components (Phase 5, not yet implemented)
 
 ## Related Documentation
 

@@ -14,8 +14,9 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 | `types.rs` | Core data structures: `Chain`, `BlockHeader`, `LiveBlockHeader`, `HeightRange`, `calculate_work()` |
 | `traits.rs` | Trait definitions: `ChaintracksClient`, `ChaintracksStorage`, `BulkIngestor`, `LiveIngestor`, `ChaintracksOptions` |
 | `chaintracks.rs` | Main `Chaintracks` orchestrator implementing client and management interfaces |
-| `storage/mod.rs` | Storage backend module; exports `MemoryStorage` |
+| `storage/mod.rs` | Storage backend module; exports `MemoryStorage` and `SqliteStorage` (feature-gated) |
 | `storage/memory.rs` | In-memory storage implementation with reorg handling, fork tracking, and batch operations |
+| `storage/sqlite.rs` | SQLite-based persistent storage (requires `sqlite` or `mysql` feature) |
 | `ingestors/mod.rs` | Ingestor module; re-exports all bulk and live ingestor implementations with helper types |
 | `ingestors/bulk_cdn.rs` | CDN-based bulk header downloads from Babbage Systems |
 | `ingestors/bulk_woc.rs` | WhatsOnChain API bulk header fetching (fallback) |
@@ -35,7 +36,7 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
          ▼                   ▼                   ▼
 ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
 │  BulkIngestor   │ │  LiveIngestor   │ │    Storage      │
-│  (CDN, WoC)     │ │ (WS, Polling)   │ │    (Memory)     │
+│  (CDN, WoC)     │ │ (WS, Polling)   │ │ (Memory, SQLite)│
 └─────────────────┘ └─────────────────┘ └─────────────────┘
 ```
 
@@ -112,6 +113,15 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
   - Fork tracking with `get_fork_headers()`, `get_active_headers()`, `find_children()`
   - Custom threshold configuration via `with_thresholds()`
 
+- **`SqliteStorage`**: Persistent SQLite-based storage (requires `sqlite` or `mysql` feature). Features:
+  - Full persistence across restarts
+  - Reorg handling with chain deactivation tracking
+  - Efficient indexes on hash, height, merkle root, and active/tip flags
+  - Constructors: `new(database_url, chain)`, `in_memory(chain)`, `with_thresholds()`
+  - Schema auto-created via `migrate_latest()`
+  - Table: `chaintracks_live_headers` with foreign key on `previous_header_id`
+  - Pruning support for inactive headers below threshold
+
 ### Ingestor Implementations
 
 #### Bulk Ingestors (Historical Data)
@@ -155,7 +165,7 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 
 ## Usage
 
-### Basic Setup
+### Basic Setup (Memory Storage)
 
 ```rust
 use bsv_wallet_toolbox::chaintracks::{
@@ -173,6 +183,28 @@ chaintracks.make_available().await?;
 // Query chain tip
 let tip = chaintracks.find_chain_tip_header().await?;
 println!("Chain tip: {} at height {}", tip.hash, tip.height);
+```
+
+### Persistent Setup (SQLite Storage)
+
+Requires `sqlite` or `mysql` feature enabled.
+
+```rust
+use bsv_wallet_toolbox::chaintracks::{
+    Chaintracks, ChaintracksOptions, Chain, SqliteStorage
+};
+
+// File-based SQLite
+let storage = SqliteStorage::new("sqlite:chaintracks.db", Chain::Main).await?;
+storage.migrate_latest().await?;  // Create tables
+
+// Or in-memory SQLite (for testing)
+let storage = SqliteStorage::in_memory(Chain::Test).await?;
+storage.migrate_latest().await?;
+
+let options = ChaintracksOptions::default_mainnet();
+let chaintracks = Chaintracks::new(options, Box::new(storage));
+chaintracks.make_available().await?;
 ```
 
 ### Querying Headers
@@ -248,11 +280,11 @@ Subscribers receive `ReorgEvent` notifications with full context.
 | Core types and traits | Complete |
 | Chaintracks orchestrator | Complete (partial ingestor integration) |
 | MemoryStorage | Complete |
+| SqliteStorage | Complete (feature-gated: `sqlite` or `mysql`) |
 | BulkCdnIngestor | Complete |
 | BulkWocIngestor | Complete |
 | LivePollingIngestor | Complete |
 | LiveWebSocketIngestor | Complete |
-| SQLite storage | Planned (commented out in `storage/mod.rs`) |
 | Full ingestor orchestration | Partial (headers can be added via `add_header()`) |
 
 ## Ingestor Usage
@@ -307,6 +339,43 @@ use bsv_wallet_toolbox::chaintracks::ingestor::{BulkCdnIngestor, LiveWebSocketIn
 // Or directly from chaintracks
 use bsv_wallet_toolbox::chaintracks::{BulkCdnIngestor, LiveWebSocketIngestor};
 ```
+
+## Feature Flags
+
+| Feature | Enables |
+|---------|---------|
+| `sqlite` | `SqliteStorage` for persistent header storage |
+| `mysql` | `SqliteStorage` (same implementation, shared feature gate) |
+
+## SQLite Database Schema
+
+The `SqliteStorage` creates a single table with the following structure:
+
+```sql
+CREATE TABLE chaintracks_live_headers (
+    header_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    previous_header_id INTEGER,          -- FK to parent header
+    previous_hash TEXT NOT NULL,
+    height INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0, -- 1 if on active chain
+    is_chain_tip INTEGER NOT NULL DEFAULT 0, -- 1 if current tip
+    hash TEXT NOT NULL UNIQUE,
+    chain_work TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    merkle_root TEXT NOT NULL,
+    time INTEGER NOT NULL,
+    bits INTEGER NOT NULL,
+    nonce INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+```
+
+**Indexes**:
+- `idx_live_headers_height` on `height`
+- `idx_live_headers_active` on `is_active`
+- `idx_live_headers_tip` on `is_chain_tip`
+- `idx_live_headers_merkle` on `merkle_root` where `is_active = 1`
 
 ## Related
 

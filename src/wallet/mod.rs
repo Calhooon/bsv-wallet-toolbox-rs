@@ -89,6 +89,7 @@
 //! - `get_network` - Network (mainnet/testnet)
 //! - `get_version` - Wallet version string
 
+mod certificate_issuance;
 mod signer;
 mod wallet;
 

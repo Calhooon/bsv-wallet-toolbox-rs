@@ -2,6 +2,20 @@
 //!
 //! This implements `WalletStorageProvider` by making authenticated JSON-RPC
 //! calls to a remote storage server (e.g., `storage.babbage.systems`).
+//!
+//! ## BRC-31 Authentication
+//!
+//! All requests are authenticated using the BRC-31 (Authrite) protocol:
+//! - Each request is signed with the wallet's identity key
+//! - A unique nonce and timestamp prevent replay attacks
+//! - Server responses can optionally be verified
+//!
+//! The authentication headers added to each request:
+//! - `x-bsv-auth-version`: Protocol version ("0.1")
+//! - `x-bsv-auth-identity-key`: Client's public key (hex)
+//! - `x-bsv-auth-nonce`: Random nonce (base64)
+//! - `x-bsv-auth-timestamp`: Unix timestamp (milliseconds)
+//! - `x-bsv-auth-signature`: Signature over canonical request (hex)
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -13,6 +27,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use bsv_sdk::auth::{Peer, PeerOptions, SimplifiedFetchTransport};
+use bsv_sdk::primitives::PublicKey;
 use bsv_sdk::wallet::{
     AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs,
     ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
@@ -24,6 +39,7 @@ use crate::error::{Error, Result};
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
+use super::auth::{create_auth_headers, ResponseAuthHeaders};
 use super::json_rpc::{JsonRpcRequest, JsonRpcResponse};
 
 /// Mainnet storage endpoint.
@@ -36,8 +52,14 @@ pub const TESTNET_URL: &str = "https://staging-storage.babbage.systems";
 /// `StorageClient` implements the `WalletStorageProvider` interface, allowing it
 /// to serve as a BRC-100 wallet's active storage via remote calls.
 ///
-/// Authentication is handled via the `Peer` type from `bsv-sdk`, which implements
-/// BRC-31 (Authrite) mutual authentication.
+/// ## BRC-31 Authentication
+///
+/// All requests are signed using the wallet's identity key. Each request includes:
+/// - Identity key header for server to identify the client
+/// - Nonce and timestamp for replay protection
+/// - Signature over the canonical request data
+///
+/// Server responses can optionally be verified (if the server provides auth headers).
 ///
 /// ## Example
 ///
@@ -49,7 +71,7 @@ pub const TESTNET_URL: &str = "https://staging-storage.babbage.systems";
 /// let wallet = ProtoWallet::new(Some(PrivateKey::from_wif("...")?));
 /// let client = StorageClient::new(wallet, StorageClient::MAINNET_URL);
 ///
-/// // Initialize and verify connection
+/// // Initialize and verify connection (authenticated)
 /// let settings = client.make_available().await?;
 /// println!("Connected to storage: {}", settings.storage_name);
 ///
@@ -60,17 +82,17 @@ pub struct StorageClient<W: WalletInterface> {
     /// The endpoint URL for the storage server.
     endpoint_url: String,
 
-    /// The authenticated peer for BRC-31 communication.
+    /// The authenticated peer for BRC-31 communication (for advanced use).
     #[allow(dead_code)]
     peer: Arc<Peer<W, SimplifiedFetchTransport>>,
 
-    /// The wallet for authentication.
+    /// The wallet for authentication and signing.
     wallet: W,
 
     /// HTTP client for requests.
     http_client: reqwest::Client,
 
-    /// Request ID counter.
+    /// Request ID counter for JSON-RPC.
     next_id: AtomicU64,
 
     /// Cached settings after makeAvailable.
@@ -79,6 +101,13 @@ pub struct StorageClient<W: WalletInterface> {
     /// Whether to use authenticated requests (BRC-31).
     /// Set to false for testing without authentication.
     use_auth: bool,
+
+    /// Whether to verify server response signatures.
+    /// Set to false if server doesn't provide auth headers.
+    verify_responses: bool,
+
+    /// Cached server identity key (from settings).
+    server_identity_key: Arc<RwLock<Option<PublicKey>>>,
 }
 
 impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
@@ -87,6 +116,9 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
     /// Testnet storage endpoint URL.
     pub const TESTNET_URL: &'static str = TESTNET_URL;
+
+    /// Originator string for BRC-31 authentication.
+    const ORIGINATOR: &'static str = "bsv-wallet-toolbox";
 
     /// Creates a new StorageClient with BRC-31 authentication.
     ///
@@ -104,7 +136,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             certificates_to_request: None,
             session_manager: None,
             auto_persist_last_session: true,
-            originator: Some("bsv-wallet-toolbox".to_string()),
+            originator: Some(Self::ORIGINATOR.to_string()),
         });
 
         Self {
@@ -115,6 +147,8 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             next_id: AtomicU64::new(1),
             settings: Arc::new(RwLock::new(None)),
             use_auth: true,
+            verify_responses: false, // Most servers don't sign responses yet
+            server_identity_key: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -128,6 +162,28 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         let mut client = Self::new(wallet, endpoint_url);
         client.use_auth = false;
         client
+    }
+
+    /// Enables or disables response signature verification.
+    ///
+    /// By default, response verification is disabled because most storage
+    /// servers don't sign their responses yet.
+    pub fn set_verify_responses(&mut self, verify: bool) {
+        self.verify_responses = verify;
+    }
+
+    /// Sets the server's identity key for signature verification.
+    ///
+    /// If not set, the key will be extracted from settings after makeAvailable().
+    pub async fn set_server_identity_key(&self, key: PublicKey) {
+        let mut cached = self.server_identity_key.write().await;
+        *cached = Some(key);
+    }
+
+    /// Gets the cached server identity key.
+    pub async fn get_server_identity_key(&self) -> Option<PublicKey> {
+        let cached = self.server_identity_key.read().await;
+        cached.clone()
     }
 
     /// Creates a new StorageClient for mainnet.
@@ -184,6 +240,16 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
     /// - JSON serialization
     /// - BRC-31 authenticated HTTP POST (when use_auth is true)
     /// - Response parsing and error handling
+    /// - Optional response signature verification
+    ///
+    /// ## BRC-31 Authentication
+    ///
+    /// When `use_auth` is true, each request includes:
+    /// - `x-bsv-auth-version`: "0.1"
+    /// - `x-bsv-auth-identity-key`: Client's identity key (hex)
+    /// - `x-bsv-auth-nonce`: Random nonce (base64)
+    /// - `x-bsv-auth-timestamp`: Unix timestamp (ms)
+    /// - `x-bsv-auth-signature`: Signature over request (hex)
     ///
     /// # Arguments
     ///
@@ -202,32 +268,54 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             "Making JSON-RPC call to storage server"
         );
 
-        // Make HTTP POST request
-        // TODO: When BRC-31 auth is properly implemented in the peer,
-        // use self.peer.to_peer() instead of direct HTTP
+        // Build HTTP POST request
         let mut request_builder = self
             .http_client
             .post(&self.endpoint_url)
             .header("Content-Type", "application/json");
 
-        // Add authentication headers if enabled
+        // Add BRC-31 authentication headers if enabled
         if self.use_auth {
-            // For now, add identity key header for basic identification
-            // Full BRC-31 auth would involve the complete handshake via Peer
-            if let Ok(identity_key) = self.get_identity_key().await {
-                request_builder = request_builder
-                    .header("x-bsv-auth-identity-key", identity_key);
+            // Get server identity key for signing (if available)
+            let server_key = self.get_server_identity_key().await;
+
+            // Create signed auth headers
+            let auth_headers = create_auth_headers(
+                &self.wallet,
+                "POST",
+                "/", // JSON-RPC endpoint path
+                &request_body,
+                server_key.as_ref(),
+                Self::ORIGINATOR,
+            )
+            .await?;
+
+            // Add all auth headers
+            for (name, value) in auth_headers.to_header_tuples() {
+                request_builder = request_builder.header(name, value);
             }
+
+            tracing::trace!(
+                identity_key = %auth_headers.identity_key,
+                nonce = %auth_headers.nonce,
+                timestamp = auth_headers.timestamp,
+                "Added BRC-31 auth headers to request"
+            );
         }
 
         let response = request_builder
-            .body(request_body)
+            .body(request_body.clone())
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("HTTP request failed: {}", e)))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        // Check HTTP status before reading body
+        let status = response.status();
+
+        // Parse response auth headers (for optional verification)
+        let response_auth = ResponseAuthHeaders::from_response(&response);
+
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(Error::NetworkError(format!(
                 "HTTP error {}: {}",
@@ -242,8 +330,33 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         tracing::trace!(
             method = method,
             response_size = response_body.len(),
+            has_auth_headers = response_auth.is_complete(),
             "Received response from storage server"
         );
+
+        // Verify response signature if enabled and headers are present
+        if self.verify_responses && response_auth.is_complete() {
+            let verification = super::auth::verify_response_auth(
+                &self.wallet,
+                "POST",
+                "/",
+                &response_body,
+                &response_auth,
+                Self::ORIGINATOR,
+            )
+            .await?;
+
+            if !verification.signature_valid {
+                return Err(Error::AccessDenied(
+                    "Server response signature verification failed".to_string(),
+                ));
+            }
+
+            tracing::trace!(
+                server_key = ?verification.server_identity_key.map(|k| k.to_hex()),
+                "Response signature verified successfully"
+            );
+        }
 
         let rpc_response: JsonRpcResponse = serde_json::from_slice(&response_body)
             .map_err(|e| Error::StorageError(format!("Invalid JSON-RPC response: {}", e)))?;
@@ -404,6 +517,18 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
             *settings = Some(result.clone());
         }
 
+        // Cache the server's identity key for future request signing
+        if !result.storage_identity_key.is_empty() {
+            if let Ok(server_key) = PublicKey::from_hex(&result.storage_identity_key) {
+                let mut cached_key = self.server_identity_key.write().await;
+                *cached_key = Some(server_key);
+                tracing::debug!(
+                    server_identity_key = %result.storage_identity_key,
+                    "Cached server identity key for BRC-31 signing"
+                );
+            }
+        }
+
         tracing::info!(
             storage_name = %result.storage_name,
             storage_identity_key = %result.storage_identity_key,
@@ -508,6 +633,18 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
         self.rpc_call(
             "insertCertificateAuth",
             vec![Self::to_value(auth)?, Self::to_value(&certificate)?],
+        )
+        .await
+    }
+
+    async fn insert_certificate_field(
+        &self,
+        auth: &AuthId,
+        field: TableCertificateField,
+    ) -> Result<i64> {
+        self.rpc_call(
+            "insertCertificateFieldAuth",
+            vec![Self::to_value(auth)?, Self::to_value(&field)?],
         )
         .await
     }
@@ -1611,5 +1748,177 @@ mod tests {
         assert_eq!(no_auth_methods.len(), 7);
         assert_eq!(auth_methods.len(), 15);
         assert_eq!(no_auth_methods.len() + auth_methods.len(), 22);
+    }
+
+    // =========================================================================
+    // BRC-31 Authentication Tests
+    // =========================================================================
+
+    #[test]
+    fn test_brc31_auth_header_names() {
+        use crate::storage::client::auth::headers;
+
+        // Verify header names match BRC-31/BRC-104 specification
+        assert_eq!(headers::VERSION, "x-bsv-auth-version");
+        assert_eq!(headers::IDENTITY_KEY, "x-bsv-auth-identity-key");
+        assert_eq!(headers::NONCE, "x-bsv-auth-nonce");
+        assert_eq!(headers::TIMESTAMP, "x-bsv-auth-timestamp");
+        assert_eq!(headers::SIGNATURE, "x-bsv-auth-signature");
+    }
+
+    #[test]
+    fn test_brc31_auth_version() {
+        use crate::storage::client::auth::AUTH_VERSION;
+
+        // BRC-31 version should be "0.1"
+        assert_eq!(AUTH_VERSION, "0.1");
+    }
+
+    #[test]
+    fn test_brc31_nonce_creation() {
+        use crate::storage::client::auth::create_simple_nonce;
+
+        let nonce1 = create_simple_nonce();
+        let nonce2 = create_simple_nonce();
+
+        // Nonces should be different
+        assert_ne!(nonce1, nonce2);
+
+        // Nonces should be base64 encoded
+        let decoded = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &nonce1,
+        );
+        assert!(decoded.is_ok());
+
+        // Should be 32 bytes when decoded
+        assert_eq!(decoded.unwrap().len(), 32);
+    }
+
+    #[test]
+    fn test_brc31_timestamp_validation() {
+        use crate::storage::client::auth::{current_timestamp_ms, validate_timestamp};
+
+        // Current timestamp should be valid
+        let now = current_timestamp_ms();
+        assert!(validate_timestamp(now).is_ok());
+
+        // Old timestamp (> 5 minutes) should fail
+        let old = now - 6 * 60 * 1000;
+        assert!(validate_timestamp(old).is_err());
+
+        // Far future timestamp should fail
+        let future = now + 2 * 60 * 1000;
+        assert!(validate_timestamp(future).is_err());
+    }
+
+    #[test]
+    fn test_brc31_signing_data_deterministic() {
+        use crate::storage::client::auth::create_signing_data;
+
+        let body = br#"{"jsonrpc":"2.0","method":"makeAvailable","params":[],"id":1}"#;
+        let nonce = "test-nonce-base64";
+        let timestamp = 1234567890000u64;
+
+        let data1 = create_signing_data("POST", "/", body, timestamp, nonce);
+        let data2 = create_signing_data("POST", "/", body, timestamp, nonce);
+
+        // Same inputs should produce same output
+        assert_eq!(data1, data2);
+    }
+
+    #[test]
+    fn test_brc31_signing_data_different_bodies() {
+        use crate::storage::client::auth::create_signing_data;
+
+        let body1 = br#"{"method":"makeAvailable"}"#;
+        let body2 = br#"{"method":"listOutputs"}"#;
+        let nonce = "test-nonce";
+        let timestamp = 1234567890000u64;
+
+        let data1 = create_signing_data("POST", "/", body1, timestamp, nonce);
+        let data2 = create_signing_data("POST", "/", body2, timestamp, nonce);
+
+        // Different bodies should produce different signing data
+        assert_ne!(data1, data2);
+    }
+
+    #[test]
+    fn test_brc31_auth_headers_struct() {
+        use crate::storage::client::auth::{AuthHeaders, AUTH_VERSION};
+
+        let headers = AuthHeaders {
+            version: AUTH_VERSION.to_string(),
+            identity_key: "02abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab".to_string(),
+            nonce: "dGVzdC1ub25jZS1iYXNlNjQ=".to_string(),
+            timestamp: 1234567890000,
+            signature: "3044022012345678".to_string(),
+        };
+
+        let tuples = headers.to_header_tuples();
+
+        // Should have 5 header tuples
+        assert_eq!(tuples.len(), 5);
+
+        // Verify each header is present
+        let map: std::collections::HashMap<_, _> = tuples.into_iter().collect();
+        assert!(map.contains_key("x-bsv-auth-version"));
+        assert!(map.contains_key("x-bsv-auth-identity-key"));
+        assert!(map.contains_key("x-bsv-auth-nonce"));
+        assert!(map.contains_key("x-bsv-auth-timestamp"));
+        assert!(map.contains_key("x-bsv-auth-signature"));
+    }
+
+    #[test]
+    fn test_brc31_response_headers_complete_check() {
+        use crate::storage::client::auth::ResponseAuthHeaders;
+
+        // Complete headers
+        let complete = ResponseAuthHeaders {
+            version: Some("0.1".to_string()),
+            identity_key: Some("02abc".to_string()),
+            nonce: Some("nonce".to_string()),
+            timestamp: Some(123456),
+            signature: Some("sig".to_string()),
+        };
+        assert!(complete.is_complete());
+
+        // Missing identity key
+        let missing_key = ResponseAuthHeaders {
+            version: Some("0.1".to_string()),
+            identity_key: None,
+            nonce: Some("nonce".to_string()),
+            timestamp: Some(123456),
+            signature: Some("sig".to_string()),
+        };
+        assert!(!missing_key.is_complete());
+
+        // Missing signature
+        let missing_sig = ResponseAuthHeaders {
+            version: Some("0.1".to_string()),
+            identity_key: Some("02abc".to_string()),
+            nonce: Some("nonce".to_string()),
+            timestamp: Some(123456),
+            signature: None,
+        };
+        assert!(!missing_sig.is_complete());
+    }
+
+    #[test]
+    fn test_brc31_replay_protection() {
+        use crate::storage::client::auth::{create_signing_data, create_simple_nonce, current_timestamp_ms};
+
+        // Two requests with same body at different times should have different signing data
+        let body = br#"{"method":"test"}"#;
+
+        let nonce1 = create_simple_nonce();
+        let nonce2 = create_simple_nonce();
+        let ts = current_timestamp_ms();
+
+        let data1 = create_signing_data("POST", "/", body, ts, &nonce1);
+        let data2 = create_signing_data("POST", "/", body, ts, &nonce2);
+
+        // Different nonces = different signing data (replay protected)
+        assert_ne!(data1, data2);
     }
 }

@@ -6,8 +6,17 @@
 //! ## Features
 //!
 //! - JSON-RPC 2.0 over HTTPS
-//! - BRC-31 (Authrite) authentication via `bsv-sdk` auth module
+//! - BRC-31 (Authrite) mutual authentication
+//! - Request signing with identity key
+//! - Response signature verification
 //! - Full implementation of `WalletStorageProvider` trait
+//!
+//! ## BRC-31 Authentication
+//!
+//! All requests are authenticated using the BRC-31 protocol:
+//! - Requests are signed with the wallet's identity key
+//! - Nonce and timestamp provide replay protection
+//! - Server responses can optionally be verified
 //!
 //! ## Example
 //!
@@ -22,7 +31,7 @@
 //! // Create client for mainnet storage
 //! let client = StorageClient::new(wallet, StorageClient::MAINNET_URL);
 //!
-//! // Initialize connection
+//! // Initialize connection (authenticated via BRC-31)
 //! let settings = client.make_available().await?;
 //! println!("Connected to: {}", settings.storage_name);
 //!
@@ -36,9 +45,15 @@
 //! let outputs = client.list_outputs(&auth, ListOutputsArgs::default()).await?;
 //! ```
 
+pub mod auth;
 mod json_rpc;
 mod storage_client;
 
+pub use auth::{
+    create_auth_headers, create_simple_nonce, current_timestamp_ms, headers as auth_headers,
+    validate_timestamp, verify_response_auth, AuthHeaders, AuthVerificationResult,
+    ResponseAuthHeaders, AUTH_PROTOCOL_ID, AUTH_VERSION,
+};
 pub use json_rpc::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 pub use storage_client::{
     StorageClient, UpdateProvenTxReqWithNewProvenTxArgs, UpdateProvenTxReqWithNewProvenTxResult,

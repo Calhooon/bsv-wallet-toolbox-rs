@@ -2043,6 +2043,43 @@ impl WalletStorageWriter for StorageSqlx {
         Ok(result.last_insert_rowid())
     }
 
+    async fn insert_certificate_field(
+        &self,
+        auth: &AuthId,
+        field: TableCertificateField,
+    ) -> Result<i64> {
+        let user_id = auth
+            .user_id
+            .ok_or_else(|| Error::AuthenticationRequired)?;
+
+        // Verify the field belongs to this user
+        if field.user_id != user_id {
+            return Err(Error::AccessDenied(
+                "Certificate field user_id does not match auth".to_string(),
+            ));
+        }
+
+        let now = Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO certificate_fields (certificate_id, user_id, field_name, field_value, master_key, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(field.certificate_id)
+        .bind(user_id)
+        .bind(&field.field_name)
+        .bind(&field.field_value)
+        .bind(&field.master_key)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
     async fn relinquish_certificate(
         &self,
         auth: &AuthId,

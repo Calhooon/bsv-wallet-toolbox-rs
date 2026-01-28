@@ -17,6 +17,7 @@ persistent storage without managing local databases.
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module exports and usage documentation |
+| `auth.rs` | BRC-31 authentication: nonce creation, request signing, response verification |
 | `json_rpc.rs` | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) |
 | `storage_client.rs` | `StorageClient` implementation of `WalletStorageProvider` |
 
@@ -102,13 +103,15 @@ if let Some(wallet_err) = WalletError::from_rpc_error(&rpc_error) {
 
 ```
 StorageClient<W: WalletInterface>
-├── endpoint_url: String          # Server URL
-├── peer: Arc<Peer<W, ...>>       # BRC-31 authenticated peer
-├── wallet: W                      # Wallet for auth
-├── http_client: reqwest::Client   # HTTP client
-├── next_id: AtomicU64            # Request ID counter
-├── settings: Arc<RwLock<...>>    # Cached TableSettings
-└── use_auth: bool                 # Enable/disable BRC-31 auth
+├── endpoint_url: String              # Server URL
+├── peer: Arc<Peer<W, ...>>           # BRC-31 authenticated peer (for advanced use)
+├── wallet: W                          # Wallet for auth and signing
+├── http_client: reqwest::Client       # HTTP client
+├── next_id: AtomicU64                # Request ID counter
+├── settings: Arc<RwLock<...>>        # Cached TableSettings
+├── use_auth: bool                     # Enable/disable BRC-31 auth
+├── verify_responses: bool             # Enable/disable response signature verification
+└── server_identity_key: Arc<RwLock<..>> # Cached server identity key
 ```
 
 ### Trait Implementation Hierarchy
@@ -174,6 +177,9 @@ Beyond trait implementations, `StorageClient` provides these convenience methods
 | `create_auth_id()` | Create AuthId for current wallet |
 | `create_auth_id_with_user(user_id)` | Create AuthId with user ID |
 | `get_storage_info(user_id, is_active)` | Build WalletStorageInfo for this client |
+| `set_verify_responses(verify)` | Enable/disable response signature verification |
+| `set_server_identity_key(key)` | Set server's identity key for signing |
+| `get_server_identity_key()` | Get cached server identity key |
 
 ## Usage
 
@@ -317,6 +323,71 @@ if let Some(wallet_err) = WalletError::from_rpc_error(&rpc_error) {
 }
 ```
 
+## BRC-31 Authentication
+
+### Overview
+
+All requests are authenticated using the BRC-31 (Authrite) protocol when `use_auth` is enabled:
+
+1. **Request Signing**: Each request is signed with the wallet's identity key
+2. **Replay Protection**: Unique nonce and timestamp prevent request replay
+3. **Response Verification**: Server responses can optionally be verified (if server provides auth headers)
+
+### Request Headers
+
+Each authenticated request includes these BRC-104 headers:
+
+| Header | Description |
+|--------|-------------|
+| `x-bsv-auth-version` | Protocol version ("0.1") |
+| `x-bsv-auth-identity-key` | Client's 33-byte compressed public key (hex) |
+| `x-bsv-auth-nonce` | Random 32-byte nonce (base64) |
+| `x-bsv-auth-timestamp` | Unix timestamp in milliseconds |
+| `x-bsv-auth-signature` | Signature over canonical request data (hex) |
+
+### Signature Creation
+
+The signature covers: `method || path || SHA256(body) || timestamp || nonce`
+
+```rust
+// Signing data construction
+let signing_data = create_signing_data("POST", "/", &body, timestamp, &nonce);
+
+// Sign with wallet identity key using BRC-42 key derivation
+let signature = wallet.create_signature(CreateSignatureArgs {
+    data: Some(signing_data),
+    protocol_id: Protocol::new(SecurityLevel::Counterparty, "storage auth"),
+    key_id: format!("{} {}", timestamp, nonce),
+    counterparty: server_identity_key.map(|k| Counterparty::Other(k)),
+    ..Default::default()
+}).await?;
+```
+
+### Timestamp Validation
+
+Timestamps are validated to prevent replay attacks:
+- Must be within 5 minutes of current time
+- Slight future timestamps (up to 1 minute) allowed for clock skew
+
+### Auth Module Exports
+
+The `auth` module exports these types and functions:
+
+| Export | Description |
+|--------|-------------|
+| `AuthHeaders` | Struct containing all auth header values |
+| `ResponseAuthHeaders` | Parsed auth headers from server response |
+| `AuthVerificationResult` | Result of response verification |
+| `create_auth_headers()` | Create signed auth headers for a request |
+| `create_simple_nonce()` | Generate random 32-byte nonce (base64) |
+| `current_timestamp_ms()` | Get current Unix timestamp in milliseconds |
+| `validate_timestamp()` | Validate timestamp is within acceptable range |
+| `create_signing_data()` | Create canonical signing data |
+| `verify_response_auth()` | Verify server response signature |
+| `AUTH_VERSION` | Protocol version constant ("0.1") |
+| `AUTH_PROTOCOL_ID` | Protocol ID for request signatures |
+| `headers::*` | Header name constants |
+
 ## Internal Details
 
 ### Request Flow
@@ -324,11 +395,17 @@ if let Some(wallet_err) = WalletError::from_rpc_error(&rpc_error) {
 1. `rpc_call<T>()` increments request ID atomically
 2. Creates `JsonRpcRequest` with method and params
 3. Serializes to JSON bytes
-4. If `use_auth` is enabled, adds `x-bsv-auth-identity-key` header
+4. If `use_auth` is enabled:
+   - Creates nonce and timestamp
+   - Creates signing data from method, path, body hash, timestamp, nonce
+   - Signs with wallet identity key
+   - Adds all BRC-31 headers to request
 5. POSTs to `endpoint_url` via `reqwest`
-6. Parses response as `JsonRpcResponse`
-7. Validates response ID matches request
-8. Deserializes result to type `T` or returns error
+6. Parses response auth headers (for optional verification)
+7. If `verify_responses` is enabled and headers are complete, verifies signature
+8. Parses response as `JsonRpcResponse`
+9. Validates response ID matches request
+10. Deserializes result to type `T` or returns error
 
 ### Settings Caching
 
@@ -346,14 +423,49 @@ This allows sharing across async tasks safely.
 
 ## Testing
 
-The module includes unit tests for JSON-RPC serialization and endpoint URLs.
-Integration tests require a running storage server or mock.
+The module includes comprehensive unit tests:
+
+### Test Categories
+
+| Category | Count | Coverage |
+|----------|-------|----------|
+| JSON-RPC serialization | 4 | Request/response format, error handling |
+| Auth module | 35 | Nonce, timestamp, signing data, headers, replay protection |
+| Storage client BRC-31 | 9 | Header names, version, nonce creation, timestamps, signing |
+| Method formats | 22 | All JSON-RPC method request/response formats |
+| Entity types | 15 | Table entity serialization/deserialization |
+
+### Running Tests
+
+```bash
+# Run all storage client tests
+cargo test --features remote storage::client::
+
+# Run auth module tests specifically
+cargo test --features remote storage::client::auth::
+
+# Run BRC-31 integration tests
+cargo test --features remote brc31
+```
+
+### Example Test
 
 ```rust
 #[test]
-fn test_endpoint_urls() {
-    assert_eq!(MAINNET_URL, "https://storage.babbage.systems");
-    assert_eq!(TESTNET_URL, "https://staging-storage.babbage.systems");
+fn test_brc31_auth_headers() {
+    use crate::storage::client::auth::{AuthHeaders, AUTH_VERSION};
+
+    let headers = AuthHeaders {
+        version: AUTH_VERSION.to_string(),
+        identity_key: "02abcdef...".to_string(),
+        nonce: "dGVzdC1ub25jZQ==".to_string(),
+        timestamp: 1234567890000,
+        signature: "3044022012345678...".to_string(),
+    };
+
+    let tuples = headers.to_header_tuples();
+    assert_eq!(tuples.len(), 5);
+    assert!(tuples.iter().any(|(k, _)| *k == "x-bsv-auth-signature"));
 }
 ```
 

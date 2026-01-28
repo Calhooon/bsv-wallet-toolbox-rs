@@ -259,6 +259,362 @@ impl SqliteStorage {
 
         Ok(row.0 as usize)
     }
+
+    /// Check if a header exists by hash (optimized for existence check only)
+    ///
+    /// More efficient than `find_live_header_for_block_hash` when you only need
+    /// to know if a header exists, not its full data.
+    pub async fn live_header_exists(&self, hash: &str) -> Result<bool> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM chaintracks_live_headers WHERE hash = ? LIMIT 1",
+        )
+        .bind(hash)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.0 > 0)
+    }
+
+    /// Find headers at or below a given height, sorted by height ascending
+    ///
+    /// Used for bulk operations and migrations.
+    pub async fn find_headers_for_height_less_than_or_equal_sorted(
+        &self,
+        height: u32,
+        limit: u32,
+    ) -> Result<Vec<LiveBlockHeader>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM chaintracks_live_headers
+            WHERE height <= ?
+            ORDER BY height ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(height as i64)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(Self::row_to_header).collect())
+    }
+
+    /// Delete headers by their IDs
+    ///
+    /// Handles foreign key constraints by first clearing references.
+    pub async fn delete_live_headers_by_ids(&self, ids: &[i64]) -> Result<u32> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Build placeholders for IN clause
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+        // First, clear previous_header_id references to prevent FK constraint violations
+        let clear_refs_sql = format!(
+            "UPDATE chaintracks_live_headers SET previous_header_id = NULL WHERE previous_header_id IN ({})",
+            placeholders
+        );
+        let mut clear_query = sqlx::query(&clear_refs_sql);
+        for id in ids {
+            clear_query = clear_query.bind(*id);
+        }
+        clear_query.execute(&self.pool).await?;
+
+        // Now delete the headers
+        let delete_sql = format!(
+            "DELETE FROM chaintracks_live_headers WHERE header_id IN ({})",
+            placeholders
+        );
+        let mut delete_query = sqlx::query(&delete_sql);
+        for id in ids {
+            delete_query = delete_query.bind(*id);
+        }
+        let result = delete_query.execute(&self.pool).await?;
+
+        let count = result.rows_affected() as u32;
+        if count > 0 {
+            debug!("Deleted {} headers by IDs", count);
+        }
+
+        Ok(count)
+    }
+
+    /// Set the is_chain_tip flag for a header by ID
+    pub async fn set_chain_tip_by_id(&self, header_id: i64, is_chain_tip: bool) -> Result<()> {
+        sqlx::query(
+            "UPDATE chaintracks_live_headers SET is_chain_tip = ?, updated_at = ? WHERE header_id = ?",
+        )
+        .bind(if is_chain_tip { 1 } else { 0 })
+        .bind(Utc::now())
+        .bind(header_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Set the is_active flag for a header by ID
+    pub async fn set_active_by_id(&self, header_id: i64, is_active: bool) -> Result<()> {
+        sqlx::query(
+            "UPDATE chaintracks_live_headers SET is_active = ?, updated_at = ? WHERE header_id = ?",
+        )
+        .bind(if is_active { 1 } else { 0 })
+        .bind(Utc::now())
+        .bind(header_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Batch insert headers for efficient bulk ingestion
+    ///
+    /// This method is optimized for the bulk ingestor which needs to insert
+    /// 10k+ headers at a time. It uses a transaction and batch inserts for
+    /// performance.
+    ///
+    /// Note: This method does NOT update the chain tip or handle reorgs.
+    /// It's designed for initial sync where headers are inserted in order.
+    /// The caller should call `update_chain_tip_to_highest()` after batch insert.
+    ///
+    /// # Arguments
+    /// * `headers` - Headers to insert (should be in height order for efficiency)
+    ///
+    /// # Returns
+    /// * Number of headers actually inserted (excludes duplicates)
+    pub async fn insert_headers_batch(&self, headers: &[LiveBlockHeader]) -> Result<u32> {
+        if headers.is_empty() {
+            return Ok(0);
+        }
+
+        let mut inserted = 0u32;
+        let now = Utc::now();
+
+        // Use a transaction for atomicity and performance
+        let mut tx = self.pool.begin().await?;
+
+        // Build a set of existing hashes for duplicate detection
+        // For very large batches, we check in chunks
+        let chunk_size = 500;
+        let mut existing_hashes = std::collections::HashSet::new();
+
+        for chunk in headers.chunks(chunk_size) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT hash FROM chaintracks_live_headers WHERE hash IN ({})",
+                placeholders
+            );
+            let mut query = sqlx::query_scalar::<_, String>(&sql);
+            for h in chunk {
+                query = query.bind(&h.hash);
+            }
+            let existing: Vec<String> = query.fetch_all(&mut *tx).await?;
+            existing_hashes.extend(existing);
+        }
+
+        // Insert headers in batches
+        for header in headers {
+            // Skip duplicates
+            if existing_hashes.contains(&header.hash) {
+                continue;
+            }
+
+            // Calculate chain work if not set
+            let chain_work = if header.chain_work.is_empty() || header.chain_work == "0" {
+                calculate_work(header.bits)
+            } else {
+                header.chain_work.clone()
+            };
+
+            // Find previous header ID if we have the previous hash
+            let previous_header_id: Option<i64> = if header.previous_hash != "0".repeat(64) {
+                let row: Option<(i64,)> = sqlx::query_as(
+                    "SELECT header_id FROM chaintracks_live_headers WHERE hash = ?",
+                )
+                .bind(&header.previous_hash)
+                .fetch_optional(&mut *tx)
+                .await?;
+                row.map(|r| r.0)
+            } else {
+                None
+            };
+
+            // Insert the header (not as chain tip - we'll update that separately)
+            sqlx::query(
+                r#"
+                INSERT INTO chaintracks_live_headers (
+                    previous_header_id, previous_hash, height, is_active, is_chain_tip,
+                    hash, chain_work, version, merkle_root, time, bits, nonce,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(previous_header_id)
+            .bind(&header.previous_hash)
+            .bind(header.height as i64)
+            .bind(1i32) // is_active = true for bulk insert
+            .bind(0i32) // is_chain_tip = false (will update after)
+            .bind(&header.hash)
+            .bind(&chain_work)
+            .bind(header.version as i64)
+            .bind(&header.merkle_root)
+            .bind(header.time as i64)
+            .bind(header.bits as i64)
+            .bind(header.nonce as i64)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+
+            inserted += 1;
+        }
+
+        // Commit the transaction
+        tx.commit().await?;
+
+        if inserted > 0 {
+            info!("Batch inserted {} headers", inserted);
+        }
+
+        Ok(inserted)
+    }
+
+    /// Update the chain tip to the header with the highest height
+    ///
+    /// Call this after `insert_headers_batch` to set the correct chain tip.
+    pub async fn update_chain_tip_to_highest(&self) -> Result<Option<LiveBlockHeader>> {
+        // First, clear any existing chain tip
+        sqlx::query("UPDATE chaintracks_live_headers SET is_chain_tip = 0 WHERE is_chain_tip = 1")
+            .execute(&self.pool)
+            .await?;
+
+        // Find the header with the highest height among active headers
+        let row = sqlx::query(
+            r#"
+            SELECT * FROM chaintracks_live_headers
+            WHERE is_active = 1
+            ORDER BY height DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(r) => {
+                let header = Self::row_to_header(&r);
+
+                // Set it as the chain tip
+                sqlx::query(
+                    "UPDATE chaintracks_live_headers SET is_chain_tip = 1, updated_at = ? WHERE header_id = ?",
+                )
+                .bind(Utc::now())
+                .bind(header.header_id)
+                .execute(&self.pool)
+                .await?;
+
+                debug!(
+                    "Updated chain tip to height {} hash {}",
+                    header.height,
+                    &header.hash[..16]
+                );
+
+                Ok(Some(header))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get headers in a height range (inclusive), active chain only
+    ///
+    /// Returns headers ordered by height ascending.
+    pub async fn get_headers_by_height_range(
+        &self,
+        start_height: u32,
+        end_height: u32,
+    ) -> Result<Vec<LiveBlockHeader>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM chaintracks_live_headers
+            WHERE height >= ? AND height <= ? AND is_active = 1
+            ORDER BY height ASC
+            "#,
+        )
+        .bind(start_height as i64)
+        .bind(end_height as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(Self::row_to_header).collect())
+    }
+
+    /// Get all headers at a specific height (including forks)
+    pub async fn get_headers_at_height(&self, height: u32) -> Result<Vec<LiveBlockHeader>> {
+        let rows = sqlx::query(
+            "SELECT * FROM chaintracks_live_headers WHERE height = ?",
+        )
+        .bind(height as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(Self::row_to_header).collect())
+    }
+
+    /// Get active headers only
+    pub async fn get_active_headers(&self) -> Result<Vec<LiveBlockHeader>> {
+        let rows = sqlx::query(
+            "SELECT * FROM chaintracks_live_headers WHERE is_active = 1 ORDER BY height ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(Self::row_to_header).collect())
+    }
+
+    /// Get inactive (fork) headers only
+    pub async fn get_fork_headers(&self) -> Result<Vec<LiveBlockHeader>> {
+        let rows = sqlx::query(
+            "SELECT * FROM chaintracks_live_headers WHERE is_active = 0 ORDER BY height ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(Self::row_to_header).collect())
+    }
+
+    /// Find headers that build on a given hash (children)
+    pub async fn find_children(&self, parent_hash: &str) -> Result<Vec<LiveBlockHeader>> {
+        let rows = sqlx::query(
+            "SELECT * FROM chaintracks_live_headers WHERE previous_hash = ?",
+        )
+        .bind(parent_hash)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(Self::row_to_header).collect())
+    }
+
+    /// Mark all headers at or above a height as inactive (for reorg handling)
+    ///
+    /// Returns the number of headers marked inactive.
+    pub async fn mark_headers_inactive_above_height(&self, height: u32) -> Result<u32> {
+        let result = sqlx::query(
+            "UPDATE chaintracks_live_headers SET is_active = 0, is_chain_tip = 0, updated_at = ? WHERE height >= ? AND is_active = 1",
+        )
+        .bind(Utc::now())
+        .bind(height as i64)
+        .execute(&self.pool)
+        .await?;
+
+        let count = result.rows_affected() as u32;
+        if count > 0 {
+            info!("Marked {} headers inactive above height {}", count, height);
+        }
+
+        Ok(count)
+    }
 }
 
 #[async_trait]
@@ -917,5 +1273,552 @@ mod tests {
 
         // Each header is 80 bytes
         assert_eq!(bytes.len(), 80);
+    }
+
+    #[tokio::test]
+    async fn test_live_header_exists() {
+        let storage = create_test_storage().await;
+
+        // Initially doesn't exist
+        assert!(!storage.live_header_exists("hash_0").await.unwrap());
+
+        // Insert header
+        let header = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(header).await.unwrap();
+
+        // Now exists
+        assert!(storage.live_header_exists("hash_0").await.unwrap());
+        assert!(!storage.live_header_exists("nonexistent").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_find_headers_for_height_less_than_or_equal_sorted() {
+        let storage = create_test_storage().await;
+
+        // Insert several headers
+        for i in 0..5 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{}", i - 1)
+            };
+            let header = create_test_header(i, &prev_hash, &format!("hash_{}", i));
+            storage.insert_header(header).await.unwrap();
+        }
+
+        // Find headers at or below height 2
+        let headers = storage
+            .find_headers_for_height_less_than_or_equal_sorted(2, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(headers.len(), 3); // heights 0, 1, 2
+        assert_eq!(headers[0].height, 0);
+        assert_eq!(headers[1].height, 1);
+        assert_eq!(headers[2].height, 2);
+    }
+
+    #[tokio::test]
+    async fn test_find_headers_with_limit() {
+        let storage = create_test_storage().await;
+
+        // Insert several headers
+        for i in 0..10 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{}", i - 1)
+            };
+            let header = create_test_header(i, &prev_hash, &format!("hash_{}", i));
+            storage.insert_header(header).await.unwrap();
+        }
+
+        // Find with limit
+        let headers = storage
+            .find_headers_for_height_less_than_or_equal_sorted(9, 3)
+            .await
+            .unwrap();
+
+        assert_eq!(headers.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_delete_live_headers_by_ids() {
+        let storage = create_test_storage().await;
+
+        // Insert headers
+        let h0 = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(h0).await.unwrap();
+
+        let h1 = create_test_header(1, "hash_0", "hash_1");
+        storage.insert_header(h1).await.unwrap();
+
+        let h2 = create_test_header(2, "hash_1", "hash_2");
+        storage.insert_header(h2).await.unwrap();
+
+        assert_eq!(storage.header_count().await.unwrap(), 3);
+
+        // Get the IDs
+        let header0 = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        let header1 = storage.find_live_header_for_block_hash("hash_1").await.unwrap().unwrap();
+
+        // Delete headers 0 and 1
+        let deleted = storage
+            .delete_live_headers_by_ids(&[header0.header_id, header1.header_id])
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 2);
+        assert_eq!(storage.header_count().await.unwrap(), 1);
+
+        // Verify remaining header
+        let remaining = storage.find_live_header_for_block_hash("hash_2").await.unwrap();
+        assert!(remaining.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_delete_empty_ids() {
+        let storage = create_test_storage().await;
+
+        let deleted = storage.delete_live_headers_by_ids(&[]).await.unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[tokio::test]
+    async fn test_set_chain_tip_by_id() {
+        let storage = create_test_storage().await;
+
+        let header = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(header).await.unwrap();
+
+        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        assert!(h.is_chain_tip);
+
+        // Clear chain tip
+        storage.set_chain_tip_by_id(h.header_id, false).await.unwrap();
+
+        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        assert!(!h.is_chain_tip);
+
+        // Set it back
+        storage.set_chain_tip_by_id(h.header_id, true).await.unwrap();
+
+        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        assert!(h.is_chain_tip);
+    }
+
+    #[tokio::test]
+    async fn test_set_active_by_id() {
+        let storage = create_test_storage().await;
+
+        let header = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(header).await.unwrap();
+
+        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        assert!(h.is_active);
+
+        // Mark inactive
+        storage.set_active_by_id(h.header_id, false).await.unwrap();
+
+        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        assert!(!h.is_active);
+    }
+
+    #[tokio::test]
+    async fn test_batch_insert() {
+        let storage = create_test_storage().await;
+
+        // Create batch of headers
+        let mut headers = Vec::new();
+        for i in 0..100 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{:04}", i - 1)
+            };
+            headers.push(create_test_header(i, &prev_hash, &format!("hash_{:04}", i)));
+        }
+
+        // Batch insert
+        let inserted = storage.insert_headers_batch(&headers).await.unwrap();
+        assert_eq!(inserted, 100);
+        assert_eq!(storage.header_count().await.unwrap(), 100);
+
+        // Update chain tip
+        let tip = storage.update_chain_tip_to_highest().await.unwrap().unwrap();
+        assert_eq!(tip.height, 99);
+    }
+
+    #[tokio::test]
+    async fn test_batch_insert_with_duplicates() {
+        let storage = create_test_storage().await;
+
+        // Insert some headers first
+        let h0 = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(h0).await.unwrap();
+
+        let h1 = create_test_header(1, "hash_0", "hash_1");
+        storage.insert_header(h1).await.unwrap();
+
+        // Batch insert with duplicates
+        let headers = vec![
+            create_test_header(0, &"0".repeat(64), "hash_0"), // duplicate
+            create_test_header(1, "hash_0", "hash_1"),        // duplicate
+            create_test_header(2, "hash_1", "hash_2"),        // new
+            create_test_header(3, "hash_2", "hash_3"),        // new
+        ];
+
+        let inserted = storage.insert_headers_batch(&headers).await.unwrap();
+        assert_eq!(inserted, 2); // Only 2 new headers
+        assert_eq!(storage.header_count().await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_batch_insert_empty() {
+        let storage = create_test_storage().await;
+
+        let inserted = storage.insert_headers_batch(&[]).await.unwrap();
+        assert_eq!(inserted, 0);
+    }
+
+    #[tokio::test]
+    async fn test_update_chain_tip_to_highest() {
+        let storage = create_test_storage().await;
+
+        // Insert headers without setting tip
+        let headers = vec![
+            create_test_header(0, &"0".repeat(64), "hash_0"),
+            create_test_header(1, "hash_0", "hash_1"),
+            create_test_header(2, "hash_1", "hash_2"),
+        ];
+
+        storage.insert_headers_batch(&headers).await.unwrap();
+
+        // Chain tip should be none or not the highest yet
+        // Update to highest
+        let tip = storage.update_chain_tip_to_highest().await.unwrap().unwrap();
+        assert_eq!(tip.height, 2);
+        assert_eq!(tip.hash, "hash_2");
+
+        // Verify tip is set
+        let fetched_tip = storage.find_chain_tip_header().await.unwrap().unwrap();
+        assert_eq!(fetched_tip.height, 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_chain_tip_empty_storage() {
+        let storage = create_test_storage().await;
+
+        let tip = storage.update_chain_tip_to_highest().await.unwrap();
+        assert!(tip.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_headers_by_height_range() {
+        let storage = create_test_storage().await;
+
+        // Insert headers
+        for i in 0..10 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{}", i - 1)
+            };
+            let header = create_test_header(i, &prev_hash, &format!("hash_{}", i));
+            storage.insert_header(header).await.unwrap();
+        }
+
+        // Get range
+        let headers = storage.get_headers_by_height_range(3, 7).await.unwrap();
+
+        assert_eq!(headers.len(), 5);
+        assert_eq!(headers[0].height, 3);
+        assert_eq!(headers[4].height, 7);
+    }
+
+    #[tokio::test]
+    async fn test_get_headers_at_height() {
+        let storage = create_test_storage().await;
+
+        let h0 = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(h0).await.unwrap();
+
+        let headers = storage.get_headers_at_height(0).await.unwrap();
+        assert_eq!(headers.len(), 1);
+
+        let headers = storage.get_headers_at_height(1).await.unwrap();
+        assert!(headers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_active_headers() {
+        let storage = create_test_storage().await;
+
+        // Insert chain
+        for i in 0..3 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{}", i - 1)
+            };
+            let header = create_test_header(i, &prev_hash, &format!("hash_{}", i));
+            storage.insert_header(header).await.unwrap();
+        }
+
+        // Mark one as inactive
+        let h1 = storage.find_live_header_for_block_hash("hash_1").await.unwrap().unwrap();
+        storage.set_active_by_id(h1.header_id, false).await.unwrap();
+
+        let active = storage.get_active_headers().await.unwrap();
+        assert_eq!(active.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_fork_headers() {
+        let storage = create_test_storage().await;
+
+        // Insert chain
+        for i in 0..3 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{}", i - 1)
+            };
+            let header = create_test_header(i, &prev_hash, &format!("hash_{}", i));
+            storage.insert_header(header).await.unwrap();
+        }
+
+        // Initially no forks
+        let forks = storage.get_fork_headers().await.unwrap();
+        assert!(forks.is_empty());
+
+        // Mark one as inactive (simulated fork)
+        let h1 = storage.find_live_header_for_block_hash("hash_1").await.unwrap().unwrap();
+        storage.set_active_by_id(h1.header_id, false).await.unwrap();
+
+        let forks = storage.get_fork_headers().await.unwrap();
+        assert_eq!(forks.len(), 1);
+        assert_eq!(forks[0].hash, "hash_1");
+    }
+
+    #[tokio::test]
+    async fn test_find_children() {
+        let storage = create_test_storage().await;
+
+        let h0 = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(h0).await.unwrap();
+
+        let h1 = create_test_header(1, "hash_0", "hash_1");
+        storage.insert_header(h1).await.unwrap();
+
+        let children = storage.find_children("hash_0").await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].hash, "hash_1");
+
+        let no_children = storage.find_children("hash_1").await.unwrap();
+        assert!(no_children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mark_headers_inactive_above_height() {
+        let storage = create_test_storage().await;
+
+        // Insert chain
+        for i in 0..5 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{}", i - 1)
+            };
+            let header = create_test_header(i, &prev_hash, &format!("hash_{}", i));
+            storage.insert_header(header).await.unwrap();
+        }
+
+        // Mark headers at or above height 3 as inactive
+        let marked = storage.mark_headers_inactive_above_height(3).await.unwrap();
+        assert_eq!(marked, 2); // heights 3 and 4
+
+        // Verify
+        let h2 = storage.find_live_header_for_block_hash("hash_2").await.unwrap().unwrap();
+        assert!(h2.is_active);
+
+        let h3 = storage.find_live_header_for_block_hash("hash_3").await.unwrap().unwrap();
+        assert!(!h3.is_active);
+
+        let h4 = storage.find_live_header_for_block_hash("hash_4").await.unwrap().unwrap();
+        assert!(!h4.is_active);
+    }
+
+    #[tokio::test]
+    async fn test_reorg_handling() {
+        let storage = create_test_storage().await;
+
+        // Build main chain: 0 -> 1 -> 2
+        let h0 = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(h0).await.unwrap();
+
+        let h1 = create_test_header(1, "hash_0", "hash_1");
+        storage.insert_header(h1).await.unwrap();
+
+        let h2 = create_test_header(2, "hash_1", "hash_2");
+        storage.insert_header(h2).await.unwrap();
+
+        // Verify tip is at height 2
+        let tip = storage.find_chain_tip_header().await.unwrap().unwrap();
+        assert_eq!(tip.height, 2);
+
+        // Create a competing chain: 0 -> 1' -> 2' -> 3'
+        // First we need to manually insert a fork at height 1
+        // Fork header at height 1, same previous as original h1
+        let fork1 = create_test_header(1, "hash_0", "fork_hash_1");
+        // This won't become tip because same height as existing tip chain
+
+        // Create fork chain that's longer
+        let fork2 = create_test_header(2, "fork_hash_1", "fork_hash_2");
+        let fork3 = create_test_header(3, "fork_hash_2", "fork_hash_3");
+
+        // Insert fork headers
+        storage.insert_header(fork1).await.unwrap();
+        storage.insert_header(fork2).await.unwrap();
+
+        // Fork 3 should trigger reorg since it's higher than current tip
+        let result = storage.insert_header(fork3).await.unwrap();
+        assert!(result.added);
+        assert!(result.is_active_tip);
+        assert!(result.reorg_depth > 0);
+
+        // Verify new tip
+        let new_tip = storage.find_chain_tip_header().await.unwrap().unwrap();
+        assert_eq!(new_tip.height, 3);
+        assert_eq!(new_tip.hash, "fork_hash_3");
+    }
+
+    #[tokio::test]
+    async fn test_empty_database_queries() {
+        let storage = create_test_storage().await;
+
+        // All queries should handle empty database gracefully
+        assert!(storage.find_chain_tip_header().await.unwrap().is_none());
+        assert!(storage.find_chain_tip_hash().await.unwrap().is_none());
+        assert!(storage.find_header_for_height(0).await.unwrap().is_none());
+        assert!(storage.find_live_header_for_block_hash("any").await.unwrap().is_none());
+        assert!(storage.find_live_header_for_merkle_root("any").await.unwrap().is_none());
+        assert!(storage.get_headers_bytes(0, 10).await.unwrap().is_empty());
+        assert!(storage.get_live_headers().await.unwrap().is_empty());
+        assert!(storage.find_live_height_range().await.unwrap().is_none());
+        assert_eq!(storage.header_count().await.unwrap(), 0);
+        assert!(!storage.live_header_exists("any").await.unwrap());
+        assert!(storage.get_headers_by_height_range(0, 10).await.unwrap().is_empty());
+        assert!(storage.get_headers_at_height(0).await.unwrap().is_empty());
+        assert!(storage.get_active_headers().await.unwrap().is_empty());
+        assert!(storage.get_fork_headers().await.unwrap().is_empty());
+        assert!(storage.find_children("any").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_detection() {
+        let storage = create_test_storage().await;
+
+        // Build chain: 0 -> 1 -> 2
+        for i in 0..3 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{}", i - 1)
+            };
+            let header = create_test_header(i, &prev_hash, &format!("hash_{}", i));
+            storage.insert_header(header).await.unwrap();
+        }
+
+        let h0 = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        let h2 = storage.find_live_header_for_block_hash("hash_2").await.unwrap().unwrap();
+
+        let ancestor = storage.find_common_ancestor(&h0, &h2).await.unwrap().unwrap();
+        assert_eq!(ancestor.hash, "hash_0");
+    }
+
+    #[tokio::test]
+    async fn test_reorg_depth_calculation() {
+        let storage = create_test_storage().await;
+
+        // Build chain: 0 -> 1 -> 2
+        for i in 0..3 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{}", i - 1)
+            };
+            let header = create_test_header(i, &prev_hash, &format!("hash_{}", i));
+            storage.insert_header(header).await.unwrap();
+        }
+
+        // A new header extending the tip has 0 reorg depth
+        let extending = create_test_header(3, "hash_2", "hash_3");
+        let depth = storage.find_reorg_depth(&LiveBlockHeader {
+            previous_hash: "hash_2".to_string(),
+            ..extending
+        }).await.unwrap();
+        assert_eq!(depth, 0);
+    }
+
+    #[tokio::test]
+    async fn test_batch_insert_large() {
+        let storage = create_test_storage().await;
+
+        // Create a large batch (simulating bulk ingestor)
+        let mut headers = Vec::new();
+        for i in 0..1000 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("hash_{:06}", i - 1)
+            };
+            headers.push(create_test_header(i, &prev_hash, &format!("hash_{:06}", i)));
+        }
+
+        let inserted = storage.insert_headers_batch(&headers).await.unwrap();
+        assert_eq!(inserted, 1000);
+
+        // Update chain tip
+        let tip = storage.update_chain_tip_to_highest().await.unwrap().unwrap();
+        assert_eq!(tip.height, 999);
+
+        // Verify some lookups
+        let h500 = storage.find_header_for_height(500).await.unwrap().unwrap();
+        assert_eq!(h500.height, 500);
+    }
+
+    #[tokio::test]
+    async fn test_headers_bytes_multiple() {
+        let storage = create_test_storage().await;
+
+        // Insert a chain
+        for i in 0..3 {
+            let prev_hash = if i == 0 {
+                "0".repeat(64)
+            } else {
+                format!("{:064x}", i - 1)
+            };
+            let mut header = create_test_header(i, &prev_hash, &format!("{:064x}", i));
+            header.merkle_root = format!("{:064x}", i + 100);
+            storage.insert_header(header).await.unwrap();
+        }
+
+        let bytes = storage.get_headers_bytes(0, 3).await.unwrap();
+        assert_eq!(bytes.len(), 240); // 3 * 80 bytes
+    }
+
+    #[tokio::test]
+    async fn test_destroy() {
+        let storage = create_test_storage().await;
+
+        let header = create_test_header(0, &"0".repeat(64), "hash_0");
+        storage.insert_header(header).await.unwrap();
+
+        assert_eq!(storage.header_count().await.unwrap(), 1);
+
+        storage.destroy().await.unwrap();
+
+        assert_eq!(storage.header_count().await.unwrap(), 0);
     }
 }

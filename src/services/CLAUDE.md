@@ -21,6 +21,7 @@ The services module provides a unified interface for interacting with BSV blockc
 │ - UTXO Status │ - Tx Status   │ - Tx Status   │                 │
 │ - Script Hist │               │ - Script Hist │                 │
 │ - Exchange $  │               │               │                 │
+│ - Chain Info  │               │               │                 │
 └───────────────┴───────────────┴───────────────┴─────────────────┘
 ```
 
@@ -29,7 +30,7 @@ The services module provides a unified interface for interacting with BSV blockc
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module root with re-exports, `ServicesOptions` configuration, and `Chain` re-export from chaintracks |
-| `traits.rs` | `WalletServices` trait definition and all result types (`GetRawTxResult`, `PostBeefResult`, etc.) |
+| `traits.rs` | `WalletServices` trait definition and all result types (`GetRawTxResult`, `PostBeefResult`, `GetBeefResult`, etc.) |
 | `services.rs` | `Services` struct implementing `WalletServices` with multi-provider orchestration |
 | `collection.rs` | `ServiceCollection<S>` generic failover container with call history tracking |
 | `providers/` | Individual provider implementations (WhatsOnChain, ARC, Bitails) |
@@ -48,11 +49,13 @@ pub struct Services {
     pub arc_taal: Arc<Arc>,
     pub arc_gorillapool: Option<Arc<Arc>>,
     pub bitails: Arc<Bitails>,
-    // Internal service collections for each operation...
+    pub post_beef_mode: PostBeefMode,
+    // Internal RwLock-protected service collections for each operation...
 }
 ```
 
 **Factory Methods:**
+- `Services::new(chain)` - Create with chain-appropriate defaults
 - `Services::mainnet()` - Create with mainnet defaults
 - `Services::testnet()` - Create with testnet configuration
 - `Services::with_options(chain, options)` - Create with custom options
@@ -60,14 +63,24 @@ pub struct Services {
 **Key Methods:**
 - `get_raw_tx(txid)` - Retrieve raw transaction bytes
 - `get_merkle_path(txid)` - Get merkle proof for SPV verification
+- `get_beef(txid, known_txids)` - Build BEEF from raw tx and merkle path
 - `post_beef(beef, txids)` - Broadcast BEEF-format transaction
 - `get_utxo_status(output, format, outpoint)` - Check if output is unspent
 - `get_status_for_txids(txids)` - Check confirmation status of transactions
 - `get_script_hash_history(hash)` - Get transaction history for script
 - `get_bsv_exchange_rate()` - Get cached USD/BSV rate
+- `get_height()` - Get current blockchain height
+- `hash_to_header(hash)` - Get block header by hash
 - `get_services_call_history(reset)` - Get diagnostics for all service calls
+- `set_post_beef_mode(mode)` - Configure broadcast behavior
 
-### WalletServices Trait (traits.rs:22)
+**Provider Count Methods:**
+- `get_merkle_path_count()` - Number of merkle path providers
+- `get_raw_tx_count()` - Number of raw tx providers
+- `post_beef_count()` - Number of post beef providers
+- `get_utxo_status_count()` - Number of UTXO status providers
+
+### WalletServices Trait (traits.rs:23)
 
 Core trait that `Services` implements:
 
@@ -76,6 +89,8 @@ Core trait that `Services` implements:
 pub trait WalletServices: Send + Sync {
     async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker>;
     async fn get_height(&self) -> Result<u32>;
+    async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>>;
+    async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader>;
     async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult>;
     async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult>;
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>>;
@@ -86,6 +101,7 @@ pub trait WalletServices: Send + Sync {
     fn hash_output_script(&self, script: &[u8]) -> String;
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool>;
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool>;
+    async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult>;
 }
 ```
 
@@ -98,18 +114,35 @@ pub struct ServiceCollection<S> {
     pub service_name: String,
     services: Vec<NamedService<S>>,
     index: usize,
-    // Call history tracking...
+    since: DateTime<Utc>,
+    history_by_provider: HashMap<String, ProviderCallHistoryInternal>,
 }
 ```
 
 **Key Methods:**
-- `add(name, service)` - Add provider to collection
+- `new(name)` - Create new collection
+- `add(name, service)` / `with(name, service)` - Add provider to collection
+- `remove(name)` - Remove provider by name
+- `count()` / `is_empty()` - Collection size queries
+- `current_name()` / `current_service()` - Get current provider
 - `next()` - Advance to next provider (wraps around)
+- `reset()` - Return to first provider
 - `move_to_last(name)` - De-prioritize failing provider
+- `service_to_call()` - Get current service with call metadata
+- `all_services_to_call()` - Get all services for parallel operations
+- `all_services_owned()` - Get owned copies (avoids lock contention)
 - `add_call_success/failure/error(provider, call)` - Record call outcome
 - `get_call_history(reset)` - Get statistics, optionally reset counters
 
-### ServicesOptions (mod.rs:64)
+### SharedServiceCollection (collection.rs:452)
+
+Thread-safe wrapper for concurrent access:
+
+```rust
+pub struct SharedServiceCollection<S>(pub Arc<RwLock<ServiceCollection<S>>>);
+```
+
+### ServicesOptions (mod.rs:67)
 
 Configuration for service providers:
 
@@ -126,19 +159,42 @@ pub struct ServicesOptions {
 }
 ```
 
+**Builder Methods:**
+- `ServicesOptions::mainnet()` / `testnet()` - Create with defaults
+- `with_woc_api_key(key)` - Set WhatsOnChain API key
+- `with_bitails_api_key(key)` - Set Bitails API key
+- `with_arc(url, config)` - Set TAAL ARC configuration
+- `with_gorillapool(url, config)` - Set GorillaPool ARC configuration
+
 ## Result Types (traits.rs)
 
 | Type | Purpose |
 |------|---------|
 | `GetRawTxResult` | Raw transaction bytes with provider name |
-| `GetMerklePathResult` | Merkle proof in TSC/BUMP format |
+| `GetMerklePathResult` | Merkle proof in TSC/BUMP format with optional header |
+| `GetBeefResult` | BEEF data with txid, proof status, and error info |
 | `PostBeefResult` | Broadcast result with per-txid status |
-| `PostTxResultForTxid` | Single transaction broadcast result |
+| `PostTxResultForTxid` | Single transaction broadcast result with double-spend detection |
 | `GetUtxoStatusResult` | UTXO check with details list |
+| `UtxoDetail` | Individual UTXO info (txid, index, satoshis, height) |
 | `GetStatusForTxidsResult` | Batch transaction status check |
+| `TxStatusDetail` | Single transaction status (unknown/known/mined with depth) |
 | `GetScriptHashHistoryResult` | Transaction history for address |
-| `BlockHeader` | Parsed block header with all fields |
-| `BsvExchangeRate` | Cached exchange rate with staleness check |
+| `ScriptHistoryItem` | Single history entry (txid, height) |
+| `BlockHeader` | Parsed block header with all fields and `to_binary()` method |
+| `BsvExchangeRate` | Cached exchange rate with `is_stale()` check |
+
+## Call Tracking Types (collection.rs)
+
+| Type | Purpose |
+|------|---------|
+| `ServiceCall` | Individual call metadata (timing, success, error) |
+| `ServiceCallError` | Error details (message, code) |
+| `ServiceToCall` | Service reference with call metadata for operations |
+| `CallCounts` | Statistics (success/failure/error counts with time range) |
+| `ProviderCallHistory` | Per-provider call history and statistics |
+| `ServiceCallHistory` | Complete history for a service collection |
+| `ServicesCallHistory` | Aggregated history across all service types |
 
 ## Provider Priority by Operation
 
@@ -163,6 +219,7 @@ Primary data provider for most operations:
 - Optional API key for rate limit bypass
 - Auto-retry on 429 (rate limited)
 - Exchange rate caching
+- Chain info for height queries
 
 ### ARC (providers/arc.rs)
 
@@ -173,6 +230,7 @@ Transaction broadcast service (mAPI):
 - Native BEEF v1 support
 - Callback URLs for proof delivery
 - Double-spend detection
+- Merkle path retrieval
 
 ### Bitails (providers/bitails.rs)
 
@@ -182,6 +240,7 @@ Alternative provider:
 - TSC merkle proofs
 - Multi-transaction broadcast
 - Script hash history
+- Block header by hash
 
 ## Helper Functions (traits.rs)
 
@@ -217,6 +276,18 @@ let options = ServicesOptions::mainnet()
 let services = Services::with_options(Chain::Main, options)?;
 ```
 
+### Get BEEF for Transaction
+
+```rust
+// Get BEEF with known txids trimmed
+let known = vec!["input_txid1".to_string()];
+let result = services.get_beef("txid...", &known).await?;
+
+if let Some(beef) = result.beef {
+    println!("Got BEEF ({} bytes), has_proof: {}", beef.len(), result.has_proof);
+}
+```
+
 ### Post BEEF Transaction
 
 ```rust
@@ -247,16 +318,18 @@ if status.is_utxo.unwrap_or(false) {
 ```rust
 let history = services.get_services_call_history(true); // true = reset counters
 
-for (name, provider_history) in &history.get_raw_tx.unwrap().history_by_provider {
-    println!("{}: {} success, {} failures",
-        name,
-        provider_history.total_counts.success,
-        provider_history.total_counts.failure
-    );
+if let Some(raw_tx_history) = &history.get_raw_tx {
+    for (name, provider_history) in &raw_tx_history.history_by_provider {
+        println!("{}: {} success, {} failures",
+            name,
+            provider_history.total_counts.success,
+            provider_history.total_counts.failure
+        );
+    }
 }
 ```
 
-## PostBeefMode (services.rs:24)
+## PostBeefMode (services.rs:25)
 
 Controls broadcast behavior:
 
@@ -275,16 +348,36 @@ All methods return `Result<T>` with these error variants:
 - `Error::ServiceError` - Provider returned error
 - `Error::ValidationError` - Invalid txid, script hash, etc.
 - `Error::NotFound` - Resource not found (block header, etc.)
+- `Error::InvalidArgument` - Invalid input parameter
 
 ## Call History Tracking
 
 Each `ServiceCollection` tracks:
-- Recent calls (up to 32) with timing
-- Total counts (success/failure/error)
-- Reset interval counts for monitoring
+- Recent calls (up to 32) with timing and outcomes
+- Total counts (success/failure/error) since creation
+- Reset interval counts for monitoring windows
 - Provider-specific statistics
 
+Constants:
+- `MAX_CALL_HISTORY = 32` - Maximum recent calls per provider
+- `MAX_RESET_COUNTS = 32` - Maximum reset intervals to keep
+
 Use `get_services_call_history(reset)` to retrieve and optionally reset counters.
+
+## Internal Service Traits (services.rs)
+
+The `Services` struct uses internal traits to abstract provider capabilities:
+
+```rust
+trait MerklePathService { async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult>; }
+trait RawTxService { async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult>; }
+trait PostBeefService { async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult>; }
+trait UtxoStatusService { async fn get_utxo_status(...) -> Result<GetUtxoStatusResult>; }
+trait StatusForTxidsService { async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult>; }
+trait ScriptHashHistoryService { async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult>; }
+```
+
+These are implemented by the provider types and used via type-erased `Arc<dyn Trait>` in service collections.
 
 ## Related Documentation
 

@@ -17,18 +17,19 @@ use bsv_sdk::wallet::{
         RevealSpecificKeyLinkageArgs as InterfaceRevealSpecificArgs,
     },
     AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult,
-    CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult, CreateSignatureArgs,
-    CreateSignatureResult, DecryptArgs, DecryptResult, DiscoverByAttributesArgs,
-    DiscoverByIdentityKeyArgs, DiscoverCertificatesResult, EncryptArgs, EncryptResult,
-    GetHeaderArgs, GetHeaderResult, GetHeightResult, GetNetworkResult, GetPublicKeyArgs,
-    GetPublicKeyResult, GetVersionResult, InternalizeActionArgs, InternalizeActionResult,
-    KeyLinkageResult, ListActionsArgs, ListActionsResult, ListCertificatesArgs,
-    ListCertificatesResult, ListOutputsArgs, ListOutputsResult, Network, Outpoint,
-    ProveCertificateArgs, ProveCertificateResult, ProtoWallet, RelinquishCertificateArgs,
-    RelinquishCertificateResult, RelinquishOutputArgs, RelinquishOutputResult,
-    RevealCounterpartyKeyLinkageResult, RevealSpecificKeyLinkageResult, SignActionArgs,
-    SignActionResult, SignableTransaction, VerifyHmacArgs, VerifyHmacResult, VerifySignatureArgs,
-    VerifySignatureResult, WalletCertificate, WalletInterface,
+    Counterparty, CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult,
+    CreateSignatureArgs, CreateSignatureResult, DecryptArgs, DecryptResult,
+    DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs, DiscoverCertificatesResult, EncryptArgs,
+    EncryptResult, GetHeaderArgs, GetHeaderResult, GetHeightResult, GetNetworkResult,
+    GetPublicKeyArgs, GetPublicKeyResult, GetVersionResult, InternalizeActionArgs,
+    InternalizeActionResult, KeyLinkageResult, ListActionsArgs, ListActionsResult,
+    ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult, Network,
+    Outpoint, Protocol, ProveCertificateArgs, ProveCertificateResult, ProtoWallet,
+    RelinquishCertificateArgs, RelinquishCertificateResult, RelinquishOutputArgs,
+    RelinquishOutputResult, RevealCounterpartyKeyLinkageResult, RevealSpecificKeyLinkageResult,
+    SecurityLevel, SignActionArgs, SignActionResult, SignableTransaction, VerifyHmacArgs,
+    VerifyHmacResult, VerifySignatureArgs, VerifySignatureResult, WalletCertificate,
+    WalletInterface,
 };
 
 use crate::error::{Error, Result};
@@ -1117,10 +1118,18 @@ where
             }
             bsv_sdk::wallet::AcquisitionProtocol::Issuance => {
                 // Issuance protocol requires HTTP communication with certifier
-                // This is a complex flow that requires the certifier URL
-                Err(bsv_sdk::Error::WalletError(
-                    "Certificate issuance protocol not yet implemented".to_string(),
-                ))
+                let auth = self.auth();
+
+                super::certificate_issuance::acquire_certificate_issuance(
+                    self,
+                    self.storage.as_ref(),
+                    &auth,
+                    args,
+                    &self.identity_key,
+                    originator,
+                )
+                .await
+                .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))
             }
         }
     }
@@ -1146,19 +1155,103 @@ where
 
     async fn prove_certificate(
         &self,
-        _args: ProveCertificateArgs,
+        args: ProveCertificateArgs,
         originator: &str,
     ) -> bsv_sdk::Result<ProveCertificateResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
-        // Proving a certificate involves creating a keyring for the verifier
-        // This requires decrypting the master keyring and creating selective reveal
+        let auth = self.auth();
 
-        // For now, return a stub - full implementation requires keyring handling
-        Err(bsv_sdk::Error::WalletError(
-            "prove_certificate not yet implemented".to_string(),
-        ))
+        // Build list_certificates args to find the certificate matching the provided certificate
+        // We query by all identifying fields to ensure a unique match
+        let list_args = ListCertificatesArgs {
+            certifiers: vec![args.certificate.certifier.clone()],
+            types: vec![args.certificate.certificate_type.clone()],
+            limit: Some(2), // Request 2 to detect multiple matches
+            offset: Some(0),
+            privileged: args.privileged,
+            privileged_reason: args.privileged_reason.clone(),
+        };
+
+        let list_result = self
+            .storage
+            .list_certificates(&auth, list_args)
+            .await
+            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
+        // Filter by serial number, subject, revocation outpoint, and signature
+        let matching_certs: Vec<_> = list_result
+            .certificates
+            .into_iter()
+            .filter(|cert| {
+                cert.certificate.serial_number == args.certificate.serial_number
+                    && cert.certificate.subject == args.certificate.subject
+                    && cert.certificate.revocation_outpoint == args.certificate.revocation_outpoint
+                    && cert.certificate.signature == args.certificate.signature
+            })
+            .collect();
+
+        // Ensure exactly one certificate matches
+        if matching_certs.is_empty() {
+            return Err(bsv_sdk::Error::WalletError(
+                "Certificate not found with the provided arguments".to_string(),
+            ));
+        }
+        if matching_certs.len() > 1 {
+            return Err(bsv_sdk::Error::WalletError(
+                "Multiple certificates match the provided arguments, expected unique match"
+                    .to_string(),
+            ));
+        }
+
+        let storage_cert = &matching_certs[0];
+
+        // Get the master keyring from storage
+        let master_keyring = storage_cert.keyring.as_ref().ok_or_else(|| {
+            bsv_sdk::Error::WalletError(
+                "Certificate does not have a master keyring stored".to_string(),
+            )
+        })?;
+
+        // Determine which fields to reveal
+        // If fields_to_reveal is empty, reveal all fields
+        let fields_to_reveal: Vec<String> = if args.fields_to_reveal.is_empty() {
+            storage_cert.certificate.fields.keys().cloned().collect()
+        } else {
+            args.fields_to_reveal.clone()
+        };
+
+        // Parse the verifier public key
+        let verifier = PublicKey::from_hex(&args.verifier).map_err(|e| {
+            bsv_sdk::Error::WalletError(format!("Invalid verifier public key: {}", e))
+        })?;
+
+        // Parse the certifier public key
+        let certifier = PublicKey::from_hex(&storage_cert.certificate.certifier).map_err(|e| {
+            bsv_sdk::Error::WalletError(format!("Invalid certifier public key: {}", e))
+        })?;
+
+        // Create keyring for verifier
+        // This follows the TypeScript/Go implementation:
+        // 1. For each field to reveal, decrypt the master key
+        // 2. Re-encrypt the symmetric key for the verifier
+        let keyring_for_verifier = create_keyring_for_verifier(
+            &self.proto_wallet,
+            &certifier,
+            &verifier,
+            &storage_cert.certificate.fields,
+            &fields_to_reveal,
+            master_keyring,
+            &storage_cert.certificate.serial_number,
+            originator,
+        )?;
+
+        Ok(ProveCertificateResult {
+            keyring_for_verifier,
+            certificate: None,
+            verifier: None,
+        })
     }
 
     async fn relinquish_certificate(
@@ -1489,6 +1582,112 @@ fn build_wallet_certificate_from_args(
     })
 }
 
+/// Protocol for certificate field encryption (BRC-52/53).
+const CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL: &str = "certificate field encryption";
+
+/// Creates a keyring for a verifier, enabling them to decrypt specific certificate fields.
+///
+/// This function follows the TypeScript/Go implementation:
+/// 1. For each field to reveal, decrypt the master symmetric key using the master keyring
+/// 2. Re-encrypt the symmetric key for the verifier with a verifiable key ID
+///
+/// # Arguments
+/// * `subject_wallet` - The subject's wallet (implements encryption/decryption)
+/// * `certifier` - The certifier's public key
+/// * `verifier` - The verifier's public key who will receive the keyring
+/// * `fields` - All encrypted field values from the certificate (base64 encoded)
+/// * `fields_to_reveal` - Field names to include in the verifier keyring
+/// * `master_keyring` - The master keyring containing encrypted symmetric keys (base64 encoded)
+/// * `serial_number` - Certificate serial number (base64 encoded)
+/// * `_originator` - Application originator string (unused by ProtoWallet but kept for API consistency)
+///
+/// # Returns
+/// A keyring for the verifier: field_name -> base64 encoded encrypted symmetric key
+fn create_keyring_for_verifier(
+    subject_wallet: &ProtoWallet,
+    certifier: &PublicKey,
+    verifier: &PublicKey,
+    fields: &HashMap<String, String>,
+    fields_to_reveal: &[String],
+    master_keyring: &HashMap<String, String>,
+    serial_number: &str,
+    _originator: &str,
+) -> bsv_sdk::Result<HashMap<String, String>> {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    use bsv_sdk::wallet::{
+        DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs,
+    };
+
+    // Validate master keyring is not empty
+    if master_keyring.is_empty() {
+        return Err(bsv_sdk::Error::WalletError(
+            "Master keyring is empty - cannot create keyring for verifier".to_string(),
+        ));
+    }
+
+    let protocol = Protocol::new(
+        SecurityLevel::Counterparty,
+        CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+    );
+
+    let mut keyring_for_verifier = HashMap::new();
+
+    for field_name in fields_to_reveal {
+        // Verify field exists in the certificate
+        if !fields.contains_key(field_name) {
+            return Err(bsv_sdk::Error::WalletError(format!(
+                "Field '{}' not found in certificate - fields_to_reveal must be a subset of certificate fields",
+                field_name
+            )));
+        }
+
+        // Get the master key for this field (base64 encoded encrypted symmetric key)
+        let master_key_base64 = master_keyring.get(field_name).ok_or_else(|| {
+            bsv_sdk::Error::WalletError(format!(
+                "Field '{}' not found in master keyring",
+                field_name
+            ))
+        })?;
+
+        // Decode master key from base64
+        let master_key_ciphertext = BASE64.decode(master_key_base64).map_err(|e| {
+            bsv_sdk::Error::WalletError(format!(
+                "Failed to decode master key for field '{}': {}",
+                field_name, e
+            ))
+        })?;
+
+        // Decrypt the master symmetric key using the certifier as counterparty
+        // Key ID for master is just the field name
+        let decrypted = subject_wallet.decrypt(ProtoDecryptArgs {
+            ciphertext: master_key_ciphertext,
+            protocol_id: protocol.clone(),
+            key_id: field_name.clone(),
+            counterparty: Some(Counterparty::Other(certifier.clone())),
+        })?;
+
+        // The decrypted plaintext is the symmetric key bytes
+        let symmetric_key = decrypted.plaintext;
+
+        // Re-encrypt the symmetric key for the verifier
+        // Key ID for verifiable is: "{serial_number} {field_name}"
+        let verifiable_key_id = format!("{} {}", serial_number, field_name);
+
+        let re_encrypted = subject_wallet.encrypt(ProtoEncryptArgs {
+            plaintext: symmetric_key,
+            protocol_id: protocol.clone(),
+            key_id: verifiable_key_id,
+            counterparty: Some(Counterparty::Other(verifier.clone())),
+        })?;
+
+        // Encode the re-encrypted symmetric key as base64
+        let encrypted_base64 = BASE64.encode(&re_encrypted.ciphertext);
+        keyring_for_verifier.insert(field_name.clone(), encrypted_base64);
+    }
+
+    Ok(keyring_for_verifier)
+}
+
 // =============================================================================
 // Debug Implementation
 // =============================================================================
@@ -1665,5 +1864,321 @@ mod tests {
         buf.clear();
         write_varint(&mut buf, 253);
         assert_eq!(buf, vec![0xfd, 0xfd, 0x00]);
+    }
+
+    // Tests for create_keyring_for_verifier helper function
+    mod prove_certificate_tests {
+        use super::*;
+        use bsv_sdk::primitives::PrivateKey;
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+
+        #[test]
+        fn test_create_keyring_empty_master_keyring_fails() {
+            let subject_key = PrivateKey::random();
+            let certifier_key = PrivateKey::random();
+            let verifier_key = PrivateKey::random();
+            let subject_wallet = ProtoWallet::new(Some(subject_key));
+
+            let fields: HashMap<String, String> = HashMap::from([
+                ("name".to_string(), BASE64.encode("encrypted_name")),
+            ]);
+            let master_keyring: HashMap<String, String> = HashMap::new(); // Empty
+            let fields_to_reveal = vec!["name".to_string()];
+
+            let result = create_keyring_for_verifier(
+                &subject_wallet,
+                &certifier_key.public_key(),
+                &verifier_key.public_key(),
+                &fields,
+                &fields_to_reveal,
+                &master_keyring,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // 32-byte serial
+                "test.app.com",
+            );
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("Master keyring is empty"));
+        }
+
+        #[test]
+        fn test_create_keyring_field_not_in_certificate_fails() {
+            let subject_key = PrivateKey::random();
+            let certifier_key = PrivateKey::random();
+            let verifier_key = PrivateKey::random();
+            let subject_wallet = ProtoWallet::new(Some(subject_key));
+
+            let fields: HashMap<String, String> = HashMap::from([
+                ("name".to_string(), BASE64.encode("encrypted_name")),
+            ]);
+            let master_keyring: HashMap<String, String> = HashMap::from([
+                ("name".to_string(), BASE64.encode("encrypted_key")),
+                ("email".to_string(), BASE64.encode("encrypted_key2")),
+            ]);
+            // Request a field that doesn't exist in certificate
+            let fields_to_reveal = vec!["nonexistent".to_string()];
+
+            let result = create_keyring_for_verifier(
+                &subject_wallet,
+                &certifier_key.public_key(),
+                &verifier_key.public_key(),
+                &fields,
+                &fields_to_reveal,
+                &master_keyring,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "test.app.com",
+            );
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("not found in certificate"));
+        }
+
+        #[test]
+        fn test_create_keyring_field_not_in_master_keyring_fails() {
+            let subject_key = PrivateKey::random();
+            let certifier_key = PrivateKey::random();
+            let verifier_key = PrivateKey::random();
+            let subject_wallet = ProtoWallet::new(Some(subject_key));
+
+            let fields: HashMap<String, String> = HashMap::from([
+                ("name".to_string(), BASE64.encode("encrypted_name")),
+                ("email".to_string(), BASE64.encode("encrypted_email")),
+            ]);
+            // Master keyring missing 'email' key
+            let master_keyring: HashMap<String, String> = HashMap::from([
+                ("name".to_string(), BASE64.encode("encrypted_key")),
+            ]);
+            let fields_to_reveal = vec!["email".to_string()];
+
+            let result = create_keyring_for_verifier(
+                &subject_wallet,
+                &certifier_key.public_key(),
+                &verifier_key.public_key(),
+                &fields,
+                &fields_to_reveal,
+                &master_keyring,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "test.app.com",
+            );
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("not found in master keyring"));
+        }
+
+        #[test]
+        fn test_create_keyring_invalid_base64_master_key_fails() {
+            let subject_key = PrivateKey::random();
+            let certifier_key = PrivateKey::random();
+            let verifier_key = PrivateKey::random();
+            let subject_wallet = ProtoWallet::new(Some(subject_key));
+
+            let fields: HashMap<String, String> = HashMap::from([
+                ("name".to_string(), BASE64.encode("encrypted_name")),
+            ]);
+            // Invalid base64
+            let master_keyring: HashMap<String, String> = HashMap::from([
+                ("name".to_string(), "not-valid-base64!!!".to_string()),
+            ]);
+            let fields_to_reveal = vec!["name".to_string()];
+
+            let result = create_keyring_for_verifier(
+                &subject_wallet,
+                &certifier_key.public_key(),
+                &verifier_key.public_key(),
+                &fields,
+                &fields_to_reveal,
+                &master_keyring,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "test.app.com",
+            );
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("Failed to decode master key"));
+        }
+
+        #[test]
+        fn test_certificate_field_encryption_protocol_constant() {
+            assert_eq!(
+                CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+                "certificate field encryption"
+            );
+        }
+
+        /// End-to-end test for keyring creation that verifies the complete encryption flow:
+        /// 1. Create a master keyring by encrypting symmetric keys from subject to certifier
+        /// 2. Create fields encrypted with those symmetric keys
+        /// 3. Call create_keyring_for_verifier to re-encrypt for verifier
+        /// 4. Verify the verifier can decrypt the field using the new keyring
+        #[test]
+        fn test_create_keyring_end_to_end() {
+            use bsv_sdk::primitives::{PrivateKey, SymmetricKey};
+            use bsv_sdk::wallet::{
+                DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs,
+            };
+
+            // Setup keys for subject, certifier, and verifier
+            let subject_key = PrivateKey::random();
+            let certifier_key = PrivateKey::random();
+            let verifier_key = PrivateKey::random();
+
+            let subject_wallet = ProtoWallet::new(Some(subject_key.clone()));
+            let certifier_wallet = ProtoWallet::new(Some(certifier_key.clone()));
+            let verifier_wallet = ProtoWallet::new(Some(verifier_key.clone()));
+
+            // Create protocol for certificate field encryption
+            let protocol = Protocol::new(
+                SecurityLevel::Counterparty,
+                CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+            );
+
+            // Serial number for the certificate (base64 encoded 32 bytes)
+            let serial_bytes = [42u8; 32];
+            let serial_number = BASE64.encode(&serial_bytes);
+
+            // Step 1: Create a symmetric key for the field "name"
+            let field_name = "name";
+            let field_plaintext = "Alice Smith";
+            let symmetric_key = SymmetricKey::random();
+
+            // Step 2: Encrypt the field value using the symmetric key
+            let encrypted_field_value = symmetric_key.encrypt(field_plaintext.as_bytes()).unwrap();
+            let encrypted_field_base64 = BASE64.encode(&encrypted_field_value);
+
+            // Step 3: Create the master keyring by encrypting the symmetric key
+            // The certifier encrypts the symmetric key for the subject
+            let master_key_encrypted = certifier_wallet
+                .encrypt(ProtoEncryptArgs {
+                    plaintext: symmetric_key.as_bytes().to_vec(),
+                    protocol_id: protocol.clone(),
+                    key_id: field_name.to_string(),
+                    counterparty: Some(Counterparty::Other(subject_key.public_key())),
+                })
+                .unwrap();
+            let master_key_base64 = BASE64.encode(&master_key_encrypted.ciphertext);
+
+            // Build the structures
+            let fields: HashMap<String, String> = HashMap::from([
+                (field_name.to_string(), encrypted_field_base64.clone()),
+            ]);
+            let master_keyring: HashMap<String, String> = HashMap::from([
+                (field_name.to_string(), master_key_base64),
+            ]);
+            let fields_to_reveal = vec![field_name.to_string()];
+
+            // Step 4: Call create_keyring_for_verifier
+            // This should decrypt the master key and re-encrypt for the verifier
+            let keyring_for_verifier = create_keyring_for_verifier(
+                &subject_wallet,
+                &certifier_key.public_key(),
+                &verifier_key.public_key(),
+                &fields,
+                &fields_to_reveal,
+                &master_keyring,
+                &serial_number,
+                "test.app.com",
+            )
+            .expect("create_keyring_for_verifier should succeed");
+
+            // Verify we got a keyring for the field
+            assert_eq!(keyring_for_verifier.len(), 1);
+            assert!(keyring_for_verifier.contains_key(field_name));
+
+            // Step 5: Verify the verifier can use the keyring to decrypt the field
+            let verifier_encrypted_key = keyring_for_verifier.get(field_name).unwrap();
+            let verifier_encrypted_key_bytes = BASE64.decode(verifier_encrypted_key).unwrap();
+
+            // Verifier decrypts the symmetric key using their wallet
+            let verifiable_key_id = format!("{} {}", serial_number, field_name);
+            let decrypted_key_result = verifier_wallet
+                .decrypt(ProtoDecryptArgs {
+                    ciphertext: verifier_encrypted_key_bytes,
+                    protocol_id: protocol.clone(),
+                    key_id: verifiable_key_id,
+                    counterparty: Some(Counterparty::Other(subject_key.public_key())),
+                })
+                .expect("Verifier should be able to decrypt the symmetric key");
+
+            // Reconstruct the symmetric key
+            let key_bytes: [u8; 32] = decrypted_key_result.plaintext.as_slice().try_into()
+                .expect("Key should be 32 bytes");
+            let recovered_symmetric_key = SymmetricKey::from_bytes(&key_bytes)
+                .expect("Should be able to reconstruct symmetric key");
+
+            // Use the symmetric key to decrypt the field value
+            let encrypted_field_bytes = BASE64.decode(&encrypted_field_base64).unwrap();
+            let decrypted_field = recovered_symmetric_key
+                .decrypt(&encrypted_field_bytes)
+                .expect("Field decryption should succeed");
+
+            // Verify we got back the original plaintext
+            let decrypted_str = String::from_utf8(decrypted_field).unwrap();
+            assert_eq!(decrypted_str, field_plaintext);
+        }
+
+        /// Test that multiple fields can be revealed correctly
+        #[test]
+        fn test_create_keyring_multiple_fields() {
+            use bsv_sdk::primitives::{PrivateKey, SymmetricKey};
+            use bsv_sdk::wallet::EncryptArgs as ProtoEncryptArgs;
+
+            let subject_key = PrivateKey::random();
+            let certifier_key = PrivateKey::random();
+            let verifier_key = PrivateKey::random();
+
+            let subject_wallet = ProtoWallet::new(Some(subject_key.clone()));
+            let certifier_wallet = ProtoWallet::new(Some(certifier_key.clone()));
+
+            let protocol = Protocol::new(
+                SecurityLevel::Counterparty,
+                CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+            );
+
+            let serial_number = BASE64.encode(&[1u8; 32]);
+
+            // Create multiple fields
+            let field_names = ["name", "email", "organization"];
+            let mut fields: HashMap<String, String> = HashMap::new();
+            let mut master_keyring: HashMap<String, String> = HashMap::new();
+
+            for field_name in &field_names {
+                let symmetric_key = SymmetricKey::random();
+                let encrypted_value = symmetric_key.encrypt(b"test value").unwrap();
+                fields.insert(field_name.to_string(), BASE64.encode(&encrypted_value));
+
+                let encrypted_key = certifier_wallet
+                    .encrypt(ProtoEncryptArgs {
+                        plaintext: symmetric_key.as_bytes().to_vec(),
+                        protocol_id: protocol.clone(),
+                        key_id: field_name.to_string(),
+                        counterparty: Some(Counterparty::Other(subject_key.public_key())),
+                    })
+                    .unwrap();
+                master_keyring.insert(field_name.to_string(), BASE64.encode(&encrypted_key.ciphertext));
+            }
+
+            // Only reveal name and email, not organization
+            let fields_to_reveal = vec!["name".to_string(), "email".to_string()];
+
+            let keyring = create_keyring_for_verifier(
+                &subject_wallet,
+                &certifier_key.public_key(),
+                &verifier_key.public_key(),
+                &fields,
+                &fields_to_reveal,
+                &master_keyring,
+                &serial_number,
+                "test.app.com",
+            )
+            .expect("Should succeed");
+
+            // Verify only the requested fields are in the keyring
+            assert_eq!(keyring.len(), 2);
+            assert!(keyring.contains_key("name"));
+            assert!(keyring.contains_key("email"));
+            assert!(!keyring.contains_key("organization"));
+        }
     }
 }

@@ -460,6 +460,13 @@ pub trait WalletStorageWriter: WalletStorageReader {
         certificate: TableCertificate,
     ) -> Result<i64>;
 
+    /// Insert a certificate field.
+    async fn insert_certificate_field(
+        &self,
+        auth: &AuthId,
+        field: TableCertificateField,
+    ) -> Result<i64>;
+
     /// Relinquish (release) a certificate.
     async fn relinquish_certificate(
         &self,

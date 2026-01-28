@@ -10,7 +10,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (~2954 lines) |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (~3266 lines) |
 | `create_action.rs` | Transaction creation implementation (~3296 lines) |
 | `process_action.rs` | Signed transaction processing (~1274 lines) |
 | `abort_action.rs` | Transaction abort/cancellation (~1249 lines) |
@@ -42,6 +42,7 @@ pub struct StorageSqlx {
 **ChainTracker methods:**
 - `set_chain_tracker(tracker)` - Set ChainTracker for BEEF verification
 - `clear_chain_tracker()` - Disable BEEF verification
+- `get_chain_tracker()` - Internal: get current ChainTracker if set
 
 ### `DEFAULT_MAX_OUTPUT_SCRIPT`
 Constant defining maximum script length stored inline (10,000 bytes). Scripts longer than this are retrieved from raw transactions.
@@ -66,6 +67,8 @@ WalletStorageWriter     - Write operations
 WalletStorageSync       - Sync operations
         ↑
 WalletStorageProvider   - Full provider interface
+        +
+MonitorStorage          - Background monitoring operations
 ```
 
 ### WalletStorageReader Methods
@@ -93,7 +96,7 @@ WalletStorageProvider   - Full provider interface
 | `relinquish_output()` | Remove output from basket |
 | `abort_action()` | Abort pending transaction, release locked outputs |
 | `create_action()` | Create new transaction with inputs/outputs |
-| `process_action()` | Process signed transaction (partial - delegates to internal) |
+| `process_action()` | Process signed transaction |
 | `internalize_action()` | Internalize external transaction into wallet |
 
 ### WalletStorageSync Methods
@@ -103,6 +106,14 @@ WalletStorageProvider   - Full provider interface
 | `set_active()` | Set user's active storage |
 | `get_sync_chunk()` | Get data chunk for synchronization |
 | `process_sync_chunk()` | Apply received sync chunk with upsert logic |
+
+### MonitorStorage Methods
+| Method | Description |
+|--------|-------------|
+| `synchronize_transaction_statuses()` | Find transactions needing proof sync |
+| `send_waiting_transactions()` | Find unsent transactions ready for broadcast |
+| `abort_abandoned()` | Abort transactions older than timeout |
+| `un_fail()` | Transition 'failed' to 'unfail' for retry |
 
 ## Abort Action Implementation
 
@@ -322,7 +333,7 @@ The `build_input_beef` function constructs BEEF with full Go/TypeScript parity:
 - returnTXIDOnly support
 
 ### Internal Types
-`ExtendedInput`, `ExtendedOutput`, `GenerateChangeParams`, `AllocatedChangeInput`, `ChangeOutput`
+`ExtendedInput`, `ExtendedOutput`, `GenerateChangeParams`, `AllocatedChangeInput`, `ChangeOutput`, `FixedInput`, `FixedOutput`
 
 ## Database Schema
 
@@ -396,29 +407,39 @@ The `find_*` and `list_*` methods build SQL dynamically based on provided filter
 Settings are loaded once via `make_available()` and cached in an `RwLock`. The `get_settings()` method returns a reference to cached data.
 
 ### Unsafe Pointer Casts
-The trait signatures require `&self` returns but internal state uses `RwLock`. The implementation uses controlled unsafe pointer casts (`storage_sqlx.rs:895`, `storage_sqlx.rs:2134-2140`) as a workaround. This is safe because settings don't change after `make_available()`.
+The trait signatures require `&self` returns but internal state uses `RwLock`. The implementation uses controlled unsafe pointer casts as a workaround. This is safe because settings don't change after `make_available()`.
 
-### Fully Implemented Methods
-- `list_actions()` - Full support for labels, inputs, outputs, pagination
-- `list_certificates()` - Full support for filters, fields, keyring
-- `list_outputs()` - Full support for baskets, tags, locking scripts
-- `create_action()` - Full transaction creation via `create_action.rs`
-- `process_action()` - Signed transaction processing via `process_action.rs` (1:1 parity with Go/TypeScript)
-- `abort_action()` - Full abort implementation via `abort_action.rs`
-- `internalize_action()` - Full external transaction internalization via `internalize_action.rs`
-- `get_sync_chunk()` - Full sync chunk retrieval via `sync.rs`
-- `process_sync_chunk()` - Full sync chunk processing with upsert logic via `sync.rs`
+### MonitorStorage Integration
+The `MonitorStorage` trait enables background task integration:
+- `synchronize_transaction_statuses()` - Finds transactions needing merkle proof synchronization
+- `send_waiting_transactions()` - Finds unsent transactions ready for broadcast
+- `abort_abandoned()` - Aborts transactions older than configurable timeout
+- `un_fail()` - Transitions failed transactions to unfail status for retry
+
+Note: Full monitor functionality requires services access, handled externally by monitor tasks.
+
+### Commission Tracking
+Storage supports commission tracking for wallet operations:
+- `insert_commission()` - Record commission for transaction
+- `get_unredeemed_commissions()` - Query unredeemed commissions
+- `redeem_commission()` - Mark commission as redeemed
+
+### Monitor Events
+Logging for monitor task operations:
+- `log_monitor_event()` - Record monitor event with optional JSON data
+- `get_monitor_events()` - Query events by type with limit
+- `cleanup_monitor_events()` - Remove events older than retention period
 
 ## Tests
 
-Total: ~139 tests across all modules.
+Total: ~142 tests across all modules.
 
 | Module | Tests | Key Coverage |
 |--------|-------|--------------|
 | `create_action.rs` | 45 | Validation, fee calculation, BEEF building, Go test parity |
 | `process_action.rs` | 35 | txid computation, VarInt parsing, script offsets, Go test parity |
 | `abort_action.rs` | 19 | Status validation, UTXO release, lookup by txid |
-| `storage_sqlx.rs` | 16 | CRUD operations, list methods, certificate filters |
+| `storage_sqlx.rs` | 19 | CRUD operations, list methods, certificate filters, monitor ops |
 | `internalize_action.rs` | 11 | Wallet payment, basket insertion, merge scenarios |
 | `sync.rs` | 9 | Chunk retrieval, upsert logic, ID translation, roundtrip |
 | `beef_verification.rs` | 4 | Verification modes, empty BEEF handling, mode serialization |
@@ -430,7 +451,7 @@ cargo test --features sqlite storage::sqlx
 
 ## Related
 
-- `../traits.rs` - Trait definitions (`WalletStorageReader`, `WalletStorageWriter`, etc.)
+- `../traits.rs` - Trait definitions (`WalletStorageReader`, `WalletStorageWriter`, `MonitorStorage`, etc.)
 - `../entities/` - Table entity structs (`TableUser`, `TableOutput`, `TransactionStatus`, etc.)
 - `../client/` - Remote storage client (alternative implementation)
 - `../../error.rs` - Error types used by this module

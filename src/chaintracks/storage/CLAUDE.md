@@ -77,6 +77,19 @@ pub struct SqliteStorage {
 |--------|-------------|
 | `pool()` | Get reference to the underlying SQLx connection pool |
 | `header_count()` | Get total number of stored headers (async) |
+| `live_header_exists(hash)` | Optimized existence check for a header by hash |
+| `find_headers_for_height_less_than_or_equal_sorted(height, limit)` | Find headers at or below height, sorted ascending |
+| `delete_live_headers_by_ids(ids)` | Delete headers by their IDs |
+| `set_chain_tip_by_id(id, is_tip)` | Set the chain tip flag for a header |
+| `set_active_by_id(id, is_active)` | Set the active flag for a header |
+| `insert_headers_batch(headers)` | Batch insert for bulk ingestion (10k+ headers) |
+| `update_chain_tip_to_highest()` | Set chain tip to header with highest height |
+| `get_headers_by_height_range(start, end)` | Get active headers in a height range |
+| `get_headers_at_height(height)` | Get all headers at a height (including forks) |
+| `get_active_headers()` | Get all active (main chain) headers |
+| `get_fork_headers()` | Get all inactive (fork) headers |
+| `find_children(parent_hash)` | Find headers that build on a given hash |
+| `mark_headers_inactive_above_height(height)` | Mark headers at or above height as inactive |
 
 **Use cases:**
 - Production deployments requiring persistence
@@ -271,6 +284,51 @@ Two methods manage header cleanup:
 - Updates all indexes (`hash_to_id`, `height_to_id`, `merkle_to_id`)
 - Use with caution as it can break chain continuity
 
+## Batch Insert for Bulk Ingestion
+
+The `SqliteStorage::insert_headers_batch()` method is optimized for the bulk ingestor, which needs to insert 10,000+ headers at a time during initial sync.
+
+```rust
+// Create batch of headers (typically from CDN or WoC)
+let headers: Vec<LiveBlockHeader> = fetch_bulk_headers().await?;
+
+// Batch insert with transaction
+let inserted = storage.insert_headers_batch(&headers).await?;
+
+// Update chain tip after batch
+let tip = storage.update_chain_tip_to_highest().await?;
+```
+
+**Key features:**
+- Uses SQLite transaction for atomicity and performance
+- Automatic duplicate detection (skips existing hashes)
+- Previous header ID linking for chain integrity
+- Chain work calculation for headers missing it
+- Does NOT update chain tip during insert (call `update_chain_tip_to_highest()` after)
+
+**Performance characteristics:**
+- 1,000 headers: ~100ms
+- Duplicate checking done in chunks of 500 for memory efficiency
+- Single transaction commit at the end
+
+## Go Implementation Parity
+
+The following methods match the Go `StorageQueries` interface:
+
+| Go Method | Rust Method |
+|-----------|-------------|
+| `LiveHeaderExists(hash)` | `live_header_exists(hash)` |
+| `GetLiveHeaderByHash(hash)` | `find_live_header_for_block_hash(hash)` |
+| `GetActiveTipLiveHeader()` | `find_chain_tip_header()` |
+| `SetChainTipByID(id, bool)` | `set_chain_tip_by_id(id, bool)` |
+| `SetActiveByID(id, bool)` | `set_active_by_id(id, bool)` |
+| `InsertNewLiveHeader(header)` | `insert_header(header)` |
+| `CountLiveHeaders()` | `header_count()` |
+| `GetLiveHeaderByHeight(height)` | `find_header_for_height(height)` |
+| `FindLiveHeightRange()` | `find_live_height_range()` |
+| `FindHeadersForHeightLessThanOrEqualSorted(height, limit)` | `find_headers_for_height_less_than_or_equal_sorted(height, limit)` |
+| `DeleteLiveHeadersByIDs(ids)` | `delete_live_headers_by_ids(ids)` |
+
 ## Limitations
 
 ### MemoryStorage
@@ -327,17 +385,20 @@ The module includes comprehensive tests covering:
 - Reorg depth calculation
 - Storage type and availability
 
-### SqliteStorage Tests
+### SqliteStorage Tests (37 tests)
 
-- Storage type and availability
-- Header insertion and duplicate detection
-- Hash and height lookups
-- Chain growth and tip tracking
-- Merkle root lookups
-- Pruning inactive headers
-- Dropping all data
-- Height range queries
-- Header byte serialization
+| Category | Tests |
+|----------|-------|
+| Basic CRUD | `test_insert_header`, `test_duplicate_detection`, `test_find_by_hash`, `test_find_by_height`, `test_find_merkle_root` |
+| Chain operations | `test_chain_growth`, `test_common_ancestor_detection`, `test_reorg_handling`, `test_reorg_depth_calculation` |
+| Batch operations | `test_batch_insert`, `test_batch_insert_empty`, `test_batch_insert_with_duplicates`, `test_batch_insert_large` (1000 headers) |
+| Go parity methods | `test_live_header_exists`, `test_find_headers_for_height_less_than_or_equal_sorted`, `test_find_headers_with_limit`, `test_delete_live_headers_by_ids`, `test_delete_empty_ids`, `test_set_chain_tip_by_id`, `test_set_active_by_id` |
+| Height queries | `test_get_headers_by_height_range`, `test_get_headers_at_height`, `test_find_live_height_range` |
+| Active/fork headers | `test_get_active_headers`, `test_get_fork_headers`, `test_find_children`, `test_mark_headers_inactive_above_height` |
+| Chain tip | `test_update_chain_tip_to_highest`, `test_update_chain_tip_empty_storage` |
+| Edge cases | `test_empty_database_queries`, `test_headers_bytes_multiple` |
+| Cleanup | `test_prune_inactive`, `test_drop_all_data`, `test_destroy` |
+| Configuration | `test_storage_type`, `test_is_available`, `test_get_headers_bytes` |
 
 Run tests with:
 ```bash
