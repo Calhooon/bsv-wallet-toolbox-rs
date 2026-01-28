@@ -10,15 +10,16 @@
 
 use crate::error::{Error, Result};
 use crate::storage::entities::{TableOutput, TableTransaction, TransactionStatus};
-use crate::storage::traits::StorageInternalizeActionResult;
+use crate::storage::traits::{BeefVerificationMode, StorageInternalizeActionResult};
 use bsv_sdk::transaction::Beef;
 use bsv_sdk::wallet::{
     BasketInsertion, InternalizeActionArgs, InternalizeActionResult, WalletPayment,
 };
 use chrono::Utc;
 use sqlx::Row;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use super::beef_verification::verify_beef_merkle_proofs;
 use super::StorageSqlx;
 
 // =============================================================================
@@ -60,7 +61,7 @@ pub async fn internalize_action_internal(
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
     // Step 1: Parse and validate the AtomicBEEF
-    let beef = Beef::from_binary(&args.tx).map_err(|e| {
+    let mut beef = Beef::from_binary(&args.tx).map_err(|e| {
         Error::ValidationError(format!("Failed to parse AtomicBEEF: {}", e))
     })?;
 
@@ -69,10 +70,25 @@ pub async fn internalize_action_internal(
         Error::ValidationError("BEEF is not AtomicBEEF (missing atomic_txid)".to_string())
     })?;
 
-    // Note: We don't strictly validate the BEEF structure here.
-    // BEEF validation is done by the transaction sender before including proofs.
-    // We just need to parse and extract the transaction data.
-    // Strict validation can be done at a higher level if needed.
+    // Step 1b: Verify BEEF merkle proofs if chain_tracker is set
+    // This ensures incoming transactions have valid proofs before internalizing
+    if let Some(chain_tracker) = storage.get_chain_tracker().await {
+        // Get known txids for TrustKnown mode (transactions already in wallet)
+        let known_txids = get_known_txids(storage, user_id).await?;
+
+        // Verify the BEEF merkle proofs against the chain
+        // Default to Strict mode for internalize_action
+        let _is_valid = verify_beef_merkle_proofs(
+            &mut beef,
+            chain_tracker.as_ref(),
+            BeefVerificationMode::Strict,
+            &known_txids,
+        ).await?;
+        // Note: verify_beef_merkle_proofs returns Err on invalid proofs,
+        // Ok(false) if no proofs to verify (empty BEEF), Ok(true) if valid.
+        // Both Ok cases are acceptable for internalize_action since unproven
+        // transactions are tracked separately.
+    }
 
     // Find the target transaction
     let beef_tx = beef.find_txid(&txid).ok_or_else(|| {
@@ -707,6 +723,25 @@ async fn add_tag_to_output(
     }
 
     Ok(())
+}
+
+/// Gets known txids for a user (for TrustKnown BEEF verification mode).
+///
+/// Returns all txids from transactions owned by the user that are in
+/// "completed" or "unproven" status. These are transactions the wallet
+/// already knows about and can trust.
+async fn get_known_txids(storage: &StorageSqlx, user_id: i64) -> Result<HashSet<String>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT txid FROM transactions
+        WHERE user_id = ? AND status IN ('completed', 'unproven')
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(storage.pool())
+    .await?;
+
+    Ok(rows.into_iter().collect())
 }
 
 /// Creates a proven transaction request for proof lookup.

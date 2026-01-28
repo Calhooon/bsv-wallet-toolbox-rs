@@ -3,11 +3,14 @@
 //! This module provides the main `Wallet` struct that implements the full
 //! `WalletInterface` trait from `bsv_sdk::wallet`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bsv_sdk::primitives::PrivateKey;
 use bsv_sdk::primitives::PublicKey;
+use chrono::{DateTime, Utc};
+use tokio::sync::RwLock;
 use bsv_sdk::wallet::{
     interface::{
         RevealCounterpartyKeyLinkageArgs as InterfaceRevealCounterpartyArgs,
@@ -40,6 +43,37 @@ use super::signer::{SignerInput, WalletSigner};
 
 /// Wallet version string
 const WALLET_VERSION: &str = "bsv-wallet-toolbox-0.1.0";
+
+/// Default TTL for pending transactions (24 hours)
+const PENDING_TRANSACTION_TTL_SECS: i64 = 24 * 60 * 60;
+
+// =============================================================================
+// PendingTransaction
+// =============================================================================
+
+/// A transaction awaiting signature.
+///
+/// When `create_action` is called with `sign_and_process = false`, the unsigned
+/// transaction is cached here for later signing via `sign_action`.
+#[derive(Debug, Clone)]
+pub struct PendingTransaction {
+    /// Unique reference for this pending transaction
+    pub reference: String,
+    /// The unsigned transaction bytes
+    pub raw_tx: Vec<u8>,
+    /// Input metadata for signing
+    pub inputs: Vec<SignerInput>,
+    /// BEEF data for the inputs (needed for broadcasting)
+    pub input_beef: Option<Vec<u8>>,
+    /// The original create_action args (for options like no_send, delayed)
+    pub is_no_send: bool,
+    /// Whether delayed broadcast was requested
+    pub is_delayed: bool,
+    /// Send with txids
+    pub send_with: Vec<String>,
+    /// When this pending transaction was created
+    pub created_at: DateTime<Utc>,
+}
 
 // =============================================================================
 // WalletOptions
@@ -125,6 +159,9 @@ where
 
     /// Wallet signer for transaction signing
     signer: WalletSigner,
+
+    /// Cache for pending unsigned transactions awaiting signature
+    pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
 }
 
 impl<S, V> Wallet<S, V>
@@ -219,6 +256,7 @@ where
             chain,
             options,
             signer,
+            pending_transactions: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -725,8 +763,55 @@ where
 
         // Return the result with signable transaction for external signing
         // Build transaction before consuming storage_result fields
-        let unsigned_tx = build_unsigned_transaction(&storage_result).unwrap_or_default();
-        let reference_bytes = storage_result.reference.into_bytes();
+        let unsigned_tx = build_unsigned_transaction(&storage_result).map_err(|e| {
+            bsv_sdk::Error::WalletError(format!("Failed to build transaction: {}", e))
+        })?;
+        let reference = storage_result.reference.clone();
+        let reference_bytes = reference.clone().into_bytes();
+
+        // Convert storage inputs to signer inputs for caching
+        let signer_inputs: Vec<SignerInput> = storage_result
+            .inputs
+            .iter()
+            .map(|input| SignerInput {
+                vin: input.vin,
+                source_txid: input.source_txid.clone(),
+                source_vout: input.source_vout,
+                satoshis: input.source_satoshis,
+                source_locking_script: Some(hex::decode(&input.source_locking_script).unwrap_or_default()),
+                unlocking_script: None,
+                derivation_prefix: input.derivation_prefix.clone(),
+                derivation_suffix: input.derivation_suffix.clone(),
+                sender_identity_key: input.sender_identity_key.clone(),
+            })
+            .collect();
+
+        // Cache the pending transaction for later signing via sign_action
+        let pending_tx = PendingTransaction {
+            reference: reference.clone(),
+            raw_tx: unsigned_tx.clone(),
+            inputs: signer_inputs,
+            input_beef: storage_result.input_beef.clone(),
+            is_no_send: no_send,
+            is_delayed: accept_delayed_broadcast,
+            send_with: args
+                .options
+                .as_ref()
+                .and_then(|o| o.send_with.clone())
+                .map(|txids| txids.iter().map(|t| hex::encode(t)).collect())
+                .unwrap_or_default(),
+            created_at: Utc::now(),
+        };
+
+        // Store in the pending transactions cache
+        {
+            let mut cache = self.pending_transactions.write().await;
+            // Clean up expired pending transactions while we have the lock
+            let cutoff = Utc::now() - chrono::Duration::seconds(PENDING_TRANSACTION_TTL_SECS);
+            cache.retain(|_, tx| tx.created_at > cutoff);
+            // Add the new pending transaction
+            cache.insert(reference.clone(), pending_tx);
+        }
 
         Ok(CreateActionResult {
             txid: None,
@@ -750,18 +835,154 @@ where
 
     async fn sign_action(
         &self,
-        _args: SignActionArgs,
+        args: SignActionArgs,
         originator: &str,
     ) -> bsv_sdk::Result<SignActionResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
-        // sign_action requires retrieving the pending transaction and applying signatures
-        // This is a complex operation that depends on having a pending transaction cache
-        // For now, return an error indicating this needs the full implementation
-        Err(bsv_sdk::Error::WalletError(
-            "sign_action requires pending transaction cache - use create_action with sign_and_process=true".to_string()
-        ))
+        // Get the reference from args (it's already a String)
+        let reference = args.reference;
+
+        if reference.is_empty() {
+            return Err(bsv_sdk::Error::WalletError(
+                "Missing reference argument for sign action".to_string(),
+            ));
+        }
+
+        // Look up the pending transaction from cache
+        let pending_tx = {
+            let cache = self.pending_transactions.read().await;
+            cache.get(&reference).cloned()
+        };
+
+        let pending_tx = pending_tx.ok_or_else(|| {
+            bsv_sdk::Error::WalletError(format!(
+                "No pending transaction found for reference: {}",
+                reference
+            ))
+        })?;
+
+        // Check if the pending transaction has expired
+        let cutoff = Utc::now() - chrono::Duration::seconds(PENDING_TRANSACTION_TTL_SECS);
+        if pending_tx.created_at < cutoff {
+            // Remove expired transaction from cache
+            let mut cache = self.pending_transactions.write().await;
+            cache.remove(&reference);
+            return Err(bsv_sdk::Error::WalletError(
+                "Pending transaction has expired".to_string(),
+            ));
+        }
+
+        // Merge any client-provided unlocking scripts from args.spends
+        let mut inputs = pending_tx.inputs.clone();
+        for (vin, spend) in &args.spends {
+            if let Some(input) = inputs.iter_mut().find(|i| i.vin == *vin) {
+                if !spend.unlocking_script.is_empty() {
+                    input.unlocking_script = Some(spend.unlocking_script.clone());
+                }
+            }
+        }
+
+        // Sign the transaction using the wallet signer
+        let signed_tx = self
+            .signer
+            .sign_transaction(&pending_tx.raw_tx, &inputs, &self.proto_wallet)
+            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
+        // Compute txid from signed transaction
+        let txid = compute_txid(&signed_tx);
+
+        // Determine options from sign_action args, falling back to cached values
+        let is_no_send = args
+            .options
+            .as_ref()
+            .and_then(|o| o.no_send)
+            .unwrap_or(pending_tx.is_no_send);
+
+        let is_delayed = args
+            .options
+            .as_ref()
+            .and_then(|o| o.accept_delayed_broadcast)
+            .unwrap_or(pending_tx.is_delayed);
+
+        let send_with = args
+            .options
+            .as_ref()
+            .and_then(|o| o.send_with.clone())
+            .map(|txids| txids.iter().map(|t| hex::encode(t)).collect())
+            .unwrap_or_else(|| pending_tx.send_with.clone());
+
+        let is_send_with = !send_with.is_empty();
+
+        // Process the signed transaction
+        let auth = self.auth();
+        let process_args = StorageProcessActionArgs {
+            is_new_tx: true,
+            is_send_with,
+            is_no_send,
+            is_delayed,
+            txid: Some(txid.clone()),
+            raw_tx: Some(signed_tx.clone()),
+            reference: Some(reference.clone()),
+            send_with,
+        };
+
+        let process_result = self
+            .storage
+            .process_action(&auth, process_args)
+            .await
+            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
+        // If not no_send and not delayed, broadcast the transaction
+        if !is_no_send && !is_delayed {
+            if let Some(ref beef) = pending_tx.input_beef {
+                let txid_strings = vec![txid.clone()];
+                let _broadcast_result = self
+                    .services
+                    .post_beef(beef, &txid_strings)
+                    .await
+                    .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+            }
+        }
+
+        // Remove from pending transactions cache on success
+        {
+            let mut cache = self.pending_transactions.write().await;
+            cache.remove(&reference);
+        }
+
+        // Convert txid string to [u8; 32]
+        let txid_bytes = hex::decode(&txid)
+            .map_err(|e| bsv_sdk::Error::WalletError(format!("Invalid txid: {}", e)))?;
+        let mut txid_array = [0u8; 32];
+        txid_array.copy_from_slice(&txid_bytes);
+
+        Ok(SignActionResult {
+            txid: Some(txid_array),
+            tx: Some(signed_tx),
+            send_with_results: process_result.send_with_results.map(|results| {
+                results
+                    .into_iter()
+                    .map(|r| {
+                        let mut result_txid = [0u8; 32];
+                        if let Ok(bytes) = hex::decode(&r.txid) {
+                            if bytes.len() == 32 {
+                                result_txid.copy_from_slice(&bytes);
+                            }
+                        }
+                        bsv_sdk::wallet::SendWithResult {
+                            txid: result_txid,
+                            status: match r.status.as_str() {
+                                "unproven" => bsv_sdk::wallet::SendWithResultStatus::Unproven,
+                                "sending" => bsv_sdk::wallet::SendWithResultStatus::Sending,
+                                _ => bsv_sdk::wallet::SendWithResultStatus::Failed,
+                            },
+                        }
+                    })
+                    .collect()
+            }),
+        })
     }
 
     async fn abort_action(
@@ -1230,6 +1451,101 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_pending_transaction_struct() {
+        // Test that PendingTransaction can be created
+        let pending = PendingTransaction {
+            reference: "test-ref-123".to_string(),
+            raw_tx: vec![0x01, 0x00, 0x00, 0x00],
+            inputs: vec![SignerInput {
+                vin: 0,
+                source_txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                source_vout: 0,
+                satoshis: 50000,
+                source_locking_script: Some(vec![0x76, 0xa9]),
+                unlocking_script: None,
+                derivation_prefix: Some("1".to_string()),
+                derivation_suffix: Some("suffix".to_string()),
+                sender_identity_key: None,
+            }],
+            input_beef: Some(vec![0xBE, 0xEF]),
+            is_no_send: false,
+            is_delayed: false,
+            send_with: vec![],
+            created_at: Utc::now(),
+        };
+
+        assert_eq!(pending.reference, "test-ref-123");
+        assert_eq!(pending.inputs.len(), 1);
+        assert_eq!(pending.inputs[0].vin, 0);
+        assert!(!pending.is_no_send);
+    }
+
+    #[test]
+    fn test_pending_transaction_ttl_constant() {
+        // TTL should be 24 hours in seconds
+        assert_eq!(PENDING_TRANSACTION_TTL_SECS, 24 * 60 * 60);
+        assert_eq!(PENDING_TRANSACTION_TTL_SECS, 86400);
+    }
+
+    #[test]
+    fn test_pending_transaction_clone() {
+        let pending = PendingTransaction {
+            reference: "clone-test".to_string(),
+            raw_tx: vec![0x01, 0x02],
+            inputs: vec![],
+            input_beef: None,
+            is_no_send: true,
+            is_delayed: true,
+            send_with: vec!["txid1".to_string()],
+            created_at: Utc::now(),
+        };
+
+        let cloned = pending.clone();
+        assert_eq!(cloned.reference, pending.reference);
+        assert_eq!(cloned.is_no_send, pending.is_no_send);
+        assert_eq!(cloned.is_delayed, pending.is_delayed);
+        assert_eq!(cloned.send_with, pending.send_with);
+    }
+
+    #[test]
+    fn test_pending_transaction_with_send_with() {
+        let pending = PendingTransaction {
+            reference: "sendwith-test".to_string(),
+            raw_tx: vec![],
+            inputs: vec![],
+            input_beef: None,
+            is_no_send: false,
+            is_delayed: false,
+            send_with: vec![
+                "abc123".to_string(),
+                "def456".to_string(),
+            ],
+            created_at: Utc::now(),
+        };
+
+        assert_eq!(pending.send_with.len(), 2);
+        assert_eq!(pending.send_with[0], "abc123");
+    }
+
+    #[test]
+    fn test_pending_transaction_debug() {
+        let pending = PendingTransaction {
+            reference: "debug-test".to_string(),
+            raw_tx: vec![0x01],
+            inputs: vec![],
+            input_beef: None,
+            is_no_send: false,
+            is_delayed: false,
+            send_with: vec![],
+            created_at: Utc::now(),
+        };
+
+        // Should be Debug-printable
+        let debug_str = format!("{:?}", pending);
+        assert!(debug_str.contains("debug-test"));
+    }
 
     #[test]
     fn test_compute_txid() {

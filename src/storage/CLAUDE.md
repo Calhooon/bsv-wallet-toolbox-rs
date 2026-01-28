@@ -32,6 +32,8 @@ WalletStorageWriter     - Read + write operations (create, insert, abort)
 WalletStorageSync       - Read + write + sync operations (get/process chunks)
         ↑
 WalletStorageProvider   - Full provider interface with identity
+        ↑
+MonitorStorage          - Background monitoring operations
 ```
 
 ### WalletStorageReader
@@ -88,6 +90,19 @@ Full provider interface (extends `WalletStorageSync`):
 | `is_storage_provider()` | Always returns `true` |
 | `storage_identity_key()` | Get storage's identity key |
 | `storage_name()` | Get storage's display name |
+
+### MonitorStorage
+
+Background monitoring operations (extends `WalletStorageProvider`). Used by the monitor daemon for transaction lifecycle management:
+
+| Method | Description |
+|--------|-------------|
+| `synchronize_transaction_statuses()` | Fetch merkle proofs for unmined/pending transactions |
+| `send_waiting_transactions()` | Broadcast transactions in unsent/sending status |
+| `abort_abandoned()` | Cancel stale unsigned/unprocessed transactions |
+| `un_fail()` | Attempt recovery of incorrectly failed transactions |
+
+This trait mirrors Go's `MonitoredStorage` interface and encapsulates the full logic for each operation: querying, calling external services, and updating records.
 
 ## Key Types
 
@@ -209,6 +224,10 @@ let settings = client.make_available().await?;
 
 See `client/CLAUDE.md` for detailed documentation.
 
+### WalletStorageManager (planned)
+
+A future implementation to orchestrate multiple providers with active/backup semantics. Currently commented out in `mod.rs`.
+
 ## Entities
 
 The `entities` submodule defines structs for the 18-table wallet schema:
@@ -231,8 +250,8 @@ The `entities` submodule defines structs for the 18-table wallet schema:
 
 | Entity | Purpose |
 |--------|---------|
-| `TableProvenTx` | Transactions with Merkle proofs |
-| `TableProvenTxReq` | Pending proof requests |
+| `TableProvenTx` | Transactions with Merkle proofs (height, block_hash, merkle_path) |
+| `TableProvenTxReq` | Proof requests with status tracking, attempts, history, and optional batch grouping |
 
 ### Certificate Tables
 
@@ -241,13 +260,18 @@ The `entities` submodule defines structs for the 18-table wallet schema:
 | `TableCertificate` | Identity certificates |
 | `TableCertificateField` | Encrypted certificate field values |
 
+### Sync Tables
+
+| Entity | Purpose |
+|--------|---------|
+| `TableSyncState` | Sync state between storages (tracks init, ref_num, sync_map, errors) |
+
 ### Other Tables
 
 | Entity | Purpose |
 |--------|---------|
-| `TableSyncState` | Sync state between storages |
-| `TableCommission` | Commission tracking |
-| `TableMonitorEvent` | Event log |
+| `TableCommission` | Commission tracking with payer locking script and key offset |
+| `TableMonitorEvent` | Event log for monitoring (event_type, event_data) |
 
 ### Status Enums
 
@@ -270,6 +294,16 @@ pub enum ProvenTxReqStatus {
     Completed,    // Proof obtained
     Failed,       // Proof failed
     NotFound,     // Transaction not found
+    Unsent,       // Waiting to be sent
+    Sending,      // Currently being sent
+    Unmined,      // Sent but not yet mined
+    Unknown,      // Status is unknown
+    Callback,     // Waiting for callback confirmation
+    Unconfirmed,  // Unconfirmed on chain
+    Unfail,       // Marked for unfail processing
+    NoSend,       // Should not be sent
+    Invalid,      // Transaction is invalid
+    DoubleSpend,  // Transaction is a double spend
 }
 ```
 

@@ -42,6 +42,7 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 | `chaintracks/` | Block header tracking system with two-tier bulk/live storage |
 | `services/` | External service providers (WhatsOnChain, ARC, Bitails) for blockchain operations |
 | `wallet/` | Full `Wallet` implementation with `WalletSigner` for transaction signing |
+| `monitor/` | Transaction monitoring daemon with background tasks for syncing and reprocessing |
 
 ## Key Exports
 
@@ -136,6 +137,18 @@ pub use wallet::{
     Wallet,          // Full wallet implementation with WalletInterface
     WalletOptions,   // Configuration options for wallet creation
     WalletSigner,    // Transaction signing component
+};
+```
+
+### Monitor Types
+
+```rust
+pub use monitor::{
+    Monitor,         // Transaction monitoring daemon
+    MonitorOptions,  // Configuration for monitor initialization
+    MonitorTask,     // Individual background task definition
+    TaskConfig,      // Configuration for task execution
+    TaskResult,      // Result from task execution
 };
 ```
 
@@ -256,7 +269,6 @@ WalletStorageProvider   ← Full provider interface with identity/name
 
 The following modules are planned but commented out in `lib.rs`:
 
-- `monitor` - Transaction monitoring (Phase 4)
 - `managers` - Higher-level manager components (Phase 5)
 
 ## Related Documentation
@@ -265,6 +277,7 @@ The following modules are planned but commented out in `lib.rs`:
 - [chaintracks/CLAUDE.md](./chaintracks/CLAUDE.md) - Block header tracking system, storage backends, ingestors
 - [services/CLAUDE.md](./services/CLAUDE.md) - External service providers, traits, and blockchain operations
 - [wallet/CLAUDE.md](./wallet/CLAUDE.md) - Wallet implementation, signing, and WalletInterface
+- [monitor/CLAUDE.md](./monitor/CLAUDE.md) - Transaction monitoring daemon and background tasks
 
 ## Development Notes
 

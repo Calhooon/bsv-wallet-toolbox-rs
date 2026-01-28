@@ -92,5 +92,5 @@
 mod signer;
 mod wallet;
 
-pub use signer::WalletSigner;
-pub use wallet::{Wallet, WalletOptions};
+pub use signer::{SignerInput, WalletSigner};
+pub use wallet::{PendingTransaction, Wallet, WalletOptions};

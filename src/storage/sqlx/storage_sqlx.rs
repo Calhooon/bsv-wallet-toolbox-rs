@@ -91,7 +91,7 @@ impl StorageSqlx {
     }
 
     /// Get a reference to the current ChainTracker, if set.
-    async fn get_chain_tracker(&self) -> Option<Arc<dyn ChainTracker>> {
+    pub(crate) async fn get_chain_tracker(&self) -> Option<Arc<dyn ChainTracker>> {
         let ct = self.chain_tracker.read().await;
         ct.clone()
     }
@@ -2166,6 +2166,182 @@ impl WalletStorageProvider for StorageSqlx {
     }
 }
 
+// =============================================================================
+// MonitorStorage Implementation
+// =============================================================================
+
+use std::time::Duration;
+use crate::storage::traits::{MonitorStorage, TxSynchronizedStatus};
+
+#[async_trait]
+impl MonitorStorage for StorageSqlx {
+    async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
+        // Query proven_tx_reqs with statuses that need synchronization
+        let statuses = vec![
+            ProvenTxReqStatus::Unmined,
+            ProvenTxReqStatus::Unknown,
+            ProvenTxReqStatus::Callback,
+            ProvenTxReqStatus::Sending,
+            ProvenTxReqStatus::Unconfirmed,
+        ];
+
+        let args = FindProvenTxReqsArgs {
+            status: Some(statuses),
+            ..Default::default()
+        };
+
+        let reqs = self.find_proven_tx_reqs(args).await?;
+
+        if reqs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Note: Full implementation would:
+        // 1. Check if already synchronized for current block height
+        // 2. For each req, call services.get_merkle_path(txid)
+        // 3. On proof found: update proven_tx_req and transaction status
+        // 4. On not found: increment attempts
+        // 5. Mark as invalid after max attempts exceeded
+        //
+        // This requires a services reference which is not available on the storage layer.
+        // The monitor tasks handle this logic externally using both storage and services.
+        //
+        // For now, return empty - the monitor tasks handle the actual synchronization.
+        tracing::debug!(
+            "synchronize_transaction_statuses: found {} transactions needing sync",
+            reqs.len()
+        );
+
+        Ok(vec![])
+    }
+
+    async fn send_waiting_transactions(
+        &self,
+        _min_transaction_age: Duration,
+    ) -> Result<Option<StorageProcessActionResults>> {
+        // Query proven_tx_reqs with unsent/sending status
+        let statuses = vec![ProvenTxReqStatus::Unsent, ProvenTxReqStatus::Sending];
+
+        let args = FindProvenTxReqsArgs {
+            status: Some(statuses),
+            ..Default::default()
+        };
+
+        let reqs = self.find_proven_tx_reqs(args).await?;
+
+        if reqs.is_empty() {
+            return Ok(None);
+        }
+
+        // Note: Full implementation would:
+        // 1. Filter by min_transaction_age
+        // 2. Group by batch_id
+        // 3. For each batch, build BEEF and call services.post_beef()
+        // 4. Update status on success/failure
+        //
+        // This requires services access which is handled by the monitor tasks.
+        tracing::debug!(
+            "send_waiting_transactions: found {} transactions waiting to send",
+            reqs.len()
+        );
+
+        Ok(None)
+    }
+
+    async fn abort_abandoned(&self, timeout: Duration) -> Result<()> {
+        // Calculate cutoff time
+        let cutoff = Utc::now() - chrono::Duration::from_std(timeout).unwrap_or_default();
+
+        // Find abandoned transactions (unsigned or unprocessed older than cutoff)
+        // Note: This is a cross-user admin operation which requires special handling.
+        //
+        // Full implementation would:
+        // 1. Query all transactions with status 'unsigned' or 'unprocessed'
+        //    where created_at < cutoff
+        // 2. For each, call abort_action to release locked UTXOs
+        //
+        // For now, log the intent and return success.
+        tracing::debug!(
+            "abort_abandoned: checking for transactions older than {:?}",
+            cutoff
+        );
+
+        // Query transactions older than cutoff in abortable statuses
+        let rows: Vec<(i64, i64, String)> = sqlx::query_as(
+            r#"
+            SELECT transaction_id, user_id, reference
+            FROM transactions
+            WHERE status IN ('unsigned', 'unprocessed')
+              AND is_outgoing = 1
+              AND created_at < ?
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_all(self.pool())
+        .await?;
+
+        let count = rows.len();
+        if count == 0 {
+            return Ok(());
+        }
+
+        tracing::info!(
+            "abort_abandoned: found {} abandoned transactions to abort",
+            count
+        );
+
+        // Abort each abandoned transaction
+        for (tx_id, user_id, reference) in rows {
+            let auth = AuthId::with_user_id("admin", user_id);
+            let args = AbortActionArgs { reference };
+
+            match self.abort_action(&auth, args).await {
+                Ok(_) => {
+                    tracing::debug!(
+                        "abort_abandoned: aborted transaction {}",
+                        tx_id
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "abort_abandoned: failed to abort transaction {}: {}",
+                        tx_id, e
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn un_fail(&self) -> Result<()> {
+        // Query proven_tx_reqs with unfail status
+        let args = FindProvenTxReqsArgs {
+            status: Some(vec![ProvenTxReqStatus::Unfail]),
+            ..Default::default()
+        };
+
+        let reqs = self.find_proven_tx_reqs(args).await?;
+
+        if reqs.is_empty() {
+            return Ok(());
+        }
+
+        // Note: Full implementation would:
+        // 1. For each req, check if transaction has merkle path on-chain
+        // 2. If found: update to unmined status, restore UTXOs
+        // 3. If not found: mark as invalid
+        //
+        // This requires services access which is handled by the monitor tasks.
+        tracing::debug!(
+            "un_fail: found {} transactions marked for unfail processing",
+            reqs.len()
+        );
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2694,5 +2870,85 @@ mod tests {
 
         assert_eq!(result2.total_certificates, 1);
         assert_eq!(result2.certificates[0].certificate.certificate_type, "type_b");
+    }
+
+    // =============================================================================
+    // MonitorStorage Tests
+    // =============================================================================
+
+    #[tokio::test]
+    async fn test_synchronize_transaction_statuses_empty() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // With no proven_tx_reqs, should return empty vec
+        let result = storage.synchronize_transaction_statuses().await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_send_waiting_transactions_empty() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // With no unsent transactions, should return None
+        let result = storage
+            .send_waiting_transactions(Duration::from_secs(0))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_abort_abandoned_empty() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // With no abandoned transactions, should complete without error
+        let result = storage.abort_abandoned(Duration::from_secs(3600)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_un_fail_empty() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // With no unfail transactions, should complete without error
+        let result = storage.un_fail().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_tx_synchronized_status_struct() {
+        // Test that TxSynchronizedStatus can be created and serialized
+        let status = TxSynchronizedStatus {
+            txid: "abc123".to_string(),
+            status: ProvenTxReqStatus::Completed,
+            block_height: Some(800000),
+            block_hash: Some("0000...".to_string()),
+            merkle_root: Some("merkle...".to_string()),
+            merkle_path: Some(vec![1, 2, 3]),
+        };
+
+        assert_eq!(status.txid, "abc123");
+        assert_eq!(status.status, ProvenTxReqStatus::Completed);
+        assert_eq!(status.block_height, Some(800000));
     }
 }

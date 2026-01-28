@@ -3,20 +3,24 @@
 
 ## Overview
 
-This module provides storage backends for the Chaintracks block header tracking system. Storage backends handle persistence and retrieval of blockchain headers, supporting both "live" headers (recent, mutable, fork-tracking) and "bulk" headers (historical, immutable). Currently implements an in-memory backend suitable for testing, development, and mobile clients.
+This module provides storage backends for the Chaintracks block header tracking system. Storage backends handle persistence and retrieval of blockchain headers, supporting both "live" headers (recent, mutable, fork-tracking) and "bulk" headers (historical, immutable). Two implementations are available:
+
+- **MemoryStorage**: In-memory backend for testing, development, and mobile clients
+- **SqliteStorage**: SQLite-based persistent storage (requires `sqlite` or `mysql` feature)
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module exports; re-exports `MemoryStorage` |
+| `mod.rs` | Module exports; conditionally re-exports storage implementations |
 | `memory.rs` | In-memory storage implementation (`MemoryStorage`) |
+| `sqlite.rs` | SQLite-based persistent storage (`SqliteStorage`) - feature-gated |
 
 ## Key Exports
 
 ### `MemoryStorage`
 
-The primary export is `MemoryStorage`, an in-memory implementation of the `ChaintracksStorage` trait.
+An in-memory implementation of the `ChaintracksStorage` trait.
 
 ```rust
 pub struct MemoryStorage {
@@ -45,7 +49,70 @@ pub struct MemoryStorage {
 - Mobile/embedded clients (ephemeral data acceptable)
 - Short-lived processes where persistence isn't needed
 
-## Public Helper Methods
+### `SqliteStorage`
+
+A SQLite-based persistent storage implementation (available with `sqlite` or `mysql` feature).
+
+```rust
+pub struct SqliteStorage {
+    pool: Pool<Sqlite>,
+    chain: Chain,
+    live_height_threshold: u32,
+    reorg_height_threshold: u32,
+    available: RwLock<bool>,
+}
+```
+
+**Constructors:**
+
+| Method | Description |
+|--------|-------------|
+| `new(database_url, chain)` | Create storage connecting to SQLite database |
+| `with_thresholds(database_url, chain, live_threshold, reorg_threshold)` | Create with custom thresholds |
+| `in_memory(chain)` | Create with in-memory SQLite database (for testing) |
+
+**Additional Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `pool()` | Get reference to the underlying SQLx connection pool |
+| `header_count()` | Get total number of stored headers (async) |
+
+**Use cases:**
+- Production deployments requiring persistence
+- Desktop applications
+- Server-side wallet services
+- Long-running processes
+
+**Database Schema:**
+
+```sql
+CREATE TABLE chaintracks_live_headers (
+    header_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    previous_header_id INTEGER,
+    previous_hash TEXT NOT NULL,
+    height INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    is_chain_tip INTEGER NOT NULL DEFAULT 0,
+    hash TEXT NOT NULL UNIQUE,
+    chain_work TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    merkle_root TEXT NOT NULL,
+    time INTEGER NOT NULL,
+    bits INTEGER NOT NULL,
+    nonce INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+```
+
+**Indexes:**
+- `idx_live_headers_height` on `height`
+- `idx_live_headers_active` on `is_active`
+- `idx_live_headers_tip` on `is_chain_tip`
+- `idx_live_headers_merkle` on `merkle_root` (partial: where `is_active = 1`)
+
+## Public Helper Methods (MemoryStorage)
 
 In addition to trait implementations, `MemoryStorage` provides utility methods:
 
@@ -60,7 +127,7 @@ In addition to trait implementations, `MemoryStorage` provides utility methods:
 
 ## Implemented Traits
 
-`MemoryStorage` implements three storage traits from `crate::chaintracks`:
+Both `MemoryStorage` and `SqliteStorage` implement three storage traits from `crate::chaintracks`:
 
 ### `ChaintracksStorageQuery` (read operations)
 
@@ -83,23 +150,23 @@ In addition to trait implementations, `MemoryStorage` provides utility methods:
 
 ### `ChaintracksStorageIngest` (write operations)
 
-| Method | Description |
-|--------|-------------|
-| `insert_header(header)` | Insert header, returns `InsertHeaderResult` |
-| `prune_live_block_headers(tip_height)` | Remove old inactive headers |
-| `migrate_live_to_bulk(count)` | No-op (no bulk storage) |
-| `delete_older_live_block_headers(max_height)` | Delete headers at or below height |
-| `make_available()` | No-op (always available) |
-| `migrate_latest()` | No-op (no migrations needed) |
-| `drop_all_data()` | Clear all stored headers |
-| `destroy()` | Alias for `drop_all_data()` |
+| Method | MemoryStorage | SqliteStorage |
+|--------|---------------|---------------|
+| `insert_header(header)` | Insert header, returns `InsertHeaderResult` | Same |
+| `prune_live_block_headers(tip_height)` | Remove old inactive headers | Same (with FK handling) |
+| `migrate_live_to_bulk(count)` | No-op (no bulk storage) | No-op |
+| `delete_older_live_block_headers(max_height)` | Delete headers at or below height | Same (with FK handling) |
+| `make_available()` | No-op (always available) | Sets available flag to true |
+| `migrate_latest()` | No-op (no migrations needed) | Creates database tables and indexes |
+| `drop_all_data()` | Clear all stored headers | DELETE all rows |
+| `destroy()` | Alias for `drop_all_data()` | Same |
 
 ### `ChaintracksStorage` (full interface)
 
-| Method | Description |
-|--------|-------------|
-| `storage_type()` | Returns `"memory"` |
-| `is_available()` | Always returns `true` |
+| Method | MemoryStorage | SqliteStorage |
+|--------|---------------|---------------|
+| `storage_type()` | Returns `"memory"` | Returns `"sqlite"` |
+| `is_available()` | Always returns `true` | Returns value set by `make_available()` |
 
 ## Internal Data Structures
 

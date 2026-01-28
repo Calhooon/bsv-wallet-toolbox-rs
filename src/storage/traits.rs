@@ -550,3 +550,120 @@ pub struct WalletStorageInfo {
     pub storage_class: String,
     pub endpoint_url: Option<String>,
 }
+
+// =============================================================================
+// BEEF Verification
+// =============================================================================
+
+/// Mode for BEEF merkle proof verification.
+///
+/// Controls how BEEF (Background Evaluation Extended Format) transactions
+/// are verified against the blockchain when internalizing or creating actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BeefVerificationMode {
+    /// Verify all BEEF merkle proofs against the chain.
+    /// Returns error if any proof is invalid.
+    #[default]
+    Strict,
+
+    /// Skip verification for transactions already known to this wallet.
+    /// Only verify merkle proofs for new/unknown txids.
+    TrustKnown,
+
+    /// Disable BEEF verification entirely.
+    /// Use when no ChainTracker is available or verification is handled elsewhere.
+    Disabled,
+}
+
+// =============================================================================
+// Monitor Storage
+// =============================================================================
+
+use std::time::Duration;
+
+/// Status result for a synchronized transaction.
+///
+/// Returned by `synchronize_transaction_statuses` to report the outcome
+/// for each transaction that was checked.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxSynchronizedStatus {
+    /// Transaction ID.
+    pub txid: String,
+    /// New status after synchronization.
+    pub status: ProvenTxReqStatus,
+    /// Block height if mined.
+    pub block_height: Option<u32>,
+    /// Block hash if mined.
+    pub block_hash: Option<String>,
+    /// Merkle root if mined.
+    pub merkle_root: Option<String>,
+    /// Encoded merkle path if mined.
+    pub merkle_path: Option<Vec<u8>>,
+}
+
+/// Storage operations used by the monitor daemon.
+///
+/// This trait provides dedicated methods for background monitoring tasks.
+/// Each method encapsulates the full logic for a monitor operation:
+/// querying the database, calling external services, and updating records.
+///
+/// The trait mirrors Go's `MonitoredStorage` interface.
+#[async_trait]
+pub trait MonitorStorage: WalletStorageProvider {
+    /// Synchronize transaction statuses by fetching merkle proofs.
+    ///
+    /// This method:
+    /// 1. Queries proven_tx_reqs with status: unmined, unknown, callback, sending, unconfirmed
+    /// 2. For each transaction, fetches merkle path from services
+    /// 3. On success with proof: updates proven_tx_req to completed, updates transaction status
+    /// 4. On not found: increments attempts counter
+    /// 5. Marks transactions as invalid after max attempts exceeded
+    ///
+    /// # Returns
+    ///
+    /// A list of transactions that were synchronized with their new statuses.
+    async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>>;
+
+    /// Send transactions that are waiting to be broadcast.
+    ///
+    /// This method:
+    /// 1. Queries proven_tx_reqs with status: unsent or sending
+    /// 2. Groups transactions by batch_id
+    /// 3. For each batch, builds BEEF and broadcasts via services
+    /// 4. On success: updates status to unmined
+    /// 5. On double-spend: marks as failed
+    ///
+    /// # Arguments
+    ///
+    /// * `min_transaction_age` - Only send transactions older than this duration
+    ///
+    /// # Returns
+    ///
+    /// Process action results for any transactions that were sent.
+    async fn send_waiting_transactions(
+        &self,
+        min_transaction_age: Duration,
+    ) -> Result<Option<StorageProcessActionResults>>;
+
+    /// Abort transactions that have been abandoned.
+    ///
+    /// This method finds transactions in 'unsigned' or 'unprocessed' status
+    /// that are older than the configured timeout and aborts them to release
+    /// locked UTXOs.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - Transactions older than this are considered abandoned
+    async fn abort_abandoned(&self, timeout: Duration) -> Result<()>;
+
+    /// Attempt to recover transactions incorrectly marked as failed.
+    ///
+    /// This method:
+    /// 1. Queries proven_tx_reqs with status: unfail
+    /// 2. For each, checks if transaction has a merkle path on-chain
+    /// 3. If found: restores the transaction as unproven
+    /// 4. If not found: marks as invalid
+    async fn un_fail(&self) -> Result<()>;
+}

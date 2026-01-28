@@ -9,13 +9,14 @@ This module provides a production-ready storage backend for BSV wallet state usi
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module definition and public exports |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (~2698 lines) |
+| `mod.rs` | Module definition and public exports (44 lines) |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (~2954 lines) |
 | `create_action.rs` | Transaction creation implementation (~3296 lines) |
 | `process_action.rs` | Signed transaction processing (~1274 lines) |
 | `abort_action.rs` | Transaction abort/cancellation (~1249 lines) |
-| `internalize_action.rs` | External transaction internalization (~1247 lines) |
-| `sync.rs` | Multi-storage synchronization (~2553 lines) |
+| `internalize_action.rs` | External transaction internalization (~1282 lines) |
+| `sync.rs` | Multi-storage synchronization (~2554 lines) |
+| `beef_verification.rs` | BEEF merkle proof verification (~256 lines) |
 | `migrations/001_initial.sql` | Initial schema with 16 tables |
 
 ## Key Exports
@@ -47,6 +48,11 @@ Constant defining maximum script length stored inline (10,000 bytes). Scripts lo
 
 ### `entity_names`
 Module containing entity name constants for sync operations (exported from `sync.rs`).
+
+### BEEF Verification Functions
+Exported from `beef_verification.rs`:
+- `verify_beef_merkle_proofs(beef, chain_tracker, mode, known_txids)` - Verify all merkle proofs in a BEEF
+- `verify_txid_merkle_proof(beef, txid, chain_tracker)` - Verify a single transaction's merkle proof
 
 ## Trait Implementations
 
@@ -390,6 +396,6 @@ cargo test --features sqlite storage::sqlx
 ## Related
 
 - `../traits.rs` - Trait definitions (`WalletStorageReader`, `WalletStorageWriter`, etc.)
-- `../entities.rs` - Table entity structs (`TableUser`, `TableOutput`, etc.)
+- `../entities/` - Table entity structs (`TableUser`, `TableOutput`, `TransactionStatus`, etc.)
 - `../client/` - Remote storage client (alternative implementation)
 - `../../error.rs` - Error types used by this module

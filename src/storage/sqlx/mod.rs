@@ -32,11 +32,13 @@
 //! ```
 
 mod abort_action;
+mod beef_verification;
 mod create_action;
 mod internalize_action;
 mod process_action;
 mod storage_sqlx;
 mod sync;
 
+pub use beef_verification::{verify_beef_merkle_proofs, verify_txid_merkle_proof};
 pub use storage_sqlx::{StorageSqlx, DEFAULT_MAX_OUTPUT_SCRIPT};
 pub use sync::entity_names;
