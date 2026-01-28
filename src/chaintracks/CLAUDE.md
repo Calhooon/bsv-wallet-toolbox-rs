@@ -96,6 +96,17 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 - **`HeaderCallback`**: `Box<dyn Fn(BlockHeader) + Send + Sync>` - New header notification
 - **`ReorgCallback`**: `Box<dyn Fn(ReorgEvent) + Send + Sync>` - Reorg notification
 
+### Chaintracks Struct Methods
+
+| Method | Description |
+|--------|-------------|
+| `new(options, storage)` | Create new instance with options and storage backend |
+| `make_available()` | Initialize storage and prepare for use |
+| `set_bulk_ingestor_count(count)` | Set number of bulk ingestors (for status reporting) |
+| `set_live_ingestor_count(count)` | Set number of live ingestors (for status reporting) |
+
+The struct also implements `ChaintracksClient` and `ChaintracksManagement` traits.
+
 ### Re-exported Types
 
 - **`ChainTracker`**: Re-exported from `bsv_sdk::transaction::ChainTracker` for convenience
@@ -179,6 +190,10 @@ let options = ChaintracksOptions::default_mainnet();
 // Create and initialize
 let chaintracks = Chaintracks::new(options, storage);
 chaintracks.make_available().await?;
+
+// Track ingestor counts (optional, for status reporting)
+chaintracks.set_bulk_ingestor_count(2).await;
+chaintracks.set_live_ingestor_count(1).await;
 
 // Query chain tip
 let tip = chaintracks.find_chain_tip_header().await?;
@@ -285,7 +300,7 @@ Subscribers receive `ReorgEvent` notifications with full context.
 | BulkWocIngestor | Complete |
 | LivePollingIngestor | Complete |
 | LiveWebSocketIngestor | Complete |
-| Full ingestor orchestration | Partial (headers can be added via `add_header()`) |
+| Full ingestor orchestration | Partial (headers can be added via `add_header()`, ingestor counts via `set_bulk_ingestor_count()` / `set_live_ingestor_count()`) |
 
 ## Ingestor Usage
 

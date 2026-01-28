@@ -31,8 +31,8 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `lib.rs` | ~120 | Crate root with module declarations, re-exports, and crate-level documentation |
-| `error.rs` | ~125 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
+| `lib.rs` | 118 | Crate root with module declarations, re-exports, and crate-level documentation |
+| `error.rs` | 124 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
 
 ## Modules
 

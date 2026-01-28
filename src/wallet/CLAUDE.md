@@ -26,6 +26,11 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 │                    PendingTransaction Cache                     │
 │  - Caches unsigned transactions for deferred signing            │
 │  - 24-hour TTL with automatic cleanup                           │
+├─────────────────────────────────────────────────────────────────┤
+│                  Certificate Issuance Protocol                  │
+│  - BRC-104 HTTP communication with certifiers                   │
+│  - Field encryption and master keyring creation                 │
+│  - HMAC-based serial number verification                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -33,9 +38,10 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mod.rs` | ~96 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput` |
-| `wallet.rs` | ~1669 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction` and helper functions |
+| `mod.rs` | ~97 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput` |
+| `wallet.rs` | ~2184 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction` and helper functions |
 | `signer.rs` | ~737 | `WalletSigner` for transaction signing with BIP-143 sighash, transaction parsing, and script generation |
+| `certificate_issuance.rs` | ~1095 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
 
 ## Key Exports
 
@@ -303,12 +309,11 @@ All `WalletInterface` methods require an `originator` string parameter:
 
 ## Implementation Notes
 
-### Stub Methods
+### Limited Implementations
 
-Some methods have limited implementations:
+Some methods have limited or local-only implementations:
 - `discover_by_identity_key` - Local-only: queries storage and filters by subject matching identity_key
 - `discover_by_attributes` - Local-only: returns empty results (full implementation requires overlay service)
-- `acquire_certificate` with `Issuance` protocol - Requires HTTP communication with certifier (returns error)
 
 ### Pending Transaction Cache
 
@@ -381,6 +386,76 @@ Internal helper functions in `signer.rs`:
 | `double_sha256(data)` | Computes double SHA256 hash |
 | `build_unlocking_script(locking_script, signature, pubkey)` | Builds P2PKH/P2PK unlocking script |
 | `insert_unlocking_script(tx_data, input_index, unlocking_script)` | Inserts unlocking script into transaction |
+
+## Certificate Issuance Protocol (certificate_issuance.rs)
+
+The `certificate_issuance` module implements the BRC-104 certificate issuance protocol for acquiring identity certificates from certifier services. This provides 1:1 parity with Go and TypeScript implementations.
+
+### Protocol Flow
+
+1. **PrepareIssuanceActionData**: Generate random 32-byte nonce, encrypt fields using subject-to-certifier encryption, build JSON request body
+2. **HTTP POST**: Send request to certifier URL with BRC-104 headers (`x-bsv-auth-version: 0.1`, `x-bsv-identity-key`)
+3. **ParseCertificateResponse**: Parse JSON response, validate headers and certificate components
+4. **VerifyCertificateIssuance**: Verify serial number via HMAC, validate certificate type/subject/certifier/fields, verify signature
+5. **StoreCertificate**: Save certificate to storage with encrypted fields and master keyring
+
+### Key Types
+
+```rust
+// Request sent to certifier
+pub struct ProtocolIssuanceRequest {
+    pub cert_type: String,           // Certificate type (base64)
+    pub client_nonce: String,        // Random nonce (base64)
+    pub fields: HashMap<String, String>,      // Encrypted field values
+    pub master_keyring: HashMap<String, String>, // Master keyring
+}
+
+// Response from certifier
+pub struct ProtocolIssuanceResponse {
+    pub protocol: String,
+    pub certificate: Option<CertificateResponse>,
+    pub server_nonce: String,        // Server nonce (base64)
+    pub timestamp: String,
+    pub version: String,
+}
+```
+
+### Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `BRC104_AUTH_VERSION` | "0.1" | BRC-104 authentication version |
+| `HEADER_AUTH_VERSION` | "x-bsv-auth-version" | Version header name |
+| `HEADER_IDENTITY_KEY` | "x-bsv-identity-key" | Identity key header name |
+| `CERTIFICATE_ISSUANCE_PROTOCOL` | "certificate issuance" | Protocol for HMAC verification |
+| `NONCE_HMAC_SIZE` | 32 | Expected HMAC/serial number size |
+| `NONCE_SIZE` | 32 | Random nonce size in bytes |
+
+### Main Entry Point
+
+```rust
+pub async fn acquire_certificate_issuance<W, S>(
+    wallet: &W,
+    storage: &S,
+    auth: &AuthId,
+    args: AcquireCertificateArgs,
+    identity_key: &str,
+    originator: &str,
+) -> Result<WalletCertificate>
+where
+    W: WalletInterface + Send + Sync,
+    S: WalletStorageProvider + Send + Sync,
+```
+
+Called by `Wallet::acquire_certificate` when `acquisition_protocol` is `Issuance`.
+
+### HMAC Verification
+
+The serial number is verified via HMAC:
+- **Data**: `clientNonceBytes || serverNonceBytes`
+- **Key ID**: `serverNonce + clientNonce` (concatenated base64 strings)
+- **Protocol**: "certificate issuance" at SecurityLevel::Counterparty
+- **Counterparty**: The certifier's public key
 
 ## Related Documentation
 

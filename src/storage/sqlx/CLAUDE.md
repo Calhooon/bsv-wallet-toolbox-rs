@@ -10,13 +10,13 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (~3266 lines) |
-| `create_action.rs` | Transaction creation implementation (~3296 lines) |
-| `process_action.rs` | Signed transaction processing (~1274 lines) |
-| `abort_action.rs` | Transaction abort/cancellation (~1249 lines) |
-| `internalize_action.rs` | External transaction internalization (~1282 lines) |
-| `sync.rs` | Multi-storage synchronization (~2554 lines) |
-| `beef_verification.rs` | BEEF merkle proof verification (~256 lines) |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (3303 lines) |
+| `create_action.rs` | Transaction creation implementation (3296 lines) |
+| `process_action.rs` | Signed transaction processing (1274 lines) |
+| `abort_action.rs` | Transaction abort/cancellation (1249 lines) |
+| `internalize_action.rs` | External transaction internalization (1282 lines) |
+| `sync.rs` | Multi-storage synchronization (2554 lines) |
+| `beef_verification.rs` | BEEF merkle proof verification (256 lines) |
 | `migrations/001_initial.sql` | Initial schema with 16 tables |
 
 ## Key Exports
@@ -110,10 +110,10 @@ MonitorStorage          - Background monitoring operations
 ### MonitorStorage Methods
 | Method | Description |
 |--------|-------------|
-| `synchronize_transaction_statuses()` | Find transactions needing proof sync |
-| `send_waiting_transactions()` | Find unsent transactions ready for broadcast |
-| `abort_abandoned()` | Abort transactions older than timeout |
-| `un_fail()` | Transition 'failed' to 'unfail' for retry |
+| `synchronize_transaction_statuses()` | Find transactions needing proof sync (unmined, unknown, callback, sending, unconfirmed) |
+| `send_waiting_transactions()` | Find unsent transactions ready for broadcast (unsent, sending status) |
+| `abort_abandoned()` | Abort unsigned/unprocessed transactions older than timeout |
+| `un_fail()` | Process transactions marked for unfail retry |
 
 ## Abort Action Implementation
 
@@ -157,19 +157,15 @@ pub async fn process_action_internal(
 ```
 
 ### Functionality (1:1 Parity with Go/TypeScript)
-| Feature | Description |
-|---------|-------------|
-| Args validation | Validates reference, txid, raw_tx for new transactions |
-| txid validation | Computes double SHA256 hash and validates against provided txid |
-| Transaction lookup | Finds transaction by reference, validates isOutgoing |
-| inputBEEF validation | Ensures transaction has inputBEEF (not already processed) |
-| Status validation | Transaction must be 'unsigned' or 'unprocessed' |
-| Script verification | Validates output locking scripts match raw_tx |
-| Script offset parsing | Extracts script offsets from raw transaction |
-| DB updates | Updates transaction, outputs, creates proven_tx_req |
-| Status determination | nosend/delayed/immediate modes |
-| Batch support | Generates batch ID for multiple txids |
-| Re-broadcast | Supports is_new_tx=false for re-broadcasting |
+- Args validation (reference, txid, raw_tx)
+- txid validation via double SHA256 hash
+- Transaction lookup by reference with isOutgoing validation
+- inputBEEF validation (ensures not already processed)
+- Status validation (must be 'unsigned' or 'unprocessed')
+- Script verification and offset parsing from raw_tx
+- DB updates: transaction, outputs, proven_tx_req
+- Status determination: nosend/delayed/immediate modes
+- Batch support and re-broadcast (is_new_tx=false)
 
 ### Status Determination
 | Condition | Transaction Status | ProvenTxReq Status |
@@ -198,17 +194,13 @@ pub async fn internalize_action_internal(
 | `basket insertion` | Custom output in specified basket, no balance effect |
 
 ### Functionality
-| Feature | Description |
-|---------|-------------|
-| AtomicBEEF parsing | Parses and validates BEEF format with atomic_txid |
-| BEEF verification | Verifies merkle proofs against ChainTracker (if set) |
-| Output extraction | Extracts satoshis and locking scripts from transaction |
-| Merge support | Updates existing transaction if txid already exists |
-| Status validation | Only completed/unproven/nosend transactions can be merged |
-| Balance tracking | Calculates net satoshi changes for balance updates |
-| Label support | Adds labels to transaction during internalization |
-| Tag support | Adds tags to outputs for basket insertions |
-| ProvenTxReq creation | Creates proof request if transaction lacks proof |
+- AtomicBEEF parsing with atomic_txid validation
+- BEEF verification against ChainTracker (if set)
+- Output extraction (satoshis, locking scripts)
+- Merge support for existing transactions (completed/unproven/nosend)
+- Balance tracking with net satoshi change calculation
+- Label and tag support for transaction/output organization
+- ProvenTxReq creation for unproven transactions
 
 ### Merge Behavior
 | Scenario | Balance Change |
@@ -242,22 +234,9 @@ Constants for sync offsets (exported as `entity_names` module):
 - `transaction`, `output`, `txLabelMap`, `outputTagMap`
 - `certificate`, `certificateField`, `commission`
 
-### get_sync_chunk Features
-| Feature | Description |
-|---------|-------------|
-| Dependency order | Processes entities in foreign key dependency order |
-| Offset-based resumption | Uses offsets to continue from previous chunk |
-| Size limiting | Tracks rough size to stay under `max_rough_size` |
-| Item limiting | Respects `max_items` constraint |
-| Since filtering | Only includes entities updated after `since` timestamp |
-
-### process_sync_chunk Features
-| Feature | Description |
-|---------|-------------|
-| Upsert logic | INSERT if new, UPDATE if chunk.updated_at > local.updated_at |
-| ID translation | Maps source IDs to local IDs for foreign keys |
-| Empty detection | Returns `done: true` when chunk is empty (sync complete) |
-| Change tracking | Counts inserts and updates for progress reporting |
+### Key Features
+- **get_sync_chunk**: Dependency-ordered entity processing, offset-based resumption, size/item limiting, since filtering
+- **process_sync_chunk**: Upsert logic (INSERT/UPDATE by updated_at), ID translation for foreign keys, empty detection, change tracking
 
 ## BEEF Verification Implementation
 
@@ -318,22 +297,15 @@ pub async fn create_action_internal(
 | `MAX_LABEL_LENGTH` | 300 | Maximum label chars |
 
 ### Features
-- **Validation**: Description, labels, inputs, outputs, noSendChange
-- **Fee calculation**: Accurate transaction size estimation
-- **Change generation**: Automatic UTXO management with target counts
-- **Input/output tracking**: Full database state management
-- **Labels and tags**: Support for transaction/output organization
+- Validation: description, labels, inputs, outputs, noSendChange
+- Fee calculation with accurate transaction size estimation
+- Change generation with automatic UTXO management
+- Full input/output database state management
+- Labels and tags for transaction/output organization
 
 ### BEEF Building (1:1 Parity with Go/TypeScript)
-
-The `build_input_beef` function constructs BEEF with full Go/TypeScript parity:
-- User inputBEEF merging (merged first before storage transactions)
-- Recursive ancestor lookup until proven transactions
-- knownTxids trimming to txid-only format
-- returnTXIDOnly support
-
-### Internal Types
-`ExtendedInput`, `ExtendedOutput`, `GenerateChangeParams`, `AllocatedChangeInput`, `ChangeOutput`, `FixedInput`, `FixedOutput`
+- User inputBEEF merging, recursive ancestor lookup until proven transactions
+- knownTxids trimming to txid-only format, returnTXIDOnly support
 
 ## Database Schema
 
@@ -349,10 +321,10 @@ The module creates 16 tables via `migrations/001_initial.sql`:
 
 ## Usage
 
-### Basic Setup
 ```rust
 use bsv_wallet_toolbox::storage::sqlx::StorageSqlx;
 
+// Setup
 let storage = StorageSqlx::open("wallet.db").await?;  // or in_memory()
 storage.migrate("my-wallet", &storage_identity_key).await?;
 storage.make_available().await?;
@@ -360,40 +332,21 @@ storage.make_available().await?;
 let identity_key = "03abc..."; // 66-char hex public key
 let (user, is_new) = storage.find_or_insert_user(&identity_key).await?;
 let auth = AuthId::with_user_id(&identity_key, user.user_id);
-```
 
-### Transaction Operations
-```rust
-// Create transaction
-let result = storage.create_action(&auth, CreateActionArgs {
-    description: "Send payment".to_string(),
-    outputs: Some(vec![CreateActionOutput { ... }]),
-    labels: Some(vec!["payment".to_string()]),
-    ..Default::default()
-}).await?;
-
-// Abort pending transaction
+// Transaction operations
+let result = storage.create_action(&auth, CreateActionArgs { ... }).await?;
 storage.abort_action(&auth, AbortActionArgs { reference: "ref".to_string() }).await?;
-
-// Internalize external transaction
 storage.internalize_action(&auth, InternalizeActionArgs { tx: beef_bytes, ... }).await?;
-```
 
-### Query Operations
-```rust
-// List transactions
-let actions = storage.list_actions(&auth, ListActionsArgs { labels: vec![], ... }).await?;
-
-// List outputs
+// Query operations
+let actions = storage.list_actions(&auth, ListActionsArgs { ... }).await?;
 let outputs = storage.list_outputs(&auth, ListOutputsArgs { basket: "default".to_string(), ... }).await?;
-
-// Find certificates
 let certs = storage.find_certificates(&auth, FindCertificatesArgs { ... }).await?;
 ```
 
 ## Feature Flags
 
-Feature `sqlite` (default) enables SQLite support. MySQL (`mysql`) is planned but not yet implemented.
+Feature `sqlite` (default) enables SQLite support. MySQL is planned but not yet implemented.
 
 ## Implementation Notes
 
@@ -410,29 +363,21 @@ Settings are loaded once via `make_available()` and cached in an `RwLock`. The `
 The trait signatures require `&self` returns but internal state uses `RwLock`. The implementation uses controlled unsafe pointer casts as a workaround. This is safe because settings don't change after `make_available()`.
 
 ### MonitorStorage Integration
-The `MonitorStorage` trait enables background task integration:
-- `synchronize_transaction_statuses()` - Finds transactions needing merkle proof synchronization
-- `send_waiting_transactions()` - Finds unsent transactions ready for broadcast
-- `abort_abandoned()` - Aborts transactions older than configurable timeout
-- `un_fail()` - Transitions failed transactions to unfail status for retry
-
-Note: Full monitor functionality requires services access, handled externally by monitor tasks.
+The `MonitorStorage` trait enables background task integration. Full monitor functionality requires services access, handled externally by monitor tasks.
 
 ### Commission Tracking
-Storage supports commission tracking for wallet operations:
-- `insert_commission()` - Record commission for transaction
-- `get_unredeemed_commissions()` - Query unredeemed commissions
-- `redeem_commission()` - Mark commission as redeemed
+- `insert_commission(user_id, transaction_id, satoshis, locking_script, key_offset)` - Record commission
+- `get_unredeemed_commissions(user_id)` - Query unredeemed commissions
+- `redeem_commission(commission_id)` - Mark commission as redeemed
 
 ### Monitor Events
-Logging for monitor task operations:
-- `log_monitor_event()` - Record monitor event with optional JSON data
-- `get_monitor_events()` - Query events by type with limit
-- `cleanup_monitor_events()` - Remove events older than retention period
+- `log_monitor_event(event, details)` - Record monitor event with optional JSON data
+- `get_monitor_events(event_type, limit)` - Query events by type with limit
+- `cleanup_monitor_events(older_than)` - Remove events older than retention period
 
 ## Tests
 
-Total: ~142 tests across all modules.
+Total: 142 tests across all modules.
 
 | Module | Tests | Key Coverage |
 |--------|-------|--------------|
@@ -451,7 +396,6 @@ cargo test --features sqlite storage::sqlx
 
 ## Related
 
-- `../traits.rs` - Trait definitions (`WalletStorageReader`, `WalletStorageWriter`, `MonitorStorage`, etc.)
-- `../entities/` - Table entity structs (`TableUser`, `TableOutput`, `TransactionStatus`, etc.)
+- `../traits.rs` - Trait definitions (`WalletStorageReader`, `WalletStorageWriter`, `MonitorStorage`)
+- `../entities/` - Table entity structs (`TableUser`, `TableOutput`, `TransactionStatus`)
 - `../client/` - Remote storage client (alternative implementation)
-- `../../error.rs` - Error types used by this module

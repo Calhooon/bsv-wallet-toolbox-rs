@@ -67,6 +67,7 @@ Write operations (extends `WalletStorageReader`):
 | `process_action()` | Process action after signing |
 | `internalize_action()` | Import an external transaction |
 | `insert_certificate()` | Add a certificate |
+| `insert_certificate_field()` | Add a certificate field value |
 | `relinquish_certificate()` | Release a certificate |
 | `relinquish_output()` | Release an output |
 

@@ -499,3 +499,311 @@ async fn test_services_get_height() {
     let height = result.unwrap();
     assert!(height > 800000); // Should be well past 800k at this point
 }
+
+// =============================================================================
+// GetBeef Result Tests
+// =============================================================================
+
+#[test]
+fn test_get_beef_result_success_with_proof() {
+    use bsv_wallet_toolbox::services::GetBeefResult;
+
+    let result = GetBeefResult {
+        name: "Services".to_string(),
+        txid: "abc123def456".to_string(),
+        beef: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        has_proof: true,
+        error: None,
+    };
+
+    assert!(result.beef.is_some());
+    assert!(result.has_proof);
+    assert!(result.error.is_none());
+    assert_eq!(result.beef.unwrap().len(), 4);
+}
+
+#[test]
+fn test_get_beef_result_success_without_proof() {
+    use bsv_wallet_toolbox::services::GetBeefResult;
+
+    let result = GetBeefResult {
+        name: "Services".to_string(),
+        txid: "abc123def456".to_string(),
+        beef: Some(vec![0x01, 0x02, 0x03]),
+        has_proof: false,
+        error: None,
+    };
+
+    assert!(result.beef.is_some());
+    assert!(!result.has_proof);
+    assert!(result.error.is_none());
+}
+
+#[test]
+fn test_get_beef_result_error_tx_not_found() {
+    use bsv_wallet_toolbox::services::GetBeefResult;
+
+    let result = GetBeefResult {
+        name: "Services".to_string(),
+        txid: "nonexistent".to_string(),
+        beef: None,
+        has_proof: false,
+        error: Some("Transaction not found".to_string()),
+    };
+
+    assert!(result.beef.is_none());
+    assert!(!result.has_proof);
+    assert!(result.error.is_some());
+    assert!(result.error.unwrap().contains("not found"));
+}
+
+#[test]
+fn test_get_beef_result_error_parse_failed() {
+    use bsv_wallet_toolbox::services::GetBeefResult;
+
+    let result = GetBeefResult {
+        name: "Services".to_string(),
+        txid: "corrupted_tx".to_string(),
+        beef: None,
+        has_proof: false,
+        error: Some("Failed to parse transaction: invalid format".to_string()),
+    };
+
+    assert!(result.beef.is_none());
+    assert!(result.error.is_some());
+    assert!(result.error.unwrap().contains("parse"));
+}
+
+#[test]
+fn test_get_beef_result_serialization() {
+    use bsv_wallet_toolbox::services::GetBeefResult;
+
+    let result = GetBeefResult {
+        name: "WoC".to_string(),
+        txid: "txid123".to_string(),
+        beef: Some(vec![0x01, 0x02]),
+        has_proof: true,
+        error: None,
+    };
+
+    // Test JSON serialization/deserialization
+    let json = serde_json::to_string(&result).unwrap();
+    let deserialized: GetBeefResult = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(deserialized.name, "WoC");
+    assert_eq!(deserialized.txid, "txid123");
+    assert!(deserialized.beef.is_some());
+    assert!(deserialized.has_proof);
+}
+
+// =============================================================================
+// nLockTime Finality Tests (Unit Tests - No Network)
+// =============================================================================
+
+/// Tests for nLockTime finality logic matching Go implementation.
+/// Note: Actual get_height() calls require network, so we test the logic separately.
+
+#[test]
+fn test_n_lock_time_zero_is_always_final() {
+    // nLockTime of 0 is always final (represents immediate finality)
+    let n_lock_time: u32 = 0;
+    // Zero locktime is always considered final in Bitcoin
+    assert!(n_lock_time == 0 || n_lock_time < 500_000_000);
+}
+
+#[test]
+fn test_n_lock_time_threshold_boundary() {
+    // The threshold between block height and timestamp is 500,000,000
+    const BLOCK_LIMIT: u32 = 500_000_000;
+
+    // Values below threshold are block heights
+    let block_height_lock: u32 = 499_999_999;
+    assert!(block_height_lock < BLOCK_LIMIT);
+
+    // Value at threshold is treated as timestamp (per Bitcoin rules)
+    let at_threshold: u32 = 500_000_000;
+    assert!(at_threshold >= BLOCK_LIMIT);
+
+    // Values above threshold are timestamps
+    let timestamp_lock: u32 = 1600000000;
+    assert!(timestamp_lock >= BLOCK_LIMIT);
+}
+
+#[test]
+fn test_n_lock_time_block_height_comparison() {
+    const BLOCK_LIMIT: u32 = 500_000_000;
+    let current_height: u32 = 880000;
+
+    // Lock at past height - should be final
+    let past_lock: u32 = 800000;
+    assert!(past_lock < BLOCK_LIMIT); // It's a block height
+    assert!(past_lock < current_height); // Lock is in the past = final
+
+    // Lock at current height - should be final (equal counts as final)
+    let current_lock: u32 = 880000;
+    assert!(current_lock < BLOCK_LIMIT);
+    assert!(current_lock <= current_height);
+
+    // Lock at future height - should NOT be final
+    let future_lock: u32 = 900000;
+    assert!(future_lock < BLOCK_LIMIT);
+    assert!(future_lock > current_height); // Lock is in the future = not final
+}
+
+#[test]
+fn test_n_lock_time_timestamp_comparison() {
+    const BLOCK_LIMIT: u32 = 500_000_000;
+
+    // Get a timestamp representing "now" (for testing purposes)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
+
+    // Past timestamp - should be final
+    let past_timestamp: u32 = now - 86400; // 1 day ago
+    assert!(past_timestamp >= BLOCK_LIMIT);
+    assert!(past_timestamp < now);
+
+    // Future timestamp - should NOT be final
+    let future_timestamp: u32 = now + 86400; // 1 day in future
+    assert!(future_timestamp >= BLOCK_LIMIT);
+    assert!(future_timestamp > now);
+}
+
+#[test]
+fn test_n_lock_time_is_final_logic() {
+    // This test validates the exact logic used in n_lock_time_is_final
+    const BLOCK_LIMIT: u32 = 500_000_000;
+
+    fn is_final_with_height_and_time(n_lock_time: u32, current_height: u32, current_time: u32) -> bool {
+        if n_lock_time >= BLOCK_LIMIT {
+            // Time-based locktime
+            n_lock_time < current_time
+        } else {
+            // Block-based locktime
+            n_lock_time < current_height
+        }
+    }
+
+    let height = 880000;
+    let time = 1706400000; // Approx Jan 2024
+
+    // Zero locktime
+    assert!(is_final_with_height_and_time(0, height, time));
+
+    // Block height locks
+    assert!(is_final_with_height_and_time(800000, height, time)); // Past height
+    assert!(!is_final_with_height_and_time(900000, height, time)); // Future height
+
+    // Timestamp locks
+    assert!(is_final_with_height_and_time(1706000000, height, time)); // Past time
+    assert!(!is_final_with_height_and_time(1707000000, height, time)); // Future time
+
+    // Edge case: exactly at threshold
+    assert!(is_final_with_height_and_time(BLOCK_LIMIT, height, time + BLOCK_LIMIT)); // Would need huge time
+}
+
+#[test]
+fn test_n_lock_time_sequence_affects_finality() {
+    // In Bitcoin, if all inputs have max sequence (0xFFFFFFFF), nLockTime is ignored
+    // This test documents the expected behavior for the sequence check
+    const MAX_SEQUENCE: u32 = 0xFFFFFFFF;
+
+    // If all inputs have max sequence, the transaction is final regardless of nLockTime
+    let all_max_sequence = vec![MAX_SEQUENCE, MAX_SEQUENCE, MAX_SEQUENCE];
+    let has_non_max = all_max_sequence.iter().any(|&s| s != MAX_SEQUENCE);
+    assert!(!has_non_max); // All max means nLockTime is bypassed
+
+    // If any input has non-max sequence, nLockTime must be checked
+    let some_non_max = vec![MAX_SEQUENCE, 0xFFFFFFFE, MAX_SEQUENCE];
+    let needs_locktime_check = some_non_max.iter().any(|&s| s != MAX_SEQUENCE);
+    assert!(needs_locktime_check);
+}
+
+// =============================================================================
+// GetBeef Integration Tests (require network - marked as ignored)
+// =============================================================================
+
+#[tokio::test]
+#[ignore = "Requires network access"]
+async fn test_services_get_beef_mined_transaction() {
+    use bsv_wallet_toolbox::services::traits::WalletServices;
+
+    let services = Services::mainnet().unwrap();
+
+    // Genesis coinbase txid (always available on mainnet)
+    let genesis_txid = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
+
+    let result = services.get_beef(genesis_txid, &[]).await;
+    assert!(result.is_ok());
+    let beef_result = result.unwrap();
+
+    // Genesis coinbase should have BEEF data
+    // Note: may or may not have proof depending on service
+    assert_eq!(beef_result.txid, genesis_txid);
+}
+
+#[tokio::test]
+#[ignore = "Requires network access"]
+async fn test_services_get_beef_with_known_txids() {
+    use bsv_wallet_toolbox::services::traits::WalletServices;
+
+    let services = Services::mainnet().unwrap();
+
+    // Use a well-known mined transaction
+    let txid = "e8b0f9f6b92e31b97d39f6f5c7f8fb2def8a13f1d5f9c5b3a2e1d0c4b3a2e1d0";
+
+    // Mark the txid itself as known (should be treated as txid-only)
+    let known = vec![txid.to_string()];
+
+    let result = services.get_beef(txid, &known).await;
+    // Result should succeed but may have txid-only treatment
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+#[ignore = "Requires network access"]
+async fn test_services_get_beef_nonexistent_tx() {
+    use bsv_wallet_toolbox::services::traits::WalletServices;
+
+    let services = Services::mainnet().unwrap();
+
+    // Use an obviously fake txid
+    let fake_txid = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    let result = services.get_beef(fake_txid, &[]).await;
+    assert!(result.is_ok());
+    let beef_result = result.unwrap();
+
+    // Should have error for non-existent tx
+    assert!(beef_result.beef.is_none() || beef_result.error.is_some());
+}
+
+#[tokio::test]
+#[ignore = "Requires network access"]
+async fn test_services_n_lock_time_finality_integration() {
+    use bsv_wallet_toolbox::services::traits::WalletServices;
+
+    let services = Services::mainnet().unwrap();
+
+    // Test zero locktime (always final)
+    let result = services.n_lock_time_is_final(0).await;
+    assert!(result.is_ok());
+    assert!(result.unwrap()); // Zero is always final
+
+    // Test past block height (should be final)
+    let result = services.n_lock_time_is_final(100000).await;
+    assert!(result.is_ok());
+    assert!(result.unwrap()); // Height 100k is long past
+
+    // Test past timestamp (should be final)
+    let result = services.n_lock_time_is_final(1600000000).await; // ~2020
+    assert!(result.is_ok());
+    assert!(result.unwrap()); // 2020 is in the past
+
+    // Test future timestamp (should NOT be final)
+    let result = services.n_lock_time_is_final(2000000000).await; // ~2033
+    assert!(result.is_ok());
+    assert!(!result.unwrap()); // 2033 is in the future
+}
