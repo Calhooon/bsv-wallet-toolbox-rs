@@ -1188,30 +1188,92 @@ where
 
     async fn discover_by_identity_key(
         &self,
-        _args: DiscoverByIdentityKeyArgs,
+        args: DiscoverByIdentityKeyArgs,
         originator: &str,
     ) -> bsv_sdk::Result<DiscoverCertificatesResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
-        // Discovery requires overlay lookup service
-        // Return empty result for now
+        // Local-only discovery: query certificates from storage where subject matches identity_key
+        // Full overlay discovery would query the ls_identity overlay service
+        let auth = self.auth();
+
+        // Build query args to find certificates
+        let find_args = crate::storage::FindCertificatesArgs {
+            base: crate::storage::FindSincePagedArgs {
+                paged: Some(crate::storage::Paged {
+                    limit: args.limit,
+                    offset: args.offset,
+                }),
+                ..Default::default()
+            },
+            include_fields: Some(true),
+            ..Default::default()
+        };
+
+        let certs = self
+            .storage
+            .find_certificates(&auth, find_args)
+            .await
+            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
+        // Filter certificates where subject matches the identity_key
+        let identity_key_hex = hex::encode(&args.identity_key);
+        let matching_certs: Vec<_> = certs
+            .into_iter()
+            .filter(|cert| cert.subject == identity_key_hex)
+            .collect();
+
+        // Convert to IdentityCertificate format
+        // WalletCertificate uses Strings, so we can directly use the stored values
+        let certificates: Vec<bsv_sdk::wallet::IdentityCertificate> = matching_certs
+            .iter()
+            .map(|cert| {
+                bsv_sdk::wallet::IdentityCertificate {
+                    certificate: WalletCertificate {
+                        certificate_type: cert.cert_type.clone(),
+                        serial_number: cert.serial_number.clone(),
+                        subject: cert.subject.clone(),
+                        certifier: cert.certifier.clone(),
+                        revocation_outpoint: cert.revocation_outpoint.clone(),
+                        fields: std::collections::HashMap::new(),
+                        signature: cert.signature.clone(),
+                    },
+                    decrypted_fields: None,
+                    publicly_revealed_keyring: None,
+                    certifier_info: None,
+                }
+            })
+            .collect();
+
         Ok(DiscoverCertificatesResult {
-            total_certificates: 0,
-            certificates: vec![],
+            total_certificates: certificates.len() as u32,
+            certificates,
         })
     }
 
     async fn discover_by_attributes(
         &self,
-        _args: DiscoverByAttributesArgs,
+        args: DiscoverByAttributesArgs,
         originator: &str,
     ) -> bsv_sdk::Result<DiscoverCertificatesResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
-        // Discovery requires overlay lookup service
-        // Return empty result for now
+        // Local-only discovery: query certificates from storage and filter by attributes
+        // Full overlay discovery would query the ls_identity overlay service
+        //
+        // Note: This is a limited local-only implementation. Full discovery requires
+        // querying the ls_identity overlay service which is not yet implemented.
+        // For now, return empty results as we can't efficiently search by attributes
+        // without the overlay service index.
+
+        // Log the intent
+        tracing::debug!(
+            "discover_by_attributes: local-only mode, attributes={:?}",
+            args.attributes
+        );
+
         Ok(DiscoverCertificatesResult {
             total_certificates: 0,
             certificates: vec![],

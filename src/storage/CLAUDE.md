@@ -179,12 +179,31 @@ Provides metadata about a configured storage provider instance.
 |------|--------|---------|
 | `StorageProvidedBy` | `You`, `Storage`, `YouAndStorage` | Who provided an input/output |
 | `ReviewActionResultStatus` | `Success`, `DoubleSpend`, `ServiceError`, `InvalidTx` | Broadcast result |
+| `BeefVerificationMode` | `Strict`, `TrustKnown`, `Disabled` | BEEF merkle proof verification mode |
+
+### BEEF Verification
+
+```rust
+pub enum BeefVerificationMode {
+    Strict,     // Verify all BEEF merkle proofs (default)
+    TrustKnown, // Skip verification for known transactions
+    Disabled,   // Disable verification entirely
+}
+```
+
+Controls how BEEF (Background Evaluation Extended Format) transactions are verified against the blockchain when internalizing or creating actions.
 
 ### Storage Info Type
 
 | Type | Purpose |
 |------|---------|
 | `WalletStorageInfo` | Metadata about a configured storage provider (active, enabled, backup status) |
+
+### Monitor Types
+
+| Type | Purpose |
+|------|---------|
+| `TxSynchronizedStatus` | Result from `synchronize_transaction_statuses` with txid, status, and optional merkle proof data |
 
 ## Storage Implementations
 
@@ -372,6 +391,28 @@ let result = dest.process_sync_chunk(args, chunk).await?;
 println!("Synced {} inserts, {} updates", result.inserts, result.updates);
 ```
 
+### Monitor Operations
+
+```rust
+use bsv_wallet_toolbox::storage::MonitorStorage;
+use std::time::Duration;
+
+// Synchronize transaction statuses (fetch merkle proofs)
+let statuses = storage.synchronize_transaction_statuses().await?;
+for status in &statuses {
+    println!("TX {} -> {:?}", status.txid, status.status);
+}
+
+// Send waiting transactions (older than 30 seconds)
+let results = storage.send_waiting_transactions(Duration::from_secs(30)).await?;
+
+// Abort abandoned transactions (older than 1 hour)
+storage.abort_abandoned(Duration::from_secs(3600)).await?;
+
+// Attempt to recover incorrectly failed transactions
+storage.un_fail().await?;
+```
+
 ## Feature Flags
 
 | Flag | Description |
@@ -386,3 +427,4 @@ println!("Synced {} inserts, {} updates", result.inserts, result.updates);
 - `sqlx/CLAUDE.md` - SQLx storage implementation details
 - `client/CLAUDE.md` - Remote storage client details
 - `../chaintracks/CLAUDE.md` - Chain tracking for proofs
+- `../monitor/CLAUDE.md` - Monitor daemon using MonitorStorage trait

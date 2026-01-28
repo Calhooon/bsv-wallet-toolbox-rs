@@ -12,7 +12,7 @@ use crate::services::{
     collection::{ServiceCall, ServiceCollection, ServiceCallHistory},
     providers::{Arc, Bitails, BitailsConfig, WhatsOnChain, WhatsOnChainConfig},
     traits::{
-        sha256, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
+        sha256, BlockHeader, BsvExchangeRate, GetBeefResult, GetMerklePathResult, GetRawTxResult,
         GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
         GetUtxoStatusResult, PostBeefResult, WalletServices,
     },
@@ -910,6 +910,85 @@ impl WalletServices for Services {
         // Block-based locktime
         let height = self.get_height().await?;
         Ok(n_lock_time < height)
+    }
+
+    async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult> {
+        use bsv_sdk::transaction::{Beef, MerklePath, Transaction};
+        use std::collections::HashSet;
+
+        // Build known txids lookup set for O(1) checking
+        let known_set: HashSet<&str> = known_txids.iter().map(|s| s.as_str()).collect();
+
+        // Get raw transaction
+        let raw_tx_result = self.get_raw_tx(txid).await?;
+        let raw_tx = match raw_tx_result.raw_tx {
+            Some(bytes) => bytes,
+            None => {
+                return Ok(GetBeefResult {
+                    name: "Services".to_string(),
+                    txid: txid.to_string(),
+                    beef: None,
+                    has_proof: false,
+                    error: raw_tx_result.error.or_else(|| Some("Transaction not found".to_string())),
+                });
+            }
+        };
+
+        // Parse the transaction
+        let tx = match Transaction::from_binary(&raw_tx) {
+            Ok(tx) => tx,
+            Err(e) => {
+                return Ok(GetBeefResult {
+                    name: "Services".to_string(),
+                    txid: txid.to_string(),
+                    beef: None,
+                    has_proof: false,
+                    error: Some(format!("Failed to parse transaction: {}", e)),
+                });
+            }
+        };
+
+        // Get merkle path for this transaction
+        let merkle_result = self.get_merkle_path(txid).await?;
+        let has_proof = merkle_result.merkle_path.is_some();
+
+        // Create BEEF
+        let mut beef = Beef::new();
+
+        // If we have a merkle path, parse and add it
+        let bump_index = if let Some(merkle_path_hex) = &merkle_result.merkle_path {
+            if let Ok(merkle_path) = MerklePath::from_hex(merkle_path_hex) {
+                // Add the merkle path (BUMP) to the BEEF and get the index
+                Some(beef.merge_bump(merkle_path))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Add the main transaction to BEEF
+        // Use merge_raw_tx with bump_index if we have a proof
+        beef.merge_raw_tx(raw_tx.clone(), bump_index);
+
+        // Process inputs - for known txids, add as TxIDOnly
+        // For this implementation, we just add known txids as references
+        for input_txid in known_txids {
+            if !known_set.is_empty() {
+                beef.merge_txid_only(input_txid.clone());
+            }
+        }
+
+        // Serialize BEEF to bytes
+        let beef_bytes = beef.to_binary();
+
+        Ok(GetBeefResult {
+            name: "Services".to_string(),
+            txid: txid.to_string(),
+            beef: Some(beef_bytes),
+            has_proof,
+            error: None,
+        })
     }
 }
 

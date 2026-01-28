@@ -168,37 +168,9 @@ Both `MemoryStorage` and `SqliteStorage` implement three storage traits from `cr
 | `storage_type()` | Returns `"memory"` | Returns `"sqlite"` |
 | `is_available()` | Always returns `true` | Returns value set by `make_available()` |
 
-## Internal Data Structures
-
-`MemoryStorage` uses five `RwLock`-protected HashMaps for concurrent access:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     MemoryStorage                            │
-├─────────────────────────────────────────────────────────────┤
-│  headers: HashMap<i64, LiveBlockHeader>                      │
-│           └── Primary storage, indexed by header_id          │
-│                                                              │
-│  hash_to_id: HashMap<String, i64>                           │
-│              └── Block hash → header_id lookup               │
-│                                                              │
-│  height_to_id: HashMap<u32, i64>                            │
-│                └── Height → header_id (active chain only)    │
-│                                                              │
-│  merkle_to_id: HashMap<String, i64>                         │
-│                └── Merkle root → header_id (active only)     │
-│                                                              │
-│  next_id: i64                                                │
-│           └── Next header_id to allocate                     │
-│                                                              │
-│  tip_id: Option<i64>                                        │
-│          └── Current chain tip header_id                     │
-└─────────────────────────────────────────────────────────────┘
-```
-
 ## Usage
 
-### Basic Usage
+### Basic Usage (MemoryStorage)
 
 ```rust
 use bsv_wallet_toolbox::chaintracks::{Chain, MemoryStorage, ChaintracksStorage};
@@ -211,70 +183,41 @@ assert!(storage.is_available().await);
 assert_eq!(storage.storage_type(), "memory");
 ```
 
-### Inserting Headers
+### Basic Usage (SqliteStorage)
 
 ```rust
-use bsv_wallet_toolbox::chaintracks::{
-    Chain, MemoryStorage, LiveBlockHeader,
-    ChaintracksStorageIngest, ChaintracksStorageQuery
-};
+use bsv_wallet_toolbox::chaintracks::{Chain, SqliteStorage, ChaintracksStorage};
 
-let storage = MemoryStorage::new(Chain::Main);
+// Create persistent storage
+let storage = SqliteStorage::new("sqlite:chaintracks.db", Chain::Main).await?;
 
-let header = LiveBlockHeader {
-    version: 1,
-    previous_hash: "0".repeat(64),  // Genesis has no parent
-    merkle_root: "4a5e1e...".to_string(),
-    time: 1231006505,
-    bits: 0x1d00ffff,
-    nonce: 2083236893,
-    height: 0,
-    hash: "000000000019d6...".to_string(),
-    chain_work: "1".to_string(),
-    is_chain_tip: false,    // Set by insert
-    is_active: false,       // Set by insert
-    header_id: 0,           // Assigned by insert
-    previous_header_id: None,
-};
+// Run migrations to create tables
+storage.migrate_latest().await?;
 
-let result = storage.insert_header(header).await?;
+// Mark as available
+storage.make_available().await?;
 
-if result.added {
-    println!("Header added successfully");
-    if result.is_active_tip {
-        println!("This is now the chain tip");
-    }
-}
-```
-
-### Querying Headers
-
-```rust
-// Find by height
-if let Some(header) = storage.find_header_for_height(100).await? {
-    println!("Block 100 hash: {}", header.hash);
-}
-
-// Find by hash
-if let Some(live_header) = storage.find_live_header_for_block_hash(&hash).await? {
-    println!("Found header at height {}", live_header.height);
-}
-
-// Get current tip
-if let Some(tip) = storage.find_chain_tip_header().await? {
-    println!("Chain tip: {} at height {}", tip.hash, tip.height);
-}
+assert!(storage.is_available().await);
+assert_eq!(storage.storage_type(), "sqlite");
 ```
 
 ### Custom Thresholds
 
 ```rust
-// For mobile clients: shorter retention
+// MemoryStorage: for mobile clients with shorter retention
 let storage = MemoryStorage::with_thresholds(
     Chain::Main,
     500,   // live_height_threshold: keep fewer headers
     100,   // reorg_height_threshold: expect smaller reorgs
 );
+
+// SqliteStorage: with custom thresholds
+let storage = SqliteStorage::with_thresholds(
+    "sqlite:chaintracks.db",
+    Chain::Main,
+    500,
+    100,
+).await?;
 ```
 
 ## Header Insertion Logic
@@ -313,15 +256,6 @@ When a reorg is detected (new tip doesn't extend current tip), `handle_reorg` ex
 4. **Update indexes**: Remove old chain from `height_to_id` and `merkle_to_id`, add new chain
 5. **Return deactivated headers**: For notification/rollback purposes
 
-## Concurrency
-
-All internal state uses `RwLock` for thread-safe access:
-- Multiple readers can query concurrently
-- Writers get exclusive access
-- `async_trait` enables use in async contexts
-
-Note: Lock acquisition is synchronous (uses `unwrap()`). In high-contention scenarios, consider the SQLite backend (when implemented).
-
 ## Pruning Behavior
 
 Two methods manage header cleanup:
@@ -339,16 +273,43 @@ Two methods manage header cleanup:
 
 ## Limitations
 
+### MemoryStorage
+
 1. **No persistence**: Data lost on process restart
 2. **No bulk storage**: `get_available_height_ranges()` returns empty, `migrate_live_to_bulk()` is no-op
 3. **Memory bound**: All headers stored in RAM
 4. **Single process**: Cannot share state across processes
 
-For persistent storage, a SQLite backend is planned (see `mod.rs` TODO comment).
+### SqliteStorage
+
+1. **No bulk storage**: Like MemoryStorage, `get_available_height_ranges()` returns empty, `migrate_live_to_bulk()` is no-op
+2. **Feature-gated**: Requires `sqlite` or `mysql` feature flag
+3. **Initialization required**: Must call `migrate_latest()` before use and `make_available()` to enable
+4. **Connection overhead**: Database connections have startup cost compared to memory storage
+
+## Feature Flags
+
+SqliteStorage is conditionally compiled based on feature flags in `Cargo.toml`:
+
+```rust
+// In mod.rs
+#[cfg(any(feature = "sqlite", feature = "mysql"))]
+mod sqlite;
+
+#[cfg(any(feature = "sqlite", feature = "mysql"))]
+pub use sqlite::SqliteStorage;
+```
+
+Enable with:
+```bash
+cargo build --features sqlite
+# or
+cargo build --features mysql
+```
 
 ## Testing
 
-The module includes comprehensive tests (~500 lines) covering:
+The module includes comprehensive tests covering:
 
 - Basic insertion and retrieval
 - Chain growth and tip tracking
@@ -366,42 +327,37 @@ The module includes comprehensive tests (~500 lines) covering:
 - Reorg depth calculation
 - Storage type and availability
 
-Example test:
-```rust
-#[tokio::test]
-async fn test_chain_growth() {
-    let storage = MemoryStorage::new(Chain::Test);
+### SqliteStorage Tests
 
-    // Insert genesis
-    let genesis = create_test_header(0, &"0".repeat(64), "hash_0");
-    storage.insert_header(genesis).await.unwrap();
-
-    // Insert block 1
-    let block1 = create_test_header(1, "hash_0", "hash_1");
-    let result = storage.insert_header(block1).await.unwrap();
-    assert!(result.added);
-    assert!(result.is_active_tip);
-    assert_eq!(result.reorg_depth, 0);
-
-    // Verify chain
-    let tip = storage.find_chain_tip_header().await.unwrap().unwrap();
-    assert_eq!(tip.height, 1);
-}
-```
+- Storage type and availability
+- Header insertion and duplicate detection
+- Hash and height lookups
+- Chain growth and tip tracking
+- Merkle root lookups
+- Pruning inactive headers
+- Dropping all data
+- Height range queries
+- Header byte serialization
 
 Run tests with:
 ```bash
-cargo test --lib chaintracks::storage
+# MemoryStorage tests (always available)
+cargo test --lib chaintracks::storage::memory
+
+# SqliteStorage tests (requires feature)
+cargo test --lib chaintracks::storage::sqlite --features sqlite
 ```
 
 ## Related
 
-- [`../CLAUDE.md`](../CLAUDE.md) - Parent Chaintracks module documentation (if exists)
+- [`../CLAUDE.md`](../CLAUDE.md) - Parent Chaintracks module documentation
 - [`../traits.rs`](../traits.rs) - Defines `ChaintracksStorage`, `ChaintracksStorageQuery`, `ChaintracksStorageIngest` traits
 - [`../types.rs`](../types.rs) - Defines `Chain`, `LiveBlockHeader`, `BlockHeader`, `HeightRange`, `InsertHeaderResult`
 
-## TypeScript Origin
+## Origin
 
-Ported from TypeScript implementation:
-- Source: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Storage/`
-- Equivalent: `ChaintracksStorageNoDb.ts` → `memory.rs`
+Ported from TypeScript and Go implementations:
+- TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Storage/`
+  - `ChaintracksStorageNoDb.ts` → `memory.rs`
+- Go: `pkg/services/chaintracks/gormstorage/`
+  - Used as reference for `sqlite.rs` implementation

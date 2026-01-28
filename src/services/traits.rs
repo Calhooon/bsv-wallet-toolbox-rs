@@ -67,6 +67,44 @@ pub trait WalletServices: Send + Sync {
 
     /// Check if nLockTime is final.
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool>;
+
+    /// Get BEEF for a transaction, building it from raw tx and merkle path.
+    ///
+    /// This method retrieves the raw transaction and merkle proof, then
+    /// assembles them into BEEF (Background Evaluation Extended Format).
+    ///
+    /// # Arguments
+    /// * `txid` - The transaction ID to get BEEF for
+    /// * `known_txids` - TXIDs that should be included as TxIDOnly (trimmed)
+    ///
+    /// # Returns
+    /// * `Ok(GetBeefResult)` - The BEEF data and metadata
+    async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult>;
+}
+
+// =============================================================================
+// Get BEEF Result
+// =============================================================================
+
+/// Result of getting BEEF for a transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetBeefResult {
+    /// Provider name that returned the result.
+    pub name: String,
+
+    /// Transaction ID.
+    pub txid: String,
+
+    /// BEEF bytes (if successful).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beef: Option<Vec<u8>>,
+
+    /// Whether the transaction has a merkle proof.
+    pub has_proof: bool,
+
+    /// Error if retrieval failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // =============================================================================

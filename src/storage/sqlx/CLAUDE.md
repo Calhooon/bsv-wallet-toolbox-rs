@@ -190,6 +190,7 @@ pub async fn internalize_action_internal(
 | Feature | Description |
 |---------|-------------|
 | AtomicBEEF parsing | Parses and validates BEEF format with atomic_txid |
+| BEEF verification | Verifies merkle proofs against ChainTracker (if set) |
 | Output extraction | Extracts satoshis and locking scripts from transaction |
 | Merge support | Updates existing transaction if txid already exists |
 | Status validation | Only completed/unproven/nosend transactions can be merged |
@@ -246,6 +247,39 @@ Constants for sync offsets (exported as `entity_names` module):
 | ID translation | Maps source IDs to local IDs for foreign keys |
 | Empty detection | Returns `done: true` when chunk is empty (sync complete) |
 | Change tracking | Counts inserts and updates for progress reporting |
+
+## BEEF Verification Implementation
+
+The `beef_verification.rs` module provides BEEF (Background Evaluation Extended Format) merkle proof verification:
+
+### Core Functions
+```rust
+pub async fn verify_beef_merkle_proofs(
+    beef: &mut Beef,
+    chain_tracker: &dyn ChainTracker,
+    mode: BeefVerificationMode,
+    known_txids: &HashSet<String>,
+) -> Result<bool>
+
+pub async fn verify_txid_merkle_proof(
+    beef: &Beef,
+    txid: &str,
+    chain_tracker: &dyn ChainTracker,
+) -> Result<bool>
+```
+
+### Verification Modes
+| Mode | Description |
+|------|-------------|
+| `Strict` | Verify all merkle roots against chain (default) |
+| `TrustKnown` | Skip verification for known txids |
+| `Disabled` | Skip all verification |
+
+### Usage
+- Called by `internalize_action` to verify incoming transaction proofs
+- Called by `create_action` to verify user-provided inputBEEF
+- Requires `ChainTracker` to be set via `storage.set_chain_tracker()`
+- Returns `Ok(true)` if valid, `Ok(false)` if no proofs to verify, `Err` if invalid
 
 ## Create Action Implementation
 
@@ -377,16 +411,17 @@ The trait signatures require `&self` returns but internal state uses `RwLock`. T
 
 ## Tests
 
-Total: ~130 tests across all modules.
+Total: ~139 tests across all modules.
 
 | Module | Tests | Key Coverage |
 |--------|-------|--------------|
-| `abort_action.rs` | 19 | Status validation, UTXO release, lookup by txid |
+| `create_action.rs` | 45 | Validation, fee calculation, BEEF building, Go test parity |
 | `process_action.rs` | 35 | txid computation, VarInt parsing, script offsets, Go test parity |
+| `abort_action.rs` | 19 | Status validation, UTXO release, lookup by txid |
+| `storage_sqlx.rs` | 16 | CRUD operations, list methods, certificate filters |
 | `internalize_action.rs` | 11 | Wallet payment, basket insertion, merge scenarios |
 | `sync.rs` | 9 | Chunk retrieval, upsert logic, ID translation, roundtrip |
-| `storage_sqlx.rs` | 11 | CRUD operations, list methods, certificate filters |
-| `create_action.rs` | 45 | Validation, fee calculation, BEEF building, Go test parity |
+| `beef_verification.rs` | 4 | Verification modes, empty BEEF handling, mode serialization |
 
 Run with:
 ```bash

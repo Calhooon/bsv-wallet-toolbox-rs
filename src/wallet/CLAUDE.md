@@ -22,6 +22,10 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 │  - BIP-143 sighash computation                                  │
 │  - P2PKH / P2PK unlocking script generation                     │
 │  - Key derivation via protocol + counterparty                   │
+├─────────────────────────────────────────────────────────────────┤
+│                    PendingTransaction Cache                     │
+│  - Caches unsigned transactions for deferred signing            │
+│  - 24-hour TTL with automatic cleanup                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -29,8 +33,8 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner` |
-| `wallet.rs` | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods |
+| `mod.rs` | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput` |
+| `wallet.rs` | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction` |
 | `signer.rs` | `WalletSigner` for transaction signing with BIP-143 sighash and script generation |
 
 ## Key Exports
@@ -42,11 +46,38 @@ pub struct Wallet<S, V>
 where
     S: WalletStorageProvider + Send + Sync,
     V: WalletServices + Send + Sync,
+{
+    proto_wallet: ProtoWallet,
+    storage: Arc<S>,
+    services: Arc<V>,
+    identity_key: String,
+    chain: Chain,
+    options: WalletOptions,
+    signer: WalletSigner,
+    pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
+}
 ```
 
 Generic wallet implementation parameterized by:
 - `S` - Storage backend (e.g., `StorageSqlx`, `StorageClient`)
 - `V` - Services backend (e.g., `Services`)
+
+### PendingTransaction
+
+```rust
+pub struct PendingTransaction {
+    pub reference: String,              // Unique reference for this pending transaction
+    pub raw_tx: Vec<u8>,                // The unsigned transaction bytes
+    pub inputs: Vec<SignerInput>,       // Input metadata for signing
+    pub input_beef: Option<Vec<u8>>,    // BEEF data for broadcasting
+    pub is_no_send: bool,               // Whether to skip broadcast
+    pub is_delayed: bool,               // Whether delayed broadcast was requested
+    pub send_with: Vec<String>,         // TXIDs to send with
+    pub created_at: DateTime<Utc>,      // When this pending transaction was created
+}
+```
+
+Cached transaction awaiting signature via `sign_action`. Created when `create_action` is called with `sign_and_process = false`. Expires after 24 hours (configurable via `PENDING_TRANSACTION_TTL_SECS`).
 
 ### WalletOptions
 
@@ -72,6 +103,11 @@ pub struct WalletSigner {
 ```
 
 Handles transaction signing using key derivation from `ProtoWallet`. Signs inputs based on their derivation prefix/suffix.
+
+**Methods:**
+- `new(root_key: Option<PrivateKey>)` - Create a new signer
+- `sign_transaction(&self, unsigned_tx, inputs, proto_wallet)` - Sign all inputs in a transaction
+- `sign_input(&self, tx_data, input_index, input, proto_wallet)` - Sign a single input
 
 ### SignerInput
 
@@ -110,8 +146,8 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 
 | Method | Description |
 |--------|-------------|
-| `create_action` | Create Bitcoin transaction with automatic signing/broadcast |
-| `sign_action` | Sign previously created transaction (stub) |
+| `create_action` | Create Bitcoin transaction with automatic or deferred signing/broadcast |
+| `sign_action` | Sign previously created transaction from pending cache |
 | `abort_action` | Cancel transaction in progress |
 | `list_actions` | List transactions matching labels |
 | `internalize_action` | Import external transaction into wallet |
@@ -150,7 +186,16 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 | `get_network` | Network (mainnet/testnet) |
 | `get_version` | Returns "bsv-wallet-toolbox-0.1.0" |
 
+## Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `WALLET_VERSION` | "bsv-wallet-toolbox-0.1.0" | Version string returned by `get_version` |
+| `PENDING_TRANSACTION_TTL_SECS` | 86400 (24 hours) | TTL for pending transactions in cache |
+
 ## Transaction Signing Flow
+
+### Immediate Signing (sign_and_process = true, default)
 
 The `create_action` method orchestrates transaction creation:
 
@@ -184,7 +229,50 @@ storage.process_action()
 services.post_beef() (if not no_send)
        │
        ▼
-CreateActionResult
+CreateActionResult { txid, tx, ... }
+```
+
+### Deferred Signing (sign_and_process = false)
+
+When `sign_and_process` is false, the transaction is cached for later signing:
+
+```
+CreateActionArgs (sign_and_process = false)
+       │
+       ▼
+storage.create_action()
+       │
+       ▼
+build_unsigned_transaction()
+       │
+       ▼
+Cache in pending_transactions HashMap
+       │
+       ▼
+CreateActionResult { signable_transaction: Some(...) }
+
+
+Later, via sign_action:
+
+SignActionArgs { reference, spends }
+       │
+       ▼
+Lookup from pending_transactions cache
+       │
+       ▼
+Merge client-provided unlocking scripts
+       │
+       ▼
+WalletSigner.sign_transaction()
+       │
+       ▼
+storage.process_action()
+       │
+       ▼
+services.post_beef() (if not no_send)
+       │
+       ▼
+SignActionResult { txid, tx, ... }
 ```
 
 ## Sighash Computation
@@ -313,18 +401,35 @@ All `WalletInterface` methods require an `originator` string parameter:
 ### Stub Methods
 
 Some methods return stubs or errors:
-- `sign_action` - Requires pending transaction cache; use `create_action` with `sign_and_process=true`
-- `prove_certificate` - Requires keyring handling
-- `discover_by_identity_key` / `discover_by_attributes` - Require overlay lookup service
+- `prove_certificate` - Requires keyring handling (returns error)
+- `discover_by_identity_key` / `discover_by_attributes` - Require overlay lookup service (return empty results)
+- `acquire_certificate` with `Issuance` protocol - Requires HTTP communication with certifier (returns error)
+
+### Pending Transaction Cache
+
+The wallet maintains an in-memory cache of unsigned transactions:
+- Keyed by `reference` string from `StorageCreateActionResult`
+- Automatically cleaned up: expired transactions (>24 hours) are removed when the cache is accessed
+- Thread-safe: uses `Arc<RwLock<HashMap<...>>>`
+- Used by `sign_action` to retrieve previously created unsigned transactions
 
 ### Storage Initialization
 
-The `Wallet::new` constructor:
+The `Wallet::new` constructor (via `with_chain`):
 1. Creates `ProtoWallet` from root key
 2. Gets identity key from ProtoWallet
 3. Creates `WalletSigner` with root key
-4. Verifies storage is available
+4. Verifies storage is available (`is_available()` check)
 5. Ensures user exists in storage via `find_or_insert_user`
+6. Initializes empty pending transactions cache
+
+### Wallet Constructors
+
+| Constructor | Description |
+|-------------|-------------|
+| `new(root_key, storage, services)` | Default options, mainnet |
+| `with_options(root_key, storage, services, options)` | Custom options, mainnet |
+| `with_chain(root_key, storage, services, options, chain)` | Full control over all parameters |
 
 ### Thread Safety
 

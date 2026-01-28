@@ -2342,6 +2342,200 @@ impl MonitorStorage for StorageSqlx {
     }
 }
 
+// =============================================================================
+// Commission and Event Logging Methods
+// =============================================================================
+
+impl StorageSqlx {
+    /// Insert a commission record for a transaction.
+    ///
+    /// Commissions track fees or royalties associated with transactions.
+    ///
+    /// # Arguments
+    /// * `user_id` - The user who owns the commission
+    /// * `transaction_id` - The transaction this commission is for
+    /// * `satoshis` - Amount of the commission in satoshis
+    /// * `locking_script` - The locking script for the commission output
+    /// * `key_offset` - Key derivation offset for the commission
+    pub async fn insert_commission(
+        &self,
+        user_id: i64,
+        transaction_id: i64,
+        satoshis: i64,
+        locking_script: &[u8],
+        key_offset: &str,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO commissions (user_id, transaction_id, satoshis, locking_script, key_offset, is_redeemed, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(transaction_id)
+        .bind(satoshis)
+        .bind(locking_script)
+        .bind(key_offset)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Mark a commission as redeemed.
+    pub async fn redeem_commission(&self, commission_id: i64) -> Result<()> {
+        let now = chrono::Utc::now();
+
+        sqlx::query(
+            r#"
+            UPDATE commissions
+            SET is_redeemed = 1, updated_at = ?
+            WHERE commission_id = ?
+            "#,
+        )
+        .bind(now)
+        .bind(commission_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Get unredeemed commissions for a user.
+    pub async fn get_unredeemed_commissions(&self, user_id: i64) -> Result<Vec<TableCommission>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT commission_id, user_id, transaction_id, satoshis, locking_script, key_offset, is_redeemed, created_at, updated_at
+            FROM commissions
+            WHERE user_id = ? AND is_redeemed = 0
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let commissions = rows
+            .iter()
+            .map(|row| TableCommission {
+                commission_id: row.get("commission_id"),
+                user_id: row.get("user_id"),
+                transaction_id: row.get("transaction_id"),
+                satoshis: row.get("satoshis"),
+                payer_locking_script: row.get("locking_script"),
+                key_offset: row.get("key_offset"),
+                is_redeemed: row.get::<i64, _>("is_redeemed") != 0,
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect();
+
+        Ok(commissions)
+    }
+
+    /// Log a monitor event.
+    ///
+    /// Monitor events track background task execution, errors, and status changes.
+    ///
+    /// # Arguments
+    /// * `event` - Event type/name (e.g., "task_started", "sync_completed", "error")
+    /// * `details` - Optional JSON details about the event
+    pub async fn log_monitor_event(&self, event: &str, details: Option<&str>) -> Result<i64> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO monitor_events (event, details, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            "#,
+        )
+        .bind(event)
+        .bind(details)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Get recent monitor events.
+    ///
+    /// # Arguments
+    /// * `limit` - Maximum number of events to return
+    /// * `event_filter` - Optional filter by event type
+    pub async fn get_monitor_events(
+        &self,
+        limit: i64,
+        event_filter: Option<&str>,
+    ) -> Result<Vec<TableMonitorEvent>> {
+        let rows = if let Some(event) = event_filter {
+            sqlx::query(
+                r#"
+                SELECT event_id, event, details, created_at
+                FROM monitor_events
+                WHERE event = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(event)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT event_id, event, details, created_at
+                FROM monitor_events
+                ORDER BY created_at DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        let events = rows
+            .iter()
+            .map(|row| TableMonitorEvent {
+                event_id: row.get("event_id"),
+                event_type: row.get("event"),
+                event_data: row.get::<Option<String>, _>("details").unwrap_or_default(),
+                created_at: row.get("created_at"),
+            })
+            .collect();
+
+        Ok(events)
+    }
+
+    /// Clear old monitor events.
+    ///
+    /// # Arguments
+    /// * `older_than` - Remove events older than this duration
+    pub async fn cleanup_monitor_events(&self, older_than: std::time::Duration) -> Result<u64> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(older_than)
+            .map_err(|e| Error::StorageError(format!("Invalid duration: {}", e)))?;
+
+        let result = sqlx::query(
+            r#"
+            DELETE FROM monitor_events
+            WHERE created_at < ?
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2950,5 +3144,123 @@ mod tests {
         assert_eq!(status.txid, "abc123");
         assert_eq!(status.status, ProvenTxReqStatus::Completed);
         assert_eq!(status.block_height, Some(800000));
+    }
+
+    #[tokio::test]
+    async fn test_insert_commission() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+
+        // Insert a test transaction first (commission requires a transaction)
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, description, is_outgoing, satoshis, reference, created_at, updated_at)
+            VALUES (?, 'completed', 'Test transaction', 1, 1000, 'ref123', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(user.user_id)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        let tx_id: i64 = sqlx::query_scalar("SELECT transaction_id FROM transactions WHERE reference = 'ref123'")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+
+        // Insert commission
+        let locking_script = vec![0x76, 0xa9, 0x14]; // Partial P2PKH
+        let commission_id = storage
+            .insert_commission(user.user_id, tx_id, 500, &locking_script, "offset_123")
+            .await
+            .unwrap();
+
+        assert!(commission_id > 0);
+
+        // Get unredeemed commissions
+        let commissions = storage.get_unredeemed_commissions(user.user_id).await.unwrap();
+        assert_eq!(commissions.len(), 1);
+        assert_eq!(commissions[0].satoshis, 500);
+        assert_eq!(commissions[0].key_offset, "offset_123");
+        assert!(!commissions[0].is_redeemed);
+
+        // Redeem commission
+        storage.redeem_commission(commission_id).await.unwrap();
+
+        // Verify redeemed
+        let commissions = storage.get_unredeemed_commissions(user.user_id).await.unwrap();
+        assert_eq!(commissions.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_monitor_events() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // Log some events
+        let event_id1 = storage
+            .log_monitor_event("task_started", Some(r#"{"task": "sync"}"#))
+            .await
+            .unwrap();
+        let event_id2 = storage
+            .log_monitor_event("task_completed", Some(r#"{"task": "sync", "duration_ms": 100}"#))
+            .await
+            .unwrap();
+        let event_id3 = storage
+            .log_monitor_event("error", Some(r#"{"message": "Connection failed"}"#))
+            .await
+            .unwrap();
+
+        assert!(event_id1 > 0);
+        assert!(event_id2 > event_id1);
+        assert!(event_id3 > event_id2);
+
+        // Get all events
+        let events = storage.get_monitor_events(10, None).await.unwrap();
+        assert_eq!(events.len(), 3);
+
+        // Get events by type
+        let error_events = storage.get_monitor_events(10, Some("error")).await.unwrap();
+        assert_eq!(error_events.len(), 1);
+        assert_eq!(error_events[0].event_type, "error");
+        assert!(error_events[0].event_data.contains("Connection failed"));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_monitor_events() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        // Log an event
+        storage
+            .log_monitor_event("test_event", None)
+            .await
+            .unwrap();
+
+        // Cleanup events older than 1 hour (should not delete recent event)
+        let deleted = storage
+            .cleanup_monitor_events(std::time::Duration::from_secs(3600))
+            .await
+            .unwrap();
+        assert_eq!(deleted, 0);
+
+        // Verify event still exists
+        let events = storage.get_monitor_events(10, None).await.unwrap();
+        assert_eq!(events.len(), 1);
     }
 }

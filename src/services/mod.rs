@@ -38,6 +38,7 @@ pub use crate::chaintracks::Chain;
 // Re-export main types
 pub use traits::{
     WalletServices,
+    GetBeefResult,
     GetMerklePathResult,
     GetRawTxResult,
     PostBeefResult,
