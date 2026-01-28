@@ -61,12 +61,7 @@ pub mod chaintracks;
 pub mod services;
 pub mod wallet;
 pub mod monitor;
-// NOTE: managers module not yet implemented. Would include:
-//   - WalletStorageManager (multi-storage sync)
-//   - WalletPermissionsManager (BRC-98/99 permissions)
-//   - SimpleWalletManager / CWIStyleWalletManager
-// See MIGRATION_PLAN.md Phase 5 for details
-// pub mod managers;
+pub mod managers;
 
 pub use error::{Error, Result};
 
@@ -121,3 +116,19 @@ pub use wallet::{Wallet, WalletOptions, WalletSigner};
 
 // Re-export Monitor types
 pub use monitor::{Monitor, MonitorOptions, MonitorTask, TaskConfig, TaskResult};
+
+// Re-export Managers types
+pub use managers::{
+    // Settings manager
+    Certifier, TrustSettings, WalletSettings, WalletSettingsManager,
+    WalletSettingsManagerConfig, WalletTheme, DEFAULT_SETTINGS, TESTNET_DEFAULT_SETTINGS,
+    // Storage manager
+    ManagedStorage, WalletStorageManager,
+    // Simple wallet manager
+    SimpleWalletManager,
+    // CWI-style wallet manager
+    CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile,
+    // Permissions manager (stub)
+    GroupedPermissions, PermissionRequest, PermissionToken, PermissionsModule,
+    WalletPermissionsManager, WalletPermissionsManagerConfig,
+};

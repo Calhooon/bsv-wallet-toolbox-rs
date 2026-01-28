@@ -31,7 +31,7 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `lib.rs` | 123 | Crate root with module declarations, re-exports, and crate-level documentation |
+| `lib.rs` | 134 | Crate root with module declarations, re-exports, and crate-level documentation |
 | `error.rs` | 127 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
 
 ## Modules
@@ -43,6 +43,7 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 | `services/` | External service providers (WhatsOnChain, ARC, Bitails) for blockchain operations |
 | `wallet/` | Full `Wallet` implementation with `WalletSigner` for transaction signing |
 | `monitor/` | Transaction monitoring daemon with background tasks for syncing and reprocessing |
+| `managers/` | Higher-level wallet management: storage sync, settings, authentication, permissions |
 
 ## Key Exports
 
@@ -152,6 +153,42 @@ pub use monitor::{
     MonitorTask,     // Individual background task definition
     TaskConfig,      // Configuration for task execution
     TaskResult,      // Result from task execution
+};
+```
+
+### Managers Types
+
+```rust
+pub use managers::{
+    // Settings manager - Persistent wallet settings
+    Certifier,                     // Certificate issuer configuration
+    TrustSettings,                 // Trust configuration for signing
+    WalletSettings,                // Complete wallet settings
+    WalletSettingsManager,         // Settings persistence manager
+    WalletSettingsManagerConfig,   // Configuration options
+    WalletTheme,                   // UI theme (Light, Dark, System)
+    DEFAULT_SETTINGS,              // Default mainnet settings
+    TESTNET_DEFAULT_SETTINGS,      // Default testnet settings
+
+    // Storage manager - Multi-storage synchronization
+    ManagedStorage,                // Individual storage with role
+    WalletStorageManager,          // Active/backup storage sync
+
+    // Simple wallet manager - Two-factor authentication
+    SimpleWalletManager,           // Primary key + privileged key manager
+
+    // CWI-style wallet manager - Multi-profile support
+    CWIStyleWalletManager,         // CWI-compatible manager
+    CWIStyleWalletManagerConfig,   // Configuration options
+    Profile,                       // User profile definition
+
+    // Permissions manager - BRC-98/99 permission control (stub)
+    GroupedPermissions,            // Grouped permission definitions
+    PermissionRequest,             // Permission request structure
+    PermissionToken,               // Permission token for operations
+    PermissionsModule,             // Permission module trait
+    WalletPermissionsManager,      // Permission manager
+    WalletPermissionsManagerConfig,// Configuration options
 };
 ```
 
@@ -268,14 +305,6 @@ WalletStorageSync       ← Sync operations (get_sync_chunk, process_sync_chunk)
 WalletStorageProvider   ← Full provider interface with identity/name
 ```
 
-## Planned Modules
-
-The following modules are planned but commented out in `lib.rs`:
-
-- `managers` - Higher-level manager components:
-  - `WalletStorageManager` - Multi-storage synchronization, handles sync between local and remote storage
-  - `WalletPermissionsManager` - Permission management for wallet operations
-
 ## Related Documentation
 
 - [storage/CLAUDE.md](./storage/CLAUDE.md) - Storage layer details, entity definitions, trait implementations
@@ -283,6 +312,7 @@ The following modules are planned but commented out in `lib.rs`:
 - [services/CLAUDE.md](./services/CLAUDE.md) - External service providers, traits, and blockchain operations
 - [wallet/CLAUDE.md](./wallet/CLAUDE.md) - Wallet implementation, signing, and WalletInterface
 - [monitor/CLAUDE.md](./monitor/CLAUDE.md) - Transaction monitoring daemon and background tasks
+- [managers/CLAUDE.md](./managers/CLAUDE.md) - Higher-level wallet management components
 
 ## Development Notes
 

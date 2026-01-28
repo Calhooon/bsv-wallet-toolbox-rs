@@ -3,7 +3,7 @@
 
 ## Overview
 
-The monitor module provides a daemon-based task scheduler for running recurring background operations on wallet storage. It handles transaction lifecycle management including proof verification, transaction broadcasting, abandoned transaction cleanup, and recovery of incorrectly failed transactions. The module is designed to run alongside a wallet instance, performing maintenance tasks at configurable intervals.
+The monitor module provides a daemon-based task scheduler for running recurring background operations on wallet storage. It handles transaction lifecycle management including proof verification, transaction broadcasting, abandoned transaction cleanup, recovery of incorrectly failed transactions, blockchain reorganization handling, and database maintenance. The module is designed to run alongside a wallet instance, performing maintenance tasks at configurable intervals.
 
 ## Architecture
 
@@ -12,15 +12,23 @@ The monitor module provides a daemon-based task scheduler for running recurring 
 │                         Monitor<S, V>                            │
 │  (S: WalletStorageProvider, V: WalletServices)                  │
 ├─────────────────────────────────────────────────────────────────┤
-│  start() / stop() / run_once()                                  │
+│  start() / stop() / run_once() / is_running()                   │
 │  Manages task lifecycle and scheduling                          │
 ├─────────────────────────────────────────────────────────────────┤
-│                        TaskConfig                                │
-│  enabled | interval | start_immediately                         │
-├───────────────┬───────────────┬───────────────┬─────────────────┤
-│ CheckForProofs│ SendWaiting   │ FailAbandoned │ UnfailTask      │
-│   (1 min)     │   (5 min)     │   (5 min)     │   (10 min)      │
-└───────────────┴───────────────┴───────────────┴─────────────────┘
+│                        TasksConfig                               │
+│  enabled | interval | start_immediately (per task)              │
+├─────────────────┬─────────────────┬─────────────────────────────┤
+│  Core Tasks     │  Extended Tasks │  Maintenance Tasks          │
+├─────────────────┼─────────────────┼─────────────────────────────┤
+│ CheckForProofs  │ CheckNoSends    │ Purge (1 hour)              │
+│   (1 min)       │   (24 hours)    │ ReviewStatus (15 min)       │
+│ SendWaiting     │ NewHeader       │ MonitorCallHistory (12 min) │
+│   (5 min)       │   (1 min)       │                             │
+│ FailAbandoned   │ Reorg           │                             │
+│   (5 min)       │   (1 min)       │                             │
+│ Unfail          │ Clock           │                             │
+│   (10 min)      │   (1 sec)       │                             │
+└─────────────────┴─────────────────┴─────────────────────────────┘
                                 │
                     ┌───────────┴───────────┐
                     ▼                       ▼
@@ -134,6 +142,13 @@ pub struct TaskResult {
 }
 ```
 
+**Constructors:**
+- `TaskResult::new()` - Create empty result
+- `TaskResult::with_count(count)` - Create result with processed count
+
+**Methods:**
+- `add_error(error)` - Add a non-fatal error to the result
+
 ### TaskType
 
 Enum identifying each task type for tracking.
@@ -144,12 +159,21 @@ pub enum TaskType {
     SendWaiting,
     FailAbandoned,
     UnFail,
+    Clock,
+    CheckNoSends,
+    MonitorCallHistory,
+    NewHeader,
+    Purge,
+    Reorg,
+    ReviewStatus,
 }
 ```
 
 ## Tasks
 
-### CheckForProofsTask
+### Core Tasks (Configured via TasksConfig)
+
+#### CheckForProofsTask
 
 Fetches merkle proofs for unconfirmed transactions.
 
@@ -162,11 +186,11 @@ Fetches merkle proofs for unconfirmed transactions.
 **Workflow:**
 1. Query proven_tx_reqs with pending confirmation statuses
 2. For each transaction, call `services.get_merkle_path()`
-3. If proof found, log success (full implementation would update status to 'completed')
+3. If proof found, update status to 'completed'
 4. If not found, increment attempts counter
 5. Continue on errors, collecting them in `TaskResult.errors`
 
-### SendWaitingTask
+#### SendWaitingTask
 
 Broadcasts transactions waiting to be sent.
 
@@ -175,17 +199,17 @@ Broadcasts transactions waiting to be sent.
 | Default interval | 5 minutes |
 | Starts immediately | Yes |
 | Storage queries | `find_proven_tx_reqs` with status: unsent, sending |
-| Service calls | Would call `post_beef()` in full implementation |
+| Service calls | `post_beef()` in full implementation |
 
 **Workflow:**
 1. Query proven_tx_reqs with unsent/sending status
-2. Group transactions by `batch_id` (or use txid as key if no batch)
+2. Group transactions by `batch` field (or use txid as key if no batch)
 3. For each batch, build BEEF and broadcast
 4. On success: update status to 'unmined'
 5. On double-spend: mark as 'failed'
 6. On error: log and retry next cycle
 
-### FailAbandonedTask
+#### FailAbandonedTask
 
 Marks abandoned transactions as failed to release locked UTXOs.
 
@@ -200,7 +224,7 @@ Marks abandoned transactions as failed to release locked UTXOs.
 3. For each abandoned transaction, call `storage.abort_action()` to release UTXOs
 4. Log results
 
-### UnfailTask
+#### UnfailTask
 
 Recovers transactions that were incorrectly marked as failed.
 
@@ -215,6 +239,163 @@ Recovers transactions that were incorrectly marked as failed.
 2. For each transaction, check if it has a merkle path on chain
 3. If proof found: update status to 'unmined', restore UTXOs
 4. If not found: mark as 'invalid'
+
+### Extended Tasks
+
+#### ClockTask
+
+Tracks minute-level clock events for scheduling purposes.
+
+| Property | Value |
+|----------|-------|
+| Default interval | 1 second |
+| State | `last_minute: AtomicU64` |
+
+**Workflow:**
+1. Run every second to check if a new minute has started
+2. On minute boundary crossing, log the event and return count of elapsed minutes
+3. Primarily used for scheduling minute-granularity events
+
+#### NewHeaderTask
+
+Polls for new blockchain block headers.
+
+| Property | Value |
+|----------|-------|
+| Default interval | 1 minute |
+| Service calls | `get_height()` |
+| State | `last_height`, `last_hash`, `stable_cycles`, `new_header_received` flag |
+
+**Workflow:**
+1. Query current chain height from services
+2. Compare with last known height
+3. If new blocks detected, set `new_header_received` flag for proof checking
+4. If height decreased, log potential reorg warning
+5. Track stable cycles without new blocks
+
+**Public Methods:**
+- `has_new_header()` - Check if new header since last check
+- `clear_new_header_flag()` - Reset the flag after processing
+- `last_known_height()` - Get last recorded chain height
+
+#### CheckNoSendsTask
+
+Retrieves proofs for 'nosend' transactions (not broadcast by wallet but may be mined externally).
+
+| Property | Value |
+|----------|-------|
+| Default interval | 24 hours |
+| Storage queries | `find_proven_tx_reqs` with status: nosend |
+| Service calls | `get_merkle_path()` for each txid |
+| State | `check_now: AtomicBool` flag for immediate trigger |
+
+**Workflow:**
+1. Query proven_tx_reqs with 'nosend' status
+2. For each transaction, check if it has been mined externally
+3. If proof found, update status accordingly
+4. Continue on errors, collecting them in result
+
+#### ReorgTask
+
+Handles blockchain reorganizations by processing deactivated headers.
+
+| Property | Value |
+|----------|-------|
+| Default interval | 1 minute |
+| Process delay | 10 minutes (to avoid temporary fork disruption) |
+| Max retry count | 3 |
+| State | `deactivated_headers: RwLock<Vec<DeactivatedHeader>>` |
+
+**Types:**
+```rust
+pub struct DeactivatedHeader {
+    pub hash: String,
+    pub height: u32,
+    pub deactivated_at: DateTime<Utc>,
+    pub retry_count: u32,
+}
+```
+
+**Workflow:**
+1. Process queued deactivated headers that have aged past the delay threshold
+2. Query transactions that may reference the reorg'd block
+3. Re-verify merkle proofs for affected transactions
+4. Update transaction status if proof no longer valid
+5. Requeue with incremented retry count if under max retries
+
+**Public Methods:**
+- `queue_deactivated_header(hash, height)` - Add header to processing queue
+- `pending_count()` - Get number of pending headers
+
+### Maintenance Tasks
+
+#### PurgeTask
+
+Database maintenance that deletes transient/expired data.
+
+| Property | Value |
+|----------|-------|
+| Default interval | 1 hour |
+| Failed tx age | 7 days (configurable) |
+| Completed data age | 30 days (configurable) |
+| State | `check_now: AtomicBool` flag |
+
+**Configuration:**
+```rust
+pub struct PurgeConfig {
+    pub purge_failed: bool,           // Default: true
+    pub purge_completed_data: bool,   // Default: true
+    pub failed_age: Duration,         // Default: 7 days
+    pub completed_data_age: Duration, // Default: 30 days
+}
+```
+
+**Workflow:**
+1. Query failed/invalid transactions older than `failed_age`
+2. Delete old failed transaction records entirely
+3. Query completed transactions older than `completed_data_age`
+4. Remove raw_tx, input_beef, mapi responses (keep record for history)
+
+**Constructors:**
+- `PurgeTask::new(storage)` - Create with default config
+- `PurgeTask::with_config(storage, config)` - Create with custom config
+
+#### ReviewStatusTask
+
+Synchronizes transaction status with ProvenTxReq status.
+
+| Property | Value |
+|----------|-------|
+| Default interval | 15 minutes |
+| Age threshold | 5 minutes (configurable) |
+| State | `check_now: AtomicBool` flag |
+
+**Workflow:**
+1. Find transactions with completed proofs that are older than age threshold
+2. Verify associated transaction records are also marked completed
+3. Sync status for any mismatches
+
+**Constructors:**
+- `ReviewStatusTask::new(storage)` - Create with default threshold
+- `ReviewStatusTask::with_age_threshold(storage, threshold)` - Custom threshold
+
+#### MonitorCallHistoryTask
+
+Logs service call history for monitoring and diagnostics.
+
+| Property | Value |
+|----------|-------|
+| Default interval | 12 minutes |
+| Service type | Requires concrete `Services` (not generic `WalletServices`) |
+
+**Workflow:**
+1. Call `services.get_services_call_history(true)` to get and reset counters
+2. Log success/failure/error counts for each service type:
+   - `get_merkle_path`
+   - `get_raw_tx`
+   - `post_beef`
+   - `get_utxo_status`
+3. Log total summary
 
 ## Usage
 
@@ -277,33 +458,39 @@ for (task_type, result) in results {
 
 | Task | Interval | Start Immediately |
 |------|----------|-------------------|
+| clock | 1 second | No |
 | check_for_proofs | 1 minute | No |
+| new_header | 1 minute | No |
+| reorg | 1 minute | No |
 | send_waiting | 5 minutes | Yes |
 | fail_abandoned | 5 minutes | No |
 | unfail | 10 minutes | No |
+| monitor_call_history | 12 minutes | No |
+| review_status | 15 minutes | No |
+| purge | 1 hour | No |
+| check_no_sends | 24 hours | No |
 
 ## Dependencies
 
 - `tokio` - Async runtime for task spawning and scheduling
 - `async_trait` - Async trait support for `MonitorTask`
-- `chrono` - Time calculations for abandoned transaction detection
+- `chrono` - Time calculations for abandoned transaction detection and age thresholds
 - `tracing` - Structured logging for task execution
 
 ## Logging
 
 The monitor uses `tracing` for structured logging:
 
-- `info` level: Task completion with items processed
-- `warn` level: Non-fatal errors from task execution
+- `info` level: Task completion with items processed, new blocks detected, transaction recovery
+- `warn` level: Non-fatal errors, chain height decrease (potential reorg), proof invalidation
 - `error` level: Fatal task failures
-- `debug` level: Detailed task progress and individual transaction processing
+- `debug` level: Detailed task progress, individual transaction processing, no-op cycles
 
 ## Related Documentation
 
 - [../CLAUDE.md](../CLAUDE.md) - Main source directory overview
 - [../storage/CLAUDE.md](../storage/CLAUDE.md) - Storage layer and `WalletStorageProvider` trait
 - [../services/CLAUDE.md](../services/CLAUDE.md) - Services layer and `WalletServices` trait
-- [./tasks/CLAUDE.md](./tasks/CLAUDE.md) - Detailed task implementations
 
 ## Implementation Notes
 
@@ -312,6 +499,11 @@ The monitor uses `tracing` for structured logging:
 The `Monitor` struct uses:
 - `AtomicBool` for the running flag to allow lock-free status checks
 - `RwLock<HashMap>` for task handles to allow concurrent reads with exclusive writes
+
+Individual tasks use:
+- `AtomicBool` for `check_now` flags (immediate trigger)
+- `AtomicU32`/`AtomicU64` for counters and heights
+- `RwLock` for queued data (e.g., deactivated headers in ReorgTask)
 
 ### Graceful Shutdown
 
@@ -327,3 +519,9 @@ Tasks distinguish between:
 - **Non-fatal errors**: Added to `TaskResult.errors`, logged at warn level, task continues
 
 This allows the monitor to continue operating even when individual transactions fail to process.
+
+### Task Coordination
+
+Some tasks coordinate via shared flags:
+- `NewHeaderTask.new_header_received` - Signals proof checking tasks that new blocks arrived
+- `PurgeTask.check_now` / `ReviewStatusTask.check_now` / `CheckNoSendsTask.check_now` - Allow external triggering

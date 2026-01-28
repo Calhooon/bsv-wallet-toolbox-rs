@@ -59,6 +59,12 @@ rand = "0.8"
 # Base64 encoding
 base64 = "0.22"
 
+# Lazy static initialization
+once_cell = "1.19"
+
+# Cryptography for PBKDF2 (CWI manager)
+ring = "0.17"
+
 # WebSocket support (for live ingestors)
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
