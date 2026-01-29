@@ -4,7 +4,7 @@
 //! using derived keys from the wallet's ProtoWallet.
 
 use bsv_sdk::primitives::PrivateKey;
-use bsv_sdk::wallet::{Counterparty, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel};
+use bsv_sdk::wallet::{Counterparty, KeyDeriverApi, ProtoWallet};
 
 use crate::error::{Error, Result};
 
@@ -44,6 +44,7 @@ pub struct SignerInput {
 #[derive(Debug)]
 pub struct WalletSigner {
     /// Root private key for key derivation
+    #[allow(dead_code)]
     root_key: Option<PrivateKey>,
 }
 
@@ -126,14 +127,27 @@ impl WalletSigner {
                 Counterparty::Self_
             };
 
-            // Create the protocol for key derivation
-            // The derivation prefix typically includes the protocol info
-            let protocol = Protocol::new(SecurityLevel::App, derivation_prefix.as_str());
+            // Derive the private key for signing using BRC-29 (SABPPP) protocol
+            // BRC-29 uses:
+            // - Security level 2 (Counterparty)
+            // - Protocol name: "3241645161d8"
+            // - Key ID: "{derivation_prefix} {derivation_suffix}" (WITH SPACE)
+            // This produces invoice number: "2-3241645161d8-{prefix} {suffix}"
+            use bsv_sdk::wallet::{Protocol, SecurityLevel};
 
-            // Derive the private key for signing
+            let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+            let key_id = format!("{} {}", derivation_prefix, derivation_suffix);
+
+            tracing::debug!(
+                derivation_prefix = %derivation_prefix,
+                derivation_suffix = %derivation_suffix,
+                key_id = %key_id,
+                "Deriving key for input using BRC-29 protocol"
+            );
+
             let signing_key = proto_wallet
                 .key_deriver()
-                .derive_private_key(&protocol, derivation_suffix, &counterparty)
+                .derive_private_key(&brc29_protocol, &key_id, &counterparty)
                 .map_err(|e| Error::TransactionError(format!("Key derivation failed: {}", e)))?;
 
             // Create the sighash for this input
@@ -210,11 +224,12 @@ impl WalletSigner {
             Counterparty::Self_
         };
 
-        let protocol = Protocol::new(SecurityLevel::App, derivation_prefix.as_str());
+        // Use raw derivation with combined prefix+suffix as invoice number
+        let invoice_number = format!("{}{}", derivation_prefix, derivation_suffix);
 
         let signing_key = proto_wallet
             .key_deriver()
-            .derive_private_key(&protocol, derivation_suffix, &counterparty)
+            .derive_private_key_raw(&invoice_number, &counterparty)
             .map_err(|e| Error::TransactionError(format!("Key derivation failed: {}", e)))?;
 
         let sighash = compute_sighash(tx_data, input_index, locking_script, input.satoshis)?;

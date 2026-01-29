@@ -21,6 +21,7 @@ pub struct FailAbandonedTask<S>
 where
     S: WalletStorageProvider + 'static,
 {
+    #[allow(dead_code)]
     storage: Arc<S>,
     timeout: Duration,
 }

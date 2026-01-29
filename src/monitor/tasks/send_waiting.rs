@@ -28,6 +28,7 @@ where
     V: WalletServices + 'static,
 {
     storage: Arc<S>,
+    #[allow(dead_code)]
     services: Arc<V>,
     first_run: std::sync::atomic::AtomicBool,
 }

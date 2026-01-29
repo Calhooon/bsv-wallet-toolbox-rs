@@ -140,30 +140,40 @@ pub struct FindProvenTxReqsArgs {
 // =============================================================================
 
 /// Result from createAction storage operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct StorageCreateActionResult {
     /// BEEF data for inputs (if needed).
     pub input_beef: Option<Vec<u8>>,
     /// Input details for the transaction.
+    #[serde(default)]
     pub inputs: Vec<StorageCreateTransactionInput>,
     /// Output details for the transaction.
+    #[serde(default)]
     pub outputs: Vec<StorageCreateTransactionOutput>,
     /// Change output vouts for noSend transactions.
     pub no_send_change_output_vouts: Option<Vec<u32>>,
     /// Derivation prefix for key derivation.
+    #[serde(default)]
     pub derivation_prefix: String,
     /// Transaction version.
+    #[serde(default = "default_version")]
     pub version: u32,
     /// Transaction locktime.
+    #[serde(default)]
     pub lock_time: u32,
     /// Unique reference for this action.
+    #[serde(default)]
     pub reference: String,
 }
 
+fn default_version() -> u32 {
+    1
+}
+
 /// Input details from storage for transaction creation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct StorageCreateTransactionInput {
     pub vin: u32,
     pub source_txid: String,
@@ -172,7 +182,9 @@ pub struct StorageCreateTransactionInput {
     pub source_locking_script: String,
     pub source_transaction: Option<Vec<u8>>,
     pub unlocking_script_length: u32,
+    #[serde(default)]
     pub provided_by: StorageProvidedBy,
+    #[serde(default)]
     pub input_type: String,
     pub spending_description: Option<String>,
     pub derivation_prefix: Option<String>,
@@ -197,9 +209,10 @@ pub struct StorageCreateTransactionOutput {
 }
 
 /// Indicates who provided the input/output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum StorageProvidedBy {
+    #[default]
     You,
     Storage,
     YouAndStorage,
@@ -215,6 +228,8 @@ pub struct StorageProcessActionArgs {
     pub is_delayed: bool,
     pub reference: Option<String>,
     pub txid: Option<String>,
+    /// Raw transaction bytes - serializes as JSON array of numbers (not hex string)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_tx: Option<Vec<u8>>,
     pub send_with: Vec<String>,
 }

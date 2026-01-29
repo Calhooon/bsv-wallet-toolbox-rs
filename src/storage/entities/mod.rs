@@ -98,7 +98,11 @@ pub struct TableUser {
     pub user_id: i64,
     pub identity_key: String,
     pub active_storage: Option<String>,
+    /// Created timestamp. Server may return as snake_case or camelCase.
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    /// Updated timestamp. Server may return as snake_case or camelCase.
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -106,13 +110,26 @@ pub struct TableUser {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableSettings {
+    /// Settings ID (optional since remote servers may not return it).
+    #[serde(default = "default_settings_id")]
     pub settings_id: i64,
     pub storage_identity_key: String,
     pub storage_name: String,
     pub chain: String,
     pub max_output_script: i32,
+    /// Database type (e.g., "MySQL", "SQLite"). Optional field from remote storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dbtype: Option<String>,
+    /// Created timestamp. Server may return as snake_case or camelCase.
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    /// Updated timestamp. Server may return as snake_case or camelCase.
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_settings_id() -> i64 {
+    1
 }
 
 impl Default for TableSettings {
@@ -123,6 +140,7 @@ impl Default for TableSettings {
             storage_name: String::new(),
             chain: "mainnet".to_string(),
             max_output_script: 10_000,
+            dbtype: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

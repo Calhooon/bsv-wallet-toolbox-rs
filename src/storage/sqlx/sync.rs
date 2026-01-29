@@ -99,6 +99,7 @@ pub struct SyncMapEntity {
 }
 
 /// Complete sync map for all entities
+#[allow(dead_code)]
 pub type SyncMap = HashMap<String, SyncMapEntity>;
 
 // =============================================================================

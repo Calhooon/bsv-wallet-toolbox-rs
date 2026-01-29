@@ -29,6 +29,7 @@ pub struct ServiceCollection<S> {
     index: usize,
 
     /// Start time of current statistics interval.
+    #[allow(dead_code)]
     since: DateTime<Utc>,
 
     /// History of calls by provider name.

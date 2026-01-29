@@ -28,6 +28,7 @@ persistent storage without managing local databases.
 | Type | Description |
 |------|-------------|
 | `StorageClient<W>` | Main client, generic over wallet type `W: WalletInterface` |
+| `ValidCreateActionArgs` | Validated CreateAction args with internal state flags (see below) |
 | `JsonRpcRequest` | JSON-RPC 2.0 request structure with `new()` constructor |
 | `JsonRpcResponse` | JSON-RPC 2.0 response with `into_result()` and `is_success()` methods |
 | `JsonRpcError` | JSON-RPC error with code, message, optional data, and factory methods |
@@ -37,6 +38,33 @@ persistent storage without managing local databases.
 | `AuthHeaders` | Authentication headers for a BRC-31 request |
 | `ResponseAuthHeaders` | Parsed auth headers from server response |
 | `AuthVerificationResult` | Result of verifying server response authentication |
+
+### ValidCreateActionArgs
+
+The `ValidCreateActionArgs` struct wraps SDK's `CreateActionArgs` and adds internal state flags
+required by the storage server. This mirrors TypeScript's `ValidCreateActionArgs` class.
+
+**Important**: The server expects these flags to be present. Without them, it returns "internal error".
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `is_new_tx` | `bool` | True when creating a new transaction (typically true for createAction) |
+| `is_no_send` | `bool` | True when `options.noSend` is true - creates tx but doesn't broadcast |
+| `is_delayed` | `bool` | True when `options.acceptDelayedBroadcast` is true |
+| `is_send_with` | `bool` | True when `options.sendWith` has items |
+| `is_remix_change` | `bool` | True for change-only remix transactions (no explicit inputs/outputs) |
+| `is_sign_action` | `bool` | True when `options.signAndProcess` is true |
+| `include_all_source_transactions` | `bool` | True to include all ancestor transactions in BEEF |
+
+**Usage**: The `create_action` method automatically converts `CreateActionArgs` to `ValidCreateActionArgs`:
+
+```rust
+// This happens automatically inside StorageClient::create_action
+let valid_args = ValidCreateActionArgs::from(args);
+
+// Or with custom flag overrides:
+let valid_args = ValidCreateActionArgs::with_flags(args, is_new_tx, is_no_send, is_delayed, is_send_with);
+```
 
 ### Constants
 

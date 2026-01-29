@@ -136,6 +136,7 @@ pub struct WalletStorageManager {
     sync_locks: LockQueue,
 
     /// Lock queue for storage provider operations.
+    #[allow(dead_code)]
     provider_locks: LockQueue,
 }
 
@@ -764,7 +765,7 @@ impl WalletStorageManager {
 
         // Find the store with matching identity key
         let stores = self.stores.read().await;
-        let new_active_idx = stores
+        let _new_active_idx = stores
             .iter()
             .position(|s| {
                 s.settings

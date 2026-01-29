@@ -84,6 +84,7 @@ pub struct Services {
     get_script_hash_history_services: RwLock<ScriptHashHistoryServiceCollection>,
 
     /// Cached BSV exchange rate.
+    #[allow(dead_code)]
     bsv_exchange_rate: RwLock<Option<BsvExchangeRate>>,
 
     /// Cached fiat exchange rates.
@@ -432,6 +433,7 @@ impl Services {
     }
 
     // Helper to run service with failover
+    #[allow(dead_code)]
     async fn run_with_failover<T, F, Fut>(
         services: &RwLock<ServiceCollection<StdArc<T>>>,
         operation: F,
@@ -997,7 +999,7 @@ impl WalletServices for Services {
         };
 
         // Parse the transaction
-        let tx = match Transaction::from_binary(&raw_tx) {
+        let _tx = match Transaction::from_binary(&raw_tx) {
             Ok(tx) => tx,
             Err(e) => {
                 return Ok(GetBeefResult {

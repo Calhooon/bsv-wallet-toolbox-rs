@@ -59,6 +59,7 @@ impl WhatsOnChainConfig {
 pub struct WhatsOnChain {
     client: Client,
     base_url: String,
+    #[allow(dead_code)]
     chain: Chain,
     api_key: Option<String>,
     exchange_rate: RwLock<Option<BsvExchangeRate>>,
@@ -761,12 +762,14 @@ impl Serialize for WocTscProof {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WocUtxoStatusResponse {
     script: String,
     result: Vec<WocUtxoItem>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WocUtxoItem {
     height: u32,
@@ -778,6 +781,7 @@ struct WocUtxoItem {
     status: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WocTxStatus {
     txid: String,
@@ -788,6 +792,7 @@ struct WocTxStatus {
     error: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WocScriptHistoryResponse {
     script: Option<String>,
@@ -803,6 +808,7 @@ struct WocScriptHistoryItem {
     height: Option<u32>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WocBlockHeader {
     hash: String,
@@ -861,6 +867,7 @@ pub struct WocChainInfo {
     pub chainwork: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WocExchangeRate {
     rate: f64,

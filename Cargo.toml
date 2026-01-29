@@ -51,6 +51,7 @@ async-trait = "0.1"
 
 # Cryptography (for Chaintracks)
 sha2 = "0.10"
+ripemd = "0.1"
 hex = "0.4"
 
 # Random generation

@@ -282,6 +282,7 @@ impl StorageSqlx {
                 storage_name: row.get("storage_name"),
                 chain: row.get("chain"),
                 max_output_script: row.get("max_output_script"),
+                dbtype: None,
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             })),
@@ -1211,7 +1212,7 @@ impl WalletStorageReader for StorageSqlx {
 
             let mut action = WalletAction {
                 txid,
-                satoshis: satoshis as u64,
+                satoshis,  // i64, can be negative for outgoing
                 status,
                 is_outgoing: is_outgoing != 0,
                 description,
@@ -1895,6 +1896,7 @@ impl WalletStorageWriter for StorageSqlx {
             storage_name: storage_name.to_string(),
             chain: "mainnet".to_string(),
             max_output_script: DEFAULT_MAX_OUTPUT_SCRIPT,
+            dbtype: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

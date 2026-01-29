@@ -36,6 +36,7 @@ pub struct Chaintracks {
 
     // Queues for header processing
     base_headers: Arc<RwLock<Vec<BaseBlockHeader>>>,
+    #[allow(dead_code)]
     live_headers: Arc<RwLock<Vec<BlockHeader>>>,
 }
 

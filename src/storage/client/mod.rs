@@ -57,5 +57,5 @@ pub use auth::{
 pub use json_rpc::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 pub use storage_client::{
     StorageClient, UpdateProvenTxReqWithNewProvenTxArgs, UpdateProvenTxReqWithNewProvenTxResult,
-    MAINNET_URL, TESTNET_URL,
+    ValidCreateActionArgs, MAINNET_URL, TESTNET_URL,
 };

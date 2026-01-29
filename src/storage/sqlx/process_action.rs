@@ -259,6 +259,7 @@ async fn find_transaction_by_reference(
     }
 }
 
+#[allow(dead_code)]
 async fn find_transaction_by_txid(
     storage: &StorageSqlx, txid: &str,
 ) -> Result<Option<TransactionRecord>> {

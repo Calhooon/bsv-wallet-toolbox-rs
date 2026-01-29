@@ -3,7 +3,7 @@
 //! This module provides functions for verifying BEEF (Background Evaluation
 //! Extended Format) merkle proofs against a ChainTracker.
 
-use bsv_sdk::transaction::{Beef, ChainTracker, ChainTrackerError};
+use bsv_sdk::transaction::{Beef, ChainTracker};
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};

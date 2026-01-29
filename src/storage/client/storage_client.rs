@@ -24,10 +24,11 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 
+use bsv_sdk::auth::transports::HttpRequest;
 use bsv_sdk::auth::{Peer, PeerOptions, SimplifiedFetchTransport};
-use bsv_sdk::primitives::PublicKey;
+use bsv_sdk::primitives::{to_base64, PublicKey};
 use bsv_sdk::wallet::{
     AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs,
     ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
@@ -40,8 +41,168 @@ use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
-use super::auth::{create_auth_headers, ResponseAuthHeaders};
 use super::json_rpc::{JsonRpcRequest, JsonRpcResponse};
+
+// =============================================================================
+// ValidCreateActionArgs
+// =============================================================================
+
+/// Validated CreateAction arguments with internal state flags.
+///
+/// This struct wraps the SDK's `CreateActionArgs` and adds internal flags that
+/// the server expects. The TypeScript SDK has a `ValidCreateActionArgs` class
+/// that performs this same validation/enhancement before sending to storage.
+///
+/// ## Server Requirement
+///
+/// The storage server expects these flags to be present in the createAction request.
+/// Without them, the server returns an "internal error" because it cannot determine
+/// the transaction mode (new tx, noSend, delayed, etc.).
+///
+/// ## Flag Derivation
+///
+/// The flags are derived from the `CreateActionArgs.options` field:
+/// - `isNewTx`: True when creating a new transaction (always true for createAction)
+/// - `isNoSend`: True when `options.noSend` is true
+/// - `isDelayed`: True when `options.acceptDelayedBroadcast` is true
+/// - `isSendWith`: True when `options.sendWith` has items
+/// - `isRemixChange`: True for change-only remix transactions (typically false)
+/// - `isSignAction`: True when `options.signAndProcess` is true
+/// - `includeAllSourceTransactions`: Whether to include all ancestor transactions in BEEF
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidCreateActionArgs {
+    /// The action description (5-2000 characters).
+    pub description: String,
+
+    /// Optional BEEF data containing input transactions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_beef: Option<Vec<u8>>,
+
+    /// Input specifications.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<Vec<bsv_sdk::wallet::CreateActionInput>>,
+
+    /// Output specifications.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<Vec<bsv_sdk::wallet::CreateActionOutput>>,
+
+    /// Transaction lock time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_time: Option<u32>,
+
+    /// Transaction version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+
+    /// Transaction labels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
+
+    /// Action options.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<bsv_sdk::wallet::CreateActionOptions>,
+
+    // === Internal state flags (required by server) ===
+
+    /// True when creating a new transaction with inputs/outputs.
+    /// For createAction, this is typically always true.
+    pub is_new_tx: bool,
+
+    /// True when `options.noSend` is true - creates transaction but doesn't broadcast.
+    pub is_no_send: bool,
+
+    /// True when `options.acceptDelayedBroadcast` is true - allows deferred broadcast.
+    pub is_delayed: bool,
+
+    /// True when `options.sendWith` has items - bundles multiple transactions for broadcast.
+    pub is_send_with: bool,
+
+    /// True when creating a change-only remix transaction (no explicit inputs/outputs).
+    pub is_remix_change: bool,
+
+    /// True when `options.signAndProcess` is true - signs immediately.
+    pub is_sign_action: bool,
+
+    /// True to include all ancestor transactions in BEEF.
+    pub include_all_source_transactions: bool,
+}
+
+impl From<CreateActionArgs> for ValidCreateActionArgs {
+    fn from(args: CreateActionArgs) -> Self {
+        // Extract option flags with sensible defaults
+        let options = args.options.as_ref();
+
+        let is_no_send = options
+            .and_then(|o| o.no_send)
+            .unwrap_or(false);
+
+        let is_delayed = options
+            .and_then(|o| o.accept_delayed_broadcast)
+            .unwrap_or(false);
+
+        let is_send_with = options
+            .and_then(|o| o.send_with.as_ref())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+
+        let is_sign_action = options
+            .and_then(|o| o.sign_and_process)
+            .unwrap_or(true); // Default to true per TypeScript SDK
+
+        // isRemixChange is true only when there are no explicit inputs or outputs
+        // and we're just remixing change. For normal createAction, this is false.
+        let is_remix_change = args.inputs.as_ref().map(|i| i.is_empty()).unwrap_or(true)
+            && args.outputs.as_ref().map(|o| o.is_empty()).unwrap_or(true);
+
+        // isNewTx is true when we have inputs or outputs to create
+        // For createAction with outputs, this is always true
+        let is_new_tx = !is_remix_change;
+
+        ValidCreateActionArgs {
+            description: args.description,
+            input_beef: args.input_beef,
+            inputs: args.inputs,
+            outputs: args.outputs,
+            lock_time: args.lock_time,
+            version: args.version,
+            labels: args.labels,
+            options: args.options,
+            is_new_tx,
+            is_no_send,
+            is_delayed,
+            is_send_with,
+            is_remix_change,
+            is_sign_action,
+            include_all_source_transactions: true, // Default to true for complete BEEF
+        }
+    }
+}
+
+impl ValidCreateActionArgs {
+    /// Creates a new ValidCreateActionArgs from CreateActionArgs.
+    pub fn new(args: CreateActionArgs) -> Self {
+        args.into()
+    }
+
+    /// Creates a ValidCreateActionArgs with custom flag overrides.
+    ///
+    /// Use this when you need to override the automatically computed flags.
+    pub fn with_flags(
+        args: CreateActionArgs,
+        is_new_tx: bool,
+        is_no_send: bool,
+        is_delayed: bool,
+        is_send_with: bool,
+    ) -> Self {
+        let mut valid_args: ValidCreateActionArgs = args.into();
+        valid_args.is_new_tx = is_new_tx;
+        valid_args.is_no_send = is_no_send;
+        valid_args.is_delayed = is_delayed;
+        valid_args.is_send_with = is_send_with;
+        valid_args
+    }
+}
 
 /// Mainnet storage endpoint.
 pub const MAINNET_URL: &str = "https://storage.babbage.systems";
@@ -140,6 +301,9 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             originator: Some(Self::ORIGINATOR.to_string()),
         });
 
+        // Start the peer to set up the transport callback for receiving messages
+        peer.start();
+
         Self {
             endpoint_url: url,
             peer: Arc::new(peer),
@@ -234,23 +398,20 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         Ok(result.public_key)
     }
 
-    /// Makes a JSON-RPC call to the storage server.
+    /// Makes a JSON-RPC call to the storage server using the authenticated Peer.
     ///
     /// This method handles:
     /// - Request ID generation
     /// - JSON serialization
-    /// - BRC-31 authenticated HTTP POST (when use_auth is true)
+    /// - Mutual authentication via Peer (BRC-31/BRC-104)
     /// - Response parsing and error handling
-    /// - Optional response signature verification
     ///
-    /// ## BRC-31 Authentication
+    /// ## BRC-104 Authentication
     ///
-    /// When `use_auth` is true, each request includes:
-    /// - `x-bsv-auth-version`: "0.1"
-    /// - `x-bsv-auth-identity-key`: Client's identity key (hex)
-    /// - `x-bsv-auth-nonce`: Random nonce (base64)
-    /// - `x-bsv-auth-timestamp`: Unix timestamp (ms)
-    /// - `x-bsv-auth-signature`: Signature over request (hex)
+    /// Uses the Peer for proper mutual authentication including:
+    /// - Session handshake with the server
+    /// - Proper nonce exchange (x-bsv-auth-your-nonce)
+    /// - Request ID correlation
     ///
     /// # Arguments
     ///
@@ -266,56 +427,173 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             method = method,
             id = id,
             endpoint = %self.endpoint_url,
-            "Making JSON-RPC call to storage server"
+            "Making JSON-RPC call to storage server via Peer"
         );
 
-        // Build HTTP POST request
-        let mut request_builder = self
-            .http_client
-            .post(&self.endpoint_url)
-            .header("Content-Type", "application/json");
-
-        // Add BRC-31 authentication headers if enabled
-        if self.use_auth {
-            // Get server identity key for signing (if available)
-            let server_key = self.get_server_identity_key().await;
-
-            // Create signed auth headers
-            let auth_headers = create_auth_headers(
-                &self.wallet,
-                "POST",
-                "/", // JSON-RPC endpoint path
-                &request_body,
-                server_key.as_ref(),
-                Self::ORIGINATOR,
-            )
-            .await?;
-
-            // Add all auth headers
-            for (name, value) in auth_headers.to_header_tuples() {
-                request_builder = request_builder.header(name, value);
-            }
-
-            tracing::trace!(
-                identity_key = %auth_headers.identity_key,
-                nonce = %auth_headers.nonce,
-                timestamp = auth_headers.timestamp,
-                "Added BRC-31 auth headers to request"
-            );
+        if !self.use_auth {
+            // Fall back to simple HTTP without auth for testing
+            return self.rpc_call_unauthenticated(method, &request_body, id).await;
         }
 
-        let response = request_builder
-            .body(request_body.clone())
+        // Generate a unique request ID (32 random bytes)
+        let mut request_nonce = [0u8; 32];
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut request_nonce);
+        let request_nonce_b64 = to_base64(&request_nonce);
+
+        // Build the HTTP request payload for the Peer
+        let http_request = HttpRequest {
+            request_id: request_nonce,
+            method: "POST".to_string(),
+            path: "/".to_string(),
+            search: String::new(),
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: request_body.clone(),
+        };
+
+        let payload = http_request.to_payload();
+
+        // Set up a channel to receive the response
+        let (tx, rx) = oneshot::channel::<Result<Vec<u8>>>();
+        let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
+        let request_nonce_for_callback = request_nonce;
+
+        // Register a listener for the response
+        let tx_clone = tx.clone();
+        let callback_id = self
+            .peer
+            .listen_for_general_messages(move |_sender, response_payload| {
+                let tx = tx_clone.clone();
+                let expected_nonce = request_nonce_for_callback;
+                Box::pin(async move {
+                    // Check if the response matches our request ID
+                    if response_payload.len() >= 32 {
+                        let mut response_nonce = [0u8; 32];
+                        response_nonce.copy_from_slice(&response_payload[..32]);
+
+                        if response_nonce == expected_nonce {
+                            // This is our response
+                            let mut tx_guard = tx.lock().await;
+                            if let Some(sender) = tx_guard.take() {
+                                let _ = sender.send(Ok(response_payload));
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .await;
+
+        // Get the server's identity key if we have it (for session lookup)
+        let server_key = self.get_server_identity_key().await;
+        let server_key_hex = server_key.map(|k| k.to_hex());
+
+        // Send the request via the Peer
+        tracing::trace!(
+            request_id = %request_nonce_b64,
+            "Sending authenticated request via Peer"
+        );
+
+        let send_result = self
+            .peer
+            .to_peer(&payload, server_key_hex.as_deref(), Some(30000))
+            .await;
+
+        if let Err(e) = send_result {
+            // Clean up listener
+            self.peer.stop_listening_for_general_messages(callback_id).await;
+            return Err(Error::NetworkError(format!("Failed to send request: {}", e)));
+        }
+
+        // Wait for the response with a timeout
+        let response_result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            rx,
+        )
+        .await;
+
+        // Clean up listener
+        self.peer.stop_listening_for_general_messages(callback_id).await;
+
+        let response_payload = match response_result {
+            Ok(Ok(Ok(payload))) => payload,
+            Ok(Ok(Err(e))) => return Err(e),
+            Ok(Err(_)) => {
+                return Err(Error::NetworkError("Response channel closed".to_string()))
+            }
+            Err(_) => {
+                return Err(Error::NetworkError("Request timed out".to_string()))
+            }
+        };
+
+        // Parse the HTTP response from the payload
+        let http_response = bsv_sdk::auth::transports::HttpResponse::from_payload(&response_payload)
+            .map_err(|e| Error::StorageError(format!("Failed to parse response: {}", e)))?;
+
+        tracing::trace!(
+            method = method,
+            status = http_response.status,
+            response_size = http_response.body.len(),
+            "Received authenticated response"
+        );
+
+        if http_response.status >= 400 {
+            let body_text = String::from_utf8_lossy(&http_response.body);
+            return Err(Error::NetworkError(format!(
+                "HTTP error {}: {}",
+                http_response.status, body_text
+            )));
+        }
+
+        let rpc_response: JsonRpcResponse = serde_json::from_slice(&http_response.body)
+            .map_err(|e| Error::StorageError(format!("Invalid JSON-RPC response: {}", e)))?;
+
+        if rpc_response.id != id {
+            return Err(Error::StorageError(format!(
+                "Response ID mismatch: expected {}, got {}",
+                id, rpc_response.id
+            )));
+        }
+
+        match rpc_response.into_result() {
+            Ok(value) => {
+                let result: T = serde_json::from_value(value).map_err(|e| {
+                    Error::StorageError(format!("Failed to deserialize result: {}", e))
+                })?;
+                Ok(result)
+            }
+            Err(rpc_error) => {
+                tracing::error!(
+                    method = method,
+                    code = rpc_error.code,
+                    message = %rpc_error.message,
+                    "JSON-RPC error from storage server"
+                );
+                Err(Error::StorageError(format!(
+                    "RPC error {}: {}",
+                    rpc_error.code, rpc_error.message
+                )))
+            }
+        }
+    }
+
+    /// Makes an unauthenticated JSON-RPC call (for testing).
+    async fn rpc_call_unauthenticated<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        request_body: &[u8],
+        id: u64,
+    ) -> Result<T> {
+        let response = self
+            .http_client
+            .post(&self.endpoint_url)
+            .header("Content-Type", "application/json")
+            .body(request_body.to_vec())
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("HTTP request failed: {}", e)))?;
 
-        // Check HTTP status before reading body
         let status = response.status();
-
-        // Parse response auth headers (for optional verification)
-        let response_auth = ResponseAuthHeaders::from_response(&response);
-
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(Error::NetworkError(format!(
@@ -327,37 +605,6 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         let response_body = response.bytes().await.map_err(|e| {
             Error::NetworkError(format!("Failed to read response body: {}", e))
         })?;
-
-        tracing::trace!(
-            method = method,
-            response_size = response_body.len(),
-            has_auth_headers = response_auth.is_complete(),
-            "Received response from storage server"
-        );
-
-        // Verify response signature if enabled and headers are present
-        if self.verify_responses && response_auth.is_complete() {
-            let verification = super::auth::verify_response_auth(
-                &self.wallet,
-                "POST",
-                "/",
-                &response_body,
-                &response_auth,
-                Self::ORIGINATOR,
-            )
-            .await?;
-
-            if !verification.signature_valid {
-                return Err(Error::AccessDenied(
-                    "Server response signature verification failed".to_string(),
-                ));
-            }
-
-            tracing::trace!(
-                server_key = ?verification.server_identity_key.map(|k| k.to_hex()),
-                "Response signature verified successfully"
-            );
-        }
 
         let rpc_response: JsonRpcResponse = serde_json::from_slice(&response_body)
             .map_err(|e| Error::StorageError(format!("Invalid JSON-RPC response: {}", e)))?;
@@ -604,9 +851,23 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
         auth: &AuthId,
         args: CreateActionArgs,
     ) -> Result<StorageCreateActionResult> {
+        // Convert to ValidCreateActionArgs to add internal state flags
+        // The server expects these flags to be present in the request
+        let valid_args = ValidCreateActionArgs::from(args);
+
+        tracing::debug!(
+            is_new_tx = valid_args.is_new_tx,
+            is_no_send = valid_args.is_no_send,
+            is_delayed = valid_args.is_delayed,
+            is_send_with = valid_args.is_send_with,
+            is_remix_change = valid_args.is_remix_change,
+            is_sign_action = valid_args.is_sign_action,
+            "Creating action with validated args"
+        );
+
         self.rpc_call(
             "createAction",
-            vec![Self::to_value(auth)?, Self::to_value(&args)?],
+            vec![Self::to_value(auth)?, Self::to_value(&valid_args)?],
         )
         .await
     }
@@ -1936,5 +2197,267 @@ mod tests {
 
         // Different nonces = different signing data (replay protected)
         assert_ne!(data1, data2);
+    }
+
+    // =========================================================================
+    // ValidCreateActionArgs Tests
+    // =========================================================================
+
+    #[test]
+    fn test_valid_create_action_args_default_flags() {
+        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput};
+
+        // Create args with outputs (typical case)
+        let args = CreateActionArgs {
+            description: "Test transaction".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: vec![0x76, 0xa9, 0x14], // partial P2PKH for test
+                satoshis: 1000,
+                output_description: "Test output".to_string(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let valid_args = ValidCreateActionArgs::from(args);
+
+        // With outputs but no inputs, should be new tx
+        assert!(valid_args.is_new_tx);
+        // Default flags should be false
+        assert!(!valid_args.is_no_send);
+        assert!(!valid_args.is_delayed);
+        assert!(!valid_args.is_send_with);
+        assert!(!valid_args.is_remix_change);
+        // Default signAndProcess is true
+        assert!(valid_args.is_sign_action);
+        assert!(valid_args.include_all_source_transactions);
+    }
+
+    #[test]
+    fn test_valid_create_action_args_with_no_send() {
+        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
+
+        let args = CreateActionArgs {
+            description: "NoSend transaction".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: vec![0x76, 0xa9],
+                satoshis: 500,
+                output_description: "Test output".to_string(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: Some(CreateActionOptions {
+                no_send: Some(true),
+                accept_delayed_broadcast: None,
+                send_with: None,
+                sign_and_process: Some(false),
+                known_txids: None,
+                return_txid_only: None,
+                no_send_change: None,
+                randomize_outputs: None,
+                trust_self: None,
+            }),
+        };
+
+        let valid_args = ValidCreateActionArgs::from(args);
+
+        assert!(valid_args.is_new_tx);
+        assert!(valid_args.is_no_send);
+        assert!(!valid_args.is_delayed);
+        assert!(!valid_args.is_send_with);
+        assert!(!valid_args.is_sign_action);
+    }
+
+    #[test]
+    fn test_valid_create_action_args_with_delayed_broadcast() {
+        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
+
+        let args = CreateActionArgs {
+            description: "Delayed broadcast tx".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: vec![0x76],
+                satoshis: 100,
+                output_description: "Test output".to_string(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: Some(CreateActionOptions {
+                no_send: None,
+                accept_delayed_broadcast: Some(true),
+                send_with: None,
+                sign_and_process: None,
+                known_txids: None,
+                return_txid_only: None,
+                no_send_change: None,
+                randomize_outputs: None,
+                trust_self: None,
+            }),
+        };
+
+        let valid_args = ValidCreateActionArgs::from(args);
+
+        assert!(valid_args.is_new_tx);
+        assert!(!valid_args.is_no_send);
+        assert!(valid_args.is_delayed);
+        assert!(!valid_args.is_send_with);
+    }
+
+    #[test]
+    fn test_valid_create_action_args_with_send_with() {
+        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
+
+        let args = CreateActionArgs {
+            description: "SendWith transaction".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: vec![0x76],
+                satoshis: 100,
+                output_description: "Test output".to_string(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: Some(CreateActionOptions {
+                no_send: None,
+                accept_delayed_broadcast: None,
+                send_with: Some(vec![[0u8; 32], [1u8; 32]]), // Two txids
+                sign_and_process: None,
+                known_txids: None,
+                return_txid_only: None,
+                no_send_change: None,
+                randomize_outputs: None,
+                trust_self: None,
+            }),
+        };
+
+        let valid_args = ValidCreateActionArgs::from(args);
+
+        assert!(valid_args.is_new_tx);
+        assert!(!valid_args.is_no_send);
+        assert!(!valid_args.is_delayed);
+        assert!(valid_args.is_send_with);
+    }
+
+    #[test]
+    fn test_valid_create_action_args_remix_change() {
+        use bsv_sdk::wallet::CreateActionArgs;
+
+        // No inputs and no outputs = remix change
+        let args = CreateActionArgs {
+            description: "Remix change".to_string(),
+            input_beef: None,
+            inputs: Some(vec![]), // Empty inputs
+            outputs: Some(vec![]), // Empty outputs
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let valid_args = ValidCreateActionArgs::from(args);
+
+        // With no inputs/outputs, this is a remix change (not new tx)
+        assert!(!valid_args.is_new_tx);
+        assert!(valid_args.is_remix_change);
+    }
+
+    #[test]
+    fn test_valid_create_action_args_serialization() {
+        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput};
+
+        let args = CreateActionArgs {
+            description: "Test transaction".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: vec![0x76, 0xa9, 0x14],
+                satoshis: 42000,
+                output_description: "Payment".to_string(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            lock_time: Some(0),
+            version: Some(1),
+            labels: Some(vec!["test".to_string()]),
+            options: None,
+        };
+
+        let valid_args = ValidCreateActionArgs::from(args);
+        let json = serde_json::to_string(&valid_args).unwrap();
+
+        // Verify the JSON contains the internal flags
+        assert!(json.contains("\"isNewTx\":true"));
+        assert!(json.contains("\"isNoSend\":false"));
+        assert!(json.contains("\"isDelayed\":false"));
+        assert!(json.contains("\"isSendWith\":false"));
+        assert!(json.contains("\"isRemixChange\":false"));
+        assert!(json.contains("\"isSignAction\":true"));
+        assert!(json.contains("\"includeAllSourceTransactions\":true"));
+
+        // Verify base args are present
+        assert!(json.contains("\"description\":\"Test transaction\""));
+        assert!(json.contains("\"lockTime\":0"));
+        assert!(json.contains("\"version\":1"));
+    }
+
+    #[test]
+    fn test_valid_create_action_args_with_custom_flags() {
+        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput};
+
+        let args = CreateActionArgs {
+            description: "Custom flags test".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: vec![0x76],
+                satoshis: 100,
+                output_description: "Test".to_string(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        // Override flags manually
+        let valid_args = ValidCreateActionArgs::with_flags(
+            args,
+            true,  // is_new_tx
+            true,  // is_no_send
+            true,  // is_delayed
+            false, // is_send_with
+        );
+
+        assert!(valid_args.is_new_tx);
+        assert!(valid_args.is_no_send);
+        assert!(valid_args.is_delayed);
+        assert!(!valid_args.is_send_with);
     }
 }

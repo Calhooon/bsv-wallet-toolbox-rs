@@ -128,6 +128,7 @@ struct AllocatedChangeInput {
 #[derive(Debug, Clone)]
 struct ChangeOutput {
     satoshis: u64,
+    #[allow(dead_code)]
     vout: u32,
     derivation_prefix: String,
     derivation_suffix: String,

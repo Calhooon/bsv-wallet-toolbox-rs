@@ -25,6 +25,7 @@ where
     /// Last known chain height.
     last_height: AtomicU32,
     /// Last known chain tip hash (stored as a string).
+    #[allow(dead_code)]
     last_hash: std::sync::RwLock<Option<String>>,
     /// Number of consecutive cycles without new headers.
     stable_cycles: AtomicU32,

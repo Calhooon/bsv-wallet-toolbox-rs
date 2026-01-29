@@ -66,20 +66,38 @@ impl JsonRpcResponse {
 }
 
 /// JSON-RPC error structure.
+///
+/// Handles both standard JSON-RPC errors (with `code` field) and non-standard
+/// server errors (with `isError`, `name` fields).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcError {
-    /// Error code.
+    /// Error code (standard JSON-RPC). Defaults to -32000 if not present.
+    #[serde(default = "default_error_code")]
     pub code: i32,
     /// Error message.
     pub message: String,
     /// Additional error data.
     #[serde(default)]
     pub data: Option<Value>,
+    /// Non-standard: indicates this is an error (some servers use this).
+    #[serde(default, rename = "isError")]
+    pub is_error: Option<bool>,
+    /// Non-standard: error name/type (e.g., "TypeError").
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+fn default_error_code() -> i32 {
+    error_codes::SERVER_ERROR_START // -32000
 }
 
 impl std::fmt::Display for JsonRpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JSON-RPC error {}: {}", self.code, self.message)
+        if let Some(ref name) = self.name {
+            write!(f, "{}: {}", name, self.message)
+        } else {
+            write!(f, "JSON-RPC error {}: {}", self.code, self.message)
+        }
     }
 }
 
@@ -110,6 +128,8 @@ impl JsonRpcError {
             code,
             message: message.into(),
             data: None,
+            is_error: None,
+            name: None,
         }
     }
 
@@ -119,6 +139,8 @@ impl JsonRpcError {
             code,
             message: message.into(),
             data: Some(data),
+            is_error: None,
+            name: None,
         }
     }
 
@@ -157,6 +179,7 @@ impl JsonRpcError {
 }
 
 /// Wallet-specific error codes (from TypeScript WERR_* errors).
+#[allow(dead_code)]
 pub mod wallet_error_codes {
     /// Invalid operation.
     pub const INVALID_OPERATION: &str = "ERR_INVALID_OPERATION";
@@ -184,14 +207,17 @@ pub struct WalletError {
     pub message: String,
     /// Description of the error.
     #[serde(default)]
+    #[allow(dead_code)]
     pub description: Option<String>,
     /// Stack trace (if available).
     #[serde(default)]
+    #[allow(dead_code)]
     pub stack: Option<String>,
 }
 
 impl WalletError {
     /// Attempts to parse a WalletError from JSON-RPC error data.
+    #[allow(dead_code)]
     pub fn from_rpc_error(error: &JsonRpcError) -> Option<Self> {
         if let Some(ref data) = error.data {
             serde_json::from_value(data.clone()).ok()

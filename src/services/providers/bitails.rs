@@ -67,8 +67,10 @@ impl BitailsConfig {
 pub struct Bitails {
     client: Client,
     base_url: String,
+    #[allow(dead_code)]
     chain: Chain,
     api_key: Option<String>,
+    #[allow(dead_code)]
     root_cache: RwLock<HashMap<u32, String>>,
 }
 
@@ -633,7 +635,7 @@ struct BitailsTscProof {
 }
 
 #[derive(Debug, Deserialize)]
-struct BitailsBroadcastResult {
+pub struct BitailsBroadcastResult {
     txid: Option<String>,
     error: Option<BitailsBroadcastError>,
 }
@@ -644,6 +646,7 @@ struct BitailsBroadcastError {
     message: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct BitailsNetworkInfo {
     blocks: u32,
@@ -651,6 +654,7 @@ struct BitailsNetworkInfo {
     bestblockhash: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct BitailsBlockInfo {
     hash: String,
@@ -664,6 +668,7 @@ struct BitailsHistoryItem {
     height: Option<u32>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct BitailsTxInfo {
     txid: String,

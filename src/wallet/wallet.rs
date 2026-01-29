@@ -163,6 +163,9 @@ where
 
     /// Cache for pending unsigned transactions awaiting signature
     pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
+
+    /// The user's ID in the storage system (for AuthId)
+    user_id: i64,
 }
 
 impl<S, V> Wallet<S, V>
@@ -246,8 +249,8 @@ where
             return Err(Error::StorageNotAvailable);
         }
 
-        // Ensure the user exists in storage
-        storage.find_or_insert_user(&identity_key).await?;
+        // Ensure the user exists in storage and get user_id
+        let (user, _is_new) = storage.find_or_insert_user(&identity_key).await?;
 
         Ok(Self {
             proto_wallet,
@@ -258,6 +261,7 @@ where
             options,
             signer,
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
+            user_id: user.user_id,
         })
     }
 
@@ -288,7 +292,7 @@ where
 
     /// Creates an AuthId for the current user.
     fn auth(&self) -> AuthId {
-        AuthId::new(&self.identity_key)
+        AuthId::with_user_id(&self.identity_key, self.user_id)
     }
 
     /// Calls ProtoWallet.get_public_key.
@@ -647,10 +651,25 @@ where
         // If sign_and_process is true and we have inputs to sign, sign them
         if sign_and_process && !storage_result.inputs.is_empty() {
             // Build the unsigned transaction from storage result
+            // Pass the key_deriver so we can compute locking scripts for change outputs
             let unsigned_tx =
-                build_unsigned_transaction(&storage_result).map_err(|e| {
+                build_unsigned_transaction(&storage_result, Some(self.proto_wallet.key_deriver())).map_err(|e| {
                     bsv_sdk::Error::WalletError(format!("Failed to build transaction: {}", e))
                 })?;
+
+            // Debug: Log storage result outputs
+            for (i, output) in storage_result.outputs.iter().enumerate() {
+                tracing::debug!(
+                    vout = output.vout,
+                    satoshis = output.satoshis,
+                    locking_script = %output.locking_script,
+                    locking_script_len = output.locking_script.len(),
+                    provided_by = ?output.provided_by,
+                    purpose = ?output.purpose,
+                    derivation_suffix = ?output.derivation_suffix,
+                    "Storage output {}", i
+                );
+            }
 
             // Convert storage inputs to signer inputs
             let signer_inputs: Vec<SignerInput> = storage_result
@@ -677,6 +696,13 @@ where
 
             // Compute txid from signed transaction
             let txid = compute_txid(&signed_tx);
+
+            tracing::debug!(
+                txid = %txid,
+                raw_tx_hex = %hex::encode(&signed_tx),
+                raw_tx_len = signed_tx.len(),
+                "Sending processAction with signed transaction"
+            );
 
             // Process the signed transaction
             let process_args = StorageProcessActionArgs {
@@ -706,18 +732,12 @@ where
                 .await
                 .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
-            // If not no_send and not delayed, broadcast the transaction
-            if !no_send && !accept_delayed_broadcast {
-                // Build BEEF for broadcasting
-                if let Some(ref beef) = storage_result.input_beef {
-                    let txid_strings = vec![txid.clone()];
-                    let _broadcast_result = self
-                        .services
-                        .post_beef(beef, &txid_strings)
-                        .await
-                        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
-                }
-            }
+            // Log the process result for debugging
+            tracing::debug!(
+                send_with_results = ?process_result.send_with_results,
+                not_delayed_results = ?process_result.not_delayed_results,
+                "processAction returned"
+            );
 
             // Convert txid string to [u8; 32]
             let txid_bytes = hex::decode(&txid)
@@ -759,12 +779,16 @@ where
                         .collect()
                 }),
                 signable_transaction: None,
+                input_type: None,
+                inputs: None,
+                reference_number: None,
             });
         }
 
         // Return the result with signable transaction for external signing
         // Build transaction before consuming storage_result fields
-        let unsigned_tx = build_unsigned_transaction(&storage_result).map_err(|e| {
+        // Pass the key_deriver so we can compute locking scripts for change outputs
+        let unsigned_tx = build_unsigned_transaction(&storage_result, Some(self.proto_wallet.key_deriver())).map_err(|e| {
             bsv_sdk::Error::WalletError(format!("Failed to build transaction: {}", e))
         })?;
         let reference = storage_result.reference.clone();
@@ -831,6 +855,9 @@ where
                 tx: unsigned_tx,
                 reference: reference_bytes,
             }),
+            input_type: None,
+            inputs: None,
+            reference_number: None,
         })
     }
 
@@ -1488,22 +1515,31 @@ fn compute_txid(raw_tx: &[u8]) -> String {
 }
 
 /// Builds an unsigned transaction from StorageCreateActionResult.
+///
+/// If `key_deriver` is provided, it will be used to compute locking scripts
+/// for change outputs that have a derivation_suffix but no locking_script.
 fn build_unsigned_transaction(
     result: &crate::storage::StorageCreateActionResult,
+    key_deriver: Option<&dyn bsv_sdk::wallet::KeyDeriverApi>,
 ) -> Result<Vec<u8>> {
     let mut tx = Vec::new();
 
     // Version
     tx.extend_from_slice(&result.version.to_le_bytes());
 
+    // Sort inputs by vin
+    let mut sorted_inputs: Vec<_> = result.inputs.iter().collect();
+    sorted_inputs.sort_by_key(|i| i.vin);
+
     // Input count
-    write_varint(&mut tx, result.inputs.len() as u64);
+    write_varint(&mut tx, sorted_inputs.len() as u64);
 
     // Inputs
-    for input in &result.inputs {
-        // Previous txid (reversed)
-        let txid_bytes = hex::decode(&input.source_txid)
+    for input in &sorted_inputs {
+        // Previous txid - needs to be reversed from display format to transaction format
+        let mut txid_bytes = hex::decode(&input.source_txid)
             .map_err(|e| Error::TransactionError(format!("Invalid txid: {}", e)))?;
+        txid_bytes.reverse(); // Reverse from display format to internal format
         tx.extend_from_slice(&txid_bytes);
 
         // Previous vout
@@ -1516,17 +1552,52 @@ fn build_unsigned_transaction(
         tx.extend_from_slice(&0xfffffffe_u32.to_le_bytes());
     }
 
+    // Sort outputs by vout
+    let mut sorted_outputs: Vec<_> = result.outputs.iter().collect();
+    sorted_outputs.sort_by_key(|o| o.vout);
+
     // Output count
-    write_varint(&mut tx, result.outputs.len() as u64);
+    write_varint(&mut tx, sorted_outputs.len() as u64);
 
     // Outputs
-    for output in &result.outputs {
+    for output in &sorted_outputs {
         // Satoshis
         tx.extend_from_slice(&output.satoshis.to_le_bytes());
 
-        // Locking script
-        let script = hex::decode(&output.locking_script)
-            .map_err(|e| Error::TransactionError(format!("Invalid locking script: {}", e)))?;
+        // Get or compute locking script
+        let script = if output.locking_script.is_empty() {
+            // Need to derive the locking script from derivation info
+            // Change outputs use BRC-29 protocol with Counterparty::Self_
+            if let (Some(key_deriver), Some(suffix)) = (key_deriver, &output.derivation_suffix) {
+                use bsv_sdk::wallet::{Protocol, SecurityLevel};
+
+                // BRC-29 protocol: security level 2, protocol name "3241645161d8"
+                let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+                // Key ID has a SPACE between prefix and suffix
+                let key_id = format!("{} {}", result.derivation_prefix, suffix);
+
+                // Derive the public key using BRC-29 protocol
+                let pubkey = key_deriver
+                    .derive_private_key(&brc29_protocol, &key_id, &bsv_sdk::wallet::Counterparty::Self_)
+                    .map_err(|e| Error::TransactionError(format!("Failed to derive change key: {}", e)))?
+                    .public_key();
+
+                // Create P2PKH locking script using SDK's ScriptTemplate trait
+                use bsv_sdk::script::template::ScriptTemplate;
+                bsv_sdk::script::templates::P2PKH::new()
+                    .lock(&pubkey.hash160())
+                    .map_err(|e| Error::TransactionError(format!("Failed to create P2PKH script: {}", e)))?
+                    .to_binary()
+            } else {
+                // Can't derive - use empty (will likely fail validation)
+                tracing::warn!(vout = output.vout, "Output has empty locking script and no derivation info");
+                Vec::new()
+            }
+        } else {
+            hex::decode(&output.locking_script)
+                .map_err(|e| Error::TransactionError(format!("Invalid locking script: {}", e)))?
+        };
+
         write_varint(&mut tx, script.len() as u64);
         tx.extend_from_slice(&script);
     }

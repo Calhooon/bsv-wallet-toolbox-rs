@@ -21,7 +21,9 @@ pub const WOC_WS_URL_MAIN: &str = "wss://socket-v2.whatsonchain.com/websocket/bl
 pub const WOC_WS_URL_TEST: &str = "wss://socket-v2-testnet.whatsonchain.com/websocket/blockHeaders";
 
 /// WebSocket URL for historical headers
+#[allow(dead_code)]
 pub const WOC_WS_HISTORY_URL_MAIN: &str = "wss://socket-v2.whatsonchain.com/websocket/blockheaders/history";
+#[allow(dead_code)]
 pub const WOC_WS_HISTORY_URL_TEST: &str = "wss://socket-v2-testnet.whatsonchain.com/websocket/blockheaders/history";
 
 /// WOC REST API URLs (for header lookup fallback)
@@ -143,6 +145,7 @@ impl LiveWebSocketOptions {
 
 /// Error types specific to WebSocket operations
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum WsError {
     ConnectionFailed(String),
     MessageParseFailed(String),
