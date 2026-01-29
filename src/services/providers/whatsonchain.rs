@@ -358,9 +358,11 @@ impl WhatsOnChain {
     /// Post BEEF transaction (extracts raw txs and broadcasts sequentially).
     pub async fn post_beef(
         &self,
-        _beef: &[u8],
+        beef: &[u8],
         txids: &[String],
     ) -> Result<PostBeefResult> {
+        use bsv_sdk::transaction::Beef;
+
         let mut result = PostBeefResult {
             name: "WoC".to_string(),
             status: "success".to_string(),
@@ -369,28 +371,63 @@ impl WhatsOnChain {
             notes: vec![make_note("postBeef")],
         };
 
-        // For WhatsOnChain, we need to extract and broadcast raw transactions
-        // This is a simplified implementation - full BEEF parsing is complex
-        // In practice, beef bytes would be parsed and individual txs extracted
+        // Parse the BEEF to extract raw transactions
+        let parsed_beef = match Beef::from_binary(beef) {
+            Ok(b) => b,
+            Err(e) => {
+                result.status = "error".to_string();
+                result.error = Some(format!("Failed to parse BEEF: {}", e));
+                return Ok(result);
+            }
+        };
 
+        // Broadcast each requested txid
         for (i, txid) in txids.iter().enumerate() {
             if i > 0 {
                 // Give WoC time to propagate between transactions
-                sleep(Duration::from_secs(3)).await;
+                sleep(Duration::from_secs(1)).await;
             }
 
-            // In full implementation, we'd extract the raw tx from BEEF
-            // For now, this demonstrates the pattern
-            let tx_result = PostTxResultForTxid {
-                txid: txid.clone(),
-                status: "error".to_string(),
-                double_spend: false,
-                competing_txs: None,
-                data: Some("BEEF parsing not implemented - use ARC for BEEF".to_string()),
-                service_error: true,
-                block_hash: None,
-                block_height: None,
-                notes: vec![make_note("postBeefNotImplemented")],
+            // Find the transaction in the BEEF
+            let beef_tx = parsed_beef.find_txid(txid);
+            let raw_tx = beef_tx.and_then(|btx| btx.tx()).map(|tx| tx.to_binary());
+
+            let tx_result = match raw_tx {
+                Some(tx_bytes) => {
+                    // Broadcast the raw transaction
+                    let tx_hex = hex::encode(&tx_bytes);
+                    match self.post_raw_tx(&tx_hex).await {
+                        Ok(broadcast_result) => broadcast_result,
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            let is_double_spend = err_msg.contains("txn-mempool-conflict")
+                                || err_msg.contains("already in the mempool")
+                                || err_msg.contains("already known");
+                            PostTxResultForTxid {
+                                txid: txid.clone(),
+                                status: if is_double_spend { "success" } else { "error" }.to_string(),
+                                double_spend: is_double_spend,
+                                competing_txs: None,
+                                data: Some(err_msg),
+                                service_error: !is_double_spend,
+                                block_hash: None,
+                                block_height: None,
+                                notes: vec![make_note("broadcastError")],
+                            }
+                        }
+                    }
+                }
+                None => PostTxResultForTxid {
+                    txid: txid.clone(),
+                    status: "error".to_string(),
+                    double_spend: false,
+                    competing_txs: None,
+                    data: Some(format!("Transaction {} not found in BEEF", txid)),
+                    service_error: true,
+                    block_hash: None,
+                    block_height: None,
+                    notes: vec![make_note("txNotInBeef")],
+                },
             };
 
             if tx_result.status != "success" {

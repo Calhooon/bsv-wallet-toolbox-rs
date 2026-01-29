@@ -150,6 +150,18 @@ impl WalletSigner {
                 .derive_private_key(&brc29_protocol, &key_id, &counterparty)
                 .map_err(|e| Error::TransactionError(format!("Key derivation failed: {}", e)))?;
 
+            // Debug: Show the derived public key and address for verification
+            let derived_pubkey = signing_key.public_key();
+            let derived_address = derived_pubkey.to_address();
+            eprintln!(
+                "DEBUG signer: vin={} key_id='{}' counterparty={:?} => address={}",
+                vin, key_id, counterparty, derived_address
+            );
+            eprintln!(
+                "DEBUG signer: locking_script={} (len={})",
+                hex::encode(locking_script), locking_script.len()
+            );
+
             // Create the sighash for this input
             // This depends on the script type (P2PKH, P2PK, etc.)
             let sighash = compute_sighash(&tx_data, vin as u32, locking_script, input.satoshis)?;
@@ -168,6 +180,14 @@ impl WalletSigner {
 
             // Insert the unlocking script into the transaction
             tx_data = insert_unlocking_script(&tx_data, vin as u32, &unlocking_script)?;
+        }
+
+        // Inject user-provided unlocking scripts for external inputs
+        // (these were skipped in the loop above)
+        for (vin, input) in inputs.iter().enumerate() {
+            if let Some(ref script) = input.unlocking_script {
+                tx_data = insert_unlocking_script(&tx_data, vin as u32, script)?;
+            }
         }
 
         Ok(tx_data)

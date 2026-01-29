@@ -338,6 +338,34 @@ async fn update_output_with_script_offset(
     Ok(())
 }
 
+/// Updates a change output with its locking script from the signed transaction.
+///
+/// Change outputs are created with empty locking scripts during create_action
+/// because key derivation happens at sign time. This function stores the
+/// actual locking script after signing so it can be used when spending.
+async fn update_change_output_with_locking_script(
+    storage: &StorageSqlx,
+    output_id: i64,
+    txid: &str,
+    script_offset: i32,
+    script_length: i32,
+    locking_script: &[u8],
+) -> Result<()> {
+    let now = Utc::now();
+    sqlx::query(
+        "UPDATE outputs SET txid = ?, script_offset = ?, script_length = ?, locking_script = ?, spendable = 1, updated_at = ? WHERE output_id = ?",
+    )
+    .bind(txid)
+    .bind(script_offset)
+    .bind(script_length)
+    .bind(locking_script)
+    .bind(now)
+    .bind(output_id)
+    .execute(storage.pool())
+    .await?;
+    Ok(())
+}
+
 async fn create_or_update_proven_tx_req(
     storage: &StorageSqlx, txid: &str, raw_tx: &[u8], input_beef: Option<&[u8]>,
     status: &str, transaction_id: i64,
@@ -494,11 +522,34 @@ pub async fn process_action_internal(
             let vout = output.vout as usize;
             if vout < script_offsets.outputs.len() {
                 let offset = &script_offsets.outputs[vout];
-                update_output_with_script_offset(
-                    storage, output.output_id, txid,
-                    offset.offset as i32, offset.length as i32,
-                    settings.max_output_script, true,
-                ).await?;
+
+                if output.change {
+                    // For change outputs, extract and store the locking script from the
+                    // signed transaction. Change outputs are created with empty locking
+                    // scripts during create_action, but we need them stored for later spending.
+                    let locking_script = &raw_tx[offset.offset..offset.offset + offset.length];
+                    update_change_output_with_locking_script(
+                        storage,
+                        output.output_id,
+                        txid,
+                        offset.offset as i32,
+                        offset.length as i32,
+                        locking_script,
+                    )
+                    .await?;
+                } else {
+                    // For non-change outputs, just update the offset/length info
+                    update_output_with_script_offset(
+                        storage,
+                        output.output_id,
+                        txid,
+                        offset.offset as i32,
+                        offset.length as i32,
+                        settings.max_output_script,
+                        true,
+                    )
+                    .await?;
+                }
             }
         }
 
@@ -545,9 +596,12 @@ pub async fn process_action_internal(
                 update_transaction_status_by_txid(storage, txid, TransactionStatus::Sending.as_str()).await?;
                 send_with_results.push(SendWithResult { txid: txid.clone(), status: "sending".to_string() });
             } else {
-                update_proven_tx_req_status(storage, req_id, proven_tx_req_status::UNMINED, batch.as_deref()).await?;
-                update_transaction_status_by_txid(storage, txid, TransactionStatus::Unproven.as_str()).await?;
-                send_with_results.push(SendWithResult { txid: txid.clone(), status: "unproven".to_string() });
+                // BUG-003 FIX: For immediate broadcast, don't set status to 'unproven' here.
+                // The wallet layer will call update_transaction_status_after_broadcast()
+                // AFTER the broadcast succeeds or fails. Until then, keep status as 'sending'.
+                update_proven_tx_req_status(storage, req_id, proven_tx_req_status::UNPROCESSED, batch.as_deref()).await?;
+                update_transaction_status_by_txid(storage, txid, TransactionStatus::Sending.as_str()).await?;
+                send_with_results.push(SendWithResult { txid: txid.clone(), status: "sending".to_string() });
             }
         } else {
             send_with_results.push(SendWithResult { txid: txid.clone(), status: "failed".to_string() });
@@ -567,6 +621,95 @@ fn generate_batch_id() -> String {
     let mut bytes = [0u8; 16];
     rng.fill_bytes(&mut bytes);
     base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
+}
+
+// =============================================================================
+// Post-Broadcast Status Update
+// =============================================================================
+
+/// Update transaction status after a broadcast attempt.
+///
+/// This function is called by the wallet layer after attempting to broadcast a transaction.
+///
+/// On success:
+/// - Sets transaction status to 'unproven'
+/// - Sets proven_tx_req status to 'unmined'
+///
+/// On failure:
+/// - Sets transaction status to 'failed'
+/// - Sets proven_tx_req status to 'invalid'
+/// - Restores spent inputs to spendable state (clears spent_by)
+pub async fn update_transaction_status_after_broadcast_internal(
+    storage: &StorageSqlx,
+    txid: &str,
+    success: bool,
+) -> Result<()> {
+    let now = Utc::now();
+
+    if success {
+        // Broadcast succeeded - update to unproven/unmined
+        sqlx::query(
+            "UPDATE transactions SET status = ?, updated_at = ? WHERE txid = ?",
+        )
+        .bind(TransactionStatus::Unproven.as_str())
+        .bind(now)
+        .bind(txid)
+        .execute(storage.pool())
+        .await?;
+
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?",
+        )
+        .bind(proven_tx_req_status::UNMINED)
+        .bind(now)
+        .bind(txid)
+        .execute(storage.pool())
+        .await?;
+    } else {
+        // Broadcast failed - mark as failed and restore inputs
+
+        // First, get the transaction_id
+        let row = sqlx::query("SELECT transaction_id FROM transactions WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(storage.pool())
+            .await?;
+
+        if let Some(row) = row {
+            let transaction_id: i64 = row.get("transaction_id");
+
+            // Restore spent inputs: set spendable = true and clear spent_by
+            // for outputs that were being spent by this transaction
+            sqlx::query(
+                "UPDATE outputs SET spendable = 1, spent_by = NULL, spending_description = NULL, updated_at = ? WHERE spent_by = ?",
+            )
+            .bind(now)
+            .bind(transaction_id)
+            .execute(storage.pool())
+            .await?;
+
+            // Update transaction status to failed
+            sqlx::query(
+                "UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?",
+            )
+            .bind(TransactionStatus::Failed.as_str())
+            .bind(now)
+            .bind(transaction_id)
+            .execute(storage.pool())
+            .await?;
+        }
+
+        // Update proven_tx_req status to invalid
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?",
+        )
+        .bind("invalid")
+        .bind(now)
+        .bind(txid)
+        .execute(storage.pool())
+        .await?;
+    }
+
+    Ok(())
 }
 
 // =============================================================================

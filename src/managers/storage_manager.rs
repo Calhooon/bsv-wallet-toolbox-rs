@@ -1010,6 +1010,18 @@ impl WalletStorageWriter for WalletStorageManager {
         self.run_as_writer(|active| async move { active.relinquish_output(auth, args).await })
             .await
     }
+
+    async fn update_transaction_status_after_broadcast(
+        &self,
+        txid: &str,
+        success: bool,
+    ) -> Result<()> {
+        let txid_owned = txid.to_string();
+        self.run_as_writer(|active| async move {
+            active.update_transaction_status_after_broadcast(&txid_owned, success).await
+        })
+        .await
+    }
 }
 
 #[async_trait]

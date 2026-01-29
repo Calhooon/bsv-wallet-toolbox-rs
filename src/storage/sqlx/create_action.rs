@@ -29,7 +29,7 @@ const MAX_SATOSHIS: u64 = 2_100_000_000_000_000;
 const MAX_POSSIBLE_SATOSHIS: u64 = 2_099_999_999_999_999;
 
 /// Default fee rate in satoshis per kilobyte.
-const DEFAULT_FEE_RATE_SAT_PER_KB: u64 = 10;
+const DEFAULT_FEE_RATE_SAT_PER_KB: u64 = 101;
 
 /// P2PKH locking script length (25 bytes).
 const P2PKH_LOCKING_SCRIPT_LENGTH: u32 = 25;
@@ -122,6 +122,7 @@ struct AllocatedChangeInput {
     locking_script: Vec<u8>,
     derivation_prefix: Option<String>,
     derivation_suffix: Option<String>,
+    sender_identity_key: Option<String>,
 }
 
 /// A generated change output.
@@ -358,6 +359,10 @@ fn random_reference() -> String {
 /// * `chain_tracker` - Optional chain tracker for BEEF verification. If None, skips verification.
 /// * `user_id` - The user ID
 /// * `args` - The create action arguments
+///
+/// Note: Change outputs are created with empty locking scripts. The locking scripts
+/// are derived during transaction signing and stored via process_action when the
+/// signed transaction is processed.
 pub async fn create_action_internal(
     storage: &StorageSqlx,
     chain_tracker: Option<&dyn ChainTracker>,
@@ -522,6 +527,9 @@ pub async fn create_action_internal(
     }
 
     // Then, handle change outputs
+    // Note: Change outputs are created with empty locking scripts here.
+    // The locking scripts are derived during transaction signing and stored
+    // in process_action when the signed transaction is processed.
     let base_vout = extended_outputs.len() as u32;
     for (i, co) in change_result.change_outputs.iter().enumerate() {
         let vout = base_vout + i as u32;
@@ -533,7 +541,7 @@ pub async fn create_action_internal(
             Some(change_basket.basket_id),
             vout as i32,
             co.satoshis as i64,
-            &[], // locking script will be filled in when signed
+            &[], // Locking script stored in process_action after signing
             "",
             &StorageProvidedBy::Storage,
             "change",
@@ -550,7 +558,7 @@ pub async fn create_action_internal(
         result_outputs.push(StorageCreateTransactionOutput {
             vout,
             satoshis: co.satoshis,
-            locking_script: String::new(), // Will be filled in by signer
+            locking_script: String::new(), // Filled in by process_action
             provided_by: StorageProvidedBy::Storage,
             purpose: Some("change".to_string()),
             derivation_suffix: Some(co.derivation_suffix.clone()),
@@ -623,7 +631,7 @@ pub async fn create_action_internal(
             spending_description: None,
             derivation_prefix: aci.derivation_prefix.clone(),
             derivation_suffix: aci.derivation_suffix.clone(),
-            sender_identity_key: None,
+            sender_identity_key: aci.sender_identity_key.clone(),
         });
     }
 
@@ -649,6 +657,23 @@ pub async fn create_action_internal(
         return_txid_only,
     )
     .await?;
+
+    eprintln!("DEBUG create_action_internal: build_input_beef returned input_beef={}", input_beef.as_ref().map(|b| b.len()).unwrap_or(0));
+
+    // Store input_beef in the transaction record (required for process_action)
+    // This matches the TypeScript behavior which stores inputBEEF at transaction creation
+    if let Some(ref beef_bytes) = input_beef {
+        eprintln!("DEBUG create_action_internal: Storing input_beef ({} bytes) for transaction_id={}", beef_bytes.len(), transaction_id);
+        let now = Utc::now();
+        sqlx::query("UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?")
+            .bind(beef_bytes)
+            .bind(now)
+            .bind(transaction_id)
+            .execute(storage.pool())
+            .await?;
+    } else {
+        eprintln!("DEBUG create_action_internal: No input_beef to store for transaction_id={}", transaction_id);
+    }
 
     // Build final result
     Ok(StorageCreateActionResult {
@@ -698,31 +723,80 @@ fn validate_and_extend_outputs(
 }
 
 /// Validates and extends input specifications, looking up associated outputs.
+/// For external inputs not in storage, looks up source output info from the input_beef.
 async fn validate_and_extend_inputs(
     storage: &StorageSqlx,
     user_id: i64,
     args: &bsv_sdk::wallet::CreateActionArgs,
 ) -> Result<Vec<ExtendedInput>> {
+    use bsv_sdk::transaction::Beef;
+
     let mut extended = Vec::new();
+
+    // Parse input_beef if provided (needed for external inputs)
+    let input_beef = if let Some(ref beef_bytes) = args.input_beef {
+        Beef::from_binary(beef_bytes).ok()
+    } else {
+        None
+    };
 
     if let Some(ref inputs) = args.inputs {
         for (i, input) in inputs.iter().enumerate() {
             let txid = hex::encode(input.outpoint.txid);
             let vout = input.outpoint.vout;
 
-            // Try to find the output being spent
+            // Try to find the output being spent in storage first
             let output = storage
                 .find_output_by_outpoint(user_id, &txid, vout)
                 .await?;
 
             let (satoshis, locking_script) = if let Some(ref out) = output {
-                let script = out.locking_script.clone().unwrap_or_default();
+                let script = if let Some(ref s) = out.locking_script {
+                    s.clone()
+                } else if out.script_offset > 0 && out.script_length > 0 && !out.txid.is_empty() {
+                    // Script was cleared from output (too long), read from rawTx
+                    get_locking_script_from_raw_tx(
+                        storage,
+                        &out.txid,
+                        out.script_offset as usize,
+                        out.script_length as usize,
+                    )
+                    .await
+                    .unwrap_or_default()
+                } else {
+                    vec![]
+                };
                 (out.satoshis as u64, script)
+            } else if let Some(ref beef) = input_beef {
+                // Output not in storage - look it up in the input_beef
+                if let Some(beef_tx) = beef.find_txid(&txid) {
+                    if let Some(tx) = beef_tx.tx() {
+                        if let Some(out) = tx.outputs.get(vout as usize) {
+                            let sats = out.satoshis.unwrap_or(0);
+                            let script = out.locking_script.to_binary();
+                            (sats, script)
+                        } else {
+                            return Err(Error::ValidationError(format!(
+                                "inputs[{}]: output {}:{} not found in BEEF transaction",
+                                i, txid, vout
+                            )));
+                        }
+                    } else {
+                        return Err(Error::ValidationError(format!(
+                            "inputs[{}]: transaction {} found in BEEF but has no parsed data",
+                            i, txid
+                        )));
+                    }
+                } else {
+                    return Err(Error::ValidationError(format!(
+                        "inputs[{}]: output {}:{} not found in storage or input_beef",
+                        i, txid, vout
+                    )));
+                }
             } else {
-                // If output not found, we need to get satoshis/script from BEEF
-                // For now, return an error - full BEEF parsing would be needed
+                // No beef provided and output not in storage
                 return Err(Error::ValidationError(format!(
-                    "inputs[{}]: output {}:{} not found in storage. BEEF validation required.",
+                    "inputs[{}]: output {}:{} not found in storage. Provide input_beef for external inputs.",
                     i, txid, vout
                 )));
             };
@@ -790,7 +864,7 @@ async fn count_change_inputs(
         WHERE o.user_id = ?
           AND o.basket_id = ?
           AND o.change = 1
-          AND t.status IN ('completed', 'unproven')
+          AND t.status IN ('completed', 'unproven', 'nosend', 'sending')
           {}
         "#,
         spendable_clause
@@ -834,6 +908,62 @@ async fn create_transaction_record(
     .await?;
 
     Ok(result.last_insert_rowid())
+}
+
+/// Reads locking script from rawTx in proven_tx_reqs table.
+/// This is needed when the output's locking_script was cleared (set to NULL)
+/// because it exceeded maxOutputScript length.
+async fn get_locking_script_from_raw_tx(
+    storage: &StorageSqlx,
+    txid: &str,
+    offset: usize,
+    length: usize,
+) -> Result<Vec<u8>> {
+    // First try proven_tx_reqs (for pending transactions)
+    let row = sqlx::query("SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?")
+        .bind(txid)
+        .fetch_optional(storage.pool())
+        .await?;
+
+    if let Some(row) = row {
+        let raw_tx: Vec<u8> = row.get("raw_tx");
+        if offset + length <= raw_tx.len() {
+            return Ok(raw_tx[offset..offset + length].to_vec());
+        }
+    }
+
+    // Then try transactions table
+    let row = sqlx::query("SELECT raw_tx FROM transactions WHERE txid = ?")
+        .bind(txid)
+        .fetch_optional(storage.pool())
+        .await?;
+
+    if let Some(row) = row {
+        let raw_tx: Option<Vec<u8>> = row.get("raw_tx");
+        if let Some(raw_tx) = raw_tx {
+            if offset + length <= raw_tx.len() {
+                return Ok(raw_tx[offset..offset + length].to_vec());
+            }
+        }
+    }
+
+    // Finally try proven_txs table
+    let row = sqlx::query("SELECT raw_tx FROM proven_txs WHERE txid = ?")
+        .bind(txid)
+        .fetch_optional(storage.pool())
+        .await?;
+
+    if let Some(row) = row {
+        let raw_tx: Vec<u8> = row.get("raw_tx");
+        if offset + length <= raw_tx.len() {
+            return Ok(raw_tx[offset..offset + length].to_vec());
+        }
+    }
+
+    Err(Error::TransactionError(format!(
+        "Could not read locking script from rawTx for txid {}",
+        txid
+    )))
 }
 
 /// Gets the reference for a transaction.
@@ -1156,6 +1286,12 @@ async fn insert_output(
 // =============================================================================
 
 /// Generates change outputs and allocates change inputs to fund the transaction.
+///
+/// This follows the TypeScript logic:
+/// 1. Create change outputs based on targetNetCount first (even if underfunded)
+/// 2. Allocate inputs to fund the transaction
+/// 3. If can't fund, remove change outputs one at a time
+/// 4. Distribute excess to change outputs
 async fn generate_change(
     storage: &StorageSqlx,
     user_id: i64,
@@ -1205,36 +1341,28 @@ async fn generate_change(
         (input_sats, output_sats, fee_required, fee_excess)
     };
 
+    let target_net = params.target_net_count.unwrap_or(0);
+    let has_target_net_count = params.target_net_count.is_some();
+
+    // Calculate current net change (outputs created - inputs consumed)
+    let net_change_count = |outputs: &[ChangeOutput], inputs: &[AllocatedChangeInput]| -> i32 {
+        outputs.len() as i32 - inputs.len() as i32
+    };
+
     // Initial state calculation
     let (_, _, _, mut fee_excess) = calculate_state(&allocated_inputs, &change_outputs);
 
-    // If we have excess and want to increase UTXO count, add change outputs
-    let target_net = params.target_net_count.unwrap_or(0);
-    while fee_excess > 0 || (target_net > 0 && (change_outputs.len() as i32) < target_net) {
+    // Step 1: Create change outputs based on targetNetCount first
+    // "If we'd like to have more change outputs create them now.
+    //  They may be removed if it turns out we can't fund them."
+    while (has_target_net_count && target_net > net_change_count(&change_outputs, &allocated_inputs))
+        || (change_outputs.is_empty() && fee_excess > 0)
+    {
         let satoshis = if change_outputs.is_empty() {
             params.change_first_satoshis
         } else {
             params.change_initial_satoshis
         };
-
-        // Check if adding this output is worthwhile
-        let (_, _, _, new_excess) = calculate_state(
-            &allocated_inputs,
-            &[
-                change_outputs.clone(),
-                vec![ChangeOutput {
-                    satoshis,
-                    vout: 0,
-                    derivation_prefix: String::new(),
-                    derivation_suffix: String::new(),
-                }],
-            ]
-            .concat(),
-        );
-
-        if new_excess < 0 && fee_excess <= 0 {
-            break;
-        }
 
         change_outputs.push(ChangeOutput {
             satoshis,
@@ -1243,77 +1371,147 @@ async fn generate_change(
             derivation_suffix: random_derivation(16),
         });
 
+        // Recalculate fee_excess with new output
+        let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
         fee_excess = new_excess;
-
-        if fee_excess >= 0 && (target_net <= 0 || (change_outputs.len() as i32) >= target_net) {
-            break;
-        }
     }
 
-    // If we need more funding, allocate change inputs
-    while fee_excess < 0 {
-        let target_sats = (-fee_excess) as u64 + params.change_initial_satoshis;
+    // Step 2: Fund the transaction (starvation loop with funding loop)
+    // This is the outer "for (;;)" loop in TypeScript
+    loop {
+        // Release all allocated inputs (TypeScript: releaseAllocatedChangeInputs)
+        for input in allocated_inputs.drain(..) {
+            release_change_input(storage, input.output_id).await?;
+        }
 
-        let allocated = allocate_change_input(
-            storage,
-            user_id,
-            basket_id,
-            transaction_id,
-            target_sats,
-            !is_delayed,
-        )
-        .await?;
+        // Recalculate after releasing
+        let (_, _, _, initial_excess) = calculate_state(&allocated_inputs, &change_outputs);
+        fee_excess = initial_excess;
 
-        if let Some(input) = allocated {
-            allocated_inputs.push(input);
-            let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
-            fee_excess = new_excess;
+        // Funding loop: add one change input at a time
+        while fee_excess < 0 {
+            // Check if we should add an output to balance a new input
+            let add_output = has_target_net_count
+                && (net_change_count(&change_outputs, &allocated_inputs) - 1) < target_net;
 
-            // If we now have excess, add a change output if beneficial
-            if fee_excess > 0 && change_outputs.is_empty() {
-                let change_sats = std::cmp::min(fee_excess as u64, params.change_first_satoshis);
-                change_outputs.push(ChangeOutput {
-                    satoshis: change_sats,
-                    vout: params.fixed_outputs.len() as u32,
-                    derivation_prefix: derivation_prefix.to_string(),
-                    derivation_suffix: random_derivation(16),
-                });
-                let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
-                fee_excess = new_excess;
-            }
-        } else {
-            // No more change inputs available
-            // If we can't fund it, remove change outputs and try again
-            if !change_outputs.is_empty() {
-                change_outputs.pop();
+            let extra_for_output = if add_output { 2 * params.change_initial_satoshis } else { 0 };
+            let target_sats = (-fee_excess) as u64 + extra_for_output;
+
+            let allocated = allocate_change_input(
+                storage,
+                user_id,
+                basket_id,
+                transaction_id,
+                target_sats,
+                !is_delayed,
+            )
+            .await?;
+
+            if let Some(input) = allocated {
+                allocated_inputs.push(input);
                 let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
                 fee_excess = new_excess;
 
-                if fee_excess >= 0 {
-                    break;
+                // If we have excess and should add output (or need at least one)
+                if fee_excess > 0 && (add_output || change_outputs.is_empty()) {
+                    let satoshis = std::cmp::min(
+                        fee_excess as u64,
+                        if change_outputs.is_empty() {
+                            params.change_first_satoshis
+                        } else {
+                            params.change_initial_satoshis
+                        },
+                    );
+                    change_outputs.push(ChangeOutput {
+                        satoshis,
+                        vout: (params.fixed_outputs.len() + change_outputs.len()) as u32,
+                        derivation_prefix: derivation_prefix.to_string(),
+                        derivation_suffix: random_derivation(16),
+                    });
+                    let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
+                    fee_excess = new_excess;
                 }
             } else {
-                // Truly insufficient funds
-                let (input_sats, output_sats, fee_required, _) =
-                    calculate_state(&allocated_inputs, &change_outputs);
-                return Err(Error::InsufficientFunds {
-                    needed: output_sats + fee_required,
-                    available: input_sats,
-                });
+                // No more change inputs available
+                break;
             }
         }
+
+        // Check if we're done (balanced/overbalanced or impossible)
+        if fee_excess >= 0 || change_outputs.is_empty() {
+            break;
+        }
+
+        // Remove change outputs one at a time (starvation)
+        while !change_outputs.is_empty() && fee_excess < 0 {
+            change_outputs.pop();
+            let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
+            fee_excess = new_excess;
+        }
+
+        if fee_excess < 0 {
+            // Not enough available funding even with no change outputs
+            break;
+        }
+
+        // Try to remove pointless churn: change inputs that fund only one change output
+        // (Simplified version - just continue to next iteration to try again)
     }
 
-    // Distribute excess fee to change outputs
-    if fee_excess > 0 && !change_outputs.is_empty() {
-        // Give all excess to the first change output
-        change_outputs[0].satoshis += fee_excess as u64;
+    // Check if we still can't fund the transaction
+    if fee_excess < 0 {
+        let (input_sats, output_sats, fee_required, _) =
+            calculate_state(&allocated_inputs, &change_outputs);
+
+        // Check if it's because we need more change outputs to capture excess
+        if change_outputs.is_empty() && fee_excess > 0 {
+            return Err(Error::InsufficientFunds {
+                needed: output_sats + fee_required + params.change_first_satoshis,
+                available: input_sats,
+            });
+        }
+
+        return Err(Error::InsufficientFunds {
+            needed: output_sats + fee_required,
+            available: input_sats,
+        });
+    }
+
+    // Step 3: Distribute excess fee across change outputs
+    while !change_outputs.is_empty() && fee_excess > 0 {
+        if change_outputs.len() == 1 {
+            // Give all excess to the single change output
+            change_outputs[0].satoshis += fee_excess as u64;
+            fee_excess = 0;
+        } else if change_outputs[0].satoshis < params.change_initial_satoshis {
+            // Fill first output up to initial amount
+            let add = std::cmp::min(
+                fee_excess as u64,
+                params.change_initial_satoshis - change_outputs[0].satoshis,
+            );
+            change_outputs[0].satoshis += add;
+            fee_excess -= add as i64;
+        } else {
+            // Distribute randomly (simplified: just add to first output)
+            let add = std::cmp::max(1, fee_excess / 2);
+            change_outputs[0].satoshis += add as u64;
+            fee_excess -= add;
+        }
     }
 
     Ok(GenerateChangeResult {
         allocated_change_inputs: allocated_inputs,
         change_outputs,
     })
+}
+
+/// Releases a previously allocated change input.
+async fn release_change_input(storage: &StorageSqlx, output_id: i64) -> Result<()> {
+    sqlx::query("UPDATE outputs SET spendable = 1, spent_by = NULL WHERE output_id = ?")
+        .bind(output_id)
+        .execute(storage.pool())
+        .await?;
+    Ok(())
 }
 
 /// Allocates a change input from the default basket.
@@ -1335,14 +1533,14 @@ async fn allocate_change_input(
     let sql = format!(
         r#"
         SELECT o.output_id, o.satoshis, o.txid, o.vout, o.locking_script,
-               o.derivation_prefix, o.derivation_suffix
+               o.derivation_prefix, o.derivation_suffix, o.sender_identity_key
         FROM outputs o
         JOIN transactions t ON o.transaction_id = t.transaction_id
         WHERE o.user_id = ?
           AND o.basket_id = ?
           AND o.change = 1
           AND o.spent_by IS NULL
-          AND t.status IN ('completed', 'unproven')
+          AND t.status IN ('completed', 'unproven', 'nosend', 'sending')
           {}
         ORDER BY
             CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
@@ -1368,6 +1566,7 @@ async fn allocate_change_input(
         let locking_script: Option<Vec<u8>> = row.get("locking_script");
         let derivation_prefix: Option<String> = row.get("derivation_prefix");
         let derivation_suffix: Option<String> = row.get("derivation_suffix");
+        let sender_identity_key: Option<String> = row.get("sender_identity_key");
 
         // Mark as allocated (spent_by this transaction)
         let now = Utc::now();
@@ -1388,6 +1587,7 @@ async fn allocate_change_input(
             locking_script: locking_script.unwrap_or_default(),
             derivation_prefix,
             derivation_suffix,
+            sender_identity_key,
         }))
     } else {
         Ok(None)
@@ -1493,7 +1693,9 @@ async fn build_input_beef(
         }
     }
 
-    // Process transactions recursively - for each unproven tx, we need to add its ancestors
+    // Process transactions - for each unproven tx, we need to add its ancestors.
+    // Optimization: If we have a stored BEEF (from internalize_action), merge it directly
+    // rather than recursively fetching each ancestor. This matches TypeScript behavior.
     let mut depth = 0;
     while !pending_txids.is_empty() && depth < MAX_BEEF_RECURSION_DEPTH {
         let txid = pending_txids.remove(0);
@@ -1503,11 +1705,35 @@ async fn build_input_beef(
         }
         processed_txids.insert(txid.clone());
 
-        // Check if already in BEEF (from user inputBEEF)
+        // Check if already in BEEF (from user inputBEEF or previously merged)
         if beef.find_txid(&txid).is_some() {
             continue;
         }
 
+        // First, try to get a stored BEEF and merge it directly.
+        // This is the most efficient path - it contains all ancestors in one structure.
+        if let Some(stored_beef) = get_stored_beef(storage, &txid).await? {
+            eprintln!("DEBUG build_input_beef: Found stored BEEF for txid {}", &txid[..16.min(txid.len())]);
+            eprintln!("DEBUG build_input_beef:   stored_beef.txs={} bumps={}", stored_beef.txs.len(), stored_beef.bumps.len());
+
+            // Merge the entire stored BEEF - this includes all ancestors and any proofs
+            beef.merge_beef(&stored_beef);
+
+            eprintln!("DEBUG build_input_beef:   after merge: beef.txs={} bumps={}", beef.txs.len(), beef.bumps.len());
+
+            // Mark all txids from the stored BEEF as processed
+            for beef_tx in &stored_beef.txs {
+                processed_txids.insert(beef_tx.txid());
+            }
+
+            // Continue to next pending txid - no need for recursive lookup
+            depth += 1;
+            continue;
+        } else {
+            eprintln!("DEBUG build_input_beef: No stored BEEF for txid {}", &txid[..16.min(txid.len())]);
+        }
+
+        // Fall back to individual transaction lookup
         if let Some(tx_data) = get_tx_with_proof(storage, &txid).await? {
             // If we have a merkle proof, add both tx and proof - no need to recurse
             let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {
@@ -1700,8 +1926,15 @@ fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u64> {
 
 /// Fetches transaction raw bytes and merkle proof from storage.
 ///
-/// First checks `proven_txs` table for transactions with proofs,
-/// then falls back to `transactions` table for unproven transactions.
+/// Checks multiple sources in priority order:
+/// 1. `proven_txs` table - transactions with confirmed merkle proofs
+/// 2. `transactions` table - may have raw_tx and/or input_beef with ancestor data
+/// 3. `proven_tx_reqs` table - may have input_beef for pending proof requests
+///
+/// The key insight is that even without merkle proofs, we can construct valid
+/// BEEFs for spending by chaining raw transactions. The `input_beef` column
+/// stores the complete BEEF that was provided during internalize_action,
+/// which contains all ancestor transactions needed for SPV validation.
 ///
 /// # Arguments
 /// * `storage` - The storage backend to query
@@ -1709,7 +1942,7 @@ fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u64> {
 ///
 /// # Returns
 /// * `Ok(Some(BeefTxData))` - Transaction data if found
-/// * `Ok(None)` - If transaction not found in either table
+/// * `Ok(None)` - If transaction not found in any table
 async fn get_tx_with_proof(storage: &StorageSqlx, txid: &str) -> Result<Option<BeefTxData>> {
     // First try proven_txs table - these have merkle proofs
     let proven_row = sqlx::query(
@@ -1733,10 +1966,10 @@ async fn get_tx_with_proof(storage: &StorageSqlx, txid: &str) -> Result<Option<B
         }));
     }
 
-    // Fall back to transactions table - these may not have proofs yet
+    // Try transactions table - check both raw_tx and input_beef
     let tx_row = sqlx::query(
         r#"
-        SELECT raw_tx
+        SELECT raw_tx, input_beef
         FROM transactions
         WHERE txid = ?
         "#,
@@ -1747,12 +1980,154 @@ async fn get_tx_with_proof(storage: &StorageSqlx, txid: &str) -> Result<Option<B
 
     if let Some(row) = tx_row {
         let raw_tx: Option<Vec<u8>> = row.get("raw_tx");
+        let input_beef: Option<Vec<u8>> = row.get("input_beef");
 
+        // If we have input_beef, try to extract the transaction and any proof from it
+        if let Some(beef_bytes) = input_beef {
+            if let Ok(beef) = Beef::from_binary(&beef_bytes) {
+                // Check if BEEF contains a merkle proof for this txid
+                if let Some(bump) = beef.find_bump(txid) {
+                    // Found merkle proof in stored BEEF!
+                    if let Some(beef_tx) = beef.find_txid(txid) {
+                        if let Some(tx) = beef_tx.tx() {
+                            return Ok(Some(BeefTxData {
+                                raw_tx: tx.to_binary(),
+                                merkle_path: Some(bump.to_binary()),
+                            }));
+                        }
+                    }
+                }
+
+                // No proof in BEEF, but we can still get the raw transaction
+                if let Some(beef_tx) = beef.find_txid(txid) {
+                    if let Some(tx) = beef_tx.tx() {
+                        return Ok(Some(BeefTxData {
+                            raw_tx: tx.to_binary(),
+                            merkle_path: None,
+                        }));
+                    }
+                }
+            }
+        }
+
+        // Fall back to raw_tx if input_beef didn't have what we need
         if let Some(raw_tx) = raw_tx {
             return Ok(Some(BeefTxData {
                 raw_tx,
                 merkle_path: None, // Unproven transaction
             }));
+        }
+    }
+
+    // Also check proven_tx_reqs table - may have input_beef for pending requests
+    let req_row = sqlx::query(
+        r#"
+        SELECT raw_tx, input_beef
+        FROM proven_tx_reqs
+        WHERE txid = ?
+        "#,
+    )
+    .bind(txid)
+    .fetch_optional(storage.pool())
+    .await?;
+
+    if let Some(row) = req_row {
+        let raw_tx: Option<Vec<u8>> = row.get("raw_tx");
+        let input_beef: Option<Vec<u8>> = row.get("input_beef");
+
+        // Try input_beef first
+        if let Some(beef_bytes) = input_beef {
+            if let Ok(beef) = Beef::from_binary(&beef_bytes) {
+                // Check if BEEF contains a merkle proof for this txid
+                if let Some(bump) = beef.find_bump(txid) {
+                    if let Some(beef_tx) = beef.find_txid(txid) {
+                        if let Some(tx) = beef_tx.tx() {
+                            return Ok(Some(BeefTxData {
+                                raw_tx: tx.to_binary(),
+                                merkle_path: Some(bump.to_binary()),
+                            }));
+                        }
+                    }
+                }
+
+                // No proof, but try to get raw tx from BEEF
+                if let Some(beef_tx) = beef.find_txid(txid) {
+                    if let Some(tx) = beef_tx.tx() {
+                        return Ok(Some(BeefTxData {
+                            raw_tx: tx.to_binary(),
+                            merkle_path: None,
+                        }));
+                    }
+                }
+            }
+        }
+
+        // Fall back to raw_tx
+        if let Some(raw_tx) = raw_tx {
+            return Ok(Some(BeefTxData {
+                raw_tx,
+                merkle_path: None,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Retrieves a stored BEEF for a transaction if available.
+///
+/// This is an optimization - instead of recursively fetching each ancestor,
+/// we can merge an entire stored BEEF that already contains the full ancestor chain.
+/// This matches the TypeScript approach where `input_beef` is stored and later
+/// merged directly during BEEF construction.
+///
+/// # Arguments
+/// * `storage` - The storage backend to query
+/// * `txid` - The transaction ID (hex string)
+///
+/// # Returns
+/// * `Ok(Some(Beef))` - Stored BEEF if available
+/// * `Ok(None)` - If no stored BEEF found
+async fn get_stored_beef(storage: &StorageSqlx, txid: &str) -> Result<Option<Beef>> {
+    // Try transactions table first
+    let tx_row = sqlx::query(
+        r#"
+        SELECT input_beef
+        FROM transactions
+        WHERE txid = ?
+        "#,
+    )
+    .bind(txid)
+    .fetch_optional(storage.pool())
+    .await?;
+
+    if let Some(row) = tx_row {
+        let input_beef: Option<Vec<u8>> = row.get("input_beef");
+        if let Some(beef_bytes) = input_beef {
+            if let Ok(beef) = Beef::from_binary(&beef_bytes) {
+                return Ok(Some(beef));
+            }
+        }
+    }
+
+    // Also try proven_tx_reqs table
+    let req_row = sqlx::query(
+        r#"
+        SELECT input_beef
+        FROM proven_tx_reqs
+        WHERE txid = ?
+        "#,
+    )
+    .bind(txid)
+    .fetch_optional(storage.pool())
+    .await?;
+
+    if let Some(row) = req_row {
+        let input_beef: Option<Vec<u8>> = row.get("input_beef");
+        if let Some(beef_bytes) = input_beef {
+            if let Ok(beef) = Beef::from_binary(&beef_bytes) {
+                return Ok(Some(beef));
+            }
         }
     }
 
@@ -2685,6 +3060,7 @@ mod tests {
             locking_script: vec![],
             derivation_prefix: None,
             derivation_suffix: None,
+            sender_identity_key: None,
         }];
 
         let result = build_input_beef(&storage, None, &extended_inputs, &change_inputs, None, &[], false)

@@ -507,6 +507,24 @@ pub trait WalletStorageWriter: WalletStorageReader {
         auth: &AuthId,
         args: RelinquishOutputArgs,
     ) -> Result<i64>;
+
+    /// Update transaction status after broadcast attempt.
+    ///
+    /// This method is called by the wallet layer after attempting to broadcast a transaction.
+    /// It updates the transaction and proven_tx_req statuses based on whether the broadcast
+    /// succeeded or failed.
+    ///
+    /// On success: Sets transaction status to 'unproven' and proven_tx_req to 'unmined'.
+    /// On failure: Sets transaction status to 'failed' and restores spent inputs to spendable.
+    ///
+    /// # Arguments
+    /// * `txid` - The transaction ID
+    /// * `success` - Whether the broadcast succeeded
+    async fn update_transaction_status_after_broadcast(
+        &self,
+        txid: &str,
+        success: bool,
+    ) -> Result<()>;
 }
 
 // =============================================================================

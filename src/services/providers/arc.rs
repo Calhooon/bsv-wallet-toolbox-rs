@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use uuid::Uuid;
 
+use bsv_sdk::transaction::{Beef, BEEF_V1};
 use crate::services::traits::{
     GetMerklePathResult, PostBeefResult, PostTxResultForTxid,
 };
@@ -311,17 +312,28 @@ impl Arc {
             notes: Vec::new(),
         };
 
-        // Convert BEEF to hex
-        let beef_hex = hex::encode(beef);
-
-        // Check if this is BEEF v2 that needs conversion
+        // Convert V2 to V1 if possible (no txid-only transactions)
         // BEEF v1 starts with 0100BEEF, v2 with 0200BEEF
-        let is_v2 = beef.len() >= 4 && beef[0..4] == [0x02, 0x00, 0xBE, 0xEF];
-        if is_v2 {
+        let beef_to_post = if beef.len() >= 4 && beef[0..4] == [0x02, 0x00, 0xBE, 0xEF] {
             result.notes.push(make_note(&self.name, "postBeefV2Detected"));
-            // In a full implementation, we'd convert v2 to v1 here
-            // For now, we'll try to post and let ARC reject if needed
-        }
+            if let Ok(mut parsed_beef) = Beef::from_binary(beef) {
+                let can_downgrade = parsed_beef.txs.iter().all(|tx| !tx.is_txid_only());
+                if can_downgrade {
+                    parsed_beef.version = BEEF_V1;
+                    result.notes.push(make_note(&self.name, "postBeefV2ToV1"));
+                    parsed_beef.to_binary()
+                } else {
+                    beef.to_vec()
+                }
+            } else {
+                beef.to_vec()
+            }
+        } else {
+            beef.to_vec()
+        };
+
+        // Convert BEEF to hex
+        let beef_hex = hex::encode(&beef_to_post);
 
         // Post the BEEF
         let post_result = self.post_raw_tx(&beef_hex, Some(txids)).await?;

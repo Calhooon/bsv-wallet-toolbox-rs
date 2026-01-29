@@ -246,13 +246,21 @@ pub async fn internalize_action_internal(
         let now = Utc::now();
         let reference = uuid::Uuid::new_v4().to_string();
 
+        // Store the complete incoming BEEF in input_beef column.
+        // This is critical for spending - when building output BEEF, we need
+        // access to ancestor transactions and any available merkle proofs.
+        // Even if the transaction is unconfirmed (no merkle proof), storing
+        // the BEEF allows us to construct valid BEEFs for spending by chaining
+        // raw transactions together.
+        let input_beef_bytes = &args.tx;
+
         let result = sqlx::query(
             r#"
             INSERT INTO transactions (
                 user_id, txid, status, reference, description, satoshis,
-                version, lock_time, raw_tx, is_outgoing, created_at, updated_at
+                version, lock_time, raw_tx, input_beef, is_outgoing, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             "#,
         )
         .bind(user_id)
@@ -264,6 +272,7 @@ pub async fn internalize_action_internal(
         .bind(tx_version as i32)
         .bind(tx_lock_time as i64)
         .bind(&raw_tx)
+        .bind(input_beef_bytes)
         .bind(now)
         .bind(now)
         .execute(storage.pool())
@@ -425,8 +434,11 @@ pub async fn internalize_action_internal(
     }
 
     // Step 10: Create proven_tx_req if no proof
+    // Store the complete BEEF in proven_tx_reqs so it can be used when building
+    // output BEEFs for spending. This is especially important for unconfirmed
+    // transactions where we need the ancestor chain.
     if !has_proof && !is_merge {
-        create_proven_tx_req(storage, &txid, &raw_tx).await?;
+        create_proven_tx_req(storage, &txid, &raw_tx, &args.tx).await?;
     }
 
     Ok(StorageInternalizeActionResult {
@@ -745,7 +757,16 @@ async fn get_known_txids(storage: &StorageSqlx, user_id: i64) -> Result<HashSet<
 }
 
 /// Creates a proven transaction request for proof lookup.
-async fn create_proven_tx_req(storage: &StorageSqlx, txid: &str, raw_tx: &[u8]) -> Result<()> {
+///
+/// Stores both the raw transaction and the complete incoming BEEF.
+/// The input_beef is crucial for spending - it contains ancestor transactions
+/// that are needed to construct valid BEEFs for outputs of this transaction.
+async fn create_proven_tx_req(
+    storage: &StorageSqlx,
+    txid: &str,
+    raw_tx: &[u8],
+    input_beef: &[u8],
+) -> Result<()> {
     let now = Utc::now();
 
     // Check if already exists
@@ -761,13 +782,14 @@ async fn create_proven_tx_req(storage: &StorageSqlx, txid: &str, raw_tx: &[u8]) 
     sqlx::query(
         r#"
         INSERT INTO proven_tx_reqs (
-            txid, status, attempts, history, notify, notified, raw_tx, created_at, updated_at
+            txid, status, attempts, history, notify, notified, raw_tx, input_beef, created_at, updated_at
         )
-        VALUES (?, 'unmined', 0, '{}', '{}', 0, ?, ?, ?)
+        VALUES (?, 'unmined', 0, '{}', '{}', 0, ?, ?, ?, ?)
         "#,
     )
     .bind(txid)
     .bind(raw_tx)
+    .bind(input_beef)
     .bind(now)
     .bind(now)
     .execute(storage.pool())

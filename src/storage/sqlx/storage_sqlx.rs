@@ -1993,6 +1993,8 @@ impl WalletStorageWriter for StorageSqlx {
         let chain_tracker = self.get_chain_tracker().await;
         let tracker_ref: Option<&dyn ChainTracker> = chain_tracker.as_ref().map(|ct| ct.as_ref());
 
+        // Note: Locking scripts for change outputs are stored during process_action
+        // when the signed transaction is processed.
         super::create_action::create_action_internal(self, tracker_ref, user_id, args).await
     }
 
@@ -2154,6 +2156,14 @@ impl WalletStorageWriter for StorageSqlx {
         .await?;
 
         Ok(result.rows_affected() as i64)
+    }
+
+    async fn update_transaction_status_after_broadcast(
+        &self,
+        txid: &str,
+        success: bool,
+    ) -> Result<()> {
+        super::process_action::update_transaction_status_after_broadcast_internal(self, txid, success).await
     }
 }
 

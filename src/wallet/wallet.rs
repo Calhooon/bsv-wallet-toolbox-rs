@@ -739,6 +739,115 @@ where
                 "processAction returned"
             );
 
+            // Broadcast the transaction if not no_send and not delayed
+            // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
+            if !no_send && !accept_delayed_broadcast {
+                let broadcast_success = if let Some(ref input_beef_bytes) = storage_result.input_beef {
+                    eprintln!("DEBUG broadcast: Have input_beef ({} bytes)", input_beef_bytes.len());
+                    // Create a new BEEF that includes both the signed tx and its ancestors
+                    match bsv_sdk::transaction::Beef::from_binary(input_beef_bytes) {
+                        Ok(mut broadcast_beef) => {
+                            // Debug: show BEEF version and txid-only status
+                            let is_v1 = broadcast_beef.version == bsv_sdk::transaction::BEEF_V1;
+                            eprintln!("DEBUG broadcast: Parsed input_beef - version={} txs={} bumps={}",
+                                if is_v1 { "V1" } else { "V2" }, broadcast_beef.txs.len(), broadcast_beef.bumps.len());
+                            for (i, btx) in broadcast_beef.txs.iter().enumerate() {
+                                eprintln!("DEBUG broadcast:   tx[{}]: txid={:.16}... txid_only={} has_proof={}",
+                                    i, btx.txid(), btx.is_txid_only(), btx.has_proof());
+                            }
+
+                            // Add the signed transaction (no bump index since it's new/unproven)
+                            broadcast_beef.merge_raw_tx(signed_tx.clone(), None);
+                            eprintln!("DEBUG broadcast: After merge - txs={} bumps={}", broadcast_beef.txs.len(), broadcast_beef.bumps.len());
+
+                            // Debug: Check if V2->V1 downgrade is possible
+                            let can_downgrade = broadcast_beef.txs.iter().all(|tx| !tx.is_txid_only());
+                            eprintln!("DEBUG broadcast: Can downgrade V2->V1: {} (all txs non-txid-only: {})", can_downgrade, can_downgrade);
+
+                            // Force downgrade to V1 for ARC compatibility
+                            if can_downgrade && broadcast_beef.version != bsv_sdk::transaction::BEEF_V1 {
+                                eprintln!("DEBUG broadcast: Forcing downgrade to BEEF V1");
+                                broadcast_beef.version = bsv_sdk::transaction::BEEF_V1;
+                            }
+
+                            // Serialize and broadcast
+                            let beef_bytes = broadcast_beef.to_binary();
+                            let txid_strings = vec![txid.clone()];
+                            eprintln!("DEBUG broadcast: Broadcasting {} bytes (version={}) to txid {}",
+                                beef_bytes.len(), if broadcast_beef.version == bsv_sdk::transaction::BEEF_V1 { "V1" } else { "V2" }, txid);
+                            tracing::debug!(
+                                txid = %txid,
+                                beef_len = beef_bytes.len(),
+                                "Broadcasting transaction via post_beef (with signed tx)"
+                            );
+                            match self.services.post_beef(&beef_bytes, &txid_strings).await {
+                                Ok(results) => {
+                                    // BUG-005 FIX: Check if at least one provider succeeded
+                                    let any_success = results.iter().any(|r| r.status == "success");
+                                    if any_success {
+                                        eprintln!("DEBUG broadcast: SUCCESS!");
+                                        tracing::info!(txid = %txid, "Transaction broadcast successfully");
+                                        true
+                                    } else {
+                                        let errors: Vec<_> = results.iter()
+                                            .filter(|r| r.status != "success")
+                                            .map(|r| format!("{}: {} {:?}", r.name, r.status, r.error))
+                                            .collect();
+                                        eprintln!("DEBUG broadcast: FAILED - errors: {:?}", errors);
+                                        // Show detailed txid_results for debugging
+                                        for r in &results {
+                                            eprintln!("DEBUG broadcast: Provider {} - status={}", r.name, r.status);
+                                            for tr in &r.txid_results {
+                                                eprintln!("DEBUG broadcast:   txid_result: txid={:.16}... status={} double_spend={} data={:?}",
+                                                    tr.txid, tr.status, tr.double_spend, tr.data);
+                                                for note in &tr.notes {
+                                                    eprintln!("DEBUG broadcast:   note: {:?}", note);
+                                                }
+                                            }
+                                        }
+                                        tracing::error!(
+                                            txid = %txid,
+                                            errors = ?errors,
+                                            "All broadcast providers returned non-success status"
+                                        );
+                                        false
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("DEBUG broadcast: post_beef error: {}", e);
+                                    tracing::error!(txid = %txid, error = %e, "Broadcast failed");
+                                    false
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("DEBUG broadcast: Failed to parse input BEEF: {}", e);
+                            tracing::error!(txid = %txid, error = %e, "Failed to parse input BEEF");
+                            false
+                        }
+                    }
+                } else {
+                    eprintln!("DEBUG broadcast: No input_beef available");
+                    tracing::warn!(txid = %txid, "No input_beef available for broadcast");
+                    false
+                };
+
+                // Update transaction status based on broadcast result
+                // On success: status -> 'unproven', inputs stay spent
+                // On failure: status -> 'failed', inputs restored to spendable
+                if let Err(e) = self.storage.update_transaction_status_after_broadcast(&txid, broadcast_success).await {
+                    tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
+                }
+
+                // If broadcast failed, return an error
+                if !broadcast_success {
+                    return Err(bsv_sdk::Error::WalletError(format!(
+                        "Transaction broadcast failed for txid {}. Transaction marked as failed and inputs restored.",
+                        txid
+                    )));
+                }
+            }
+
             // Convert txid string to [u8; 32]
             let txid_bytes = hex::decode(&txid)
                 .map_err(|e| bsv_sdk::Error::WalletError(format!("Invalid txid: {}", e)))?;
@@ -963,14 +1072,65 @@ where
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // If not no_send and not delayed, broadcast the transaction
+        // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
         if !is_no_send && !is_delayed {
-            if let Some(ref beef) = pending_tx.input_beef {
-                let txid_strings = vec![txid.clone()];
-                let _broadcast_result = self
-                    .services
-                    .post_beef(beef, &txid_strings)
-                    .await
-                    .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+            let broadcast_success = if let Some(ref input_beef_bytes) = pending_tx.input_beef {
+                // Create a new BEEF that includes both the signed tx and its ancestors
+                match bsv_sdk::transaction::Beef::from_binary(input_beef_bytes) {
+                    Ok(mut broadcast_beef) => {
+                        // Add the signed transaction (no bump index since it's new/unproven)
+                        broadcast_beef.merge_raw_tx(signed_tx.clone(), None);
+
+                        // Serialize and broadcast
+                        let beef_bytes = broadcast_beef.to_binary();
+                        let txid_strings = vec![txid.clone()];
+                        match self.services.post_beef(&beef_bytes, &txid_strings).await {
+                            Ok(results) => {
+                                // BUG-005 FIX: Check if at least one provider succeeded
+                                let any_success = results.iter().any(|r| r.status == "success");
+                                if any_success {
+                                    tracing::info!(txid = %txid, "Transaction broadcast successfully (sign_action)");
+                                    true
+                                } else {
+                                    let errors: Vec<_> = results.iter()
+                                        .filter(|r| r.status != "success")
+                                        .map(|r| format!("{}: {} {:?}", r.name, r.status, r.error))
+                                        .collect();
+                                    tracing::error!(
+                                        txid = %txid,
+                                        errors = ?errors,
+                                        "All broadcast providers returned non-success status (sign_action)"
+                                    );
+                                    false
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(txid = %txid, error = %e, "Broadcast failed (sign_action)");
+                                false
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(txid = %txid, error = %e, "Failed to parse input BEEF (sign_action)");
+                        false
+                    }
+                }
+            } else {
+                tracing::warn!(txid = %txid, "No input_beef available for broadcast (sign_action)");
+                false
+            };
+
+            // Update transaction status based on broadcast result
+            if let Err(e) = self.storage.update_transaction_status_after_broadcast(&txid, broadcast_success).await {
+                tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
+            }
+
+            // If broadcast failed, return an error
+            if !broadcast_success {
+                return Err(bsv_sdk::Error::WalletError(format!(
+                    "Transaction broadcast failed for txid {}. Transaction marked as failed and inputs restored.",
+                    txid
+                )));
             }
         }
 
