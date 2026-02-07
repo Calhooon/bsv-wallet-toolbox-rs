@@ -330,6 +330,7 @@ impl<S> ServiceCollection<S> {
     }
 
     /// Move to the next provider, wrapping around.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> usize {
         if !self.services.is_empty() {
             self.index = (self.index + 1) % self.services.len();
@@ -479,12 +480,12 @@ impl<S> SharedServiceCollection<S> {
         Self(Arc::new(RwLock::new(collection)))
     }
 
-    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, ServiceCollection<S>> {
-        self.0.read().unwrap()
+    pub fn read(&self) -> crate::Result<std::sync::RwLockReadGuard<'_, ServiceCollection<S>>> {
+        crate::lock_utils::lock_read(&self.0)
     }
 
-    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, ServiceCollection<S>> {
-        self.0.write().unwrap()
+    pub fn write(&self) -> crate::Result<std::sync::RwLockWriteGuard<'_, ServiceCollection<S>>> {
+        crate::lock_utils::lock_write(&self.0)
     }
 }
 

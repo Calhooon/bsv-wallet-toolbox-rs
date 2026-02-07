@@ -28,9 +28,11 @@
 //! ```
 
 pub mod traits;
+#[allow(clippy::module_inception)]
 pub mod services;
 pub mod collection;
 pub mod providers;
+pub mod mock;
 
 // Re-export Chain from chaintracks for convenience
 pub use crate::chaintracks::Chain;

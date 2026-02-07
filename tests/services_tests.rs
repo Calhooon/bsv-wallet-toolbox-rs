@@ -27,10 +27,10 @@ fn test_services_mainnet_creation() {
     let services = Services::mainnet();
     assert!(services.is_ok());
     let services = services.unwrap();
-    assert!(services.get_merkle_path_count() >= 1);
-    assert!(services.get_raw_tx_count() >= 1);
-    assert!(services.post_beef_count() >= 1);
-    assert!(services.get_utxo_status_count() >= 1);
+    assert!(services.get_merkle_path_count().unwrap() >= 1);
+    assert!(services.get_raw_tx_count().unwrap() >= 1);
+    assert!(services.post_beef_count().unwrap() >= 1);
+    assert!(services.get_utxo_status_count().unwrap() >= 1);
 }
 
 #[test]
@@ -711,12 +711,12 @@ fn test_n_lock_time_sequence_affects_finality() {
     const MAX_SEQUENCE: u32 = 0xFFFFFFFF;
 
     // If all inputs have max sequence, the transaction is final regardless of nLockTime
-    let all_max_sequence = vec![MAX_SEQUENCE, MAX_SEQUENCE, MAX_SEQUENCE];
+    let all_max_sequence = [MAX_SEQUENCE, MAX_SEQUENCE, MAX_SEQUENCE];
     let has_non_max = all_max_sequence.iter().any(|&s| s != MAX_SEQUENCE);
     assert!(!has_non_max); // All max means nLockTime is bypassed
 
     // If any input has non-max sequence, nLockTime must be checked
-    let some_non_max = vec![MAX_SEQUENCE, 0xFFFFFFFE, MAX_SEQUENCE];
+    let some_non_max = [MAX_SEQUENCE, 0xFFFFFFFE, MAX_SEQUENCE];
     let needs_locktime_check = some_non_max.iter().any(|&s| s != MAX_SEQUENCE);
     assert!(needs_locktime_check);
 }

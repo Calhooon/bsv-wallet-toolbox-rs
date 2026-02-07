@@ -13,6 +13,7 @@ use crate::chaintracks::{
     calculate_work, BlockHeader, Chain, ChaintracksStorage, ChaintracksStorageIngest,
     ChaintracksStorageQuery, HeightRange, InsertHeaderResult, LiveBlockHeader,
 };
+use crate::lock_utils::{lock_read, lock_write};
 use crate::Result;
 
 /// SQLite storage for Chaintracks
@@ -463,8 +464,8 @@ impl SqliteStorage {
             .bind(header.time as i64)
             .bind(header.bits as i64)
             .bind(header.nonce as i64)
-            .bind(&now)
-            .bind(&now)
+            .bind(now)
+            .bind(now)
             .execute(&mut *tx)
             .await?;
 
@@ -620,7 +621,7 @@ impl SqliteStorage {
 #[async_trait]
 impl ChaintracksStorageQuery for SqliteStorage {
     fn chain(&self) -> Chain {
-        self.chain.clone()
+        self.chain
     }
 
     fn live_height_threshold(&self) -> u32 {
@@ -774,55 +775,59 @@ impl ChaintracksStorageQuery for SqliteStorage {
             }
 
             // Move the higher one back
-            if a.height > b.height {
-                h1 = if let Some(prev_id) = a.previous_header_id {
-                    let row = sqlx::query(
-                        "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
-                    )
-                    .bind(prev_id)
-                    .fetch_optional(&self.pool)
-                    .await?;
-                    row.map(|r| Self::row_to_header(&r))
-                } else {
-                    None
-                };
-            } else if b.height > a.height {
-                h2 = if let Some(prev_id) = b.previous_header_id {
-                    let row = sqlx::query(
-                        "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
-                    )
-                    .bind(prev_id)
-                    .fetch_optional(&self.pool)
-                    .await?;
-                    row.map(|r| Self::row_to_header(&r))
-                } else {
-                    None
-                };
-            } else {
-                // Same height but different hashes - move both back
-                h1 = if let Some(prev_id) = a.previous_header_id {
-                    let row = sqlx::query(
-                        "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
-                    )
-                    .bind(prev_id)
-                    .fetch_optional(&self.pool)
-                    .await?;
-                    row.map(|r| Self::row_to_header(&r))
-                } else {
-                    None
-                };
+            match a.height.cmp(&b.height) {
+                std::cmp::Ordering::Greater => {
+                    h1 = if let Some(prev_id) = a.previous_header_id {
+                        let row = sqlx::query(
+                            "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
+                        )
+                        .bind(prev_id)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                        row.map(|r| Self::row_to_header(&r))
+                    } else {
+                        None
+                    };
+                }
+                std::cmp::Ordering::Less => {
+                    h2 = if let Some(prev_id) = b.previous_header_id {
+                        let row = sqlx::query(
+                            "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
+                        )
+                        .bind(prev_id)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                        row.map(|r| Self::row_to_header(&r))
+                    } else {
+                        None
+                    };
+                }
+                std::cmp::Ordering::Equal => {
+                    // Same height but different hashes - move both back
+                    h1 = if let Some(prev_id) = a.previous_header_id {
+                        let row = sqlx::query(
+                            "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
+                        )
+                        .bind(prev_id)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                        row.map(|r| Self::row_to_header(&r))
+                    } else {
+                        None
+                    };
 
-                h2 = if let Some(prev_id) = b.previous_header_id {
-                    let row = sqlx::query(
-                        "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
-                    )
-                    .bind(prev_id)
-                    .fetch_optional(&self.pool)
-                    .await?;
-                    row.map(|r| Self::row_to_header(&r))
-                } else {
-                    None
-                };
+                    h2 = if let Some(prev_id) = b.previous_header_id {
+                        let row = sqlx::query(
+                            "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
+                        )
+                        .bind(prev_id)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                        row.map(|r| Self::row_to_header(&r))
+                    } else {
+                        None
+                    };
+                }
             }
         }
 
@@ -1037,7 +1042,7 @@ impl ChaintracksStorageIngest for SqliteStorage {
     }
 
     async fn make_available(&self) -> Result<()> {
-        let mut available = self.available.write().unwrap();
+        let mut available = lock_write(&self.available)?;
         *available = true;
         Ok(())
     }
@@ -1065,7 +1070,7 @@ impl ChaintracksStorage for SqliteStorage {
     }
 
     async fn is_available(&self) -> bool {
-        *self.available.read().unwrap()
+        lock_read(&self.available).map(|v| *v).unwrap_or(false)
     }
 }
 

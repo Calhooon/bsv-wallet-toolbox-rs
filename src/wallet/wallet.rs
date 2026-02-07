@@ -73,11 +73,13 @@ pub trait PrivilegedKeyManager: Send + Sync {
 // =============================================================================
 
 /// Lookup resolver for overlay certificate discovery.
+#[allow(dead_code)]
 pub struct LookupResolver {
     client: reqwest::Client,
     hosts: Vec<String>,
 }
 
+#[allow(dead_code)]
 impl LookupResolver {
     pub fn new(hosts: Vec<String>) -> Self {
         Self {
@@ -101,6 +103,7 @@ impl LookupResolver {
 
 /// Wallet operation logger for debugging and diagnostics.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct WalletLogger {
     pub indent: u32,
     pub logs: Vec<WalletLoggerLog>,
@@ -110,6 +113,7 @@ pub struct WalletLogger {
 
 /// A single log entry.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct WalletLoggerLog {
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub level: String,
@@ -117,6 +121,7 @@ pub struct WalletLoggerLog {
     pub indent: u32,
 }
 
+#[allow(dead_code)]
 impl WalletLogger {
     pub fn new() -> Self {
         Self::default()
@@ -990,7 +995,7 @@ where
                     .options
                     .as_ref()
                     .and_then(|o| o.send_with.clone())
-                    .map(|txids| txids.iter().map(|t| hex::encode(t)).collect())
+                    .map(|txids| txids.iter().map(hex::encode).collect())
                     .unwrap_or_default(),
             };
 
@@ -1184,7 +1189,7 @@ where
                 .options
                 .as_ref()
                 .and_then(|o| o.send_with.clone())
-                .map(|txids| txids.iter().map(|t| hex::encode(t)).collect())
+                .map(|txids| txids.iter().map(hex::encode).collect())
                 .unwrap_or_default(),
             created_at: Utc::now(),
         };
@@ -1315,7 +1320,7 @@ where
             .options
             .as_ref()
             .and_then(|o| o.send_with.clone())
-            .map(|txids| txids.iter().map(|t| hex::encode(t)).collect())
+            .map(|txids| txids.iter().map(hex::encode).collect())
             .unwrap_or_else(|| pending_tx.send_with.clone());
 
         let is_send_with = !send_with.is_empty();
@@ -2138,6 +2143,7 @@ const CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL: &str = "certificate field encryptio
 ///
 /// # Returns
 /// A keyring for the verifier: field_name -> base64 encoded encrypted symmetric key
+#[allow(clippy::too_many_arguments)]
 fn create_keyring_for_verifier(
     subject_wallet: &ProtoWallet,
     certifier: &PublicKey,
@@ -2572,7 +2578,7 @@ mod tests {
 
             // Serial number for the certificate (base64 encoded 32 bytes)
             let serial_bytes = [42u8; 32];
-            let serial_number = BASE64.encode(&serial_bytes);
+            let serial_number = BASE64.encode(serial_bytes);
 
             // Step 1: Create a symmetric key for the field "name"
             let field_name = "name";
@@ -2672,7 +2678,7 @@ mod tests {
                 CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
             );
 
-            let serial_number = BASE64.encode(&[1u8; 32]);
+            let serial_number = BASE64.encode([1u8; 32]);
 
             // Create multiple fields
             let field_names = ["name", "email", "organization"];

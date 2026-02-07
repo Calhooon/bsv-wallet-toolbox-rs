@@ -33,6 +33,7 @@ mod types;
 mod traits;
 mod storage;
 mod ingestors;
+#[allow(clippy::module_inception)]
 mod chaintracks;
 
 pub use types::*;

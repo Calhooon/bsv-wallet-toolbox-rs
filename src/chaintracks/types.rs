@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 /// Network chain identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Chain {
+    #[default]
     Main,
     Test,
 }
@@ -21,11 +23,6 @@ impl Chain {
     }
 }
 
-impl Default for Chain {
-    fn default() -> Self {
-        Chain::Main
-    }
-}
 
 /// Base block header without height or hash (as received from network)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +178,7 @@ impl From<LiveBlockHeader> for BlockHeader {
 
 /// Result of inserting a header into storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct InsertHeaderResult {
     /// True if header was newly added (not a duplicate)
     pub added: bool,
@@ -204,22 +202,6 @@ pub struct InsertHeaderResult {
     pub no_tip: bool,
 }
 
-impl Default for InsertHeaderResult {
-    fn default() -> Self {
-        InsertHeaderResult {
-            added: false,
-            dupe: false,
-            is_active_tip: false,
-            reorg_depth: 0,
-            prior_tip: None,
-            deactivated_headers: vec![],
-            no_prev: false,
-            bad_prev: false,
-            no_active_ancestor: false,
-            no_tip: false,
-        }
-    }
-}
 
 /// Height range representation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,7 +304,7 @@ fn compute_block_hash(header_bytes: &[u8; 80]) -> String {
 
     // Second SHA256
     let mut hasher = Sha256::new();
-    hasher.update(&first_hash);
+    hasher.update(first_hash);
     let second_hash = hasher.finalize();
 
     // Reverse for display (Bitcoin convention)
@@ -338,7 +320,7 @@ fn compute_block_hash(header_bytes: &[u8; 80]) -> String {
 /// For accurate chain work calculations, a big integer library should be used.
 pub fn calculate_work(bits: u32) -> String {
     // Extract exponent and mantissa from compact format
-    let exponent = (bits >> 24) as u32;
+    let exponent = bits >> 24;
     let mantissa = (bits & 0x007fffff) as u128;
 
     if mantissa == 0 {
@@ -363,7 +345,7 @@ pub fn calculate_work(bits: u32) -> String {
         return "0".repeat(63) + "1";
     } else {
         // Use checked_shl with fallback to MAX for overflow
-        mantissa.checked_shl(shift_amount as u32).unwrap_or(u128::MAX)
+        mantissa.checked_shl(shift_amount).unwrap_or(u128::MAX)
     };
 
     // Work = 2^256 / (target + 1)

@@ -27,6 +27,7 @@ use crate::services::traits::{
     GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid,
     ScriptHistoryItem, TxStatusDetail, UtxoDetail,
 };
+use crate::lock_utils::{lock_read, lock_write};
 use crate::{Error, Result};
 
 /// Base URL for WhatsOnChain mainnet API.
@@ -732,7 +733,7 @@ impl WhatsOnChain {
     ) -> Result<f64> {
         // Check cached rate
         {
-            let rate = self.exchange_rate.read().unwrap();
+            let rate = lock_read(&self.exchange_rate)?;
             if let Some(ref r) = *rate {
                 if !r.is_stale(update_msecs) {
                     return Ok(r.rate);
@@ -763,7 +764,7 @@ impl WhatsOnChain {
 
         // Update cache
         {
-            let mut rate = self.exchange_rate.write().unwrap();
+            let mut rate = lock_write(&self.exchange_rate)?;
             *rate = Some(BsvExchangeRate::new(data.rate));
         }
 

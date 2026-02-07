@@ -33,6 +33,7 @@ pub const WOC_API_URL_TEST: &str = "https://api.whatsonchain.com/v1/bsv/test";
 /// WebSocket message types from WOC
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum WocWsMessage {
     /// Header data message
     HeaderData {

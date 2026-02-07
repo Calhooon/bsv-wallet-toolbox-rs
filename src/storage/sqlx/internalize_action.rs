@@ -1028,7 +1028,7 @@ mod tests {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
 
-        let (beef_bytes, txid, satoshis) = create_test_atomic_beef();
+        let (beef_bytes, _txid, satoshis) = create_test_atomic_beef();
 
         // First internalization
         let args1 = InternalizeActionArgs {

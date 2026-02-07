@@ -809,8 +809,8 @@ fn parse_block_header(data: &[u8], hash: &str) -> Result<BlockHeader> {
     }
 
     let version = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    let previous_hash = hex::encode(&data[4..36].iter().rev().copied().collect::<Vec<u8>>());
-    let merkle_root = hex::encode(&data[36..68].iter().rev().copied().collect::<Vec<u8>>());
+    let previous_hash = hex::encode(data[4..36].iter().rev().copied().collect::<Vec<u8>>());
+    let merkle_root = hex::encode(data[36..68].iter().rev().copied().collect::<Vec<u8>>());
     let time = u32::from_le_bytes([data[68], data[69], data[70], data[71]]);
     let bits = u32::from_le_bytes([data[72], data[73], data[74], data[75]]);
     let nonce = u32::from_le_bytes([data[76], data[77], data[78], data[79]]);

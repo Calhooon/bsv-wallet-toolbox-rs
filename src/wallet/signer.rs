@@ -325,6 +325,7 @@ impl WalletSigner {
     /// # Returns
     ///
     /// The transaction bytes with unlocking scripts applied.
+    #[allow(clippy::ptr_arg)]
     pub fn apply_templates(
         &self,
         raw_tx: &mut Vec<u8>,

@@ -658,10 +658,18 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageReader for StorageClient
     }
 
     fn get_settings(&self) -> &TableSettings {
-        // This is problematic for the trait signature - we need to return a reference
-        // but we're behind an RwLock. For now, panic if not available.
-        // A better design would be to cache settings differently.
-        panic!("get_settings() requires make_available() to be called first. Use get_settings_async() instead.")
+        // The trait signature requires returning a reference but we're behind an async RwLock.
+        // Use try_read() which is synchronous. If the lock is held or settings not yet loaded,
+        // return a static default. Callers should use get_settings_async() for async contexts.
+        static DEFAULT_SETTINGS: std::sync::OnceLock<TableSettings> = std::sync::OnceLock::new();
+        if let Ok(guard) = self.settings.try_read() {
+            if let Some(ref settings) = *guard {
+                // SAFETY: Settings are effectively static once loaded via make_available().
+                // The pointer remains valid because the Arc keeps the allocation alive.
+                unsafe { return &*(settings as *const TableSettings) }
+            }
+        }
+        DEFAULT_SETTINGS.get_or_init(TableSettings::default)
     }
 
     fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
@@ -1071,6 +1079,64 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageProvider for StorageClie
         // Ignored. Remote storage cannot share Services with remote clients.
         // Services are local definitions to the storage - the remote server
         // manages its own service connections. This matches TypeScript behavior.
+    }
+}
+
+// =============================================================================
+// MonitorStorage Implementation
+// =============================================================================
+
+#[async_trait]
+impl<W: WalletInterface + Clone + 'static> MonitorStorage for StorageClient<W> {
+    async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
+        self.rpc_call(
+            "synchronizeTransactionStatuses",
+            vec![],
+        )
+        .await
+    }
+
+    async fn send_waiting_transactions(
+        &self,
+        min_transaction_age: std::time::Duration,
+    ) -> Result<Option<StorageProcessActionResults>> {
+        self.rpc_call(
+            "sendWaitingTransactions",
+            vec![Self::to_value(&min_transaction_age.as_millis())?],
+        )
+        .await
+    }
+
+    async fn abort_abandoned(&self, timeout: std::time::Duration) -> Result<()> {
+        self.rpc_call(
+            "abortAbandoned",
+            vec![Self::to_value(&timeout.as_millis())?],
+        )
+        .await
+    }
+
+    async fn un_fail(&self) -> Result<()> {
+        self.rpc_call(
+            "unFail",
+            vec![],
+        )
+        .await
+    }
+
+    async fn review_status(&self) -> Result<ReviewStatusResult> {
+        self.rpc_call(
+            "monitorReviewStatus",
+            vec![],
+        )
+        .await
+    }
+
+    async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults> {
+        self.rpc_call(
+            "monitorPurgeData",
+            vec![Self::to_value(&params)?],
+        )
+        .await
     }
 }
 
@@ -1977,6 +2043,30 @@ mod tests {
         assert_eq!(state.sync_state_id, 1);
         assert_eq!(state.storage_name, "my-storage");
         assert!(state.init);
+        assert_eq!(state.satoshis, None);
+    }
+
+    #[test]
+    fn test_table_sync_state_deserialization_with_satoshis() {
+        let json = r#"{
+            "syncStateId": 2,
+            "userId": 1,
+            "storageIdentityKey": "storage-key",
+            "storageName": "my-storage",
+            "status": "idle",
+            "init": false,
+            "refNum": "ref456",
+            "syncMap": "{}",
+            "whenLastSyncStarted": null,
+            "satoshis": 50000,
+            "errorLocal": null,
+            "errorOther": null,
+            "createdAt": "2024-01-01T00:00:00Z",
+            "updatedAt": "2024-01-01T00:00:00Z"
+        }"#;
+        let state: TableSyncState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.sync_state_id, 2);
+        assert_eq!(state.satoshis, Some(50000));
     }
 
     #[test]

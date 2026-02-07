@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
+use crate::lock_utils::{lock_read, lock_write};
 use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
@@ -332,7 +333,7 @@ impl StorageSqlx {
         }
 
         // Update cache
-        let mut cached = self.settings.write().unwrap();
+        let mut cached = lock_write(&self.settings)?;
         *cached = Some(settings.clone());
 
         Ok(())
@@ -861,7 +862,7 @@ impl StorageSqlx {
         let row = sqlx::query(
             r#"
             SELECT sync_state_id, user_id, storage_identity_key, storage_name, status, init,
-                   ref_num, sync_map, when_last_sync_started, error_local, error_other,
+                   ref_num, sync_map, when_last_sync_started, satoshis, error_local, error_other,
                    created_at, updated_at
             FROM sync_states
             WHERE user_id = ? AND storage_identity_key = ?
@@ -883,6 +884,7 @@ impl StorageSqlx {
                 ref_num: row.get("ref_num"),
                 sync_map: row.get("sync_map"),
                 when_last_sync_started: row.get("when_last_sync_started"),
+                satoshis: row.get("satoshis"),
                 error_local: row.get("error_local"),
                 error_other: row.get("error_other"),
                 created_at: row.get("created_at"),
@@ -920,6 +922,7 @@ impl StorageSqlx {
             ref_num,
             sync_map: "{}".to_string(),
             when_last_sync_started: None,
+            satoshis: None,
             error_local: None,
             error_other: None,
             created_at: now,
@@ -937,14 +940,17 @@ impl StorageSqlx {
 #[async_trait]
 impl WalletStorageReader for StorageSqlx {
     fn is_available(&self) -> bool {
-        self.settings.read().unwrap().is_some()
+        lock_read(&self.settings).map(|s| s.is_some()).unwrap_or(false)
     }
 
     fn get_settings(&self) -> &TableSettings {
         // This is a bit awkward due to the RwLock, but the trait requires &self
         // In practice, make_available() should be called first
         static DEFAULT_SETTINGS: std::sync::OnceLock<TableSettings> = std::sync::OnceLock::new();
-        let guard = self.settings.read().unwrap();
+        let guard = match lock_read(&self.settings) {
+            Ok(g) => g,
+            Err(_) => return DEFAULT_SETTINGS.get_or_init(TableSettings::default),
+        };
         if let Some(ref settings) = *guard {
             // SAFETY: This is a workaround for the trait signature
             // The settings are effectively static once loaded
@@ -955,7 +961,7 @@ impl WalletStorageReader for StorageSqlx {
     }
 
     fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
-        let guard = self.services.read().unwrap();
+        let guard = lock_read(&self.services)?;
         guard.clone().ok_or_else(|| {
             Error::InvalidOperation("Must setServices first. Services are required for blockchain operations.".to_string())
         })
@@ -968,7 +974,7 @@ impl WalletStorageReader for StorageSqlx {
     ) -> Result<Vec<TableCertificate>> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
         self.find_certificates_internal(user_id, &args).await
     }
 
@@ -979,14 +985,14 @@ impl WalletStorageReader for StorageSqlx {
     ) -> Result<Vec<TableOutputBasket>> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
         self.find_output_baskets_internal(user_id, &args).await
     }
 
     async fn find_outputs(&self, auth: &AuthId, args: FindOutputsArgs) -> Result<Vec<TableOutput>> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
         self.find_outputs_internal(user_id, &args).await
     }
 
@@ -1008,7 +1014,7 @@ impl WalletStorageReader for StorageSqlx {
 
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
@@ -1402,7 +1408,7 @@ impl WalletStorageReader for StorageSqlx {
 
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
@@ -1555,7 +1561,7 @@ impl WalletStorageReader for StorageSqlx {
 
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
@@ -1887,7 +1893,7 @@ impl WalletStorageWriter for StorageSqlx {
         let settings = self.read_settings().await?;
 
         if let Some(settings) = settings {
-            let mut cached = self.settings.write().unwrap();
+            let mut cached = lock_write(&self.settings)?;
             *cached = Some(settings.clone());
             Ok(settings)
         } else {
@@ -1915,11 +1921,11 @@ impl WalletStorageWriter for StorageSqlx {
 
         // Update internal state
         {
-            let mut key = self.storage_identity_key.write().unwrap();
+            let mut key = lock_write(&self.storage_identity_key)?;
             *key = storage_identity_key.to_string();
         }
         {
-            let mut name = self.storage_name.write().unwrap();
+            let mut name = lock_write(&self.storage_name)?;
             *name = storage_name.to_string();
         }
 
@@ -1953,7 +1959,7 @@ impl WalletStorageWriter for StorageSqlx {
         }
 
         // Clear cached settings
-        let mut cached = self.settings.write().unwrap();
+        let mut cached = lock_write(&self.settings)?;
         *cached = None;
 
         Ok(())
@@ -1985,7 +1991,7 @@ impl WalletStorageWriter for StorageSqlx {
     ) -> Result<AbortActionResult> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         super::abort_action::abort_action_internal(self, user_id, args).await
     }
@@ -1997,7 +2003,7 @@ impl WalletStorageWriter for StorageSqlx {
     ) -> Result<StorageCreateActionResult> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         // Get the ChainTracker for BEEF verification (if set)
         let chain_tracker = self.get_chain_tracker().await;
@@ -2015,7 +2021,7 @@ impl WalletStorageWriter for StorageSqlx {
     ) -> Result<StorageProcessActionResults> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         super::process_action::process_action_internal(self, user_id, args).await
     }
@@ -2027,7 +2033,7 @@ impl WalletStorageWriter for StorageSqlx {
     ) -> Result<StorageInternalizeActionResult> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         super::internalize_action::internalize_action_internal(self, user_id, args).await
     }
@@ -2039,7 +2045,7 @@ impl WalletStorageWriter for StorageSqlx {
     ) -> Result<i64> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         // Verify the certificate belongs to this user
         if certificate.user_id != user_id {
@@ -2079,7 +2085,7 @@ impl WalletStorageWriter for StorageSqlx {
     ) -> Result<i64> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         // Verify the field belongs to this user
         if field.user_id != user_id {
@@ -2116,7 +2122,7 @@ impl WalletStorageWriter for StorageSqlx {
     ) -> Result<i64> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         let now = Utc::now();
 
@@ -2142,7 +2148,7 @@ impl WalletStorageWriter for StorageSqlx {
     async fn relinquish_output(&self, auth: &AuthId, args: RelinquishOutputArgs) -> Result<i64> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         let now = Utc::now();
 
@@ -2347,7 +2353,7 @@ impl WalletStorageSync for StorageSqlx {
     ) -> Result<(TableSyncState, bool)> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         self.find_or_insert_sync_state_internal(user_id, storage_identity_key, storage_name)
             .await
@@ -2356,7 +2362,7 @@ impl WalletStorageSync for StorageSqlx {
     async fn set_active(&self, auth: &AuthId, new_active_storage_identity_key: &str) -> Result<i64> {
         let user_id = auth
             .user_id
-            .ok_or_else(|| Error::AuthenticationRequired)?;
+            .ok_or(Error::AuthenticationRequired)?;
 
         self.update_user_active_storage(user_id, new_active_storage_identity_key)
             .await?;
@@ -2385,19 +2391,30 @@ impl WalletStorageSync for StorageSqlx {
 impl WalletStorageProvider for StorageSqlx {
     fn storage_identity_key(&self) -> &str {
         // SAFETY: Similar workaround as get_settings
-        let guard = self.storage_identity_key.read().unwrap();
+        // If lock is poisoned, return empty string as fallback
+        let guard = match lock_read(&self.storage_identity_key) {
+            Ok(g) => g,
+            Err(_) => return "",
+        };
         unsafe { &*(&*guard as *const String) }
     }
 
     fn storage_name(&self) -> &str {
         // SAFETY: Similar workaround as get_settings
-        let guard = self.storage_name.read().unwrap();
+        // If lock is poisoned, return empty string as fallback
+        let guard = match lock_read(&self.storage_name) {
+            Ok(g) => g,
+            Err(_) => return "",
+        };
         unsafe { &*(&*guard as *const String) }
     }
 
     fn set_services(&self, services: Arc<dyn WalletServices>) {
-        let mut guard = self.services.write().unwrap();
-        *guard = Some(services);
+        // If lock is poisoned, log and skip rather than panicking
+        match lock_write(&self.services) {
+            Ok(mut guard) => *guard = Some(services),
+            Err(e) => tracing::error!("Failed to set services: {}", e),
+        }
     }
 }
 
@@ -3191,6 +3208,7 @@ impl StorageSqlx {
             "#
         };
 
+        #[allow(clippy::type_complexity)]
         let row: Option<(i64, i64, i64, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(base_query)
             .bind(user_id)
             .bind(basket_id)

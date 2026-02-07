@@ -175,8 +175,7 @@ impl BulkCdnIngestor {
 
     /// Download a binary header file
     async fn download_file(&self, file: &BulkHeaderFileInfo) -> Result<Vec<u8>> {
-        let source = file.source_url.as_ref()
-            .map(|s| s.as_str())
+        let source = file.source_url.as_deref()
             .unwrap_or(&self.options.cdn_url);
         let url = format!("{}/{}", source.trim_end_matches('/'), file.file_name);
 
@@ -277,7 +276,7 @@ impl BulkCdnIngestor {
         let first_hash = hasher.finalize();
 
         let mut hasher = Sha256::new();
-        hasher.update(&first_hash);
+        hasher.update(first_hash);
         let second_hash = hasher.finalize();
 
         // Reverse for display (Bitcoin convention)

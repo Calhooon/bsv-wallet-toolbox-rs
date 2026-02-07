@@ -19,6 +19,7 @@ use crate::services::{
     },
     ServicesOptions,
 };
+use crate::lock_utils::{lock_read, lock_write};
 use crate::{Error, Result};
 
 /// Post BEEF mode for handling multiple broadcast services.
@@ -380,66 +381,54 @@ impl Services {
     }
 
     /// Get services call history.
-    pub fn get_services_call_history(&self, reset: bool) -> ServicesCallHistory {
-        ServicesCallHistory {
+    pub fn get_services_call_history(&self, reset: bool) -> Result<ServicesCallHistory> {
+        Ok(ServicesCallHistory {
             version: 2,
             get_merkle_path: Some(
-                self.get_merkle_path_services
-                    .write()
-                    .unwrap()
+                lock_write(&self.get_merkle_path_services)?
                     .get_call_history(reset),
             ),
             get_raw_tx: Some(
-                self.get_raw_tx_services
-                    .write()
-                    .unwrap()
+                lock_write(&self.get_raw_tx_services)?
                     .get_call_history(reset),
             ),
             post_beef: Some(
-                self.post_beef_services
-                    .write()
-                    .unwrap()
+                lock_write(&self.post_beef_services)?
                     .get_call_history(reset),
             ),
             get_utxo_status: Some(
-                self.get_utxo_status_services
-                    .write()
-                    .unwrap()
+                lock_write(&self.get_utxo_status_services)?
                     .get_call_history(reset),
             ),
             get_status_for_txids: Some(
-                self.get_status_for_txids_services
-                    .write()
-                    .unwrap()
+                lock_write(&self.get_status_for_txids_services)?
                     .get_call_history(reset),
             ),
             get_script_hash_history: Some(
-                self.get_script_hash_history_services
-                    .write()
-                    .unwrap()
+                lock_write(&self.get_script_hash_history_services)?
                     .get_call_history(reset),
             ),
-        }
+        })
     }
 
     /// Get count of merkle path providers.
-    pub fn get_merkle_path_count(&self) -> usize {
-        self.get_merkle_path_services.read().unwrap().count()
+    pub fn get_merkle_path_count(&self) -> Result<usize> {
+        Ok(lock_read(&self.get_merkle_path_services)?.count())
     }
 
     /// Get count of raw tx providers.
-    pub fn get_raw_tx_count(&self) -> usize {
-        self.get_raw_tx_services.read().unwrap().count()
+    pub fn get_raw_tx_count(&self) -> Result<usize> {
+        Ok(lock_read(&self.get_raw_tx_services)?.count())
     }
 
     /// Get count of post beef providers.
-    pub fn post_beef_count(&self) -> usize {
-        self.post_beef_services.read().unwrap().count()
+    pub fn post_beef_count(&self) -> Result<usize> {
+        Ok(lock_read(&self.post_beef_services)?.count())
     }
 
     /// Get count of utxo status providers.
-    pub fn get_utxo_status_count(&self) -> usize {
-        self.get_utxo_status_services.read().unwrap().count()
+    pub fn get_utxo_status_count(&self) -> Result<usize> {
+        Ok(lock_read(&self.get_utxo_status_services)?.count())
     }
 
     /// Set post beef mode.
@@ -458,14 +447,14 @@ impl Services {
         F: Fn(&StdArc<T>) -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
     {
-        let count = services.read().unwrap().count();
+        let count = lock_read(services)?.count();
         if count == 0 {
             return Err(Error::NoServicesAvailable);
         }
 
         for _ in 0..count {
             let service = {
-                let collection = services.read().unwrap();
+                let collection = lock_read(services)?;
                 collection.current_service().cloned()
             };
 
@@ -473,7 +462,7 @@ impl Services {
                 match operation(&svc).await {
                     Ok(()) => return Ok(()),
                     Err(_) => {
-                        services.write().unwrap().next();
+                        lock_write(services)?.next();
                     }
                 }
             }
@@ -591,7 +580,7 @@ impl WalletServices for Services {
     async fn get_raw_tx(&self, txid: &str, use_next: bool) -> Result<GetRawTxResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, RawTxProvider)> = {
-            let mut services = self.get_raw_tx_services.write().unwrap();
+            let mut services = lock_write(&self.get_raw_tx_services)?;
             // If use_next, skip to next service before starting
             if use_next {
                 services.next();
@@ -610,25 +599,19 @@ impl WalletServices for Services {
             match service.get_raw_tx(txid).await {
                 Ok(result) if result.raw_tx.is_some() => {
                     call.mark_success(None);
-                    self.get_raw_tx_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_raw_tx_services)?
                         .add_call_success(&provider_name, call);
                     return Ok(result);
                 }
                 Ok(result) => {
                     call.mark_failure(Some("not found".to_string()));
-                    self.get_raw_tx_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_raw_tx_services)?
                         .add_call_failure(&provider_name, call);
                     last_error = result.error.clone();
                 }
                 Err(e) => {
                     call.mark_error(&e.to_string(), "ERROR");
-                    self.get_raw_tx_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_raw_tx_services)?
                         .add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
                 }
@@ -646,7 +629,7 @@ impl WalletServices for Services {
     async fn get_merkle_path(&self, txid: &str, use_next: bool) -> Result<GetMerklePathResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, MerklePathProvider)> = {
-            let mut services = self.get_merkle_path_services.write().unwrap();
+            let mut services = lock_write(&self.get_merkle_path_services)?;
             // If use_next, skip to next service before starting
             if use_next {
                 services.next();
@@ -668,25 +651,19 @@ impl WalletServices for Services {
                     notes.extend(result.notes.clone());
                     if result.merkle_path.is_some() {
                         call.mark_success(None);
-                        self.get_merkle_path_services
-                            .write()
-                            .unwrap()
+                        lock_write(&self.get_merkle_path_services)?
                             .add_call_success(&provider_name, call);
                         return Ok(result);
                     } else {
                         call.mark_failure(Some("no proof".to_string()));
-                        self.get_merkle_path_services
-                            .write()
-                            .unwrap()
+                        lock_write(&self.get_merkle_path_services)?
                             .add_call_failure(&provider_name, call);
                         last_error = result.error.clone();
                     }
                 }
                 Err(e) => {
                     call.mark_error(&e.to_string(), "ERROR");
-                    self.get_merkle_path_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_merkle_path_services)?
                         .add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
                 }
@@ -705,7 +682,7 @@ impl WalletServices for Services {
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, PostBeefProvider)> = {
-            let services = self.post_beef_services.read().unwrap();
+            let services = lock_read(&self.post_beef_services)?;
             services.all_services_owned()
         };
 
@@ -724,22 +701,16 @@ impl WalletServices for Services {
                             let is_success = result.is_success();
                             if is_success {
                                 call.mark_success(None);
-                                self.post_beef_services
-                                    .write()
-                                    .unwrap()
+                                lock_write(&self.post_beef_services)?
                                     .add_call_success(&provider_name, call);
                             } else {
                                 call.mark_failure(Some(result.status.clone()));
-                                self.post_beef_services
-                                    .write()
-                                    .unwrap()
+                                lock_write(&self.post_beef_services)?
                                     .add_call_failure(&provider_name, call);
 
                                 // Move failing service to last
                                 if result.txid_results.iter().all(|r| r.service_error) {
-                                    self.post_beef_services
-                                        .write()
-                                        .unwrap()
+                                    lock_write(&self.post_beef_services)?
                                         .move_to_last(&provider_name);
                                 }
                             }
@@ -750,9 +721,7 @@ impl WalletServices for Services {
                         }
                         Err(e) => {
                             call.mark_error(&e.to_string(), "ERROR");
-                            self.post_beef_services
-                                .write()
-                                .unwrap()
+                            lock_write(&self.post_beef_services)?
                                 .add_call_error(&provider_name, call);
                         }
                     }
@@ -778,24 +747,18 @@ impl WalletServices for Services {
                         Ok(r) => {
                             if r.is_success() {
                                 call.mark_success(None);
-                                self.post_beef_services
-                                    .write()
-                                    .unwrap()
+                                lock_write(&self.post_beef_services)?
                                     .add_call_success(provider_name, call);
                             } else {
                                 call.mark_failure(Some(r.status.clone()));
-                                self.post_beef_services
-                                    .write()
-                                    .unwrap()
+                                lock_write(&self.post_beef_services)?
                                     .add_call_failure(provider_name, call);
                             }
                             results.push(r);
                         }
                         Err(e) => {
                             call.mark_error(&e.to_string(), "ERROR");
-                            self.post_beef_services
-                                .write()
-                                .unwrap()
+                            lock_write(&self.post_beef_services)?
                                 .add_call_error(provider_name, call);
                         }
                     }
@@ -815,7 +778,7 @@ impl WalletServices for Services {
     ) -> Result<GetUtxoStatusResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, UtxoStatusProvider)> = {
-            let mut services = self.get_utxo_status_services.write().unwrap();
+            let mut services = lock_write(&self.get_utxo_status_services)?;
             // If use_next, skip to next service before starting
             if use_next {
                 services.next();
@@ -836,25 +799,19 @@ impl WalletServices for Services {
                 match service.get_utxo_status(output, output_format, outpoint).await {
                     Ok(result) if result.status == "success" => {
                         call.mark_success(None);
-                        self.get_utxo_status_services
-                            .write()
-                            .unwrap()
+                        lock_write(&self.get_utxo_status_services)?
                             .add_call_success(provider_name, call);
                         return Ok(result);
                     }
                     Ok(result) => {
                         call.mark_failure(result.error.clone());
-                        self.get_utxo_status_services
-                            .write()
-                            .unwrap()
+                        lock_write(&self.get_utxo_status_services)?
                             .add_call_failure(provider_name, call);
                         last_error = result.error.clone();
                     }
                     Err(e) => {
                         call.mark_error(&e.to_string(), "ERROR");
-                        self.get_utxo_status_services
-                            .write()
-                            .unwrap()
+                        lock_write(&self.get_utxo_status_services)?
                             .add_call_error(provider_name, call);
                         last_error = Some(e.to_string());
                     }
@@ -878,7 +835,7 @@ impl WalletServices for Services {
     async fn get_status_for_txids(&self, txids: &[String], use_next: bool) -> Result<GetStatusForTxidsResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, StatusForTxidsProvider)> = {
-            let mut services = self.get_status_for_txids_services.write().unwrap();
+            let mut services = lock_write(&self.get_status_for_txids_services)?;
             // If use_next, skip to next service before starting
             if use_next {
                 services.next();
@@ -897,25 +854,19 @@ impl WalletServices for Services {
             match service.get_status_for_txids(txids).await {
                 Ok(result) if result.status == "success" => {
                     call.mark_success(None);
-                    self.get_status_for_txids_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_status_for_txids_services)?
                         .add_call_success(&provider_name, call);
                     return Ok(result);
                 }
                 Ok(result) => {
                     call.mark_failure(result.error.clone());
-                    self.get_status_for_txids_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_status_for_txids_services)?
                         .add_call_failure(&provider_name, call);
                     last_error = result.error.clone();
                 }
                 Err(e) => {
                     call.mark_error(&e.to_string(), "ERROR");
-                    self.get_status_for_txids_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_status_for_txids_services)?
                         .add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
                 }
@@ -933,7 +884,7 @@ impl WalletServices for Services {
     async fn get_script_hash_history(&self, hash: &str, use_next: bool) -> Result<GetScriptHashHistoryResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, ScriptHashHistoryProvider)> = {
-            let mut services = self.get_script_hash_history_services.write().unwrap();
+            let mut services = lock_write(&self.get_script_hash_history_services)?;
             // If use_next, skip to next service before starting
             if use_next {
                 services.next();
@@ -952,25 +903,19 @@ impl WalletServices for Services {
             match service.get_script_hash_history(hash).await {
                 Ok(result) if result.status == "success" => {
                     call.mark_success(None);
-                    self.get_script_hash_history_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_script_hash_history_services)?
                         .add_call_success(&provider_name, call);
                     return Ok(result);
                 }
                 Ok(result) => {
                     call.mark_failure(result.error.clone());
-                    self.get_script_hash_history_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_script_hash_history_services)?
                         .add_call_failure(&provider_name, call);
                     last_error = result.error.clone();
                 }
                 Err(e) => {
                     call.mark_error(&e.to_string(), "ERROR");
-                    self.get_script_hash_history_services
-                        .write()
-                        .unwrap()
+                    lock_write(&self.get_script_hash_history_services)?
                         .add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
                 }
@@ -998,7 +943,7 @@ impl WalletServices for Services {
     ) -> Result<f64> {
         // Check if we need to update the rates
         let needs_update = {
-            let rates = self.fiat_exchange_rates.read().unwrap();
+            let rates = lock_read(&self.fiat_exchange_rates)?;
             rates.is_stale(self.options.fiat_update_msecs)
         };
 
@@ -1006,7 +951,7 @@ impl WalletServices for Services {
             // Try to fetch updated rates from a public exchange rate API
             match self.fetch_fiat_exchange_rates().await {
                 Ok(new_rates) => {
-                    let mut rates = self.fiat_exchange_rates.write().unwrap();
+                    let mut rates = lock_write(&self.fiat_exchange_rates)?;
                     *rates = new_rates;
                     tracing::debug!("Updated fiat exchange rates from API");
                 }
@@ -1017,7 +962,7 @@ impl WalletServices for Services {
             }
         }
 
-        let rates = self.fiat_exchange_rates.read().unwrap();
+        let rates = lock_read(&self.fiat_exchange_rates)?;
         Ok(rates.get_rate(currency, base).unwrap_or(0.0))
     }
 
@@ -1152,8 +1097,8 @@ mod tests {
         let services = Services::mainnet();
         assert!(services.is_ok());
         let services = services.unwrap();
-        assert!(services.get_merkle_path_count() >= 1);
-        assert!(services.post_beef_count() >= 1);
+        assert!(services.get_merkle_path_count().unwrap() >= 1);
+        assert!(services.post_beef_count().unwrap() >= 1);
     }
 
     #[test]

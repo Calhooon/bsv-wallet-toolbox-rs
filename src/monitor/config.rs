@@ -51,7 +51,7 @@ impl Default for MonitorOptions {
     fn default() -> Self {
         Self {
             tasks: TasksConfig::default(),
-            fail_abandoned_timeout: Duration::from_secs(24 * 60 * 60), // 24 hours
+            fail_abandoned_timeout: Duration::from_secs(5 * 60), // 5 minutes (matches TS/Go)
             on_tx_broadcasted: None,
             on_tx_proven: None,
         }
@@ -196,7 +196,7 @@ mod tests {
         assert!(opts.tasks.review_status.enabled);
         assert!(opts.tasks.purge.enabled);
         assert!(opts.tasks.monitor_call_history.enabled);
-        assert_eq!(opts.fail_abandoned_timeout, Duration::from_secs(24 * 60 * 60));
+        assert_eq!(opts.fail_abandoned_timeout, Duration::from_secs(5 * 60));
         assert!(opts.on_tx_broadcasted.is_none());
         assert!(opts.on_tx_proven.is_none());
     }

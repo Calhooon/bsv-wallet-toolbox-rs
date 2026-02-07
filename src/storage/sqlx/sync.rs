@@ -357,18 +357,18 @@ pub async fn process_sync_chunk_internal(
     let mut certificate_id_map: HashMap<i64, i64> = HashMap::new();
 
     // Check if chunk is empty (sync complete)
-    let chunk_is_empty = chunk.output_baskets.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.proven_txs.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.proven_tx_reqs.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.transactions.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.outputs.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.tx_labels.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.tx_label_maps.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.output_tags.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.output_tag_maps.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.certificates.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.certificate_fields.as_ref().map_or(true, |v| v.is_empty())
-        && chunk.commissions.as_ref().map_or(true, |v| v.is_empty());
+    let chunk_is_empty = chunk.output_baskets.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.proven_txs.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.proven_tx_reqs.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.transactions.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.outputs.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.tx_labels.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.tx_label_maps.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.output_tags.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.output_tag_maps.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.certificates.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.certificate_fields.as_ref().is_none_or(|v| v.is_empty())
+        && chunk.commissions.as_ref().is_none_or(|v| v.is_empty());
 
     if chunk_is_empty {
         result.done = true;
@@ -2142,7 +2142,7 @@ mod tests {
         assert!(chunk.user.is_some()); // User is always included when no since
 
         // Default basket should be present
-        assert!(chunk.output_baskets.as_ref().map_or(false, |b| !b.is_empty()));
+        assert!(chunk.output_baskets.as_ref().is_some_and(|b| !b.is_empty()));
     }
 
     #[tokio::test]
@@ -2205,7 +2205,7 @@ mod tests {
         // User should not be included since updated_at < since
         assert!(chunk.user.is_none());
         // Baskets should be empty since all created before since
-        assert!(chunk.output_baskets.as_ref().map_or(true, |b| b.is_empty()));
+        assert!(chunk.output_baskets.as_ref().is_none_or(|b| b.is_empty()));
     }
 
     #[tokio::test]
@@ -2530,7 +2530,7 @@ mod tests {
 
         // Verify chunk has data
         assert!(chunk.user.is_some());
-        assert!(chunk.output_baskets.as_ref().map_or(false, |b| b.len() >= 2)); // default + payments
+        assert!(chunk.output_baskets.as_ref().is_some_and(|b| b.len() >= 2)); // default + payments
 
         // Create destination storage
         let dest = StorageSqlx::in_memory().await.unwrap();

@@ -91,6 +91,7 @@
 
 mod certificate_issuance;
 mod signer;
+#[allow(clippy::module_inception)]
 mod wallet;
 
 pub use signer::{ScriptType, SignerInput, UnlockingScriptTemplate, WalletSigner};

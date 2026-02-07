@@ -385,7 +385,7 @@ mod tests {
         assert!(opts.tasks.monitor_call_history.enabled);
         assert_eq!(
             opts.fail_abandoned_timeout,
-            Duration::from_secs(24 * 60 * 60)
+            Duration::from_secs(5 * 60)
         );
     }
 

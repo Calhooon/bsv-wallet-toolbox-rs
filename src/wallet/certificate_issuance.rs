@@ -278,7 +278,7 @@ where
 {
     // Generate random client nonce
     let nonce_bytes: [u8; NONCE_SIZE] = rand::random();
-    let client_nonce = BASE64.encode(&nonce_bytes);
+    let client_nonce = BASE64.encode(nonce_bytes);
 
     // Encode certificate type as base64
     // The certificate_type is already a string - decode it to get the 32 bytes
@@ -739,7 +739,7 @@ async fn store_certificate<S>(
 where
     S: WalletStorageProvider + Send + Sync,
 {
-    let user_id = auth.user_id.ok_or_else(|| Error::AuthenticationRequired)?;
+    let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
     // Format revocation outpoint
     let revocation_outpoint = if let Some(ref outpoint) = parsed.certificate.revocation_outpoint {
@@ -931,15 +931,15 @@ mod tests {
         let response = ProtocolIssuanceResponse {
             protocol: "certificate issuance".to_string(),
             certificate: Some(CertificateResponse {
-                cert_type: BASE64.encode(&[0u8; 32]),
-                serial_number: BASE64.encode(&[1u8; 32]),
+                cert_type: BASE64.encode([0u8; 32]),
+                serial_number: BASE64.encode([1u8; 32]),
                 subject: subject_key.public_key().to_hex(),
                 certifier: certifier_key.public_key().to_hex(),
                 revocation_outpoint: "0000000000000000000000000000000000000000000000000000000000000001.0".to_string(),
                 fields: HashMap::new(),
                 signature: "304402200000000000000000000000000000000000000000000000000000000000000000022000000000000000000000000000000000000000000000000000000000000000000".to_string(),
             }),
-            server_nonce: BASE64.encode(&[2u8; 32]),
+            server_nonce: BASE64.encode([2u8; 32]),
             timestamp: String::new(),
             version: String::new(),
         };
@@ -948,7 +948,7 @@ mod tests {
         let result = parse_certificate_response(
             &response,
             &different_certifier_key.public_key().to_hex(),
-            &BASE64.encode(&[0u8; 32]),
+            &BASE64.encode([0u8; 32]),
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid certifier"));
@@ -964,15 +964,15 @@ mod tests {
         let response = ProtocolIssuanceResponse {
             protocol: "certificate issuance".to_string(),
             certificate: Some(CertificateResponse {
-                cert_type: BASE64.encode(&[0u8; 32]),
-                serial_number: BASE64.encode(&[1u8; 32]),
+                cert_type: BASE64.encode([0u8; 32]),
+                serial_number: BASE64.encode([1u8; 32]),
                 subject: subject_key.public_key().to_hex(),
                 certifier: certifier_key.public_key().to_hex(),
                 revocation_outpoint: "0000000000000000000000000000000000000000000000000000000000000001.0".to_string(),
                 fields: HashMap::new(),
                 signature: "304402200000000000000000000000000000000000000000000000000000000000000000022000000000000000000000000000000000000000000000000000000000000000000".to_string(),
             }),
-            server_nonce: BASE64.encode(&[2u8; 32]),
+            server_nonce: BASE64.encode([2u8; 32]),
             timestamp: String::new(),
             version: String::new(),
         };
@@ -981,7 +981,7 @@ mod tests {
         let result = parse_certificate_response(
             &response,
             &certifier_key.public_key().to_hex(),
-            &BASE64.encode(&[99u8; 32]), // Different type
+            &BASE64.encode([99u8; 32]), // Different type
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid certificate type"));
@@ -1015,12 +1015,12 @@ mod tests {
         let subject_key = PrivateKey::random();
 
         // Use a 16-byte serial number (invalid - should be 32)
-        let invalid_serial = BASE64.encode(&[1u8; 16]);
+        let invalid_serial = BASE64.encode([1u8; 16]);
 
         let response = ProtocolIssuanceResponse {
             protocol: "certificate issuance".to_string(),
             certificate: Some(CertificateResponse {
-                cert_type: BASE64.encode(&[0u8; 32]),
+                cert_type: BASE64.encode([0u8; 32]),
                 serial_number: invalid_serial,
                 subject: subject_key.public_key().to_hex(),
                 certifier: certifier_key.public_key().to_hex(),
@@ -1028,7 +1028,7 @@ mod tests {
                 fields: HashMap::new(),
                 signature: "3045022100".to_string(),
             }),
-            server_nonce: BASE64.encode(&[0u8; 32]),
+            server_nonce: BASE64.encode([0u8; 32]),
             timestamp: String::new(),
             version: String::new(),
         };
@@ -1036,7 +1036,7 @@ mod tests {
         let result = parse_certificate_response(
             &response,
             &certifier_key.public_key().to_hex(),
-            &BASE64.encode(&[0u8; 32]),
+            &BASE64.encode([0u8; 32]),
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("serial number length"));

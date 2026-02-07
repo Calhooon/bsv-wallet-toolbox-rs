@@ -359,6 +359,9 @@ pub struct TableSyncState {
     pub ref_num: String,
     pub sync_map: String,
     pub when_last_sync_started: Option<DateTime<Utc>>,
+    /// Total satoshis tracked for this sync state. Optional, matches TS/Go implementations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub satoshis: Option<i64>,
     pub error_local: Option<String>,
     pub error_other: Option<String>,
     pub created_at: DateTime<Utc>,

@@ -107,46 +107,50 @@ where
             return Ok(result);
         }
 
-        if current_height > last_height {
-            // New blocks found
-            let blocks_ahead = current_height - last_height;
-            self.last_height.store(current_height, Ordering::SeqCst);
-            self.stable_cycles.store(0, Ordering::SeqCst);
+        match current_height.cmp(&last_height) {
+            std::cmp::Ordering::Greater => {
+                // New blocks found
+                let blocks_ahead = current_height - last_height;
+                self.last_height.store(current_height, Ordering::SeqCst);
+                self.stable_cycles.store(0, Ordering::SeqCst);
 
-            tracing::info!(
-                task = "new_header",
-                height = current_height,
-                blocks_ahead = blocks_ahead,
-                "New block(s) detected"
-            );
+                tracing::info!(
+                    task = "new_header",
+                    height = current_height,
+                    blocks_ahead = blocks_ahead,
+                    "New block(s) detected"
+                );
 
-            // Set the flag to trigger proof checking
-            self.new_header_received.store(true, Ordering::SeqCst);
+                // Set the flag to trigger proof checking
+                self.new_header_received.store(true, Ordering::SeqCst);
 
-            result.items_processed = blocks_ahead;
-        } else if current_height < last_height {
-            // Potential reorg detected (chain tip went backwards)
-            tracing::warn!(
-                task = "new_header",
-                current = current_height,
-                last = last_height,
-                "Chain height decreased - possible reorg"
-            );
-            self.last_height.store(current_height, Ordering::SeqCst);
-            self.stable_cycles.store(0, Ordering::SeqCst);
-            result.add_error(format!(
-                "Chain height decreased from {} to {} - possible reorg",
-                last_height, current_height
-            ));
-        } else {
-            // Same height, increment stable cycle counter
-            let cycles = self.stable_cycles.fetch_add(1, Ordering::SeqCst) + 1;
-            tracing::debug!(
-                task = "new_header",
-                height = current_height,
-                stable_cycles = cycles,
-                "No new blocks"
-            );
+                result.items_processed = blocks_ahead;
+            }
+            std::cmp::Ordering::Less => {
+                // Potential reorg detected (chain tip went backwards)
+                tracing::warn!(
+                    task = "new_header",
+                    current = current_height,
+                    last = last_height,
+                    "Chain height decreased - possible reorg"
+                );
+                self.last_height.store(current_height, Ordering::SeqCst);
+                self.stable_cycles.store(0, Ordering::SeqCst);
+                result.add_error(format!(
+                    "Chain height decreased from {} to {} - possible reorg",
+                    last_height, current_height
+                ));
+            }
+            std::cmp::Ordering::Equal => {
+                // Same height, increment stable cycle counter
+                let cycles = self.stable_cycles.fetch_add(1, Ordering::SeqCst) + 1;
+                tracing::debug!(
+                    task = "new_header",
+                    height = current_height,
+                    stable_cycles = cycles,
+                    "No new blocks"
+                );
+            }
         }
 
         Ok(result)

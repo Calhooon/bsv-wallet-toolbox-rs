@@ -396,7 +396,7 @@ impl BulkWocIngestor {
         let first_hash = hasher.finalize();
 
         let mut hasher = Sha256::new();
-        hasher.update(&first_hash);
+        hasher.update(first_hash);
         let second_hash = hasher.finalize();
 
         let mut reversed = second_hash.to_vec();

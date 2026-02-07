@@ -113,6 +113,9 @@ pub enum Error {
 
     #[error("HTTP error: {0}")]
     HttpError(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 // Manual From impl for sqlx::Error to avoid trait bound issues

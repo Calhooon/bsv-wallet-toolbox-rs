@@ -41,7 +41,7 @@ impl MonitorTask for MonitorCallHistoryTask {
 
     async fn run(&self) -> Result<TaskResult> {
         // Get service call history and reset counters
-        let history = self.services.get_services_call_history(true);
+        let history = self.services.get_services_call_history(true)?;
 
         let mut total_calls = 0u64;
         let mut total_errors = 0u64;

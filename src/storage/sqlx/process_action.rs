@@ -620,7 +620,7 @@ fn generate_batch_id() -> String {
     let mut rng = rand::thread_rng();
     let mut bytes = [0u8; 16];
     rng.fill_bytes(&mut bytes);
-    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
 }
 
 // =============================================================================

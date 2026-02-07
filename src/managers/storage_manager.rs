@@ -36,10 +36,10 @@ use chrono::{DateTime, Utc};
 
 use crate::storage::{
     AuthId, FindCertificatesArgs, FindOutputBasketsArgs, FindOutputsArgs, FindProvenTxReqsArgs,
-    ProcessSyncChunkResult, PurgeParams, PurgeResults, RequestSyncChunkArgs,
+    MonitorStorage, ProcessSyncChunkResult, PurgeParams, PurgeResults, RequestSyncChunkArgs,
     ReviewStatusResult, StorageCreateActionResult,
     StorageInternalizeActionResult, StorageProcessActionArgs, StorageProcessActionResults,
-    SyncChunk, WalletStorageInfo, WalletStorageProvider, WalletStorageReader,
+    SyncChunk, TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider, WalletStorageReader,
     WalletStorageSync, WalletStorageWriter,
     entities::{
         TableCertificate, TableCertificateField, TableOutput, TableOutputBasket,
@@ -50,8 +50,8 @@ use crate::storage::{
 /// A wrapper around a storage provider with cached state.
 #[derive(Clone)]
 pub struct ManagedStorage {
-    /// The underlying storage provider.
-    pub storage: Arc<dyn WalletStorageProvider>,
+    /// The underlying storage provider (also implements MonitorStorage).
+    pub storage: Arc<dyn MonitorStorage>,
     /// Whether the storage is available and initialized.
     pub is_available: bool,
     /// Whether the storage supports full StorageProvider interface.
@@ -64,7 +64,7 @@ pub struct ManagedStorage {
 
 impl ManagedStorage {
     /// Creates a new managed storage wrapper.
-    pub fn new(storage: Arc<dyn WalletStorageProvider>) -> Self {
+    pub fn new(storage: Arc<dyn MonitorStorage>) -> Self {
         let is_storage_provider = storage.is_storage_provider();
         Self {
             storage,
@@ -157,8 +157,8 @@ impl WalletStorageManager {
     /// * `backups` - Optional list of backup storage providers
     pub fn new(
         identity_key: String,
-        active: Option<Arc<dyn WalletStorageProvider>>,
-        backups: Option<Vec<Arc<dyn WalletStorageProvider>>>,
+        active: Option<Arc<dyn MonitorStorage>>,
+        backups: Option<Vec<Arc<dyn MonitorStorage>>>,
     ) -> Self {
         let mut stores = Vec::new();
 
@@ -373,7 +373,7 @@ impl WalletStorageManager {
     }
 
     /// Gets a reference to the active storage provider.
-    async fn get_active(&self) -> Result<Arc<dyn WalletStorageProvider>> {
+    async fn get_active(&self) -> Result<Arc<dyn MonitorStorage>> {
         let active_idx = self.active_index.read().await;
         let stores = self.stores.read().await;
 
@@ -437,7 +437,7 @@ impl WalletStorageManager {
     /// Runs a closure with reader lock.
     pub async fn run_as_reader<F, Fut, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(Arc<dyn WalletStorageProvider>) -> Fut,
+        F: FnOnce(Arc<dyn MonitorStorage>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
         Self::acquire_lock(&self.reader_locks, "reader").await?;
@@ -459,7 +459,7 @@ impl WalletStorageManager {
     /// Runs a closure with writer lock.
     pub async fn run_as_writer<F, Fut, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(Arc<dyn WalletStorageProvider>) -> Fut,
+        F: FnOnce(Arc<dyn MonitorStorage>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
         Self::acquire_lock(&self.reader_locks, "reader").await?;
@@ -491,7 +491,7 @@ impl WalletStorageManager {
     /// Runs a closure with sync lock.
     pub async fn run_as_sync<F, Fut, R>(&self, f: F) -> Result<R>
     where
-        F: FnOnce(Arc<dyn WalletStorageProvider>) -> Fut,
+        F: FnOnce(Arc<dyn MonitorStorage>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
         Self::acquire_lock(&self.reader_locks, "reader").await?;
@@ -542,7 +542,7 @@ impl WalletStorageManager {
     /// Adds a new storage provider.
     pub async fn add_wallet_storage_provider(
         &self,
-        provider: Arc<dyn WalletStorageProvider>,
+        provider: Arc<dyn MonitorStorage>,
     ) -> Result<()> {
         provider.make_available().await?;
 
@@ -660,7 +660,7 @@ impl WalletStorageManager {
     pub async fn sync_from_reader(
         &self,
         identity_key: &str,
-        reader: Arc<dyn WalletStorageProvider>,
+        reader: Arc<dyn MonitorStorage>,
     ) -> Result<SyncResult> {
         let auth = self.get_auth(false).await?;
         if identity_key != auth.identity_key {
@@ -747,7 +747,7 @@ impl WalletStorageManager {
     pub async fn sync_to_writer(
         &self,
         identity_key: &str,
-        writer: Arc<dyn WalletStorageProvider>,
+        writer: Arc<dyn MonitorStorage>,
     ) -> Result<SyncResult> {
         let writer_settings = writer.make_available().await?;
         let mut inserts = 0u32;
@@ -1071,13 +1071,13 @@ impl WalletStorageWriter for WalletStorageManager {
 
     async fn review_status(&self, auth: &AuthId, aged_limit: DateTime<Utc>) -> Result<ReviewStatusResult> {
         let auth = auth.clone();
-        self.run_as_writer(|active| async move { active.review_status(&auth, aged_limit).await })
+        self.run_as_writer(|active| async move { WalletStorageWriter::review_status(active.as_ref(), &auth, aged_limit).await })
             .await
     }
 
     async fn purge_data(&self, auth: &AuthId, params: PurgeParams) -> Result<PurgeResults> {
         let auth = auth.clone();
-        self.run_as_writer(|active| async move { active.purge_data(&auth, params).await })
+        self.run_as_writer(|active| async move { WalletStorageWriter::purge_data(active.as_ref(), &auth, params).await })
             .await
     }
 }
@@ -1149,6 +1149,58 @@ impl WalletStorageProvider for WalletStorageManager {
             store.storage.set_services(services.clone());
         }
         *self.services.blocking_write() = Some(services);
+    }
+}
+
+// =============================================================================
+// MonitorStorage Implementation
+// =============================================================================
+
+#[async_trait]
+impl MonitorStorage for WalletStorageManager {
+    async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
+        self.run_as_writer(|active| async move {
+            active.synchronize_transaction_statuses().await
+        })
+        .await
+    }
+
+    async fn send_waiting_transactions(
+        &self,
+        min_transaction_age: Duration,
+    ) -> Result<Option<StorageProcessActionResults>> {
+        self.run_as_writer(|active| async move {
+            active.send_waiting_transactions(min_transaction_age).await
+        })
+        .await
+    }
+
+    async fn abort_abandoned(&self, timeout: Duration) -> Result<()> {
+        self.run_as_writer(|active| async move {
+            active.abort_abandoned(timeout).await
+        })
+        .await
+    }
+
+    async fn un_fail(&self) -> Result<()> {
+        self.run_as_writer(|active| async move {
+            active.un_fail().await
+        })
+        .await
+    }
+
+    async fn review_status(&self) -> Result<ReviewStatusResult> {
+        self.run_as_writer(|active| async move {
+            MonitorStorage::review_status(active.as_ref()).await
+        })
+        .await
+    }
+
+    async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults> {
+        self.run_as_writer(|active| async move {
+            MonitorStorage::purge_data(active.as_ref(), params).await
+        })
+        .await
     }
 }
 

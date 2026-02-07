@@ -56,6 +56,7 @@
 //! ```
 
 pub mod error;
+pub mod lock_utils;
 pub mod storage;
 pub mod chaintracks;
 pub mod services;
@@ -68,6 +69,7 @@ pub use error::{Error, Result};
 // Re-export storage types
 pub use storage::{
     AuthId,
+    MonitorStorage,
     WalletStorageProvider,
     WalletStorageReader,
     WalletStorageSync,
