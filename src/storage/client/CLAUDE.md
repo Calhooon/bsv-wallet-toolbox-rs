@@ -1,13 +1,13 @@
 # Storage Client
 
-> Remote wallet storage via JSON-RPC over HTTPS with BRC-31 authentication.
+> Remote wallet storage via JSON-RPC over HTTPS with BRC-31/BRC-104 authentication.
 
 ## Overview
 
 This module provides `StorageClient`, a remote storage implementation that communicates with
 BSV wallet storage servers (e.g., `storage.babbage.systems`) using JSON-RPC 2.0 over HTTPS.
 It implements the full `WalletStorageProvider` trait hierarchy, enabling wallets to persist
-state to remote infrastructure with BRC-31 (Authrite) mutual authentication.
+state to remote infrastructure with BRC-104 mutual authentication via `Peer`.
 
 The client is the recommended approach for production wallet applications that need reliable,
 persistent storage without managing local databases.
@@ -138,12 +138,12 @@ if let Some(wallet_err) = WalletError::from_rpc_error(&rpc_error) {
 ```
 StorageClient<W: WalletInterface>
 ├── endpoint_url: String              # Server URL
-├── peer: Arc<Peer<W, ...>>           # BRC-31 authenticated peer (for advanced use)
+├── peer: Arc<Peer<W, SimplifiedFetchTransport>>  # BRC-104 authenticated peer
 ├── wallet: W                          # Wallet for auth and signing
-├── http_client: reqwest::Client       # HTTP client
+├── http_client: reqwest::Client       # HTTP client (unauthenticated fallback)
 ├── next_id: AtomicU64                # Request ID counter
 ├── settings: Arc<RwLock<...>>        # Cached TableSettings
-├── use_auth: bool                     # Enable/disable BRC-31 auth
+├── use_auth: bool                     # Enable/disable BRC-104 auth
 ├── verify_responses: bool             # Enable/disable response signature verification
 └── server_identity_key: Arc<RwLock<..>> # Cached server identity key
 ```
@@ -184,14 +184,17 @@ The client calls these remote methods via `rpc_call()`:
 | `processAction` | Writer | Process signed transaction |
 | `internalizeAction` | Writer | Import external transaction |
 | `insertCertificateAuth` | Writer | Add certificate |
+| `insertCertificateFieldAuth` | Writer | Add certificate field |
 | `relinquishCertificate` | Writer | Release certificate |
 | `relinquishOutput` | Writer | Release output |
+| `updateTransactionStatusAfterBroadcast` | Writer | Update tx status post-broadcast |
+| `reviewStatus` | Writer | Review aged transaction statuses |
+| `purgeData` | Writer | Purge old/completed data |
 | `findOrInsertSyncStateAuth` | Sync | Find/create sync state |
 | `setActive` | Sync | Set active storage |
 | `getSyncChunk` | Sync | Get sync data chunk |
 | `processSyncChunk` | Sync | Apply sync data chunk |
 | `updateProvenTxReqWithNewProvenTx` | Helper | Update proven tx request |
-| `insertCertificateFieldAuth` | Writer | Add certificate field |
 
 ### StorageClient Helper Methods
 
@@ -199,12 +202,12 @@ Beyond trait implementations, `StorageClient` provides these convenience methods
 
 | Method | Description |
 |--------|-------------|
-| `new(wallet, endpoint_url)` | Create client with BRC-31 auth |
+| `new(wallet, endpoint_url)` | Create client with BRC-104 auth via Peer |
 | `new_unauthenticated(wallet, url)` | Create client without auth (testing) |
 | `mainnet(wallet)` | Create client for mainnet |
 | `testnet(wallet)` | Create client for testnet |
 | `endpoint_url()` | Get the server URL |
-| `peer()` | Get reference to BRC-31 Peer |
+| `peer()` | Get reference to BRC-104 Peer |
 | `wallet()` | Get reference to wallet |
 | `get_identity_key()` | Get wallet's identity key (hex) |
 | `get_settings_async()` | Get cached settings or fetch if needed |
@@ -215,6 +218,7 @@ Beyond trait implementations, `StorageClient` provides these convenience methods
 | `set_verify_responses(verify)` | Enable/disable response signature verification |
 | `set_server_identity_key(key)` | Set server's identity key for signing |
 | `get_server_identity_key()` | Get cached server identity key |
+| `update_proven_tx_req_with_new_proven_tx(args)` | Update proven tx request with proof |
 
 ## Usage
 
@@ -259,65 +263,11 @@ if is_new {
 let auth = client.create_auth_id_with_user(user.user_id).await?;
 ```
 
-### Querying Data
-
-```rust
-use bsv_wallet_toolbox::storage::traits::{FindOutputsArgs, FindCertificatesArgs};
-use bsv_sdk::wallet::ListOutputsArgs;
-
-// List outputs using SDK args
-let list_result = client.list_outputs(&auth, ListOutputsArgs::default()).await?;
-println!("Total outputs: {}", list_result.total_outputs);
-
-// Find outputs with custom criteria
-let outputs = client.find_outputs(&auth, FindOutputsArgs {
-    basket_id: Some(1),
-    ..Default::default()
-}).await?;
-
-// Find certificates
-let certs = client.find_certificates(&auth, FindCertificatesArgs {
-    certifiers: Some(vec!["certifier_pubkey".to_string()]),
-    ..Default::default()
-}).await?;
-```
-
-### Creating Transactions
-
-```rust
-use bsv_sdk::wallet::CreateActionArgs;
-
-// Create action returns inputs/outputs for transaction construction
-let create_result = client.create_action(&auth, CreateActionArgs {
-    description: Some("Payment".to_string()),
-    outputs: vec![/* output specs */],
-    ..Default::default()
-}).await?;
-
-// After signing, process the action
-use bsv_wallet_toolbox::storage::traits::StorageProcessActionArgs;
-let process_result = client.process_action(&auth, StorageProcessActionArgs {
-    is_new_tx: true,
-    raw_tx: Some(signed_tx_bytes),
-    txid: Some(txid_hex),
-    reference: Some(create_result.reference),
-    ..Default::default()
-}).await?;
-```
-
 ### Unauthenticated Mode (Testing)
 
 ```rust
-// For testing without BRC-31 authentication
+// For testing without BRC-104 authentication
 let client = StorageClient::new_unauthenticated(wallet, "http://localhost:8080");
-```
-
-### Getting Storage Info
-
-```rust
-// Get info about this storage for display/debugging
-let info = client.get_storage_info(user.user_id, true /* is_active */).await?;
-println!("Storage: {} at {}", info.storage_name, info.endpoint_url.unwrap());
 ```
 
 ## Error Handling
@@ -328,7 +278,7 @@ The client converts JSON-RPC errors to `crate::error::Error`:
 match client.make_available().await {
     Ok(settings) => { /* success */ }
     Err(Error::NetworkError(msg)) => {
-        // HTTP-level failure
+        // HTTP-level failure or timeout
         eprintln!("Network error: {}", msg);
     }
     Err(Error::StorageError(msg)) => {
@@ -338,39 +288,61 @@ match client.make_available().await {
     Err(Error::AuthenticationRequired) => {
         // Failed to get identity key
     }
+    Err(Error::InvalidOperation(msg)) => {
+        // E.g., calling get_services() on remote client
+    }
     Err(e) => { /* other errors */ }
 }
 ```
 
-### Parsing Wallet Errors
-
-```rust
-use bsv_wallet_toolbox::storage::client::JsonRpcError;
-use bsv_wallet_toolbox::storage::client::json_rpc::WalletError;
-
-// If you have access to the raw JsonRpcError:
-if let Some(wallet_err) = WalletError::from_rpc_error(&rpc_error) {
-    match wallet_err.code.as_str() {
-        "ERR_INSUFFICIENT_FUNDS" => { /* handle */ }
-        "ERR_UNAUTHORIZED" => { /* handle */ }
-        _ => {}
-    }
-}
-```
-
-## BRC-31 Authentication
+## BRC-104 Peer-Based Authentication
 
 ### Overview
 
-All requests are authenticated using the BRC-31 (Authrite) protocol when `use_auth` is enabled:
+When `use_auth` is enabled (the default), all requests are sent through a `Peer<W, SimplifiedFetchTransport>`
+which handles BRC-104 mutual authentication automatically. This replaces the older direct
+HTTP + BRC-31 header approach with proper session management.
 
-1. **Request Signing**: Each request is signed with the wallet's identity key
-2. **Replay Protection**: Unique nonce and timestamp prevent request replay
-3. **Response Verification**: Server responses can optionally be verified (if server provides auth headers)
+### Authenticated Request Flow
 
-### Request Headers
+1. `rpc_call<T>()` increments request ID atomically
+2. Creates `JsonRpcRequest` with method and params, serializes to JSON
+3. Wraps in `HttpRequest` with 32 random bytes as request nonce
+4. Converts to payload via `http_request.to_payload()`
+5. Registers a `oneshot` channel listener via `peer.listen_for_general_messages()`
+6. Sends payload via `peer.to_peer()` with 30s timeout and server identity key
+7. Listener matches response by comparing first 32 bytes (request nonce)
+8. Parses `HttpResponse` from payload, checks HTTP status
+9. Deserializes `JsonRpcResponse`, validates response ID matches
+10. Returns deserialized result `T` or converts error to `Error::StorageError`
 
-Each authenticated request includes these BRC-104 headers:
+### Unauthenticated Fallback
+
+When `use_auth` is false, `rpc_call_unauthenticated()` sends plain HTTP POST via `reqwest::Client`
+without any BRC-104 headers. Used for testing.
+
+### Settings Caching
+
+`make_available()` caches `TableSettings` in an `RwLock` to avoid repeated
+server calls. Also caches the server's identity key from settings for future
+request signing. Use `get_settings_async()` for safe async access.
+
+### Thread Safety
+
+`StorageClient` uses:
+- `AtomicU64` for request IDs (lock-free)
+- `Arc<RwLock<...>>` for cached settings and server identity key
+- `Arc<Peer<...>>` for shared peer access
+- All methods take `&self` (immutable borrows)
+
+This allows sharing across async tasks safely.
+
+## Auth Module (auth.rs)
+
+The `auth` module provides lower-level BRC-31 authentication primitives. While `StorageClient`
+now uses `Peer` for transport-level auth, these functions remain available for custom usage.
+
+### Request Headers (BRC-104)
 
 | Header | Description |
 |--------|-------------|
@@ -380,32 +352,11 @@ Each authenticated request includes these BRC-104 headers:
 | `x-bsv-auth-timestamp` | Unix timestamp in milliseconds |
 | `x-bsv-auth-signature` | Signature over canonical request data (hex) |
 
-### Signature Creation
+### Signature Format
 
 The signature covers: `method || path || SHA256(body) || timestamp || nonce`
 
-```rust
-use bsv_wallet_toolbox::storage::client::auth::{create_signing_data, sign_request};
-
-// Signing data construction
-let signing_data = create_signing_data("POST", "/", &body, timestamp, &nonce);
-
-// Sign request using the auth module helper
-let signature = sign_request(
-    &wallet,
-    "POST",
-    "/",
-    &body,
-    timestamp,
-    &nonce,
-    server_identity_key.as_ref(),
-    "my-app",
-).await?;
-```
-
 ### Nonce Creation
-
-Two nonce creation methods are available:
 
 | Method | Use Case |
 |--------|----------|
@@ -416,13 +367,10 @@ The HMAC nonce format is: `base64(random_16_bytes || hmac_16_bytes)` where HMAC 
 
 ### Timestamp Validation
 
-Timestamps are validated to prevent replay attacks:
 - Must be within 5 minutes of current time (300,000 ms)
 - Slight future timestamps (up to 1 minute) allowed for clock skew
 
 ### Auth Module Exports
-
-The `auth` module exports these types and functions:
 
 | Export | Description |
 |--------|-------------|
@@ -443,39 +391,6 @@ The `auth` module exports these types and functions:
 | `NONCE_PROTOCOL_ID` | Protocol ID for nonce HMAC computation |
 | `headers::*` | Header name constants |
 
-## Internal Details
-
-### Request Flow
-
-1. `rpc_call<T>()` increments request ID atomically
-2. Creates `JsonRpcRequest` with method and params
-3. Serializes to JSON bytes
-4. If `use_auth` is enabled:
-   - Creates nonce and timestamp
-   - Creates signing data from method, path, body hash, timestamp, nonce
-   - Signs with wallet identity key
-   - Adds all BRC-31 headers to request
-5. POSTs to `endpoint_url` via `reqwest`
-6. Parses response auth headers (for optional verification)
-7. If `verify_responses` is enabled and headers are complete, verifies signature
-8. Parses response as `JsonRpcResponse`
-9. Validates response ID matches request
-10. Deserializes result to type `T` or returns error
-
-### Settings Caching
-
-`make_available()` caches `TableSettings` in an `RwLock` to avoid repeated
-server calls. Use `get_settings_async()` for safe async access.
-
-### Thread Safety
-
-`StorageClient` uses:
-- `AtomicU64` for request IDs (lock-free)
-- `Arc<RwLock<...>>` for cached settings
-- All methods take `&self` (immutable borrows)
-
-This allows sharing across async tasks safely.
-
 ## Testing
 
 The module includes comprehensive unit tests:
@@ -489,6 +404,7 @@ The module includes comprehensive unit tests:
 | Storage client BRC-31 | 9 | Header names, version, nonce creation, timestamps, signing |
 | Method formats | 22+ | All JSON-RPC method request/response formats |
 | Entity types | 15+ | Table entity serialization/deserialization |
+| ValidCreateActionArgs | 7 | Flag derivation, serialization, custom flags |
 
 ### Running Tests
 
@@ -501,27 +417,6 @@ cargo test --features remote storage::client::auth::
 
 # Run BRC-31 integration tests
 cargo test --features remote brc31
-```
-
-### Example Test
-
-```rust
-#[test]
-fn test_brc31_auth_headers() {
-    use crate::storage::client::auth::{AuthHeaders, AUTH_VERSION};
-
-    let headers = AuthHeaders {
-        version: AUTH_VERSION.to_string(),
-        identity_key: "02abcdef...".to_string(),
-        nonce: "dGVzdC1ub25jZQ==".to_string(),
-        timestamp: 1234567890000,
-        signature: "3044022012345678...".to_string(),
-    };
-
-    let tuples = headers.to_header_tuples();
-    assert_eq!(tuples.len(), 5);
-    assert!(tuples.iter().any(|(k, _)| *k == "x-bsv-auth-signature"));
-}
 ```
 
 ## Related

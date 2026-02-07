@@ -5,14 +5,42 @@
 
 use bsv_sdk::primitives::PrivateKey;
 use bsv_sdk::wallet::{Counterparty, KeyDeriverApi, ProtoWallet};
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+
+// =============================================================================
+// UnlockingScriptTemplate Types
+// =============================================================================
+
+/// Template for generating unlocking scripts via BRC-29 key derivation.
+/// Used for deferred signing where the wallet controls the keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnlockingScriptTemplate {
+    /// Key derivation prefix (hex).
+    pub derivation_prefix: String,
+    /// Key derivation suffix (hex).
+    pub derivation_suffix: String,
+    /// The type of script to generate.
+    pub script_type: ScriptType,
+    /// Satoshis for this input (required for correct BIP-143 sighash).
+    pub satoshis: u64,
+}
+
+/// Supported script types for template-based signing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScriptType {
+    /// Pay-to-Public-Key-Hash
+    P2PKH,
+    /// Pay-to-Public-Key
+    P2PK,
+}
 
 /// Input details from storage for transaction creation.
 ///
 /// This is used to pass input information to the signer.
 /// The full type is in `crate::storage::StorageCreateTransactionInput`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignerInput {
     pub vin: u32,
     pub source_txid: String,
@@ -150,18 +178,6 @@ impl WalletSigner {
                 .derive_private_key(&brc29_protocol, &key_id, &counterparty)
                 .map_err(|e| Error::TransactionError(format!("Key derivation failed: {}", e)))?;
 
-            // Debug: Show the derived public key and address for verification
-            let derived_pubkey = signing_key.public_key();
-            let derived_address = derived_pubkey.to_address();
-            eprintln!(
-                "DEBUG signer: vin={} key_id='{}' counterparty={:?} => address={}",
-                vin, key_id, counterparty, derived_address
-            );
-            eprintln!(
-                "DEBUG signer: locking_script={} (len={})",
-                hex::encode(locking_script), locking_script.len()
-            );
-
             // Create the sighash for this input
             // This depends on the script type (P2PKH, P2PK, etc.)
             let sighash = compute_sighash(&tx_data, vin as u32, locking_script, input.satoshis)?;
@@ -244,12 +260,17 @@ impl WalletSigner {
             Counterparty::Self_
         };
 
-        // Use raw derivation with combined prefix+suffix as invoice number
-        let invoice_number = format!("{}{}", derivation_prefix, derivation_suffix);
+        // Derive the private key using BRC-29 (SABPPP) protocol
+        // Same as sign_transaction: SecurityLevel::Counterparty, protocol "3241645161d8"
+        // Key ID: "{derivation_prefix} {derivation_suffix}" (WITH SPACE)
+        use bsv_sdk::wallet::{Protocol, SecurityLevel};
+
+        let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+        let key_id = format!("{} {}", derivation_prefix, derivation_suffix);
 
         let signing_key = proto_wallet
             .key_deriver()
-            .derive_private_key_raw(&invoice_number, &counterparty)
+            .derive_private_key(&brc29_protocol, &key_id, &counterparty)
             .map_err(|e| Error::TransactionError(format!("Key derivation failed: {}", e)))?;
 
         let sighash = compute_sighash(tx_data, input_index, locking_script, input.satoshis)?;
@@ -261,6 +282,117 @@ impl WalletSigner {
         let pubkey = signing_key.public_key();
 
         build_unlocking_script(locking_script, &signature.to_der(), &pubkey.to_compressed())
+    }
+
+    /// Create an unlocking script template for deferred signing.
+    ///
+    /// This creates a template that captures the key derivation parameters
+    /// and script type needed to generate an unlocking script later.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - Key derivation prefix (hex)
+    /// * `suffix` - Key derivation suffix (hex)
+    /// * `script_type` - The type of script to generate (P2PKH or P2PK)
+    /// * `satoshis` - The satoshi value of the input (required for BIP-143 sighash)
+    pub fn create_unlock_template(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        script_type: ScriptType,
+        satoshis: u64,
+    ) -> UnlockingScriptTemplate {
+        UnlockingScriptTemplate {
+            derivation_prefix: prefix.to_string(),
+            derivation_suffix: suffix.to_string(),
+            script_type,
+            satoshis,
+        }
+    }
+
+    /// Apply unlocking script templates to a transaction.
+    ///
+    /// This derives keys from the templates and creates proper unlocking scripts
+    /// for each input that has a template. Uses BRC-29 key derivation to compute
+    /// the signing key for each templated input.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw_tx` - The unsigned transaction bytes (modified in place concept, but cloned)
+    /// * `templates` - Pairs of (input_index, template) for each input to sign
+    /// * `proto_wallet` - The ProtoWallet for key derivation
+    ///
+    /// # Returns
+    ///
+    /// The transaction bytes with unlocking scripts applied.
+    pub fn apply_templates(
+        &self,
+        raw_tx: &mut Vec<u8>,
+        templates: &[(usize, UnlockingScriptTemplate)],
+        proto_wallet: &ProtoWallet,
+    ) -> Result<Vec<u8>> {
+        // For each template, derive the key and create the unlocking script
+        // This is a stub that returns the raw_tx unchanged for now
+        // Full implementation would derive keys per template and sign inputs
+        tracing::debug!("Applying {} unlocking script templates", templates.len());
+
+        let mut tx_data = raw_tx.clone();
+
+        for (input_index, template) in templates {
+            tracing::debug!(
+                input_index = %input_index,
+                derivation_prefix = %template.derivation_prefix,
+                derivation_suffix = %template.derivation_suffix,
+                script_type = ?template.script_type,
+                "Applying template for input"
+            );
+
+            // Derive the signing key using BRC-29 protocol
+            use bsv_sdk::wallet::{Protocol, SecurityLevel};
+
+            let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+            let key_id = format!("{} {}", template.derivation_prefix, template.derivation_suffix);
+
+            let signing_key = proto_wallet
+                .key_deriver()
+                .derive_private_key(&brc29_protocol, &key_id, &Counterparty::Self_)
+                .map_err(|e| Error::TransactionError(format!("Template key derivation failed: {}", e)))?;
+
+            let pubkey = signing_key.public_key();
+            let pubkey_bytes = pubkey.to_compressed();
+
+            // Build a locking script for sighash computation based on script type
+            let locking_script = match template.script_type {
+                ScriptType::P2PKH => {
+                    // P2PKH locking script: OP_DUP OP_HASH160 <pubkey_hash> OP_EQUALVERIFY OP_CHECKSIG
+                    let pubkey_hash = hash160(&pubkey_bytes);
+                    let mut script = vec![0x76, 0xa9, 0x14];
+                    script.extend_from_slice(&pubkey_hash);
+                    script.extend_from_slice(&[0x88, 0xac]);
+                    script
+                }
+                ScriptType::P2PK => {
+                    // P2PK locking script: <pubkey> OP_CHECKSIG
+                    let mut script = vec![pubkey_bytes.len() as u8];
+                    script.extend_from_slice(&pubkey_bytes);
+                    script.push(0xac);
+                    script
+                }
+            };
+
+            let sighash = compute_sighash(&tx_data, *input_index as u32, &locking_script, template.satoshis)?;
+
+            let signature = signing_key
+                .sign(&sighash)
+                .map_err(|e| Error::TransactionError(format!("Template signing failed: {}", e)))?;
+
+            let unlocking_script =
+                build_unlocking_script(&locking_script, &signature.to_der(), &pubkey_bytes)?;
+
+            tx_data = insert_unlocking_script(&tx_data, *input_index as u32, &unlocking_script)?;
+        }
+
+        Ok(tx_data)
     }
 }
 
@@ -541,6 +673,21 @@ fn double_sha256(data: &[u8]) -> [u8; 32] {
     result
 }
 
+/// Computes HASH160 (RIPEMD160(SHA256(data))).
+///
+/// Used to derive the public key hash for P2PKH locking scripts.
+fn hash160(data: &[u8]) -> [u8; 20] {
+    use sha2::{Digest, Sha256};
+
+    let sha256_hash = Sha256::digest(data);
+
+    use ripemd::Ripemd160;
+    let ripemd_hash = <Ripemd160 as ripemd::Digest>::digest(sha256_hash);
+    let mut result = [0u8; 20];
+    result.copy_from_slice(&ripemd_hash);
+    result
+}
+
 /// Builds an unlocking script based on the locking script type.
 fn build_unlocking_script(
     locking_script: &[u8],
@@ -768,5 +915,61 @@ mod tests {
         let key = PrivateKey::random();
         let signer = WalletSigner::new(Some(key));
         assert!(signer.root_key.is_some());
+    }
+
+    #[test]
+    fn test_create_unlock_template() {
+        let signer = WalletSigner::new(None);
+        let template = signer.create_unlock_template("aabbcc", "ddeeff", ScriptType::P2PKH, 5000);
+
+        assert_eq!(template.derivation_prefix, "aabbcc");
+        assert_eq!(template.derivation_suffix, "ddeeff");
+        assert_eq!(template.script_type, ScriptType::P2PKH);
+        assert_eq!(template.satoshis, 5000);
+    }
+
+    #[test]
+    fn test_create_unlock_template_p2pk() {
+        let signer = WalletSigner::new(None);
+        let template = signer.create_unlock_template("1234", "5678", ScriptType::P2PK, 10000);
+
+        assert_eq!(template.derivation_prefix, "1234");
+        assert_eq!(template.derivation_suffix, "5678");
+        assert_eq!(template.script_type, ScriptType::P2PK);
+        assert_eq!(template.satoshis, 10000);
+    }
+
+    #[test]
+    fn test_unlocking_script_template_serialization() {
+        let template = UnlockingScriptTemplate {
+            derivation_prefix: "aabb".to_string(),
+            derivation_suffix: "ccdd".to_string(),
+            script_type: ScriptType::P2PKH,
+            satoshis: 1000,
+        };
+
+        let json = serde_json::to_string(&template).unwrap();
+        let deserialized: UnlockingScriptTemplate = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.derivation_prefix, "aabb");
+        assert_eq!(deserialized.derivation_suffix, "ccdd");
+        assert_eq!(deserialized.script_type, ScriptType::P2PKH);
+    }
+
+    #[test]
+    fn test_script_type_equality() {
+        assert_eq!(ScriptType::P2PKH, ScriptType::P2PKH);
+        assert_eq!(ScriptType::P2PK, ScriptType::P2PK);
+        assert_ne!(ScriptType::P2PKH, ScriptType::P2PK);
+    }
+
+    #[test]
+    fn test_hash160() {
+        // Test with a known value - empty input
+        let result = hash160(&[]);
+        // SHA256 of empty = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        // RIPEMD160 of that = b472a266d0bd89c13706a4132ccfb16f7c3b9fcb
+        let expected = hex::decode("b472a266d0bd89c13706a4132ccfb16f7c3b9fcb").unwrap();
+        assert_eq!(result.to_vec(), expected);
     }
 }

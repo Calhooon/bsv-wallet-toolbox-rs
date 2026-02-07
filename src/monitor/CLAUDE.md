@@ -36,12 +36,20 @@ The monitor module provides a daemon-based task scheduler for running recurring 
             (find_proven_tx_reqs)    (get_merkle_path)
 ```
 
+### Callbacks
+
+`MonitorOptions` supports optional event callbacks:
+- `on_tx_broadcasted` - Invoked when a transaction has been broadcast
+- `on_tx_proven` - Invoked when a transaction proof has been obtained
+
+Both receive a `TransactionStatusUpdate` with txid, status, and optional proof data.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module root with re-exports of `Monitor`, `MonitorOptions`, `TaskConfig`, `MonitorTask`, and `TaskResult` |
-| `config.rs` | Configuration types: `MonitorOptions`, `TasksConfig`, and `TaskConfig` with default intervals |
+| `mod.rs` | Module root with re-exports of `Monitor`, `MonitorOptions`, `TaskConfig`, `TransactionStatusUpdate`, `MonitorTask`, and `TaskResult` |
+| `config.rs` | Configuration types: `MonitorOptions`, `TasksConfig`, `TaskConfig`, and `TransactionStatusUpdate` |
 | `daemon.rs` | Main `Monitor` struct that spawns and manages background task execution via tokio |
 
 ## Submodules
@@ -78,6 +86,8 @@ where
 - `is_running()` - Check daemon status
 - `run_once()` - Execute all enabled tasks once (useful for testing)
 
+**Note:** `MonitorCallHistoryTask` requires a concrete `Services` type (not the generic `WalletServices` trait), so it is **not** spawned by `start()` or executed by `run_once()`. Users who need this task should spawn it separately with a concrete `Services` instance.
+
 ### MonitorOptions
 
 Configuration for the daemon.
@@ -86,19 +96,47 @@ Configuration for the daemon.
 pub struct MonitorOptions {
     pub tasks: TasksConfig,
     pub fail_abandoned_timeout: Duration,  // Default: 24 hours
+    pub on_tx_broadcasted: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
+    pub on_tx_proven: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
+}
+```
+
+Has a custom `Debug` impl that prints `"Some(<callback>)"` for non-None callbacks.
+
+### TransactionStatusUpdate
+
+Status update payload passed to monitor event callbacks.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionStatusUpdate {
+    pub txid: String,
+    pub status: String,
+    pub merkle_root: Option<String>,
+    pub merkle_path: Option<String>,
+    pub block_height: Option<u32>,
+    pub block_hash: Option<String>,
 }
 ```
 
 ### TasksConfig
 
-Configuration for all tasks with individual `TaskConfig` entries.
+Configuration for all 11 tasks with individual `TaskConfig` entries.
 
 ```rust
 pub struct TasksConfig {
-    pub check_for_proofs: TaskConfig,  // Default: 1 min, not immediate
-    pub send_waiting: TaskConfig,       // Default: 5 min, starts immediately
-    pub fail_abandoned: TaskConfig,     // Default: 5 min, not immediate
-    pub unfail: TaskConfig,             // Default: 10 min, not immediate
+    pub check_for_proofs: TaskConfig,   // Default: 1 min, not immediate
+    pub send_waiting: TaskConfig,        // Default: 5 min, starts immediately
+    pub fail_abandoned: TaskConfig,      // Default: 5 min, not immediate
+    pub unfail: TaskConfig,              // Default: 10 min, not immediate
+    pub clock: TaskConfig,               // Default: 1 sec, starts immediately
+    pub new_header: TaskConfig,          // Default: 1 min, not immediate
+    pub reorg: TaskConfig,               // Default: 1 min, not immediate
+    pub check_no_sends: TaskConfig,      // Default: 24 hours, not immediate
+    pub review_status: TaskConfig,       // Default: 15 min, not immediate
+    pub purge: TaskConfig,               // Default: 1 hour, not immediate
+    pub monitor_call_history: TaskConfig, // Default: 12 min, not immediate
 }
 ```
 
@@ -127,9 +165,12 @@ Interface for background tasks.
 pub trait MonitorTask: Send + Sync {
     fn name(&self) -> &'static str;
     fn default_interval(&self) -> Duration;
+    async fn setup(&self) -> Result<()> { Ok(()) }  // optional, called before first run
     async fn run(&self) -> Result<TaskResult>;
 }
 ```
+
+The `setup()` method is called once before the first `run()` invocation. It has a default no-op implementation. Tasks can override it to perform async initialization (e.g., loading state from storage). If `setup()` returns an error, the task is not started.
 
 ### TaskResult
 
@@ -151,7 +192,7 @@ pub struct TaskResult {
 
 ### TaskType
 
-Enum identifying each task type for tracking.
+Enum identifying each task type for tracking. Implements `Display` (delegates to `as_str()`).
 
 ```rust
 pub enum TaskType {
@@ -249,6 +290,7 @@ Tracks minute-level clock events for scheduling purposes.
 | Property | Value |
 |----------|-------|
 | Default interval | 1 second |
+| Starts immediately | Yes |
 | State | `last_minute: AtomicU64` |
 
 **Workflow:**
@@ -388,6 +430,8 @@ Logs service call history for monitoring and diagnostics.
 | Default interval | 12 minutes |
 | Service type | Requires concrete `Services` (not generic `WalletServices`) |
 
+**Note:** This task is **not** spawned by `Monitor.start()` or included in `Monitor.run_once()` because it requires a concrete `Services` type. Users must spawn it separately.
+
 **Workflow:**
 1. Call `services.get_services_call_history(true)` to get and reset counters
 2. Log success/failure/error counts for each service type:
@@ -418,22 +462,28 @@ monitor.start().await?;
 monitor.stop().await?;
 ```
 
-### Custom Configuration
+### Custom Configuration with Callbacks
 
 ```rust
 use bsv_wallet_toolbox::monitor::{Monitor, MonitorOptions, TaskConfig};
+use std::sync::Arc;
 use std::time::Duration;
 
-let mut options = MonitorOptions::default();
-
-// Disable the unfail task
-options.tasks.unfail.enabled = false;
-
-// Run proof checking more frequently
-options.tasks.check_for_proofs.interval = Duration::from_secs(30);
-
-// Set shorter abandoned timeout
-options.fail_abandoned_timeout = Duration::from_secs(12 * 60 * 60); // 12 hours
+let options = MonitorOptions {
+    tasks: {
+        let mut t = TasksConfig::default();
+        t.unfail.enabled = false;
+        t.check_for_proofs.interval = Duration::from_secs(30);
+        t
+    },
+    fail_abandoned_timeout: Duration::from_secs(12 * 60 * 60), // 12 hours
+    on_tx_broadcasted: Some(Arc::new(|update| {
+        println!("Broadcast: {} -> {}", update.txid, update.status);
+    })),
+    on_tx_proven: Some(Arc::new(|update| {
+        println!("Proven: {} at height {:?}", update.txid, update.block_height);
+    })),
+};
 
 let monitor = Monitor::with_options(
     Arc::new(storage),
@@ -458,7 +508,7 @@ for (task_type, result) in results {
 
 | Task | Interval | Start Immediately |
 |------|----------|-------------------|
-| clock | 1 second | No |
+| clock | 1 second | Yes |
 | check_for_proofs | 1 minute | No |
 | new_header | 1 minute | No |
 | reorg | 1 minute | No |
@@ -476,6 +526,7 @@ for (task_type, result) in results {
 - `async_trait` - Async trait support for `MonitorTask`
 - `chrono` - Time calculations for abandoned transaction detection and age thresholds
 - `tracing` - Structured logging for task execution
+- `serde` - Serialization for `TransactionStatusUpdate`
 
 ## Logging
 
@@ -483,7 +534,7 @@ The monitor uses `tracing` for structured logging:
 
 - `info` level: Task completion with items processed, new blocks detected, transaction recovery
 - `warn` level: Non-fatal errors, chain height decrease (potential reorg), proof invalidation
-- `error` level: Fatal task failures
+- `error` level: Fatal task failures, task setup failures
 - `debug` level: Detailed task progress, individual transaction processing, no-op cycles
 
 ## Related Documentation
@@ -511,6 +562,13 @@ When `stop()` is called or the `Monitor` is dropped:
 1. The `running` flag is set to `false`
 2. All spawned task handles are aborted
 3. Tasks will complete their current iteration before stopping
+
+### Task Lifecycle
+
+Each spawned task follows this lifecycle:
+1. `setup()` is called (fails the task if it returns an error)
+2. If `start_immediately` is false, wait for the configured interval
+3. Enter run loop: call `run()`, log results, sleep for interval, repeat
 
 ### Error Handling
 

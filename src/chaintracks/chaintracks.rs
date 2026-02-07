@@ -3,14 +3,17 @@
 //! Based on TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Chaintracks.ts`
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use async_trait::async_trait;
 
 use crate::Result;
 use super::{
     Chain, ChaintracksOptions, ChaintracksInfo, BlockHeader, BaseBlockHeader,
+    LiveBlockHeader, calculate_work,
     ChaintracksClient, ChaintracksManagement, ChaintracksStorage,
-    HeaderCallback, ReorgCallback,
+    HeaderCallback, ReorgCallback, ReorgEvent,
 };
 
 /// Main Chaintracks orchestrator
@@ -25,6 +28,7 @@ pub struct Chaintracks {
     available: Arc<RwLock<bool>>,
     listening: Arc<RwLock<bool>>,
     synchronized: Arc<RwLock<bool>>,
+    is_syncing: Arc<AtomicBool>,
 
     // Ingestor tracking
     bulk_ingestor_count: Arc<RwLock<usize>>,
@@ -38,6 +42,9 @@ pub struct Chaintracks {
     base_headers: Arc<RwLock<Vec<BaseBlockHeader>>>,
     #[allow(dead_code)]
     live_headers: Arc<RwLock<Vec<BlockHeader>>>,
+
+    // Background sync task handle
+    sync_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
 }
 
 impl Chaintracks {
@@ -46,18 +53,24 @@ impl Chaintracks {
         options: ChaintracksOptions,
         storage: Box<dyn ChaintracksStorage>,
     ) -> Self {
+        if options.require_ingestors {
+            tracing::warn!("Chaintracks created - ingestor validation deferred to start_background_sync");
+        }
+
         Chaintracks {
             options,
             storage: Arc::new(RwLock::new(storage)),
             available: Arc::new(RwLock::new(false)),
             listening: Arc::new(RwLock::new(false)),
             synchronized: Arc::new(RwLock::new(false)),
+            is_syncing: Arc::new(AtomicBool::new(false)),
             bulk_ingestor_count: Arc::new(RwLock::new(0)),
             live_ingestor_count: Arc::new(RwLock::new(0)),
             header_subscribers: Arc::new(RwLock::new(vec![])),
             reorg_subscribers: Arc::new(RwLock::new(vec![])),
             base_headers: Arc::new(RwLock::new(vec![])),
             live_headers: Arc::new(RwLock::new(vec![])),
+            sync_handle: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -84,6 +97,331 @@ impl Chaintracks {
 
     fn generate_subscription_id() -> String {
         uuid::Uuid::new_v4().to_string()
+    }
+
+    /// Set the listening state.
+    async fn set_listening(&self, value: bool) {
+        *self.listening.write().await = value;
+    }
+
+    /// Process all pending base headers from the queue.
+    ///
+    /// Drains the `base_headers` queue, computes the hash and determines
+    /// the height for each header, validates parent linkage, inserts valid
+    /// headers into storage, and fires reorg callbacks when necessary.
+    pub async fn process_pending_headers(&self) -> crate::Result<()> {
+        // Drain the queue
+        let pending: Vec<BaseBlockHeader> = {
+            let mut queue = self.base_headers.write().await;
+            std::mem::take(&mut *queue)
+        };
+
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        tracing::debug!("Processing {} pending headers", pending.len());
+
+        let storage = self.storage.read().await;
+
+        for base_header in pending {
+            // Compute the hash and build a BlockHeader (height 0 placeholder)
+            let block_header = base_header.to_block_header_at_height(0);
+
+            // Determine the height by looking up the parent
+            let genesis_hash = "0".repeat(64);
+            let (height, previous_header_id) = if base_header.previous_hash == genesis_hash
+                || base_header.previous_hash.is_empty()
+            {
+                // Genesis block
+                (0u32, None)
+            } else {
+                // Look up parent in storage
+                match storage
+                    .find_live_header_for_block_hash(&base_header.previous_hash)
+                    .await?
+                {
+                    Some(parent) => (parent.height + 1, Some(parent.header_id)),
+                    None => {
+                        tracing::warn!(
+                            "Parent header {} not found for header {}, inserting anyway",
+                            &base_header.previous_hash[..16.min(base_header.previous_hash.len())],
+                            &block_header.hash[..16.min(block_header.hash.len())]
+                        );
+                        // Insert with height 0 and let storage figure it out
+                        (0u32, None)
+                    }
+                }
+            };
+
+            // Build a LiveBlockHeader for insertion
+            let live_header = LiveBlockHeader {
+                version: base_header.version,
+                previous_hash: base_header.previous_hash.clone(),
+                merkle_root: base_header.merkle_root.clone(),
+                time: base_header.time,
+                bits: base_header.bits,
+                nonce: base_header.nonce,
+                height,
+                hash: block_header.hash.clone(),
+                chain_work: calculate_work(base_header.bits),
+                is_chain_tip: false,
+                is_active: false,
+                header_id: 0,
+                previous_header_id,
+            };
+
+            // Insert into storage
+            let result = storage.insert_header(live_header).await?;
+
+            if result.dupe {
+                tracing::debug!("Skipping duplicate header {}", &block_header.hash[..16]);
+                continue;
+            }
+
+            if result.added {
+                tracing::debug!(
+                    "Inserted header at height {} hash={}",
+                    height,
+                    &block_header.hash[..16]
+                );
+            }
+
+            // Fire reorg callbacks if a reorg was detected
+            if result.reorg_depth > 0 {
+                let old_tip_header: BlockHeader = result
+                    .prior_tip
+                    .clone()
+                    .map(|h| h.into())
+                    .unwrap_or_else(|| block_header.clone());
+
+                let new_tip_header = base_header.to_block_header_at_height(height);
+
+                let deactivated: Vec<BlockHeader> = result
+                    .deactivated_headers
+                    .iter()
+                    .map(|h| h.clone().into())
+                    .collect();
+
+                let event = ReorgEvent {
+                    depth: result.reorg_depth,
+                    old_tip: old_tip_header,
+                    new_tip: new_tip_header,
+                    deactivated_headers: deactivated,
+                };
+
+                tracing::info!(
+                    "Reorg detected: depth={}, firing {} callbacks",
+                    result.reorg_depth,
+                    self.reorg_subscribers.read().await.len()
+                );
+
+                self.notify_reorg_subscribers(&event).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Start background synchronization.
+    ///
+    /// Spawns an async task that coordinates bulk and live ingestors,
+    /// processes header queues automatically, and fires callbacks to subscribers.
+    pub async fn start_background_sync(&self) -> crate::Result<()> {
+        if self.is_syncing.load(Ordering::SeqCst) {
+            tracing::warn!("Background sync already running");
+            return Ok(());
+        }
+        self.is_syncing.store(true, Ordering::SeqCst);
+        tracing::info!("Starting background header sync");
+
+        // Validate ingestor configuration if required
+        if self.options.require_ingestors {
+            self.validate_ingestor_config().await?;
+        }
+
+        // Mark as listening
+        self.set_listening(true).await;
+
+        // Clone the Arcs needed by the background task
+        let is_syncing = Arc::clone(&self.is_syncing);
+        let synchronized = Arc::clone(&self.synchronized);
+        let base_headers = Arc::clone(&self.base_headers);
+        let storage = Arc::clone(&self.storage);
+        let reorg_subscribers = Arc::clone(&self.reorg_subscribers);
+
+        let handle = tokio::spawn(async move {
+            let mut first_pass_done = false;
+
+            while is_syncing.load(Ordering::SeqCst) {
+                // Drain the queue
+                let pending: Vec<BaseBlockHeader> = {
+                    let mut queue = base_headers.write().await;
+                    std::mem::take(&mut *queue)
+                };
+
+                if !pending.is_empty() {
+                    tracing::debug!(
+                        "Background sync: processing {} pending headers",
+                        pending.len()
+                    );
+
+                    let stor = storage.read().await;
+
+                    for base_header in &pending {
+                        let block_header = base_header.to_block_header_at_height(0);
+
+                        let genesis_hash = "0".repeat(64);
+                        let (height, previous_header_id) =
+                            if base_header.previous_hash == genesis_hash
+                                || base_header.previous_hash.is_empty()
+                            {
+                                (0u32, None)
+                            } else {
+                                match stor
+                                    .find_live_header_for_block_hash(&base_header.previous_hash)
+                                    .await
+                                {
+                                    Ok(Some(parent)) => {
+                                        (parent.height + 1, Some(parent.header_id))
+                                    }
+                                    _ => (0u32, None),
+                                }
+                            };
+
+                        let live_header = LiveBlockHeader {
+                            version: base_header.version,
+                            previous_hash: base_header.previous_hash.clone(),
+                            merkle_root: base_header.merkle_root.clone(),
+                            time: base_header.time,
+                            bits: base_header.bits,
+                            nonce: base_header.nonce,
+                            height,
+                            hash: block_header.hash.clone(),
+                            chain_work: calculate_work(base_header.bits),
+                            is_chain_tip: false,
+                            is_active: false,
+                            header_id: 0,
+                            previous_header_id,
+                        };
+
+                        match stor.insert_header(live_header).await {
+                            Ok(result) => {
+                                if result.reorg_depth > 0 {
+                                    let old_tip_header: BlockHeader = result
+                                        .prior_tip
+                                        .clone()
+                                        .map(|h| h.into())
+                                        .unwrap_or_else(|| block_header.clone());
+                                    let new_tip_header =
+                                        base_header.to_block_header_at_height(height);
+                                    let deactivated: Vec<BlockHeader> = result
+                                        .deactivated_headers
+                                        .iter()
+                                        .map(|h| h.clone().into())
+                                        .collect();
+                                    let event = ReorgEvent {
+                                        depth: result.reorg_depth,
+                                        old_tip: old_tip_header,
+                                        new_tip: new_tip_header,
+                                        deactivated_headers: deactivated,
+                                    };
+                                    let callbacks = reorg_subscribers.read().await;
+                                    for (_id, cb) in callbacks.iter() {
+                                        cb(event.clone());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Background sync: failed to insert header: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                // Mark synchronized after first successful processing pass
+                if !first_pass_done {
+                    first_pass_done = true;
+                    *synchronized.write().await = true;
+                    tracing::info!("Background sync: initial synchronization complete");
+                }
+
+                // Sleep before polling the queue again
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+
+            tracing::info!("Background sync task exiting");
+        });
+
+        // Store the handle so stop_background_sync can abort it
+        *self.sync_handle.write().await = Some(handle);
+
+        Ok(())
+    }
+
+    /// Stop background synchronization.
+    pub async fn stop_background_sync(&self) -> crate::Result<()> {
+        if !self.is_syncing.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        tracing::info!("Stopping background header sync");
+        self.is_syncing.store(false, Ordering::SeqCst);
+        self.set_listening(false).await;
+
+        // Abort and clean up the background task
+        let handle = self.sync_handle.write().await.take();
+        if let Some(h) = handle {
+            h.abort();
+            // Ignore JoinError from abort
+            let _ = h.await;
+        }
+
+        Ok(())
+    }
+
+    /// Check if background sync is currently running.
+    pub fn is_background_syncing(&self) -> bool {
+        self.is_syncing.load(Ordering::SeqCst)
+    }
+
+    /// Validate that required ingestors are configured.
+    pub async fn validate_ingestor_config(&self) -> crate::Result<()> {
+        let bulk_count = *self.bulk_ingestor_count.read().await;
+        let live_count = *self.live_ingestor_count.read().await;
+
+        if bulk_count == 0 {
+            tracing::warn!("No bulk ingestors configured - bulk sync will not be available");
+        }
+        if live_count == 0 {
+            tracing::warn!("No live ingestors configured - real-time header updates will not be available");
+        }
+        Ok(())
+    }
+
+    /// Fire header callbacks for all subscribers.
+    async fn notify_header_subscribers(&self, header: &BlockHeader) {
+        let callbacks = self.header_subscribers.read().await;
+        for (_id, callback) in callbacks.iter() {
+            callback(header.clone());
+        }
+    }
+
+    /// Fire reorg callbacks for all subscribers.
+    async fn notify_reorg_subscribers(&self, event: &ReorgEvent) {
+        let callbacks = self.reorg_subscribers.read().await;
+        for (_id, callback) in callbacks.iter() {
+            callback(event.clone());
+        }
+    }
+
+    /// Check if the instance is in readonly mode.
+    fn check_readonly(&self) -> crate::Result<()> {
+        if self.options.readonly {
+            return Err(crate::Error::InvalidOperation(
+                "Chaintracks is in readonly mode".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -190,12 +528,21 @@ impl ChaintracksClient for Chaintracks {
     }
 
     async fn add_header(&self, header: BaseBlockHeader) -> Result<()> {
+        self.check_readonly()?;
+        let block_header: BlockHeader = header.clone().into();
         let mut queue = self.base_headers.write().await;
         queue.push(header);
+
+        // Notify subscribers that a header was queued for processing
+        tracing::debug!("Header with hash {} queued, notifying subscribers", block_header.hash);
+        drop(queue); // Release the write lock before notifying
+        self.notify_header_subscribers(&block_header).await;
+
         Ok(())
     }
 
     async fn start_listening(&self) -> Result<()> {
+        self.check_readonly()?;
         // In a full implementation, this would:
         // 1. Start live ingestor(s) to receive new headers
         // 2. Set up a processing loop for incoming headers
@@ -251,8 +598,17 @@ impl ChaintracksClient for Chaintracks {
 #[async_trait]
 impl ChaintracksManagement for Chaintracks {
     async fn destroy(&self) -> Result<()> {
+        self.check_readonly()?;
         *self.listening.write().await = false;
         *self.available.write().await = false;
+
+        // Stop background sync if running
+        self.is_syncing.store(false, Ordering::SeqCst);
+        let handle = self.sync_handle.write().await.take();
+        if let Some(h) = handle {
+            h.abort();
+            let _ = h.await;
+        }
 
         let storage = self.storage.read().await;
         storage.destroy().await?;
@@ -435,5 +791,144 @@ mod tests {
 
         // Empty storage should validate as true
         assert!(ct.validate().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_background_sync_lifecycle() {
+        let storage = Box::new(MemoryStorage::new(Chain::Test));
+        let options = ChaintracksOptions::default_testnet();
+        let ct = Chaintracks::new(options, storage);
+
+        ct.make_available().await.unwrap();
+
+        // Initially not syncing
+        assert!(!ct.is_background_syncing());
+
+        // Start background sync
+        ct.start_background_sync().await.unwrap();
+        assert!(ct.is_background_syncing());
+        assert!(ct.is_listening().await.unwrap());
+
+        // Starting again should be a no-op (warn but not error)
+        ct.start_background_sync().await.unwrap();
+        assert!(ct.is_background_syncing());
+
+        // Stop background sync
+        ct.stop_background_sync().await.unwrap();
+        assert!(!ct.is_background_syncing());
+        assert!(!ct.is_listening().await.unwrap());
+
+        // Stopping again should be a no-op
+        ct.stop_background_sync().await.unwrap();
+        assert!(!ct.is_background_syncing());
+    }
+
+    #[tokio::test]
+    async fn test_validate_ingestor_config() {
+        let storage = Box::new(MemoryStorage::new(Chain::Test));
+        let options = ChaintracksOptions::default_testnet();
+        let ct = Chaintracks::new(options, storage);
+
+        ct.make_available().await.unwrap();
+
+        // Should succeed (just logs warnings, no errors)
+        ct.validate_ingestor_config().await.unwrap();
+
+        // Set ingestor counts and validate again
+        ct.set_bulk_ingestor_count(1).await;
+        ct.set_live_ingestor_count(1).await;
+        ct.validate_ingestor_config().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_require_ingestors_option() {
+        let storage = Box::new(MemoryStorage::new(Chain::Test));
+        let mut options = ChaintracksOptions::default_testnet();
+        options.require_ingestors = true;
+        let ct = Chaintracks::new(options, storage);
+
+        ct.make_available().await.unwrap();
+
+        // start_background_sync should call validate_ingestor_config
+        ct.start_background_sync().await.unwrap();
+        assert!(ct.is_background_syncing());
+    }
+
+    #[tokio::test]
+    async fn test_readonly_mode() {
+        let storage = Box::new(MemoryStorage::new(Chain::Test));
+        let mut options = ChaintracksOptions::default_testnet();
+        options.readonly = true;
+        let ct = Chaintracks::new(options, storage);
+
+        ct.make_available().await.unwrap();
+
+        // add_header should fail in readonly mode
+        let header = BaseBlockHeader {
+            version: 1,
+            previous_hash: "0".repeat(64),
+            merkle_root: "a".repeat(64),
+            time: 1234567890,
+            bits: 0x1d00ffff,
+            nonce: 42,
+        };
+        let result = ct.add_header(header).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::Error::InvalidOperation(msg) => {
+                assert!(msg.contains("readonly"));
+            }
+            other => panic!("Expected InvalidOperation, got: {:?}", other),
+        }
+
+        // start_listening should fail in readonly mode
+        let result = ct.start_listening().await;
+        assert!(result.is_err());
+
+        // destroy should fail in readonly mode
+        let result = ct.destroy().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_readonly_default_is_false() {
+        let options = ChaintracksOptions::default();
+        assert!(!options.readonly);
+        assert!(!options.require_ingestors);
+    }
+
+    #[tokio::test]
+    async fn test_header_subscriber_notification() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let storage = Box::new(MemoryStorage::new(Chain::Test));
+        let options = ChaintracksOptions::default_testnet();
+        let ct = Chaintracks::new(options, storage);
+
+        ct.make_available().await.unwrap();
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count_clone = call_count.clone();
+
+        let _sub_id = ct
+            .subscribe_headers(Box::new(move |_header| {
+                count_clone.fetch_add(1, Ordering::SeqCst);
+            }))
+            .await
+            .unwrap();
+
+        // Add a header - should trigger the subscriber callback
+        let header = BaseBlockHeader {
+            version: 1,
+            previous_hash: "0".repeat(64),
+            merkle_root: "b".repeat(64),
+            time: 1234567890,
+            bits: 0x1d00ffff,
+            nonce: 99,
+        };
+        ct.add_header(header).await.unwrap();
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 }

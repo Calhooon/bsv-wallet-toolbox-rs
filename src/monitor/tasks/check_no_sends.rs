@@ -12,7 +12,7 @@ use std::time::Duration;
 use super::{MonitorTask, TaskResult};
 use crate::services::WalletServices;
 use crate::storage::entities::ProvenTxReqStatus;
-use crate::storage::{FindProvenTxReqsArgs, WalletStorageProvider};
+use crate::storage::{FindProvenTxReqsArgs, MonitorStorage};
 use crate::Result;
 
 /// Task that retrieves merkle proofs for 'nosend' transactions.
@@ -23,7 +23,7 @@ use crate::Result;
 /// and retrieves their merkle proofs.
 pub struct CheckNoSendsTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     storage: Arc<S>,
@@ -34,7 +34,7 @@ where
 
 impl<S, V> CheckNoSendsTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     /// Create a new check no-sends task.
@@ -55,7 +55,7 @@ where
 #[async_trait]
 impl<S, V> MonitorTask for CheckNoSendsTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     fn name(&self) -> &'static str {

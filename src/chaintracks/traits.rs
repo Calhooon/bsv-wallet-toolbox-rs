@@ -272,6 +272,10 @@ pub struct ChaintracksOptions {
     pub batch_insert_limit: u32,
     /// Migration chunk size (default: 500)
     pub bulk_migration_chunk_size: u32,
+    /// If true, require ingestors to be configured (validation only, not a hard error)
+    pub require_ingestors: bool,
+    /// If true, prevent any write operations (header insertion, reorg handling)
+    pub readonly: bool,
 }
 
 impl Default for ChaintracksOptions {
@@ -283,6 +287,8 @@ impl Default for ChaintracksOptions {
             add_live_recursion_limit: 36,
             batch_insert_limit: 400,
             bulk_migration_chunk_size: 500,
+            require_ingestors: false,
+            readonly: false,
         }
     }
 }

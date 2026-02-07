@@ -63,6 +63,7 @@ pub use providers::{
     WhatsOnChain, WhatsOnChainConfig,
     Arc, ArcConfig,
     Bitails, BitailsConfig,
+    BlockHeaderService, BhsConfig,
 };
 
 /// Configuration options for wallet services.
@@ -86,6 +87,12 @@ pub struct ServicesOptions {
     /// ARC configuration for GorillaPool
     pub arc_gorillapool_config: Option<ArcConfig>,
 
+    /// Block Header Service URL (optional)
+    pub bhs_url: Option<String>,
+
+    /// Block Header Service API key (optional)
+    pub bhs_api_key: Option<String>,
+
     /// BSV exchange rate cache duration in milliseconds
     pub bsv_update_msecs: u64,
 
@@ -105,6 +112,8 @@ impl Default for ServicesOptions {
             arc_config: None,
             arc_gorillapool_url: Some("https://arc.gorillapool.io".to_string()),
             arc_gorillapool_config: None,
+            bhs_url: None,
+            bhs_api_key: None,
             bsv_update_msecs: 15 * 60 * 1000, // 15 minutes
             fiat_update_msecs: 24 * 60 * 60 * 1000, // 24 hours (fiat rates change less frequently)
             fiat_exchange_rates: FiatExchangeRates::default(),
@@ -150,6 +159,25 @@ impl ServicesOptions {
     pub fn with_gorillapool(mut self, url: impl Into<String>, config: Option<ArcConfig>) -> Self {
         self.arc_gorillapool_url = Some(url.into());
         self.arc_gorillapool_config = config;
+        self
+    }
+
+    /// Set Block Header Service URL.
+    pub fn with_bhs_url(mut self, url: impl Into<String>) -> Self {
+        self.bhs_url = Some(url.into());
+        self
+    }
+
+    /// Set Block Header Service API key.
+    pub fn with_bhs_api_key(mut self, key: impl Into<String>) -> Self {
+        self.bhs_api_key = Some(key.into());
+        self
+    }
+
+    /// Set Block Header Service URL and API key.
+    pub fn with_bhs(mut self, url: impl Into<String>, api_key: Option<String>) -> Self {
+        self.bhs_url = Some(url.into());
+        self.bhs_api_key = api_key;
         self
     }
 }

@@ -93,5 +93,5 @@ mod certificate_issuance;
 mod signer;
 mod wallet;
 
-pub use signer::{SignerInput, WalletSigner};
-pub use wallet::{PendingTransaction, Wallet, WalletOptions};
+pub use signer::{ScriptType, SignerInput, UnlockingScriptTemplate, WalletSigner};
+pub use wallet::{PendingTransaction, PrivilegedKeyManager, Wallet, WalletOptions};

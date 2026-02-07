@@ -658,12 +658,9 @@ pub async fn create_action_internal(
     )
     .await?;
 
-    eprintln!("DEBUG create_action_internal: build_input_beef returned input_beef={}", input_beef.as_ref().map(|b| b.len()).unwrap_or(0));
-
     // Store input_beef in the transaction record (required for process_action)
     // This matches the TypeScript behavior which stores inputBEEF at transaction creation
     if let Some(ref beef_bytes) = input_beef {
-        eprintln!("DEBUG create_action_internal: Storing input_beef ({} bytes) for transaction_id={}", beef_bytes.len(), transaction_id);
         let now = Utc::now();
         sqlx::query("UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?")
             .bind(beef_bytes)
@@ -671,8 +668,6 @@ pub async fn create_action_internal(
             .bind(transaction_id)
             .execute(storage.pool())
             .await?;
-    } else {
-        eprintln!("DEBUG create_action_internal: No input_beef to store for transaction_id={}", transaction_id);
     }
 
     // Build final result
@@ -1713,13 +1708,8 @@ async fn build_input_beef(
         // First, try to get a stored BEEF and merge it directly.
         // This is the most efficient path - it contains all ancestors in one structure.
         if let Some(stored_beef) = get_stored_beef(storage, &txid).await? {
-            eprintln!("DEBUG build_input_beef: Found stored BEEF for txid {}", &txid[..16.min(txid.len())]);
-            eprintln!("DEBUG build_input_beef:   stored_beef.txs={} bumps={}", stored_beef.txs.len(), stored_beef.bumps.len());
-
             // Merge the entire stored BEEF - this includes all ancestors and any proofs
             beef.merge_beef(&stored_beef);
-
-            eprintln!("DEBUG build_input_beef:   after merge: beef.txs={} bumps={}", beef.txs.len(), beef.bumps.len());
 
             // Mark all txids from the stored BEEF as processed
             for beef_tx in &stored_beef.txs {
@@ -1729,8 +1719,6 @@ async fn build_input_beef(
             // Continue to next pending txid - no need for recursive lookup
             depth += 1;
             continue;
-        } else {
-            eprintln!("DEBUG build_input_beef: No stored BEEF for txid {}", &txid[..16.min(txid.len())]);
         }
 
         // Fall back to individual transaction lookup

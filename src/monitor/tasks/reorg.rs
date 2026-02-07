@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use super::{MonitorTask, TaskResult};
 use crate::services::WalletServices;
 use crate::storage::entities::ProvenTxReqStatus;
-use crate::storage::{FindProvenTxReqsArgs, WalletStorageProvider};
+use crate::storage::{FindProvenTxReqsArgs, MonitorStorage};
 use crate::Result;
 
 /// A deactivated header from a reorg.
@@ -41,7 +41,7 @@ const REORG_PROCESS_DELAY_SECS: i64 = 10 * 60;
 /// that may have been affected.
 pub struct ReorgTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     storage: Arc<S>,
@@ -52,7 +52,7 @@ where
 
 impl<S, V> ReorgTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     /// Create a new reorg task.
@@ -92,7 +92,7 @@ where
 #[async_trait]
 impl<S, V> MonitorTask for ReorgTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     fn name(&self) -> &'static str {

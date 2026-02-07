@@ -37,6 +37,9 @@ const PROFILE_ID_LENGTH: usize = 16;
 /// Primary pad length in bytes.
 const PRIMARY_PAD_LENGTH: usize = 32;
 
+/// Privileged pad length in bytes.
+const PRIVILEGED_PAD_LENGTH: usize = 32;
+
 /// Configuration for the CWI-style wallet manager.
 #[derive(Debug, Clone)]
 pub struct CWIStyleWalletManagerConfig {
@@ -67,6 +70,9 @@ pub struct Profile {
     /// Primary pad XOR'd with derived key to get root key.
     #[serde(with = "base64_bytes")]
     pub primary_pad: Vec<u8>,
+    /// Privileged key pad (32 bytes) for two-factor authentication.
+    #[serde(default, with = "base64_bytes_default")]
+    pub privileged_pad: Vec<u8>,
     /// When the profile was created.
     pub created_at: DateTime<Utc>,
     /// When the profile was last updated.
@@ -74,12 +80,13 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// Creates a new profile with random id and pad.
+    /// Creates a new profile with random id, primary pad, and privileged pad.
     pub fn new(name: String) -> Self {
         Self {
             name,
             id: generate_random_bytes(PROFILE_ID_LENGTH),
             primary_pad: generate_random_bytes(PRIMARY_PAD_LENGTH),
+            privileged_pad: generate_random_bytes(PRIVILEGED_PAD_LENGTH),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -98,6 +105,7 @@ impl Profile {
             name,
             id: generate_random_bytes(PROFILE_ID_LENGTH),
             primary_pad,
+            privileged_pad: generate_random_bytes(PRIVILEGED_PAD_LENGTH),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -128,6 +136,81 @@ mod base64_bytes {
         STANDARD
             .decode(&s)
             .map_err(|e| serde::de::Error::custom(e.to_string()))
+    }
+}
+
+/// Base64 encoding helper for serde with default support (for optional/new fields).
+mod base64_bytes_default {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error> {
+        if bytes.is_empty() {
+            serializer.serialize_str("")
+        } else {
+            serializer.serialize_str(&STANDARD.encode(bytes))
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        if s.is_empty() {
+            Ok(Vec::new())
+        } else {
+            STANDARD
+                .decode(&s)
+                .map_err(|e| serde::de::Error::custom(e.to_string()))
+        }
+    }
+}
+
+/// Universal Message Protocol token for cross-device wallet transfer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UmpToken {
+    /// Token format version.
+    pub version: u32,
+    /// Encrypted root key material.
+    pub key_encrypted: Vec<u8>,
+    /// Encrypted profiles data.
+    pub profiles_encrypted: Vec<u8>,
+}
+
+impl UmpToken {
+    /// Create a new UMP token (version 1).
+    pub fn new(key_encrypted: Vec<u8>, profiles_encrypted: Vec<u8>) -> Self {
+        Self {
+            version: 1,
+            key_encrypted,
+            profiles_encrypted,
+        }
+    }
+}
+
+/// Wallet snapshot for persistence and recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletSnapshot {
+    /// Snapshot format version (currently 2).
+    pub version: u8,
+    /// Encrypted snapshot key material.
+    pub snapshot_key: Vec<u8>,
+    /// Active profile identifier.
+    pub active_profile_id: String,
+    /// Encrypted payload containing wallet state.
+    pub encrypted_payload: Vec<u8>,
+}
+
+impl WalletSnapshot {
+    /// Current snapshot version.
+    pub const CURRENT_VERSION: u8 = 2;
+
+    /// Create a new V2 snapshot.
+    pub fn new(snapshot_key: Vec<u8>, active_profile_id: String, encrypted_payload: Vec<u8>) -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            snapshot_key,
+            active_profile_id,
+            encrypted_payload,
+        }
     }
 }
 
@@ -456,6 +539,64 @@ impl CWIStyleWalletManager {
         Ok(profile)
     }
 
+    /// Exports a single profile to JSON bytes (unencrypted).
+    ///
+    /// This serializes the profile data to a JSON byte array that can be
+    /// stored or transmitted. Unlike `export_profile()`, this does not encrypt
+    /// the data, making it suitable for internal backup operations.
+    pub async fn export_profile_json(&self, profile_id: &[u8]) -> Result<Vec<u8>> {
+        let profiles = self.profiles.read().await;
+        let profile = profiles
+            .get(profile_id)
+            .ok_or_else(|| Error::NotFound {
+                entity: "Profile".to_string(),
+                id: hex::encode(profile_id),
+            })?;
+
+        serde_json::to_vec(profile).map_err(Error::JsonError)
+    }
+
+    /// Imports a profile from JSON bytes (unencrypted).
+    ///
+    /// Deserializes a profile from a JSON byte array and stores it in the
+    /// manager. If a profile with the same ID already exists, it will be
+    /// overwritten.
+    pub async fn import_profile_json(&self, data: &[u8]) -> Result<Profile> {
+        let profile: Profile =
+            serde_json::from_slice(data).map_err(Error::JsonError)?;
+
+        let mut profiles = self.profiles.write().await;
+        profiles.insert(profile.id.clone(), profile.clone());
+
+        Ok(profile)
+    }
+
+    /// Backs up all profiles to a JSON byte array.
+    ///
+    /// Serializes all profiles to a JSON array. This is an unencrypted backup
+    /// suitable for internal storage. For encrypted backups, use `save_snapshot()`.
+    pub async fn backup_all_profiles(&self) -> Result<Vec<u8>> {
+        let profiles = self.profiles.read().await;
+        let all_profiles: Vec<&Profile> = profiles.values().collect();
+        serde_json::to_vec(&all_profiles).map_err(Error::JsonError)
+    }
+
+    /// Restores profiles from a JSON byte array backup.
+    ///
+    /// Deserializes profiles from a JSON array and adds them to the manager.
+    /// Existing profiles with the same IDs will be overwritten.
+    pub async fn restore_all_profiles(&self, data: &[u8]) -> Result<Vec<Profile>> {
+        let restored: Vec<Profile> =
+            serde_json::from_slice(data).map_err(Error::JsonError)?;
+
+        let mut profiles = self.profiles.write().await;
+        for profile in &restored {
+            profiles.insert(profile.id.clone(), profile.clone());
+        }
+
+        Ok(restored)
+    }
+
     /// Destroys the manager state, returning to unauthenticated.
     pub async fn destroy(&self) {
         *self.underlying.write().await = None;
@@ -540,6 +681,7 @@ mod tests {
         assert_eq!(profile.name, "Test");
         assert_eq!(profile.id.len(), PROFILE_ID_LENGTH);
         assert_eq!(profile.primary_pad.len(), PRIMARY_PAD_LENGTH);
+        assert_eq!(profile.privileged_pad.len(), PRIVILEGED_PAD_LENGTH);
     }
 
     #[test]
@@ -574,6 +716,46 @@ mod tests {
         assert_eq!(profile.name, parsed.name);
         assert_eq!(profile.id, parsed.id);
         assert_eq!(profile.primary_pad, parsed.primary_pad);
+        assert_eq!(profile.privileged_pad, parsed.privileged_pad);
+    }
+
+    #[test]
+    fn test_profile_backward_compat_deserialization() {
+        // Simulate old format without privileged_pad
+        let json = r#"{"name":"Test","id":"AAAAAAAAAAAAAAAAAAAAAA==","primaryPad":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z"}"#;
+        let parsed: Profile = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.name, "Test");
+        // privileged_pad should default to empty vec
+        assert!(parsed.privileged_pad.is_empty());
+    }
+
+    #[test]
+    fn test_ump_token() {
+        let token = UmpToken::new(vec![1, 2, 3], vec![4, 5, 6]);
+        assert_eq!(token.version, 1);
+        assert_eq!(token.key_encrypted, vec![1, 2, 3]);
+        assert_eq!(token.profiles_encrypted, vec![4, 5, 6]);
+
+        let json = serde_json::to_string(&token).unwrap();
+        let parsed: UmpToken = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.version, token.version);
+    }
+
+    #[test]
+    fn test_wallet_snapshot() {
+        let snapshot = WalletSnapshot::new(
+            vec![0xAA; 32],
+            "profile-1".to_string(),
+            vec![0xBB; 64],
+        );
+        assert_eq!(snapshot.version, WalletSnapshot::CURRENT_VERSION);
+        assert_eq!(snapshot.version, 2);
+        assert_eq!(snapshot.active_profile_id, "profile-1");
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let parsed: WalletSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.active_profile_id, "profile-1");
     }
 
     #[test]

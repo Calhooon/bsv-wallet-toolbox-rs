@@ -109,13 +109,16 @@ pub use services::{
     WhatsOnChain, WhatsOnChainConfig,
     Arc, ArcConfig,
     Bitails, BitailsConfig,
+    BlockHeaderService, BhsConfig,
 };
 
 // Re-export Wallet types
-pub use wallet::{Wallet, WalletOptions, WalletSigner};
+pub use wallet::{Wallet, WalletOptions, WalletSigner, UnlockingScriptTemplate, ScriptType, SignerInput};
 
 // Re-export Monitor types
-pub use monitor::{Monitor, MonitorOptions, MonitorTask, TaskConfig, TaskResult};
+pub use monitor::{
+    Monitor, MonitorOptions, MonitorTask, TaskConfig, TaskResult, TransactionStatusUpdate,
+};
 
 // Re-export Managers types
 pub use managers::{
@@ -128,7 +131,14 @@ pub use managers::{
     SimpleWalletManager,
     // CWI-style wallet manager
     CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile,
-    // Permissions manager (stub)
+    UmpToken, WalletSnapshot,
+    // Permissions manager
     GroupedPermissions, PermissionRequest, PermissionToken, PermissionsModule,
     WalletPermissionsManager, WalletPermissionsManagerConfig,
+    // Authentication manager
+    WalletAuthenticationManager,
+    // Logger
+    WalletLogger, WalletLogEntry,
+    // Setup helpers
+    SetupWalletOptions, setup_wallet,
 };

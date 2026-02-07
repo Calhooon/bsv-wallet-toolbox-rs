@@ -183,6 +183,18 @@ pub struct TableOutput {
     pub script_length: i32,
     pub script_offset: i32,
     pub output_type: String,
+    /// Who provided this output: "you", "storage", or "you-and-storage".
+    pub provided_by: String,
+    /// Purpose of this output.
+    pub purpose: Option<String>,
+    /// Description of this output.
+    pub output_description: Option<String>,
+    /// Transaction ID that spent this output.
+    pub spent_by: Option<i64>,
+    /// Sequence number for spending input.
+    pub sequence_number: Option<u32>,
+    /// Description of how this output was spent.
+    pub spending_description: Option<String>,
     pub spendable: bool,
     pub change: bool,
     pub derivation_prefix: Option<String>,
@@ -279,7 +291,15 @@ pub struct TableProvenTxReq {
     pub status: ProvenTxReqStatus,
     pub attempts: i32,
     pub history: String,
-    pub notify_txid: Option<String>,
+    /// Whether notifications have been sent for this request.
+    pub notified: bool,
+    /// JSON string matching TS ProvenTxReqNotifyApi. Default "".
+    #[serde(default)]
+    pub notify: String,
+    /// Raw transaction bytes.
+    pub raw_tx: Option<Vec<u8>>,
+    /// Input BEEF data for this request.
+    pub input_beef: Option<Vec<u8>>,
     pub proven_tx_id: Option<i64>,
     /// Batch identifier for grouping transactions to broadcast together.
     pub batch: Option<String>,

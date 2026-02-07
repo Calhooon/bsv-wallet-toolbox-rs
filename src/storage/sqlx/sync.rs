@@ -729,11 +729,6 @@ async fn fetch_proven_tx_reqs_for_sync(
                 _ => ProvenTxReqStatus::Pending,
             };
             let notified_val: i32 = row.get("notified");
-            let notify_txid = if notified_val != 0 {
-                Some(row.get::<String, _>("txid"))
-            } else {
-                None
-            };
 
             TableProvenTxReq {
                 proven_tx_req_id: row.get("proven_tx_req_id"),
@@ -741,7 +736,10 @@ async fn fetch_proven_tx_reqs_for_sync(
                 status,
                 attempts: row.get("attempts"),
                 history: row.get("history"),
-                notify_txid,
+                notified: notified_val != 0,
+                notify: row.try_get::<String, _>("notify").unwrap_or_default(),
+                raw_tx: row.try_get("raw_tx").ok().flatten(),
+                input_beef: row.try_get("input_beef").ok().flatten(),
                 proven_tx_id: row.get("proven_tx_id"),
                 batch: row.try_get("batch").ok(),
                 created_at: row.get("created_at"),
@@ -956,6 +954,12 @@ async fn fetch_outputs_for_sync(
             script_length: row.get("script_length"),
             script_offset: row.get("script_offset"),
             output_type: row.get("type"),
+            provided_by: row.try_get("provided_by").unwrap_or("you".to_string()),
+            purpose: row.try_get("purpose").ok(),
+            output_description: row.try_get("output_description").ok(),
+            spent_by: row.try_get("spent_by").ok().flatten(),
+            sequence_number: row.try_get::<Option<i32>, _>("sequence_number").ok().flatten().map(|v| v as u32),
+            spending_description: row.try_get("spending_description").ok(),
             spendable: row.get("spendable"),
             change: row.get("change"),
             derivation_prefix: row.get("derivation_prefix"),
@@ -1404,7 +1408,7 @@ async fn upsert_proven_tx_req(storage: &StorageSqlx, req: &TableProvenTxReq) -> 
             .bind(&status_str)
             .bind(req.attempts)
             .bind(&req.history)
-            .bind(req.notify_txid.is_some() as i32)
+            .bind(req.notified as i32)
             .bind(req.proven_tx_id)
             .bind(req.updated_at)
             .bind(local_id)
@@ -1428,7 +1432,7 @@ async fn upsert_proven_tx_req(storage: &StorageSqlx, req: &TableProvenTxReq) -> 
         .bind(&status_str)
         .bind(req.attempts)
         .bind(&req.history)
-        .bind(req.notify_txid.is_some() as i32)
+        .bind(req.notified as i32)
         .bind(req.proven_tx_id)
         .bind(req.created_at)
         .bind(req.updated_at)
@@ -2446,6 +2450,12 @@ mod tests {
                     script_length: 25,
                     script_offset: 0,
                     output_type: "P2PKH".to_string(),
+                    provided_by: "you".to_string(),
+                    purpose: None,
+                    output_description: None,
+                    spent_by: None,
+                    sequence_number: None,
+                    spending_description: None,
                     spendable: true,
                     change: false,
                     derivation_prefix: None,

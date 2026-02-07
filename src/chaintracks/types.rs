@@ -45,6 +45,22 @@ pub struct BaseBlockHeader {
 }
 
 impl BaseBlockHeader {
+    /// Compute the double SHA256 hash of this header and create a BlockHeader at the given height.
+    pub fn to_block_header_at_height(&self, height: u32) -> BlockHeader {
+        let bytes = self.to_bytes();
+        let hash = compute_block_hash(&bytes);
+        BlockHeader {
+            version: self.version,
+            previous_hash: self.previous_hash.clone(),
+            merkle_root: self.merkle_root.clone(),
+            time: self.time,
+            bits: self.bits,
+            nonce: self.nonce,
+            height,
+            hash,
+        }
+    }
+
     /// Serialize header to 80-byte array
     pub fn to_bytes(&self) -> [u8; 80] {
         let mut bytes = [0u8; 80];
@@ -355,7 +371,7 @@ pub fn calculate_work(bits: u32) -> String {
     // This gives a relative work value suitable for comparison
     if target == 0 {
         format!("{:064x}", u128::MAX)
-    } else if target >= u128::MAX {
+    } else if target == u128::MAX {
         "0".repeat(63) + "1"
     } else {
         format!("{:064x}", u128::MAX / (target + 1))

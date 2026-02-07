@@ -3,11 +3,12 @@
 //! This module provides the main `Wallet` struct that implements the full
 //! `WalletInterface` trait from `bsv_sdk::wallet`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bsv_sdk::primitives::PrivateKey;
+use serde::{Deserialize, Serialize};
 use bsv_sdk::primitives::PublicKey;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
@@ -34,7 +35,8 @@ use bsv_sdk::wallet::{
 
 use crate::error::{Error, Result};
 use crate::services::{Chain, WalletServices};
-use crate::storage::{AuthId, StorageProcessActionArgs, WalletStorageProvider};
+use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
+use crate::storage::entities::TransactionStatus;
 
 use super::signer::{SignerInput, WalletSigner};
 
@@ -49,6 +51,121 @@ const WALLET_VERSION: &str = "bsv-wallet-toolbox-0.1.0";
 const PENDING_TRANSACTION_TTL_SECS: i64 = 24 * 60 * 60;
 
 // =============================================================================
+// PrivilegedKeyManager
+// =============================================================================
+
+/// Trait for privileged key management operations.
+/// Used for two-factor authentication where crypto operations at SecurityLevel >= 2
+/// are routed through a separate key manager.
+#[async_trait]
+pub trait PrivilegedKeyManager: Send + Sync {
+    async fn get_public_key(&self, args: GetPublicKeyArgs, originator: &str) -> std::result::Result<GetPublicKeyResult, bsv_sdk::Error>;
+    async fn encrypt(&self, args: EncryptArgs, originator: &str) -> std::result::Result<EncryptResult, bsv_sdk::Error>;
+    async fn decrypt(&self, args: DecryptArgs, originator: &str) -> std::result::Result<DecryptResult, bsv_sdk::Error>;
+    async fn create_hmac(&self, args: CreateHmacArgs, originator: &str) -> std::result::Result<CreateHmacResult, bsv_sdk::Error>;
+    async fn verify_hmac(&self, args: VerifyHmacArgs, originator: &str) -> std::result::Result<VerifyHmacResult, bsv_sdk::Error>;
+    async fn create_signature(&self, args: CreateSignatureArgs, originator: &str) -> std::result::Result<CreateSignatureResult, bsv_sdk::Error>;
+    async fn verify_signature(&self, args: VerifySignatureArgs, originator: &str) -> std::result::Result<VerifySignatureResult, bsv_sdk::Error>;
+}
+
+// =============================================================================
+// LookupResolver
+// =============================================================================
+
+/// Lookup resolver for overlay certificate discovery.
+pub struct LookupResolver {
+    client: reqwest::Client,
+    hosts: Vec<String>,
+}
+
+impl LookupResolver {
+    pub fn new(hosts: Vec<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            hosts,
+        }
+    }
+
+    pub async fn query(&self, _attributes: &std::collections::HashMap<String, String>) -> Result<Vec<bsv_sdk::wallet::IdentityCertificate>> {
+        // Stub: overlay lookup not yet connected
+        let _ = &self.client;
+        let _ = &self.hosts;
+        tracing::debug!("LookupResolver query called - overlay integration pending");
+        Ok(vec![])
+    }
+}
+
+// =============================================================================
+// WalletLogger
+// =============================================================================
+
+/// Wallet operation logger for debugging and diagnostics.
+#[derive(Debug, Clone, Default)]
+pub struct WalletLogger {
+    pub indent: u32,
+    pub logs: Vec<WalletLoggerLog>,
+    pub is_origin: bool,
+    pub is_error: bool,
+}
+
+/// A single log entry.
+#[derive(Debug, Clone)]
+pub struct WalletLoggerLog {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub level: String,
+    pub message: String,
+    pub indent: u32,
+}
+
+impl WalletLogger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn group(&mut self, name: &str) {
+        self.log("info", name);
+        self.indent += 1;
+    }
+
+    pub fn group_end(&mut self) {
+        if self.indent > 0 {
+            self.indent -= 1;
+        }
+    }
+
+    pub fn log(&mut self, level: &str, message: &str) {
+        self.logs.push(WalletLoggerLog {
+            timestamp: chrono::Utc::now(),
+            level: level.to_string(),
+            message: message.to_string(),
+            indent: self.indent,
+        });
+    }
+
+    pub fn error(&mut self, message: &str) {
+        self.is_error = true;
+        self.log("error", message);
+    }
+
+    pub fn to_log_string(&self) -> String {
+        self.logs
+            .iter()
+            .map(|l| {
+                let indent_str = "  ".repeat(l.indent as usize);
+                format!(
+                    "[{}] {}{}: {}",
+                    l.timestamp.format("%H:%M:%S"),
+                    indent_str,
+                    l.level,
+                    l.message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+// =============================================================================
 // PendingTransaction
 // =============================================================================
 
@@ -56,7 +173,7 @@ const PENDING_TRANSACTION_TTL_SECS: i64 = 24 * 60 * 60;
 ///
 /// When `create_action` is called with `sign_and_process = false`, the unsigned
 /// transaction is cached here for later signing via `sign_action`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingTransaction {
     /// Unique reference for this pending transaction
     pub reference: String,
@@ -166,6 +283,11 @@ where
 
     /// The user's ID in the storage system (for AuthId)
     user_id: i64,
+
+    /// Optional privileged key manager for SecurityLevel >= 2 operations.
+    /// Used for two-factor authentication where crypto operations are routed
+    /// through a separate key manager.
+    privileged_key_manager: Option<Arc<dyn PrivilegedKeyManager>>,
 }
 
 impl<S, V> Wallet<S, V>
@@ -262,6 +384,7 @@ where
             signer,
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
             user_id: user.user_id,
+            privileged_key_manager: None,
         })
     }
 
@@ -293,6 +416,136 @@ where
     /// Creates an AuthId for the current user.
     fn auth(&self) -> AuthId {
         AuthId::with_user_id(&self.identity_key, self.user_id)
+    }
+
+    // =========================================================================
+    // WS4.2 - Privileged Key Manager
+    // =========================================================================
+
+    /// Sets the privileged key manager for SecurityLevel >= 2 operations.
+    ///
+    /// When set, cryptographic operations at elevated security levels will be
+    /// routed through this separate key manager for two-factor authentication.
+    pub fn set_privileged_key_manager(&mut self, manager: Arc<dyn PrivilegedKeyManager>) {
+        self.privileged_key_manager = Some(manager);
+    }
+
+    /// Returns a reference to the privileged key manager, if set.
+    pub fn privileged_key_manager(&self) -> Option<&Arc<dyn PrivilegedKeyManager>> {
+        self.privileged_key_manager.as_ref()
+    }
+
+    // =========================================================================
+    // WS4.1 - list_failed_actions
+    // =========================================================================
+
+    /// Lists actions (transactions) with Failed status.
+    ///
+    /// Queries the storage for outputs associated with transactions that have
+    /// a Failed status, then returns the unique txids of those transactions.
+    ///
+    /// # Returns
+    ///
+    /// A vector of txid strings for transactions with Failed status.
+    pub async fn list_failed_actions(&self) -> Result<Vec<String>> {
+        let auth = self.auth();
+        let args = FindOutputsArgs {
+            user_id: Some(self.user_id),
+            tx_status: Some(vec![TransactionStatus::Failed]),
+            ..Default::default()
+        };
+        let outputs = self.storage.find_outputs(&auth, args).await?;
+        let txids: Vec<String> = outputs
+            .into_iter()
+            .map(|o| o.txid)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(txids)
+    }
+
+    // =========================================================================
+    // WS4.3 - Helper Methods
+    // =========================================================================
+
+    /// Destroys the wallet's storage, deleting all persisted data.
+    ///
+    /// This delegates to the storage backend's `destroy()` method.
+    /// After calling this, the wallet should not be used further.
+    pub async fn destroy(&self) -> Result<()> {
+        self.storage.destroy().await
+    }
+
+    /// Returns the wallet's identity key as an owned String.
+    ///
+    /// This is a convenience method that clones the identity key.
+    /// For a borrowed reference, use `identity_key()`.
+    pub fn get_identity_key(&self) -> String {
+        self.identity_key.clone()
+    }
+
+    /// Returns a list of known transaction IDs from storage.
+    ///
+    /// Queries storage for outputs associated with transactions that have
+    /// been broadcast or confirmed (Completed, Unproven, Sending statuses),
+    /// and returns their unique txids.
+    pub async fn get_known_txids(&self) -> Result<Vec<String>> {
+        let auth = self.auth();
+        let args = FindOutputsArgs {
+            user_id: Some(self.user_id),
+            tx_status: Some(vec![
+                TransactionStatus::Completed,
+                TransactionStatus::Unproven,
+                TransactionStatus::Sending,
+            ]),
+            ..Default::default()
+        };
+        let outputs = self.storage.find_outputs(&auth, args).await?;
+        let txids: Vec<String> = outputs
+            .into_iter()
+            .map(|o| o.txid)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(txids)
+    }
+
+    /// Returns the storage identity key and storage name from settings.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(storage_identity_key, storage_name)`.
+    pub fn get_storage_identity(&self) -> (String, String) {
+        let settings = self.storage.get_settings();
+        (
+            settings.storage_identity_key.clone(),
+            settings.storage_name.clone(),
+        )
+    }
+
+    /// Lists actions (transactions) with NoSend status.
+    ///
+    /// Queries the storage for outputs associated with transactions that have
+    /// a NoSend status, then returns the unique txids of those transactions.
+    ///
+    /// # Returns
+    ///
+    /// A vector of txid strings for transactions with NoSend status.
+    pub async fn list_no_send_actions(&self) -> Result<Vec<String>> {
+        let auth = self.auth();
+        let args = FindOutputsArgs {
+            user_id: Some(self.user_id),
+            tx_status: Some(vec![TransactionStatus::NoSend]),
+            ..Default::default()
+        };
+        let outputs = self.storage.find_outputs(&auth, args).await?;
+        let txids: Vec<String> = outputs
+            .into_iter()
+            .map(|o| o.txid)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(txids)
     }
 
     /// Calls ProtoWallet.get_public_key.
@@ -689,10 +942,25 @@ where
                 .collect();
 
             // Sign the transaction using the wallet signer
-            let signed_tx = self
+            let signed_tx = match self
                 .signer
                 .sign_transaction(&unsigned_tx, &signer_inputs, &self.proto_wallet)
-                .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+            {
+                Ok(tx) => tx,
+                Err(e) => {
+                    // Signing failed - abort the transaction to release locked UTXOs
+                    tracing::error!(reference = %storage_result.reference, error = %e, "Signing failed in create_action, aborting transaction to release UTXOs");
+                    if let Err(abort_err) = self.storage.abort_action(&auth, bsv_sdk::wallet::AbortActionArgs {
+                        reference: storage_result.reference.clone(),
+                    }).await {
+                        tracing::error!(reference = %storage_result.reference, error = %abort_err, "Failed to abort transaction after signing error");
+                    }
+                    return Err(bsv_sdk::Error::WalletError(format!(
+                        "Signing failed: {}. Transaction aborted and UTXOs released.",
+                        e
+                    )));
+                }
+            };
 
             // Compute txid from signed transaction
             let txid = compute_txid(&signed_tx);
@@ -726,11 +994,26 @@ where
                     .unwrap_or_default(),
             };
 
-            let process_result = self
+            let process_result = match self
                 .storage
                 .process_action(&auth, process_args)
                 .await
-                .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    // Processing failed - abort the transaction to release locked UTXOs
+                    tracing::error!(reference = %storage_result.reference, error = %e, "Process action failed in create_action, aborting transaction to release UTXOs");
+                    if let Err(abort_err) = self.storage.abort_action(&auth, bsv_sdk::wallet::AbortActionArgs {
+                        reference: storage_result.reference.clone(),
+                    }).await {
+                        tracing::error!(reference = %storage_result.reference, error = %abort_err, "Failed to abort transaction after process error");
+                    }
+                    return Err(bsv_sdk::Error::WalletError(format!(
+                        "Process action failed: {}. Transaction aborted and UTXOs released.",
+                        e
+                    )));
+                }
+            };
 
             // Log the process result for debugging
             tracing::debug!(
@@ -743,38 +1026,23 @@ where
             // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
             if !no_send && !accept_delayed_broadcast {
                 let broadcast_success = if let Some(ref input_beef_bytes) = storage_result.input_beef {
-                    eprintln!("DEBUG broadcast: Have input_beef ({} bytes)", input_beef_bytes.len());
                     // Create a new BEEF that includes both the signed tx and its ancestors
                     match bsv_sdk::transaction::Beef::from_binary(input_beef_bytes) {
                         Ok(mut broadcast_beef) => {
-                            // Debug: show BEEF version and txid-only status
-                            let is_v1 = broadcast_beef.version == bsv_sdk::transaction::BEEF_V1;
-                            eprintln!("DEBUG broadcast: Parsed input_beef - version={} txs={} bumps={}",
-                                if is_v1 { "V1" } else { "V2" }, broadcast_beef.txs.len(), broadcast_beef.bumps.len());
-                            for (i, btx) in broadcast_beef.txs.iter().enumerate() {
-                                eprintln!("DEBUG broadcast:   tx[{}]: txid={:.16}... txid_only={} has_proof={}",
-                                    i, btx.txid(), btx.is_txid_only(), btx.has_proof());
-                            }
-
                             // Add the signed transaction (no bump index since it's new/unproven)
                             broadcast_beef.merge_raw_tx(signed_tx.clone(), None);
-                            eprintln!("DEBUG broadcast: After merge - txs={} bumps={}", broadcast_beef.txs.len(), broadcast_beef.bumps.len());
 
-                            // Debug: Check if V2->V1 downgrade is possible
+                            // Check if V2->V1 downgrade is possible
                             let can_downgrade = broadcast_beef.txs.iter().all(|tx| !tx.is_txid_only());
-                            eprintln!("DEBUG broadcast: Can downgrade V2->V1: {} (all txs non-txid-only: {})", can_downgrade, can_downgrade);
 
                             // Force downgrade to V1 for ARC compatibility
                             if can_downgrade && broadcast_beef.version != bsv_sdk::transaction::BEEF_V1 {
-                                eprintln!("DEBUG broadcast: Forcing downgrade to BEEF V1");
                                 broadcast_beef.version = bsv_sdk::transaction::BEEF_V1;
                             }
 
                             // Serialize and broadcast
                             let beef_bytes = broadcast_beef.to_binary();
                             let txid_strings = vec![txid.clone()];
-                            eprintln!("DEBUG broadcast: Broadcasting {} bytes (version={}) to txid {}",
-                                beef_bytes.len(), if broadcast_beef.version == bsv_sdk::transaction::BEEF_V1 { "V1" } else { "V2" }, txid);
                             tracing::debug!(
                                 txid = %txid,
                                 beef_len = beef_bytes.len(),
@@ -785,7 +1053,6 @@ where
                                     // BUG-005 FIX: Check if at least one provider succeeded
                                     let any_success = results.iter().any(|r| r.status == "success");
                                     if any_success {
-                                        eprintln!("DEBUG broadcast: SUCCESS!");
                                         tracing::info!(txid = %txid, "Transaction broadcast successfully");
                                         true
                                     } else {
@@ -793,18 +1060,6 @@ where
                                             .filter(|r| r.status != "success")
                                             .map(|r| format!("{}: {} {:?}", r.name, r.status, r.error))
                                             .collect();
-                                        eprintln!("DEBUG broadcast: FAILED - errors: {:?}", errors);
-                                        // Show detailed txid_results for debugging
-                                        for r in &results {
-                                            eprintln!("DEBUG broadcast: Provider {} - status={}", r.name, r.status);
-                                            for tr in &r.txid_results {
-                                                eprintln!("DEBUG broadcast:   txid_result: txid={:.16}... status={} double_spend={} data={:?}",
-                                                    tr.txid, tr.status, tr.double_spend, tr.data);
-                                                for note in &tr.notes {
-                                                    eprintln!("DEBUG broadcast:   note: {:?}", note);
-                                                }
-                                            }
-                                        }
                                         tracing::error!(
                                             txid = %txid,
                                             errors = ?errors,
@@ -814,20 +1069,17 @@ where
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("DEBUG broadcast: post_beef error: {}", e);
                                     tracing::error!(txid = %txid, error = %e, "Broadcast failed");
                                     false
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("DEBUG broadcast: Failed to parse input BEEF: {}", e);
                             tracing::error!(txid = %txid, error = %e, "Failed to parse input BEEF");
                             false
                         }
                     }
                 } else {
-                    eprintln!("DEBUG broadcast: No input_beef available");
                     tracing::warn!(txid = %txid, "No input_beef available for broadcast");
                     false
                 };
@@ -1022,10 +1274,26 @@ where
         }
 
         // Sign the transaction using the wallet signer
-        let signed_tx = self
+        let signed_tx = match self
             .signer
             .sign_transaction(&pending_tx.raw_tx, &inputs, &self.proto_wallet)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        {
+            Ok(tx) => tx,
+            Err(e) => {
+                // Signing failed - abort the transaction to release locked UTXOs
+                tracing::error!(reference = %reference, error = %e, "Signing failed, aborting transaction to release UTXOs");
+                let auth = self.auth();
+                if let Err(abort_err) = self.storage.abort_action(&auth, bsv_sdk::wallet::AbortActionArgs {
+                    reference: reference.clone(),
+                }).await {
+                    tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after signing error");
+                }
+                return Err(bsv_sdk::Error::WalletError(format!(
+                    "Signing failed: {}. Transaction aborted and UTXOs released.",
+                    e
+                )));
+            }
+        };
 
         // Compute txid from signed transaction
         let txid = compute_txid(&signed_tx);
@@ -1065,11 +1333,26 @@ where
             send_with,
         };
 
-        let process_result = self
+        let process_result = match self
             .storage
             .process_action(&auth, process_args)
             .await
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        {
+            Ok(result) => result,
+            Err(e) => {
+                // Processing failed - abort the transaction to release locked UTXOs
+                tracing::error!(reference = %reference, error = %e, "Process action failed, aborting transaction to release UTXOs");
+                if let Err(abort_err) = self.storage.abort_action(&auth, bsv_sdk::wallet::AbortActionArgs {
+                    reference: reference.clone(),
+                }).await {
+                    tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after process error");
+                }
+                return Err(bsv_sdk::Error::WalletError(format!(
+                    "Process action failed: {}. Transaction aborted and UTXOs released.",
+                    e
+                )));
+            }
+        };
 
         // If not no_send and not delayed, broadcast the transaction
         // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
@@ -1219,6 +1502,24 @@ where
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
+        // Validate wallet payment outputs have correct BRC-29 derivation parameters
+        for output in &args.outputs {
+            if let Some(ref payment) = output.payment_remittance {
+                // Validate derivation parameters are present and non-empty
+                if payment.derivation_prefix.is_empty() || payment.derivation_suffix.is_empty() {
+                    return Err(bsv_sdk::Error::WalletError(
+                        "Wallet payment outputs require non-empty derivation_prefix and derivation_suffix".to_string()
+                    ));
+                }
+                tracing::debug!(
+                    output_index = output.output_index,
+                    derivation_prefix = %payment.derivation_prefix,
+                    derivation_suffix = %payment.derivation_suffix,
+                    "Validated BRC-29 derivation parameters for wallet payment output"
+                );
+            }
+        }
+
         let auth = self.auth();
 
         let result = self
@@ -1286,12 +1587,14 @@ where
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
-        // For direct acquisition, store the certificate
-        // For issuance, this would require HTTP communication with the certifier
+        // Route based on acquisition protocol:
+        // - Direct: certificate data is already provided in args, store directly
+        // - Issuance: use BRC-104 HTTP communication with certifier service
 
         match args.acquisition_protocol {
             bsv_sdk::wallet::AcquisitionProtocol::Direct => {
-                // Direct acquisition - certificate is already provided
+                // Direct certificate storage (existing behavior)
+                tracing::debug!("Acquiring certificate via direct protocol");
                 let _auth = self.auth();
 
                 // Build the certificate from args
@@ -1304,7 +1607,8 @@ where
                 Ok(certificate)
             }
             bsv_sdk::wallet::AcquisitionProtocol::Issuance => {
-                // Issuance protocol requires HTTP communication with certifier
+                // Use the certificate issuance module (BRC-104 protocol)
+                tracing::debug!("Acquiring certificate via issuance protocol");
                 let auth = self.auth();
 
                 super::certificate_issuance::acquire_certificate_issuance(
@@ -1932,6 +2236,7 @@ where
         f.debug_struct("Wallet")
             .field("identity_key", &self.identity_key)
             .field("chain", &self.chain)
+            .field("has_privileged_key_manager", &self.privileged_key_manager.is_some())
             .finish_non_exhaustive()
     }
 }

@@ -352,7 +352,12 @@ impl Bitails {
     }
 
     /// Post BEEF transaction.
-    pub async fn post_beef(&self, _beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
+    ///
+    /// Parses the BEEF to extract raw transactions and broadcasts each one
+    /// via the raw transaction endpoint.
+    pub async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
+        use bsv_sdk::transaction::Beef;
+
         let mut result = PostBeefResult {
             name: "Bitails".to_string(),
             status: "success".to_string(),
@@ -361,24 +366,60 @@ impl Bitails {
             notes: vec![make_note("postBeef")],
         };
 
-        // Extract raw transactions from BEEF
-        // This is a simplified implementation - full BEEF parsing is complex
-        // In practice, we'd parse the BEEF and extract individual transactions
+        // Parse the BEEF to extract raw transactions
+        let parsed_beef = match Beef::from_binary(beef) {
+            Ok(b) => b,
+            Err(e) => {
+                result.status = "error".to_string();
+                result.error = Some(format!("Failed to parse BEEF: {}", e));
+                return Ok(result);
+            }
+        };
 
-        // For now, we'll indicate this needs proper BEEF parsing
+        // Broadcast each requested txid
         for txid in txids {
-            result.txid_results.push(PostTxResultForTxid {
-                txid: txid.clone(),
-                status: "error".to_string(),
-                double_spend: false,
-                competing_txs: None,
-                data: Some("BEEF parsing not implemented".to_string()),
-                service_error: true,
-                block_hash: None,
-                block_height: None,
-                notes: vec![make_note("postBeefNotImplemented")],
-            });
-            result.status = "error".to_string();
+            // Find the transaction in the BEEF
+            let beef_tx = parsed_beef.find_txid(txid);
+            let raw_tx = beef_tx.and_then(|btx| btx.tx()).map(|tx| tx.to_binary());
+
+            let tx_result = match raw_tx {
+                Some(tx_bytes) => {
+                    // Broadcast the raw transaction
+                    match self.broadcast(&tx_bytes).await {
+                        Ok(broadcast_result) => broadcast_result,
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            PostTxResultForTxid {
+                                txid: txid.clone(),
+                                status: "error".to_string(),
+                                double_spend: false,
+                                competing_txs: None,
+                                data: Some(err_msg),
+                                service_error: true,
+                                block_hash: None,
+                                block_height: None,
+                                notes: vec![make_note("postBeefBroadcastError")],
+                            }
+                        }
+                    }
+                }
+                None => PostTxResultForTxid {
+                    txid: txid.clone(),
+                    status: "error".to_string(),
+                    double_spend: false,
+                    competing_txs: None,
+                    data: Some(format!("Transaction {} not found in BEEF", txid)),
+                    service_error: true,
+                    block_hash: None,
+                    block_height: None,
+                    notes: vec![make_note("postBeefTxNotFound")],
+                },
+            };
+
+            if tx_result.status != "success" {
+                result.status = "error".to_string();
+            }
+            result.txid_results.push(tx_result);
         }
 
         Ok(result)
@@ -618,6 +659,68 @@ impl Bitails {
                 status
             ))),
         }
+    }
+
+    // =========================================================================
+    // Additional Height / Header Methods
+    // =========================================================================
+
+    /// Get current blockchain height.
+    ///
+    /// Uses the chain info endpoint to retrieve the current block count.
+    pub async fn current_height(&self) -> Result<u32> {
+        let url = format!("{}network/info", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.get_headers())
+            .send()
+            .await
+            .map_err(|e| Error::NetworkError(format!("Bitails chain_info: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(Error::ServiceError(format!(
+                "Bitails chain_info: HTTP {}",
+                response.status()
+            )));
+        }
+
+        let data: BitailsNetworkInfo = response.json().await.map_err(|e| {
+            Error::ServiceError(format!("Bitails parse: {}", e))
+        })?;
+
+        Ok(data.blocks)
+    }
+
+    /// Get block header by height.
+    pub async fn get_header_by_height(&self, height: u32) -> Result<BlockHeader> {
+        let url = format!("{}block/header/{}", self.base_url, height);
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.get_headers())
+            .send()
+            .await
+            .map_err(|e| Error::NetworkError(format!("Bitails header: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(Error::ServiceError(format!(
+                "Bitails header: HTTP {}",
+                response.status()
+            )));
+        }
+
+        response.json::<BlockHeader>().await.map_err(|e| {
+            Error::ServiceError(format!("Bitails header parse: {}", e))
+        })
+    }
+
+    /// Validate merkle root for height (lookup header and compare).
+    pub async fn is_valid_root_for_height(&self, root: &str, height: u32) -> Result<bool> {
+        let header = self.get_header_by_height(height).await?;
+        Ok(header.merkle_root == root)
     }
 }
 

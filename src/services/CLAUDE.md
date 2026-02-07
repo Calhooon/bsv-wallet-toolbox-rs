@@ -3,7 +3,7 @@
 
 ## Overview
 
-The services module provides a unified interface for interacting with BSV blockchain services. It coordinates multiple service providers (WhatsOnChain, ARC, Bitails) with automatic failover and call tracking. The system uses a collection-based pattern where each operation type maintains an ordered list of providers that are tried sequentially until one succeeds.
+The services module provides a unified interface for interacting with BSV blockchain services. It coordinates multiple service providers (WhatsOnChain, ARC, Bitails, BHS) with automatic failover and call tracking. The system uses a collection-based pattern where each operation type maintains an ordered list of providers that are tried sequentially until one succeeds.
 
 ## Architecture
 
@@ -15,12 +15,12 @@ The services module provides a unified interface for interacting with BSV blockc
 │                    ServiceCollection<T>                          │
 │  (Per-operation failover with call history tracking)            │
 ├───────────────┬───────────────┬───────────────┬─────────────────┤
-│ WhatsOnChain  │     ARC       │    Bitails    │                 │
-│ - Raw TX      │ - BEEF Post   │ - Raw TX      │                 │
-│ - Merkle Path │ - Merkle Path │ - Merkle Path │                 │
-│ - UTXO Status │ - Tx Status   │ - Tx Status   │                 │
-│ - Script Hist │               │ - Script Hist │                 │
-│ - Exchange $  │               │               │                 │
+│ WhatsOnChain  │     ARC       │    Bitails    │      BHS        │
+│ - Raw TX      │ - BEEF Post   │ - Raw TX      │ - Height        │
+│ - Merkle Path │ - Merkle Path │ - Merkle Path │ - Header by Ht  │
+│ - UTXO Status │ - Tx Status   │ - Tx Status   │ - Merkle Root   │
+│ - Script Hist │               │ - Script Hist │   Validation    │
+│ - Exchange $  │               │ - Height      │ - Chain Tip     │
 │ - Chain Info  │               │               │                 │
 └───────────────┴───────────────┴───────────────┴─────────────────┘
 ```
@@ -33,7 +33,7 @@ The services module provides a unified interface for interacting with BSV blockc
 | `traits.rs` | `WalletServices` trait definition, `NLockTimeInput` type, and all result types (`GetRawTxResult`, `PostBeefResult`, `GetBeefResult`, etc.) |
 | `services.rs` | `Services` struct implementing `WalletServices` with multi-provider orchestration |
 | `collection.rs` | `ServiceCollection<S>` generic failover container with call history tracking |
-| `providers/` | Individual provider implementations (WhatsOnChain, ARC, Bitails) |
+| `providers/` | Individual provider implementations (WhatsOnChain, ARC, Bitails, BHS) |
 
 ## Key Types
 
@@ -45,10 +45,11 @@ Main orchestrator coordinating all blockchain operations:
 pub struct Services {
     pub chain: Chain,
     pub options: ServicesOptions,
-    pub whatsonchain: Arc<WhatsOnChain>,
-    pub arc_taal: Arc<Arc>,
-    pub arc_gorillapool: Option<Arc<Arc>>,
-    pub bitails: Arc<Bitails>,
+    pub whatsonchain: StdArc<WhatsOnChain>,
+    pub arc_taal: StdArc<Arc>,
+    pub arc_gorillapool: Option<StdArc<Arc>>,
+    pub bitails: StdArc<Bitails>,
+    pub bhs: Option<StdArc<BlockHeaderService>>,
     pub post_beef_mode: PostBeefMode,
     // Internal RwLock-protected service collections for each operation...
     // Cached exchange rates (BSV and fiat)...
@@ -71,7 +72,7 @@ pub struct Services {
 - `get_script_hash_history(hash, use_next)` - Get transaction history for script
 - `get_bsv_exchange_rate()` - Get cached USD/BSV rate
 - `get_fiat_exchange_rate(currency, base)` - Get fiat exchange rate between currencies
-- `get_height()` - Get current blockchain height
+- `get_height()` - Get current blockchain height (BHS -> WoC -> Bitails failover)
 - `hash_to_header(hash)` - Get block header by hash
 - `n_lock_time_is_final(n_lock_time)` - Check if raw nLockTime value allows mining
 - `n_lock_time_is_final_for_tx(input)` - Check nLockTime finality with sequence info
@@ -163,6 +164,7 @@ pub struct ServiceCollection<S> {
 - `all_services_to_call()` - Get all services for parallel operations
 - `all_services_owned()` - Get owned copies (avoids lock contention)
 - `all_services_from_current()` - Get services in round-robin order from current index
+- `clone_collection()` - Clone with fresh history (requires `S: Clone`)
 - `add_call_success/failure/error(provider, call)` - Record call outcome
 - `get_call_history(reset)` - Get statistics, optionally reset counters
 
@@ -186,6 +188,8 @@ pub struct ServicesOptions {
     pub arc_config: Option<ArcConfig>,
     pub arc_gorillapool_url: Option<String>,
     pub arc_gorillapool_config: Option<ArcConfig>,
+    pub bhs_url: Option<String>,
+    pub bhs_api_key: Option<String>,
     pub bsv_update_msecs: u64,       // 15 min default
     pub fiat_update_msecs: u64,      // 24 hour default
     pub fiat_exchange_rates: FiatExchangeRates,
@@ -198,6 +202,9 @@ pub struct ServicesOptions {
 - `with_bitails_api_key(key)` - Set Bitails API key
 - `with_arc(url, config)` - Set TAAL ARC configuration
 - `with_gorillapool(url, config)` - Set GorillaPool ARC configuration
+- `with_bhs_url(url)` - Set Block Header Service URL
+- `with_bhs_api_key(key)` - Set Block Header Service API key
+- `with_bhs(url, api_key)` - Set BHS URL and API key together
 
 ### FiatCurrency (traits.rs:657)
 
@@ -276,6 +283,9 @@ The `Services` constructor sets up provider priority for each operation:
 | `get_utxo_status` | WhatsOnChain |
 | `get_status_for_txids` | WhatsOnChain -> Bitails |
 | `get_script_hash_history` | WhatsOnChain -> Bitails |
+| `get_height` | BHS (if configured) -> WhatsOnChain -> Bitails (not via ServiceCollection) |
+
+Note: `get_height` uses direct failover (not ServiceCollection-based) trying BHS first, then WhatsOnChain's `get_chain_info()`, then Bitails' `current_height()`.
 
 ## Providers
 
@@ -295,10 +305,10 @@ Transaction broadcast service (mAPI):
 - **TAAL Mainnet:** `https://arc.taal.com`
 - **TAAL Testnet:** `https://arc-test.taal.com`
 - **GorillaPool:** `https://arc.gorillapool.io`
-- Native BEEF v1 support
+- Native BEEF v1 support with automatic V2-to-V1 conversion
 - Callback URLs for proof delivery
 - Double-spend detection
-- Merkle path retrieval
+- Merkle path retrieval (implements `MerklePathService` via `get_tx_data`)
 
 ### Bitails (providers/bitails.rs)
 
@@ -308,7 +318,19 @@ Alternative provider:
 - TSC merkle proofs
 - Multi-transaction broadcast
 - Script hash history
-- Block header by hash
+- Block header by hash and by height
+- Current height endpoint
+
+### BlockHeaderService (providers/bhs.rs)
+
+Dedicated block header lookup service:
+- **Mainnet:** `https://bhs.babbage.systems`
+- **Testnet:** `https://bhs-test.babbage.systems`
+- Current chain height
+- Header by height
+- Merkle root validation
+- Chain tip header
+- Optional Bearer token authentication
 
 ## Helper Functions (traits.rs)
 
@@ -319,114 +341,6 @@ pub fn txid_from_raw_tx(raw_tx: &[u8]) -> String;
 pub fn validate_txid(raw_tx: &[u8], expected: &str) -> Result<()>;
 pub fn validate_script_hash(hash: &str) -> Result<()>;
 pub fn convert_script_hash(output: &str, format: Option<GetUtxoStatusOutputFormat>) -> Result<String>;
-```
-
-## Usage Examples
-
-### Create Services with Defaults
-
-```rust
-use bsv_wallet_toolbox::services::{Services, Chain};
-
-let services = Services::mainnet()?;
-let raw_tx = services.get_raw_tx("txid...", false).await?;
-```
-
-### Custom Configuration
-
-```rust
-use bsv_wallet_toolbox::services::{Services, ServicesOptions, Chain};
-
-let options = ServicesOptions::mainnet()
-    .with_woc_api_key("your-api-key")
-    .with_bitails_api_key("bitails-key");
-
-let services = Services::with_options(Chain::Main, options)?;
-```
-
-### Get BEEF for Transaction
-
-```rust
-// Get BEEF with known txids trimmed
-let known = vec!["input_txid1".to_string()];
-let result = services.get_beef("txid...", &known).await?;
-
-if let Some(beef) = result.beef {
-    println!("Got BEEF ({} bytes), has_proof: {}", beef.len(), result.has_proof);
-}
-```
-
-### Post BEEF Transaction
-
-```rust
-let beef_bytes: Vec<u8> = /* BEEF-encoded transaction */;
-let txids = vec!["txid1".to_string(), "txid2".to_string()];
-
-let results = services.post_beef(&beef_bytes, &txids).await?;
-for result in results {
-    if result.is_success() {
-        println!("Broadcast via {}", result.name);
-    }
-}
-```
-
-### Check UTXO Status
-
-```rust
-let script_hash = services.hash_output_script(&locking_script);
-let status = services.get_utxo_status(&script_hash, None, Some("txid.0"), false).await?;
-
-if status.is_utxo.unwrap_or(false) {
-    println!("Output is unspent!");
-}
-```
-
-### Check nLockTime Finality
-
-```rust
-use bsv_wallet_toolbox::services::{NLockTimeInput, WalletServices};
-
-// From a Transaction
-let input = NLockTimeInput::from_transaction(&tx);
-let is_final = services.n_lock_time_is_final_for_tx(input).await?;
-
-// From raw bytes
-let input = NLockTimeInput::from_raw_tx(&raw_tx_bytes)?;
-let is_final = services.n_lock_time_is_final_for_tx(input).await?;
-
-// Simple check with just the nLockTime value
-let is_final = services.n_lock_time_is_final(500000).await?;
-```
-
-### Get Fiat Exchange Rates
-
-```rust
-use bsv_wallet_toolbox::services::{FiatCurrency, WalletServices};
-
-// Get EUR per USD
-let eur_rate = services.get_fiat_exchange_rate(FiatCurrency::EUR, None).await?;
-
-// Get GBP per EUR
-let gbp_per_eur = services.get_fiat_exchange_rate(
-    FiatCurrency::GBP,
-    Some(FiatCurrency::EUR)
-).await?;
-```
-
-### Get Service Diagnostics
-
-```rust
-let history = services.get_services_call_history(true); // true = reset counters
-
-if let Some(raw_tx_history) = &history.get_raw_tx {
-    for (name, provider_history) in &raw_tx_history.history_by_provider {
-        println!("{}: {} success, {} failures",
-            name,
-            provider_history.total_counts.success,
-            provider_history.total_counts.failure
-        );
-    }
-}
 ```
 
 ## PostBeefMode (services.rs:26)
@@ -478,6 +392,17 @@ trait ScriptHashHistoryService { async fn get_script_hash_history(&self, hash: &
 ```
 
 These are implemented by the provider types and used via type-erased `Arc<dyn Trait>` in service collections.
+
+**Trait implementations by provider:**
+
+| Trait | WhatsOnChain | ARC | Bitails |
+|-------|:---:|:---:|:---:|
+| `MerklePathService` | Y | Y | Y |
+| `RawTxService` | Y | - | Y |
+| `PostBeefService` | Y | Y | Y |
+| `UtxoStatusService` | Y | - | - |
+| `StatusForTxidsService` | Y | - | Y |
+| `ScriptHashHistoryService` | Y | - | Y |
 
 ## Related Documentation
 

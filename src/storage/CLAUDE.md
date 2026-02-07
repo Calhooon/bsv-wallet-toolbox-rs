@@ -16,7 +16,7 @@ This module provides the storage layer for the wallet toolbox, defining traits f
 
 | Submodule | Feature Flag | Purpose |
 |-----------|--------------|---------|
-| `entities/` | Always | Database entity structs for the wallet schema (16 table types) |
+| `entities/` | Always | Database entity structs for the wallet schema (18 table types) |
 | `sqlx/` | `sqlite` or `mysql` | Local database storage using SQLx |
 | `client/` | `remote` | Remote storage via JSON-RPC to storage.babbage.systems |
 
@@ -71,6 +71,9 @@ Write operations (extends `WalletStorageReader`):
 | `insert_certificate_field()` | Add a certificate field value |
 | `relinquish_certificate()` | Release a certificate |
 | `relinquish_output()` | Release an output |
+| `update_transaction_status_after_broadcast()` | Update tx/proven_tx_req status after broadcast attempt |
+| `review_status()` | Review storage status, clean up aged items |
+| `purge_data()` | Remove old completed/failed records |
 
 ### WalletStorageSync
 
@@ -166,6 +169,10 @@ Provides metadata about a configured storage provider instance.
 | `StorageInternalizeActionResult` | Result of importing external transaction |
 | `SendWithResult` | Status of a sent transaction |
 | `ReviewActionResult` | Result of non-delayed broadcast |
+| `ReviewStatusResult` | Log output from `review_status()` |
+| `PurgeParams` | Parameters for `purge_data()` (max_age_days, purge_completed, purge_failed) |
+| `PurgeResults` | Count and log from `purge_data()` |
+| `AdminStatsResult` | Aggregate statistics (users, transactions, outputs, etc.) |
 
 ### Sync Types
 
@@ -240,13 +247,13 @@ let settings = client.make_available().await?;
 
 See `client/CLAUDE.md` for detailed documentation.
 
-### WalletStorageManager (planned)
+### WalletStorageManager (in `managers/` module)
 
-A future implementation to orchestrate multiple providers with active/backup semantics. Currently commented out in `mod.rs`.
+Orchestrates multiple storage providers with active/backup semantics. Implemented in `src/managers/storage_manager.rs`, not in the `storage/` submodule. Implements all storage traits by delegating via `run_as_writer`.
 
 ## Entities
 
-The `entities` submodule defines structs for the wallet schema (16 table types):
+The `entities` submodule defines structs for the wallet schema (18 table types):
 
 ### Core Tables
 

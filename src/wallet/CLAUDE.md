@@ -21,7 +21,8 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 │                       WalletSigner                              │
 │  - BIP-143 sighash computation                                  │
 │  - P2PKH / P2PK unlocking script generation                     │
-│  - Key derivation via protocol + counterparty                   │
+│  - Key derivation via BRC-29 protocol + counterparty            │
+│  - Unlocking script templates for deferred signing              │
 ├─────────────────────────────────────────────────────────────────┤
 │                    PendingTransaction Cache                     │
 │  - Caches unsigned transactions for deferred signing            │
@@ -31,6 +32,11 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 │  - BRC-104 HTTP communication with certifiers                   │
 │  - Field encryption and master keyring creation                 │
 │  - HMAC-based serial number verification                        │
+├─────────────────────────────────────────────────────────────────┤
+│              Scaffolding Types (future integration)             │
+│  - PrivilegedKeyManager trait (two-factor auth)                 │
+│  - LookupResolver (overlay certificate discovery)               │
+│  - WalletLogger (operation diagnostics)                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -38,9 +44,9 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mod.rs` | ~97 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput` |
-| `wallet.rs` | ~2184 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction` and helper functions |
-| `signer.rs` | ~737 | `WalletSigner` for transaction signing with BIP-143 sighash, transaction parsing, and script generation |
+| `mod.rs` | ~97 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput`, `ScriptType`, `UnlockingScriptTemplate` |
+| `wallet.rs` | ~2582 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, and helper functions |
+| `signer.rs` | ~966 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1095 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
 
 ## Key Exports
@@ -61,12 +67,15 @@ where
     options: WalletOptions,
     signer: WalletSigner,
     pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
+    user_id: i64,
 }
 ```
 
 Generic wallet implementation parameterized by:
 - `S` - Storage backend (e.g., `StorageSqlx`, `StorageClient`)
 - `V` - Services backend (e.g., `Services`)
+
+The `user_id` field is resolved during construction via `storage.find_or_insert_user()` and used to build `AuthId` for all storage calls.
 
 ### PendingTransaction
 
@@ -108,12 +117,31 @@ pub struct WalletSigner {
 }
 ```
 
-Handles transaction signing using key derivation from `ProtoWallet`. Signs inputs based on their derivation prefix/suffix, deriving keys via `Protocol` and `Counterparty` from `bsv_sdk::wallet`.
+Handles transaction signing using key derivation from `ProtoWallet`. Signs inputs based on their derivation prefix/suffix, deriving keys via BRC-29 protocol (`"3241645161d8"` at SecurityLevel::Counterparty).
 
 **Methods:**
 - `new(root_key: Option<PrivateKey>)` - Create a new signer (uses "anyone" key if None)
 - `sign_transaction(&self, unsigned_tx, inputs, proto_wallet) -> Result<Vec<u8>>` - Sign all inputs in a transaction, returns fully signed transaction bytes
 - `sign_input(&self, tx_data, input_index, input, proto_wallet) -> Result<Vec<u8>>` - Sign a single input, returns unlocking script bytes
+- `create_unlock_template(&self, prefix, suffix, script_type) -> UnlockingScriptTemplate` - Create a template for deferred signing
+- `apply_templates(&self, raw_tx, templates, proto_wallet) -> Result<Vec<u8>>` - Apply unlocking script templates to sign inputs
+
+### UnlockingScriptTemplate & ScriptType
+
+```rust
+pub struct UnlockingScriptTemplate {
+    pub derivation_prefix: String,
+    pub derivation_suffix: String,
+    pub script_type: ScriptType,
+}
+
+pub enum ScriptType {
+    P2PKH,
+    P2PK,
+}
+```
+
+Templates for deferred signing where the wallet controls the keys. Captures BRC-29 key derivation parameters and script type for later unlocking script generation.
 
 ### SignerInput
 
@@ -132,6 +160,35 @@ pub struct SignerInput {
 ```
 
 Input metadata required for signing. Passed from storage results to the signer.
+
+## Scaffolding Types (wallet.rs)
+
+These types are defined for future integration but not yet fully wired into the wallet flow:
+
+### PrivilegedKeyManager Trait
+
+```rust
+#[async_trait]
+pub trait PrivilegedKeyManager: Send + Sync {
+    async fn get_public_key(...) -> Result<GetPublicKeyResult>;
+    async fn encrypt(...) -> Result<EncryptResult>;
+    async fn decrypt(...) -> Result<DecryptResult>;
+    async fn create_hmac(...) -> Result<CreateHmacResult>;
+    async fn verify_hmac(...) -> Result<VerifyHmacResult>;
+    async fn create_signature(...) -> Result<CreateSignatureResult>;
+    async fn verify_signature(...) -> Result<VerifySignatureResult>;
+}
+```
+
+For two-factor authentication where crypto operations at SecurityLevel >= 2 are routed through a separate key manager.
+
+### LookupResolver
+
+Overlay certificate discovery via HTTP. Has `new(hosts)` and `query(attributes)` methods. Currently a stub returning empty results.
+
+### WalletLogger
+
+Structured operation logger with indented groups, timestamps, and log levels. Provides `group()`/`group_end()`, `log()`, `error()`, and `to_log_string()` methods.
 
 ## WalletInterface Methods
 
@@ -156,7 +213,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 | `sign_action` | Sign previously created transaction from pending cache |
 | `abort_action` | Cancel transaction in progress |
 | `list_actions` | List transactions matching labels |
-| `internalize_action` | Import external transaction into wallet |
+| `internalize_action` | Import external transaction into wallet (validates BRC-29 derivation params) |
 
 ### Output Operations (delegated to storage)
 
@@ -169,7 +226,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 
 | Method | Description |
 |--------|-------------|
-| `acquire_certificate` | Acquire identity certificate (direct protocol) |
+| `acquire_certificate` | Acquire identity certificate (direct or issuance protocol) |
 | `list_certificates` | List certificates by certifier/type |
 | `prove_certificate` | Prove certificate fields to verifier by creating a verifier-specific keyring |
 | `relinquish_certificate` | Remove certificate from wallet |
@@ -198,6 +255,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 |----------|-------|-------------|
 | `WALLET_VERSION` | "bsv-wallet-toolbox-0.1.0" | Version string returned by `get_version` |
 | `PENDING_TRANSACTION_TTL_SECS` | 86400 (24 hours) | TTL for pending transactions in cache |
+| `CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL` | "certificate field encryption" | Protocol for BRC-52/53 field encryption |
 
 ## Transaction Signing Flow
 
@@ -205,12 +263,17 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 
 ```
 CreateActionArgs → storage.create_action() → StorageCreateActionResult
-    → build_unsigned_transaction() → WalletSigner.sign_transaction()
-    → storage.process_action() → services.post_beef() (if not no_send)
+    → build_unsigned_transaction(result, key_deriver)
+    → WalletSigner.sign_transaction()
+    → storage.process_action()
+    → services.post_beef() (if not no_send/delayed)
+    → storage.update_transaction_status_after_broadcast()
     → CreateActionResult { txid, tx, ... }
 ```
 
-For each input: derive signing key from protocol/counterparty → compute BIP-143 sighash → sign and build unlocking script.
+For each input: derive signing key from BRC-29 protocol/counterparty, compute BIP-143 sighash, sign and build unlocking script.
+
+**Error recovery:** If signing or process_action fails, the wallet automatically calls `abort_action` to release locked UTXOs before returning the error.
 
 ### Deferred Signing (sign_and_process = false)
 
@@ -221,8 +284,24 @@ CreateActionArgs → storage.create_action() → build_unsigned_transaction()
 Later via sign_action:
 SignActionArgs → Lookup from cache → Merge client unlocking scripts
     → WalletSigner.sign_transaction() → storage.process_action()
-    → services.post_beef() → SignActionResult { txid, tx, ... }
+    → services.post_beef() → storage.update_transaction_status_after_broadcast()
+    → SignActionResult { txid, tx, ... }
 ```
+
+### Broadcast Flow
+
+When broadcasting (not no_send, not delayed):
+1. Parse `input_beef` into BEEF structure
+2. Merge signed transaction into BEEF (`merge_raw_tx`)
+3. Downgrade BEEF V2 to V1 for ARC compatibility (if all txs have full data)
+4. Broadcast via `services.post_beef()`
+5. Check results: at least one provider must return "success"
+6. Call `storage.update_transaction_status_after_broadcast(txid, success)` to update status
+7. On broadcast failure: return error with "Transaction marked as failed and inputs restored"
+
+### Change Output Locking Scripts
+
+`build_unsigned_transaction` accepts an optional `KeyDeriverApi` reference. For outputs with an empty `locking_script` but a `derivation_suffix`, it derives the P2PKH locking script using BRC-29 key derivation (protocol `"3241645161d8"`, key_id `"{prefix} {suffix}"`, counterparty Self).
 
 ## Sighash Computation
 
@@ -252,7 +331,7 @@ The signer recognizes and signs (implemented in `build_unlocking_script`):
 | Script Type | Detection | Unlocking Script |
 |-------------|-----------|------------------|
 | P2PKH | 25 bytes: `76 a9 14 <20-byte hash> 88 ac` (OP_DUP OP_HASH160 PUSH20 \<hash\> OP_EQUALVERIFY OP_CHECKSIG) | `<sig+0x41> <pubkey>` |
-| P2PK | ≥35 bytes, starts with pubkey length (33 or 65), ends with `ac` (OP_CHECKSIG) | `<sig+0x41>` |
+| P2PK | >=35 bytes, starts with pubkey length (33 or 65), ends with `ac` (OP_CHECKSIG) | `<sig+0x41>` |
 
 Note: Signature includes SIGHASH_ALL \| SIGHASH_FORKID (0x41) appended.
 
@@ -300,6 +379,16 @@ let wallet = Wallet::with_chain(root_key, storage, services, WalletOptions::defa
 | `options()` | `&WalletOptions` - Configuration options |
 | `auth()` | `AuthId` - Creates an AuthId for the current user (internal) |
 
+## Wallet Constructors
+
+| Constructor | Description |
+|-------------|-------------|
+| `new(root_key, storage, services)` | Default options, mainnet |
+| `with_options(root_key, storage, services, options)` | Custom options, mainnet |
+| `with_chain(root_key, storage, services, options, chain)` | Full control over all parameters |
+
+Initialization flow: Creates `ProtoWallet` -> gets identity key -> creates `WalletSigner` -> verifies storage is available -> ensures user exists via `find_or_insert_user` -> stores `user_id`.
+
 ## Originator Validation
 
 All `WalletInterface` methods require an `originator` string parameter:
@@ -322,16 +411,6 @@ The wallet maintains an in-memory cache of unsigned transactions:
 - Automatically cleaned up: expired transactions (>24 hours) removed on access
 - Thread-safe via `Arc<RwLock<HashMap<...>>>`
 
-### Wallet Constructors
-
-| Constructor | Description |
-|-------------|-------------|
-| `new(root_key, storage, services)` | Default options, mainnet |
-| `with_options(root_key, storage, services, options)` | Custom options, mainnet |
-| `with_chain(root_key, storage, services, options, chain)` | Full control over all parameters |
-
-Initialization flow: Creates `ProtoWallet` → gets identity key → creates `WalletSigner` → verifies storage is available → ensures user exists via `find_or_insert_user`.
-
 ### Thread Safety
 
 `Wallet<S, V>` uses `Arc<S>` and `Arc<V>` for storage/services. `WalletInterface` impl requires `S: WalletStorageProvider + Send + Sync + 'static` and `V: WalletServices + Send + Sync + 'static`.
@@ -350,9 +429,9 @@ Internal helper functions in `wallet.rs`:
 |----------|---------|
 | `validate_originator(originator: &str)` | Validates originator string (non-empty, max 253 chars) |
 | `compute_txid(raw_tx: &[u8])` | Computes txid (double SHA256, reversed) from raw transaction |
-| `build_unsigned_transaction(result: &StorageCreateActionResult)` | Builds unsigned transaction bytes from storage result |
+| `build_unsigned_transaction(result, key_deriver)` | Builds unsigned transaction bytes from storage result; optionally derives P2PKH locking scripts for change outputs via BRC-29 |
 | `write_varint(output: &mut Vec<u8>, value: u64)` | Writes a Bitcoin varint to output buffer |
-| `build_wallet_certificate_from_args(args: &AcquireCertificateArgs)` | Builds WalletCertificate from acquisition args |
+| `build_wallet_certificate_from_args(args)` | Builds WalletCertificate from acquisition args |
 | `create_keyring_for_verifier(...)` | Creates verifier-specific keyring for selective field disclosure (BRC-52/53) |
 
 ### Certificate Field Encryption (prove_certificate)
@@ -365,9 +444,6 @@ The `prove_certificate` method implements BRC-52/53 selective attribute disclosu
    - Decrypts master symmetric key using certifier as counterparty with key_id = field_name
    - Re-encrypts for verifier using key_id = "{serial_number} {field_name}"
 4. **Return keyring** - Field names mapped to base64-encoded encrypted symmetric keys
-
-**Constants:**
-- `CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL` = "certificate field encryption"
 
 **Encryption Protocol:**
 - Security Level: Counterparty (level 2)
@@ -384,8 +460,10 @@ Internal helper functions in `signer.rs`:
 | `parse_transaction(tx_data)` | Parses transaction into (version, inputs, outputs, locktime) |
 | `read_varint(data)` | Reads a Bitcoin varint, returns (value, bytes_read) |
 | `double_sha256(data)` | Computes double SHA256 hash |
+| `hash160(data)` | Computes HASH160 (RIPEMD160(SHA256(data))) for P2PKH pubkey hashes |
 | `build_unlocking_script(locking_script, signature, pubkey)` | Builds P2PKH/P2PK unlocking script |
 | `insert_unlocking_script(tx_data, input_index, unlocking_script)` | Inserts unlocking script into transaction |
+| `write_varint(output, value)` | Writes a Bitcoin varint to output buffer |
 
 ## Certificate Issuance Protocol (certificate_issuance.rs)
 

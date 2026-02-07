@@ -8,11 +8,18 @@
 //! - Broadcasting pending transactions
 //! - Marking abandoned transactions as failed
 //! - Recovering incorrectly failed transactions
+//! - Tracking clock/minute boundaries
+//! - Polling for new block headers
+//! - Handling blockchain reorganizations
+//! - Checking nosend transaction proofs
+//! - Reviewing and synchronizing transaction status
+//! - Purging expired data
+//! - Monitoring service call history
 
 mod config;
 mod daemon;
 pub mod tasks;
 
-pub use config::{MonitorOptions, TaskConfig};
+pub use config::{MonitorOptions, TaskConfig, TransactionStatusUpdate};
 pub use daemon::Monitor;
 pub use tasks::{MonitorTask, TaskResult};

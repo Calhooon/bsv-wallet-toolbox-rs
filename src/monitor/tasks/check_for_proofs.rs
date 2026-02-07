@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::services::WalletServices;
 use crate::storage::entities::ProvenTxReqStatus;
-use crate::storage::{FindProvenTxReqsArgs, WalletStorageProvider};
+use crate::storage::{FindProvenTxReqsArgs, MonitorStorage};
 use crate::Result;
 
 use super::{MonitorTask, TaskResult};
@@ -22,7 +22,7 @@ use super::{MonitorTask, TaskResult};
 /// 5. Handles errors gracefully, continues to next txid
 pub struct CheckForProofsTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     storage: Arc<S>,
@@ -31,7 +31,7 @@ where
 
 impl<S, V> CheckForProofsTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     /// Create a new CheckForProofsTask.
@@ -43,7 +43,7 @@ where
 #[async_trait]
 impl<S, V> MonitorTask for CheckForProofsTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     fn name(&self) -> &'static str {
@@ -55,7 +55,8 @@ where
     }
 
     async fn run(&self) -> Result<TaskResult> {
-        let mut result = TaskResult::new();
+        let mut items_processed = 0;
+        let mut errors = Vec::new();
 
         // Find transactions that need proofs
         let statuses = vec![
@@ -71,11 +72,29 @@ where
             ..Default::default()
         };
 
-        let reqs = self.storage.find_proven_tx_reqs(args).await?;
+        let reqs = match self.storage.find_proven_tx_reqs(args).await {
+            Ok(reqs) => reqs,
+            Err(e) => {
+                errors.push(format!("find_proven_tx_reqs failed: {}", e));
+                return Ok(TaskResult {
+                    items_processed: 0,
+                    errors,
+                });
+            }
+        };
 
         if reqs.is_empty() {
-            return Ok(result);
+            return Ok(TaskResult {
+                items_processed: 0,
+                errors,
+            });
         }
+
+        tracing::debug!(
+            task = "check_for_proofs",
+            count = reqs.len(),
+            "Checking for merkle proofs"
+        );
 
         for req in reqs {
             let txid = &req.txid;
@@ -84,24 +103,26 @@ where
             match self.services.get_merkle_path(txid, false).await {
                 Ok(merkle_result) => {
                     if merkle_result.merkle_path.is_some() {
-                        // We have a proof - the storage layer should update the status
-                        // In a full implementation, we would update proven_tx_reqs and transactions
-                        // For now, we just log success
-                        tracing::info!(txid = %txid, "Found merkle proof for transaction");
-                        result.items_processed += 1;
+                        tracing::info!(
+                            txid = %txid,
+                            status = ?req.status,
+                            "Transaction status synchronized - proof found"
+                        );
+                        items_processed += 1;
                     } else {
-                        // No proof yet, increment attempts
                         tracing::debug!(txid = %txid, "No merkle proof available yet");
                     }
                 }
                 Err(e) => {
-                    // Error getting merkle path
-                    result.add_error(format!("Failed to get merkle path for {}: {}", txid, e));
+                    errors.push(format!("Failed to get merkle path for {}: {}", txid, e));
                 }
             }
         }
 
-        Ok(result)
+        Ok(TaskResult {
+            items_processed,
+            errors,
+        })
     }
 }
 

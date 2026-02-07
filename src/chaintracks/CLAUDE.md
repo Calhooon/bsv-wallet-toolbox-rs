@@ -12,7 +12,7 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 |------|---------|
 | `mod.rs` | Module entry point; re-exports all public types, traits, ingestors, and `ChainTracker` from bsv-sdk |
 | `types.rs` | Core data structures: `Chain`, `BlockHeader`, `LiveBlockHeader`, `HeightRange`, `calculate_work()` |
-| `traits.rs` | Trait definitions: `ChaintracksClient`, `ChaintracksStorage`, `BulkIngestor`, `LiveIngestor`, `ChaintracksOptions` |
+| `traits.rs` | Trait definitions: `ChaintracksClient`, `ChaintracksStorage`, `BulkIngestor`, `LiveIngestor`, `ChaintracksOptions` (with `readonly`/`require_ingestors` fields) |
 | `chaintracks.rs` | Main `Chaintracks` orchestrator implementing client and management interfaces |
 | `storage/mod.rs` | Storage backend module; exports `MemoryStorage` and `SqliteStorage` (feature-gated) |
 | `storage/memory.rs` | In-memory storage implementation with reorg handling, fork tracking, and batch operations |
@@ -78,6 +78,8 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
   - `add_live_recursion_limit`: Max recursive lookups (default: 36)
   - `batch_insert_limit`: Batch size for inserts (default: 400)
   - `bulk_migration_chunk_size`: Migration chunk size (default: 500)
+  - `require_ingestors`: If true, validate ingestor config on `start_background_sync()` (default: false)
+  - `readonly`: If true, block all write operations (`add_header`, `start_listening`, `destroy`) (default: false)
 
 ### Traits
 
@@ -104,8 +106,21 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 | `make_available()` | Initialize storage and prepare for use |
 | `set_bulk_ingestor_count(count)` | Set number of bulk ingestors (for status reporting) |
 | `set_live_ingestor_count(count)` | Set number of live ingestors (for status reporting) |
+| `start_background_sync()` | Start background sync; validates ingestor config if `require_ingestors` is set, sets listening flag. Idempotent (no-op if already running) |
+| `stop_background_sync()` | Stop background sync and clear listening flag. Idempotent |
+| `is_background_syncing()` | Check if background sync is currently running (non-async, uses `AtomicBool`) |
+| `validate_ingestor_config()` | Check ingestor counts and log warnings if none configured (does not error) |
 
 The struct also implements `ChaintracksClient` and `ChaintracksManagement` traits.
+
+#### Readonly Mode
+
+When `ChaintracksOptions::readonly` is set to `true`, write operations return `Error::InvalidOperation`:
+- `add_header()` - blocked
+- `start_listening()` - blocked
+- `destroy()` - blocked
+
+Read-only queries (`find_header_for_height`, `get_info`, `current_height`, etc.) still work normally.
 
 ### Re-exported Types
 
@@ -238,6 +253,33 @@ let headers_hex = chaintracks.get_headers(100000, 10).await?;
 let is_valid = chaintracks.is_valid_root_for_height(merkle_root, height).await?;
 ```
 
+### Background Sync Lifecycle
+
+```rust
+// Start background sync (validates ingestors if require_ingestors is set)
+chaintracks.start_background_sync().await?;
+assert!(chaintracks.is_background_syncing());
+
+// Stop when done
+chaintracks.stop_background_sync().await?;
+assert!(!chaintracks.is_background_syncing());
+```
+
+### Readonly Mode
+
+```rust
+let mut options = ChaintracksOptions::default_mainnet();
+options.readonly = true;
+let ct = Chaintracks::new(options, storage);
+ct.make_available().await?;
+
+// Reads work fine
+let info = ct.get_info().await?;
+
+// Writes return Error::InvalidOperation
+let result = ct.add_header(header).await; // Err(InvalidOperation)
+```
+
 ### Subscribing to Events
 
 ```rust
@@ -300,7 +342,9 @@ Subscribers receive `ReorgEvent` notifications with full context.
 | BulkWocIngestor | Complete |
 | LivePollingIngestor | Complete |
 | LiveWebSocketIngestor | Complete |
-| Full ingestor orchestration | Partial (headers can be added via `add_header()`, ingestor counts via `set_bulk_ingestor_count()` / `set_live_ingestor_count()`) |
+| Background sync lifecycle | Complete (`start_background_sync()` / `stop_background_sync()` / `is_background_syncing()`) |
+| Readonly mode | Complete (blocks writes when `readonly: true`) |
+| Full ingestor orchestration | Partial (headers added via `add_header()`, ingestor counts tracked; actual ingestor spawning deferred) |
 
 ## Ingestor Usage
 

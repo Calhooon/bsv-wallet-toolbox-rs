@@ -214,6 +214,20 @@ impl WalletSettingsManager {
         Ok(())
     }
 
+    /// Serializes settings to a JSON string for persistence.
+    pub async fn save_to_string(&self) -> Result<String> {
+        let settings = self.settings.read().await;
+        serde_json::to_string(&*settings).map_err(Error::JsonError)
+    }
+
+    /// Loads settings from a JSON string.
+    pub async fn load_from_string(&self, json: &str) -> Result<()> {
+        let settings: WalletSettings =
+            serde_json::from_str(json).map_err(Error::JsonError)?;
+        *self.settings.write().await = settings;
+        Ok(())
+    }
+
     /// Gets the default settings from configuration.
     pub fn default_settings(&self) -> &WalletSettings {
         &self.config.default_settings

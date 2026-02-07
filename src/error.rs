@@ -92,6 +92,9 @@ pub enum Error {
     #[error("Sync conflict: {0}")]
     SyncConflict(String),
 
+    #[error("Lock acquisition timed out: {0}")]
+    LockTimeout(String),
+
     // ===================
     // Wrapped errors
     // ===================

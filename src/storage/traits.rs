@@ -362,6 +362,46 @@ pub struct ProcessSyncChunkResult {
 }
 
 // =============================================================================
+// Storage Operation Types
+// =============================================================================
+
+/// Parameters for purging old data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeParams {
+    pub max_age_days: u32,
+    pub purge_completed: bool,
+    pub purge_failed: bool,
+}
+
+/// Results from a purge operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeResults {
+    pub count: u32,
+    pub log: String,
+}
+
+/// Result from reviewing storage status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewStatusResult {
+    pub log: String,
+}
+
+/// Result from admin statistics query.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminStatsResult {
+    pub users: u32,
+    pub transactions: u32,
+    pub outputs: u32,
+    pub certificates: u32,
+    pub proven_txs: u32,
+    pub proven_tx_reqs: u32,
+}
+
+// =============================================================================
 // Wallet Storage Reader
 // =============================================================================
 
@@ -525,6 +565,25 @@ pub trait WalletStorageWriter: WalletStorageReader {
         txid: &str,
         success: bool,
     ) -> Result<()>;
+
+    /// Review storage status and clean up aged items.
+    ///
+    /// Checks for proven_tx_reqs and transactions that may need attention,
+    /// and returns a log of what was found/processed.
+    ///
+    /// # Arguments
+    /// * `auth` - The authenticated user
+    /// * `aged_limit` - Items older than this are considered aged
+    async fn review_status(&self, auth: &AuthId, aged_limit: DateTime<Utc>) -> Result<ReviewStatusResult>;
+
+    /// Purge old data from storage.
+    ///
+    /// Removes completed and/or failed records older than the specified age.
+    ///
+    /// # Arguments
+    /// * `auth` - The authenticated user
+    /// * `params` - Parameters controlling what to purge
+    async fn purge_data(&self, auth: &AuthId, params: PurgeParams) -> Result<PurgeResults>;
 }
 
 // =============================================================================
@@ -730,4 +789,22 @@ pub trait MonitorStorage: WalletStorageProvider {
     /// 3. If found: restores the transaction as unproven
     /// 4. If not found: marks as invalid
     async fn un_fail(&self) -> Result<()>;
+
+    /// Review and synchronize transaction statuses.
+    ///
+    /// This is the monitor-level review_status that operates across all users
+    /// without requiring an AuthId. It checks for proven_tx_reqs and transactions
+    /// that may need status corrections.
+    async fn review_status(&self) -> Result<ReviewStatusResult>;
+
+    /// Purge old data from storage.
+    ///
+    /// This is the monitor-level purge that operates across all users
+    /// without requiring an AuthId. It removes old completed and/or failed
+    /// records based on the provided parameters.
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - Parameters controlling what to purge
+    async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults>;
 }

@@ -115,6 +115,8 @@ impl MonitorTask for MonitorCallHistoryTask {
             }
         }
 
+        tracing::debug!("Monitor call history task executed");
+
         tracing::info!(
             task = "monitor_call_history",
             total_calls = total_calls,
@@ -122,7 +124,10 @@ impl MonitorTask for MonitorCallHistoryTask {
             "Service call history summary"
         );
 
-        Ok(TaskResult::with_count(total_calls as u32))
+        Ok(TaskResult {
+            items_processed: total_calls as u32,
+            errors: vec![],
+        })
     }
 }
 

@@ -31,7 +31,7 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `lib.rs` | 134 | Crate root with module declarations, re-exports, and crate-level documentation |
+| `lib.rs` | 144 | Crate root with module declarations, re-exports, and crate-level documentation |
 | `error.rs` | 127 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
 
 ## Modules
@@ -40,7 +40,7 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 |--------|---------|
 | `storage/` | Wallet storage layer with traits and implementations (SQLite, MySQL, remote) |
 | `chaintracks/` | Block header tracking system with two-tier bulk/live storage |
-| `services/` | External service providers (WhatsOnChain, ARC, Bitails) for blockchain operations |
+| `services/` | External service providers (WhatsOnChain, ARC, Bitails, BHS) for blockchain operations |
 | `wallet/` | Full `Wallet` implementation with `WalletSigner` for transaction signing |
 | `monitor/` | Transaction monitoring daemon with background tasks for syncing and reprocessing |
 | `managers/` | Higher-level wallet management: storage sync, settings, authentication, permissions |
@@ -131,6 +131,7 @@ pub use services::{
     WhatsOnChain, WhatsOnChainConfig,  // WhatsOnChain API provider
     Arc, ArcConfig,                     // ARC transaction processor
     Bitails, BitailsConfig,             // Bitails API provider
+    BlockHeaderService, BhsConfig,      // Block Header Service provider
 };
 ```
 
@@ -148,11 +149,12 @@ pub use wallet::{
 
 ```rust
 pub use monitor::{
-    Monitor,         // Transaction monitoring daemon
-    MonitorOptions,  // Configuration for monitor initialization
-    MonitorTask,     // Individual background task definition
-    TaskConfig,      // Configuration for task execution
-    TaskResult,      // Result from task execution
+    Monitor,                    // Transaction monitoring daemon
+    MonitorOptions,             // Configuration for monitor initialization
+    MonitorTask,                // Individual background task definition
+    TaskConfig,                 // Configuration for task execution
+    TaskResult,                 // Result from task execution
+    TransactionStatusUpdate,    // Status update notification for monitored transactions
 };
 ```
 
@@ -181,6 +183,8 @@ pub use managers::{
     CWIStyleWalletManager,         // CWI-compatible manager
     CWIStyleWalletManagerConfig,   // Configuration options
     Profile,                       // User profile definition
+    UmpToken,                      // User media policy token
+    WalletSnapshot,                // Serializable wallet state snapshot
 
     // Permissions manager - BRC-98/99 permission control (stub)
     GroupedPermissions,            // Grouped permission definitions
@@ -189,6 +193,17 @@ pub use managers::{
     PermissionsModule,             // Permission module trait
     WalletPermissionsManager,      // Permission manager
     WalletPermissionsManagerConfig,// Configuration options
+
+    // Authentication manager - WAB integration
+    WalletAuthenticationManager,   // Web Authentication Bridge manager (skeleton)
+
+    // Logger - Structured wallet logging
+    WalletLogger,                  // Logger interface for wallet operations
+    WalletLogEntry,                // Individual log entry
+
+    // Setup helpers - Convenience wallet initialization
+    SetupWalletOptions,            // Options for setup_wallet()
+    setup_wallet,                  // Helper to create a fully configured wallet
 };
 ```
 

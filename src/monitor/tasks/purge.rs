@@ -10,8 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{MonitorTask, TaskResult};
-use crate::storage::entities::ProvenTxReqStatus;
-use crate::storage::{FindProvenTxReqsArgs, WalletStorageProvider};
+use crate::storage::{MonitorStorage, PurgeParams};
 use crate::Result;
 
 /// Configuration for the purge task.
@@ -21,10 +20,8 @@ pub struct PurgeConfig {
     pub purge_failed: bool,
     /// Whether to purge completed transaction data (keeps the record, removes raw data).
     pub purge_completed_data: bool,
-    /// Age threshold for purging failed transactions.
-    pub failed_age: Duration,
-    /// Age threshold for purging completed transaction data.
-    pub completed_data_age: Duration,
+    /// Age threshold for purging (in days).
+    pub max_age_days: u32,
 }
 
 impl Default for PurgeConfig {
@@ -32,21 +29,20 @@ impl Default for PurgeConfig {
         Self {
             purge_failed: true,
             purge_completed_data: true,
-            failed_age: Duration::from_secs(7 * 24 * 60 * 60), // 7 days
-            completed_data_age: Duration::from_secs(30 * 24 * 60 * 60), // 30 days
+            max_age_days: 30,
         }
     }
 }
 
 /// Task that purges old/expired data from storage.
 ///
-/// This maintenance task cleans up transient data to keep the database
-/// size manageable:
+/// This maintenance task delegates to `MonitorStorage::purge_data()` to clean up
+/// transient data and keep the database size manageable:
 /// - Removes failed transaction records after a configurable period
 /// - Removes raw transaction data from completed transactions
 pub struct PurgeTask<S>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
 {
     storage: Arc<S>,
     config: PurgeConfig,
@@ -56,7 +52,7 @@ where
 
 impl<S> PurgeTask<S>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
 {
     /// Create a new purge task with default configuration.
     pub fn new(storage: Arc<S>) -> Self {
@@ -85,7 +81,7 @@ where
 #[async_trait]
 impl<S> MonitorTask for PurgeTask<S>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
 {
     fn name(&self) -> &'static str {
         "purge"
@@ -99,95 +95,41 @@ where
         // Reset the check_now flag
         self.check_now.store(false, Ordering::SeqCst);
 
-        let mut result = TaskResult::new();
+        let mut errors = Vec::new();
 
-        // Calculate cutoff times
-        let now = chrono::Utc::now();
-        let failed_cutoff = now
-            - chrono::Duration::from_std(self.config.failed_age).unwrap_or(chrono::Duration::days(7));
-        let completed_cutoff = now
-            - chrono::Duration::from_std(self.config.completed_data_age)
-                .unwrap_or(chrono::Duration::days(30));
+        // Build PurgeParams from our config
+        let params = PurgeParams {
+            max_age_days: self.config.max_age_days,
+            purge_completed: self.config.purge_completed_data,
+            purge_failed: self.config.purge_failed,
+        };
 
-        // Purge failed transactions
-        if self.config.purge_failed {
-            let args = FindProvenTxReqsArgs {
-                status: Some(vec![ProvenTxReqStatus::Failed, ProvenTxReqStatus::Invalid]),
-                ..Default::default()
-            };
-
-            let failed_reqs = match self.storage.find_proven_tx_reqs(args).await {
-                Ok(reqs) => reqs,
-                Err(e) => {
-                    tracing::warn!(
-                        task = "purge",
-                        error = %e,
-                        "Failed to query failed transactions"
+        // Delegate to MonitorStorage::purge_data() which operates across all users
+        match MonitorStorage::purge_data(self.storage.as_ref(), params).await {
+            Ok(result) => {
+                if result.count > 0 {
+                    tracing::info!(
+                        count = result.count,
+                        log = %result.log,
+                        "Purge completed"
                     );
-                    result.add_error(format!("Failed to query failed transactions: {}", e));
-                    Vec::new()
+                } else {
+                    tracing::debug!("Purge task executed - nothing to purge");
                 }
-            };
 
-            let mut purged_failed = 0u32;
-            for req in failed_reqs {
-                if req.updated_at < failed_cutoff {
-                    // TODO: Delete the proven_tx_req and associated data
-                    tracing::debug!(
-                        task = "purge",
-                        txid = req.txid,
-                        status = ?req.status,
-                        "Would purge failed transaction"
-                    );
-                    purged_failed += 1;
-                }
+                Ok(TaskResult {
+                    items_processed: result.count,
+                    errors,
+                })
             }
-            result.items_processed += purged_failed;
-        }
-
-        // Purge completed transaction data (keep record, remove raw data)
-        if self.config.purge_completed_data {
-            let args = FindProvenTxReqsArgs {
-                status: Some(vec![ProvenTxReqStatus::Completed]),
-                ..Default::default()
-            };
-
-            let completed_reqs = match self.storage.find_proven_tx_reqs(args).await {
-                Ok(reqs) => reqs,
-                Err(e) => {
-                    tracing::warn!(
-                        task = "purge",
-                        error = %e,
-                        "Failed to query completed transactions"
-                    );
-                    result.add_error(format!("Failed to query completed transactions: {}", e));
-                    Vec::new()
-                }
-            };
-
-            let mut purged_data = 0u32;
-            for req in completed_reqs {
-                if req.updated_at < completed_cutoff {
-                    // TODO: Remove raw_tx, input_beef, and mapi responses
-                    // but keep the transaction record for history
-                    tracing::debug!(
-                        task = "purge",
-                        txid = req.txid,
-                        "Would purge raw data from completed transaction"
-                    );
-                    purged_data += 1;
-                }
+            Err(e) => {
+                errors.push(format!("purge_data failed: {}", e));
+                Ok(TaskResult {
+                    items_processed: 0,
+                    errors,
+                })
             }
-            result.items_processed += purged_data;
         }
-
-        tracing::info!(
-            task = "purge",
-            items_processed = result.items_processed,
-            "Purge task completed"
-        );
-
-        Ok(result)
     }
 }
 
@@ -200,8 +142,7 @@ mod tests {
         let config = PurgeConfig::default();
         assert!(config.purge_failed);
         assert!(config.purge_completed_data);
-        assert_eq!(config.failed_age.as_secs(), 7 * 24 * 60 * 60);
-        assert_eq!(config.completed_data_age.as_secs(), 30 * 24 * 60 * 60);
+        assert_eq!(config.max_age_days, 30);
     }
 
     #[test]

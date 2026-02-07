@@ -10,7 +10,7 @@ use crate::chaintracks::Chain;
 use bsv_sdk::transaction::ChainTracker;
 use crate::services::{
     collection::{ServiceCall, ServiceCollection, ServiceCallHistory},
-    providers::{Arc, Bitails, BitailsConfig, WhatsOnChain, WhatsOnChainConfig},
+    providers::{Arc, Bitails, BitailsConfig, BlockHeaderService, BhsConfig, WhatsOnChain, WhatsOnChainConfig},
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
@@ -64,6 +64,9 @@ pub struct Services {
 
     /// Bitails provider.
     pub bitails: StdArc<Bitails>,
+
+    /// Block Header Service provider (optional).
+    pub bhs: Option<StdArc<BlockHeaderService>>,
 
     /// Service collection for getMerklePath.
     get_merkle_path_services: RwLock<MerklePathServiceCollection>,
@@ -285,6 +288,17 @@ impl Services {
         };
         let bitails = StdArc::new(Bitails::new(chain, bitails_config)?);
 
+        // Create BHS provider if URL is configured
+        let bhs = if let Some(ref bhs_url) = options.bhs_url {
+            let bhs_config = BhsConfig {
+                url: bhs_url.clone(),
+                api_key: options.bhs_api_key.clone(),
+            };
+            Some(StdArc::new(BlockHeaderService::new(bhs_config)))
+        } else {
+            None
+        };
+
         // Build service collections
 
         // getMerklePath: WoC, Bitails
@@ -342,6 +356,7 @@ impl Services {
             arc_taal,
             arc_gorillapool,
             bitails,
+            bhs,
             get_merkle_path_services: RwLock::new(merkle_path_services),
             get_raw_tx_services: RwLock::new(raw_tx_services),
             post_beef_services: RwLock::new(post_beef_services),
@@ -466,6 +481,56 @@ impl Services {
 
         Err(Error::NoServicesAvailable)
     }
+
+    /// Fetch fiat exchange rates from a public API.
+    ///
+    /// Tries to fetch rates from an open exchange rate API. Falls back to
+    /// cached defaults if the fetch fails.
+    async fn fetch_fiat_exchange_rates(&self) -> Result<FiatExchangeRates> {
+        use std::collections::HashMap;
+
+        // Use a free/open exchange rate API
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| Error::NetworkError(format!("HTTP client error: {}", e)))?;
+
+        let url = "https://open.er-api.com/v6/latest/USD";
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| Error::NetworkError(format!("Fiat rate fetch: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(Error::ServiceError(format!(
+                "Fiat rate API returned HTTP {}",
+                response.status()
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ExchangeRateResponse {
+            rates: HashMap<String, f64>,
+        }
+
+        let data: ExchangeRateResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Fiat rate parse: {}", e)))?;
+
+        let mut rates = HashMap::new();
+        rates.insert(FiatCurrency::USD, 1.0);
+
+        if let Some(&eur) = data.rates.get("EUR") {
+            rates.insert(FiatCurrency::EUR, eur);
+        }
+        if let Some(&gbp) = data.rates.get("GBP") {
+            rates.insert(FiatCurrency::GBP, gbp);
+        }
+
+        Ok(FiatExchangeRates::new(rates))
+    }
 }
 
 #[async_trait]
@@ -478,9 +543,25 @@ impl WalletServices for Services {
     }
 
     async fn get_height(&self) -> Result<u32> {
-        // Use WhatsOnChain for height
-        let info = self.whatsonchain.get_chain_info().await?;
-        Ok(info.blocks)
+        // Try BHS first if configured
+        if let Some(ref bhs) = self.bhs {
+            match bhs.current_height().await {
+                Ok(h) => return Ok(h),
+                Err(e) => tracing::debug!("BHS height failed, trying WoC: {}", e),
+            }
+        }
+        // Try WhatsOnChain
+        match self.whatsonchain.get_chain_info().await {
+            Ok(info) => return Ok(info.blocks),
+            Err(e) => tracing::debug!("WoC height failed, trying Bitails: {}", e),
+        }
+        // Try Bitails
+        match self.bitails.current_height().await {
+            Ok(h) => Ok(h),
+            Err(e) => Err(Error::ServiceError(
+                format!("All height services failed. Last error: {}", e)
+            )),
+        }
     }
 
     async fn get_header_for_height(&self, _height: u32) -> Result<Vec<u8>> {
@@ -921,13 +1002,19 @@ impl WalletServices for Services {
             rates.is_stale(self.options.fiat_update_msecs)
         };
 
-        // For now, we use the cached rates from configuration
-        // A full implementation would fetch updated rates from an API
-        // (like exchangeratesapi.io or chaintracks fiat endpoint)
         if needs_update {
-            // In a full implementation, we would fetch new rates here
-            // For now, just use the existing rates
-            tracing::debug!("Fiat rates are stale, but remote fetch not implemented");
+            // Try to fetch updated rates from a public exchange rate API
+            match self.fetch_fiat_exchange_rates().await {
+                Ok(new_rates) => {
+                    let mut rates = self.fiat_exchange_rates.write().unwrap();
+                    *rates = new_rates;
+                    tracing::debug!("Updated fiat exchange rates from API");
+                }
+                Err(e) => {
+                    // Fall back to cached/default rates if fetch fails
+                    tracing::debug!("Fiat rates fetch failed, using cached rates: {}", e);
+                }
+            }
         }
 
         let rates = self.fiat_exchange_rates.read().unwrap();
@@ -1038,7 +1125,7 @@ impl WalletServices for Services {
         // Process inputs - for known txids, add as TxIDOnly
         // For this implementation, we just add known txids as references
         for input_txid in known_txids {
-            if !known_set.is_empty() {
+            if known_set.contains(input_txid.as_str()) {
                 beef.merge_txid_only(input_txid.clone());
             }
         }

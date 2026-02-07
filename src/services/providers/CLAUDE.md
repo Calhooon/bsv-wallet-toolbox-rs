@@ -19,6 +19,7 @@ The providers are designed to be used through the `WalletServices` trait defined
 | `WhatsOnChain` | Full-featured blockchain explorer API | Mainnet, Testnet | UTXO queries, raw tx retrieval, script history |
 | `Arc` | Transaction broadcasting (mAPI) | TAAL, GorillaPool | BEEF transaction broadcasting with callbacks |
 | `Bitails` | Alternative merkle proof provider | Mainnet, Testnet | TSC merkle proofs, tx history |
+| `BlockHeaderService` | Block Header Service (BHS) | Mainnet, Testnet | Header lookups, merkle root validation |
 
 ## Provider Details
 
@@ -34,7 +35,6 @@ Primary blockchain data provider with the most comprehensive feature set.
 
 **Factory Methods:**
 ```rust
-// Create for mainnet or testnet
 WhatsOnChain::new(Chain::Main, WhatsOnChainConfig::default())?;
 WhatsOnChain::new(Chain::Test, WhatsOnChainConfig::with_api_key("key"))?;
 ```
@@ -44,10 +44,10 @@ WhatsOnChain::new(Chain::Test, WhatsOnChainConfig::with_api_key("key"))?;
 |--------|-------------|
 | `get_raw_tx(txid)` | Retrieve raw transaction bytes |
 | `get_merkle_path(txid)` | Get TSC merkle proof |
-| `post_raw_tx(hex)` | Broadcast raw transaction |
-| `post_beef(beef, txids)` | Broadcast BEEF (limited support) |
+| `post_raw_tx(hex)` | Broadcast raw transaction (with retry on 429) |
+| `post_beef(beef, txids)` | Parse BEEF, extract raw txs, broadcast sequentially with 1s delay |
 | `get_utxo_status(output, format, outpoint)` | Check UTXO status for script hash |
-| `get_status_for_txids(txids)` | Batch query transaction statuses |
+| `get_status_for_txids(txids)` | Batch query transaction statuses (POST) |
 | `get_script_hash_history(hash)` | Get confirmed + unconfirmed tx history |
 | `get_script_hash_confirmed_history(hash)` | Get confirmed tx history only |
 | `get_script_hash_unconfirmed_history(hash)` | Get mempool tx history only |
@@ -59,7 +59,9 @@ WhatsOnChain::new(Chain::Test, WhatsOnChainConfig::with_api_key("key"))?;
 - Mainnet: `https://api.whatsonchain.com/v1/bsv/main`
 - Testnet: `https://api.whatsonchain.com/v1/bsv/test`
 
-**Rate Limiting:** Built-in retry with 2-second backoff on HTTP 429 responses.
+**Rate Limiting:** Built-in retry with 2-second backoff on HTTP 429 responses (up to 2 retries for GET, 5 for POST).
+
+**BEEF Handling:** Parses BEEF via `Beef::from_binary()`, finds each txid with `find_txid()`, extracts raw tx bytes, and broadcasts each via `post_raw_tx` with 1-second delays between transactions.
 
 ---
 
@@ -80,15 +82,11 @@ Transaction broadcasting service implementing the ARC (mAPI) protocol. Preferred
 
 **Factory Methods:**
 ```rust
-// Pre-configured endpoints
 Arc::taal_mainnet(Some(ArcConfig::with_api_key("key")))?;
 Arc::taal_testnet(config)?;
 Arc::gorillapool(config)?;
-
-// Custom endpoint
 Arc::new("https://custom-arc.example.com", config, Some("customArc"))?;
 
-// With callbacks
 let config = ArcConfig::with_api_key("key")
     .with_callback("https://myserver.com/callback", Some("secret"))
     .with_deployment_id("my-app-v1");
@@ -98,9 +96,9 @@ let config = ArcConfig::with_api_key("key")
 | Method | Description |
 |--------|-------------|
 | `post_raw_tx(hex, txids)` | Broadcast raw/EF/BEEF v1 transaction |
-| `post_beef(beef, txids)` | Broadcast BEEF with multi-txid support |
+| `post_beef(beef, txids)` | Broadcast BEEF with auto V2-to-V1 conversion and multi-txid support |
 | `get_tx_data(txid)` | Query transaction status (recent txs only) |
-| `get_merkle_path(txid)` | Get BUMP merkle path if available |
+| `get_merkle_path(txid)` | Get BUMP merkle path if available (via `get_tx_data`) |
 
 **API Endpoints:**
 - TAAL Mainnet: `https://arc.taal.com`
@@ -114,9 +112,11 @@ let config = ArcConfig::with_api_key("key")
 | 465 | `FEE_TOO_LOW` | Fee below minimum |
 | 473 | `CUMULATIVE_FEE_FAILED` | Cumulative fee validation failed |
 
+**BEEF V2-to-V1 Conversion:** `post_beef` detects BEEF v2 (prefix `0200BEEF`), parses via `Beef::from_binary()`, checks if all txs have full data (no txid-only entries), and downgrades to v1 by setting `parsed_beef.version = BEEF_V1` before posting.
+
 **Response Types:**
-- `ArcTxInfo` - Transaction info including `txid`, `tx_status`, `merkle_path`, `block_hash`, `block_height`, `competing_txs`
-- `ArcApiError` - Detailed error information
+- `ArcTxInfo` - Transaction info: `txid`, `tx_status`, `merkle_path`, `block_hash`, `block_height`, `competing_txs`, `timestamp`, `extra_info`
+- `ArcApiError` - Error detail: `error_type`, `title`, `status`, `detail`, `instance`, `txid`, `extra_info`
 
 ---
 
@@ -139,17 +139,19 @@ Bitails::new(Chain::Test, BitailsConfig::with_api_key("key"))?;
 **Capabilities:**
 | Method | Description |
 |--------|-------------|
-| `get_raw_tx(txid)` | Retrieve raw transaction bytes |
+| `get_raw_tx(txid)` | Retrieve raw transaction bytes (with txid validation) |
 | `get_merkle_path(txid)` | Get TSC format merkle proof |
-| `broadcast(raw_tx)` | Broadcast single transaction |
-| `post_raws(raws)` | Broadcast multiple transactions |
-| `post_beef(beef, txids)` | BEEF broadcast (not fully implemented) |
-| `get_current_height()` | Get blockchain height |
-| `get_block_header_by_hash(hash)` | Get 80-byte raw header |
+| `broadcast(raw_tx)` | Broadcast single raw transaction (via `post_raws`) |
+| `post_raws(raws)` | Broadcast multiple raw transactions (multi endpoint) |
+| `post_beef(beef, txids)` | Parse BEEF, extract raw txs, broadcast each individually |
+| `get_current_height()` | Get blockchain height from network/info |
+| `current_height()` | Alias for `get_current_height()` |
+| `get_block_header_by_hash(hash)` | Get and parse 80-byte raw header |
+| `get_header_by_height(height)` | Get block header by height (JSON) |
 | `get_latest_block()` | Get latest block hash and height |
-| `get_script_hash_history(hash)` | Get transaction history |
-| `get_status_for_txids(txids)` | Get transaction statuses with depth |
-| `get_tx_info(txid)` | Get transaction metadata |
+| `get_script_hash_history(hash)` | Get transaction history for script hash |
+| `get_status_for_txids(txids)` | Get tx statuses with depth (queries each via `get_tx_info`) |
+| `is_valid_root_for_height(root, height)` | Validate merkle root for a block height |
 
 **API Endpoints:**
 - Mainnet: `https://api.bitails.io/`
@@ -158,13 +160,50 @@ Bitails::new(Chain::Test, BitailsConfig::with_api_key("key"))?;
 **Error Codes:**
 | Code | Constant | Meaning |
 |------|----------|---------|
-| "-27" | `ALREADY_IN_MEMPOOL` | Transaction already known |
+| "-27" | `ALREADY_IN_MEMPOOL` | Transaction already known (treated as success) |
 | "-25" | `DOUBLE_SPEND_OR_MISSING_INPUTS` | Double spend or missing input |
 | "ECONNREFUSED" | `ECONNREFUSED` | Connection refused |
 | "ECONNRESET" | `ECONNRESET` | Connection reset |
 
 **Internal Features:**
 - `root_cache: RwLock<HashMap<u32, String>>` - Caches merkle roots by block height
+- `parse_block_header()` - Parses 80-byte raw headers into `BlockHeader` structs
+
+---
+
+### BlockHeaderService (`bhs.rs`)
+
+Dedicated block header lookup service for production header data and merkle root validation.
+
+**Struct:** `BlockHeaderService`
+
+**Configuration:** `BhsConfig`
+- `url: String` - BHS API URL
+- `api_key: Option<String>` - Optional Bearer token
+
+**Factory Methods:**
+```rust
+BlockHeaderService::new(BhsConfig::mainnet());
+BlockHeaderService::new(BhsConfig::testnet());
+BlockHeaderService::from_url("https://custom-bhs.example.com");
+```
+
+**Capabilities:**
+| Method | Description |
+|--------|-------------|
+| `current_height()` | Get current blockchain tip height |
+| `chain_header_by_height(height)` | Get block header by height (JSON `BlockHeader`) |
+| `is_valid_root_for_height(root, height)` | Validate merkle root for a given block height |
+| `find_chain_tip_header()` | Get the chain tip header |
+
+**API Endpoints:**
+- Mainnet: `https://bhs.babbage.systems`
+- Testnet: `https://bhs-test.babbage.systems`
+
+**API Paths:**
+- `/api/v1/chain/tip/height` - Current height (plain text)
+- `/api/v1/chain/header/byHeight?height=N` - Header by height (JSON)
+- `/api/v1/chain/header/tip` - Chain tip header (JSON)
 
 ## Common Result Types
 
@@ -179,7 +218,7 @@ All providers return standardized result types from `src/services/traits.rs`:
 | `GetUtxoStatusResult` | UTXO status with details array |
 | `GetStatusForTxidsResult` | Batch txid status results |
 | `GetScriptHashHistoryResult` | Transaction history for script |
-| `BlockHeader` | Parsed 80-byte header with height |
+| `BlockHeader` | Parsed header with version, previous_hash, merkle_root, time, bits, nonce, hash, height |
 
 ## Usage Patterns
 
@@ -206,14 +245,12 @@ for tx_result in result.txid_results {
 }
 ```
 
-### Script Hash History Query
+### Block Header Validation via BHS
 ```rust
-let bitails = Bitails::new(Chain::Main, BitailsConfig::default())?;
-// Note: script hash must be 64 hex chars (SHA256 of locking script)
-let history = bitails.get_script_hash_history("abc123...").await?;
-for item in history.history {
-    println!("txid: {}, height: {:?}", item.txid, item.height);
-}
+let bhs = BlockHeaderService::new(BhsConfig::mainnet());
+let height = bhs.current_height().await?;
+let header = bhs.chain_header_by_height(height).await?;
+let valid = bhs.is_valid_root_for_height(&merkle_root, height).await?;
 ```
 
 ### Exchange Rate with Caching
@@ -232,9 +269,9 @@ println!("BSV/USD: {}", rate);
 - Use `validate_script_hash()` from traits.rs to validate 64-char hex format
 
 ### BEEF Support
-- **Arc**: Full BEEF v1 support; v2 detection with conversion needed
-- **WhatsOnChain**: Limited BEEF support; prefers raw tx broadcasting
-- **Bitails**: BEEF parsing not fully implemented
+- **Arc**: Full BEEF v1 support; automatic V2-to-V1 downgrade when all txs have full data
+- **WhatsOnChain**: Parses BEEF via `Beef::from_binary()`, extracts raw txs, broadcasts sequentially
+- **Bitails**: Same BEEF parsing approach; broadcasts each extracted tx individually
 
 ### Transaction ID Computation
 All providers use `txid_from_raw_tx()` from traits.rs which computes:
@@ -263,6 +300,7 @@ cargo test services::providers
 cargo test services::providers::whatsonchain
 cargo test services::providers::arc
 cargo test services::providers::bitails
+cargo test services::providers::bhs
 ```
 
 ## Related Documentation

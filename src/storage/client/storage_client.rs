@@ -939,6 +939,42 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
         )
         .await
     }
+
+    async fn update_transaction_status_after_broadcast(
+        &self,
+        txid: &str,
+        success: bool,
+    ) -> Result<()> {
+        self.rpc_call(
+            "updateTransactionStatusAfterBroadcast",
+            vec![Value::String(txid.to_string()), Value::Bool(success)],
+        )
+        .await
+    }
+
+    async fn review_status(
+        &self,
+        auth: &AuthId,
+        aged_limit: chrono::DateTime<chrono::Utc>,
+    ) -> Result<ReviewStatusResult> {
+        self.rpc_call(
+            "reviewStatus",
+            vec![Self::to_value(auth)?, Self::to_value(&aged_limit.to_rfc3339())?],
+        )
+        .await
+    }
+
+    async fn purge_data(
+        &self,
+        auth: &AuthId,
+        params: PurgeParams,
+    ) -> Result<PurgeResults> {
+        self.rpc_call(
+            "purgeData",
+            vec![Self::to_value(auth)?, Self::to_value(&params)?],
+        )
+        .await
+    }
 }
 
 // =============================================================================
@@ -1877,6 +1913,12 @@ mod tests {
             "scriptLength": 25,
             "scriptOffset": 0,
             "outputType": "P2PKH",
+            "providedBy": "you",
+            "purpose": null,
+            "outputDescription": null,
+            "spentBy": null,
+            "sequenceNumber": null,
+            "spendingDescription": null,
             "spendable": true,
             "change": false,
             "derivationPrefix": "m/0",

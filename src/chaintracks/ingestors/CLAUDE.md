@@ -19,25 +19,27 @@ This module provides four ingestor implementations for fetching BSV blockchain h
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      BulkIngestor Trait                         │
-│  get_present_height() | synchronize() | fetch_headers()         │
-└───────────────────────┬─────────────────────┬───────────────────┘
-                        │                     │
-            ┌───────────▼──────────┐ ┌────────▼──────────┐
-            │   BulkCdnIngestor    │ │  BulkWocIngestor  │
-            │ (Babbage CDN files)  │ │  (WOC API/files)  │
-            └──────────────────────┘ └───────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                       BulkIngestor Trait                            │
+│  get_present_height() | synchronize() | fetch_headers()             │
+│  set_storage() | shutdown()                                         │
+└───────────────────────┬─────────────────────────┬───────────────────┘
+                        │                         │
+            ┌───────────▼──────────┐   ┌──────────▼──────────┐
+            │   BulkCdnIngestor    │   │  BulkWocIngestor    │
+            │ (Babbage CDN files)  │   │  (WOC API/files)    │
+            └──────────────────────┘   └─────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│                      LiveIngestor Trait                         │
-│  start_listening() | stop_listening() | get_header_by_hash()    │
-└───────────────────────┬─────────────────────┬───────────────────┘
-                        │                     │
-            ┌───────────▼──────────┐ ┌────────▼──────────┐
-            │ LivePollingIngestor  │ │LiveWebSocketIngest│
-            │  (REST API polling)  │ │  (WS streaming)   │
-            └──────────────────────┘ └───────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                       LiveIngestor Trait                            │
+│  get_header_by_hash() | start_listening() | stop_listening()        │
+│  set_storage() | shutdown()                                         │
+└───────────────────────┬─────────────────────────┬───────────────────┘
+                        │                         │
+            ┌───────────▼──────────┐   ┌──────────▼──────────┐
+            │ LivePollingIngestor  │   │LiveWebSocketIngestor│
+            │  (REST API polling)  │   │  (WS streaming)     │
+            └──────────────────────┘   └─────────────────────┘
 ```
 
 ## Key Exports
@@ -47,48 +49,52 @@ This module provides four ingestor implementations for fetching BSV blockchain h
 | Type | Description |
 |------|-------------|
 | `BulkCdnIngestor` | Downloads binary header files from Babbage CDN; fast and preferred for historical sync |
-| `BulkCdnOptions` | Configuration: `chain`, `cdn_url`, `json_resource`, `timeout_secs`, `user_agent` |
+| `BulkCdnOptions` | Configuration: `chain`, `cdn_url`, `json_resource`, `max_per_file`, `timeout_secs`, `user_agent` |
 | `BulkWocIngestor` | Uses WhatsOnChain API for headers; slower but reliable fallback with chain tip info |
-| `BulkWocOptions` | Configuration: `chain`, `api_key`, `timeout_secs`, `enable_cache`, `chain_info_ttl_ms` |
+| `BulkWocOptions` | Configuration: `chain`, `api_key`, `timeout_secs`, `enable_cache`, `chain_info_ttl_ms`, `idle_wait_ms` |
 
 ### Live Ingestors
 
 | Type | Description |
 |------|-------------|
-| `LivePollingIngestor` | Polls WOC `/block/headers` at intervals; simple, battery-friendly |
-| `LivePollingOptions` | Configuration: `chain`, `api_key`, `poll_interval_secs`, `idle_wait_ms` |
-| `LiveWebSocketIngestor` | Connects to WOC WebSocket for instant notifications; low latency |
-| `LiveWebSocketOptions` | Configuration: `chain`, `api_key`, `idle_timeout_ms`, `ping_interval_ms`, `max_reconnect_attempts` |
+| `LivePollingIngestor` | Polls WOC `/block/headers` at intervals; simple, battery-friendly. Has `subscribe()` and `is_running()` methods |
+| `LivePollingOptions` | Configuration: `chain`, `api_key`, `poll_interval_secs`, `timeout_secs`, `idle_wait_ms` |
+| `LiveWebSocketIngestor` | Connects to WOC WebSocket for instant notifications; low latency. Has `subscribe()`, `is_running()`, and `get_errors()` methods |
+| `LiveWebSocketOptions` | Configuration: `chain`, `api_key`, `idle_timeout_ms`, `ping_interval_ms`, `max_reconnect_attempts`, `reconnect_delay_ms`, `http_timeout_secs` |
 
 ### Response Types
 
 | Type | Description |
 |------|-------------|
-| `BulkHeaderFileInfo` | CDN file metadata: `file_name`, `from_height`, `to_height`, `count`, `chain` |
+| `BulkHeaderFileInfo` | CDN file metadata: `file_name`, `from_height`, `to_height`, `count`, `file_hash`, `chain`, `source_url` |
 | `BulkHeaderFilesInfo` | CDN listing response: `files`, `headers_per_file`, `last_updated` |
-| `WocChainInfo` | Chain status: `chain`, `blocks`, `headers`, `best_block_hash` |
-| `WocHeaderResponse` | Full header from WOC REST API |
-| `WocGetHeadersHeader` | Header from `/block/headers` endpoint |
-| `WocWsBlockHeader` | Header from WebSocket stream (numeric `bits` field) |
-| `WocWsMessage` | WebSocket message envelope (untagged enum) |
+| `WocChainInfo` | Chain status: `chain`, `blocks`, `headers`, `best_block_hash`, `difficulty`, `median_time` |
+| `WocHeaderResponse` | Full header from WOC REST API (uses `previousblockhash`/`nextblockhash` field names) |
+| `WocHeaderByteFileLinks` | WOC header byte file listing: `files` (Vec of URL strings) |
+| `WocGetHeadersHeader` | Header from `/block/headers` endpoint (`bits` as hex string, `previous_block_hash`, `n_tx`, `num_tx`) |
+| `WocWsBlockHeader` | Header from WebSocket stream (`bits` as numeric u32) |
+| `WocWsMessage` | WebSocket message envelope (untagged enum: `HeaderData`, `TypedMessage`, `Connect`, `Empty`) |
+| `WocPubData` | Published header data wrapper containing optional `WocWsBlockHeader` |
 
 ### Utility Functions
 
 | Function | Description |
 |----------|-------------|
-| `woc_header_to_block_header()` | Convert `WocGetHeadersHeader` to `BlockHeader` |
-| `ws_header_to_block_header()` | Convert `WocWsBlockHeader` to `BlockHeader` |
+| `woc_header_to_block_header()` | Convert `WocGetHeadersHeader` to `BlockHeader` (parses hex `bits` string) |
+| `ws_header_to_block_header()` | Convert `WocWsBlockHeader` to `BlockHeader` (uses numeric `bits` directly) |
 
 ### Constants
 
-| Constant | Value |
-|----------|-------|
-| `DEFAULT_CDN_URL` | `https://bsv-headers.babbage.systems/` |
-| `LEGACY_CDN_URL` | `https://cdn.projectbabbage.com/blockheaders/` |
-| `WOC_API_URL_MAIN` | `https://api.whatsonchain.com/v1/bsv/main` |
-| `WOC_API_URL_TEST` | `https://api.whatsonchain.com/v1/bsv/test` |
-| `WOC_WS_URL_MAIN` | `wss://socket-v2.whatsonchain.com/websocket/blockHeaders` |
-| `WOC_WS_URL_TEST` | `wss://socket-v2-testnet.whatsonchain.com/websocket/blockHeaders` |
+| Constant | Value | Exported |
+|----------|-------|----------|
+| `DEFAULT_CDN_URL` | `https://bsv-headers.babbage.systems/` | Yes |
+| `LEGACY_CDN_URL` | `https://cdn.projectbabbage.com/blockheaders/` | Yes |
+| `WOC_API_URL_MAIN` | `https://api.whatsonchain.com/v1/bsv/main` | Yes |
+| `WOC_API_URL_TEST` | `https://api.whatsonchain.com/v1/bsv/test` | Yes |
+| `WOC_WS_URL_MAIN` | `wss://socket-v2.whatsonchain.com/websocket/blockHeaders` | Yes |
+| `WOC_WS_URL_TEST` | `wss://socket-v2-testnet.whatsonchain.com/websocket/blockHeaders` | Yes |
+
+Note: `WOC_WS_HISTORY_URL_MAIN` and `WOC_WS_HISTORY_URL_TEST` exist in `live_websocket.rs` but are `#[allow(dead_code)]` and not re-exported.
 
 ## Usage
 
@@ -113,18 +119,9 @@ let websocket = LiveWebSocketIngestor::mainnet()?;   // Low latency
 
 ```rust
 use bsv_wallet_toolbox::chaintracks::ingestors::{BulkCdnIngestor, BulkCdnOptions};
-use bsv_wallet_toolbox::chaintracks::{Chain, HeightRange};
+use bsv_wallet_toolbox::chaintracks::HeightRange;
 
-// Custom options
-let options = BulkCdnOptions {
-    chain: Chain::Main,
-    cdn_url: "https://bsv-headers.babbage.systems/".to_string(),
-    json_resource: "mainNetBlockHeaders.json".to_string(),
-    timeout_secs: 120,
-    ..Default::default()
-};
-
-let ingestor = BulkCdnIngestor::new(options)?;
+let ingestor = BulkCdnIngestor::new(BulkCdnOptions::mainnet())?;
 
 // Fetch headers in a range
 let headers = ingestor.fetch_headers(
@@ -133,8 +130,6 @@ let headers = ingestor.fetch_headers(
     None,                           // bulk_range (optional)
     &[],                            // prior_live_headers
 ).await?;
-
-println!("Fetched {} headers", headers.len());
 ```
 
 ### WhatsOnChain Bulk Sync with API Key
@@ -142,19 +137,19 @@ println!("Fetched {} headers", headers.len());
 ```rust
 use bsv_wallet_toolbox::chaintracks::ingestors::{BulkWocIngestor, BulkWocOptions};
 
-let options = BulkWocOptions::mainnet()
-    .with_api_key("your-woc-api-key");
-
+let options = BulkWocOptions::mainnet().with_api_key("your-woc-api-key");
 let ingestor = BulkWocIngestor::new(options)?;
 
 // Get current chain tip
 let height = ingestor.get_chain_tip_height().await?;
-println!("Chain tip at height {}", height);
 
-// Fetch specific header by hash
+// Fetch header by hash
 if let Some(header) = ingestor.get_header_by_hash("000000000019d6689c...").await? {
     println!("Genesis block: height={}", header.height);
 }
+
+// Fetch header byte file links (for binary download)
+let links = ingestor.get_header_byte_file_links().await?;
 ```
 
 ### Polling for New Blocks
@@ -168,7 +163,7 @@ let options = LivePollingOptions::mainnet()
 
 let ingestor = LivePollingIngestor::new(options)?;
 
-// Subscribe to new headers
+// Subscribe to new headers (broadcast channel)
 let mut receiver = ingestor.subscribe();
 
 // Start polling
@@ -178,11 +173,12 @@ ingestor.start_listening(&mut live_headers).await?;
 // Receive notifications in another task
 tokio::spawn(async move {
     while let Ok(header) = receiver.recv().await {
-        println!("New block: height={}, hash={}", header.height, &header.hash[..16]);
+        println!("New block: height={}", header.height);
     }
 });
 
-// Later: stop
+// Check status and stop
+assert!(ingestor.is_running());
 ingestor.stop_listening();
 ```
 
@@ -197,10 +193,7 @@ let options = LiveWebSocketOptions::mainnet()
 
 let ingestor = LiveWebSocketIngestor::new(options)?;
 
-// Subscribe before starting
 let mut receiver = ingestor.subscribe();
-
-// Start WebSocket connection with auto-reconnect
 let mut live_headers = vec![];
 ingestor.start_listening(&mut live_headers).await?;
 
@@ -208,6 +201,9 @@ ingestor.start_listening(&mut live_headers).await?;
 while let Ok(header) = receiver.recv().await {
     println!("Block via WebSocket: height={}", header.height);
 }
+
+// Check errors if needed
+let errors = ingestor.get_errors().await;
 ```
 
 ### Header Format Conversion
@@ -218,22 +214,10 @@ use bsv_wallet_toolbox::chaintracks::ingestors::{
     WocWsBlockHeader, ws_header_to_block_header,
 };
 
-// From REST API (bits as hex string)
-let woc_header = WocGetHeadersHeader {
-    hash: "000000000019d6689c...".to_string(),
-    height: 0,
-    bits: "1d00ffff".to_string(),  // Hex string
-    // ... other fields
-};
+// From REST API (bits as hex string "1d00ffff")
 let block_header = woc_header_to_block_header(&woc_header);
 
-// From WebSocket (bits as u32)
-let ws_header = WocWsBlockHeader {
-    hash: "000000000019d6689c...".to_string(),
-    height: 0,
-    bits: 486604799,  // Numeric
-    // ... other fields
-};
+// From WebSocket (bits as u32: 486604799)
 let block_header = ws_header_to_block_header(&ws_header);
 ```
 
@@ -252,7 +236,7 @@ Headers are stored as 80-byte binary blobs in CDN files:
 | 72-75 | bits | little-endian u32 |
 | 76-79 | nonce | little-endian u32 |
 
-Both `BulkCdnIngestor` and `BulkWocIngestor` include `deserialize_header()` and `compute_block_hash()` methods that parse this format and compute double-SHA256 hashes.
+Both `BulkCdnIngestor` and `BulkWocIngestor` include `deserialize_header()` and `compute_block_hash()` methods that parse this format and compute double-SHA256 hashes (reversed for Bitcoin display convention).
 
 ### CDN File Naming
 
@@ -260,7 +244,11 @@ CDN files follow the pattern: `{from_height}_{to_height}_headers.bin`
 
 Example: `0_99999_headers.bin` contains headers for heights 0-99999 (100,000 headers, 8MB).
 
-The JSON index file (e.g., `mainNetBlockHeaders.json`) lists available files with their height ranges.
+The JSON index file (e.g., `mainNetBlockHeaders.json` or `testNetBlockHeaders.json`) lists available files with their height ranges. Files can optionally specify a `source_url` override and `file_hash` for integrity verification.
+
+### WOC Header Byte File Links
+
+`BulkWocIngestor` can also download binary header files via `get_header_byte_file_links()`, which fetches URLs from the `/block/headers/resources` endpoint. File links are parsed from URLs using the `{from}_{to}_headers.bin` naming convention, with a special `latest` file for the most recent headers.
 
 ### WebSocket Protocol
 
@@ -268,21 +256,34 @@ The WOC WebSocket uses a custom protocol:
 
 1. Connect to `wss://socket-v2.whatsonchain.com/websocket/blockHeaders`
 2. Send `{}` to initiate subscription
-3. Receive messages with type codes:
-   - Type 5/6: Subscription confirmations
-   - Type 7: Data delivery or errors
-4. Block headers arrive in `pub.data` or `data.data` fields
-5. Send periodic pings to maintain connection
+3. Receive messages as `WocWsMessage` (untagged enum):
+   - `Connect`: Initial connection info
+   - `TypedMessage` with type codes: 3 (unsubscribe), 5 (subscribed), 6 (confirm), 7 (data/error)
+   - `HeaderData`: Block headers in `pub.data` or `data.data` fields
+   - `Empty`: Ping response
+4. Send periodic pings (`"ping"`) at `ping_interval_ms` intervals
+5. Automatic reconnection on connection loss
 
 ### Error Handling and Reconnection
 
 Live ingestors handle transient failures gracefully:
 
-- **Polling**: Continues on fetch errors, logs warnings
+- **Polling**: Continues on fetch errors, logs warnings, detects new blocks by comparing against last seen header hashes
 - **WebSocket**: Auto-reconnects with configurable attempts and delays
   - `max_reconnect_attempts`: Default 10
   - `reconnect_delay_ms`: Default 5000ms between attempts
-  - `idle_timeout_ms`: Reconnect if no messages for 100s
+  - `idle_timeout_ms`: Reconnect if no messages for 100s (default)
+  - `WsError` enum tracks: `ConnectionFailed`, `MessageParseFailed`, `IdleTimeout`, `Stopped`
+  - Error history available via `get_errors()` method
+
+### BulkWocIngestor Additional Methods
+
+Beyond the `BulkIngestor` trait, `BulkWocIngestor` provides:
+
+- `get_chain_tip_height()` / `get_chain_tip_hash()` - Current chain state (cached via `chain_info_ttl_ms`)
+- `get_header_by_hash(hash)` - Lookup individual headers
+- `get_recent_headers()` - Last ~10 blocks from `/block/headers`
+- `get_header_byte_file_links()` - Binary file download URLs
 
 ### Choosing an Ingestor
 
@@ -294,8 +295,14 @@ Live ingestors handle transient failures gracefully:
 | Low-latency trading | `LiveWebSocketIngestor` (instant notifications) |
 | Development/testing | `LivePollingIngestor` (simpler to debug) |
 
+## Internal Types (Not Exported)
+
+- `FileLink` (bulk_woc.rs) - Parsed file link with URL, file name, optional height range, and `is_latest` flag
+- `WsError` (live_websocket.rs) - WebSocket-specific error enum
+- `block_header_to_live_header()` (live_polling.rs, live_websocket.rs) - Converts `BlockHeader` to `LiveBlockHeader` with default chain work and flags
+
 ## Related
 
 - [`../CLAUDE.md`](../CLAUDE.md) - Parent Chaintracks module documentation
 - [`../traits.rs`](../traits.rs) - `BulkIngestor` and `LiveIngestor` trait definitions
-- [`../types.rs`](../types.rs) - `BlockHeader`, `LiveBlockHeader`, `HeightRange` types
+- [`../types.rs`](../types.rs) - `BlockHeader`, `LiveBlockHeader`, `HeightRange`, `Chain` types

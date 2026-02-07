@@ -6,8 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::services::WalletServices;
-use crate::storage::entities::ProvenTxReqStatus;
-use crate::storage::{FindProvenTxReqsArgs, WalletStorageProvider};
+use crate::storage::MonitorStorage;
 use crate::Result;
 
 use super::{MonitorTask, TaskResult};
@@ -25,16 +24,17 @@ use super::{MonitorTask, TaskResult};
 ///    - Updates proven_tx_req status to 'invalid'
 pub struct UnfailTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     storage: Arc<S>,
+    #[allow(dead_code)]
     services: Arc<V>,
 }
 
 impl<S, V> UnfailTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     /// Create a new UnfailTask.
@@ -46,7 +46,7 @@ where
 #[async_trait]
 impl<S, V> MonitorTask for UnfailTask<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     fn name(&self) -> &'static str {
@@ -58,62 +58,23 @@ where
     }
 
     async fn run(&self) -> Result<TaskResult> {
-        let mut result = TaskResult::new();
+        let mut errors = Vec::new();
 
-        // Find transactions marked for unfail
-        let args = FindProvenTxReqsArgs {
-            status: Some(vec![ProvenTxReqStatus::Unfail]),
-            ..Default::default()
-        };
-
-        let reqs = self.storage.find_proven_tx_reqs(args).await?;
-
-        if reqs.is_empty() {
-            return Ok(result);
-        }
-
-        tracing::info!(count = reqs.len(), "Found transactions to unfail");
-
-        for req in reqs {
-            let txid = &req.txid;
-
-            // Check if transaction has a merkle path on chain
-            match self.services.get_merkle_path(txid, false).await {
-                Ok(merkle_result) => {
-                    if merkle_result.merkle_path.is_some() {
-                        // Transaction is on chain - recover it
-                        tracing::info!(
-                            txid = %txid,
-                            "Transaction found on chain, recovering"
-                        );
-
-                        // In a full implementation, we would:
-                        // 1. Update proven_tx_req status to 'unmined'
-                        // 2. Update transaction status to 'unproven'
-                        // 3. Create UTXOs for spendable outputs
-                        //
-                        // This requires additional storage methods for status updates
-
-                        result.items_processed += 1;
-                    } else {
-                        // Transaction not found - mark as invalid
-                        tracing::info!(
-                            txid = %txid,
-                            "Transaction not found on chain, marking as invalid"
-                        );
-
-                        // In a full implementation:
-                        // Update proven_tx_req status to 'invalid'
-                    }
-                }
-                Err(e) => {
-                    // Error checking merkle path - don't change status
-                    result.add_error(format!("Failed to check merkle path for {}: {}", txid, e));
-                }
+        // Delegate to MonitorStorage which handles the full unfail logic:
+        // querying unfail reqs, checking merkle paths, updating statuses.
+        match self.storage.un_fail().await {
+            Ok(()) => {
+                tracing::debug!("Unfail check completed");
+            }
+            Err(e) => {
+                errors.push(format!("un_fail failed: {}", e));
             }
         }
 
-        Ok(result)
+        Ok(TaskResult {
+            items_processed: 0,
+            errors,
+        })
     }
 }
 

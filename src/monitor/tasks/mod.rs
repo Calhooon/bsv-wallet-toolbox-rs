@@ -70,6 +70,14 @@ pub trait MonitorTask: Send + Sync {
     /// Get the default interval for this task.
     fn default_interval(&self) -> Duration;
 
+    /// Optional async setup phase called before first run.
+    ///
+    /// Override this to perform initialization that requires async operations,
+    /// such as loading state from storage. The default implementation is a no-op.
+    async fn setup(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Run the task once.
     async fn run(&self) -> Result<TaskResult>;
 }

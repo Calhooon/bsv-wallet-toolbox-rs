@@ -457,6 +457,12 @@ impl StorageSqlx {
                 script_length: row.get("script_length"),
                 script_offset: row.get("script_offset"),
                 output_type: row.get("type"),
+                provided_by: row.try_get("provided_by").unwrap_or("you".to_string()),
+                purpose: row.try_get("purpose").ok(),
+                output_description: row.try_get("output_description").ok(),
+                spent_by: row.try_get("spent_by").ok().flatten(),
+                sequence_number: row.try_get::<Option<i32>, _>("sequence_number").ok().flatten().map(|v| v as u32),
+                spending_description: row.try_get("spending_description").ok(),
                 spendable: row.get("spendable"),
                 change: row.get("change"),
                 derivation_prefix: row.get("derivation_prefix"),
@@ -507,6 +513,12 @@ impl StorageSqlx {
                 script_length: row.get("script_length"),
                 script_offset: row.get("script_offset"),
                 output_type: row.get("type"),
+                provided_by: row.try_get("provided_by").unwrap_or("you".to_string()),
+                purpose: row.try_get("purpose").ok(),
+                output_description: row.try_get("output_description").ok(),
+                spent_by: row.try_get("spent_by").ok().flatten(),
+                sequence_number: row.try_get::<Option<i32>, _>("sequence_number").ok().flatten().map(|v| v as u32),
+                spending_description: row.try_get("spending_description").ok(),
                 spendable: row.get("spendable"),
                 change: row.get("change"),
                 derivation_prefix: row.get("derivation_prefix"),
@@ -813,11 +825,6 @@ impl StorageSqlx {
             };
 
             let notified_val: i32 = row.get("notified");
-            let notify_txid = if notified_val != 0 {
-                Some(row.get::<String, _>("txid"))
-            } else {
-                None
-            };
 
             reqs.push(TableProvenTxReq {
                 proven_tx_req_id: row.get("proven_tx_req_id"),
@@ -825,7 +832,10 @@ impl StorageSqlx {
                 status,
                 attempts: row.get("attempts"),
                 history: row.get("history"),
-                notify_txid,
+                notified: notified_val != 0,
+                notify: row.try_get::<String, _>("notify").unwrap_or_default(),
+                raw_tx: row.try_get("raw_tx").ok().flatten(),
+                input_beef: row.try_get("input_beef").ok().flatten(),
                 proven_tx_id: row.get("proven_tx_id"),
                 batch: row.try_get("batch").ok(),
                 created_at: row.get("created_at"),
@@ -2165,6 +2175,162 @@ impl WalletStorageWriter for StorageSqlx {
     ) -> Result<()> {
         super::process_action::update_transaction_status_after_broadcast_internal(self, txid, success).await
     }
+
+    async fn review_status(&self, auth: &AuthId, aged_limit: chrono::DateTime<chrono::Utc>) -> Result<ReviewStatusResult> {
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+        let mut log = String::new();
+
+        // 1. Find aged proven_tx_reqs that may need attention
+        let aged_reqs: Vec<(i64, String, String)> = sqlx::query_as(
+            r#"
+            SELECT proven_tx_req_id, txid, status
+            FROM proven_tx_reqs
+            WHERE updated_at < ?
+              AND status IN ('unmined', 'sending', 'unknown', 'unconfirmed', 'callback')
+            "#,
+        )
+        .bind(aged_limit)
+        .fetch_all(self.pool())
+        .await?;
+
+        if !aged_reqs.is_empty() {
+            log.push_str(&format!("Found {} aged proven_tx_reqs needing attention.\n", aged_reqs.len()));
+        }
+
+        // 2. Find transactions where status doesn't match proven_tx_req status
+        let mismatches: Vec<(i64, String, String, String)> = sqlx::query_as(
+            r#"
+            SELECT t.transaction_id, t.txid, t.status AS tx_status, p.status AS req_status
+            FROM transactions t
+            JOIN proven_tx_reqs p ON t.txid = p.txid
+            WHERE t.user_id = ?
+              AND (
+                (t.status = 'unproven' AND p.status = 'completed')
+                OR (t.status = 'sending' AND p.status IN ('completed', 'unmined'))
+                OR (t.status = 'completed' AND p.status NOT IN ('completed', 'nosend'))
+              )
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        // 3. Fix mismatches
+        for (tx_id, txid, tx_status, req_status) in &mismatches {
+            if tx_status == "unproven" && req_status == "completed" {
+                // Transaction should be completed since proof exists
+                sqlx::query("UPDATE transactions SET status = 'completed', updated_at = ? WHERE transaction_id = ?")
+                    .bind(chrono::Utc::now())
+                    .bind(tx_id)
+                    .execute(self.pool())
+                    .await?;
+                log.push_str(&format!("Fixed tx {}: unproven -> completed (proof exists).\n", txid));
+            } else if tx_status == "sending" && (req_status == "completed" || req_status == "unmined") {
+                // Transaction was sent; update status
+                let new_status = if req_status == "completed" { "completed" } else { "unproven" };
+                sqlx::query("UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?")
+                    .bind(new_status)
+                    .bind(chrono::Utc::now())
+                    .bind(tx_id)
+                    .execute(self.pool())
+                    .await?;
+                log.push_str(&format!("Fixed tx {}: sending -> {} (req={}).\n", txid, new_status, req_status));
+            }
+        }
+
+        if !mismatches.is_empty() {
+            log.push_str(&format!("Fixed {} status mismatches.\n", mismatches.len()));
+        }
+
+        if log.is_empty() {
+            log.push_str("No issues found.\n");
+        }
+
+        Ok(ReviewStatusResult { log })
+    }
+
+    async fn purge_data(&self, auth: &AuthId, params: PurgeParams) -> Result<PurgeResults> {
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+        let mut count = 0u32;
+        let mut log = String::new();
+
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(params.max_age_days as i64);
+
+        // Build status list based on params
+        let mut statuses = Vec::new();
+        if params.purge_completed {
+            statuses.push("completed");
+        }
+        if params.purge_failed {
+            statuses.push("failed");
+        }
+
+        if statuses.is_empty() {
+            return Ok(PurgeResults { count: 0, log: "No statuses selected for purge.\n".to_string() });
+        }
+
+        // 1. Null out raw_tx on old completed transactions to save space
+        if params.purge_completed {
+            let result = sqlx::query(
+                r#"
+                UPDATE transactions
+                SET raw_tx = NULL, updated_at = ?
+                WHERE user_id = ?
+                  AND status = 'completed'
+                  AND updated_at < ?
+                  AND raw_tx IS NOT NULL
+                "#,
+            )
+            .bind(chrono::Utc::now())
+            .bind(user_id)
+            .bind(cutoff)
+            .execute(self.pool())
+            .await?;
+            let rows = result.rows_affected() as u32;
+            if rows > 0 {
+                log.push_str(&format!("Cleared raw_tx from {} completed transactions.\n", rows));
+                count += rows;
+            }
+        }
+
+        // 2. Delete proven_tx_reqs for old failed transactions
+        if params.purge_failed {
+            let result = sqlx::query(
+                r#"
+                DELETE FROM proven_tx_reqs
+                WHERE status IN ('failed', 'invalid', 'doubleSpend')
+                  AND updated_at < ?
+                "#,
+            )
+            .bind(cutoff)
+            .execute(self.pool())
+            .await?;
+            let rows = result.rows_affected() as u32;
+            if rows > 0 {
+                log.push_str(&format!("Deleted {} failed proven_tx_reqs.\n", rows));
+                count += rows;
+            }
+        }
+
+        // 3. Clean up old monitor events
+        let result = sqlx::query(
+            r#"DELETE FROM monitor_events WHERE created_at < ?"#,
+        )
+        .bind(cutoff)
+        .execute(self.pool())
+        .await?;
+        let rows = result.rows_affected() as u32;
+        if rows > 0 {
+            log.push_str(&format!("Deleted {} old monitor events.\n", rows));
+            count += rows;
+        }
+
+        if log.is_empty() {
+            log.push_str("Nothing to purge.\n");
+        }
+
+        Ok(PurgeResults { count, log })
+    }
 }
 
 // =============================================================================
@@ -2265,28 +2431,146 @@ impl MonitorStorage for StorageSqlx {
             return Ok(vec![]);
         }
 
-        // Note: Full implementation would:
-        // 1. Check if already synchronized for current block height
-        // 2. For each req, call services.get_merkle_path(txid)
-        // 3. On proof found: update proven_tx_req and transaction status
-        // 4. On not found: increment attempts
-        // 5. Mark as invalid after max attempts exceeded
-        //
-        // This requires a services reference which is not available on the storage layer.
-        // The monitor tasks handle this logic externally using both storage and services.
-        //
-        // For now, return empty - the monitor tasks handle the actual synchronization.
+        let services = self.get_services()?;
+
         tracing::debug!(
-            "synchronize_transaction_statuses: found {} transactions needing sync",
+            "synchronize_transaction_statuses: checking {} transactions",
             reqs.len()
         );
 
-        Ok(vec![])
+        let mut results = Vec::new();
+        let max_attempts = 10;
+
+        for req in &reqs {
+            let txid = &req.txid;
+
+            // Attempt to get merkle path from services
+            match services.get_merkle_path(txid, false).await {
+                Ok(proof_result) => {
+                    if let Some(ref merkle_path) = proof_result.merkle_path {
+                        // Proof found - update proven_tx_req to completed
+                        let now = chrono::Utc::now();
+
+                        // Extract block info from header if available
+                        let block_height = proof_result.header.as_ref().map(|h| h.height).unwrap_or(0);
+                        let block_hash = proof_result.header.as_ref().map(|h| h.hash.clone()).unwrap_or_default();
+
+                        let merkle_path_bytes = merkle_path.as_bytes();
+                        let merkle_root = proof_result.header.as_ref().map(|h| h.merkle_root.clone()).unwrap_or_default();
+
+                        sqlx::query(
+                            r#"
+                            INSERT OR IGNORE INTO proven_txs (txid, height, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, (SELECT raw_tx FROM transactions WHERE txid = ? LIMIT 1), ?, ?)
+                            "#,
+                        )
+                        .bind(txid)
+                        .bind(block_height as i64)
+                        .bind(&block_hash)
+                        .bind(&merkle_root)
+                        .bind(merkle_path_bytes)
+                        .bind(txid)
+                        .bind(now)
+                        .bind(now)
+                        .execute(self.pool())
+                        .await?;
+
+                        // Get the proven_tx_id
+                        let proven_tx_id: Option<(i64,)> = sqlx::query_as(
+                            "SELECT proven_tx_id FROM proven_txs WHERE txid = ?"
+                        )
+                        .bind(txid)
+                        .fetch_optional(self.pool())
+                        .await?;
+
+                        // Update proven_tx_req to completed
+                        sqlx::query(
+                            r#"
+                            UPDATE proven_tx_reqs
+                            SET status = 'completed', proven_tx_id = ?, updated_at = ?
+                            WHERE proven_tx_req_id = ?
+                            "#,
+                        )
+                        .bind(proven_tx_id.map(|r| r.0))
+                        .bind(now)
+                        .bind(req.proven_tx_req_id)
+                        .execute(self.pool())
+                        .await?;
+
+                        // Update transaction status to completed
+                        sqlx::query(
+                            "UPDATE transactions SET status = 'completed', updated_at = ? WHERE txid = ?"
+                        )
+                        .bind(now)
+                        .bind(txid)
+                        .execute(self.pool())
+                        .await?;
+
+                        results.push(TxSynchronizedStatus {
+                            txid: txid.clone(),
+                            status: ProvenTxReqStatus::Completed,
+                            block_height: Some(block_height),
+                            block_hash: Some(block_hash),
+                            merkle_root: Some(merkle_root),
+                            merkle_path: Some(merkle_path_bytes.to_vec()),
+                        });
+                    } else {
+                        // No proof yet - increment attempts
+                        let attempts = req.attempts + 1;
+                        let now = chrono::Utc::now();
+
+                        if attempts >= max_attempts {
+                            // Too many attempts - mark as invalid
+                            sqlx::query(
+                                "UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
+                            )
+                            .bind(attempts)
+                            .bind(now)
+                            .bind(req.proven_tx_req_id)
+                            .execute(self.pool())
+                            .await?;
+
+                            results.push(TxSynchronizedStatus {
+                                txid: txid.clone(),
+                                status: ProvenTxReqStatus::Invalid,
+                                block_height: None,
+                                block_hash: None,
+                                merkle_root: None,
+                                merkle_path: None,
+                            });
+                        } else {
+                            sqlx::query(
+                                "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
+                            )
+                            .bind(attempts)
+                            .bind(now)
+                            .bind(req.proven_tx_req_id)
+                            .execute(self.pool())
+                            .await?;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to get merkle path for {}: {}", txid, e);
+                    // Increment attempts on error
+                    let now = chrono::Utc::now();
+                    sqlx::query(
+                        "UPDATE proven_tx_reqs SET attempts = attempts + 1, updated_at = ? WHERE proven_tx_req_id = ?"
+                    )
+                    .bind(now)
+                    .bind(req.proven_tx_req_id)
+                    .execute(self.pool())
+                    .await?;
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     async fn send_waiting_transactions(
         &self,
-        _min_transaction_age: Duration,
+        min_transaction_age: Duration,
     ) -> Result<Option<StorageProcessActionResults>> {
         // Query proven_tx_reqs with unsent/sending status
         let statuses = vec![ProvenTxReqStatus::Unsent, ProvenTxReqStatus::Sending];
@@ -2302,19 +2586,140 @@ impl MonitorStorage for StorageSqlx {
             return Ok(None);
         }
 
-        // Note: Full implementation would:
-        // 1. Filter by min_transaction_age
-        // 2. Group by batch_id
-        // 3. For each batch, build BEEF and call services.post_beef()
-        // 4. Update status on success/failure
-        //
-        // This requires services access which is handled by the monitor tasks.
+        // Filter by min_transaction_age
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(min_transaction_age).unwrap_or_default();
+        let reqs: Vec<_> = reqs.into_iter().filter(|r| r.created_at < cutoff).collect();
+
+        if reqs.is_empty() {
+            return Ok(None);
+        }
+
+        let services = self.get_services()?;
+
         tracing::debug!(
-            "send_waiting_transactions: found {} transactions waiting to send",
+            "send_waiting_transactions: broadcasting {} transactions",
             reqs.len()
         );
 
-        Ok(None)
+        let mut send_with_results = Vec::new();
+        let now = chrono::Utc::now();
+
+        for req in &reqs {
+            // Get raw_tx for this proven_tx_req
+            let raw_tx = match &req.raw_tx {
+                Some(tx) if !tx.is_empty() => tx.clone(),
+                _ => {
+                    // Try to get from transaction table
+                    let row: Option<(Vec<u8>,)> = sqlx::query_as(
+                        "SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL"
+                    )
+                    .bind(&req.txid)
+                    .fetch_optional(self.pool())
+                    .await?;
+                    match row {
+                        Some((tx,)) => tx,
+                        None => {
+                            tracing::warn!("No raw_tx found for txid {}", req.txid);
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            // Build BEEF from raw_tx and input_beef
+            let beef_bytes = if let Some(ref input_beef) = req.input_beef {
+                // Merge raw_tx into input_beef to create broadcast-ready BEEF
+                use bsv_sdk::transaction::Beef;
+                match Beef::from_binary(input_beef) {
+                    Ok(mut beef) => {
+                        if let Ok(tx) = bsv_sdk::transaction::Transaction::from_binary(&raw_tx) {
+                            beef.merge_transaction(tx);
+                        }
+                        beef.to_binary()
+                    }
+                    Err(_) => raw_tx.clone(),
+                }
+            } else {
+                raw_tx.clone()
+            };
+
+            // Update status to sending
+            sqlx::query("UPDATE proven_tx_reqs SET status = 'sending', updated_at = ? WHERE proven_tx_req_id = ?")
+                .bind(now)
+                .bind(req.proven_tx_req_id)
+                .execute(self.pool())
+                .await?;
+
+            // Broadcast via services - returns Vec<PostBeefResult> (one per provider)
+            match services.post_beef(&beef_bytes, &[req.txid.clone()]).await {
+                Ok(results_vec) => {
+                    // Check if any provider returned success
+                    let success = results_vec.iter().any(|r| r.is_success());
+                    if success {
+                        // Update to unmined
+                        sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
+                            .bind(now)
+                            .bind(req.proven_tx_req_id)
+                            .execute(self.pool())
+                            .await?;
+
+                        sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
+                            .bind(now)
+                            .bind(&req.txid)
+                            .execute(self.pool())
+                            .await?;
+
+                        send_with_results.push(SendWithResult {
+                            txid: req.txid.clone(),
+                            status: "unproven".to_string(),
+                        });
+                    } else {
+                        // Check for double spend in any provider's results
+                        let is_double_spend = results_vec.iter().any(|r| {
+                            r.txid_results.iter().any(|tr| tr.double_spend)
+                        });
+
+                        if is_double_spend {
+                            sqlx::query("UPDATE proven_tx_reqs SET status = 'doubleSpend', updated_at = ? WHERE proven_tx_req_id = ?")
+                                .bind(now)
+                                .bind(req.proven_tx_req_id)
+                                .execute(self.pool())
+                                .await?;
+                        } else {
+                            sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = attempts + 1, updated_at = ? WHERE proven_tx_req_id = ?")
+                                .bind(now)
+                                .bind(req.proven_tx_req_id)
+                                .execute(self.pool())
+                                .await?;
+                        }
+
+                        send_with_results.push(SendWithResult {
+                            txid: req.txid.clone(),
+                            status: "failed".to_string(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to broadcast tx {}: {}", req.txid, e);
+                    sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = attempts + 1, updated_at = ? WHERE proven_tx_req_id = ?")
+                        .bind(now)
+                        .bind(req.proven_tx_req_id)
+                        .execute(self.pool())
+                        .await?;
+
+                    send_with_results.push(SendWithResult {
+                        txid: req.txid.clone(),
+                        status: "failed".to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(Some(StorageProcessActionResults {
+            send_with_results: Some(send_with_results),
+            not_delayed_results: None,
+            log: None,
+        }))
     }
 
     async fn abort_abandoned(&self, timeout: Duration) -> Result<()> {
@@ -2396,18 +2801,161 @@ impl MonitorStorage for StorageSqlx {
             return Ok(());
         }
 
-        // Note: Full implementation would:
-        // 1. For each req, check if transaction has merkle path on-chain
-        // 2. If found: update to unmined status, restore UTXOs
-        // 3. If not found: mark as invalid
-        //
-        // This requires services access which is handled by the monitor tasks.
+        let services = self.get_services()?;
+
         tracing::debug!(
-            "un_fail: found {} transactions marked for unfail processing",
+            "un_fail: processing {} transactions marked for unfail",
             reqs.len()
         );
 
+        let now = chrono::Utc::now();
+
+        for req in &reqs {
+            // Check if transaction has a merkle path on-chain
+            match services.get_merkle_path(&req.txid, false).await {
+                Ok(result) if result.merkle_path.is_some() => {
+                    // Transaction exists on chain - restore it
+                    // Update proven_tx_req to unmined (will be picked up by sync)
+                    sqlx::query(
+                        "UPDATE proven_tx_reqs SET status = 'unmined', attempts = 0, updated_at = ? WHERE proven_tx_req_id = ?"
+                    )
+                    .bind(now)
+                    .bind(req.proven_tx_req_id)
+                    .execute(self.pool())
+                    .await?;
+
+                    // Update transaction status to unproven
+                    sqlx::query(
+                        "UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?"
+                    )
+                    .bind(now)
+                    .bind(&req.txid)
+                    .execute(self.pool())
+                    .await?;
+
+                    // Restore spent outputs that were released when the tx was marked failed
+                    // Mark outputs of this transaction as spendable again
+                    sqlx::query(
+                        r#"
+                        UPDATE outputs SET spendable = 1, updated_at = ?
+                        WHERE txid = ? AND spendable = 0
+                        "#
+                    )
+                    .bind(now)
+                    .bind(&req.txid)
+                    .execute(self.pool())
+                    .await?;
+
+                    tracing::info!("un_fail: restored transaction {}", req.txid);
+                }
+                _ => {
+                    // Not found on chain - mark as invalid
+                    sqlx::query(
+                        "UPDATE proven_tx_reqs SET status = 'invalid', updated_at = ? WHERE proven_tx_req_id = ?"
+                    )
+                    .bind(now)
+                    .bind(req.proven_tx_req_id)
+                    .execute(self.pool())
+                    .await?;
+
+                    tracing::debug!("un_fail: marked {} as invalid (not found on chain)", req.txid);
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    async fn review_status(&self) -> Result<ReviewStatusResult> {
+        let mut log = String::new();
+        let now = chrono::Utc::now();
+
+        // Find completed proven_tx_reqs whose associated transactions are not yet 'completed'
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT ptr.txid, t.status
+            FROM proven_tx_reqs ptr
+            JOIN transactions t ON t.txid = ptr.txid
+            WHERE ptr.status = 'completed'
+              AND t.status != 'completed'
+              AND ptr.proven_tx_id IS NOT NULL
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        if !rows.is_empty() {
+            log.push_str(&format!("Found {} transactions needing status sync\n", rows.len()));
+
+            for (txid, old_status) in &rows {
+                sqlx::query(
+                    "UPDATE transactions SET status = 'completed', updated_at = ? WHERE txid = ?"
+                )
+                .bind(now)
+                .bind(txid)
+                .execute(self.pool())
+                .await?;
+
+                tracing::debug!(
+                    "review_status: synced transaction {} from {} to completed",
+                    txid, old_status
+                );
+            }
+
+            log.push_str(&format!("Updated {} transaction statuses to completed\n", rows.len()));
+        } else {
+            log.push_str("No status mismatches found\n");
+        }
+
+        Ok(ReviewStatusResult { log })
+    }
+
+    async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults> {
+        let mut count = 0u32;
+        let mut log = String::new();
+        let now = chrono::Utc::now();
+        let cutoff = now - chrono::Duration::days(params.max_age_days as i64);
+
+        if params.purge_failed {
+            // Delete old failed/invalid proven_tx_reqs
+            let result = sqlx::query(
+                r#"
+                DELETE FROM proven_tx_reqs
+                WHERE status IN ('failed', 'invalid', 'doubleSpend')
+                  AND updated_at < ?
+                "#,
+            )
+            .bind(cutoff)
+            .execute(self.pool())
+            .await?;
+
+            let deleted = result.rows_affected() as u32;
+            count += deleted;
+            log.push_str(&format!("Purged {} failed/invalid proven_tx_reqs\n", deleted));
+        }
+
+        if params.purge_completed {
+            // Clear raw data from old completed proven_tx_reqs (keep the record)
+            let result = sqlx::query(
+                r#"
+                UPDATE proven_tx_reqs
+                SET raw_tx = NULL, input_beef = NULL, updated_at = ?
+                WHERE status = 'completed'
+                  AND updated_at < ?
+                  AND (raw_tx IS NOT NULL OR input_beef IS NOT NULL)
+                "#,
+            )
+            .bind(now)
+            .bind(cutoff)
+            .execute(self.pool())
+            .await?;
+
+            let cleaned = result.rows_affected() as u32;
+            count += cleaned;
+            log.push_str(&format!("Cleaned raw data from {} completed proven_tx_reqs\n", cleaned));
+        }
+
+        Ok(PurgeResults { count, log })
     }
 }
 
@@ -2581,6 +3129,314 @@ impl StorageSqlx {
             .collect();
 
         Ok(events)
+    }
+
+    /// Find a spendable change output suitable for use as input.
+    ///
+    /// Looks for change outputs that are spendable and belong to the specified basket.
+    /// Optionally excludes outputs from transactions currently in 'sending' status.
+    ///
+    /// # Arguments
+    /// * `user_id` - The user who owns the outputs
+    /// * `basket_id` - The basket to search in
+    /// * `_target_satoshis` - Target satoshi amount (for future optimization)
+    /// * `_exclude_sending` - Whether to exclude outputs from sending transactions
+    /// * `_transaction_id` - The transaction that will use this input
+    pub async fn allocate_change_input(
+        &self,
+        user_id: i64,
+        basket_id: i64,
+        target_satoshis: i64,
+        exclude_sending: bool,
+        transaction_id: i64,
+    ) -> Result<Option<TableOutput>> {
+        // Find a spendable change output suitable for use as a transaction input.
+        // Strategy: select the smallest output >= target_satoshis to minimize change,
+        // or the largest output if none meet the target.
+        // Find a spendable change output suitable for use as a transaction input.
+        // Strategy: select the smallest output >= target_satoshis to minimize change,
+        // or the largest output if none meet the target.
+        let base_query = if exclude_sending {
+            r#"
+            SELECT output_id, satoshis, vout, txid, locking_script
+            FROM outputs
+            WHERE user_id = ?
+              AND basket_id = ?
+              AND change = 1
+              AND spendable = 1
+              AND spent_by IS NULL
+              AND transaction_id != ?
+              AND transaction_id NOT IN (
+                SELECT transaction_id FROM transactions WHERE status = 'sending'
+              )
+            ORDER BY
+              CASE WHEN satoshis >= ? THEN 0 ELSE 1 END,
+              CASE WHEN satoshis >= ? THEN satoshis ELSE -satoshis END
+            LIMIT 1
+            "#
+        } else {
+            r#"
+            SELECT output_id, satoshis, vout, txid, locking_script
+            FROM outputs
+            WHERE user_id = ?
+              AND basket_id = ?
+              AND change = 1
+              AND spendable = 1
+              AND spent_by IS NULL
+              AND transaction_id != ?
+            ORDER BY
+              CASE WHEN satoshis >= ? THEN 0 ELSE 1 END,
+              CASE WHEN satoshis >= ? THEN satoshis ELSE -satoshis END
+            LIMIT 1
+            "#
+        };
+
+        let row: Option<(i64, i64, i64, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(base_query)
+            .bind(user_id)
+            .bind(basket_id)
+            .bind(transaction_id)
+            .bind(target_satoshis)
+            .bind(target_satoshis)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some((output_id, _satoshis, _vout, _txid, _locking_script)) => {
+                // Mark the output as non-spendable (allocated to this transaction)
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?"
+                )
+                .bind(transaction_id)
+                .bind(output_id)
+                .execute(&self.pool)
+                .await?;
+
+                // Fetch the full output record
+                let full_row = sqlx::query("SELECT * FROM outputs WHERE output_id = ?")
+                    .bind(output_id)
+                    .fetch_one(&self.pool)
+                    .await?;
+
+                let now = chrono::Utc::now();
+                let output = TableOutput {
+                    output_id: full_row.get("output_id"),
+                    user_id: full_row.get("user_id"),
+                    transaction_id: full_row.get("transaction_id"),
+                    basket_id: full_row.try_get("basket_id").ok(),
+                    txid: full_row.get("txid"),
+                    vout: full_row.get("vout"),
+                    satoshis: full_row.get("satoshis"),
+                    locking_script: full_row.try_get("locking_script").ok().flatten(),
+                    script_length: full_row.try_get("script_length").unwrap_or(0),
+                    script_offset: full_row.try_get("script_offset").unwrap_or(0),
+                    output_type: full_row.try_get("output_type").unwrap_or_default(),
+                    provided_by: full_row.try_get("provided_by").unwrap_or_default(),
+                    purpose: full_row.try_get("purpose").ok(),
+                    output_description: full_row.try_get("output_description").ok(),
+                    spent_by: full_row.try_get("spent_by").ok().flatten(),
+                    sequence_number: full_row.try_get("sequence_number").ok().flatten(),
+                    spending_description: full_row.try_get("spending_description").ok(),
+                    spendable: full_row.try_get::<bool, _>("spendable").unwrap_or(false),
+                    change: full_row.try_get::<bool, _>("change").unwrap_or(false),
+                    derivation_prefix: full_row.try_get("derivation_prefix").ok(),
+                    derivation_suffix: full_row.try_get("derivation_suffix").ok(),
+                    sender_identity_key: full_row.try_get("sender_identity_key").ok(),
+                    custom_instructions: full_row.try_get("custom_instructions").ok(),
+                    created_at: full_row.try_get("created_at").unwrap_or(now),
+                    updated_at: full_row.try_get("updated_at").unwrap_or(now),
+                };
+
+                Ok(Some(output))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get labels associated with a transaction.
+    ///
+    /// Queries the tx_label_maps and tx_labels tables to find all labels
+    /// for a given transaction.
+    pub async fn get_labels_for_transaction_id(&self, transaction_id: i64) -> Result<Vec<String>> {
+        let labels: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT tl.label
+            FROM tx_labels_map tlm
+            JOIN tx_labels tl ON tlm.tx_label_id = tl.tx_label_id
+            WHERE tlm.transaction_id = ?
+              AND tl.is_deleted = 0
+            ORDER BY tl.label
+            "#,
+        )
+        .bind(transaction_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(labels.into_iter().map(|(l,)| l).collect())
+    }
+
+    /// Get tags associated with an output.
+    ///
+    /// Queries the output_tag_maps and output_tags tables to find all tags
+    /// for a given output.
+    pub async fn get_tags_for_output_id(&self, output_id: i64) -> Result<Vec<String>> {
+        let tags: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT ot.tag
+            FROM output_tags_map otm
+            JOIN output_tags ot ON otm.output_tag_id = ot.output_tag_id
+            WHERE otm.output_id = ?
+              AND ot.is_deleted = 0
+            ORDER BY ot.tag
+            "#,
+        )
+        .bind(output_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(tags.into_iter().map(|(t,)| t).collect())
+    }
+
+    /// Count spendable change outputs for a user in a basket.
+    ///
+    /// # Arguments
+    /// * `_user_id` - The user who owns the outputs
+    /// * `_basket_id` - The basket to count in
+    /// * `_exclude_sending` - Whether to exclude outputs from sending transactions
+    pub async fn count_change_inputs(
+        &self,
+        user_id: i64,
+        basket_id: i64,
+        exclude_sending: bool,
+    ) -> Result<i64> {
+        let count: (i64,) = if exclude_sending {
+            sqlx::query_as(
+                r#"
+                SELECT COUNT(*)
+                FROM outputs o
+                WHERE o.user_id = ?
+                  AND o.basket_id = ?
+                  AND o.change = 1
+                  AND o.spendable = 1
+                  AND o.spent_by IS NULL
+                  AND o.transaction_id NOT IN (
+                    SELECT transaction_id FROM transactions WHERE status = 'sending'
+                  )
+                "#,
+            )
+            .bind(user_id)
+            .bind(basket_id)
+            .fetch_one(self.pool())
+            .await?
+        } else {
+            sqlx::query_as(
+                r#"
+                SELECT COUNT(*)
+                FROM outputs o
+                WHERE o.user_id = ?
+                  AND o.basket_id = ?
+                  AND o.change = 1
+                  AND o.spendable = 1
+                  AND o.spent_by IS NULL
+                "#,
+            )
+            .bind(user_id)
+            .bind(basket_id)
+            .fetch_one(self.pool())
+            .await?
+        };
+
+        Ok(count.0)
+    }
+
+    /// Find certificate fields for a given certificate.
+    pub async fn find_certificate_fields(
+        &self,
+        certificate_id: i64,
+    ) -> Result<Vec<TableCertificateField>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM certificate_fields
+            WHERE certificate_id = ?
+            ORDER BY field_name
+            "#,
+        )
+        .bind(certificate_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        let fields = rows.iter().map(|row| {
+            let now = chrono::Utc::now();
+            TableCertificateField {
+                certificate_field_id: row.get("certificate_field_id"),
+                certificate_id: row.get("certificate_id"),
+                user_id: row.get("user_id"),
+                field_name: row.get("field_name"),
+                field_value: row.get("field_value"),
+                master_key: row.get("master_key"),
+                created_at: row.try_get("created_at").unwrap_or(now),
+                updated_at: row.try_get("updated_at").unwrap_or(now),
+            }
+        }).collect();
+
+        Ok(fields)
+    }
+
+    /// Get a raw transaction, preferring proven_tx but falling back to transactions table.
+    pub async fn get_proven_or_raw_tx(&self, txid: &str) -> Result<Option<Vec<u8>>> {
+        // First try proven_txs
+        let proven: Option<(Vec<u8>,)> = sqlx::query_as(
+            "SELECT raw_tx FROM proven_txs WHERE txid = ? AND raw_tx IS NOT NULL"
+        )
+        .bind(txid)
+        .fetch_optional(self.pool())
+        .await?;
+
+        if let Some((raw_tx,)) = proven {
+            return Ok(Some(raw_tx));
+        }
+
+        // Fall back to transactions table
+        let tx: Option<(Vec<u8>,)> = sqlx::query_as(
+            "SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL"
+        )
+        .bind(txid)
+        .fetch_optional(self.pool())
+        .await?;
+
+        Ok(tx.map(|(raw_tx,)| raw_tx))
+    }
+
+    /// Get admin statistics about the storage.
+    ///
+    /// Returns counts of users, transactions, outputs, certificates, etc.
+    pub async fn admin_stats(&self, _admin_identity_key: &str) -> Result<AdminStatsResult> {
+        let users: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(self.pool())
+            .await?;
+        let transactions: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM transactions")
+            .fetch_one(self.pool())
+            .await?;
+        let outputs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM outputs")
+            .fetch_one(self.pool())
+            .await?;
+        let certificates: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM certificates WHERE is_deleted = 0")
+            .fetch_one(self.pool())
+            .await?;
+        let proven_txs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM proven_txs")
+            .fetch_one(self.pool())
+            .await?;
+        let proven_tx_reqs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM proven_tx_reqs")
+            .fetch_one(self.pool())
+            .await?;
+
+        Ok(AdminStatsResult {
+            users: users.0 as u32,
+            transactions: transactions.0 as u32,
+            outputs: outputs.0 as u32,
+            certificates: certificates.0 as u32,
+            proven_txs: proven_txs.0 as u32,
+            proven_tx_reqs: proven_tx_reqs.0 as u32,
+        })
     }
 
     /// Clear old monitor events.

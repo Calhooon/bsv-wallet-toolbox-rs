@@ -19,6 +19,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock};
@@ -31,9 +32,12 @@ use bsv_sdk::wallet::{
 
 use crate::error::{Error, Result};
 use crate::services::WalletServices;
+use chrono::{DateTime, Utc};
+
 use crate::storage::{
     AuthId, FindCertificatesArgs, FindOutputBasketsArgs, FindOutputsArgs, FindProvenTxReqsArgs,
-    ProcessSyncChunkResult, RequestSyncChunkArgs, StorageCreateActionResult,
+    ProcessSyncChunkResult, PurgeParams, PurgeResults, RequestSyncChunkArgs,
+    ReviewStatusResult, StorageCreateActionResult,
     StorageInternalizeActionResult, StorageProcessActionArgs, StorageProcessActionResults,
     SyncChunk, WalletStorageInfo, WalletStorageProvider, WalletStorageReader,
     WalletStorageSync, WalletStorageWriter,
@@ -71,6 +75,9 @@ impl ManagedStorage {
         }
     }
 }
+
+/// Default lock acquisition timeout in seconds.
+const LOCK_TIMEOUT_SECS: u64 = 30;
 
 /// Lock queue for managing concurrent access.
 type LockQueue = Arc<Mutex<VecDeque<tokio::sync::oneshot::Sender<()>>>>;
@@ -381,8 +388,10 @@ impl WalletStorageManager {
         ))
     }
 
-    /// Acquires a lock from the specified queue.
-    async fn acquire_lock(queue: &LockQueue) {
+    /// Acquires a lock from the specified queue with a timeout.
+    ///
+    /// Returns an error if the lock cannot be acquired within `LOCK_TIMEOUT_SECS` seconds.
+    async fn acquire_lock(queue: &LockQueue, lock_name: &str) -> Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let should_wait;
 
@@ -393,7 +402,20 @@ impl WalletStorageManager {
         }
 
         if should_wait {
-            let _ = rx.await;
+            match tokio::time::timeout(Duration::from_secs(LOCK_TIMEOUT_SECS), rx).await {
+                Ok(_) => Ok(()),
+                Err(_) => {
+                    // Remove our sender from the queue since we're giving up
+                    // Note: the sender may have already been consumed, so we just
+                    // report the timeout.
+                    Err(Error::LockTimeout(format!(
+                        "Timed out after {}s waiting for {} lock",
+                        LOCK_TIMEOUT_SECS, lock_name
+                    )))
+                }
+            }
+        } else {
+            Ok(())
         }
     }
 
@@ -418,14 +440,17 @@ impl WalletStorageManager {
         F: FnOnce(Arc<dyn WalletStorageProvider>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
-        Self::acquire_lock(&self.reader_locks).await;
+        Self::acquire_lock(&self.reader_locks, "reader").await?;
 
-        if !*self.is_available.read().await {
-            self.make_available().await?;
+        let result = async {
+            if !*self.is_available.read().await {
+                self.make_available().await?;
+            }
+
+            let active = self.get_active().await?;
+            f(active).await
         }
-
-        let active = self.get_active().await?;
-        let result = f(active).await;
+        .await;
 
         Self::release_lock(&self.reader_locks).await;
         result
@@ -437,17 +462,28 @@ impl WalletStorageManager {
         F: FnOnce(Arc<dyn WalletStorageProvider>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
-        Self::acquire_lock(&self.reader_locks).await;
-        Self::acquire_lock(&self.writer_locks).await;
+        Self::acquire_lock(&self.reader_locks, "reader").await?;
+        let result = match Self::acquire_lock(&self.writer_locks, "writer").await {
+            Ok(()) => {
+                let inner_result = async {
+                    if !*self.is_available.read().await {
+                        self.make_available().await?;
+                    }
 
-        if !*self.is_available.read().await {
-            self.make_available().await?;
-        }
+                    let active = self.get_active().await?;
+                    f(active).await
+                }
+                .await;
 
-        let active = self.get_active().await?;
-        let result = f(active).await;
+                Self::release_lock(&self.writer_locks).await;
+                inner_result
+            }
+            Err(e) => {
+                Self::release_lock(&self.reader_locks).await;
+                return Err(e);
+            }
+        };
 
-        Self::release_lock(&self.writer_locks).await;
         Self::release_lock(&self.reader_locks).await;
         result
     }
@@ -458,16 +494,26 @@ impl WalletStorageManager {
         F: FnOnce(Arc<dyn WalletStorageProvider>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
-        Self::acquire_lock(&self.reader_locks).await;
-        Self::acquire_lock(&self.writer_locks).await;
-        Self::acquire_lock(&self.sync_locks).await;
-
-        if !*self.is_available.read().await {
-            self.make_available().await?;
+        Self::acquire_lock(&self.reader_locks, "reader").await?;
+        if let Err(e) = Self::acquire_lock(&self.writer_locks, "writer").await {
+            Self::release_lock(&self.reader_locks).await;
+            return Err(e);
+        }
+        if let Err(e) = Self::acquire_lock(&self.sync_locks, "sync").await {
+            Self::release_lock(&self.writer_locks).await;
+            Self::release_lock(&self.reader_locks).await;
+            return Err(e);
         }
 
-        let active = self.get_active().await?;
-        let result = f(active).await;
+        let result = async {
+            if !*self.is_available.read().await {
+                self.make_available().await?;
+            }
+
+            let active = self.get_active().await?;
+            f(active).await
+        }
+        .await;
 
         Self::release_lock(&self.sync_locks).await;
         Self::release_lock(&self.writer_locks).await;
@@ -1021,6 +1067,18 @@ impl WalletStorageWriter for WalletStorageManager {
             active.update_transaction_status_after_broadcast(&txid_owned, success).await
         })
         .await
+    }
+
+    async fn review_status(&self, auth: &AuthId, aged_limit: DateTime<Utc>) -> Result<ReviewStatusResult> {
+        let auth = auth.clone();
+        self.run_as_writer(|active| async move { active.review_status(&auth, aged_limit).await })
+            .await
+    }
+
+    async fn purge_data(&self, auth: &AuthId, params: PurgeParams) -> Result<PurgeResults> {
+        let auth = auth.clone();
+        self.run_as_writer(|active| async move { active.purge_data(&auth, params).await })
+            .await
     }
 }
 

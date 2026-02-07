@@ -13,7 +13,7 @@ This module defines the monitor task system that runs periodic background operat
 │               (Schedules and runs tasks at configured intervals)              │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                           MonitorTask Trait                                   │
-│                   name() | default_interval() | run()                         │
+│              name() | default_interval() | setup() | run()                    │
 ├──────────────┬──────────────┬──────────────┬──────────────┬──────────────────┤
 │ Blockchain   │ Transaction  │ Status &     │ Maintenance  │ Service          │
 │ Monitoring   │ Processing   │ Recovery     │              │ Monitoring       │
@@ -30,9 +30,10 @@ This module defines the monitor task system that runs periodic background operat
          │               │               │               │               │
          ▼               ▼               ▼               ▼               ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  WalletStorageProvider              │         WalletServices                  │
-│  (find_proven_tx_reqs,              │         (get_merkle_path, post_beef,    │
-│   abort_action, etc.)               │          get_height, etc.)              │
+│  MonitorStorage                       │         WalletServices                │
+│  (find_proven_tx_reqs, abort_abandoned│         (get_merkle_path, post_beef,  │
+│   purge_data, review_status,          │          get_height, etc.)            │
+│   send_waiting_transactions, un_fail) │                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -55,7 +56,7 @@ This module defines the monitor task system that runs periodic background operat
 
 ## Key Exports
 
-### MonitorTask Trait (mod.rs:64-75)
+### MonitorTask Trait (mod.rs:64-83)
 
 The core trait that all monitor tasks implement:
 
@@ -68,34 +69,39 @@ pub trait MonitorTask: Send + Sync {
     /// Get the default interval for this task.
     fn default_interval(&self) -> Duration;
 
+    /// Optional async setup phase called before first run.
+    /// Override for initialization that requires async operations
+    /// (e.g., loading state from storage). Default is a no-op.
+    async fn setup(&self) -> Result<()> { Ok(()) }
+
     /// Run the task once, returning processed count and any errors.
     async fn run(&self) -> Result<TaskResult>;
 }
 ```
 
-### TaskResult (mod.rs:35-62)
+### TaskResult (mod.rs:36-62)
 
-Result structure returned by task execution:
+Result structure returned by task execution. Derives `Default`.
 
 ```rust
+#[derive(Debug, Clone, Default)]
 pub struct TaskResult {
-    /// Number of items processed.
     pub items_processed: u32,
-    /// List of errors encountered (non-fatal).
     pub errors: Vec<String>,
 }
 ```
 
 **Methods:**
-- `TaskResult::new()` - Create empty result
+- `TaskResult::new()` - Create empty result (same as `Default::default()`)
 - `TaskResult::with_count(n)` - Create result with processed count
 - `add_error(msg)` - Record a non-fatal error
 
-### TaskType Enum (mod.rs:77-102)
+### TaskType Enum (mod.rs:86-135)
 
-Identifies task types for scheduling and configuration:
+Identifies task types for scheduling and configuration. Implements `Display` and has an `as_str()` method.
 
 ```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskType {
     CheckForProofs,      // "check_for_proofs"
     SendWaiting,         // "send_waiting"
@@ -110,6 +116,10 @@ pub enum TaskType {
     ReviewStatus,        // "review_status"
 }
 ```
+
+**Methods:**
+- `as_str() -> &'static str` - Get the task name as a string
+- `fmt::Display` - Delegates to `as_str()`
 
 ### Task Implementations
 
@@ -145,8 +155,6 @@ pub use reorg::DeactivatedHeader;
 
 Polls for new blockchain block headers and triggers proof checking.
 
-**Purpose:** Detect new blocks and coordinate proof fetching for pending transactions.
-
 **Type Parameters:**
 - `V: WalletServices` - Service provider for chain height lookups
 
@@ -170,26 +178,24 @@ NewHeaderTask::new(services: Arc<V>) -> Self
 1. Calls `services.get_height()` to get current chain height
 2. On first run: records initial height
 3. If height increased: sets `new_header_received` flag, logs blocks ahead
-4. If height decreased: logs potential reorg warning
+4. If height decreased: logs potential reorg warning, records as error
 5. If same height: increments stable cycle counter
 
 #### ClockTask (clock.rs)
 
 Tracks minute-level clock events for scheduling coordination.
 
-**Purpose:** Provide minute granularity timing for other tasks and logging.
-
 **Constructor:**
 ```rust
 ClockTask::new() -> Self
-ClockTask::default() -> Self
+ClockTask::default() -> Self  // Implements Default
 ```
 
 **State:**
 - `last_minute: AtomicU64` - Last recorded minute since Unix epoch
 
 **Behavior:**
-1. Calculates current minute since epoch
+1. Calculates current minute since epoch (`SystemTime / 60`)
 2. On first run: records current minute
 3. If minute boundary crossed: logs elapsed minutes, returns count
 4. Otherwise: returns zero items processed
@@ -198,10 +204,8 @@ ClockTask::default() -> Self
 
 Handles blockchain reorganizations by re-verifying affected proofs.
 
-**Purpose:** Maintain proof validity when the blockchain reorganizes.
-
 **Type Parameters:**
-- `S: WalletStorageProvider` - Storage backend
+- `S: MonitorStorage` - Storage backend
 - `V: WalletServices` - Service provider for proof verification
 
 **Constructor:**
@@ -224,15 +228,15 @@ pub struct DeactivatedHeader {
 ```
 
 **Public Methods:**
-- `queue_deactivated_header(hash, height)` - Queue a header for processing
-- `pending_count()` - Get number of pending headers
+- `queue_deactivated_header(hash, height)` - Queue a header for processing (async)
+- `pending_count()` - Get number of pending headers (async)
 
 **Behavior:**
 1. Processes deactivated headers after 10-minute delay (avoids temporary forks)
-2. For each header, queries potentially affected transactions
+2. Queries `Completed` and `Unmined` proven_tx_reqs for potentially affected transactions
 3. Re-verifies merkle proofs via `services.get_merkle_path()`
 4. Logs affected transactions that lost valid proofs
-5. Retries up to 3 times with delay reset between attempts
+5. Retries up to 3 times, resetting the delay between attempts
 
 ### Transaction Processing Tasks
 
@@ -240,10 +244,8 @@ pub struct DeactivatedHeader {
 
 Fetches merkle proofs for transactions that have been broadcast but not yet confirmed.
 
-**Purpose:** Monitor unconfirmed transactions and obtain merkle proofs once mined.
-
 **Type Parameters:**
-- `S: WalletStorageProvider` - Storage backend
+- `S: MonitorStorage` - Storage backend
 - `V: WalletServices` - Service provider for merkle path lookups
 
 **Constructor:**
@@ -253,19 +255,17 @@ CheckForProofsTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 
 **Behavior:**
 1. Queries `proven_tx_reqs` with status: `Unmined`, `Unknown`, `Callback`, `Sending`, or `Unconfirmed`
-2. For each transaction, calls `services.get_merkle_path(txid)`
+2. For each transaction, calls `services.get_merkle_path(txid, false)`
 3. On success with proof: logs success, increments processed count
-4. On "not found": logs debug message (will retry next cycle)
+4. On no proof: logs debug message (will retry next cycle)
 5. On error: records error in `TaskResult.errors`, continues to next txid
 
 #### CheckNoSendsTask (check_no_sends.rs)
 
 Retrieves proofs for 'nosend' transactions that may have been mined externally.
 
-**Purpose:** Track transactions the wallet didn't broadcast but may have been mined by another party.
-
 **Type Parameters:**
-- `S: WalletStorageProvider` - Storage backend
+- `S: MonitorStorage` - Storage backend
 - `V: WalletServices` - Service provider for merkle path lookups
 
 **Constructor:**
@@ -280,19 +280,18 @@ CheckNoSendsTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 - `trigger_check()` - Set flag for immediate check on next run
 
 **Behavior:**
-1. Queries `proven_tx_reqs` with status: `NoSend`
-2. For each transaction, checks for merkle proof
-3. If proof found: logs success (would update status to indicate proof found)
-4. If not found: logs debug, will retry on next daily cycle
+1. Resets `check_now` flag
+2. Queries `proven_tx_reqs` with status: `NoSend`
+3. For each transaction, checks for merkle proof via `get_merkle_path(txid, false)`
+4. If proof found: logs success, increments processed count
+5. If not found: logs debug, will retry on next daily cycle
 
 #### SendWaitingTask (send_waiting.rs)
 
 Broadcasts transactions that are ready to be sent to the network.
 
-**Purpose:** Ensure all signed transactions get broadcast, with automatic retry on failures.
-
 **Type Parameters:**
-- `S: WalletStorageProvider` - Storage backend
+- `S: MonitorStorage` - Storage backend
 - `V: WalletServices` - Service provider for transaction broadcast
 
 **Constructor:**
@@ -300,18 +299,18 @@ Broadcasts transactions that are ready to be sent to the network.
 SendWaitingTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 ```
 
+**Constants:**
+- `DEFAULT_MIN_AGE_SECS: u64 = 30` - Minimum age before sending (skipped on first run)
+
 **State:**
+- `min_age: Duration` - Minimum age filter (default 30s)
 - `first_run: AtomicBool` - Tracks whether this is the first execution
 
 **Behavior:**
-1. Queries `proven_tx_reqs` with status: `Unsent` or `Sending`
-2. Groups transactions by `batch_id` (or uses `txid` as key for unbatched)
-3. For each batch:
-   - Would build BEEF from stored `raw_tx` and `input_beef`
-   - Would call `services.post_beef()` to broadcast
-   - On success: update status to `Unmined`
-   - On double-spend: mark as `Failed`
-   - On error: log and retry next cycle
+1. On first run: uses zero-duration age filter for immediate processing
+2. Delegates to `storage.send_waiting_transactions(min_age)`
+3. Returns count from `send_with_results` in the response
+4. On error: records error, returns zero items processed
 
 ### Status & Recovery Tasks
 
@@ -319,40 +318,31 @@ SendWaitingTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 
 Synchronizes transaction status with ProvenTxReq status.
 
-**Purpose:** Ensure consistency between transaction records and proof requests.
-
 **Type Parameters:**
-- `S: WalletStorageProvider` - Storage backend
-
-**Constants:**
-- `DEFAULT_AGE_THRESHOLD_SECS: u64 = 300` - 5 minute default age threshold
+- `S: MonitorStorage` - Storage backend
 
 **Constructor:**
 ```rust
 ReviewStatusTask::new(storage: Arc<S>) -> Self
-ReviewStatusTask::with_age_threshold(storage: Arc<S>, age_threshold: Duration) -> Self
 ```
 
 **State:**
-- `age_threshold: Duration` - How old before reviewing status
 - `check_now: AtomicBool` - Flag to trigger immediate check
 
 **Public Methods:**
 - `trigger_check()` - Set flag for immediate check
 
 **Behavior:**
-1. Queries completed `proven_tx_reqs` older than age threshold
-2. For each, verifies associated transaction is marked completed
-3. Would sync mismatched statuses
+1. Resets `check_now` flag
+2. Delegates to `MonitorStorage::review_status()` which ensures consistency between transaction records and their associated proof requests
+3. Logs the result log if non-empty
 
 #### UnfailTask (unfail.rs)
 
 Recovers transactions that were incorrectly marked as failed.
 
-**Purpose:** Allow recovery of transactions that succeeded on-chain but were marked failed due to errors.
-
 **Type Parameters:**
-- `S: WalletStorageProvider` - Storage backend
+- `S: MonitorStorage` - Storage backend
 - `V: WalletServices` - Service provider for merkle path lookups
 
 **Constructor:**
@@ -361,15 +351,8 @@ UnfailTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 ```
 
 **Behavior:**
-1. Queries `proven_tx_reqs` with status: `Unfail`
-2. For each transaction, checks if it has a merkle path on-chain
-3. If merkle path found (transaction succeeded):
-   - Would update `proven_tx_req` status to `Unmined`
-   - Would update transaction status to `Unproven`
-   - Would create UTXOs for spendable outputs
-4. If not found (transaction truly failed):
-   - Would update `proven_tx_req` status to `Invalid`
-5. On lookup error: records error, does not change status
+1. Delegates to `storage.un_fail()` which handles the full unfail logic: querying unfail reqs, checking merkle paths, updating statuses
+2. On error: records error in result
 
 ### Maintenance Tasks
 
@@ -377,18 +360,15 @@ UnfailTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 
 Database maintenance that deletes transient/expired data.
 
-**Purpose:** Keep database size manageable by removing old data.
-
 **Type Parameters:**
-- `S: WalletStorageProvider` - Storage backend
+- `S: MonitorStorage` - Storage backend
 
 **Configuration:**
 ```rust
 pub struct PurgeConfig {
     pub purge_failed: bool,           // Whether to purge failed txs (default: true)
     pub purge_completed_data: bool,   // Whether to purge completed tx data (default: true)
-    pub failed_age: Duration,         // Age for failed tx purge (default: 7 days)
-    pub completed_data_age: Duration, // Age for completed data purge (default: 30 days)
+    pub max_age_days: u32,            // Age threshold in days (default: 30)
 }
 ```
 
@@ -405,21 +385,17 @@ PurgeTask::with_config(storage: Arc<S>, config: PurgeConfig) -> Self
 - `trigger_purge()` - Set flag for immediate purge
 
 **Behavior:**
-1. If `purge_failed` enabled:
-   - Queries `Failed` and `Invalid` transactions older than `failed_age`
-   - Would delete entire records
-2. If `purge_completed_data` enabled:
-   - Queries `Completed` transactions older than `completed_data_age`
-   - Would remove raw_tx, input_beef, mapi responses (keeps record)
+1. Resets `check_now` flag
+2. Builds `PurgeParams` from config (`max_age_days`, `purge_completed`, `purge_failed`)
+3. Delegates to `MonitorStorage::purge_data(params)` which operates across all users
+4. Returns `result.count` as items processed; logs `result.log` if any items purged
 
 #### FailAbandonedTask (fail_abandoned.rs)
 
 Marks abandoned transactions as failed to release locked UTXOs.
 
-**Purpose:** Clean up stale transactions that were never completed.
-
 **Type Parameters:**
-- `S: WalletStorageProvider` - Storage backend
+- `S: MonitorStorage` - Storage backend
 
 **Constructor:**
 ```rust
@@ -430,18 +406,14 @@ FailAbandonedTask::new(storage: Arc<S>, timeout: Duration) -> Self
 - `timeout: Duration` - How long before a transaction is considered abandoned
 
 **Behavior:**
-1. Calculates cutoff time: `now - timeout`
-2. Would query transactions with status `Unsigned` or `Unprocessed` older than cutoff
-3. For each abandoned transaction:
-   - Call `storage.abort_action()` to release locked UTXOs
+1. Delegates to `storage.abort_abandoned(timeout)` which queries transactions with status 'unsigned' or 'unprocessed' older than the timeout and calls `abort_action` for each
+2. On error: records error in result
 
 ### Service Monitoring Tasks
 
 #### MonitorCallHistoryTask (monitor_call_history.rs)
 
 Logs service call statistics for monitoring and debugging.
-
-**Purpose:** Track success/failure rates of external service calls.
 
 **Note:** Requires concrete `Services` type (not generic `WalletServices` trait).
 
@@ -457,7 +429,8 @@ MonitorCallHistoryTask::new(services: Arc<Services>) -> Self
    - `get_raw_tx` - Transaction retrieval
    - `post_beef` - Transaction broadcast
    - `get_utxo_status` - UTXO status checks
-3. Logs summary of total calls and errors
+3. Tracks total_calls and total_errors across all providers
+4. Returns total_calls as `items_processed`
 
 ## Transaction Status Flow
 
@@ -505,133 +478,26 @@ MonitorCallHistoryTask::new(services: Arc<Services>) -> Self
                               └──────────┘
 ```
 
-## Usage
-
-### Creating Tasks
-
-```rust
-use std::sync::Arc;
-use std::time::Duration;
-use bsv_wallet_toolbox::monitor::tasks::{
-    CheckForProofsTask, CheckNoSendsTask, ClockTask, FailAbandonedTask,
-    MonitorCallHistoryTask, NewHeaderTask, PurgeTask, PurgeConfig,
-    ReorgTask, ReviewStatusTask, SendWaitingTask, UnfailTask,
-    MonitorTask, TaskResult,
-};
-
-// Blockchain monitoring tasks
-let new_header = NewHeaderTask::new(Arc::clone(&services));
-let clock = ClockTask::new();
-let reorg = ReorgTask::new(Arc::clone(&storage), Arc::clone(&services));
-
-// Transaction processing tasks
-let check_proofs = CheckForProofsTask::new(Arc::clone(&storage), Arc::clone(&services));
-let check_no_sends = CheckNoSendsTask::new(Arc::clone(&storage), Arc::clone(&services));
-let send_waiting = SendWaitingTask::new(Arc::clone(&storage), Arc::clone(&services));
-
-// Status & recovery tasks
-let review_status = ReviewStatusTask::new(Arc::clone(&storage));
-let unfail = UnfailTask::new(Arc::clone(&storage), Arc::clone(&services));
-
-// Maintenance tasks
-let purge = PurgeTask::with_config(Arc::clone(&storage), PurgeConfig {
-    purge_failed: true,
-    purge_completed_data: true,
-    failed_age: Duration::from_secs(7 * 24 * 60 * 60),
-    completed_data_age: Duration::from_secs(30 * 24 * 60 * 60),
-});
-let fail_abandoned = FailAbandonedTask::new(
-    Arc::clone(&storage),
-    Duration::from_secs(24 * 60 * 60),
-);
-
-// Service monitoring (requires concrete Services type)
-let monitor_calls = MonitorCallHistoryTask::new(Arc::clone(&services));
-```
-
-### Running a Task
-
-```rust
-async fn run_task<T: MonitorTask>(task: &T) -> Result<()> {
-    println!("Running task: {}", task.name());
-
-    let result = task.run().await?;
-
-    println!("Processed {} items", result.items_processed);
-    for error in &result.errors {
-        eprintln!("Non-fatal error: {}", error);
-    }
-
-    Ok(())
-}
-```
-
-### Task Scheduling Pattern
-
-```rust
-use tokio::time::{interval, Duration};
-
-async fn schedule_task<T: MonitorTask>(task: Arc<T>) {
-    let mut interval = interval(task.default_interval());
-
-    loop {
-        interval.tick().await;
-
-        match task.run().await {
-            Ok(result) => {
-                tracing::info!(
-                    task = task.name(),
-                    processed = result.items_processed,
-                    errors = result.errors.len(),
-                    "Task completed"
-                );
-            }
-            Err(e) => {
-                tracing::error!(task = task.name(), error = %e, "Task failed");
-            }
-        }
-    }
-}
-```
-
-### Triggering Immediate Checks
-
-Several tasks support immediate triggering:
-
-```rust
-// Trigger proof check when new header received
-if new_header_task.has_new_header() {
-    check_no_sends_task.trigger_check();
-    new_header_task.clear_new_header_flag();
-}
-
-// Trigger purge manually
-purge_task.trigger_purge();
-
-// Queue reorg header for processing
-reorg_task.queue_deactivated_header(hash, height).await;
-```
-
 ## ProvenTxReqStatus Values Used
 
 | Task | Queries Statuses | Updates To |
 |------|------------------|------------|
 | `CheckForProofsTask` | `Unmined`, `Unknown`, `Callback`, `Sending`, `Unconfirmed` | `Completed` (on proof) |
 | `CheckNoSendsTask` | `NoSend` | Updates when proof found |
-| `SendWaitingTask` | `Unsent`, `Sending` | `Unmined` (success), `Failed` (double-spend) |
-| `FailAbandonedTask` | N/A (queries transactions) | Calls `abort_action` |
-| `UnfailTask` | `Unfail` | `Unmined` (on-chain), `Invalid` (not found) |
-| `PurgeTask` | `Failed`, `Invalid`, `Completed` | Deletes/clears data |
-| `ReviewStatusTask` | `Completed` | Syncs transaction status |
+| `SendWaitingTask` | via `send_waiting_transactions()` | `Unmined` (success), `Failed` (double-spend) |
+| `FailAbandonedTask` | via `abort_abandoned()` | Calls `abort_action` on stale unsigned/unprocessed txs |
+| `UnfailTask` | via `un_fail()` | `Unmined` (on-chain), `Invalid` (not found) |
+| `PurgeTask` | via `purge_data()` | Deletes/clears data |
+| `ReviewStatusTask` | via `review_status()` | Syncs transaction status |
 | `ReorgTask` | `Completed`, `Unmined` | Re-verifies proofs |
 
 ## Generic Type Constraints
 
 Tasks use different type constraints based on their needs:
 
-**Storage only:**
+**Storage only (`MonitorStorage`):**
 ```rust
-S: WalletStorageProvider + 'static
+S: MonitorStorage + 'static
 ```
 Used by: `FailAbandonedTask`, `PurgeTask`, `ReviewStatusTask`
 
@@ -643,7 +509,7 @@ Used by: `NewHeaderTask`
 
 **Both storage and services:**
 ```rust
-S: WalletStorageProvider + 'static
+S: MonitorStorage + 'static
 V: WalletServices + 'static
 ```
 Used by: `CheckForProofsTask`, `CheckNoSendsTask`, `ReorgTask`, `SendWaitingTask`, `UnfailTask`
@@ -656,6 +522,6 @@ Used by: `CheckForProofsTask`, `CheckNoSendsTask`, `ReorgTask`, `SendWaitingTask
 
 - [../CLAUDE.md](../CLAUDE.md) - Parent monitor module
 - [../../CLAUDE.md](../../CLAUDE.md) - Source root documentation
-- [../../storage/CLAUDE.md](../../storage/CLAUDE.md) - Storage layer and `WalletStorageProvider` trait
+- [../../storage/CLAUDE.md](../../storage/CLAUDE.md) - Storage layer and `MonitorStorage` trait
 - [../../services/CLAUDE.md](../../services/CLAUDE.md) - Services layer and `WalletServices` trait
 - [../../storage/entities/CLAUDE.md](../../storage/entities/CLAUDE.md) - Entity definitions including `ProvenTxReqStatus`

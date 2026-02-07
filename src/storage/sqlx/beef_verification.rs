@@ -160,6 +160,7 @@ pub async fn verify_txid_merkle_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bsv_sdk::transaction::ChainTrackerError;
     use std::collections::HashSet;
 
     // A mock ChainTracker that always returns true

@@ -1071,7 +1071,7 @@ mod tests {
         let send_results = result.send_with_results.unwrap();
         assert_eq!(send_results.len(), 1);
         assert_eq!(send_results[0].txid, txid);
-        assert_eq!(send_results[0].status, "unproven");
+        assert_eq!(send_results[0].status, "sending");
     }
 
     #[tokio::test]
@@ -1152,7 +1152,7 @@ mod tests {
         let result1 = process_action_internal(&storage, user_id, args1).await.unwrap();
         assert!(result1.send_with_results.is_some());
         assert_eq!(result1.send_with_results.as_ref().unwrap().len(), 1);
-        assert_eq!(result1.send_with_results.as_ref().unwrap()[0].status, "unproven");
+        assert_eq!(result1.send_with_results.as_ref().unwrap()[0].status, "sending");
 
         // Second process with is_new_tx=false (re-broadcast)
         let args2 = StorageProcessActionArgs {
@@ -1164,8 +1164,8 @@ mod tests {
         let send_results = result2.send_with_results.unwrap();
         assert_eq!(send_results.len(), 1);
         assert_eq!(send_results[0].txid, txid);
-        // Already sent tx should return "unproven" status
-        assert_eq!(send_results[0].status, "unproven");
+        // Already sent tx should return "sending" status
+        assert_eq!(send_results[0].status, "sending");
     }
 
     /// Test error when is_new_tx=false for non-existent tx (Go: TestProcessActionErrorCases)
@@ -1292,8 +1292,8 @@ mod tests {
         // Should still have broadcast result since send_with overrides no_send
         assert_eq!(send_results.len(), 1);
         assert_eq!(send_results[0].txid, txid);
-        // Status should be unproven (immediate broadcast) not nosend
-        assert_eq!(send_results[0].status, "unproven");
+        // Status should be sending (immediate broadcast) not nosend
+        assert_eq!(send_results[0].status, "sending");
     }
 
     /// Test locking script mismatch error (Go: validateNewTxOutputs)
@@ -1411,8 +1411,8 @@ mod tests {
             let row = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
                 .bind(&txid).fetch_one(storage.pool()).await.unwrap();
             let status: String = row.get("status");
-            // After broadcast phase, immediate should be 'unmined' (broadcast succeeded)
-            assert_eq!(status, "unmined");
+            // After broadcast phase, immediate should be 'unprocessed' (awaiting broadcast)
+            assert_eq!(status, "unprocessed");
         }
     }
 }
