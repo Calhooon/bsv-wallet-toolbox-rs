@@ -4,7 +4,7 @@
 
 ## Overview
 
-This directory contains 9 integration test files (~6,500 lines total) covering concurrent storage safety, chain reorganizations, monitor daemon lifecycle, service error handling, BEEF format edge cases, double-spend detection, error type construction, and cross-SDK test vector validation. Tests use in-memory SQLite databases for speed and isolation, with `mockito` for HTTP mocking and `MockWalletServices` for service layer stubs.
+This directory contains 9 integration test files (~6,700 lines total) covering concurrent storage safety, chain reorganizations, monitor daemon lifecycle, service error handling, BEEF format edge cases, double-spend detection, error type construction, and cross-SDK test vector validation. Tests use in-memory SQLite databases for speed and isolation, with `mockito` for HTTP mocking and `MockWalletServices` for service layer stubs.
 
 ## Running Tests
 
@@ -23,15 +23,15 @@ Most integration tests require the `sqlite` feature (default). The `valid_create
 
 | File | Lines | Tests | Feature Gate | Purpose |
 |------|-------|-------|--------------|---------|
-| `concurrent_tests.rs` | 1026 | 10 | `sqlite` | Thread safety and concurrent access to `StorageSqlx` |
-| `reorg_tests.rs` | 739 | 10 | `sqlite` | Chain reorganization handling via `ReorgTask` |
+| `concurrent_tests.rs` | 1053 | 10 | `sqlite` | Thread safety and concurrent access to `StorageSqlx` |
+| `reorg_tests.rs` | 765 | 10 | `sqlite` | Chain reorganization handling via `ReorgTask` |
 | `monitor_tests.rs` | 527 | 8 | `sqlite` | Monitor daemon lifecycle, task execution, callbacks |
-| `error_recovery_tests.rs` | 520 | 10 | none | Service layer HTTP errors, adaptive timeouts, EMA |
-| `services_tests.rs` | 917 | ~58 | none | Service creation, provider config, result types, nLockTime |
-| `test_vectors.rs` | 1955 | ~40 | none/`remote` | Cross-SDK test vector validation (7 vector files) |
-| `beef_edge_cases.rs` | 303 | 5 | none | BEEF format edge cases and serialization roundtrips |
-| `double_spend_tests.rs` | 296 | 5 | none | Double-spend detection data structures and status enums |
-| `error_path_tests.rs` | 253 | 5 | none | Error variant construction, Display, conversions |
+| `error_recovery_tests.rs` | 495 | 10 | none | Service layer HTTP errors, adaptive timeouts, EMA |
+| `services_tests.rs` | 949 | ~58 | none | Service creation, provider config, result types, nLockTime |
+| `test_vectors.rs` | 2059 | ~40 | none/`remote` | Cross-SDK test vector validation (7 vector files) |
+| `beef_edge_cases.rs` | 309 | 5 | none | BEEF format edge cases and serialization roundtrips |
+| `double_spend_tests.rs` | 309 | 5 | none | Double-spend detection data structures and status enums |
+| `error_path_tests.rs` | 250 | 5 | none | Error variant construction, Display, conversions |
 
 ## Test Categories
 
@@ -51,6 +51,8 @@ Tests thread safety of `StorageSqlx` and `WalletStorageManager` under concurrent
 - `test_concurrent_internalize_action_graceful_failure` - Two threads race to insert same txid; verifies idempotency
 - `test_concurrent_abort_and_process_exactly_one_wins` - Racing `abort_action` calls; exactly one succeeds
 - `test_race_broadcast_status_vs_abort` - `update_transaction_status_after_broadcast` vs `abort_action` on "sending" tx
+- `test_storage_manager_lock_queue_fifo_ordering` - 5 concurrent `insert_certificate` calls succeed; SQLite serializes writes
+- `test_concurrent_certificate_insert_and_relinquish` - Races certificate insert vs `relinquish_certificate`; verifies soft-delete
 - `test_parallel_create_action_competing_for_same_utxo` - Atomic `UPDATE ... WHERE spent_by IS NULL` prevents double-spend
 - `test_lock_queue_concurrent_operations_complete` - `WalletStorageManager::run_as_writer` serializes access; second writer blocked
 - `test_reader_writer_interleaving` - 5 readers + 5 writers complete without blocking
@@ -64,31 +66,41 @@ Tests `ReorgTask` behavior when blockchain blocks are deactivated. Uses a custom
 - `MockServices::with_no_proof()` - Returns empty merkle path (simulates proof gone after reorg)
 - Implements full `WalletServices` trait with stub methods
 
+**Helper functions:**
+- `setup_monitor_storage()` - Creates in-memory storage with test user
+- `insert_proven_tx_req()` - Direct SQL insert into `proven_tx_reqs`
+- `insert_transaction()` - Direct SQL insert into `transactions`
+- `insert_proven_tx()` - Direct SQL insert into `proven_txs` with block hash/height
+
 **Key tests:**
 - `test_reorg_single_block_at_tip` - Queues one deactivated header; verifies 10-minute delay before processing
 - `test_reorg_depth_3_blocks` - Three deactivated headers at different heights
 - `test_reorg_transaction_proof_reverification` - Completed tx in reorged block; verifies `FindProvenTxReqsArgs` query
+- `test_reorg_transaction_in_both_chains_no_status_change` - Tx confirmed in both old and new chain stays "completed"
 - `test_reorg_delay_is_respected` - Confirms recently queued headers are not processed (10-min delay)
 - `test_reorg_retry_count_mechanism` - `DeactivatedHeader.retry_count` increments; max 3 retries
+- `test_reorg_pending_count_accuracy` - Verifies `pending_count()` increments correctly for 5 queued headers
+- `test_reorg_empty_queue_noop` - Empty queue produces 0 items processed, 0 errors, 0 service calls
 - `test_reorg_concurrent_queue_access` - 20 concurrent `queue_deactivated_header` calls; verifies thread safety
+- `test_reorg_completed_proof_reverification_setup` - 5 txs with proofs, queue 3-block reorg; verifies task metadata (`name()`, `default_interval()`)
 
 ### Monitor Tests (`monitor_tests.rs`)
 
 Integration tests for `Monitor<S, V>` lifecycle and task execution. Uses `MockWalletServices` from the `services::mock` module.
 
 **Helper functions:**
-- `setup_storage_and_services()` - Creates in-memory storage + mock services
+- `setup_storage_and_services()` - Creates in-memory storage + mock services, calls `set_services()`
 - `all_tasks_disabled()` - `MonitorOptions` with all 11 tasks disabled via `TaskConfig::disabled()`
 
 **Key tests:**
 - `start_stop_lifecycle` - `Monitor::start()` sets `is_running`, `Monitor::stop()` clears it
 - `double_start_error` - Second `start()` returns error containing "already running"
-- `run_once_empty_storage` - All tasks run on empty DB with 0 items processed, no errors
-- `fail_abandoned_integration` - Inserts old "unsigned" tx, runs `FailAbandonedTask`, verifies status becomes "failed"
+- `run_once_empty_storage` - All tasks run on empty DB with 0 items processed, no errors; expects >= 10 task results
+- `fail_abandoned_integration` - Inserts old "unsigned" tx (1 hour ago), runs `FailAbandonedTask` with 1s timeout, verifies status becomes "failed"
 - `check_for_proofs_integration` - Inserts "unmined" `ProvenTxReq`, mock returns merkle path, verifies `items_processed > 0`
-- `send_waiting_integration` - Inserts "unsent" `ProvenTxReq`, mock returns broadcast success
+- `send_waiting_integration` - Inserts "unsent" `ProvenTxReq`, mock returns broadcast success; verifies no fatal errors
 - `custom_task_config` - Enables only `clock` task; verifies only that task appears in results
-- `monitor_options_callbacks` - Wires `on_tx_broadcasted` and `on_tx_proven` callbacks; verifies invocation
+- `monitor_options_callbacks` - Wires `on_tx_broadcasted` and `on_tx_proven` callbacks; verifies invocation via `TransactionStatusUpdate`
 
 ### Error Recovery Tests (`error_recovery_tests.rs`)
 
@@ -115,8 +127,9 @@ Broad integration tests for service creation, provider configuration, collection
 - **Provider config:** `WhatsOnChain`, `Arc` (Taal/GorillaPool), `Bitails` construction and API key setup
 - **Collection ops:** `ServiceCollection` add/next/reset/remove/move_to_last, call tracking
 - **Result types:** Serialization of `GetRawTxResult`, `GetMerklePathResult`, `PostBeefResult`, `GetUtxoStatusResult`, `GetStatusForTxidsResult`, `GetScriptHashHistoryResult`, `GetBeefResult`
-- **nLockTime:** Block height vs timestamp threshold (500,000,000), sequence finality, `NLockTimeInput::from_hex_tx` parsing real BSV transactions
-- **Network tests (ignored):** `test_whatsonchain_get_chain_info`, `test_services_get_height`, `test_services_get_beef_*`, `test_services_n_lock_time_finality_integration`
+- **Services options:** `ServicesOptions::default()`, `mainnet()`, `testnet()`, builder pattern with `with_woc_api_key`, `with_arc`, `with_gorillapool`
+- **nLockTime:** Block height vs timestamp threshold (500,000,000), sequence finality, `NLockTimeInput::from_hex_tx` parsing real BSV transactions, `NLockTimeInput::from_lock_time`, `n_lock_time_is_final_for_tx` with final/non-final sequences
+- **Network tests (ignored):** `test_whatsonchain_get_chain_info`, `test_whatsonchain_get_exchange_rate`, `test_services_get_height`, `test_services_get_beef_*`, `test_services_n_lock_time_finality_integration`
 
 ### Test Vectors (`test_vectors.rs`)
 
@@ -147,13 +160,34 @@ Cross-SDK test vector validation ensuring Rust implementation matches TypeScript
 
 Tests `GetBeefResult`, `PostBeefResult`, `PostTxResultForTxid`, and `BeefVerificationMode` data structures. Covers serialization roundtrips, optional field handling (`skip_serializing_if`), and all verification modes (`Strict`, `TrustKnown`, `Disabled`).
 
+**Key tests:**
+- `test_beef_empty_bytes` - `GetBeefResult` with `beef: None`, error message, serialization roundtrip
+- `test_beef_invalid_version` - Invalid BEEF version byte (0x99), bytes preserved through serde
+- `test_beef_result_types` - Full success, overall error, partial success (mixed txid results), already-mined result
+- `test_atomic_beef_missing_fields` - Three cases: no proof, failed retrieval, successful with proof; all serialize cleanly
+- `test_beef_broadcast_result_serialization` - `PostBeefResult` with notes, `GetBeefResult` `skip_serializing_if` for error, `BeefVerificationMode` all 3 variants roundtrip, default is `Strict`
+
 ### Double-Spend Tests (`double_spend_tests.rs`)
 
 Tests double-spend detection structures: `PostTxResultForTxid.double_spend`, `competing_txs`, `TransactionStatus` enum variants, and `ProvenTxReqStatus::DoubleSpend`. Verifies serde roundtrips for all status variants.
 
+**Key tests:**
+- `test_post_beef_result_double_spend_fields` - Double-spend flag, competing_txs populated, `service_error` is false
+- `test_post_beef_result_success` - Successful broadcast with no double-spend
+- `test_post_beef_result_serialization` - JSON roundtrip preserving `doubleSpend` and `competingTxs` fields
+- `test_transaction_status_values` - All 9 `TransactionStatus` variants roundtrip (`nosend`..`unfail`); all 15 `ProvenTxReqStatus` variants roundtrip
+- `test_double_spend_result_handling` - Mixed result (success + double-spend + service error); pattern-matching to filter each category
+
 ### Error Path Tests (`error_path_tests.rs`)
 
 Verifies all `Error` enum variants can be constructed and produce useful `Display` messages. Tests `Error::from` conversions for `serde_json::Error` and `std::io::Error`. Confirms `Error` is `Send + Sync`.
+
+**Key tests:**
+- `test_error_variants_exist` - Constructs all expected variants: `StorageNotAvailable`, `StorageError`, `DatabaseError`, `MigrationError`, `NotFound`, `Duplicate`, `AuthenticationRequired`, `InvalidIdentityKey`, `UserNotFound`, `AccessDenied`, `ServiceError`, `NetworkError`, `BroadcastFailed`, `NoServicesAvailable`, `TransactionError`, `InvalidTransactionStatus`, `InsufficientFunds`, `ValidationError`, `InvalidArgument`, `InvalidOperation`, `SyncError`, `SyncConflict`, `LockTimeout`, `HttpError`, `Internal`
+- `test_error_display` - `NotFound` includes entity+id, `InsufficientFunds` includes both amounts, Debug works
+- `test_error_conversion_from_sdk` - `Error::Internal` implements `std::error::Error`, can be matched
+- `test_error_conversion_from_json` - `serde_json::Error` converts to `Error::JsonError`
+- `test_validation_error_construction` - `ValidationError`, `InvalidArgument`, `InvalidOperation` messages; `Error` is `Send + Sync`; `std::io::Error` converts to `Error::IoError`
 
 ## Common Patterns
 

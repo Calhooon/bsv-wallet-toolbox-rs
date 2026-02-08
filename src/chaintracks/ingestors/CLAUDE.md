@@ -8,13 +8,15 @@ This module provides four ingestor implementations for fetching BSV blockchain h
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Module entry point; re-exports all ingestors, options, and utility functions |
-| `bulk_cdn.rs` | CDN-based bulk ingestor using Babbage Systems header files |
-| `bulk_woc.rs` | WhatsOnChain API-based bulk ingestor (fallback) |
-| `live_polling.rs` | Polling-based live ingestor using WOC REST API |
-| `live_websocket.rs` | WebSocket-based live ingestor using WOC streaming API |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `mod.rs` | 191 | Module entry point; re-exports all ingestors, options, and utility functions; 13 unit tests |
+| `bulk_cdn.rs` | 691 | CDN-based bulk ingestor using Babbage Systems header files; 12 tests |
+| `bulk_woc.rs` | 782 | WhatsOnChain API-based bulk ingestor (fallback); 12 tests |
+| `live_polling.rs` | 590 | Polling-based live ingestor using WOC REST API; 10 tests |
+| `live_websocket.rs` | 846 | WebSocket-based live ingestor using WOC streaming API; 14 tests |
+
+**Total:** ~3,100 lines, ~61 tests
 
 ## Architecture
 
@@ -42,7 +44,7 @@ This module provides four ingestor implementations for fetching BSV blockchain h
             └──────────────────────┘   └─────────────────────┘
 ```
 
-## Key Exports
+## Key Exports (from mod.rs)
 
 ### Bulk Ingestors
 
@@ -51,16 +53,16 @@ This module provides four ingestor implementations for fetching BSV blockchain h
 | `BulkCdnIngestor` | Downloads binary header files from Babbage CDN; fast and preferred for historical sync |
 | `BulkCdnOptions` | Configuration: `chain`, `cdn_url`, `json_resource`, `max_per_file`, `timeout_secs`, `user_agent` |
 | `BulkWocIngestor` | Uses WhatsOnChain API for headers; slower but reliable fallback with chain tip info |
-| `BulkWocOptions` | Configuration: `chain`, `api_key`, `timeout_secs`, `enable_cache`, `chain_info_ttl_ms`, `idle_wait_ms` |
+| `BulkWocOptions` | Configuration: `chain`, `api_key`, `timeout_secs`, `user_agent`, `enable_cache`, `chain_info_ttl_ms`, `idle_wait_ms` |
 
 ### Live Ingestors
 
 | Type | Description |
 |------|-------------|
 | `LivePollingIngestor` | Polls WOC `/block/headers` at intervals; simple, battery-friendly. Has `subscribe()` and `is_running()` methods |
-| `LivePollingOptions` | Configuration: `chain`, `api_key`, `poll_interval_secs`, `timeout_secs`, `idle_wait_ms` |
+| `LivePollingOptions` | Configuration: `chain`, `api_key`, `poll_interval_secs`, `timeout_secs`, `user_agent`, `idle_wait_ms` |
 | `LiveWebSocketIngestor` | Connects to WOC WebSocket for instant notifications; low latency. Has `subscribe()`, `is_running()`, and `get_errors()` methods |
-| `LiveWebSocketOptions` | Configuration: `chain`, `api_key`, `idle_timeout_ms`, `ping_interval_ms`, `max_reconnect_attempts`, `reconnect_delay_ms`, `http_timeout_secs` |
+| `LiveWebSocketOptions` | Configuration: `chain`, `api_key`, `idle_timeout_ms`, `ping_interval_ms`, `max_reconnect_attempts`, `reconnect_delay_ms`, `user_agent`, `http_timeout_secs` |
 
 ### Response Types
 
@@ -74,7 +76,8 @@ This module provides four ingestor implementations for fetching BSV blockchain h
 | `WocGetHeadersHeader` | Header from `/block/headers` endpoint (`bits` as hex string, `previous_block_hash`, `n_tx`, `num_tx`) |
 | `WocWsBlockHeader` | Header from WebSocket stream (`bits` as numeric u32) |
 | `WocWsMessage` | WebSocket message envelope (untagged enum: `HeaderData`, `TypedMessage`, `Connect`, `Empty`) |
-| `WocPubData` | Published header data wrapper containing optional `WocWsBlockHeader` |
+
+Note: `WocPubData` is not directly re-exported from `mod.rs` but is publicly accessible through `WocWsMessage::HeaderData` variant fields.
 
 ### Utility Functions
 
@@ -89,12 +92,12 @@ This module provides four ingestor implementations for fetching BSV blockchain h
 |----------|-------|----------|
 | `DEFAULT_CDN_URL` | `https://bsv-headers.babbage.systems/` | Yes |
 | `LEGACY_CDN_URL` | `https://cdn.projectbabbage.com/blockheaders/` | Yes |
-| `WOC_API_URL_MAIN` | `https://api.whatsonchain.com/v1/bsv/main` | Yes |
-| `WOC_API_URL_TEST` | `https://api.whatsonchain.com/v1/bsv/test` | Yes |
+| `WOC_API_URL_MAIN` | `https://api.whatsonchain.com/v1/bsv/main` | Yes (from bulk_woc) |
+| `WOC_API_URL_TEST` | `https://api.whatsonchain.com/v1/bsv/test` | Yes (from bulk_woc) |
 | `WOC_WS_URL_MAIN` | `wss://socket-v2.whatsonchain.com/websocket/blockHeaders` | Yes |
 | `WOC_WS_URL_TEST` | `wss://socket-v2-testnet.whatsonchain.com/websocket/blockHeaders` | Yes |
 
-Note: `WOC_WS_HISTORY_URL_MAIN` and `WOC_WS_HISTORY_URL_TEST` exist in `live_websocket.rs` but are `#[allow(dead_code)]` and not re-exported.
+Note: `WOC_API_URL_MAIN`/`WOC_API_URL_TEST` are also defined locally in `live_polling.rs` and `live_websocket.rs` (not re-exported from those modules). `WOC_WS_HISTORY_URL_MAIN` and `WOC_WS_HISTORY_URL_TEST` exist in `live_websocket.rs` but are `#[allow(dead_code)]` and not re-exported.
 
 ## Usage
 
@@ -257,12 +260,13 @@ The WOC WebSocket uses a custom protocol:
 1. Connect to `wss://socket-v2.whatsonchain.com/websocket/blockHeaders`
 2. Send `{}` to initiate subscription
 3. Receive messages as `WocWsMessage` (untagged enum):
-   - `Connect`: Initial connection info
+   - `Connect`: Initial connection info (`{"connect": "..."}`)
    - `TypedMessage` with type codes: 3 (unsubscribe), 5 (subscribed), 6 (confirm), 7 (data/error)
-   - `HeaderData`: Block headers in `pub.data` or `data.data` fields
-   - `Empty`: Ping response
-4. Send periodic pings (`"ping"`) at `ping_interval_ms` intervals
-5. Automatic reconnection on connection loss
+   - `HeaderData`: Block headers extracted from `pub.data`, `data.data`, or `message.data` fields
+   - `Empty`: Ping response (`{}`)
+4. Send periodic pings (`"ping"`) at `ping_interval_ms` intervals (default 10s)
+5. Automatic reconnection on connection loss (configurable attempts and delay)
+6. Native WebSocket `Ping`/`Pong` frames are also handled
 
 ### Error Handling and Reconnection
 
@@ -274,16 +278,16 @@ Live ingestors handle transient failures gracefully:
   - `reconnect_delay_ms`: Default 5000ms between attempts
   - `idle_timeout_ms`: Reconnect if no messages for 100s (default)
   - `WsError` enum tracks: `ConnectionFailed`, `MessageParseFailed`, `IdleTimeout`, `Stopped`
-  - Error history available via `get_errors()` method
+  - Error history available via `get_errors()` method (returns `Vec<(i32, String)>`)
 
 ### BulkWocIngestor Additional Methods
 
 Beyond the `BulkIngestor` trait, `BulkWocIngestor` provides:
 
-- `get_chain_tip_height()` / `get_chain_tip_hash()` - Current chain state (cached via `chain_info_ttl_ms`)
-- `get_header_by_hash(hash)` - Lookup individual headers
+- `get_chain_tip_height()` / `get_chain_tip_hash()` - Current chain state (cached via `chain_info_ttl_ms`, default 5s)
+- `get_header_by_hash(hash)` - Lookup individual headers via `/block/{hash}/header`
 - `get_recent_headers()` - Last ~10 blocks from `/block/headers`
-- `get_header_byte_file_links()` - Binary file download URLs
+- `get_header_byte_file_links()` - Binary file download URLs from `/block/headers/resources`
 
 ### Choosing an Ingestor
 
@@ -291,15 +295,28 @@ Beyond the `BulkIngestor` trait, `BulkWocIngestor` provides:
 |----------|---------------------|
 | Initial historical sync | `BulkCdnIngestor` (fast, parallel downloads) |
 | CDN unavailable | `BulkWocIngestor` (reliable fallback) |
-| Mobile/battery-conscious | `LivePollingIngestor` (configurable interval) |
+| Mobile/battery-conscious | `LivePollingIngestor` (configurable interval, default 60s) |
 | Low-latency trading | `LiveWebSocketIngestor` (instant notifications) |
 | Development/testing | `LivePollingIngestor` (simpler to debug) |
 
+### Default Option Values
+
+| Option | BulkCdn | BulkWoc | LivePolling | LiveWebSocket |
+|--------|---------|---------|-------------|---------------|
+| `timeout_secs` | 60 | 30 | 30 | 30 (http) |
+| `user_agent` | `BsvWalletToolbox/1.0` | `BsvWalletToolbox/1.0` | `BsvWalletToolbox/1.0` | `BsvWalletToolbox/1.0` |
+| `idle_wait_ms` | - | 5000 | 100000 | 100000 (idle_timeout) |
+| `poll_interval_secs` | - | - | 60 | - |
+| `ping_interval_ms` | - | - | - | 10000 |
+| `max_reconnect` | - | - | - | 10 |
+| `reconnect_delay_ms` | - | - | - | 5000 |
+
 ## Internal Types (Not Exported)
 
-- `FileLink` (bulk_woc.rs) - Parsed file link with URL, file name, optional height range, and `is_latest` flag
-- `WsError` (live_websocket.rs) - WebSocket-specific error enum
-- `block_header_to_live_header()` (live_polling.rs, live_websocket.rs) - Converts `BlockHeader` to `LiveBlockHeader` with default chain work and flags
+- `FileLink` (bulk_woc.rs) - Parsed file link with `url`, `file_name`, optional `range: HeightRange`, and `is_latest` flag
+- `WsError` (live_websocket.rs) - WebSocket-specific error enum (`ConnectionFailed`, `MessageParseFailed`, `IdleTimeout`, `Stopped`)
+- `block_header_to_live_header()` (live_polling.rs, live_websocket.rs) - Converts `BlockHeader` to `LiveBlockHeader` with default chain work (`"0"*64`), `is_chain_tip: true`, `is_active: true`, `header_id: 0`
+- `WocHeaderResp` (live_websocket.rs) - Local struct for HTTP header-by-hash fallback deserialization
 
 ## Related
 

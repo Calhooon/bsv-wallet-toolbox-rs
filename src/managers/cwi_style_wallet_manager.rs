@@ -18,6 +18,8 @@ use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use zeroize::Zeroizing;
+
 use crate::error::{Error, Result};
 
 /// Generate random bytes using the rand crate.
@@ -346,8 +348,11 @@ impl CWIStyleWalletManager {
     }
 
     /// Derives a key from password using PBKDF2.
-    fn derive_key_from_password(&self, password: &str, salt: &[u8]) -> Vec<u8> {
-        let mut derived = vec![0u8; 32];
+    ///
+    /// Returns a `Zeroizing<Vec<u8>>` that is automatically zeroed on drop,
+    /// preventing sensitive derived key material from lingering in memory.
+    fn derive_key_from_password(&self, password: &str, salt: &[u8]) -> Zeroizing<Vec<u8>> {
+        let mut derived = Zeroizing::new(vec![0u8; 32]);
 
         if self.config.use_pbkdf2 {
             pbkdf2::derive(

@@ -31,8 +31,8 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `lib.rs` | 146 | Crate root with module declarations, re-exports, and crate-level documentation |
-| `error.rs` | 133 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, validation, and internal errors |
+| `lib.rs` | 159 | Crate root with module declarations, re-exports, and crate-level documentation |
+| `error.rs` | 166 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, validation, and internal errors |
 | `utils.rs` | 128 | Security utilities: `constant_time_eq` for timing-safe byte comparisons (HMAC, tokens) |
 | `lock_utils.rs` | 20 | Safe `RwLock` acquisition helpers (`lock_read`, `lock_write`) that return `Error::Internal` instead of panicking on poison |
 
@@ -137,8 +137,9 @@ pub use services::{
     FiatExchangeRates,          // Collection of fiat exchange rates
 
     // Service collection and history
-    ServiceCollection,          // Collection of service providers
+    ServiceCollection,          // Collection of service providers with failover
     ServiceCallHistory,         // History of service calls
+    AdaptiveTimeoutConfig,      // EMA-based adaptive timeout configuration
 
     // Provider implementations
     WhatsOnChain, WhatsOnChainConfig,  // WhatsOnChain API provider
@@ -154,10 +155,14 @@ pub use services::{
 pub use wallet::{
     Wallet,                    // Full wallet implementation with WalletInterface
     WalletOptions,             // Configuration options for wallet creation
+    WalletBalance,             // Balance info from balance() / balance_and_utxos()
     WalletSigner,              // Transaction signing component
     UnlockingScriptTemplate,   // Template for generating unlocking scripts
     ScriptType,                // Script type enum (P2PKH, P2PK, etc.)
     SignerInput,               // Input metadata for signing operations
+    OverlayLookupResolver,     // Trait for overlay discovery (BRC-31 SHIP/SLAP)
+    HttpLookupResolver,        // HTTP-based overlay lookup with endpoint failover
+    OverlayCertificate,        // Certificate from overlay lookup results
 };
 ```
 
@@ -202,16 +207,20 @@ pub use managers::{
     UmpToken,                      // User media policy token
     WalletSnapshot,                // Serializable wallet state snapshot
 
-    // Permissions manager - BRC-98/99 permission control (stub)
+    // Permissions manager - BRC-98/99 full enforcement (DPACP/DBAP/DCAP/DSAP)
+    BasketUsageType,               // Basket permission usage type
+    CertificateUsageType,          // Certificate permission usage type
     GroupedPermissions,            // Grouped permission definitions
     PermissionRequest,             // Permission request structure
+    PermissionRequestHandler,      // Callback for user permission prompts
     PermissionToken,               // Permission token for operations
+    PermissionUsageType,           // Generic permission usage type
     PermissionsModule,             // Permission module trait
-    WalletPermissionsManager,      // Permission manager
+    WalletPermissionsManager,      // Full BRC-98/99 permission manager (1978 lines)
     WalletPermissionsManagerConfig,// Configuration options
 
     // Authentication manager - WAB integration
-    WalletAuthenticationManager,   // Web Authentication Bridge manager (skeleton)
+    WalletAuthenticationManager,   // Web Authentication Bridge manager
 
     // Logger - Structured wallet logging
     WalletLogger,                  // Logger interface for wallet operations

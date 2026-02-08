@@ -10,7 +10,7 @@ This module provides the storage layer for the wallet toolbox, defining traits f
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module root; exports traits and conditionally compiles storage backends |
-| `traits.rs` | Core trait definitions and associated types for storage operations |
+| `traits.rs` | Core trait definitions, associated types, and `TrxToken` (921 lines) |
 
 ## Submodules
 
@@ -74,6 +74,9 @@ Write operations (extends `WalletStorageReader`):
 | `update_transaction_status_after_broadcast()` | Update tx/proven_tx_req status after broadcast attempt |
 | `review_status()` | Review storage status, clean up aged items |
 | `purge_data()` | Remove old completed/failed records |
+| `begin_transaction()` | Start a new transaction scope, returns `TrxToken` |
+| `commit_transaction()` | Commit all operations under a `TrxToken` |
+| `rollback_transaction()` | Discard all operations under a `TrxToken` |
 
 ### WalletStorageSync
 
@@ -109,10 +112,26 @@ Background monitoring operations (extends `WalletStorageProvider`). Used by the 
 | `un_fail()` | Attempt recovery of incorrectly failed transactions |
 | `review_status()` | Monitor-level status review across all users (no AuthId required) |
 | `purge_data()` | Monitor-level purge across all users (no AuthId required) |
+| `try_acquire_task_lock()` | Acquire distributed lock for multi-instance support (default: always acquires) |
+| `release_task_lock()` | Release a previously acquired task lock (default: no-op) |
+| `update_proven_tx_req_status()` | Update proven_tx_req status (used by reorg task; default: logs warning) |
 
-This trait mirrors Go's `MonitoredStorage` interface and encapsulates the full logic for each operation: querying, calling external services, and updating records. Note that `review_status()` and `purge_data()` here are monitor-level variants that operate without an `AuthId`, unlike the per-user versions on `WalletStorageWriter`.
+This trait mirrors Go's `MonitoredStorage` interface and encapsulates the full logic for each operation: querying, calling external services, and updating records. Note that `review_status()` and `purge_data()` here are monitor-level variants that operate without an `AuthId`, unlike the per-user versions on `WalletStorageWriter`. The `try_acquire_task_lock` / `release_task_lock` methods enable multi-instance monitor support where only one daemon executes each task at a time; they default to single-instance mode (always acquire, no-op release).
 
 ## Key Types
+
+### Transaction Token
+
+```rust
+pub struct TrxToken { id: u64 }
+
+impl TrxToken {
+    pub(crate) fn new() -> Self;  // Unique ID via AtomicU64
+    pub fn id(&self) -> u64;
+}
+```
+
+Opaque token for grouping storage operations into a single database transaction. Obtained via `WalletStorageWriter::begin_transaction()`, closed with `commit_transaction()` or `rollback_transaction()`. Mirrors TypeScript's `TrxToken` interface.
 
 ### Authentication
 
@@ -395,6 +414,22 @@ let chunk = source.get_sync_chunk(args.clone()).await?;
 // Apply to destination
 let result = dest.process_sync_chunk(args, chunk).await?;
 println!("Synced {} inserts, {} updates", result.inserts, result.updates);
+```
+
+### Transaction Scopes
+
+```rust
+use bsv_wallet_toolbox::storage::WalletStorageWriter;
+
+// Begin a transaction scope
+let trx = storage.begin_transaction().await?;
+
+// Operations under this token execute atomically
+// (pass trx to storage operations that accept it)
+
+// Commit or rollback
+storage.commit_transaction(trx).await?;
+// OR: storage.rollback_transaction(trx).await?;
 ```
 
 ### Monitor Operations

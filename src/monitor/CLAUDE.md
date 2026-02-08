@@ -3,7 +3,7 @@
 
 ## Overview
 
-The monitor module provides a daemon-based task scheduler for running recurring background operations on wallet storage. It handles transaction lifecycle management including proof verification, transaction broadcasting, abandoned transaction cleanup, recovery of incorrectly failed transactions, blockchain reorganization handling, and database maintenance. The module is designed to run alongside a wallet instance, performing maintenance tasks at configurable intervals.
+The monitor module provides a daemon-based task scheduler for running recurring background operations on wallet storage. It handles transaction lifecycle management including proof verification, transaction broadcasting, abandoned transaction cleanup, recovery of incorrectly failed transactions, blockchain reorganization handling, and database maintenance. The module is designed to run alongside a wallet instance, performing maintenance tasks at configurable intervals. It supports multi-instance deployments via distributed task locking.
 
 ## Architecture
 
@@ -12,10 +12,11 @@ The monitor module provides a daemon-based task scheduler for running recurring 
 │                         Monitor<S, V>                            │
 │  (S: MonitorStorage, V: WalletServices)                         │
 ├─────────────────────────────────────────────────────────────────┤
-│  start() / stop() / run_once() / is_running()                   │
-│  Manages task lifecycle and scheduling                          │
+│  start() / stop() / run_once() / is_running() / health()        │
+│  instance_id() - unique per Monitor for distributed locking     │
+│  Manages task lifecycle, scheduling, and health tracking        │
 ├─────────────────────────────────────────────────────────────────┤
-│                        TasksConfig                               │
+│                        TasksConfig (12 tasks)                    │
 │  enabled | interval | start_immediately (per task)              │
 ├─────────────────┬─────────────────┬─────────────────────────────┤
 │  Core Tasks     │  Extended Tasks │  Maintenance Tasks          │
@@ -23,7 +24,7 @@ The monitor module provides a daemon-based task scheduler for running recurring 
 │ CheckForProofs  │ CheckNoSends    │ Purge (1 hour)              │
 │   (1 min)       │   (24 hours)    │ ReviewStatus (15 min)       │
 │ SendWaiting     │ NewHeader       │ MonitorCallHistory (12 min) │
-│   (5 min)       │   (1 min)       │                             │
+│   (5 min)       │   (1 min)       │ SyncWhenIdle (1 min)        │
 │ FailAbandoned   │ Reorg           │                             │
 │   (5 min)       │   (1 min)       │                             │
 │ Unfail          │ Clock           │                             │
@@ -33,8 +34,14 @@ The monitor module provides a daemon-based task scheduler for running recurring 
                     ┌───────────┴───────────┐
                     ▼                       ▼
               MonitorStorage         WalletServices
-            (find_proven_tx_reqs)    (get_merkle_path)
+            (find_proven_tx_reqs,    (get_merkle_path,
+             try_acquire_task_lock,   get_height,
+             release_task_lock)       post_beef)
 ```
+
+### Multi-Instance Support
+
+Each `Monitor` generates a random 16-byte hex `instance_id` on creation. Before each task run, the daemon acquires a distributed task lock via `storage.try_acquire_task_lock(task_name, instance_id, ttl)`. The TTL is set to 2x the task interval so locks auto-expire if an instance crashes. After the task completes, the lock is released via `storage.release_task_lock()`.
 
 ### Callbacks
 
@@ -48,15 +55,15 @@ Both receive a `TransactionStatusUpdate` with txid, status, and optional proof d
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module root with re-exports of `Monitor`, `MonitorOptions`, `TaskConfig`, `TransactionStatusUpdate`, `MonitorTask`, and `TaskResult` |
+| `mod.rs` | Module root with re-exports of `Monitor`, `MonitorHealth`, `TaskHealth`, `MonitorOptions`, `TaskConfig`, `TransactionStatusUpdate`, `MonitorTask`, and `TaskResult` |
 | `config.rs` | Configuration types: `MonitorOptions`, `TasksConfig`, `TaskConfig`, and `TransactionStatusUpdate` |
-| `daemon.rs` | Main `Monitor` struct that spawns and manages background task execution via tokio |
+| `daemon.rs` | Main `Monitor` struct with health tracking, distributed locking, and background task execution via tokio |
 
 ## Submodules
 
 | Submodule | Purpose |
 |-----------|---------|
-| `tasks/` | Individual task implementations, each implementing `MonitorTask` trait (12 files: 11 exported tasks + `sync_when_idle.rs` standalone) |
+| `tasks/` | Individual task implementations, each implementing `MonitorTask` trait (12 task files + `mod.rs` with trait/types) |
 
 ## Key Types
 
@@ -75,18 +82,50 @@ where
     options: MonitorOptions,
     running: Arc<AtomicBool>,
     task_handles: RwLock<HashMap<TaskType, JoinHandle<()>>>,
+    task_health: Arc<RwLock<HashMap<TaskType, TaskHealth>>>,
+    instance_id: String,
 }
 ```
 
 **Methods:**
 - `new(storage, services)` - Create with default options
 - `with_options(storage, services, options)` - Create with custom configuration
-- `start()` - Spawn all enabled tasks as background tokio tasks
+- `start()` - Spawn all 12 enabled tasks as background tokio tasks
 - `stop()` - Cancel all running tasks
 - `is_running()` - Check daemon status
 - `run_once()` - Execute all enabled tasks once (useful for testing)
+- `health()` - Returns `MonitorHealth` snapshot with per-task health info
+- `instance_id()` - Get the unique instance identifier
 
-**Note:** `MonitorCallHistoryTask` requires a concrete `Services` type (not the generic `WalletServices` trait), so it is **not** spawned by `start()` or executed by `run_once()`. Users who need this task should spawn it separately with a concrete `Services` instance.
+### MonitorHealth
+
+Aggregate health status for the entire monitor daemon.
+
+```rust
+pub struct MonitorHealth {
+    pub running: bool,
+    pub task_count: usize,
+    pub tasks: HashMap<TaskType, TaskHealth>,
+}
+```
+
+**Methods:**
+- `all_tasks_healthy()` - Returns `true` if all tasks have run at least once with zero consecutive errors
+
+### TaskHealth
+
+Health status for an individual monitor task.
+
+```rust
+pub struct TaskHealth {
+    pub last_run: Option<Instant>,
+    pub last_result: Option<TaskResult>,
+    pub last_error: Option<String>,
+    pub consecutive_errors: u32,
+}
+```
+
+Implements `Default` (all `None`/zero). Updated after each task run: success resets `consecutive_errors` to 0, failure increments it.
 
 ### MonitorOptions
 
@@ -122,21 +161,22 @@ pub struct TransactionStatusUpdate {
 
 ### TasksConfig
 
-Configuration for all 11 tasks with individual `TaskConfig` entries.
+Configuration for all 12 tasks with individual `TaskConfig` entries.
 
 ```rust
 pub struct TasksConfig {
-    pub check_for_proofs: TaskConfig,   // Default: 1 min, not immediate
-    pub send_waiting: TaskConfig,        // Default: 5 min, starts immediately
-    pub fail_abandoned: TaskConfig,      // Default: 5 min, not immediate
-    pub unfail: TaskConfig,              // Default: 10 min, not immediate
-    pub clock: TaskConfig,               // Default: 1 sec, starts immediately
-    pub new_header: TaskConfig,          // Default: 1 min, not immediate
-    pub reorg: TaskConfig,               // Default: 1 min, not immediate
-    pub check_no_sends: TaskConfig,      // Default: 24 hours, not immediate
-    pub review_status: TaskConfig,       // Default: 15 min, not immediate
-    pub purge: TaskConfig,               // Default: 1 hour, not immediate
+    pub check_for_proofs: TaskConfig,    // Default: 1 min, not immediate
+    pub send_waiting: TaskConfig,         // Default: 5 min, starts immediately
+    pub fail_abandoned: TaskConfig,       // Default: 5 min, not immediate
+    pub unfail: TaskConfig,               // Default: 10 min, not immediate
+    pub clock: TaskConfig,                // Default: 1 sec, starts immediately
+    pub new_header: TaskConfig,           // Default: 1 min, not immediate
+    pub reorg: TaskConfig,                // Default: 1 min, not immediate
+    pub check_no_sends: TaskConfig,       // Default: 24 hours, not immediate
+    pub review_status: TaskConfig,        // Default: 15 min, not immediate
+    pub purge: TaskConfig,                // Default: 1 hour, not immediate
     pub monitor_call_history: TaskConfig, // Default: 12 min, not immediate
+    pub sync_when_idle: TaskConfig,       // Default: 1 min, not immediate
 }
 ```
 
@@ -177,6 +217,7 @@ The `setup()` method is called once before the first `run()` invocation. It has 
 Result of a task execution.
 
 ```rust
+#[derive(Debug, Clone, Default)]
 pub struct TaskResult {
     pub items_processed: u32,
     pub errors: Vec<String>,  // Non-fatal errors
@@ -192,7 +233,7 @@ pub struct TaskResult {
 
 ### TaskType
 
-Enum identifying each task type for tracking. Implements `Display` (delegates to `as_str()`).
+Enum identifying each of the 12 task types for tracking. Implements `Display` (delegates to `as_str()`).
 
 ```rust
 pub enum TaskType {
@@ -207,12 +248,13 @@ pub enum TaskType {
     Purge,
     Reorg,
     ReviewStatus,
+    SyncWhenIdle,
 }
 ```
 
 ## Tasks
 
-### Core Tasks (Configured via TasksConfig)
+### Core Tasks
 
 #### CheckForProofsTask
 
@@ -428,9 +470,6 @@ Logs service call history for monitoring and diagnostics.
 | Property | Value |
 |----------|-------|
 | Default interval | 12 minutes |
-| Service type | Requires concrete `Services` (not generic `WalletServices`) |
-
-**Note:** This task is **not** spawned by `Monitor.start()` or included in `Monitor.run_once()` because it requires a concrete `Services` type. Users must spawn it separately.
 
 **Workflow:**
 1. Call `services.get_services_call_history(true)` to get and reset counters
@@ -441,7 +480,7 @@ Logs service call history for monitoring and diagnostics.
    - `get_utxo_status`
 3. Log total summary
 
-#### SyncWhenIdleTask (standalone, not wired)
+#### SyncWhenIdleTask
 
 Triggers storage synchronization after idle periods. Mirrors the TypeScript `TaskSyncWhenIdle`.
 
@@ -450,8 +489,6 @@ Triggers storage synchronization after idle periods. Mirrors the TypeScript `Tas
 | Default interval | 1 minute |
 | Idle threshold | 2 minutes (configurable) |
 | State | `last_activity: AtomicU64` |
-
-**Note:** This task exists in `tasks/sync_when_idle.rs` but is **not** declared in `tasks/mod.rs`, **not** exported, and **not** spawned by the daemon. It is a standalone implementation for future integration.
 
 **Workflow:**
 1. Track last wallet activity timestamp via `notify_activity()`
@@ -481,8 +518,12 @@ let monitor = Monitor::new(
     Arc::new(services),
 );
 
-// Start background tasks
+// Start all 12 background tasks
 monitor.start().await?;
+
+// Check health
+let health = monitor.health().await;
+assert!(health.running);
 
 // Later, stop the monitor
 monitor.stop().await?;
@@ -538,6 +579,7 @@ for (task_type, result) in results {
 | check_for_proofs | 1 minute | No |
 | new_header | 1 minute | No |
 | reorg | 1 minute | No |
+| sync_when_idle | 1 minute | No |
 | send_waiting | 5 minutes | Yes |
 | fail_abandoned | 5 minutes | No |
 | unfail | 10 minutes | No |
@@ -553,21 +595,17 @@ for (task_type, result) in results {
 - `chrono` - Time calculations for abandoned transaction detection and age thresholds
 - `tracing` - Structured logging for task execution
 - `serde` - Serialization for `TransactionStatusUpdate`
+- `rand` - CSPRNG for generating unique instance IDs
+- `hex` - Encoding instance IDs as hex strings
 
 ## Logging
 
 The monitor uses `tracing` for structured logging:
 
 - `info` level: Task completion with items processed, new blocks detected, transaction recovery
-- `warn` level: Non-fatal errors, chain height decrease (potential reorg), proof invalidation
+- `warn` level: Non-fatal errors, chain height decrease (potential reorg), proof invalidation, lock acquisition failures
 - `error` level: Fatal task failures, task setup failures
-- `debug` level: Detailed task progress, individual transaction processing, no-op cycles
-
-## Related Documentation
-
-- [../CLAUDE.md](../CLAUDE.md) - Main source directory overview
-- [../storage/CLAUDE.md](../storage/CLAUDE.md) - Storage layer and `WalletStorageProvider` trait
-- [../services/CLAUDE.md](../services/CLAUDE.md) - Services layer and `WalletServices` trait
+- `debug` level: Detailed task progress, individual transaction processing, no-op cycles, lock skips (held by another instance)
 
 ## Implementation Notes
 
@@ -575,7 +613,8 @@ The monitor uses `tracing` for structured logging:
 
 The `Monitor` struct uses:
 - `Arc<AtomicBool>` for the running flag, shared with spawned tasks for lock-free status checks
-- `RwLock<HashMap>` for task handles to allow concurrent reads with exclusive writes
+- `RwLock<HashMap>` for task handles and health tracking to allow concurrent reads with exclusive writes
+- `Arc<RwLock<HashMap<TaskType, TaskHealth>>>` for per-task health, updated after each run
 
 Individual tasks use:
 - `AtomicBool` for `check_now` flags (immediate trigger)
@@ -594,13 +633,17 @@ When `stop()` is called or the `Monitor` is dropped:
 Each spawned task follows this lifecycle:
 1. `setup()` is called (fails the task if it returns an error)
 2. If `start_immediately` is false, wait for the configured interval
-3. Enter run loop: call `run()`, log results, sleep for interval, repeat
+3. Enter run loop:
+   a. Acquire distributed task lock (skip run if held by another instance)
+   b. Call `run()`, update health tracking
+   c. Release task lock
+   d. Sleep for interval, repeat
 
 ### Error Handling
 
 Tasks distinguish between:
-- **Fatal errors**: Returned as `Err(Error)`, logged at error level
-- **Non-fatal errors**: Added to `TaskResult.errors`, logged at warn level, task continues
+- **Fatal errors**: Returned as `Err(Error)`, logged at error level, increments `consecutive_errors` in health
+- **Non-fatal errors**: Added to `TaskResult.errors`, logged at warn level, task continues, resets `consecutive_errors`
 
 This allows the monitor to continue operating even when individual transactions fail to process.
 
@@ -609,3 +652,9 @@ This allows the monitor to continue operating even when individual transactions 
 Some tasks coordinate via shared flags:
 - `NewHeaderTask.new_header_received` - Signals proof checking tasks that new blocks arrived
 - `PurgeTask.check_now` / `ReviewStatusTask.check_now` / `CheckNoSendsTask.check_now` - Allow external triggering
+
+## Related Documentation
+
+- [../CLAUDE.md](../CLAUDE.md) - Main source directory overview
+- [../storage/CLAUDE.md](../storage/CLAUDE.md) - Storage layer and `WalletStorageProvider` trait
+- [../services/CLAUDE.md](../services/CLAUDE.md) - Services layer and `WalletServices` trait

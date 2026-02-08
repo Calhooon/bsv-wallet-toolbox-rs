@@ -21,5 +21,5 @@ mod daemon;
 pub mod tasks;
 
 pub use config::{MonitorOptions, TaskConfig, TransactionStatusUpdate};
-pub use daemon::Monitor;
+pub use daemon::{Monitor, MonitorHealth, TaskHealth};
 pub use tasks::{MonitorTask, TaskResult};

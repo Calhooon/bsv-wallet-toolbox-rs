@@ -28,8 +28,8 @@ This module provides manager components that sit above the core storage, service
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | 317 | Module declarations, re-exports, `WalletLogger`, `SetupWalletOptions`, `setup_wallet()` |
-| `storage_manager.rs` | 1311 | Multi-storage orchestration with active/backup semantics, lock queues, MonitorStorage impl with task locking |
-| `cwi_style_wallet_manager.rs` | 760 | CWI-compatible multi-profile manager with PBKDF2 password derivation, UMP tokens, snapshots, JSON import/export |
+| `storage_manager.rs` | 1392 | Multi-storage orchestration with active/backup semantics, lock queues, MonitorStorage impl with task locking, sync-safe cached settings/services |
+| `cwi_style_wallet_manager.rs` | 765 | CWI-compatible multi-profile manager with PBKDF2 password derivation, UMP tokens, snapshots, JSON import/export |
 | `permissions_manager.rs` | 1978 | BRC-98/99 permission enforcement with DPACP/DBAP/DCAP/DSAP, in-memory cache (5-min TTL), permission request handler |
 | `settings_manager.rs` | 354 | Persistent wallet settings with mainnet/testnet defaults and string serialization |
 | `simple_wallet_manager.rs` | 336 | Two-factor authentication manager (primary key + privileged key) |
@@ -127,7 +127,7 @@ The storage manager handles multi-storage synchronization with sophisticated con
 reader_locks   // Multiple readers allowed
 writer_locks   // Exclusive with readers
 sync_locks     // Exclusive with readers + writers
-provider_locks // Highest precedence
+provider_locks // Highest precedence (currently unused)
 ```
 
 Lock timeout: 30 seconds (`LOCK_TIMEOUT_SECS`). Returns `Error::LockTimeout` on expiration.
@@ -174,13 +174,21 @@ SyncResult { inserts: u32, updates: u32, log: String }
 
 Returned by `sync_from_reader` and `sync_to_writer`. Contains counts and a human-readable log of sync operations performed.
 
+### Sync-Safe Cached State
+
+The manager maintains two `std::sync::RwLock` caches for synchronous trait methods:
+- `cached_settings` - Populated by `make_available()`, used by `WalletStorageReader::get_settings()` (returns `&TableSettings`)
+- `services_sync` - Populated by `set_services()`, used by `WalletStorageReader::get_services()` (returns `Result<Arc<dyn WalletServices>>`)
+
+These use `std::sync::RwLock` (not `tokio::sync::RwLock`) because the trait methods are synchronous. Before `make_available()` is called, `get_settings()` returns a default `TableSettings` via `OnceLock` fallback.
+
 ### Trait Implementations
 
 `WalletStorageManager` implements the full storage trait hierarchy:
-- `WalletStorageReader` - Delegates reads to active storage with reader lock
+- `WalletStorageReader` - Delegates reads to active storage with reader lock; `get_settings()` and `get_services()` use sync caches
 - `WalletStorageWriter` - Delegates writes to active storage with writer lock (includes `review_status`, `purge_data`, `update_transaction_status_after_broadcast`, `begin_transaction`, `commit_transaction`, `rollback_transaction`)
 - `WalletStorageSync` - Delegates sync operations with sync lock
-- `WalletStorageProvider` - Partial implementation (some sync methods unimplemented)
+- `WalletStorageProvider` - Partial implementation (`storage_identity_key()` and `storage_name()` panic with "use async method" message)
 - `MonitorStorage` - Delegates monitor operations (`synchronize_transaction_statuses`, `send_waiting_transactions`, `abort_abandoned`, `un_fail`, `review_status`, `purge_data`, `try_acquire_task_lock`, `release_task_lock`) with writer lock
 
 ## SimpleWalletManager Authentication Flow
@@ -207,9 +215,9 @@ Snapshot format: `[32-byte key][encrypted payload]` where payload is `[1-byte ve
 
 ### PBKDF2 Key Derivation
 
-Uses `ring::pbkdf2` with SHA-512 and configurable rounds (default: 7777):
+Uses `ring::pbkdf2` with SHA-512 and configurable rounds (default: 7777). Derived key material is wrapped in `zeroize::Zeroizing<Vec<u8>>` to ensure automatic zeroing on drop, preventing sensitive key material from lingering in memory:
 ```rust
-// Password -> derived_key (32 bytes)
+// Password -> derived_key (32 bytes, Zeroizing<Vec<u8>>)
 // primary_key = primary_pad XOR derived_key
 // Salt = profile.id (16 bytes)
 ```
@@ -547,4 +555,4 @@ All managers use `tokio::sync::RwLock` for async-safe interior mutability. The s
 
 ### Encryption
 
-Managers use `bsv_sdk::primitives::SymmetricKey` for AES encryption of snapshots and exports. Keys are randomly generated per operation.
+Managers use `bsv_sdk::primitives::SymmetricKey` for AES encryption of snapshots and exports. Keys are randomly generated per operation. The `CWIStyleWalletManager` additionally uses `zeroize::Zeroizing` for derived key material memory safety.

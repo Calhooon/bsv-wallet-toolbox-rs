@@ -33,7 +33,9 @@ This module defines the monitor task system that runs periodic background operat
 │  MonitorStorage                       │         WalletServices                │
 │  (find_proven_tx_reqs, abort_abandoned│         (get_merkle_path, post_beef,  │
 │   purge_data, review_status,          │          get_height, etc.)            │
-│   send_waiting_transactions, un_fail) │                                       │
+│   send_waiting_transactions, un_fail, │                                       │
+│   synchronize_transaction_statuses,   │                                       │
+│   update_proven_tx_req_status)        │                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,15 +43,15 @@ This module defines the monitor task system that runs periodic background operat
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mod.rs` | 183 | Module root with `MonitorTask` trait, `TaskResult`, and `TaskType` enum (12 variants) |
+| `mod.rs` | 186 | Module root with `MonitorTask` trait, `TaskResult`, and `TaskType` enum (12 variants) |
 | `check_for_proofs.rs` | 165 | `CheckForProofsTask` - fetches merkle proofs for unconfirmed transactions |
-| `check_no_sends.rs` | 165 | `CheckNoSendsTask` - retrieves proofs for 'nosend' transactions |
+| `check_no_sends.rs` | 199 | `CheckNoSendsTask` - retrieves proofs for 'nosend' transactions |
 | `clock.rs` | 113 | `ClockTask` - tracks minute-level clock events |
 | `fail_abandoned.rs` | 91 | `FailAbandonedTask` - marks abandoned transactions as failed |
 | `monitor_call_history.rs` | 181 | `MonitorCallHistoryTask<V>` - generic service call statistics logger |
 | `new_header.rs` | 181 | `NewHeaderTask` - polls for new blockchain block headers |
 | `purge.rs` | 154 | `PurgeTask` - database maintenance, deletes expired data |
-| `reorg.rs` | 257 | `ReorgTask` - handles blockchain reorganizations |
+| `reorg.rs` | 279 | `ReorgTask` - handles blockchain reorganizations with status demotion |
 | `review_status.rs` | 96 | `ReviewStatusTask` - synchronizes transaction and proof status |
 | `send_waiting.rs` | 138 | `SendWaitingTask` - broadcasts transactions waiting to be sent |
 | `sync_when_idle.rs` | 177 | `SyncWhenIdleTask` - triggers sync after idle periods |
@@ -238,7 +240,7 @@ pub struct DeactivatedHeader {
 1. Processes deactivated headers after 10-minute delay (avoids temporary forks)
 2. Queries `Completed` and `Unmined` proven_tx_reqs for potentially affected transactions
 3. Re-verifies merkle proofs via `services.get_merkle_path()`
-4. Logs affected transactions that lost valid proofs
+4. If proof no longer valid: demotes proven_tx_req status to `Unmined` via `storage.update_proven_tx_req_status()` so `CheckForProofsTask` will re-fetch the proof
 5. Retries up to 3 times, resetting the delay between attempts
 
 ### Transaction Processing Tasks
@@ -286,7 +288,7 @@ CheckNoSendsTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 1. Resets `check_now` flag
 2. Queries `proven_tx_reqs` with status: `NoSend`
 3. For each transaction, checks for merkle proof via `get_merkle_path(txid, false)`
-4. If proof found: logs success, increments processed count
+4. If proof found: logs success with block height/hash, increments processed count, calls `storage.synchronize_transaction_statuses()` to persist proof state (note: `synchronize_transaction_statuses` covers unmined/unknown/callback/sending/unconfirmed statuses but does not directly persist nosend proofs — full nosend proof persistence requires a dedicated `MonitorStorage` method)
 5. If not found: logs debug, will retry on next daily cycle
 
 #### SendWaitingTask (send_waiting.rs)
@@ -517,13 +519,13 @@ SyncWhenIdleTask::default() -> Self           // Implements Default (same as new
 | Task | Queries Statuses | Updates To |
 |------|------------------|------------|
 | `CheckForProofsTask` | `Unmined`, `Unknown`, `Callback`, `Sending`, `Unconfirmed` | `Completed` (on proof) |
-| `CheckNoSendsTask` | `NoSend` | Updates when proof found |
+| `CheckNoSendsTask` | `NoSend` | Calls `synchronize_transaction_statuses()` on proof discovery |
 | `SendWaitingTask` | via `send_waiting_transactions()` | `Unmined` (success), `Failed` (double-spend) |
 | `FailAbandonedTask` | via `abort_abandoned()` | Calls `abort_action` on stale unsigned/unprocessed txs |
 | `UnfailTask` | via `un_fail()` | `Unmined` (on-chain), `Invalid` (not found) |
 | `PurgeTask` | via `purge_data()` | Deletes/clears data |
 | `ReviewStatusTask` | via `review_status()` | Syncs transaction status |
-| `ReorgTask` | `Completed`, `Unmined` | Re-verifies proofs |
+| `ReorgTask` | `Completed`, `Unmined` | Demotes to `Unmined` via `update_proven_tx_req_status()` if proof invalidated |
 
 ## Generic Type Constraints
 

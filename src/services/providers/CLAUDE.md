@@ -99,6 +99,7 @@ let config = ArcConfig::with_api_key("key")
 | `post_beef(beef, txids)` | Broadcast BEEF with auto V2-to-V1 conversion and multi-txid support |
 | `get_tx_data(txid)` | Query transaction status (recent txs only) |
 | `get_merkle_path(txid)` | Get BUMP merkle path if available (via `get_tx_data`) |
+| `name()` | Get provider name string |
 
 **API Endpoints:**
 - TAAL Mainnet: `https://arc.taal.com`
@@ -303,8 +304,29 @@ cargo test services::providers::bitails
 cargo test services::providers::bhs
 ```
 
+## File Sizes
+
+| File | Lines |
+|------|-------|
+| `whatsonchain.rs` | 950 |
+| `bitails.rs` | 868 |
+| `arc.rs` | 631 |
+| `bhs.rs` | 172 |
+| `mod.rs` | 17 |
+
+## Public Exports (from `mod.rs`)
+
+```rust
+pub use arc::{Arc, ArcConfig};
+pub use bhs::{BhsConfig, BlockHeaderService};
+pub use bitails::{Bitails, BitailsConfig};
+pub use whatsonchain::{WhatsOnChain, WhatsOnChainConfig};
+```
+
 ## Related Documentation
 
 - `../traits.rs` - `WalletServices` trait and result type definitions
+- `../collection.rs` - `ServiceCollection<S>` for composing providers with failover
+- `../services.rs` - `Services` orchestrator wiring providers together
 - `../mod.rs` - Service module organization
 - `../../chaintracks/` - Chain and block header tracking

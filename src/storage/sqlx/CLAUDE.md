@@ -10,14 +10,14 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (4292 lines) |
-| `create_action.rs` | Transaction creation implementation (3661 lines) |
-| `process_action.rs` | Signed transaction processing (1418 lines) |
-| `abort_action.rs` | Transaction abort/cancellation (1249 lines) |
-| `internalize_action.rs` | External transaction internalization (1310 lines) |
-| `sync.rs` | Multi-storage synchronization (2565 lines) |
-| `beef_verification.rs` | BEEF merkle proof verification (1068 lines) |
-| `migrations/001_initial.sql` | Initial schema with 16 tables |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (4798 lines) |
+| `create_action.rs` | Transaction creation implementation (3823 lines) |
+| `process_action.rs` | Signed transaction processing (1884 lines) |
+| `abort_action.rs` | Transaction abort/cancellation (1193 lines) |
+| `internalize_action.rs` | External transaction internalization (1343 lines) |
+| `sync.rs` | Multi-storage synchronization (2713 lines) |
+| `beef_verification.rs` | BEEF merkle proof verification (989 lines) |
+| `migrations/001_initial.sql` | Initial schema with 16 tables (284 lines) |
 
 ## Key Exports
 
@@ -31,7 +31,9 @@ pub struct StorageSqlx {
     storage_identity_key: std::sync::RwLock<String>,
     storage_name: std::sync::RwLock<String>,
     chain_tracker: RwLock<Option<Arc<dyn ChainTracker>>>,  // For BEEF verification
-    services: std::sync::RwLock<Option<Arc<dyn WalletServices>>>,  // For blockchain operations
+    services: std::sync::RwLock<Option<Arc<dyn WalletServices>>>,
+    active_transactions: RwLock<HashMap<u64, ()>>,         // TrxToken scope tracking
+    task_locks: RwLock<HashMap<String, (String, Instant)>>, // Multi-instance task locking
 }
 ```
 
@@ -68,13 +70,13 @@ Exported from `beef_verification.rs`:
 ```
 WalletStorageReader     - Read operations
         ↑
-WalletStorageWriter     - Write operations
+WalletStorageWriter     - Write operations (+ TrxToken scopes)
         ↑
 WalletStorageSync       - Sync operations
         ↑
 WalletStorageProvider   - Full provider interface
         +
-MonitorStorage          - Background monitoring operations
+MonitorStorage          - Background monitoring operations (+ task locking)
 ```
 
 ### WalletStorageReader Methods
@@ -109,6 +111,9 @@ MonitorStorage          - Background monitoring operations
 | `update_transaction_status_after_broadcast()` | Update tx status after broadcast success/failure (delegates to process_action.rs) |
 | `review_status()` | Sync proven_tx_req completion status to transaction table |
 | `purge_data()` | Purge old failed/invalid proven_tx_reqs, clean completed raw data |
+| `begin_transaction()` | Begin a TrxToken transaction scope; returns opaque u64 token |
+| `commit_transaction()` | Commit a TrxToken transaction scope |
+| `rollback_transaction()` | Rollback a TrxToken transaction scope |
 
 ### WalletStorageSync Methods
 | Method | Description |
@@ -132,15 +137,33 @@ MonitorStorage          - Background monitoring operations
 | `send_waiting_transactions()` | Query unsent/sending proven_tx_reqs older than min age, build BEEF from raw_tx + input_beef, broadcast via `services.post_beef()`, handle double-spend detection |
 | `abort_abandoned()` | Query unsigned/unprocessed outgoing transactions older than timeout, abort each via `abort_action` |
 | `un_fail()` | Query unfail proven_tx_reqs, check chain for merkle path via services, restore to unmined/unproven if found, mark invalid if not |
+| `review_status()` | Monitor-level status review (no AuthId required) |
+| `purge_data()` | Monitor-level purge (no AuthId required) |
+| `try_acquire_task_lock()` | Acquire in-memory task lock for multi-instance monitor support (lock TTL = 2x task interval) |
+| `release_task_lock()` | Release a previously acquired task lock |
+| `update_proven_tx_req_status()` | Update proven_tx_req status directly |
 
 ### Utility Methods (on `StorageSqlx` directly)
-| Method | Description | Status |
-|--------|-------------|--------|
-| `allocate_change_input()` | Allocate a change input for transaction | Stub |
-| `get_labels_for_transaction_id()` | Get labels for a transaction | Stub |
-| `get_tags_for_output_id()` | Get tags for an output | Stub |
-| `count_change_inputs()` | Count available change inputs | Stub |
-| `admin_stats()` | Get administrative statistics | Stub |
+| Method | Description |
+|--------|-------------|
+| `find_user()` | Find user by identity key |
+| `find_user_by_id()` | Find user by ID |
+| `insert_user()` | Insert a new user |
+| `update_user_active_storage()` | Update user's active storage |
+| `find_outputs_internal()` | Internal output query (no auth) |
+| `find_output_by_outpoint()` | Find output by txid + vout |
+| `allocate_change_input()` | Allocate a change input for transaction |
+| `count_change_inputs()` | Count available change inputs |
+| `find_output_baskets_internal()` | Internal basket query |
+| `find_or_create_default_basket()` | Find or create the "default" basket |
+| `find_certificates_internal()` | Internal certificate query |
+| `find_certificate_fields()` | Get fields for a certificate |
+| `find_proven_tx_reqs_internal()` | Internal proven_tx_req query |
+| `get_proven_or_raw_tx()` | Get proven tx or raw tx bytes |
+| `find_or_insert_sync_state_internal()` | Internal sync state lookup |
+| `get_labels_for_transaction_id()` | Get labels for a transaction |
+| `get_tags_for_output_id()` | Get tags for an output |
+| `admin_stats()` | Get administrative statistics |
 
 ## Commission Tracking
 
@@ -257,9 +280,9 @@ pub async fn internalize_action_internal(
 | Scenario | Balance Change |
 |----------|---------------|
 | New wallet payment | +satoshis |
-| Existing change output → wallet payment | 0 (ignored) |
-| Existing non-change → wallet payment | +satoshis |
-| Change output → basket insertion | -satoshis |
+| Existing change output -> wallet payment | 0 (ignored) |
+| Existing non-change -> wallet payment | +satoshis |
+| Change output -> basket insertion | -satoshis |
 
 ## Sync Implementation
 
@@ -281,9 +304,9 @@ pub async fn process_sync_chunk_internal(
 
 ### Entity Names
 Constants for sync offsets (exported as `entity_names` module):
-- `outputBasket`, `provenTx`, `provenTxReq`, `txLabel`, `outputTag`
-- `transaction`, `output`, `txLabelMap`, `outputTagMap`
-- `certificate`, `certificateField`, `commission`
+- `OUTPUT_BASKET`, `PROVEN_TX`, `PROVEN_TX_REQ`, `TX_LABEL`, `OUTPUT_TAG`
+- `TRANSACTION`, `OUTPUT`, `TX_LABEL_MAP`, `OUTPUT_TAG_MAP`
+- `CERTIFICATE`, `CERTIFICATE_FIELD`, `COMMISSION`
 
 ### Key Features
 - **get_sync_chunk**: Dependency-ordered entity processing, offset-based resumption, size/item limiting, since filtering
@@ -395,6 +418,11 @@ let result = storage.create_action(&auth, CreateActionArgs { ... }).await?;
 storage.abort_action(&auth, AbortActionArgs { reference: "ref".to_string() }).await?;
 storage.internalize_action(&auth, InternalizeActionArgs { tx: beef_bytes, ... }).await?;
 
+// TrxToken scopes
+let token = storage.begin_transaction().await?;
+// ... perform operations within scope ...
+storage.commit_transaction(token).await?;  // or rollback_transaction(token)
+
 // Query operations
 let actions = storage.list_actions(&auth, ListActionsArgs { ... }).await?;
 let outputs = storage.list_outputs(&auth, ListOutputsArgs { basket: "default".to_string(), ... }).await?;
@@ -409,6 +437,13 @@ storage.redeem_commission(commission_id).await?;
 storage.log_monitor_event("sync_started", Some(r#"{"block": 800000}"#)).await?;
 let events = storage.get_monitor_events(100, Some("sync_started")).await?;
 storage.cleanup_monitor_events(Duration::from_secs(86400)).await?;
+
+// Multi-instance task locking
+let acquired = storage.try_acquire_task_lock("check_proofs", "instance-1", ttl).await?;
+if acquired {
+    // ... run task ...
+    storage.release_task_lock("check_proofs", "instance-1").await?;
+}
 ```
 
 ## Feature Flags
@@ -423,6 +458,12 @@ All `std::sync::RwLock` access goes through `lock_utils::{lock_read, lock_write}
 ### Unsafe Pointer Casts
 Three trait methods (`get_settings`, `storage_identity_key`, `storage_name`) use controlled unsafe pointer casts because the trait signatures require `&self` returns but internal state is behind `RwLock`. This is safe because these values are effectively immutable after `make_available()`. A `OnceLock<TableSettings>` provides a safe default fallback for `get_settings()` when settings are not yet loaded.
 
+### TrxToken Scope Tracking
+The `active_transactions` field tracks in-flight transaction scopes using opaque `u64` token IDs generated by `AtomicU64`. `begin_transaction()` registers a token, `commit_transaction()` and `rollback_transaction()` remove it. This enables grouping multiple storage operations into logical units.
+
+### Multi-Instance Task Locking
+The `task_locks` field provides in-memory task locking for multi-instance monitor support. `try_acquire_task_lock()` checks if a task is already locked by another instance (with TTL = 2x task interval). `release_task_lock()` removes the lock. This prevents duplicate task execution across monitor instances.
+
 ### Soft Deletes
 Certificates and baskets use `is_deleted` flag for soft deletes rather than actual row removal. This preserves history for sync operations.
 
@@ -433,11 +474,13 @@ The `find_*` and `list_*` methods build SQL dynamically based on provided filter
 Settings are loaded once via `make_available()` and cached in an `RwLock`. The `get_settings()` method returns a reference to cached data.
 
 ### MonitorStorage Integration
-All four `MonitorStorage` methods are fully implemented:
+All MonitorStorage methods are fully implemented:
 - `synchronize_transaction_statuses` - queries chain via services, updates proof records
 - `send_waiting_transactions` - broadcasts via `services.post_beef()`, handles double-spend
 - `abort_abandoned` - queries and aborts stale unsigned/unprocessed transactions
 - `un_fail` - checks chain via services, restores or invalidates failed transactions
+- `try_acquire_task_lock` / `release_task_lock` - multi-instance coordination
+- `update_proven_tx_req_status` - direct status updates
 
 The `review_status` and `purge_data` methods on `WalletStorageWriter` are also fully implemented:
 - `review_status` - syncs completed proven_tx_req status to associated transactions
@@ -448,14 +491,14 @@ Operations requiring blockchain access (BEEF verification, broadcasting, header 
 
 ## Tests
 
-Total: 166 tests across all modules.
+Total: 176 tests across all modules.
 
 | Module | Tests | Key Coverage |
 |--------|-------|--------------|
 | `create_action.rs` | 45 | Validation, fee calculation, BEEF building, Go test parity |
 | `process_action.rs` | 35 | txid computation, VarInt parsing, script offsets, Go test parity |
+| `storage_sqlx.rs` | 32 | CRUD, list methods, certificate filters, monitor ops, TrxToken, task locks |
 | `beef_verification.rs` | 25 | Merkle proof verification, verification modes, edge cases |
-| `storage_sqlx.rs` | 22 | CRUD operations, list methods, certificate filters, monitor ops, services integration |
 | `abort_action.rs` | 19 | Status validation, UTXO release, lookup by txid |
 | `internalize_action.rs` | 11 | Wallet payment, basket insertion, merge scenarios |
 | `sync.rs` | 9 | Chunk retrieval, upsert logic, ID translation, roundtrip |

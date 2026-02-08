@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -18,20 +19,43 @@ use super::tasks::{
     SyncWhenIdleTask, TaskResult, TaskType, UnfailTask,
 };
 
-/// Generate a pseudo-random byte using system time as entropy.
-/// This is NOT cryptographically secure - used only for instance IDs.
-fn rand_byte() -> u8 {
-    use std::sync::atomic::AtomicU64;
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    // Mix counter with time for uniqueness
-    ((nanos as u64)
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(count)) as u8
+/// Generate random bytes using the `rand` crate's thread-local CSPRNG.
+fn rand_bytes(buf: &mut [u8]) {
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(buf);
+}
+
+/// Health status for an individual monitor task.
+#[derive(Debug, Clone, Default)]
+pub struct TaskHealth {
+    /// When the task last completed a run (success or failure).
+    pub last_run: Option<Instant>,
+    /// The result of the last successful run, or `None` if the task has never succeeded.
+    pub last_result: Option<TaskResult>,
+    /// The error message from the last failed run, if any.
+    pub last_error: Option<String>,
+    /// Number of consecutive fatal errors (resets on success).
+    pub consecutive_errors: u32,
+}
+
+/// Aggregate health status for the entire monitor daemon.
+#[derive(Debug, Clone)]
+pub struct MonitorHealth {
+    /// Whether the monitor daemon is currently running.
+    pub running: bool,
+    /// Number of spawned tasks.
+    pub task_count: usize,
+    /// Per-task health status.
+    pub tasks: HashMap<TaskType, TaskHealth>,
+}
+
+impl MonitorHealth {
+    /// Returns `true` if all tasks have run at least once without consecutive errors.
+    pub fn all_tasks_healthy(&self) -> bool {
+        self.tasks
+            .values()
+            .all(|h| h.consecutive_errors == 0 && h.last_run.is_some())
+    }
 }
 
 /// Background task scheduler for wallet transaction lifecycle management.
@@ -90,6 +114,8 @@ where
     options: MonitorOptions,
     running: Arc<AtomicBool>,
     task_handles: RwLock<HashMap<TaskType, JoinHandle<()>>>,
+    /// Per-task health tracking, updated after each task run.
+    task_health: Arc<RwLock<HashMap<TaskType, TaskHealth>>>,
     /// Unique identifier for this monitor instance, used for distributed task locking.
     instance_id: String,
 }
@@ -108,9 +134,7 @@ where
     pub fn with_options(storage: Arc<S>, services: Arc<V>, options: MonitorOptions) -> Self {
         // Generate a random 16-byte hex string as instance ID
         let mut bytes = [0u8; 16];
-        for b in &mut bytes {
-            *b = rand_byte();
-        }
+        rand_bytes(&mut bytes);
         let instance_id = hex::encode(bytes);
 
         Self {
@@ -119,6 +143,7 @@ where
             options,
             running: Arc::new(AtomicBool::new(false)),
             task_handles: RwLock::new(HashMap::new()),
+            task_health: Arc::new(RwLock::new(HashMap::new())),
             instance_id,
         }
     }
@@ -285,6 +310,20 @@ where
         self.running.load(Ordering::SeqCst)
     }
 
+    /// Returns a snapshot of the monitor's health status.
+    ///
+    /// Includes per-task health information such as last run time,
+    /// last result, and consecutive error counts.
+    pub async fn health(&self) -> MonitorHealth {
+        let tasks = self.task_health.read().await.clone();
+        let task_count = self.task_handles.read().await.len();
+        MonitorHealth {
+            running: self.is_running(),
+            task_count,
+            tasks,
+        }
+    }
+
     /// Run all enabled tasks once (for testing).
     pub async fn run_once(&self) -> Result<HashMap<TaskType, TaskResult>> {
         let mut results = HashMap::new();
@@ -383,6 +422,7 @@ where
         let task_name = task_type.as_str();
         let storage = self.storage.clone();
         let instance_id = self.instance_id.clone();
+        let health_map = self.task_health.clone();
 
         tokio::spawn(async move {
             // Run optional async setup phase before first run
@@ -434,7 +474,7 @@ where
                     continue;
                 }
 
-                // Run the task
+                // Run the task and update health tracking
                 match task.run().await {
                     Ok(result) => {
                         if result.items_processed > 0 {
@@ -455,6 +495,13 @@ where
                                 );
                             }
                         }
+                        // Record successful run in health state
+                        let mut health = health_map.write().await;
+                        let entry = health.entry(task_type).or_default();
+                        entry.last_run = Some(Instant::now());
+                        entry.last_result = Some(result);
+                        entry.last_error = None;
+                        entry.consecutive_errors = 0;
                     }
                     Err(e) => {
                         tracing::error!(
@@ -462,6 +509,12 @@ where
                             error = %e,
                             "Task failed"
                         );
+                        // Record failure in health state
+                        let mut health = health_map.write().await;
+                        let entry = health.entry(task_type).or_default();
+                        entry.last_run = Some(Instant::now());
+                        entry.last_error = Some(e.to_string());
+                        entry.consecutive_errors += 1;
                     }
                 }
 
@@ -535,23 +588,84 @@ mod tests {
 
     #[test]
     fn test_monitor_instance_id_is_unique() {
-        // Two monitors created in quick succession should have different instance IDs
-        // (due to counter + time mixing)
+        // Two calls to rand_bytes should produce different values
         let id1 = {
             let mut bytes = [0u8; 16];
-            for b in &mut bytes {
-                *b = rand_byte();
-            }
+            rand_bytes(&mut bytes);
             hex::encode(bytes)
         };
         let id2 = {
             let mut bytes = [0u8; 16];
-            for b in &mut bytes {
-                *b = rand_byte();
-            }
+            rand_bytes(&mut bytes);
             hex::encode(bytes)
         };
         assert_ne!(id1, id2);
         assert_eq!(id1.len(), 32); // 16 bytes = 32 hex chars
+    }
+
+    #[test]
+    fn test_task_health_default() {
+        let health = TaskHealth::default();
+        assert!(health.last_run.is_none());
+        assert!(health.last_result.is_none());
+        assert!(health.last_error.is_none());
+        assert_eq!(health.consecutive_errors, 0);
+    }
+
+    #[test]
+    fn test_monitor_health_all_tasks_healthy() {
+        // Empty monitor is considered healthy (no tasks to be unhealthy)
+        let health = MonitorHealth {
+            running: true,
+            task_count: 0,
+            tasks: HashMap::new(),
+        };
+        assert!(health.all_tasks_healthy());
+
+        // Task with successful run is healthy
+        let mut tasks = HashMap::new();
+        tasks.insert(
+            TaskType::Clock,
+            TaskHealth {
+                last_run: Some(Instant::now()),
+                last_result: Some(TaskResult::new()),
+                last_error: None,
+                consecutive_errors: 0,
+            },
+        );
+        let health = MonitorHealth {
+            running: true,
+            task_count: 1,
+            tasks,
+        };
+        assert!(health.all_tasks_healthy());
+
+        // Task with consecutive errors is unhealthy
+        let mut tasks = HashMap::new();
+        tasks.insert(
+            TaskType::Clock,
+            TaskHealth {
+                last_run: Some(Instant::now()),
+                last_result: None,
+                last_error: Some("test error".to_string()),
+                consecutive_errors: 3,
+            },
+        );
+        let health = MonitorHealth {
+            running: true,
+            task_count: 1,
+            tasks,
+        };
+        assert!(!health.all_tasks_healthy());
+
+        // Task that has never run is unhealthy
+        let mut tasks = HashMap::new();
+        tasks.insert(TaskType::Clock, TaskHealth::default());
+        let health = MonitorHealth {
+            running: true,
+            task_count: 1,
+            tasks,
+        };
+        assert!(!health.all_tasks_healthy());
     }
 }

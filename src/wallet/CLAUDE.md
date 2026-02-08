@@ -28,6 +28,16 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 │  - Caches unsigned transactions for deferred signing            │
 │  - 24-hour TTL with automatic cleanup                           │
 ├─────────────────────────────────────────────────────────────────┤
+│              BRC-98/99 Permission Enforcement                   │
+│  - Protocol access control (DPACP)                              │
+│  - Basket access control (DBAP)                                 │
+│  - Certificate access control (DCAP)                            │
+│  - Spending authorization (DSAP)                                │
+├─────────────────────────────────────────────────────────────────┤
+│              Balance & Sweep Helpers (P3-07)                    │
+│  - balance() / balance_and_utxos() for UTXO summaries           │
+│  - sweep_to_address() for full-wallet sweeps                    │
+├─────────────────────────────────────────────────────────────────┤
 │                  Certificate Issuance Protocol                  │
 │  - BRC-104 HTTP communication with certifiers                   │
 │  - Field encryption and master keyring creation                 │
@@ -38,7 +48,7 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 │  - HttpLookupResolver with endpoint failover                    │
 │  - BEEF/PushDrop certificate parsing                            │
 ├─────────────────────────────────────────────────────────────────┤
-│              Scaffolding Types (future integration)             │
+│              Scaffolding Types                                  │
 │  - PrivilegedKeyManager trait (two-factor auth, wired in)       │
 │  - LookupResolver (legacy stub in wallet.rs)                    │
 │  - WalletLogger (operation diagnostics)                         │
@@ -49,11 +59,11 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mod.rs` | ~98 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput`, `ScriptType`, `UnlockingScriptTemplate` |
-| `wallet.rs` | ~2726 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, and helper functions |
-| `signer.rs` | ~976 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
-| `certificate_issuance.rs` | ~1095 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
-| `lookup.rs` | ~638 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication. **Not yet wired into mod.rs** |
+| `mod.rs` | ~102 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput`, `ScriptType`, `UnlockingScriptTemplate`, `WalletBalance`, `UtxoInfo`, `HttpLookupResolver`, `OverlayCertificate`, `OverlayLookupResolver` |
+| `wallet.rs` | ~3547 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `WalletBalance`, `UtxoInfo`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, balance/sweep helpers, permission checks, and helper functions |
+| `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
+| `certificate_issuance.rs` | ~1090 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
+| `lookup.rs` | ~610 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication |
 
 ## Key Exports
 
@@ -75,6 +85,7 @@ where
     pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
     user_id: i64,
     privileged_key_manager: Option<Arc<dyn PrivilegedKeyManager>>,
+    permissions_manager: Option<Arc<WalletPermissionsManager>>,
 }
 ```
 
@@ -85,6 +96,8 @@ Generic wallet implementation parameterized by:
 The `user_id` field is resolved during construction via `storage.find_or_insert_user()` and used to build `AuthId` for all storage calls.
 
 The `privileged_key_manager` field is optional; when set via `set_privileged_key_manager()`, crypto operations at SecurityLevel >= 2 are routed through it for two-factor authentication.
+
+The `permissions_manager` field is optional; when set via `set_permissions_manager()`, wallet operations check BRC-98/99 permissions (protocol, basket, certificate, spending) before proceeding.
 
 ### PendingTransaction
 
@@ -102,6 +115,22 @@ pub struct PendingTransaction {
 ```
 
 Cached transaction awaiting signature via `sign_action`. Created when `create_action` is called with `sign_and_process = false`. Expires after 24 hours (configurable via `PENDING_TRANSACTION_TTL_SECS`).
+
+### WalletBalance & UtxoInfo
+
+```rust
+pub struct WalletBalance {
+    pub total: u64,              // Total satoshis across spendable outputs
+    pub utxos: Vec<UtxoInfo>,    // Individual UTXOs (empty for balance(), populated for balance_and_utxos())
+}
+
+pub struct UtxoInfo {
+    pub satoshis: u64,           // Satoshi value of this output
+    pub outpoint: String,        // Outpoint in "txid.vout" format
+}
+```
+
+Returned by `balance()` and `balance_and_utxos()`. Both use `#[serde(rename_all = "camelCase")]` for cross-SDK wire compatibility.
 
 ### WalletOptions
 
@@ -200,7 +229,7 @@ Structured operation logger with indented groups, timestamps, and log levels. Pr
 
 ## Overlay Service Discovery (lookup.rs)
 
-The `lookup.rs` module provides trait-based overlay service lookups for `discover_by_identity_key` and `discover_by_attributes`. **Note: not yet declared in mod.rs** — the file exists but is not compiled into the module tree.
+The `lookup.rs` module provides trait-based overlay service lookups for `discover_by_identity_key` and `discover_by_attributes`. Exported via `mod.rs` as `HttpLookupResolver`, `OverlayCertificate`, and `OverlayLookupResolver`.
 
 ### OverlayCertificate
 
@@ -299,12 +328,27 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 |--------|-------------|
 | `set_privileged_key_manager(manager)` | Set the privileged key manager for 2FA |
 | `privileged_key_manager()` | Get reference to privileged key manager |
+| `set_permissions_manager(manager)` | Set BRC-98/99 permissions manager |
+| `permissions_manager()` | Get reference to permissions manager |
+| `balance()` | Total spendable satoshis from default basket (paginated) |
+| `balance_and_utxos()` | Total + individual `UtxoInfo` list from default basket |
+| `sweep_to_address(address)` | Sweep all funds to a BSV address via `create_action` |
 | `list_failed_actions()` | List txids with Failed status |
 | `list_no_send_actions()` | List txids with NoSend status |
 | `get_known_txids()` | List txids with Completed/Unproven/Sending status |
 | `destroy()` | Destroy wallet storage (delegates to `storage.destroy()`) |
 | `get_identity_key()` | Identity key as owned String |
 | `get_storage_identity()` | Returns `(storage_identity_key, storage_name)` tuple |
+
+### Permission Check Helpers (internal)
+
+When `permissions_manager` is set, operations automatically check permissions:
+- `check_protocol_permission(originator, protocol, counterparty, usage_type)` - DPACP enforcement
+- `check_basket_permission(originator, basket, usage_type)` - DBAP enforcement
+- `check_spending_permission(originator, satoshis)` - DSAP enforcement
+- `check_certificate_permission(originator, privileged, verifier, cert_type, fields, usage_type)` - DCAP enforcement
+
+All check helpers return `Ok(())` if no permissions manager is set.
 
 ## Constants
 
@@ -444,7 +488,7 @@ let wallet = Wallet::with_chain(root_key, storage, services, WalletOptions::defa
 | `with_options(root_key, storage, services, options)` | Custom options, mainnet |
 | `with_chain(root_key, storage, services, options, chain)` | Full control over all parameters |
 
-Initialization flow: Creates `ProtoWallet` -> gets identity key -> creates `WalletSigner` -> verifies storage is available -> ensures user exists via `find_or_insert_user` -> stores `user_id` -> sets `privileged_key_manager` to None.
+Initialization flow: Creates `ProtoWallet` -> gets identity key -> creates `WalletSigner` -> verifies storage is available -> ensures user exists via `find_or_insert_user` -> stores `user_id` -> sets `privileged_key_manager` and `permissions_manager` to None.
 
 ## Originator Validation
 
@@ -490,6 +534,7 @@ Internal helper functions in `wallet.rs`:
 | `write_varint(output: &mut Vec<u8>, value: u64)` | Writes a Bitcoin varint to output buffer |
 | `build_wallet_certificate_from_args(args)` | Builds WalletCertificate from acquisition args |
 | `create_keyring_for_verifier(...)` | Creates verifier-specific keyring for selective field disclosure (BRC-52/53) |
+| `address_to_p2pkh_script(address: &str)` | Decodes Base58Check BSV address to P2PKH locking script bytes (used by `sweep_to_address`) |
 
 ### Certificate Field Encryption (prove_certificate)
 

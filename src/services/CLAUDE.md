@@ -29,16 +29,16 @@ The services module provides a unified interface for interacting with BSV blockc
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mod.rs` | 185 | Module root with re-exports, `ServicesOptions` config, `Chain` re-export |
-| `traits.rs` | 840 | `WalletServices` trait, `NLockTimeInput`, all result types, helper functions |
-| `services.rs` | 1166 | `Services` struct implementing `WalletServices` with multi-provider orchestration |
-| `collection.rs` | 733 | `ServiceCollection<S>` failover container with call history and adaptive timeouts |
-| `mock.rs` | 1433 | `MockWalletServices` for testing with configurable responses and call tracking |
+| `mod.rs` | 183 | Module root with re-exports, `ServicesOptions` config, `Chain` re-export |
+| `traits.rs` | 884 | `WalletServices` trait, `NLockTimeInput`, all result types, helper functions |
+| `services.rs` | 1210 | `Services` struct implementing `WalletServices` with multi-provider orchestration |
+| `collection.rs` | 762 | `ServiceCollection<S>` failover container with call history and adaptive timeouts |
+| `mock.rs` | 1396 | `MockWalletServices` for testing with configurable responses and call tracking |
 | `providers/` | - | Individual provider implementations (WhatsOnChain, ARC, Bitails, BHS) |
 
 ## Key Types
 
-### Services (services.rs:80)
+### Services (services.rs:71)
 
 Main orchestrator coordinating all blockchain operations:
 
@@ -86,7 +86,7 @@ pub struct Services {
 - `post_beef_count()` - Number of post beef providers
 - `get_utxo_status_count()` - Number of UTXO status providers
 
-### WalletServices Trait (traits.rs:93)
+### WalletServices Trait (traits.rs:117)
 
 Core trait that `Services` implements:
 
@@ -111,12 +111,13 @@ pub trait WalletServices: Send + Sync {
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool>;
     async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool>;
     async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult>;
+    fn get_services_call_history(&self, _reset: bool) -> ServicesCallHistory { .. } // default impl
 }
 ```
 
 **`use_next` Parameter:** Several methods accept a `use_next: bool` parameter. When `true`, the service collection skips to the next provider before starting the failover cycle. This is useful for retrying with alternate providers when the current one returned incomplete results.
 
-### NLockTimeInput (traits.rs:26)
+### NLockTimeInput (traits.rs:28)
 
 Pre-extracted data for nLockTime finality checks:
 
@@ -164,10 +165,10 @@ pub struct ServiceCollection<S> {
 - `next()` - Advance to next provider (wraps around)
 - `reset()` - Return to first provider
 - `move_to_last(name)` - De-prioritize failing provider
-- `service_to_call()` - Get current service with call metadata
+- `service_to_call()` / `get_service_to_call(index)` - Get service with call metadata
 - `all_services_to_call()` - Get all services for parallel operations
-- `all_services_owned()` - Get owned copies (avoids lock contention)
-- `all_services_from_current()` - Get services in round-robin order from current index
+- `all_services_owned()` - Get owned copies (avoids lock contention, requires `S: Clone`)
+- `all_services_from_current()` - Get services in round-robin order from current index (requires `S: Clone`)
 - `clone_collection()` - Clone with fresh history (requires `S: Clone`)
 - `add_call_success/failure/error(provider, call)` - Record call outcome
 - `get_call_history(reset)` - Get statistics, optionally reset counters
@@ -193,7 +194,7 @@ pub struct AdaptiveTimeoutConfig {
 
 Timeout = clamp(avg_response_ms * multiplier, min, max). Uses `initial_timeout_ms` when no response data is available.
 
-### SharedServiceCollection (collection.rs:574)
+### SharedServiceCollection (collection.rs:587)
 
 Thread-safe wrapper for concurrent access:
 
@@ -201,9 +202,9 @@ Thread-safe wrapper for concurrent access:
 pub struct SharedServiceCollection<S>(pub Arc<RwLock<ServiceCollection<S>>>);
 ```
 
-Methods: `new(collection)`, `read()`, `write()`. Implements `Clone`.
+Methods: `new(collection)`, `read()` -> `Result<RwLockReadGuard>`, `write()` -> `Result<RwLockWriteGuard>`. Uses `lock_utils::lock_read/lock_write` for safe locking. Implements `Clone`.
 
-### ServicesOptions (mod.rs:73)
+### ServicesOptions (mod.rs:61)
 
 Configuration for service providers:
 
@@ -220,6 +221,7 @@ pub struct ServicesOptions {
     pub bsv_update_msecs: u64,       // 15 min default
     pub fiat_update_msecs: u64,      // 24 hour default
     pub fiat_exchange_rates: FiatExchangeRates,
+    pub timeout_config: AdaptiveTimeoutConfig,
 }
 ```
 
@@ -232,8 +234,9 @@ pub struct ServicesOptions {
 - `with_bhs_url(url)` - Set Block Header Service URL
 - `with_bhs_api_key(key)` - Set Block Header Service API key
 - `with_bhs(url, api_key)` - Set BHS URL and API key together
+- `with_timeout_config(config)` - Set adaptive timeout configuration
 
-### FiatCurrency (traits.rs:657)
+### FiatCurrency (traits.rs:701)
 
 Supported fiat currencies for exchange rate conversions:
 
@@ -246,7 +249,7 @@ pub enum FiatCurrency { USD, GBP, EUR }
 - `as_str()` - Get currency code as string
 - Implements `FromStr` and `Display`
 
-### FiatExchangeRates (traits.rs:703)
+### FiatExchangeRates (traits.rs:747)
 
 Fiat exchange rates with USD as base:
 
@@ -339,7 +342,7 @@ pub struct MockWalletServices {
 | `CallCounts` | Statistics (success/failure/error counts with time range) |
 | `ProviderCallHistory` | Per-provider call history and statistics |
 | `ServiceCallHistory` | Complete history for a service collection |
-| `ServicesCallHistory` | Aggregated history across all service types (services.rs:37) |
+| `ServicesCallHistory` | Aggregated history across all service types (traits.rs:91) |
 
 ## Provider Priority by Operation
 
@@ -413,7 +416,7 @@ pub fn validate_script_hash(hash: &str) -> Result<()>;
 pub fn convert_script_hash(output: &str, format: Option<GetUtxoStatusOutputFormat>) -> Result<String>;
 ```
 
-## PostBeefMode (services.rs:27)
+## PostBeefMode (services.rs:30)
 
 Controls broadcast behavior:
 

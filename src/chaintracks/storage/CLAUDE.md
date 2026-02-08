@@ -10,11 +10,11 @@ This module provides storage backends for the Chaintracks block header tracking 
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Module exports; conditionally re-exports storage implementations |
-| `memory.rs` | In-memory storage implementation (`MemoryStorage`) |
-| `sqlite.rs` | SQLite-based persistent storage (`SqliteStorage`) - feature-gated |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `mod.rs` | 11 | Module exports; conditionally re-exports storage implementations |
+| `memory.rs` | 1195 | In-memory storage implementation (`MemoryStorage`) with 31 tests |
+| `sqlite.rs` | 1917 | SQLite-based persistent storage (`SqliteStorage`) - feature-gated, 37 tests |
 
 ## Key Exports
 
@@ -367,7 +367,7 @@ cargo build --features mysql
 
 ## Testing
 
-The module includes comprehensive tests covering:
+The module includes 68 total tests (31 in memory.rs, 37 in sqlite.rs) covering:
 
 - Basic insertion and retrieval
 - Chain growth and tip tracking
@@ -384,6 +384,19 @@ The module includes comprehensive tests covering:
 - Children finding
 - Reorg depth calculation
 - Storage type and availability
+
+### MemoryStorage Tests (31 tests)
+
+| Category | Tests |
+|----------|-------|
+| Basic CRUD | `test_memory_storage_basic`, `test_duplicate_detection`, `test_hash_lookup`, `test_merkle_root_lookup`, `test_merkle_root_lookup_inactive` |
+| Chain operations | `test_chain_growth`, `test_common_ancestor_same_chain`, `test_find_reorg_depth`, `test_no_prev_header` |
+| Batch operations | `test_batch_insert`, `test_get_live_headers_sorted` |
+| Queries | `test_headers_bytes_serialization`, `test_headers_bytes_multiple`, `test_live_height_range`, `test_get_headers_at_height`, `test_available_height_ranges` |
+| Active/fork headers | `test_get_active_headers`, `test_get_fork_headers_empty`, `test_find_children` |
+| Cleanup | `test_pruning`, `test_delete_older`, `test_drop_all_data`, `test_destroy` |
+| No-ops | `test_migrate_live_to_bulk`, `test_make_available`, `test_migrate_latest` |
+| Configuration | `test_storage_type`, `test_is_available`, `test_chain_accessor`, `test_thresholds`, `test_default_thresholds` |
 
 ### SqliteStorage Tests (37 tests)
 
@@ -402,12 +415,23 @@ The module includes comprehensive tests covering:
 
 Run tests with:
 ```bash
-# MemoryStorage tests (always available)
+# MemoryStorage tests (always available, 31 tests)
 cargo test --lib chaintracks::storage::memory
 
-# SqliteStorage tests (requires feature)
+# SqliteStorage tests (requires feature, 37 tests)
 cargo test --lib chaintracks::storage::sqlite --features sqlite
+
+# All storage tests
+cargo test --lib chaintracks::storage
 ```
+
+## Internal Dependencies
+
+- **`crate::lock_utils`**: Both `MemoryStorage` and `SqliteStorage` use `lock_read`/`lock_write` helpers for `std::sync::RwLock` access with error handling
+- **`crate::chaintracks`**: Imports `calculate_work`, `BlockHeader`, `Chain`, `ChaintracksStorage`, `ChaintracksStorageIngest`, `ChaintracksStorageQuery`, `HeightRange`, `InsertHeaderResult`, `LiveBlockHeader`
+- **`tracing`**: Both backends use `debug!`, `info!`, `warn!` for structured logging
+- **`chrono::Utc`**: SqliteStorage uses `Utc::now()` for `created_at`/`updated_at` timestamps
+- **`sqlx`**: SqliteStorage uses `Pool<Sqlite>`, `SqlitePool`, `Row` trait for database access
 
 ## Related
 

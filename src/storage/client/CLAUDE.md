@@ -18,8 +18,8 @@ persistent storage without managing local databases.
 |------|-------|---------|
 | `mod.rs` | 61 | Module exports and usage documentation |
 | `auth.rs` | 969 | BRC-31 authentication: nonce creation, request signing, response verification |
-| `json_rpc.rs` | 296 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) |
-| `storage_client.rs` | 2640 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
+| `json_rpc.rs` | 292 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) |
+| `storage_client.rs` | 2619 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
 
 ## Key Exports
 
@@ -408,22 +408,23 @@ The HMAC nonce format is: `base64(random_16_bytes || hmac_16_bytes)` where HMAC 
 
 The module includes comprehensive unit tests across all three source files:
 
-### Test Categories
+### Test Categories (104 total)
 
 | Category | File | Count | Coverage |
 |----------|------|-------|----------|
 | JSON-RPC serialization | `json_rpc.rs` | 4 | Request/response format, error codes |
 | Nonce creation | `auth.rs` | 3 | Uniqueness, base64 encoding, bulk uniqueness |
-| Timestamp validation | `auth.rs` | 5 | Current, old, future, edge-of-expiry, slight future |
+| Timestamp validation | `auth.rs` | 6 | Current, old, future, edge-of-expiry, slight future, monotonicity |
 | Signing data | `auth.rs` | 8 | Determinism, body/method/path/timestamp/nonce inclusion, empty/large body |
-| Auth headers | `auth.rs` | 3 | Tuple conversion, header names, BRC-31 spec compliance |
-| Response headers | `auth.rs` | 6 | Completeness checks (each missing field), valid/invalid/none identity key |
+| Auth headers | `auth.rs` | 2 | Tuple conversion, header name constants |
+| Response headers | `auth.rs` | 8 | Completeness checks (each missing field), valid/invalid/none identity key |
 | Replay protection | `auth.rs` | 2 | Different nonces, same nonce different timestamps |
 | Auth integration | `auth.rs` | 2 | Full header creation flow, verification result creation |
 | Constants | `auth.rs` | 4 | AUTH_VERSION, AUTH_PROTOCOL_ID, NONCE_PROTOCOL_ID, MAX_TIMESTAMP_AGE |
+| Basic format/types | `storage_client.rs` | 12 | Endpoint URLs, request format, response parsing, AuthId, entity deserialization |
 | Storage client BRC-31 | `storage_client.rs` | 9 | Header names, version, nonce, timestamps, signing data, headers struct, replay |
-| Method formats | `storage_client.rs` | 22 | All JSON-RPC method request/response formats |
-| Entity types | `storage_client.rs` | 15+ | Table entity serialization/deserialization |
+| Method formats | `storage_client.rs` | 22 | All 22 JSON-RPC method request/response formats |
+| Entity/result types | `storage_client.rs` | 15 | Table entity and result type serialization/deserialization |
 | ValidCreateActionArgs | `storage_client.rs` | 7 | Default flags, noSend, delayed, sendWith, remix, serialization, custom flags |
 
 ### Running Tests
