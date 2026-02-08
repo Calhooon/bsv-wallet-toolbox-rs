@@ -240,11 +240,7 @@ mod tests {
 
     #[test]
     fn test_json_rpc_request_serialization() {
-        let request = JsonRpcRequest::new(
-            "makeAvailable",
-            vec![],
-            1,
-        );
+        let request = JsonRpcRequest::new("makeAvailable", vec![], 1);
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"jsonrpc\":\"2.0\""));

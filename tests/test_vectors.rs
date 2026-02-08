@@ -9,8 +9,7 @@ use std::path::Path;
 
 /// Helper to load a test vector JSON file.
 fn load_test_vectors(relative_path: &str) -> Value {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| ".".to_string());
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let path = Path::new(&manifest_dir).join(relative_path);
     let content = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("Failed to read test vector file {}: {}", path.display(), e));
@@ -27,9 +26,11 @@ fn load_test_vectors(relative_path: &str) -> Value {
 // that should produce a validation error.
 
 mod create_action_validation {
-    
-    use bsv_wallet_toolbox::{WalletStorageWriter, StorageSqlx, AuthId};
-    use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput, CreateActionInput, CreateActionOptions, Outpoint};
+
+    use bsv_sdk::wallet::{
+        CreateActionArgs, CreateActionInput, CreateActionOptions, CreateActionOutput, Outpoint,
+    };
+    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageWriter};
 
     /// Helper to set up an in-memory storage with a test user.
     async fn setup_storage() -> (StorageSqlx, AuthId) {
@@ -184,7 +185,8 @@ mod create_action_validation {
         // Test vector: go_output_satoshis_too_high
         // Output satoshis cannot exceed 21 million BTC
         let (storage, auth) = setup_storage().await;
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
         let args = CreateActionArgs {
             description: "test transaction".to_string(),
             input_beef: None,
@@ -217,7 +219,8 @@ mod create_action_validation {
         // Test vector: go_output_description_too_short
         // Output description too short
         let (storage, auth) = setup_storage().await;
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
         let args = CreateActionArgs {
             description: "test transaction".to_string(),
             input_beef: None,
@@ -236,7 +239,10 @@ mod create_action_validation {
             options: None,
         };
         let result = storage.create_action(&auth, args).await;
-        assert!(result.is_err(), "Short output description should fail validation");
+        assert!(
+            result.is_err(),
+            "Short output description should fail validation"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("output description") && err_msg.contains("length"),
@@ -250,7 +256,8 @@ mod create_action_validation {
         // Test vector: go_output_basket_empty
         // Output basket cannot be empty string when specified
         let (storage, auth) = setup_storage().await;
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
         let args = CreateActionArgs {
             description: "test transaction".to_string(),
             input_beef: None,
@@ -283,7 +290,8 @@ mod create_action_validation {
         // Test vector: go_output_tag_empty
         // Output tag cannot be empty string
         let (storage, auth) = setup_storage().await;
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
         let args = CreateActionArgs {
             description: "test transaction".to_string(),
             input_beef: None,
@@ -334,7 +342,10 @@ mod create_action_validation {
             options: None,
         };
         let result = storage.create_action(&auth, args).await;
-        assert!(result.is_err(), "Missing unlocking script should fail validation");
+        assert!(
+            result.is_err(),
+            "Missing unlocking script should fail validation"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("unlockingScript") || err_msg.contains("unlocking"),
@@ -356,7 +367,7 @@ mod create_action_validation {
                 outpoint: Outpoint { txid, vout: 0 },
                 input_description: "test input".to_string(),
                 unlocking_script: Some(vec![0x00]), // 1 byte
-                unlocking_script_length: Some(2),    // says 2
+                unlocking_script_length: Some(2),   // says 2
                 sequence_number: None,
             }]),
             outputs: Some(vec![]),
@@ -407,7 +418,10 @@ mod create_action_validation {
             options: None,
         };
         let result = storage.create_action(&auth, args).await;
-        assert!(result.is_err(), "Duplicate outpoints should fail validation");
+        assert!(
+            result.is_err(),
+            "Duplicate outpoints should fail validation"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("duplicate") && err_msg.contains("outpoint"),
@@ -432,10 +446,7 @@ mod create_action_validation {
             labels: None,
             options: Some(CreateActionOptions {
                 no_send: Some(true),
-                no_send_change: Some(vec![
-                    Outpoint { txid, vout: 0 },
-                    Outpoint { txid, vout: 0 },
-                ]),
+                no_send_change: Some(vec![Outpoint { txid, vout: 0 }, Outpoint { txid, vout: 0 }]),
                 sign_and_process: None,
                 accept_delayed_broadcast: None,
                 trust_self: None,
@@ -446,7 +457,10 @@ mod create_action_validation {
             }),
         };
         let result = storage.create_action(&auth, args).await;
-        assert!(result.is_err(), "Duplicate noSendChange should fail validation");
+        assert!(
+            result.is_err(),
+            "Duplicate noSendChange should fail validation"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("duplicate") && err_msg.contains("noSendChange"),
@@ -462,7 +476,8 @@ mod create_action_validation {
         // Note: This will fail at the change/funding stage (no UTXOs), but must NOT
         // fail at the validation stage.
         let (storage, auth) = setup_storage().await;
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
         let args = CreateActionArgs {
             description: "test transaction".to_string(),
             input_beef: None,
@@ -572,9 +587,9 @@ mod create_action_defaults {
         let script_bytes = hex::decode(script_hex).unwrap();
         assert_eq!(script_bytes.len(), 25);
         // Verify P2PKH structure: OP_DUP OP_HASH160 PUSH20 <hash> OP_EQUALVERIFY OP_CHECKSIG
-        assert_eq!(script_bytes[0], 0x76);  // OP_DUP
-        assert_eq!(script_bytes[1], 0xa9);  // OP_HASH160
-        assert_eq!(script_bytes[2], 0x14);  // Push 20 bytes
+        assert_eq!(script_bytes[0], 0x76); // OP_DUP
+        assert_eq!(script_bytes[1], 0xa9); // OP_HASH160
+        assert_eq!(script_bytes[2], 0x14); // Push 20 bytes
         assert_eq!(script_bytes[23], 0x88); // OP_EQUALVERIFY
         assert_eq!(script_bytes[24], 0xac); // OP_CHECKSIG
     }
@@ -628,8 +643,8 @@ mod create_action_defaults {
 
 mod list_outputs_validation {
     use super::*;
-    use bsv_wallet_toolbox::{WalletStorageReader, WalletStorageWriter, StorageSqlx, AuthId};
     use bsv_sdk::wallet::ListOutputsArgs;
+    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     /// Helper to set up an in-memory storage with a test user.
     async fn setup_storage() -> (StorageSqlx, AuthId) {
@@ -672,7 +687,8 @@ mod list_outputs_validation {
             Err(e) => {
                 let err_msg = format!("{}", e);
                 assert!(
-                    err_msg.to_lowercase().contains("basket") || err_msg.contains("WERR_INVALID_PARAMETER"),
+                    err_msg.to_lowercase().contains("basket")
+                        || err_msg.contains("WERR_INVALID_PARAMETER"),
                     "Error should mention basket: {}",
                     err_msg
                 );
@@ -698,7 +714,11 @@ mod list_outputs_validation {
             seek_permission: None,
         };
         let result = storage.list_outputs(&auth, args).await;
-        assert!(result.is_ok(), "Valid paging args should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Valid paging args should succeed: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap().total_outputs, 0);
     }
 
@@ -720,7 +740,11 @@ mod list_outputs_validation {
             seek_permission: Some(true),
         };
         let result = storage.list_outputs(&auth, args).await;
-        assert!(result.is_ok(), "Full valid args should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Full valid args should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]
@@ -741,8 +765,16 @@ mod list_outputs_validation {
             seek_permission: None,
         };
         let result = storage.list_outputs(&auth, args).await;
-        assert!(result.is_ok(), "Non-existent basket should not error: {:?}", result.err());
-        assert_eq!(result.unwrap().total_outputs, 0, "Non-existent basket should return 0 outputs");
+        assert!(
+            result.is_ok(),
+            "Non-existent basket should not error: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap().total_outputs,
+            0,
+            "Non-existent basket should return 0 outputs"
+        );
     }
 
     #[test]
@@ -750,15 +782,24 @@ mod list_outputs_validation {
         // Verify the test vector file is well-formed and contains expected fields
         let vectors = load_test_vectors("test_vectors/storage/list_outputs/validation.json");
         let test_cases = vectors["test_vectors"].as_array().unwrap();
-        assert!(test_cases.len() >= 10, "Should have at least 10 error test cases");
+        assert!(
+            test_cases.len() >= 10,
+            "Should have at least 10 error test cases"
+        );
 
         let valid_cases = vectors["valid_test_vectors"].as_array().unwrap();
-        assert!(valid_cases.len() >= 3, "Should have at least 3 valid test cases");
+        assert!(
+            valid_cases.len() >= 3,
+            "Should have at least 3 valid test cases"
+        );
 
         // Verify all test vectors have required fields
         for tc in test_cases {
             assert!(tc.get("id").is_some(), "Each test case must have an id");
-            assert!(tc.get("expected_error").is_some(), "Each error case must have expected_error");
+            assert!(
+                tc.get("expected_error").is_some(),
+                "Each error case must have expected_error"
+            );
         }
     }
 }
@@ -771,8 +812,8 @@ mod list_outputs_validation {
 
 mod list_actions_validation {
     use super::*;
-    use bsv_wallet_toolbox::{WalletStorageReader, WalletStorageWriter, StorageSqlx, AuthId};
     use bsv_sdk::wallet::ListActionsArgs;
+    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     /// Helper to set up an in-memory storage with a test user.
     async fn setup_storage() -> (StorageSqlx, AuthId) {
@@ -808,8 +849,16 @@ mod list_actions_validation {
             seek_permission: Some(true),
         };
         let result = storage.list_actions(&auth, args).await;
-        assert!(result.is_ok(), "Valid label args should succeed: {:?}", result.err());
-        assert_eq!(result.unwrap().total_actions, 0, "Empty database should return 0 actions");
+        assert!(
+            result.is_ok(),
+            "Valid label args should succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap().total_actions,
+            0,
+            "Empty database should return 0 actions"
+        );
     }
 
     #[tokio::test]
@@ -831,7 +880,11 @@ mod list_actions_validation {
             seek_permission: Some(true),
         };
         let result = storage.list_actions(&auth, args).await;
-        assert!(result.is_ok(), "Max pagination args should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Max pagination args should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]
@@ -853,7 +906,11 @@ mod list_actions_validation {
             seek_permission: Some(true),
         };
         let result = storage.list_actions(&auth, args).await;
-        assert!(result.is_ok(), "Default wallet args should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Default wallet args should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]
@@ -875,7 +932,11 @@ mod list_actions_validation {
             seek_permission: Some(true),
         };
         let result = storage.list_actions(&auth, args).await;
-        assert!(result.is_ok(), "All-includes args should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "All-includes args should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -883,10 +944,16 @@ mod list_actions_validation {
         // Verify the test vector file is well-formed and contains expected fields
         let vectors = load_test_vectors("test_vectors/storage/list_actions/validation.json");
         let test_cases = vectors["test_vectors"].as_array().unwrap();
-        assert!(test_cases.len() >= 9, "Should have at least 9 error test cases");
+        assert!(
+            test_cases.len() >= 9,
+            "Should have at least 9 error test cases"
+        );
 
         let valid_cases = vectors["valid_test_vectors"].as_array().unwrap();
-        assert!(valid_cases.len() >= 4, "Should have at least 4 valid test cases");
+        assert!(
+            valid_cases.len() >= 4,
+            "Should have at least 4 valid test cases"
+        );
 
         // Verify specific error IDs exist
         let error_ids: Vec<&str> = test_cases
@@ -928,8 +995,8 @@ mod brc29_key_derivation {
         let private_key_hex = sender["privateKeyHex"].as_str().unwrap();
         let expected_public_key = sender["publicKeyHex"].as_str().unwrap();
 
-        let private_key = PrivateKey::from_hex(private_key_hex)
-            .expect("Sender private key should be valid");
+        let private_key =
+            PrivateKey::from_hex(private_key_hex).expect("Sender private key should be valid");
         let public_key = private_key.public_key();
         let actual_public_key = public_key.to_hex();
 
@@ -968,12 +1035,11 @@ mod brc29_key_derivation {
         let vectors = load_brc29_vectors();
         let constants = &vectors["constants"];
 
-        let sender_priv = PrivateKey::from_hex(
-            constants["sender"]["privateKeyHex"].as_str().unwrap()
-        ).unwrap();
-        let recipient_priv = PrivateKey::from_hex(
-            constants["recipient"]["privateKeyHex"].as_str().unwrap()
-        ).unwrap();
+        let sender_priv =
+            PrivateKey::from_hex(constants["sender"]["privateKeyHex"].as_str().unwrap()).unwrap();
+        let recipient_priv =
+            PrivateKey::from_hex(constants["recipient"]["privateKeyHex"].as_str().unwrap())
+                .unwrap();
 
         let sender_pub = sender_priv.public_key();
         let recipient_pub = recipient_priv.public_key();
@@ -1185,12 +1251,11 @@ mod brc29_key_derivation {
         let constants = &vectors["constants"];
         let expected_mainnet = constants["expectedAddress"]["mainnet"].as_str().unwrap();
 
-        let sender_priv = PrivateKey::from_hex(
-            constants["sender"]["privateKeyHex"].as_str().unwrap()
-        ).unwrap();
-        let recipient_priv = PrivateKey::from_hex(
-            constants["recipient"]["privateKeyHex"].as_str().unwrap()
-        ).unwrap();
+        let sender_priv =
+            PrivateKey::from_hex(constants["sender"]["privateKeyHex"].as_str().unwrap()).unwrap();
+        let recipient_priv =
+            PrivateKey::from_hex(constants["recipient"]["privateKeyHex"].as_str().unwrap())
+                .unwrap();
 
         let sender_pub = sender_priv.public_key();
         let recipient_pub = recipient_priv.public_key();
@@ -1255,7 +1320,9 @@ mod brc29_key_derivation {
         assert!(self_error_ids.contains(&"error_invalid_recipient_key"));
 
         // Check address_for_counterparty error cases exist
-        let cp_cases = vectors["address_for_counterparty_test_vectors"].as_array().unwrap();
+        let cp_cases = vectors["address_for_counterparty_test_vectors"]
+            .as_array()
+            .unwrap();
         let cp_error_ids: Vec<&str> = cp_cases
             .iter()
             .filter(|tc| tc.get("expected_error").is_some_and(|e| !e.is_null()))
@@ -1298,8 +1365,8 @@ mod test_users {
         let private_key_hex = alice["privateKeyHex"].as_str().unwrap();
         let expected_public_key = alice["publicKeyHex"].as_str().unwrap();
 
-        let private_key = PrivateKey::from_hex(private_key_hex)
-            .expect("Alice's private key should be valid");
+        let private_key =
+            PrivateKey::from_hex(private_key_hex).expect("Alice's private key should be valid");
         let public_key = private_key.public_key();
         let actual_public_key = public_key.to_hex();
 
@@ -1322,13 +1389,17 @@ mod test_users {
 
         let private_key_hex = bob["privateKeyHex"].as_str().unwrap();
 
-        let private_key = PrivateKey::from_hex(private_key_hex)
-            .expect("Bob's private key should be valid");
+        let private_key =
+            PrivateKey::from_hex(private_key_hex).expect("Bob's private key should be valid");
 
         // Verify we can derive a public key from it
         let public_key = private_key.public_key();
         let pub_hex = public_key.to_hex();
-        assert_eq!(pub_hex.len(), 66, "Compressed public key should be 66 hex chars");
+        assert_eq!(
+            pub_hex.len(),
+            66,
+            "Compressed public key should be 66 hex chars"
+        );
         assert!(
             pub_hex.starts_with("02") || pub_hex.starts_with("03"),
             "Compressed public key should start with 02 or 03"
@@ -1344,8 +1415,12 @@ mod test_users {
         let alice_priv = users["test_users"][0]["privateKeyHex"].as_str().unwrap();
         let alice_pub = users["test_users"][0]["publicKeyHex"].as_str().unwrap();
 
-        let brc29_sender_priv = brc29["constants"]["sender"]["privateKeyHex"].as_str().unwrap();
-        let brc29_sender_pub = brc29["constants"]["sender"]["publicKeyHex"].as_str().unwrap();
+        let brc29_sender_priv = brc29["constants"]["sender"]["privateKeyHex"]
+            .as_str()
+            .unwrap();
+        let brc29_sender_pub = brc29["constants"]["sender"]["publicKeyHex"]
+            .as_str()
+            .unwrap();
 
         assert_eq!(
             alice_priv, brc29_sender_priv,
@@ -1364,8 +1439,8 @@ mod test_users {
         let config = &vectors["storage_configuration"];
 
         let server_priv = config["storageServerPrivKey"].as_str().unwrap();
-        let key = PrivateKey::from_hex(server_priv)
-            .expect("Storage server private key should be valid");
+        let key =
+            PrivateKey::from_hex(server_priv).expect("Storage server private key should be valid");
         let pub_key = key.public_key().to_hex();
 
         let expected_identity = config["storageIdentityKey"].as_str().unwrap();
@@ -1395,14 +1470,20 @@ mod test_users {
 
         // Verify the user identity key is a valid public key hex
         let identity_key = common["userIdentityKeyHex"].as_str().unwrap();
-        assert_eq!(identity_key.len(), 66, "Identity key should be 66 hex chars");
+        assert_eq!(
+            identity_key.len(),
+            66,
+            "Identity key should be 66 hex chars"
+        );
         let _pub_key = bsv_sdk::primitives::PublicKey::from_hex(identity_key)
             .expect("User identity key should be a valid public key");
 
         // Verify the anyone identity key matches the generator point
         let anyone_key = common["anyoneIdentityKey"].as_str().unwrap();
         let brc29 = load_test_vectors("test_vectors/keys/brc29.json");
-        let recipient_pub = brc29["constants"]["recipient"]["publicKeyHex"].as_str().unwrap();
+        let recipient_pub = brc29["constants"]["recipient"]["publicKeyHex"]
+            .as_str()
+            .unwrap();
         assert_eq!(
             anyone_key, recipient_pub,
             "The 'anyone' identity key should be the generator point (private key = 1)"
@@ -1419,7 +1500,9 @@ mod test_users {
     fn tv_mock_outpoint_format() {
         // Verify the mock outpoint has the expected format: txid.vout
         let vectors = load_users();
-        let outpoint_str = vectors["common_test_values"]["mockOutpoint"].as_str().unwrap();
+        let outpoint_str = vectors["common_test_values"]["mockOutpoint"]
+            .as_str()
+            .unwrap();
 
         // Should be "txid.vout" format
         let parts: Vec<&str> = outpoint_str.split('.').collect();
@@ -1537,7 +1620,11 @@ mod merkle_path {
         let expected_levels = expected["path_levels"].as_u64().unwrap() as usize;
 
         let result = tsc_proof_to_merkle_path(txid, index, &nodes, block_height);
-        assert!(result.is_ok(), "Even index proof should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Even index proof should succeed: {:?}",
+            result.err()
+        );
 
         let merkle_path = result.unwrap();
         assert_eq!(merkle_path.block_height, expected_height);
@@ -1569,7 +1656,11 @@ mod merkle_path {
         let expected_levels = expected["path_levels"].as_u64().unwrap() as usize;
 
         let result = tsc_proof_to_merkle_path(txid, index, &nodes, block_height);
-        assert!(result.is_ok(), "Odd index proof should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Odd index proof should succeed: {:?}",
+            result.err()
+        );
 
         let merkle_path = result.unwrap();
         assert_eq!(merkle_path.block_height, expected_height);
@@ -1601,7 +1692,11 @@ mod merkle_path {
         let expected_levels = expected["path_levels"].as_u64().unwrap() as usize;
 
         let result = tsc_proof_to_merkle_path(txid, index, &nodes, block_height);
-        assert!(result.is_ok(), "Duplicate marker proof should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Duplicate marker proof should succeed: {:?}",
+            result.err()
+        );
 
         let merkle_path = result.unwrap();
         assert_eq!(merkle_path.block_height, expected_height);
@@ -1720,7 +1815,10 @@ mod merkle_path {
             .compute_root(Some(txid))
             .expect("compute_root should succeed");
         assert_eq!(root.len(), 64, "Merkle root should be 64 hex chars");
-        assert!(hex::decode(&root).is_ok(), "Merkle root should be valid hex");
+        assert!(
+            hex::decode(&root).is_ok(),
+            "Merkle root should be valid hex"
+        );
     }
 
     #[test]
@@ -1759,7 +1857,10 @@ mod merkle_path {
 
         // Verify notes section exists
         let notes = &vectors["notes"];
-        assert_eq!(notes["txid_format"], "64-character lowercase hex string (32 bytes)");
+        assert_eq!(
+            notes["txid_format"],
+            "64-character lowercase hex string (32 bytes)"
+        );
         assert_eq!(notes["duplicate_marker"], "The '*' character indicates the node at that level is a duplicate of the previous node (used when a tree level has odd number of nodes)");
     }
 }
@@ -1774,8 +1875,8 @@ mod merkle_path {
 #[cfg(feature = "remote")]
 mod valid_create_action_args {
     use super::*;
+    use bsv_sdk::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
     use bsv_wallet_toolbox::storage::client::ValidCreateActionArgs;
-    use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput, CreateActionOptions};
 
     #[test]
     fn tv_default_flags_match_test_vectors() {
@@ -1864,10 +1965,7 @@ mod cross_vector_consistency {
         let default_args = &defaults["default_valid_create_action_args"]["args"];
 
         // Description should match
-        assert_eq!(
-            valid_inputs["description"],
-            default_args["description"],
-        );
+        assert_eq!(valid_inputs["description"], default_args["description"],);
 
         // Output satoshis should match
         let valid_satoshis = valid_inputs["outputs"][0]["satoshis"].as_u64().unwrap();
@@ -1875,8 +1973,12 @@ mod cross_vector_consistency {
         assert_eq!(valid_satoshis, default_satoshis);
 
         // Custom instructions should match
-        let valid_ci = valid_inputs["outputs"][0]["customInstructions"].as_str().unwrap();
-        let default_ci = default_args["outputs"][0]["customInstructions"].as_str().unwrap();
+        let valid_ci = valid_inputs["outputs"][0]["customInstructions"]
+            .as_str()
+            .unwrap();
+        let default_ci = default_args["outputs"][0]["customInstructions"]
+            .as_str()
+            .unwrap();
         assert_eq!(valid_ci, default_ci);
     }
 
@@ -1903,7 +2005,9 @@ mod cross_vector_consistency {
         let list_outputs = load_test_vectors("test_vectors/storage/list_outputs/validation.json");
         let list_actions = load_test_vectors("test_vectors/storage/list_actions/validation.json");
 
-        let max_limit = users["pagination_defaults"]["maxPaginationLimit"].as_u64().unwrap();
+        let max_limit = users["pagination_defaults"]["maxPaginationLimit"]
+            .as_u64()
+            .unwrap();
         assert_eq!(max_limit, 10000);
 
         // list_outputs has ts_invalid_limit_too_high with limit: 10001

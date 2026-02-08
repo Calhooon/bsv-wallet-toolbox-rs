@@ -23,7 +23,6 @@ impl Chain {
     }
 }
 
-
 /// Base block header without height or hash (as received from network)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseBlockHeader {
@@ -177,8 +176,7 @@ impl From<LiveBlockHeader> for BlockHeader {
 }
 
 /// Result of inserting a header into storage
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InsertHeaderResult {
     /// True if header was newly added (not a duplicate)
     pub added: bool,
@@ -201,7 +199,6 @@ pub struct InsertHeaderResult {
     /// True if no chain tip exists
     pub no_tip: bool,
 }
-
 
 /// Height range representation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +292,7 @@ pub struct ChaintracksInfo {
 
 /// Compute double SHA256 hash of block header bytes
 fn compute_block_hash(header_bytes: &[u8; 80]) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     // First SHA256
     let mut hasher = Sha256::new();
@@ -331,11 +328,7 @@ pub fn calculate_work(bits: u32) -> String {
     // For exponent > 3, this would require very large shifts that overflow
     // We use saturating arithmetic and provide a simplified approximation
 
-    let shift_amount = if exponent >= 3 {
-        8 * (exponent - 3)
-    } else {
-        0
-    };
+    let shift_amount = if exponent >= 3 { 8 * (exponent - 3) } else { 0 };
 
     // Calculate target with overflow protection
     let target = if exponent <= 3 {

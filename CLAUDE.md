@@ -4,18 +4,18 @@ Rust implementation of the BSV wallet toolbox (`@bsv/wallet-toolbox` / `go-walle
 Provides storage, services, and monitoring for BSV wallets, built on top of `bsv-sdk`.
 
 **Crate:** `bsv-wallet-toolbox` v0.1.0 | **Edition:** 2021 | **License:** MIT
-**Stats:** 64 source files, ~44k lines of Rust
+**Stats:** 69 source files, ~51k lines of Rust
 
 ## Build & Test
 
 ```bash
 cargo build                          # Default (sqlite feature)
 cargo build --features full          # All features (sqlite + mysql + remote)
-cargo test --lib                     # 427 unit tests
-cargo test --test services_tests     # 58 integration tests
-cargo test                           # All tests (485 total)
+cargo test --lib                     # 533 unit tests
+cargo test --test services_tests     # 58 services integration tests (169 total across 9 test files)
+cargo test                           # All tests (702 total: 533 unit + 169 integration)
 cargo test -- --test-threads=1       # If tests conflict on shared resources
-cargo clippy                         # Lint (62 warnings, no errors)
+cargo clippy -- -D warnings          # Lint (0 warnings, 0 errors)
 cargo fmt --all -- --check           # Format check
 cargo doc --no-deps --open           # Generate docs
 ```
@@ -29,10 +29,10 @@ You MUST have `../rust-sdk` checked out for the project to compile.
 
 ```
 src/
-├── lib.rs                  # Public API re-exports (145 lines)
-├── error.rs                # thiserror Error enum (131 lines)
+├── lib.rs                  # Public API re-exports (159 lines)
+├── error.rs                # thiserror Error enum (166 lines)
 ├── storage/                # Persistence layer
-│   ├── traits.rs           # WalletStorageReader → Writer → Sync → Provider → MonitorStorage (811 lines)
+│   ├── traits.rs           # WalletStorageReader → Writer → Sync → Provider → MonitorStorage (892 lines)
 │   ├── entities/mod.rs     # 18 table entity structs (single file, camelCase serde)
 │   ├── sqlx/               # SQLite/MySQL impl (StorageSqlx)
 │   │   ├── storage_sqlx.rs # Main impl + CRUD
@@ -54,26 +54,28 @@ src/
 │   ├── collection.rs       # ServiceCollection<S> with failover
 │   └── providers/          # WhatsOnChain, ARC, Bitails, BHS
 ├── wallet/                 # Full WalletInterface (28 methods)
-│   ├── wallet.rs           # Wallet<S, V> generic struct (2582 lines)
-│   ├── signer.rs           # BIP-143 sighash + P2PKH/P2PK signing (966 lines)
-│   ├── certificate_issuance.rs  # BRC-104 protocol (1095 lines)
+│   ├── wallet.rs           # Wallet<S, V> generic struct (3314 lines)
+│   ├── signer.rs           # BIP-143 sighash + P2PKH/P2PK signing (993 lines)
+│   ├── certificate_issuance.rs  # BRC-104 protocol (1090 lines)
+│   ├── lookup.rs           # OverlayLookupResolver trait + HttpLookupResolver (610 lines)
 │   └── mod.rs
 ├── monitor/                # Background task daemon
 │   ├── daemon.rs           # Monitor<S, V> task scheduler
 │   ├── config.rs           # MonitorOptions, TaskConfig
-│   └── tasks/              # 11 recurring tasks
+│   └── tasks/              # 12 recurring tasks
 │       ├── check_for_proofs.rs, send_waiting.rs, fail_abandoned.rs
 │       ├── unfail.rs, clock.rs, new_header.rs, reorg.rs
 │       ├── check_no_sends.rs, review_status.rs, purge.rs
-│       └── monitor_call_history.rs
+│       ├── monitor_call_history.rs
+│       └── sync_when_idle.rs
 └── managers/               # Higher-level orchestration
     ├── mod.rs              # WalletLogger, setup_wallet() helper
-    ├── storage_manager.rs  # Multi-storage sync with lock hierarchy (1131 lines)
-    ├── cwi_style_wallet_manager.rs  # PBKDF2 multi-profile (709 lines)
+    ├── storage_manager.rs  # Multi-storage sync with lock hierarchy (1311 lines)
+    ├── cwi_style_wallet_manager.rs  # PBKDF2 multi-profile (760 lines)
     ├── simple_wallet_manager.rs     # 2FA auth (336 lines)
-    ├── settings_manager.rs          # Persistent settings (339 lines)
-    ├── permissions_manager.rs       # BRC-98/99 (stub - does NOT enforce) (600 lines)
-    └── auth_manager.rs              # WAB integration (skeleton) (56 lines)
+    ├── settings_manager.rs          # Persistent settings (354 lines)
+    ├── permissions_manager.rs       # BRC-98/99 full enforcement with DPACP/DBAP/DCAP/DSAP (1978 lines)
+    └── auth_manager.rs              # WAB integration wrapper (58 lines)
 ```
 
 Each subdirectory has its own `CLAUDE.md` with detailed API docs.
@@ -107,12 +109,11 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 - `bsv-sdk` is a local path dep - must have `../rust-sdk` checked out
 - `ChainTrackerError` must be imported separately: `use bsv_sdk::transaction::ChainTrackerError;`
 - `target >= u128::MAX` triggers clippy `absurd_extreme_comparisons` - use `==` instead
-- `WalletPermissionsManager` is a stub - it does NOT enforce permissions
-- `WalletAuthenticationManager` is a skeleton (56 lines)
+- `WalletPermissionsManager` provides full BRC-98/99 permission enforcement (1978 lines)
+- `WalletAuthenticationManager` provides WAB integration (58 lines)
 - Doc tests are `ignored` (need runtime setup); real tests are in lib + `tests/`
-- 62 clippy warnings (dead_code for scaffolding types, minor style) - no errors
-- CI uses `-D warnings` (deny) for clippy - local warnings won't pass CI as-is
-- Scaffolding types (`PrivilegedKeyManager`, `WalletLogger`, `LookupResolver`) generate dead_code warnings - expected, they're for future integration
+- 0 clippy warnings with `-D warnings` flag
+- CI uses `-D warnings` (deny) for clippy - passes clean
 
 ## Test Vectors
 

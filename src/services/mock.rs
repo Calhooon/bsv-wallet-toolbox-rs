@@ -299,14 +299,12 @@ impl Default for MockWalletServicesBuilder {
                 error: None,
                 results: vec![],
             }),
-            get_script_hash_history_response: MockResponse::Success(
-                GetScriptHashHistoryResult {
-                    name: "MockProvider".to_string(),
-                    status: "success".to_string(),
-                    error: None,
-                    history: vec![],
-                },
-            ),
+            get_script_hash_history_response: MockResponse::Success(GetScriptHashHistoryResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                history: vec![],
+            }),
         }
     }
 }
@@ -413,19 +411,13 @@ impl MockWalletServicesBuilder {
     }
 
     /// Set the response for get_merkle_path calls.
-    pub fn get_merkle_path_response(
-        mut self,
-        response: MockResponse<GetMerklePathResult>,
-    ) -> Self {
+    pub fn get_merkle_path_response(mut self, response: MockResponse<GetMerklePathResult>) -> Self {
         self.get_merkle_path_response = response;
         self
     }
 
     /// Set the response for get_utxo_status calls.
-    pub fn get_utxo_status_response(
-        mut self,
-        response: MockResponse<GetUtxoStatusResult>,
-    ) -> Self {
+    pub fn get_utxo_status_response(mut self, response: MockResponse<GetUtxoStatusResult>) -> Self {
         self.get_utxo_status_response = response;
         self
     }
@@ -507,11 +499,7 @@ pub fn error_post_beef_result(name: &str, error_msg: &str) -> PostBeefResult {
 }
 
 /// Create a double-spend PostBeefResult.
-pub fn double_spend_post_beef_result(
-    name: &str,
-    txid: &str,
-    competing_tx: &str,
-) -> PostBeefResult {
+pub fn double_spend_post_beef_result(name: &str, txid: &str, competing_tx: &str) -> PostBeefResult {
     PostBeefResult {
         name: name.to_string(),
         status: "error".to_string(),
@@ -569,11 +557,7 @@ impl WalletServices for MockWalletServices {
     }
 
     async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>> {
-        self.record_call(
-            "get_header_for_height",
-            vec![format!("{}", height)],
-            true,
-        );
+        self.record_call("get_header_for_height", vec![format!("{}", height)], true);
         // Return a mock 80-byte header
         Ok(vec![0u8; 80])
     }
@@ -837,14 +821,8 @@ mod tests {
     async fn test_partial_success() {
         let mock = MockWalletServices::builder()
             .post_beef_response(MockResponse::Sequence(vec![
-                MockResponse::Error(
-                    MockErrorKind::NetworkError,
-                    "provider1 down".to_string(),
-                ),
-                MockResponse::Error(
-                    MockErrorKind::ServiceError,
-                    "provider2 error".to_string(),
-                ),
+                MockResponse::Error(MockErrorKind::NetworkError, "provider1 down".to_string()),
+                MockResponse::Error(MockErrorKind::ServiceError, "provider2 error".to_string()),
                 MockResponse::Success(vec![success_post_beef_result("provider3", &["tx123"])]),
             ]))
             .build();
@@ -905,8 +883,7 @@ mod tests {
 
         let succeeding_mock = Arc::new(MockWalletServices::builder().post_beef_success().build());
 
-        let mut collection =
-            ServiceCollection::<Arc<MockWalletServices>>::new("postBeef");
+        let mut collection = ServiceCollection::<Arc<MockWalletServices>>::new("postBeef");
         collection.add("failing_provider", Arc::clone(&failing_mock));
         collection.add("succeeding_provider", Arc::clone(&succeeding_mock));
 
@@ -954,7 +931,10 @@ mod tests {
 
         let result = &results[0];
         assert!(result.is_success());
-        assert_eq!(result.txid_results[0].data.as_deref(), Some("Already known"));
+        assert_eq!(
+            result.txid_results[0].data.as_deref(),
+            Some("Already known")
+        );
         assert!(!result.txid_results[0].double_spend);
     }
 
@@ -1015,10 +995,7 @@ mod tests {
         assert!(post_result[0].is_success());
 
         // Step 2: Check status
-        let status_result = mock
-            .get_status_for_txids(&txids, false)
-            .await
-            .unwrap();
+        let status_result = mock.get_status_for_txids(&txids, false).await.unwrap();
         assert_eq!(status_result.status, "success");
         assert_eq!(status_result.results.len(), 1);
         assert_eq!(status_result.results[0].status, "known");
@@ -1039,19 +1016,10 @@ mod tests {
                 .post_beef_network_error("provider1 down")
                 .build(),
         );
-        let provider2 = Arc::new(
-            MockWalletServices::builder()
-                .post_beef_success()
-                .build(),
-        );
-        let provider3 = Arc::new(
-            MockWalletServices::builder()
-                .post_beef_success()
-                .build(),
-        );
+        let provider2 = Arc::new(MockWalletServices::builder().post_beef_success().build());
+        let provider3 = Arc::new(MockWalletServices::builder().post_beef_success().build());
 
-        let mut collection =
-            ServiceCollection::<Arc<MockWalletServices>>::new("postBeef");
+        let mut collection = ServiceCollection::<Arc<MockWalletServices>>::new("postBeef");
         collection.add("provider1", Arc::clone(&provider1));
         collection.add("provider2", Arc::clone(&provider2));
         collection.add("provider3", Arc::clone(&provider3));
@@ -1111,8 +1079,7 @@ mod tests {
                 .build(),
         );
 
-        let mut collection =
-            ServiceCollection::<Arc<MockWalletServices>>::new("postBeef");
+        let mut collection = ServiceCollection::<Arc<MockWalletServices>>::new("postBeef");
         collection.add("provider1", Arc::clone(&provider1));
         collection.add("provider2", Arc::clone(&provider2));
 
@@ -1243,11 +1210,7 @@ mod tests {
             .build();
 
         let beef = vec![0x01, 0x02, 0x03, 0x04]; // Multi-tx BEEF
-        let txids = vec![
-            "tx1".to_string(),
-            "tx2".to_string(),
-            "tx3".to_string(),
-        ];
+        let txids = vec!["tx1".to_string(), "tx2".to_string(), "tx3".to_string()];
 
         let results = mock.post_beef(&beef, &txids).await.unwrap();
         assert_eq!(results.len(), 1);

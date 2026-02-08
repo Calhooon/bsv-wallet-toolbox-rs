@@ -30,10 +30,9 @@ use bsv_sdk::auth::transports::HttpRequest;
 use bsv_sdk::auth::{Peer, PeerOptions, SimplifiedFetchTransport};
 use bsv_sdk::primitives::{to_base64, PublicKey};
 use bsv_sdk::wallet::{
-    AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs,
-    ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
-    ListOutputsArgs, ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs,
-    WalletInterface,
+    AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs, ListActionsArgs,
+    ListActionsResult, ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs,
+    ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs, WalletInterface,
 };
 
 use crate::error::{Error, Result};
@@ -104,7 +103,6 @@ pub struct ValidCreateActionArgs {
     pub options: Option<bsv_sdk::wallet::CreateActionOptions>,
 
     // === Internal state flags (required by server) ===
-
     /// True when creating a new transaction with inputs/outputs.
     /// For createAction, this is typically always true.
     pub is_new_tx: bool,
@@ -133,9 +131,7 @@ impl From<CreateActionArgs> for ValidCreateActionArgs {
         // Extract option flags with sensible defaults
         let options = args.options.as_ref();
 
-        let is_no_send = options
-            .and_then(|o| o.no_send)
-            .unwrap_or(false);
+        let is_no_send = options.and_then(|o| o.no_send).unwrap_or(false);
 
         let is_delayed = options
             .and_then(|o| o.accept_delayed_broadcast)
@@ -146,9 +142,7 @@ impl From<CreateActionArgs> for ValidCreateActionArgs {
             .map(|s| !s.is_empty())
             .unwrap_or(false);
 
-        let is_sign_action = options
-            .and_then(|o| o.sign_and_process)
-            .unwrap_or(true); // Default to true per TypeScript SDK
+        let is_sign_action = options.and_then(|o| o.sign_and_process).unwrap_or(true); // Default to true per TypeScript SDK
 
         // isRemixChange is true only when there are no explicit inputs or outputs
         // and we're just remixing change. For normal createAction, this is false.
@@ -432,7 +426,9 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
         if !self.use_auth {
             // Fall back to simple HTTP without auth for testing
-            return self.rpc_call_unauthenticated(method, &request_body, id).await;
+            return self
+                .rpc_call_unauthenticated(method, &request_body, id)
+                .await;
         }
 
         // Generate a unique request ID (32 random bytes)
@@ -501,34 +497,34 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
         if let Err(e) = send_result {
             // Clean up listener
-            self.peer.stop_listening_for_general_messages(callback_id).await;
-            return Err(Error::NetworkError(format!("Failed to send request: {}", e)));
+            self.peer
+                .stop_listening_for_general_messages(callback_id)
+                .await;
+            return Err(Error::NetworkError(format!(
+                "Failed to send request: {}",
+                e
+            )));
         }
 
         // Wait for the response with a timeout
-        let response_result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            rx,
-        )
-        .await;
+        let response_result = tokio::time::timeout(std::time::Duration::from_secs(30), rx).await;
 
         // Clean up listener
-        self.peer.stop_listening_for_general_messages(callback_id).await;
+        self.peer
+            .stop_listening_for_general_messages(callback_id)
+            .await;
 
         let response_payload = match response_result {
             Ok(Ok(Ok(payload))) => payload,
             Ok(Ok(Err(e))) => return Err(e),
-            Ok(Err(_)) => {
-                return Err(Error::NetworkError("Response channel closed".to_string()))
-            }
-            Err(_) => {
-                return Err(Error::NetworkError("Request timed out".to_string()))
-            }
+            Ok(Err(_)) => return Err(Error::NetworkError("Response channel closed".to_string())),
+            Err(_) => return Err(Error::NetworkError("Request timed out".to_string())),
         };
 
         // Parse the HTTP response from the payload
-        let http_response = bsv_sdk::auth::transports::HttpResponse::from_payload(&response_payload)
-            .map_err(|e| Error::StorageError(format!("Failed to parse response: {}", e)))?;
+        let http_response =
+            bsv_sdk::auth::transports::HttpResponse::from_payload(&response_payload)
+                .map_err(|e| Error::StorageError(format!("Failed to parse response: {}", e)))?;
 
         tracing::trace!(
             method = method,
@@ -602,9 +598,10 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             )));
         }
 
-        let response_body = response.bytes().await.map_err(|e| {
-            Error::NetworkError(format!("Failed to read response body: {}", e))
-        })?;
+        let response_body = response
+            .bytes()
+            .await
+            .map_err(|e| Error::NetworkError(format!("Failed to read response body: {}", e)))?;
 
         let rpc_response: JsonRpcResponse = serde_json::from_slice(&response_body)
             .map_err(|e| Error::StorageError(format!("Invalid JSON-RPC response: {}", e)))?;
@@ -807,11 +804,8 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
     async fn migrate(&self, storage_name: &str, _storage_identity_key: &str) -> Result<String> {
         // Remote storage typically ignores migration requests from clients
         // The TypeScript implementation only sends storage_name
-        self.rpc_call(
-            "migrate",
-            vec![Value::String(storage_name.to_string())],
-        )
-        .await
+        self.rpc_call("migrate", vec![Value::String(storage_name.to_string())])
+            .await
     }
 
     async fn destroy(&self) -> Result<()> {
@@ -967,16 +961,15 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
     ) -> Result<ReviewStatusResult> {
         self.rpc_call(
             "reviewStatus",
-            vec![Self::to_value(auth)?, Self::to_value(&aged_limit.to_rfc3339())?],
+            vec![
+                Self::to_value(auth)?,
+                Self::to_value(&aged_limit.to_rfc3339())?,
+            ],
         )
         .await
     }
 
-    async fn purge_data(
-        &self,
-        auth: &AuthId,
-        params: PurgeParams,
-    ) -> Result<PurgeResults> {
+    async fn purge_data(&self, auth: &AuthId, params: PurgeParams) -> Result<PurgeResults> {
         self.rpc_call(
             "purgeData",
             vec![Self::to_value(auth)?, Self::to_value(&params)?],
@@ -1106,11 +1099,8 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageProvider for StorageClie
 #[async_trait]
 impl<W: WalletInterface + Clone + 'static> MonitorStorage for StorageClient<W> {
     async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
-        self.rpc_call(
-            "synchronizeTransactionStatuses",
-            vec![],
-        )
-        .await
+        self.rpc_call("synchronizeTransactionStatuses", vec![])
+            .await
     }
 
     async fn send_waiting_transactions(
@@ -1133,27 +1123,16 @@ impl<W: WalletInterface + Clone + 'static> MonitorStorage for StorageClient<W> {
     }
 
     async fn un_fail(&self) -> Result<()> {
-        self.rpc_call(
-            "unFail",
-            vec![],
-        )
-        .await
+        self.rpc_call("unFail", vec![]).await
     }
 
     async fn review_status(&self) -> Result<ReviewStatusResult> {
-        self.rpc_call(
-            "monitorReviewStatus",
-            vec![],
-        )
-        .await
+        self.rpc_call("monitorReviewStatus", vec![]).await
     }
 
     async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults> {
-        self.rpc_call(
-            "monitorPurgeData",
-            vec![Self::to_value(&params)?],
-        )
-        .await
+        self.rpc_call("monitorPurgeData", vec![Self::to_value(&params)?])
+            .await
     }
 
     async fn try_acquire_task_lock(
@@ -1176,10 +1155,7 @@ impl<W: WalletInterface + Clone + 'static> MonitorStorage for StorageClient<W> {
     async fn release_task_lock(&self, task_name: &str, instance_id: &str) -> Result<()> {
         self.rpc_call(
             "releaseTaskLock",
-            vec![
-                Self::to_value(&task_name)?,
-                Self::to_value(&instance_id)?,
-            ],
+            vec![Self::to_value(&task_name)?, Self::to_value(&instance_id)?],
         )
         .await
     }
@@ -1278,7 +1254,11 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
     /// Creates a WalletStorageInfo for this client.
     ///
     /// Requires that make_available() has been called first.
-    pub async fn get_storage_info(&self, user_id: i64, is_active: bool) -> Result<WalletStorageInfo> {
+    pub async fn get_storage_info(
+        &self,
+        user_id: i64,
+        is_active: bool,
+    ) -> Result<WalletStorageInfo> {
         let settings = self.get_settings_async().await?;
 
         Ok(WalletStorageInfo {
@@ -1297,8 +1277,8 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::JsonRpcResponse;
+    use super::*;
     use chrono::Utc;
 
     #[test]
@@ -2171,13 +2151,13 @@ mod tests {
         // This test documents all 22 JSON-RPC methods that must be implemented
         // No Auth (7 methods):
         let no_auth_methods = vec![
-            "makeAvailable",     // Initialize storage
-            "destroy",           // Delete all data
-            "migrate",           // Run migrations
-            "findOrInsertUser",  // Find/create user
-            "findProvenTxReqs",  // Find proof requests
-            "getSyncChunk",      // Get sync data
-            "processSyncChunk",  // Apply sync data
+            "makeAvailable",    // Initialize storage
+            "destroy",          // Delete all data
+            "migrate",          // Run migrations
+            "findOrInsertUser", // Find/create user
+            "findProvenTxReqs", // Find proof requests
+            "getSyncChunk",     // Get sync data
+            "processSyncChunk", // Apply sync data
         ];
 
         // Auth Required (15 methods):
@@ -2239,10 +2219,7 @@ mod tests {
         assert_ne!(nonce1, nonce2);
 
         // Nonces should be base64 encoded
-        let decoded = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &nonce1,
-        );
+        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &nonce1);
         assert!(decoded.is_ok());
 
         // Should be 32 bytes when decoded
@@ -2303,7 +2280,8 @@ mod tests {
 
         let headers = AuthHeaders {
             version: AUTH_VERSION.to_string(),
-            identity_key: "02abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab".to_string(),
+            identity_key: "02abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+                .to_string(),
             nonce: "dGVzdC1ub25jZS1iYXNlNjQ=".to_string(),
             timestamp: 1234567890000,
             signature: "3044022012345678".to_string(),
@@ -2360,7 +2338,9 @@ mod tests {
 
     #[test]
     fn test_brc31_replay_protection() {
-        use crate::storage::client::auth::{create_signing_data, create_simple_nonce, current_timestamp_ms};
+        use crate::storage::client::auth::{
+            create_signing_data, create_simple_nonce, current_timestamp_ms,
+        };
 
         // Two requests with same body at different times should have different signing data
         let body = br#"{"method":"test"}"#;
@@ -2546,7 +2526,7 @@ mod tests {
         let args = CreateActionArgs {
             description: "Remix change".to_string(),
             input_beef: None,
-            inputs: Some(vec![]), // Empty inputs
+            inputs: Some(vec![]),  // Empty inputs
             outputs: Some(vec![]), // Empty outputs
             lock_time: None,
             version: None,
@@ -2625,8 +2605,7 @@ mod tests {
 
         // Override flags manually
         let valid_args = ValidCreateActionArgs::with_flags(
-            args,
-            true,  // is_new_tx
+            args, true,  // is_new_tx
             true,  // is_no_send
             true,  // is_delayed
             false, // is_send_with

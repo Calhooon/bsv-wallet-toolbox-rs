@@ -22,8 +22,8 @@
 //! - `StorageClient` - Remote storage via JSON-RPC to storage.babbage.systems
 //! - `WalletStorageManager` - Orchestrates multiple providers with active/backup
 
-mod traits;
 pub mod entities;
+mod traits;
 
 // SQLx storage (SQLite/MySQL)
 #[cfg(any(feature = "sqlite", feature = "mysql"))]

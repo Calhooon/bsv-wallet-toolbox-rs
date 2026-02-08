@@ -72,10 +72,12 @@ pub static DEFAULT_SETTINGS: once_cell::sync::Lazy<WalletSettings> =
             trusted_certifiers: vec![
                 Certifier {
                     name: "Metanet Trust Services".to_string(),
-                    description: "Registry for protocols, baskets, and certificate types".to_string(),
-                    icon_url: Some("https://bsvblockchain.org/favicon.ico".to_string()),
-                    identity_key: "03daf815fe38f83da0ad83b5bedc520aa488aef5cbc93a93c67a7fe60406cbffe8"
+                    description: "Registry for protocols, baskets, and certificate types"
                         .to_string(),
+                    icon_url: Some("https://bsvblockchain.org/favicon.ico".to_string()),
+                    identity_key:
+                        "03daf815fe38f83da0ad83b5bedc520aa488aef5cbc93a93c67a7fe60406cbffe8"
+                            .to_string(),
                     trust: 4,
                     base_url: None,
                 },
@@ -85,8 +87,9 @@ pub static DEFAULT_SETTINGS: once_cell::sync::Lazy<WalletSettings> =
                         .to_string(),
                     icon_url: Some("https://socialcert.net/favicon.ico".to_string()),
                     trust: 3,
-                    identity_key: "02cf6cdf466951d8dfc9e7c9367511d0007ed6fba35ed42d425cc412fd6cfd4a17"
-                        .to_string(),
+                    identity_key:
+                        "02cf6cdf466951d8dfc9e7c9367511d0007ed6fba35ed42d425cc412fd6cfd4a17"
+                            .to_string(),
                     base_url: None,
                 },
             ],
@@ -208,8 +211,7 @@ impl WalletSettingsManager {
 
     /// Loads settings from JSON bytes.
     pub async fn load(&self, data: &[u8]) -> Result<()> {
-        let settings: WalletSettings =
-            serde_json::from_slice(data).map_err(Error::JsonError)?;
+        let settings: WalletSettings = serde_json::from_slice(data).map_err(Error::JsonError)?;
         *self.settings.write().await = settings;
         Ok(())
     }
@@ -222,8 +224,7 @@ impl WalletSettingsManager {
 
     /// Loads settings from a JSON string.
     pub async fn load_from_string(&self, json: &str) -> Result<()> {
-        let settings: WalletSettings =
-            serde_json::from_str(json).map_err(Error::JsonError)?;
+        let settings: WalletSettings = serde_json::from_str(json).map_err(Error::JsonError)?;
         *self.settings.write().await = settings;
         Ok(())
     }

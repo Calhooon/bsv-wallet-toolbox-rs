@@ -15,9 +15,8 @@ use bsv_wallet_toolbox::{PostBeefResult, PostTxResultForTxid};
 #[tokio::test]
 async fn test_post_beef_result_double_spend_fields() {
     // Create a PostBeefResult with double_spend indicators on a per-txid basis
-    let competing = vec![
-        "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233".to_string(),
-    ];
+    let competing =
+        vec!["aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233".to_string()];
 
     let txid_result = PostTxResultForTxid {
         txid: "11223344556677881122334455667788112233445566778811223344556677ab".to_string(),
@@ -36,7 +35,10 @@ async fn test_post_beef_result_double_spend_fields() {
     assert!(!txid_result.is_success());
     assert_eq!(txid_result.competing_txs.as_ref().unwrap().len(), 1);
     assert_eq!(txid_result.competing_txs.as_ref().unwrap()[0], competing[0]);
-    assert!(!txid_result.service_error, "Double-spend is not a service error");
+    assert!(
+        !txid_result.service_error,
+        "Double-spend is not a service error"
+    );
 
     // Wrap in a PostBeefResult
     let result = PostBeefResult {
@@ -131,7 +133,11 @@ async fn test_post_beef_result_serialization() {
     assert_eq!(deserialized.txid_results.len(), 1);
     assert!(deserialized.txid_results[0].double_spend);
     assert_eq!(
-        deserialized.txid_results[0].competing_txs.as_ref().unwrap().len(),
+        deserialized.txid_results[0]
+            .competing_txs
+            .as_ref()
+            .unwrap()
+            .len(),
         2
     );
 }
@@ -155,7 +161,12 @@ async fn test_transaction_status_values() {
     ];
 
     for (status, expected_str) in &statuses {
-        assert_eq!(status.as_str(), *expected_str, "Status string mismatch for {:?}", status);
+        assert_eq!(
+            status.as_str(),
+            *expected_str,
+            "Status string mismatch for {:?}",
+            status
+        );
 
         // Roundtrip via serde
         let json = serde_json::to_string(status).expect("Should serialize TransactionStatus");
@@ -285,7 +296,9 @@ async fn test_double_spend_result_handling() {
         competing_txs: None,
         data: Some("MINED".to_string()),
         service_error: false,
-        block_hash: Some("0000000000000000000123456789abcdef0123456789abcdef0123456789abcd".to_string()),
+        block_hash: Some(
+            "0000000000000000000123456789abcdef0123456789abcdef0123456789abcd".to_string(),
+        ),
         block_height: Some(800_000),
         notes: Vec::new(),
     };

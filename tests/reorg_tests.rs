@@ -12,22 +12,17 @@ mod reorg {
     use async_trait::async_trait;
     use chrono::Utc;
 
-    use bsv_wallet_toolbox::{
-        AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter,
-    };
-    use bsv_wallet_toolbox::monitor::tasks::{
-        DeactivatedHeader, MonitorTask, ReorgTask,
-    };
+    use bsv_sdk::transaction::{ChainTracker, ChainTrackerError};
+    use bsv_wallet_toolbox::monitor::tasks::{DeactivatedHeader, MonitorTask, ReorgTask};
+    use bsv_wallet_toolbox::services::traits::GetBeefResult;
     use bsv_wallet_toolbox::services::{
-        BlockHeader, FiatCurrency, GetMerklePathResult,
-        GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
-        GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput,
+        BlockHeader, FiatCurrency, GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult,
+        GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput,
         PostBeefResult, WalletServices,
     };
-    use bsv_wallet_toolbox::services::traits::GetBeefResult;
     use bsv_wallet_toolbox::storage::entities::ProvenTxReqStatus;
     use bsv_wallet_toolbox::storage::FindProvenTxReqsArgs;
-    use bsv_sdk::transaction::{ChainTracker, ChainTrackerError};
+    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     // =========================================================================
     // Mock WalletServices for testing
@@ -122,17 +117,11 @@ mod reorg {
             Ok(800000)
         }
 
-        async fn get_header_for_height(
-            &self,
-            _height: u32,
-        ) -> bsv_wallet_toolbox::Result<Vec<u8>> {
+        async fn get_header_for_height(&self, _height: u32) -> bsv_wallet_toolbox::Result<Vec<u8>> {
             Ok(vec![0u8; 80])
         }
 
-        async fn hash_to_header(
-            &self,
-            _hash: &str,
-        ) -> bsv_wallet_toolbox::Result<BlockHeader> {
+        async fn hash_to_header(&self, _hash: &str) -> bsv_wallet_toolbox::Result<BlockHeader> {
             Ok(BlockHeader {
                 hash: "h".repeat(64),
                 height: 800000,
@@ -390,7 +379,11 @@ mod reorg {
             result.items_processed, 0,
             "Should not process headers before delay"
         );
-        assert_eq!(task.pending_count().await, 1, "Header should remain in queue");
+        assert_eq!(
+            task.pending_count().await,
+            1,
+            "Header should remain in queue"
+        );
     }
 
     // =========================================================================
@@ -416,11 +409,18 @@ mod reorg {
         task.queue_deactivated_header("h2".repeat(32), 799999).await;
         task.queue_deactivated_header("h3".repeat(32), 800000).await;
 
-        assert_eq!(task.pending_count().await, 3, "All 3 headers should be queued");
+        assert_eq!(
+            task.pending_count().await,
+            3,
+            "All 3 headers should be queued"
+        );
 
         // The 10-minute delay prevents immediate processing
         let result = task.run().await.unwrap();
-        assert_eq!(result.items_processed, 0, "No headers ready yet (delay not met)");
+        assert_eq!(
+            result.items_processed, 0,
+            "No headers ready yet (delay not met)"
+        );
         assert_eq!(task.pending_count().await, 3, "All 3 should remain queued");
     }
 
@@ -486,13 +486,11 @@ mod reorg {
         assert_eq!(result.items_processed, 0);
 
         // Verify transaction status is still 'completed' (not changed)
-        let status: (String,) = sqlx::query_as(
-            "SELECT status FROM transactions WHERE txid = ?",
-        )
-        .bind(&txid)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let status: (String,) = sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
         assert_eq!(status.0, "completed", "Transaction should remain completed");
     }
 
@@ -510,12 +508,16 @@ mod reorg {
         let task = ReorgTask::new(storage.clone(), services.clone());
 
         // Queue a header just now
-        task.queue_deactivated_header("recent".repeat(4), 800000).await;
+        task.queue_deactivated_header("recent".repeat(4), 800000)
+            .await;
         assert_eq!(task.pending_count().await, 1);
 
         // Run immediately - should NOT process (delay not met)
         let result1 = task.run().await.unwrap();
-        assert_eq!(result1.items_processed, 0, "Recent header should not be processed");
+        assert_eq!(
+            result1.items_processed, 0,
+            "Recent header should not be processed"
+        );
         assert_eq!(task.pending_count().await, 1, "Header should remain queued");
 
         // The actual delay is 10 minutes, which we cannot wait for in a test.
@@ -558,7 +560,10 @@ mod reorg {
         assert_eq!(retry3.retry_count, 3);
 
         // After retry_count reaches 3 (MAX_RETRY_COUNT), the task should not requeue
-        assert!(retry3.retry_count >= 3, "At max retries, should not requeue");
+        assert!(
+            retry3.retry_count >= 3,
+            "At max retries, should not requeue"
+        );
     }
 
     // =========================================================================
@@ -574,19 +579,24 @@ mod reorg {
         assert_eq!(task.pending_count().await, 0);
 
         // Add headers one by one and verify count
-        task.queue_deactivated_header("h1".to_string(), 800000).await;
+        task.queue_deactivated_header("h1".to_string(), 800000)
+            .await;
         assert_eq!(task.pending_count().await, 1);
 
-        task.queue_deactivated_header("h2".to_string(), 800001).await;
+        task.queue_deactivated_header("h2".to_string(), 800001)
+            .await;
         assert_eq!(task.pending_count().await, 2);
 
-        task.queue_deactivated_header("h3".to_string(), 800002).await;
+        task.queue_deactivated_header("h3".to_string(), 800002)
+            .await;
         assert_eq!(task.pending_count().await, 3);
 
-        task.queue_deactivated_header("h4".to_string(), 800003).await;
+        task.queue_deactivated_header("h4".to_string(), 800003)
+            .await;
         assert_eq!(task.pending_count().await, 4);
 
-        task.queue_deactivated_header("h5".to_string(), 800004).await;
+        task.queue_deactivated_header("h5".to_string(), 800004)
+            .await;
         assert_eq!(task.pending_count().await, 5);
 
         // Run the task - none should be processed (10min delay)
@@ -609,8 +619,14 @@ mod reorg {
 
         // Run should be a no-op
         let result = task.run().await.unwrap();
-        assert_eq!(result.items_processed, 0, "No items should be processed with empty queue");
-        assert!(result.errors.is_empty(), "No errors expected with empty queue");
+        assert_eq!(
+            result.items_processed, 0,
+            "No items should be processed with empty queue"
+        );
+        assert!(
+            result.errors.is_empty(),
+            "No errors expected with empty queue"
+        );
 
         // Run again - still no-op
         let result2 = task.run().await.unwrap();
@@ -716,21 +732,31 @@ mod reorg {
         let task = ReorgTask::new(storage.clone(), services.clone());
 
         // Queue a reorg that affects 3 of the 5 blocks
-        task.queue_deactivated_header(format!("{:064x}", 100), 800000).await;
-        task.queue_deactivated_header(format!("{:064x}", 101), 799999).await;
-        task.queue_deactivated_header(format!("{:064x}", 102), 799998).await;
+        task.queue_deactivated_header(format!("{:064x}", 100), 800000)
+            .await;
+        task.queue_deactivated_header(format!("{:064x}", 101), 799999)
+            .await;
+        task.queue_deactivated_header(format!("{:064x}", 102), 799998)
+            .await;
 
         assert_eq!(task.pending_count().await, 3);
 
         // Verify we can query the affected transactions via the storage
         let completed_reqs = storage
             .find_proven_tx_reqs(FindProvenTxReqsArgs {
-                status: Some(vec![ProvenTxReqStatus::Completed, ProvenTxReqStatus::Unmined]),
+                status: Some(vec![
+                    ProvenTxReqStatus::Completed,
+                    ProvenTxReqStatus::Unmined,
+                ]),
                 ..Default::default()
             })
             .await
             .unwrap();
-        assert_eq!(completed_reqs.len(), 5, "Should find all 5 completed reqs for re-verification");
+        assert_eq!(
+            completed_reqs.len(),
+            5,
+            "Should find all 5 completed reqs for re-verification"
+        );
 
         // Verify the task metadata
         assert_eq!(task.name(), "reorg");

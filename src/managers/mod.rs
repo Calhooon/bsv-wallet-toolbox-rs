@@ -62,8 +62,7 @@ pub use simple_wallet_manager::SimpleWalletManager;
 pub use storage_manager::{ManagedStorage, WalletStorageManager};
 
 pub use cwi_style_wallet_manager::{
-    CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile,
-    UmpToken, WalletSnapshot,
+    CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile, UmpToken, WalletSnapshot,
 };
 
 pub use permissions_manager::{

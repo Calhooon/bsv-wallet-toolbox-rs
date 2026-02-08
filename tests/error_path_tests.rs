@@ -148,10 +148,7 @@ async fn test_error_display() {
 
     // Verify Debug also works (thiserror derives Debug)
     let debug = format!("{:?}", e);
-    assert!(
-        !debug.is_empty(),
-        "Debug output should not be empty"
-    );
+    assert!(!debug.is_empty(), "Debug output should not be empty");
 }
 
 #[tokio::test]

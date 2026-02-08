@@ -8,35 +8,34 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bsv_sdk::primitives::PrivateKey;
-use serde::{Deserialize, Serialize};
 use bsv_sdk::primitives::PublicKey;
-use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 use bsv_sdk::wallet::{
     interface::{
         RevealCounterpartyKeyLinkageArgs as InterfaceRevealCounterpartyArgs,
         RevealSpecificKeyLinkageArgs as InterfaceRevealSpecificArgs,
     },
-    AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult,
-    Counterparty, CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult,
-    CreateSignatureArgs, CreateSignatureResult, DecryptArgs, DecryptResult,
-    DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs, DiscoverCertificatesResult, EncryptArgs,
-    EncryptResult, GetHeaderArgs, GetHeaderResult, GetHeightResult, GetNetworkResult,
-    GetPublicKeyArgs, GetPublicKeyResult, GetVersionResult, InternalizeActionArgs,
-    InternalizeActionResult, KeyLinkageResult, ListActionsArgs, ListActionsResult,
-    ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult, Network,
-    Outpoint, Protocol, ProveCertificateArgs, ProveCertificateResult, ProtoWallet,
-    RelinquishCertificateArgs, RelinquishCertificateResult, RelinquishOutputArgs,
-    RelinquishOutputResult, RevealCounterpartyKeyLinkageResult, RevealSpecificKeyLinkageResult,
-    SecurityLevel, SignActionArgs, SignActionResult, SignableTransaction, VerifyHmacArgs,
-    VerifyHmacResult, VerifySignatureArgs, VerifySignatureResult, WalletCertificate,
-    WalletInterface,
+    AbortActionArgs, AbortActionResult, AcquireCertificateArgs, AuthenticatedResult, Counterparty,
+    CreateActionArgs, CreateActionResult, CreateHmacArgs, CreateHmacResult, CreateSignatureArgs,
+    CreateSignatureResult, DecryptArgs, DecryptResult, DiscoverByAttributesArgs,
+    DiscoverByIdentityKeyArgs, DiscoverCertificatesResult, EncryptArgs, EncryptResult,
+    GetHeaderArgs, GetHeaderResult, GetHeightResult, GetNetworkResult, GetPublicKeyArgs,
+    GetPublicKeyResult, GetVersionResult, InternalizeActionArgs, InternalizeActionResult,
+    KeyLinkageResult, ListActionsArgs, ListActionsResult, ListCertificatesArgs,
+    ListCertificatesResult, ListOutputsArgs, ListOutputsResult, Network, Outpoint, ProtoWallet,
+    Protocol, ProveCertificateArgs, ProveCertificateResult, RelinquishCertificateArgs,
+    RelinquishCertificateResult, RelinquishOutputArgs, RelinquishOutputResult,
+    RevealCounterpartyKeyLinkageResult, RevealSpecificKeyLinkageResult, SecurityLevel,
+    SignActionArgs, SignActionResult, SignableTransaction, VerifyHmacArgs, VerifyHmacResult,
+    VerifySignatureArgs, VerifySignatureResult, WalletCertificate, WalletInterface,
 };
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
 use crate::services::{Chain, WalletServices};
-use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
 use crate::storage::entities::TransactionStatus;
+use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
 
 use super::signer::{SignerInput, WalletSigner};
 
@@ -59,13 +58,41 @@ const PENDING_TRANSACTION_TTL_SECS: i64 = 24 * 60 * 60;
 /// are routed through a separate key manager.
 #[async_trait]
 pub trait PrivilegedKeyManager: Send + Sync {
-    async fn get_public_key(&self, args: GetPublicKeyArgs, originator: &str) -> std::result::Result<GetPublicKeyResult, bsv_sdk::Error>;
-    async fn encrypt(&self, args: EncryptArgs, originator: &str) -> std::result::Result<EncryptResult, bsv_sdk::Error>;
-    async fn decrypt(&self, args: DecryptArgs, originator: &str) -> std::result::Result<DecryptResult, bsv_sdk::Error>;
-    async fn create_hmac(&self, args: CreateHmacArgs, originator: &str) -> std::result::Result<CreateHmacResult, bsv_sdk::Error>;
-    async fn verify_hmac(&self, args: VerifyHmacArgs, originator: &str) -> std::result::Result<VerifyHmacResult, bsv_sdk::Error>;
-    async fn create_signature(&self, args: CreateSignatureArgs, originator: &str) -> std::result::Result<CreateSignatureResult, bsv_sdk::Error>;
-    async fn verify_signature(&self, args: VerifySignatureArgs, originator: &str) -> std::result::Result<VerifySignatureResult, bsv_sdk::Error>;
+    async fn get_public_key(
+        &self,
+        args: GetPublicKeyArgs,
+        originator: &str,
+    ) -> std::result::Result<GetPublicKeyResult, bsv_sdk::Error>;
+    async fn encrypt(
+        &self,
+        args: EncryptArgs,
+        originator: &str,
+    ) -> std::result::Result<EncryptResult, bsv_sdk::Error>;
+    async fn decrypt(
+        &self,
+        args: DecryptArgs,
+        originator: &str,
+    ) -> std::result::Result<DecryptResult, bsv_sdk::Error>;
+    async fn create_hmac(
+        &self,
+        args: CreateHmacArgs,
+        originator: &str,
+    ) -> std::result::Result<CreateHmacResult, bsv_sdk::Error>;
+    async fn verify_hmac(
+        &self,
+        args: VerifyHmacArgs,
+        originator: &str,
+    ) -> std::result::Result<VerifyHmacResult, bsv_sdk::Error>;
+    async fn create_signature(
+        &self,
+        args: CreateSignatureArgs,
+        originator: &str,
+    ) -> std::result::Result<CreateSignatureResult, bsv_sdk::Error>;
+    async fn verify_signature(
+        &self,
+        args: VerifySignatureArgs,
+        originator: &str,
+    ) -> std::result::Result<VerifySignatureResult, bsv_sdk::Error>;
 }
 
 // =============================================================================
@@ -88,7 +115,10 @@ impl LookupResolver {
         }
     }
 
-    pub async fn query(&self, _attributes: &std::collections::HashMap<String, String>) -> Result<Vec<bsv_sdk::wallet::IdentityCertificate>> {
+    pub async fn query(
+        &self,
+        _attributes: &std::collections::HashMap<String, String>,
+    ) -> Result<Vec<bsv_sdk::wallet::IdentityCertificate>> {
         // Stub: overlay lookup not yet connected
         let _ = &self.client;
         let _ = &self.hosts;
@@ -491,9 +521,7 @@ where
     }
 
     /// Returns a reference to the permissions manager, if set.
-    pub fn permissions_manager(
-        &self,
-    ) -> Option<&Arc<crate::managers::WalletPermissionsManager>> {
+    pub fn permissions_manager(&self) -> Option<&Arc<crate::managers::WalletPermissionsManager>> {
         self.permissions_manager.as_ref()
     }
 
@@ -535,11 +563,7 @@ where
     }
 
     /// Checks spending permission if a permissions manager is set.
-    async fn check_spending_permission(
-        &self,
-        originator: &str,
-        satoshis: u64,
-    ) -> Result<()> {
+    async fn check_spending_permission(&self, originator: &str, satoshis: u64) -> Result<()> {
         if let Some(ref pm) = self.permissions_manager {
             pm.ensure_spending_permission(originator, satoshis, None)
                 .await?;
@@ -559,13 +583,7 @@ where
     ) -> Result<()> {
         if let Some(ref pm) = self.permissions_manager {
             pm.ensure_certificate_access(
-                originator,
-                privileged,
-                verifier,
-                cert_type,
-                fields,
-                None,
-                usage_type,
+                originator, privileged, verifier, cert_type, fields, None, usage_type,
             )
             .await?;
         }
@@ -662,7 +680,7 @@ where
 
     /// Sweeps all funds from this wallet to a target BSV address.
     pub async fn sweep_to_address(&self, address: &str) -> Result<CreateActionResult> {
-        use bsv_sdk::wallet::{CreateActionOutput, CreateActionInput};
+        use bsv_sdk::wallet::{CreateActionInput, CreateActionOutput};
 
         let balance_result = self.balance_and_utxos().await?;
 
@@ -709,7 +727,8 @@ where
             options: None,
         };
 
-        let result = WalletInterface::create_action(self, args, "sweep").await
+        let result = WalletInterface::create_action(self, args, "sweep")
+            .await
             .map_err(|e| Error::TransactionError(e.to_string()))?;
 
         Ok(result)
@@ -1000,8 +1019,7 @@ where
         args: GetPublicKeyArgs,
         originator: &str,
     ) -> bsv_sdk::Result<GetPublicKeyResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         // BRC-98/99: Check protocol permission for public key revelation
         if let Some(ref protocol_id) = args.protocol_id {
             self.check_protocol_permission(
@@ -1017,8 +1035,7 @@ where
     }
 
     async fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_sdk::Result<EncryptResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         // BRC-98/99: Check protocol permission for encryption
         self.check_protocol_permission(
             originator,
@@ -1032,8 +1049,7 @@ where
     }
 
     async fn decrypt(&self, args: DecryptArgs, originator: &str) -> bsv_sdk::Result<DecryptResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         // BRC-98/99: Check protocol permission for decryption
         self.check_protocol_permission(
             originator,
@@ -1051,8 +1067,7 @@ where
         args: CreateHmacArgs,
         originator: &str,
     ) -> bsv_sdk::Result<CreateHmacResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         // BRC-98/99: Check protocol permission for HMAC
         self.check_protocol_permission(
             originator,
@@ -1070,8 +1085,7 @@ where
         args: VerifyHmacArgs,
         originator: &str,
     ) -> bsv_sdk::Result<VerifyHmacResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         // BRC-98/99: Check protocol permission for HMAC verification
         self.check_protocol_permission(
             originator,
@@ -1089,8 +1103,7 @@ where
         args: CreateSignatureArgs,
         originator: &str,
     ) -> bsv_sdk::Result<CreateSignatureResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         // BRC-98/99: Check protocol permission for signing
         self.check_protocol_permission(
             originator,
@@ -1108,8 +1121,7 @@ where
         args: VerifySignatureArgs,
         originator: &str,
     ) -> bsv_sdk::Result<VerifySignatureResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         self.proto_verify_signature(args)
     }
 
@@ -1118,8 +1130,7 @@ where
         args: InterfaceRevealCounterpartyArgs,
         originator: &str,
     ) -> bsv_sdk::Result<RevealCounterpartyKeyLinkageResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Convert interface args to proto_wallet args
         use bsv_sdk::wallet::RevealCounterpartyKeyLinkageArgs as ProtoRevealCounterpartyArgs;
@@ -1129,7 +1140,9 @@ where
             verifier: args.verifier.clone(),
         };
 
-        let result = self.proto_wallet.reveal_counterparty_key_linkage(proto_args)?;
+        let result = self
+            .proto_wallet
+            .reveal_counterparty_key_linkage(proto_args)?;
 
         // Parse the prover hex string back to PublicKey
         let prover = PublicKey::from_hex(&result.prover)
@@ -1156,8 +1169,7 @@ where
         args: InterfaceRevealSpecificArgs,
         originator: &str,
     ) -> bsv_sdk::Result<RevealSpecificKeyLinkageResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Convert interface args to proto_wallet args
         use bsv_sdk::wallet::{
@@ -1206,8 +1218,7 @@ where
         args: CreateActionArgs,
         originator: &str,
     ) -> bsv_sdk::Result<CreateActionResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // BRC-98/99: Check spending permission based on total output satoshis
         if self.permissions_manager.is_some() {
@@ -1272,9 +1283,10 @@ where
             // Build the unsigned transaction from storage result
             // Pass the key_deriver so we can compute locking scripts for change outputs
             let unsigned_tx =
-                build_unsigned_transaction(&storage_result, Some(self.proto_wallet.key_deriver())).map_err(|e| {
-                    bsv_sdk::Error::WalletError(format!("Failed to build transaction: {}", e))
-                })?;
+                build_unsigned_transaction(&storage_result, Some(self.proto_wallet.key_deriver()))
+                    .map_err(|e| {
+                        bsv_sdk::Error::WalletError(format!("Failed to build transaction: {}", e))
+                    })?;
 
             // Debug: Log storage result outputs
             for (i, output) in storage_result.outputs.iter().enumerate() {
@@ -1299,7 +1311,9 @@ where
                     source_txid: input.source_txid.clone(),
                     source_vout: input.source_vout,
                     satoshis: input.source_satoshis,
-                    source_locking_script: Some(hex::decode(&input.source_locking_script).unwrap_or_default()),
+                    source_locking_script: Some(
+                        hex::decode(&input.source_locking_script).unwrap_or_default(),
+                    ),
                     unlocking_script: None,
                     derivation_prefix: input.derivation_prefix.clone(),
                     derivation_suffix: input.derivation_suffix.clone(),
@@ -1308,17 +1322,25 @@ where
                 .collect();
 
             // Sign the transaction using the wallet signer
-            let signed_tx = match self
-                .signer
-                .sign_transaction(&unsigned_tx, &signer_inputs, &self.proto_wallet)
-            {
+            let signed_tx = match self.signer.sign_transaction(
+                &unsigned_tx,
+                &signer_inputs,
+                &self.proto_wallet,
+            ) {
                 Ok(tx) => tx,
                 Err(e) => {
                     // Signing failed - abort the transaction to release locked UTXOs
                     tracing::error!(reference = %storage_result.reference, error = %e, "Signing failed in create_action, aborting transaction to release UTXOs");
-                    if let Err(abort_err) = self.storage.abort_action(&auth, bsv_sdk::wallet::AbortActionArgs {
-                        reference: storage_result.reference.clone(),
-                    }).await {
+                    if let Err(abort_err) = self
+                        .storage
+                        .abort_action(
+                            &auth,
+                            bsv_sdk::wallet::AbortActionArgs {
+                                reference: storage_result.reference.clone(),
+                            },
+                        )
+                        .await
+                    {
                         tracing::error!(reference = %storage_result.reference, error = %abort_err, "Failed to abort transaction after signing error");
                     }
                     return Err(bsv_sdk::Error::WalletError(format!(
@@ -1360,18 +1382,21 @@ where
                     .unwrap_or_default(),
             };
 
-            let process_result = match self
-                .storage
-                .process_action(&auth, process_args)
-                .await
-            {
+            let process_result = match self.storage.process_action(&auth, process_args).await {
                 Ok(result) => result,
                 Err(e) => {
                     // Processing failed - abort the transaction to release locked UTXOs
                     tracing::error!(reference = %storage_result.reference, error = %e, "Process action failed in create_action, aborting transaction to release UTXOs");
-                    if let Err(abort_err) = self.storage.abort_action(&auth, bsv_sdk::wallet::AbortActionArgs {
-                        reference: storage_result.reference.clone(),
-                    }).await {
+                    if let Err(abort_err) = self
+                        .storage
+                        .abort_action(
+                            &auth,
+                            bsv_sdk::wallet::AbortActionArgs {
+                                reference: storage_result.reference.clone(),
+                            },
+                        )
+                        .await
+                    {
                         tracing::error!(reference = %storage_result.reference, error = %abort_err, "Failed to abort transaction after process error");
                     }
                     return Err(bsv_sdk::Error::WalletError(format!(
@@ -1391,7 +1416,9 @@ where
             // Broadcast the transaction if not no_send and not delayed
             // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
             if !no_send && !accept_delayed_broadcast {
-                let broadcast_success = if let Some(ref input_beef_bytes) = storage_result.input_beef {
+                let broadcast_success = if let Some(ref input_beef_bytes) =
+                    storage_result.input_beef
+                {
                     // Create a new BEEF that includes both the signed tx and its ancestors
                     match bsv_sdk::transaction::Beef::from_binary(input_beef_bytes) {
                         Ok(mut broadcast_beef) => {
@@ -1399,10 +1426,13 @@ where
                             broadcast_beef.merge_raw_tx(signed_tx.clone(), None);
 
                             // Check if V2->V1 downgrade is possible
-                            let can_downgrade = broadcast_beef.txs.iter().all(|tx| !tx.is_txid_only());
+                            let can_downgrade =
+                                broadcast_beef.txs.iter().all(|tx| !tx.is_txid_only());
 
                             // Force downgrade to V1 for ARC compatibility
-                            if can_downgrade && broadcast_beef.version != bsv_sdk::transaction::BEEF_V1 {
+                            if can_downgrade
+                                && broadcast_beef.version != bsv_sdk::transaction::BEEF_V1
+                            {
                                 broadcast_beef.version = bsv_sdk::transaction::BEEF_V1;
                             }
 
@@ -1422,9 +1452,12 @@ where
                                         tracing::info!(txid = %txid, "Transaction broadcast successfully");
                                         true
                                     } else {
-                                        let errors: Vec<_> = results.iter()
+                                        let errors: Vec<_> = results
+                                            .iter()
                                             .filter(|r| r.status != "success")
-                                            .map(|r| format!("{}: {} {:?}", r.name, r.status, r.error))
+                                            .map(|r| {
+                                                format!("{}: {} {:?}", r.name, r.status, r.error)
+                                            })
                                             .collect();
                                         tracing::error!(
                                             txid = %txid,
@@ -1453,7 +1486,11 @@ where
                 // Update transaction status based on broadcast result
                 // On success: status -> 'unproven', inputs stay spent
                 // On failure: status -> 'failed', inputs restored to spendable
-                if let Err(e) = self.storage.update_transaction_status_after_broadcast(&txid, broadcast_success).await {
+                if let Err(e) = self
+                    .storage
+                    .update_transaction_status_after_broadcast(&txid, broadcast_success)
+                    .await
+                {
                     tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
                 }
 
@@ -1515,9 +1552,11 @@ where
         // Return the result with signable transaction for external signing
         // Build transaction before consuming storage_result fields
         // Pass the key_deriver so we can compute locking scripts for change outputs
-        let unsigned_tx = build_unsigned_transaction(&storage_result, Some(self.proto_wallet.key_deriver())).map_err(|e| {
-            bsv_sdk::Error::WalletError(format!("Failed to build transaction: {}", e))
-        })?;
+        let unsigned_tx =
+            build_unsigned_transaction(&storage_result, Some(self.proto_wallet.key_deriver()))
+                .map_err(|e| {
+                    bsv_sdk::Error::WalletError(format!("Failed to build transaction: {}", e))
+                })?;
         let reference = storage_result.reference.clone();
         let reference_bytes = reference.clone().into_bytes();
 
@@ -1530,7 +1569,9 @@ where
                 source_txid: input.source_txid.clone(),
                 source_vout: input.source_vout,
                 satoshis: input.source_satoshis,
-                source_locking_script: Some(hex::decode(&input.source_locking_script).unwrap_or_default()),
+                source_locking_script: Some(
+                    hex::decode(&input.source_locking_script).unwrap_or_default(),
+                ),
                 unlocking_script: None,
                 derivation_prefix: input.derivation_prefix.clone(),
                 derivation_suffix: input.derivation_suffix.clone(),
@@ -1593,8 +1634,7 @@ where
         args: SignActionArgs,
         originator: &str,
     ) -> bsv_sdk::Result<SignActionResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Get the reference from args (it's already a String)
         let reference = args.reference;
@@ -1640,18 +1680,26 @@ where
         }
 
         // Sign the transaction using the wallet signer
-        let signed_tx = match self
-            .signer
-            .sign_transaction(&pending_tx.raw_tx, &inputs, &self.proto_wallet)
-        {
+        let signed_tx = match self.signer.sign_transaction(
+            &pending_tx.raw_tx,
+            &inputs,
+            &self.proto_wallet,
+        ) {
             Ok(tx) => tx,
             Err(e) => {
                 // Signing failed - abort the transaction to release locked UTXOs
                 tracing::error!(reference = %reference, error = %e, "Signing failed, aborting transaction to release UTXOs");
                 let auth = self.auth();
-                if let Err(abort_err) = self.storage.abort_action(&auth, bsv_sdk::wallet::AbortActionArgs {
-                    reference: reference.clone(),
-                }).await {
+                if let Err(abort_err) = self
+                    .storage
+                    .abort_action(
+                        &auth,
+                        bsv_sdk::wallet::AbortActionArgs {
+                            reference: reference.clone(),
+                        },
+                    )
+                    .await
+                {
                     tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after signing error");
                 }
                 return Err(bsv_sdk::Error::WalletError(format!(
@@ -1699,18 +1747,21 @@ where
             send_with,
         };
 
-        let process_result = match self
-            .storage
-            .process_action(&auth, process_args)
-            .await
-        {
+        let process_result = match self.storage.process_action(&auth, process_args).await {
             Ok(result) => result,
             Err(e) => {
                 // Processing failed - abort the transaction to release locked UTXOs
                 tracing::error!(reference = %reference, error = %e, "Process action failed, aborting transaction to release UTXOs");
-                if let Err(abort_err) = self.storage.abort_action(&auth, bsv_sdk::wallet::AbortActionArgs {
-                    reference: reference.clone(),
-                }).await {
+                if let Err(abort_err) = self
+                    .storage
+                    .abort_action(
+                        &auth,
+                        bsv_sdk::wallet::AbortActionArgs {
+                            reference: reference.clone(),
+                        },
+                    )
+                    .await
+                {
                     tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after process error");
                 }
                 return Err(bsv_sdk::Error::WalletError(format!(
@@ -1741,7 +1792,8 @@ where
                                     tracing::info!(txid = %txid, "Transaction broadcast successfully (sign_action)");
                                     true
                                 } else {
-                                    let errors: Vec<_> = results.iter()
+                                    let errors: Vec<_> = results
+                                        .iter()
                                         .filter(|r| r.status != "success")
                                         .map(|r| format!("{}: {} {:?}", r.name, r.status, r.error))
                                         .collect();
@@ -1770,7 +1822,11 @@ where
             };
 
             // Update transaction status based on broadcast result
-            if let Err(e) = self.storage.update_transaction_status_after_broadcast(&txid, broadcast_success).await {
+            if let Err(e) = self
+                .storage
+                .update_transaction_status_after_broadcast(&txid, broadcast_success)
+                .await
+            {
                 tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
             }
 
@@ -1827,8 +1883,7 @@ where
         args: AbortActionArgs,
         originator: &str,
     ) -> bsv_sdk::Result<AbortActionResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let auth = self.auth();
 
@@ -1846,8 +1901,7 @@ where
         args: ListActionsArgs,
         originator: &str,
     ) -> bsv_sdk::Result<ListActionsResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let auth = self.auth();
 
@@ -1865,8 +1919,7 @@ where
         args: InternalizeActionArgs,
         originator: &str,
     ) -> bsv_sdk::Result<InternalizeActionResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Validate wallet payment outputs have correct BRC-29 derivation parameters
         for output in &args.outputs {
@@ -1908,8 +1961,7 @@ where
         args: ListOutputsArgs,
         originator: &str,
     ) -> bsv_sdk::Result<ListOutputsResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // BRC-98/99: Check basket access permission for listing
         self.check_basket_permission(
@@ -1936,8 +1988,7 @@ where
         args: RelinquishOutputArgs,
         originator: &str,
     ) -> bsv_sdk::Result<RelinquishOutputResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // BRC-98/99: Check basket access permission for removal
         self.check_basket_permission(
@@ -1968,8 +2019,7 @@ where
         args: AcquireCertificateArgs,
         originator: &str,
     ) -> bsv_sdk::Result<WalletCertificate> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Route based on acquisition protocol:
         // - Direct: certificate data is already provided in args, store directly
@@ -2014,8 +2064,7 @@ where
         args: ListCertificatesArgs,
         originator: &str,
     ) -> bsv_sdk::Result<ListCertificatesResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let auth = self.auth();
 
@@ -2033,8 +2082,7 @@ where
         args: ProveCertificateArgs,
         originator: &str,
     ) -> bsv_sdk::Result<ProveCertificateResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // BRC-98/99: Check certificate disclosure permission
         self.check_certificate_permission(
@@ -2146,8 +2194,7 @@ where
         args: RelinquishCertificateArgs,
         originator: &str,
     ) -> bsv_sdk::Result<RelinquishCertificateResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let auth = self.auth();
 
@@ -2157,9 +2204,7 @@ where
             .await
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
-        Ok(RelinquishCertificateResult {
-            relinquished: true,
-        })
+        Ok(RelinquishCertificateResult { relinquished: true })
     }
 
     // =========================================================================
@@ -2171,8 +2216,7 @@ where
         args: DiscoverByIdentityKeyArgs,
         originator: &str,
     ) -> bsv_sdk::Result<DiscoverCertificatesResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Local-only discovery: query certificates from storage where subject matches identity_key
         // Full overlay discovery would query the ls_identity overlay service
@@ -2208,21 +2252,19 @@ where
         // WalletCertificate uses Strings, so we can directly use the stored values
         let certificates: Vec<bsv_sdk::wallet::IdentityCertificate> = matching_certs
             .iter()
-            .map(|cert| {
-                bsv_sdk::wallet::IdentityCertificate {
-                    certificate: WalletCertificate {
-                        certificate_type: cert.cert_type.clone(),
-                        serial_number: cert.serial_number.clone(),
-                        subject: cert.subject.clone(),
-                        certifier: cert.certifier.clone(),
-                        revocation_outpoint: cert.revocation_outpoint.clone(),
-                        fields: std::collections::HashMap::new(),
-                        signature: cert.signature.clone(),
-                    },
-                    decrypted_fields: None,
-                    publicly_revealed_keyring: None,
-                    certifier_info: None,
-                }
+            .map(|cert| bsv_sdk::wallet::IdentityCertificate {
+                certificate: WalletCertificate {
+                    certificate_type: cert.cert_type.clone(),
+                    serial_number: cert.serial_number.clone(),
+                    subject: cert.subject.clone(),
+                    certifier: cert.certifier.clone(),
+                    revocation_outpoint: cert.revocation_outpoint.clone(),
+                    fields: std::collections::HashMap::new(),
+                    signature: cert.signature.clone(),
+                },
+                decrypted_fields: None,
+                publicly_revealed_keyring: None,
+                certifier_info: None,
             })
             .collect();
 
@@ -2237,8 +2279,7 @@ where
         args: DiscoverByAttributesArgs,
         originator: &str,
     ) -> bsv_sdk::Result<DiscoverCertificatesResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Local-only discovery: query certificates from storage and filter by attributes
         // Full overlay discovery would query the ls_identity overlay service
@@ -2265,8 +2306,7 @@ where
     // =========================================================================
 
     async fn is_authenticated(&self, originator: &str) -> bsv_sdk::Result<AuthenticatedResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Wallet is always authenticated (it has a key)
         Ok(AuthenticatedResult {
@@ -2278,8 +2318,7 @@ where
         &self,
         originator: &str,
     ) -> bsv_sdk::Result<AuthenticatedResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         // Wallet is always authenticated
         Ok(AuthenticatedResult {
@@ -2288,8 +2327,7 @@ where
     }
 
     async fn get_height(&self, originator: &str) -> bsv_sdk::Result<GetHeightResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let height = self
             .services
@@ -2305,8 +2343,7 @@ where
         args: GetHeaderArgs,
         originator: &str,
     ) -> bsv_sdk::Result<GetHeaderResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let header_bytes = self
             .services
@@ -2321,8 +2358,7 @@ where
     }
 
     async fn get_network(&self, originator: &str) -> bsv_sdk::Result<GetNetworkResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let network = match self.chain {
             Chain::Main => Network::Mainnet,
@@ -2333,8 +2369,7 @@ where
     }
 
     async fn get_version(&self, originator: &str) -> bsv_sdk::Result<GetVersionResult> {
-        validate_originator(originator)
-            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        validate_originator(originator).map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         Ok(GetVersionResult {
             version: WALLET_VERSION.to_string(),
@@ -2438,19 +2473,30 @@ fn build_unsigned_transaction(
 
                 // Derive the public key using BRC-29 protocol
                 let pubkey = key_deriver
-                    .derive_private_key(&brc29_protocol, &key_id, &bsv_sdk::wallet::Counterparty::Self_)
-                    .map_err(|e| Error::TransactionError(format!("Failed to derive change key: {}", e)))?
+                    .derive_private_key(
+                        &brc29_protocol,
+                        &key_id,
+                        &bsv_sdk::wallet::Counterparty::Self_,
+                    )
+                    .map_err(|e| {
+                        Error::TransactionError(format!("Failed to derive change key: {}", e))
+                    })?
                     .public_key();
 
                 // Create P2PKH locking script using SDK's ScriptTemplate trait
                 use bsv_sdk::script::template::ScriptTemplate;
                 bsv_sdk::script::templates::P2PKH::new()
                     .lock(&pubkey.hash160())
-                    .map_err(|e| Error::TransactionError(format!("Failed to create P2PKH script: {}", e)))?
+                    .map_err(|e| {
+                        Error::TransactionError(format!("Failed to create P2PKH script: {}", e))
+                    })?
                     .to_binary()
             } else {
                 // Can't derive - use empty (will likely fail validation)
-                tracing::warn!(vout = output.vout, "Output has empty locking script and no derivation info");
+                tracing::warn!(
+                    vout = output.vout,
+                    "Output has empty locking script and no derivation info"
+                );
                 Vec::new()
             }
         } else {
@@ -2546,9 +2592,7 @@ fn create_keyring_for_verifier(
     _originator: &str,
 ) -> bsv_sdk::Result<HashMap<String, String>> {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-    use bsv_sdk::wallet::{
-        DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs,
-    };
+    use bsv_sdk::wallet::{DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs};
 
     // Validate master keyring is not empty
     if master_keyring.is_empty() {
@@ -2632,11 +2676,9 @@ fn address_to_p2pkh_script(address: &str) -> Result<Vec<u8>> {
 
     let mut result = [0u8; 25];
     for &ch in address.as_bytes() {
-        let mut carry = ALPHABET
-            .iter()
-            .position(|&c| c == ch)
-            .ok_or_else(|| Error::ValidationError(format!("Invalid Base58 character: {}", ch as char)))?
-            as u32;
+        let mut carry = ALPHABET.iter().position(|&c| c == ch).ok_or_else(|| {
+            Error::ValidationError(format!("Invalid Base58 character: {}", ch as char))
+        })? as u32;
 
         for byte in result.iter_mut().rev() {
             carry += 58 * (*byte as u32);
@@ -2652,7 +2694,9 @@ fn address_to_p2pkh_script(address: &str) -> Result<Vec<u8>> {
     let leading_zeros = address.bytes().take_while(|&b| b == b'1').count();
     let first_nonzero = result.iter().position(|&b| b != 0).unwrap_or(result.len());
     if first_nonzero < leading_zeros {
-        return Err(Error::ValidationError("Invalid address encoding".to_string()));
+        return Err(Error::ValidationError(
+            "Invalid address encoding".to_string(),
+        ));
     }
 
     let decoded = &result[(first_nonzero - leading_zeros)..];
@@ -2669,7 +2713,9 @@ fn address_to_p2pkh_script(address: &str) -> Result<Vec<u8>> {
     let hash1 = Sha256::digest(payload);
     let hash2 = Sha256::digest(hash1);
     if &hash2[..4] != checksum {
-        return Err(Error::ValidationError("Invalid address checksum".to_string()));
+        return Err(Error::ValidationError(
+            "Invalid address checksum".to_string(),
+        ));
     }
 
     let version = decoded[0];
@@ -2706,7 +2752,10 @@ where
         f.debug_struct("Wallet")
             .field("identity_key", &self.identity_key)
             .field("chain", &self.chain)
-            .field("has_privileged_key_manager", &self.privileged_key_manager.is_some())
+            .field(
+                "has_privileged_key_manager",
+                &self.privileged_key_manager.is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -2727,7 +2776,8 @@ mod tests {
             raw_tx: vec![0x01, 0x00, 0x00, 0x00],
             inputs: vec![SignerInput {
                 vin: 0,
-                source_txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                source_txid: "0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
                 source_vout: 0,
                 satoshis: 50000,
                 source_locking_script: Some(vec![0x76, 0xa9]),
@@ -2785,10 +2835,7 @@ mod tests {
             input_beef: None,
             is_no_send: false,
             is_delayed: false,
-            send_with: vec![
-                "abc123".to_string(),
-                "def456".to_string(),
-            ],
+            send_with: vec!["abc123".to_string(), "def456".to_string()],
             created_at: Utc::now(),
         };
 
@@ -2875,8 +2922,8 @@ mod tests {
     // Tests for create_keyring_for_verifier helper function
     mod prove_certificate_tests {
         use super::*;
-        use bsv_sdk::primitives::PrivateKey;
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+        use bsv_sdk::primitives::PrivateKey;
 
         #[test]
         fn test_create_keyring_empty_master_keyring_fails() {
@@ -2885,9 +2932,8 @@ mod tests {
             let verifier_key = PrivateKey::random();
             let subject_wallet = ProtoWallet::new(Some(subject_key));
 
-            let fields: HashMap<String, String> = HashMap::from([
-                ("name".to_string(), BASE64.encode("encrypted_name")),
-            ]);
+            let fields: HashMap<String, String> =
+                HashMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
             let master_keyring: HashMap<String, String> = HashMap::new(); // Empty
             let fields_to_reveal = vec!["name".to_string()];
 
@@ -2914,9 +2960,8 @@ mod tests {
             let verifier_key = PrivateKey::random();
             let subject_wallet = ProtoWallet::new(Some(subject_key));
 
-            let fields: HashMap<String, String> = HashMap::from([
-                ("name".to_string(), BASE64.encode("encrypted_name")),
-            ]);
+            let fields: HashMap<String, String> =
+                HashMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
             let master_keyring: HashMap<String, String> = HashMap::from([
                 ("name".to_string(), BASE64.encode("encrypted_key")),
                 ("email".to_string(), BASE64.encode("encrypted_key2")),
@@ -2952,9 +2997,8 @@ mod tests {
                 ("email".to_string(), BASE64.encode("encrypted_email")),
             ]);
             // Master keyring missing 'email' key
-            let master_keyring: HashMap<String, String> = HashMap::from([
-                ("name".to_string(), BASE64.encode("encrypted_key")),
-            ]);
+            let master_keyring: HashMap<String, String> =
+                HashMap::from([("name".to_string(), BASE64.encode("encrypted_key"))]);
             let fields_to_reveal = vec!["email".to_string()];
 
             let result = create_keyring_for_verifier(
@@ -2980,13 +3024,11 @@ mod tests {
             let verifier_key = PrivateKey::random();
             let subject_wallet = ProtoWallet::new(Some(subject_key));
 
-            let fields: HashMap<String, String> = HashMap::from([
-                ("name".to_string(), BASE64.encode("encrypted_name")),
-            ]);
+            let fields: HashMap<String, String> =
+                HashMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
             // Invalid base64
-            let master_keyring: HashMap<String, String> = HashMap::from([
-                ("name".to_string(), "not-valid-base64!!!".to_string()),
-            ]);
+            let master_keyring: HashMap<String, String> =
+                HashMap::from([("name".to_string(), "not-valid-base64!!!".to_string())]);
             let fields_to_reveal = vec!["name".to_string()];
 
             let result = create_keyring_for_verifier(
@@ -3066,12 +3108,10 @@ mod tests {
             let master_key_base64 = BASE64.encode(&master_key_encrypted.ciphertext);
 
             // Build the structures
-            let fields: HashMap<String, String> = HashMap::from([
-                (field_name.to_string(), encrypted_field_base64.clone()),
-            ]);
-            let master_keyring: HashMap<String, String> = HashMap::from([
-                (field_name.to_string(), master_key_base64),
-            ]);
+            let fields: HashMap<String, String> =
+                HashMap::from([(field_name.to_string(), encrypted_field_base64.clone())]);
+            let master_keyring: HashMap<String, String> =
+                HashMap::from([(field_name.to_string(), master_key_base64)]);
             let fields_to_reveal = vec![field_name.to_string()];
 
             // Step 4: Call create_keyring_for_verifier
@@ -3108,7 +3148,10 @@ mod tests {
                 .expect("Verifier should be able to decrypt the symmetric key");
 
             // Reconstruct the symmetric key
-            let key_bytes: [u8; 32] = decrypted_key_result.plaintext.as_slice().try_into()
+            let key_bytes: [u8; 32] = decrypted_key_result
+                .plaintext
+                .as_slice()
+                .try_into()
                 .expect("Key should be 32 bytes");
             let recovered_symmetric_key = SymmetricKey::from_bytes(&key_bytes)
                 .expect("Should be able to reconstruct symmetric key");
@@ -3162,7 +3205,10 @@ mod tests {
                         counterparty: Some(Counterparty::Other(subject_key.public_key())),
                     })
                     .unwrap();
-                master_keyring.insert(field_name.to_string(), BASE64.encode(&encrypted_key.ciphertext));
+                master_keyring.insert(
+                    field_name.to_string(),
+                    BASE64.encode(&encrypted_key.ciphertext),
+                );
             }
 
             // Only reveal name and email, not organization
@@ -3250,8 +3296,8 @@ mod tests {
 
     #[test]
     fn test_address_to_p2pkh_script_mainnet() {
-        let script = address_to_p2pkh_script("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
-            .expect("valid address");
+        let script =
+            address_to_p2pkh_script("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa").expect("valid address");
         assert_eq!(script.len(), 25);
         assert_eq!(script[0], 0x76); // OP_DUP
         assert_eq!(script[1], 0xa9); // OP_HASH160
@@ -3265,5 +3311,4 @@ mod tests {
         assert!(address_to_p2pkh_script("0OIl").is_err());
         assert!(address_to_p2pkh_script("1").is_err());
     }
-
 }

@@ -20,40 +20,23 @@ mod live_websocket;
 
 // Re-export bulk ingestors
 pub use bulk_cdn::{
-    BulkCdnIngestor,
-    BulkCdnOptions,
-    BulkHeaderFileInfo,
-    BulkHeaderFilesInfo,
-    DEFAULT_CDN_URL,
+    BulkCdnIngestor, BulkCdnOptions, BulkHeaderFileInfo, BulkHeaderFilesInfo, DEFAULT_CDN_URL,
     LEGACY_CDN_URL,
 };
 
 pub use bulk_woc::{
-    BulkWocIngestor,
-    BulkWocOptions,
-    WocChainInfo,
-    WocHeaderResponse,
-    WocHeaderByteFileLinks,
-    WOC_API_URL_MAIN,
-    WOC_API_URL_TEST,
+    BulkWocIngestor, BulkWocOptions, WocChainInfo, WocHeaderByteFileLinks, WocHeaderResponse,
+    WOC_API_URL_MAIN, WOC_API_URL_TEST,
 };
 
 // Re-export live ingestors
 pub use live_polling::{
-    LivePollingIngestor,
-    LivePollingOptions,
-    WocGetHeadersHeader,
-    woc_header_to_block_header,
+    woc_header_to_block_header, LivePollingIngestor, LivePollingOptions, WocGetHeadersHeader,
 };
 
 pub use live_websocket::{
-    LiveWebSocketIngestor,
-    LiveWebSocketOptions,
-    WocWsBlockHeader,
-    WocWsMessage,
-    ws_header_to_block_header,
-    WOC_WS_URL_MAIN,
-    WOC_WS_URL_TEST,
+    ws_header_to_block_header, LiveWebSocketIngestor, LiveWebSocketOptions, WocWsBlockHeader,
+    WocWsMessage, WOC_WS_URL_MAIN, WOC_WS_URL_TEST,
 };
 
 #[cfg(test)]
@@ -163,7 +146,8 @@ mod tests {
             height: 0,
             version: 1,
             version_hex: "00000001".to_string(),
-            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b".to_string(),
+            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+                .to_string(),
             time: 1231006505,
             median_time: 1231006505,
             nonce: 2083236893,
@@ -189,7 +173,8 @@ mod tests {
             height: 0,
             version: 1,
             previous_block_hash: None,
-            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b".to_string(),
+            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+                .to_string(),
             time: 1231006505,
             bits: 486604799,
             nonce: 2083236893,

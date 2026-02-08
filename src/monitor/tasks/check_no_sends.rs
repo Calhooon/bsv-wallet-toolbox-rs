@@ -146,9 +146,6 @@ mod tests {
 
     #[test]
     fn test_check_no_sends_task_name() {
-        
-        
-
         // We can't easily create a real storage in tests, so just test the constants
         assert_eq!(
             Duration::from_secs(24 * 60 * 60),

@@ -486,11 +486,8 @@ pub trait WalletStorageReader: Send + Sync {
     ) -> Result<Vec<TableProvenTxReq>>;
 
     /// List actions (transactions) for the user.
-    async fn list_actions(
-        &self,
-        auth: &AuthId,
-        args: ListActionsArgs,
-    ) -> Result<ListActionsResult>;
+    async fn list_actions(&self, auth: &AuthId, args: ListActionsArgs)
+        -> Result<ListActionsResult>;
 
     /// List certificates for the user.
     async fn list_certificates(
@@ -523,17 +520,11 @@ pub trait WalletStorageWriter: WalletStorageReader {
     async fn destroy(&self) -> Result<()>;
 
     /// Find or create a user by identity key.
-    async fn find_or_insert_user(
-        &self,
-        identity_key: &str,
-    ) -> Result<(TableUser, bool)>;
+    async fn find_or_insert_user(&self, identity_key: &str) -> Result<(TableUser, bool)>;
 
     /// Abort an in-progress action.
-    async fn abort_action(
-        &self,
-        auth: &AuthId,
-        args: AbortActionArgs,
-    ) -> Result<AbortActionResult>;
+    async fn abort_action(&self, auth: &AuthId, args: AbortActionArgs)
+        -> Result<AbortActionResult>;
 
     /// Create a new action (transaction).
     async fn create_action(
@@ -557,11 +548,8 @@ pub trait WalletStorageWriter: WalletStorageReader {
     ) -> Result<StorageInternalizeActionResult>;
 
     /// Insert a certificate.
-    async fn insert_certificate(
-        &self,
-        auth: &AuthId,
-        certificate: TableCertificate,
-    ) -> Result<i64>;
+    async fn insert_certificate(&self, auth: &AuthId, certificate: TableCertificate)
+        -> Result<i64>;
 
     /// Insert a certificate field.
     async fn insert_certificate_field(
@@ -578,11 +566,7 @@ pub trait WalletStorageWriter: WalletStorageReader {
     ) -> Result<i64>;
 
     /// Relinquish (release) an output.
-    async fn relinquish_output(
-        &self,
-        auth: &AuthId,
-        args: RelinquishOutputArgs,
-    ) -> Result<i64>;
+    async fn relinquish_output(&self, auth: &AuthId, args: RelinquishOutputArgs) -> Result<i64>;
 
     /// Update transaction status after broadcast attempt.
     ///
@@ -610,7 +594,11 @@ pub trait WalletStorageWriter: WalletStorageReader {
     /// # Arguments
     /// * `auth` - The authenticated user
     /// * `aged_limit` - Items older than this are considered aged
-    async fn review_status(&self, auth: &AuthId, aged_limit: DateTime<Utc>) -> Result<ReviewStatusResult>;
+    async fn review_status(
+        &self,
+        auth: &AuthId,
+        aged_limit: DateTime<Utc>,
+    ) -> Result<ReviewStatusResult>;
 
     /// Purge old data from storage.
     ///
@@ -664,11 +652,8 @@ pub trait WalletStorageSync: WalletStorageWriter {
     ) -> Result<(TableSyncState, bool)>;
 
     /// Set the active storage for a user.
-    async fn set_active(
-        &self,
-        auth: &AuthId,
-        new_active_storage_identity_key: &str,
-    ) -> Result<i64>;
+    async fn set_active(&self, auth: &AuthId, new_active_storage_identity_key: &str)
+        -> Result<i64>;
 
     /// Get a chunk of data for synchronization.
     async fn get_sync_chunk(&self, args: RequestSyncChunkArgs) -> Result<SyncChunk>;

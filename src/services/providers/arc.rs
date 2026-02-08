@@ -14,11 +14,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 use uuid::Uuid;
 
-use bsv_sdk::transaction::{Beef, BEEF_V1};
-use crate::services::traits::{
-    GetMerklePathResult, PostBeefResult, PostTxResultForTxid,
-};
+use crate::services::traits::{GetMerklePathResult, PostBeefResult, PostTxResultForTxid};
 use crate::{Error, Result};
+use bsv_sdk::transaction::{Beef, BEEF_V1};
 
 /// TAAL ARC mainnet URL.
 pub const ARC_TAAL_MAINNET: &str = "https://arc.taal.com";
@@ -102,7 +100,11 @@ pub struct Arc {
 
 impl Arc {
     /// Create a new ARC provider.
-    pub fn new(url: impl Into<String>, config: Option<ArcConfig>, name: Option<&str>) -> Result<Self> {
+    pub fn new(
+        url: impl Into<String>,
+        config: Option<ArcConfig>,
+        name: Option<&str>,
+    ) -> Result<Self> {
         let url = url.into();
         let config = config.unwrap_or_default();
 
@@ -238,7 +240,11 @@ impl Arc {
                         status: "error".to_string(),
                         double_spend: true,
                         competing_txs: data.competing_txs,
-                        data: Some(format!("{} {}", data.tx_status, data.extra_info.unwrap_or_default())),
+                        data: Some(format!(
+                            "{} {}",
+                            data.tx_status,
+                            data.extra_info.unwrap_or_default()
+                        )),
                         service_error: false,
                         block_hash: None,
                         block_height: None,
@@ -250,7 +256,11 @@ impl Arc {
                         status: "success".to_string(),
                         double_spend: false,
                         competing_txs: None,
-                        data: Some(format!("{} {}", data.tx_status, data.extra_info.unwrap_or_default())),
+                        data: Some(format!(
+                            "{} {}",
+                            data.tx_status,
+                            data.extra_info.unwrap_or_default()
+                        )),
                         service_error: false,
                         block_hash: None,
                         block_height: None,
@@ -315,7 +325,9 @@ impl Arc {
         // Convert V2 to V1 if possible (no txid-only transactions)
         // BEEF v1 starts with 0100BEEF, v2 with 0200BEEF
         let beef_to_post = if beef.len() >= 4 && beef[0..4] == [0x02, 0x00, 0xBE, 0xEF] {
-            result.notes.push(make_note(&self.name, "postBeefV2Detected"));
+            result
+                .notes
+                .push(make_note(&self.name, "postBeefV2Detected"));
             if let Ok(mut parsed_beef) = Beef::from_binary(beef) {
                 let can_downgrade = parsed_beef.txs.iter().all(|tx| !tx.is_txid_only());
                 if can_downgrade {
@@ -425,9 +437,10 @@ impl Arc {
 
         match response.status() {
             StatusCode::OK => {
-                let data: ArcTxInfo = response.json().await.map_err(|e| {
-                    Error::ServiceError(format!("Failed to parse response: {}", e))
-                })?;
+                let data: ArcTxInfo = response
+                    .json()
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse response: {}", e)))?;
                 Ok(Some(data))
             }
             StatusCode::NOT_FOUND => Ok(None),
@@ -561,7 +574,10 @@ pub struct ArcApiError {
 
 fn make_note(provider: &str, what: &str) -> HashMap<String, serde_json::Value> {
     let mut note = HashMap::new();
-    note.insert("what".to_string(), serde_json::Value::String(what.to_string()));
+    note.insert(
+        "what".to_string(),
+        serde_json::Value::String(what.to_string()),
+    );
     note.insert(
         "name".to_string(),
         serde_json::Value::String(provider.to_string()),
@@ -606,7 +622,10 @@ mod tests {
     fn test_config_with_callback() {
         let config = ArcConfig::default()
             .with_callback("https://example.com/callback", Some("secret".to_string()));
-        assert_eq!(config.callback_url, Some("https://example.com/callback".to_string()));
+        assert_eq!(
+            config.callback_url,
+            Some("https://example.com/callback".to_string())
+        );
         assert_eq!(config.callback_token, Some("secret".to_string()));
     }
 }

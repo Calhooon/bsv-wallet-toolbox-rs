@@ -3,18 +3,15 @@
 //! Connects to WhatsOnChain WebSocket for real-time block header updates.
 //! Based on TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Ingest/LiveIngestorWhatsOnChainWs.ts`
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
-use tokio::sync::{RwLock, broadcast, Mutex};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn, error};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::{broadcast, Mutex, RwLock};
+use tracing::{debug, error, info, warn};
 
+use crate::chaintracks::{BlockHeader, Chain, ChaintracksStorage, LiveBlockHeader, LiveIngestor};
 use crate::Result;
-use crate::chaintracks::{
-    Chain, BlockHeader, LiveBlockHeader,
-    LiveIngestor, ChaintracksStorage,
-};
 
 /// WebSocket URLs for WhatsOnChain
 pub const WOC_WS_URL_MAIN: &str = "wss://socket-v2.whatsonchain.com/websocket/blockHeaders";
@@ -22,9 +19,11 @@ pub const WOC_WS_URL_TEST: &str = "wss://socket-v2-testnet.whatsonchain.com/webs
 
 /// WebSocket URL for historical headers
 #[allow(dead_code)]
-pub const WOC_WS_HISTORY_URL_MAIN: &str = "wss://socket-v2.whatsonchain.com/websocket/blockheaders/history";
+pub const WOC_WS_HISTORY_URL_MAIN: &str =
+    "wss://socket-v2.whatsonchain.com/websocket/blockheaders/history";
 #[allow(dead_code)]
-pub const WOC_WS_HISTORY_URL_TEST: &str = "wss://socket-v2-testnet.whatsonchain.com/websocket/blockheaders/history";
+pub const WOC_WS_HISTORY_URL_TEST: &str =
+    "wss://socket-v2-testnet.whatsonchain.com/websocket/blockheaders/history";
 
 /// WOC REST API URLs (for header lookup fallback)
 pub const WOC_API_URL_MAIN: &str = "https://api.whatsonchain.com/v1/bsv/main";
@@ -50,9 +49,7 @@ pub enum WocWsMessage {
         data: Option<serde_json::Value>,
     },
     /// Connection info
-    Connect {
-        connect: String,
-    },
+    Connect { connect: String },
     /// Empty ping response
     Empty {},
 }
@@ -246,9 +243,10 @@ impl LiveWebSocketIngestor {
         }
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("WOC header lookup returned status {}", response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "WOC header lookup returned status {}",
+                response.status()
+            )));
         }
 
         #[derive(Deserialize)]
@@ -279,10 +277,7 @@ impl LiveWebSocketIngestor {
     }
 
     /// Run the WebSocket listener loop with reconnection
-    async fn websocket_loop(
-        self: Arc<Self>,
-        live_headers: Arc<RwLock<Vec<BlockHeader>>>,
-    ) {
+    async fn websocket_loop(self: Arc<Self>, live_headers: Arc<RwLock<Vec<BlockHeader>>>) {
         info!("Starting WebSocket listener for {:?}", self.options.chain);
 
         let mut reconnect_attempts = 0;
@@ -302,14 +297,21 @@ impl LiveWebSocketIngestor {
                         break;
                     }
 
-                    warn!("WebSocket connection lost, reconnecting (attempt {})", reconnect_attempts);
+                    warn!(
+                        "WebSocket connection lost, reconnecting (attempt {})",
+                        reconnect_attempts
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_millis(
-                        self.options.reconnect_delay_ms
-                    )).await;
+                        self.options.reconnect_delay_ms,
+                    ))
+                    .await;
                 }
                 Err(e) => {
                     reconnect_attempts += 1;
-                    error!("WebSocket error: {}, reconnecting (attempt {})", e, reconnect_attempts);
+                    error!(
+                        "WebSocket error: {}, reconnecting (attempt {})",
+                        e, reconnect_attempts
+                    );
 
                     if reconnect_attempts > self.options.max_reconnect_attempts {
                         error!("Max reconnection attempts reached after error");
@@ -317,8 +319,9 @@ impl LiveWebSocketIngestor {
                     }
 
                     tokio::time::sleep(tokio::time::Duration::from_millis(
-                        self.options.reconnect_delay_ms
-                    )).await;
+                        self.options.reconnect_delay_ms,
+                    ))
+                    .await;
                 }
             }
         }
@@ -340,7 +343,8 @@ impl LiveWebSocketIngestor {
         let url = self.ws_url();
         info!("Connecting to WebSocket: {}", url);
 
-        let (ws_stream, _) = connect_async(url).await
+        let (ws_stream, _) = connect_async(url)
+            .await
             .map_err(|e| crate::Error::NetworkError(format!("WebSocket connect failed: {}", e)))?;
 
         info!("WebSocket connected");
@@ -348,7 +352,9 @@ impl LiveWebSocketIngestor {
         let (mut write, mut read) = ws_stream.split();
 
         // Send initial empty object to trigger connection on server
-        write.send(Message::Text("{}".to_string())).await
+        write
+            .send(Message::Text("{}".to_string()))
+            .await
             .map_err(|e| crate::Error::NetworkError(format!("WebSocket send failed: {}", e)))?;
 
         let mut last_message_time = std::time::Instant::now();
@@ -381,10 +387,8 @@ impl LiveWebSocketIngestor {
             }
 
             // Try to receive a message with timeout
-            let receive_timeout = tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                read.next()
-            ).await;
+            let receive_timeout =
+                tokio::time::timeout(std::time::Duration::from_secs(1), read.next()).await;
 
             match receive_timeout {
                 Ok(Some(Ok(message))) => {
@@ -463,7 +467,8 @@ impl LiveWebSocketIngestor {
                     if let Some(data) = msg.get("data") {
                         if let Some(code) = data.get("code").and_then(|v| v.as_i64()) {
                             if code != 200 {
-                                let reason = data.get("reason")
+                                let reason = data
+                                    .get("reason")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("unknown");
                                 warn!("WOC message type 7: code={}, reason={}", code, reason);
@@ -477,18 +482,24 @@ impl LiveWebSocketIngestor {
         }
 
         // Try to extract header data
-        let header_data = msg.get("pub")
+        let header_data = msg
+            .get("pub")
             .and_then(|p| p.get("data"))
             .or_else(|| msg.get("data").and_then(|d| d.get("data")))
             .or_else(|| msg.get("message").and_then(|m| m.get("data")));
 
         if let Some(data) = header_data {
-            let woc_header: WocWsBlockHeader = serde_json::from_value(data.clone())
-                .map_err(|e| crate::Error::ValidationError(format!("Invalid header data: {}", e)))?;
+            let woc_header: WocWsBlockHeader =
+                serde_json::from_value(data.clone()).map_err(|e| {
+                    crate::Error::ValidationError(format!("Invalid header data: {}", e))
+                })?;
 
             let header = ws_header_to_block_header(&woc_header);
-            info!("New block from WebSocket: height={}, hash={}",
-                header.height, &header.hash[..16]);
+            info!(
+                "New block from WebSocket: height={}, hash={}",
+                header.height,
+                &header.hash[..16]
+            );
 
             // Add to live headers
             {
@@ -589,7 +600,9 @@ impl LiveWebSocketIngestor {
 
 /// Convert WebSocket header to BlockHeader
 pub fn ws_header_to_block_header(woc: &WocWsBlockHeader) -> BlockHeader {
-    let previous_hash = woc.previous_block_hash.clone()
+    let previous_hash = woc
+        .previous_block_hash
+        .clone()
         .unwrap_or_else(|| "0".repeat(64));
 
     BlockHeader {
@@ -658,7 +671,8 @@ mod tests {
             height: 0,
             version: 1,
             previous_block_hash: None,
-            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b".to_string(),
+            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+                .to_string(),
             time: 1231006505,
             bits: 486604799,
             nonce: 2083236893,
@@ -724,8 +738,11 @@ mod tests {
             hash: "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048".to_string(),
             height: 1,
             version: 1,
-            previous_block_hash: Some("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string()),
-            merkleroot: "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098".to_string(),
+            previous_block_hash: Some(
+                "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string(),
+            ),
+            merkleroot: "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098"
+                .to_string(),
             time: 1231469665,
             bits: 486604799,
             nonce: 2573394689,
@@ -735,7 +752,10 @@ mod tests {
 
         let header = ws_header_to_block_header(&woc);
         assert_eq!(header.height, 1);
-        assert_eq!(header.previous_hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
+        assert_eq!(
+            header.previous_hash,
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
     }
 
     #[test]

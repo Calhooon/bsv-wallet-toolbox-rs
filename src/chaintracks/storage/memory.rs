@@ -2,18 +2,17 @@
 //!
 //! Based on TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Storage/ChaintracksStorageNoDb.ts`
 
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::RwLock;
-use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
+use crate::chaintracks::{
+    calculate_work, BlockHeader, Chain, ChaintracksStorage, ChaintracksStorageIngest,
+    ChaintracksStorageQuery, HeightRange, InsertHeaderResult, LiveBlockHeader,
+};
 use crate::lock_utils::{lock_read, lock_write};
 use crate::Result;
-use crate::chaintracks::{
-    Chain, LiveBlockHeader, BlockHeader, HeightRange, InsertHeaderResult,
-    ChaintracksStorage, ChaintracksStorageQuery, ChaintracksStorageIngest,
-    calculate_work,
-};
 
 /// In-memory storage for Chaintracks
 ///
@@ -87,46 +86,49 @@ impl MemoryStorage {
 
     /// Get all headers at a specific height (including forks)
     pub fn get_headers_at_height(&self, height: u32) -> Vec<LiveBlockHeader> {
-        lock_read(&self.headers).map(|headers| {
-            headers.values()
-                .filter(|h| h.height == height)
-                .cloned()
-                .collect()
-        }).unwrap_or_default()
+        lock_read(&self.headers)
+            .map(|headers| {
+                headers
+                    .values()
+                    .filter(|h| h.height == height)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Get all active headers (on the main chain)
     pub fn get_active_headers(&self) -> Vec<LiveBlockHeader> {
-        lock_read(&self.headers).map(|headers| {
-            headers.values()
-                .filter(|h| h.is_active)
-                .cloned()
-                .collect()
-        }).unwrap_or_default()
+        lock_read(&self.headers)
+            .map(|headers| headers.values().filter(|h| h.is_active).cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Get all inactive headers (on forks)
     pub fn get_fork_headers(&self) -> Vec<LiveBlockHeader> {
-        lock_read(&self.headers).map(|headers| {
-            headers.values()
-                .filter(|h| !h.is_active)
-                .cloned()
-                .collect()
-        }).unwrap_or_default()
+        lock_read(&self.headers)
+            .map(|headers| headers.values().filter(|h| !h.is_active).cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Find headers that build on a given hash
     pub fn find_children(&self, parent_hash: &str) -> Vec<LiveBlockHeader> {
-        lock_read(&self.headers).map(|headers| {
-            headers.values()
-                .filter(|h| h.previous_hash == parent_hash)
-                .cloned()
-                .collect()
-        }).unwrap_or_default()
+        lock_read(&self.headers)
+            .map(|headers| {
+                headers
+                    .values()
+                    .filter(|h| h.previous_hash == parent_hash)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Insert multiple headers in batch
-    pub async fn insert_headers_batch(&self, headers: Vec<LiveBlockHeader>) -> Result<Vec<InsertHeaderResult>> {
+    pub async fn insert_headers_batch(
+        &self,
+        headers: Vec<LiveBlockHeader>,
+    ) -> Result<Vec<InsertHeaderResult>> {
         let mut results = Vec::with_capacity(headers.len());
         for header in headers {
             let result = self.insert_header(header).await?;
@@ -151,8 +153,10 @@ impl MemoryStorage {
         };
 
         let reorg_depth = old_tip.height - ancestor.height;
-        info!("Reorg detected: depth={}, old_tip={}, new_tip={}",
-            reorg_depth, old_tip.height, new_tip.height);
+        info!(
+            "Reorg detected: depth={}, old_tip={}, new_tip={}",
+            reorg_depth, old_tip.height, new_tip.height
+        );
 
         // Collect headers to deactivate (walk from old tip to ancestor)
         let mut deactivated = Vec::new();
@@ -261,7 +265,10 @@ impl ChaintracksStorageQuery for MemoryStorage {
         }
     }
 
-    async fn find_live_header_for_merkle_root(&self, merkle_root: &str) -> Result<Option<LiveBlockHeader>> {
+    async fn find_live_header_for_merkle_root(
+        &self,
+        merkle_root: &str,
+    ) -> Result<Option<LiveBlockHeader>> {
         // First check the merkle root index (active headers)
         {
             let merkle_to_id = lock_read(&self.merkle_to_id)?;
@@ -415,8 +422,12 @@ impl ChaintracksStorageQuery for MemoryStorage {
         while h1.hash != h2.hash && iterations < max_iterations {
             iterations += 1;
 
-            let p1 = h1.previous_header_id.and_then(|id| headers.get(&id).cloned());
-            let p2 = h2.previous_header_id.and_then(|id| headers.get(&id).cloned());
+            let p1 = h1
+                .previous_header_id
+                .and_then(|id| headers.get(&id).cloned());
+            let p2 = h2
+                .previous_header_id
+                .and_then(|id| headers.get(&id).cloned());
 
             match (p1, p2) {
                 (Some(prev1), Some(prev2)) => {
@@ -492,8 +503,8 @@ impl ChaintracksStorageIngest for MemoryStorage {
             Some(tip) => {
                 // New header is tip if it extends the current tip
                 // or has more work (simplified: higher height)
-                header.height > tip.height ||
-                (header.height == tip.height && header.previous_hash == tip.hash)
+                header.height > tip.height
+                    || (header.height == tip.height && header.previous_hash == tip.hash)
             }
         };
 
@@ -534,8 +545,12 @@ impl ChaintracksStorageIngest for MemoryStorage {
         lock_write(&self.hash_to_id)?.insert(header.hash.clone(), id);
 
         result.added = true;
-        debug!("Inserted header: height={}, hash={}, is_tip={}",
-            header.height, &header.hash[..16], result.is_active_tip);
+        debug!(
+            "Inserted header: height={}, hash={}, is_tip={}",
+            header.height,
+            &header.hash[..16],
+            result.is_active_tip
+        );
 
         Ok(result)
     }
@@ -565,7 +580,10 @@ impl ChaintracksStorageIngest for MemoryStorage {
         }
 
         if count > 0 {
-            debug!("Pruned {} inactive headers below height {}", count, threshold);
+            debug!(
+                "Pruned {} inactive headers below height {}",
+                count, threshold
+            );
         }
 
         Ok(count)
@@ -599,7 +617,10 @@ impl ChaintracksStorageIngest for MemoryStorage {
         }
 
         if count > 0 {
-            info!("Deleted {} headers at or below height {}", count, max_height);
+            info!(
+                "Deleted {} headers at or below height {}",
+                count, max_height
+            );
         }
 
         Ok(count)
@@ -744,12 +765,18 @@ mod tests {
         storage.insert_header(genesis).await.unwrap();
 
         // Find by hash
-        let found = storage.find_live_header_for_block_hash("genesis_hash").await.unwrap();
+        let found = storage
+            .find_live_header_for_block_hash("genesis_hash")
+            .await
+            .unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().height, 0);
 
         // Not found
-        let not_found = storage.find_live_header_for_block_hash("nonexistent").await.unwrap();
+        let not_found = storage
+            .find_live_header_for_block_hash("nonexistent")
+            .await
+            .unwrap();
         assert!(not_found.is_none());
     }
 
@@ -761,7 +788,10 @@ mod tests {
         storage.insert_header(genesis).await.unwrap();
 
         // Find by merkle root
-        let found = storage.find_live_header_for_merkle_root("merkle_genesis_hash").await.unwrap();
+        let found = storage
+            .find_live_header_for_merkle_root("merkle_genesis_hash")
+            .await
+            .unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().height, 0);
     }
@@ -888,11 +918,23 @@ mod tests {
         storage.insert_header(block2).await.unwrap();
 
         // Get headers
-        let h0 = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
-        let h2 = storage.find_live_header_for_block_hash("hash_2").await.unwrap().unwrap();
+        let h0 = storage
+            .find_live_header_for_block_hash("hash_0")
+            .await
+            .unwrap()
+            .unwrap();
+        let h2 = storage
+            .find_live_header_for_block_hash("hash_2")
+            .await
+            .unwrap()
+            .unwrap();
 
         // Find common ancestor
-        let ancestor = storage.find_common_ancestor(&h0, &h2).await.unwrap().unwrap();
+        let ancestor = storage
+            .find_common_ancestor(&h0, &h2)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(ancestor.hash, "hash_0");
     }
 
@@ -1093,10 +1135,13 @@ mod tests {
 
         // With the tip being block1, reorg depth for a header extending block1 should be 0
         let new_header = create_test_header(2, "hash_1", "hash_2");
-        let depth = storage.find_reorg_depth(&LiveBlockHeader {
-            previous_hash: "hash_1".to_string(),
-            ..new_header
-        }).await.unwrap();
+        let depth = storage
+            .find_reorg_depth(&LiveBlockHeader {
+                previous_hash: "hash_1".to_string(),
+                ..new_header
+            })
+            .await
+            .unwrap();
 
         // Should find common ancestor at block1
         assert_eq!(depth, 0);
@@ -1141,7 +1186,10 @@ mod tests {
         storage.insert_header(genesis).await.unwrap();
 
         // Search for merkle root that doesn't exist
-        let not_found = storage.find_live_header_for_merkle_root("nonexistent").await.unwrap();
+        let not_found = storage
+            .find_live_header_for_merkle_root("nonexistent")
+            .await
+            .unwrap();
         assert!(not_found.is_none());
     }
 }

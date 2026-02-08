@@ -2,9 +2,9 @@
 //!
 //! Based on TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Api/`
 
-use async_trait::async_trait;
-use crate::Result;
 use super::types::*;
+use crate::Result;
+use async_trait::async_trait;
 
 /// Read-only client interface for Chaintracks
 ///
@@ -134,7 +134,10 @@ pub trait ChaintracksStorageQuery: Send + Sync {
     async fn find_live_header_for_block_hash(&self, hash: &str) -> Result<Option<LiveBlockHeader>>;
 
     /// Find live header by merkle root
-    async fn find_live_header_for_merkle_root(&self, merkle_root: &str) -> Result<Option<LiveBlockHeader>>;
+    async fn find_live_header_for_merkle_root(
+        &self,
+        merkle_root: &str,
+    ) -> Result<Option<LiveBlockHeader>>;
 
     /// Get serialized headers as bytes
     async fn get_headers_bytes(&self, height: u32, count: u32) -> Result<Vec<u8>>;

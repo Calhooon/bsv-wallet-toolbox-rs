@@ -3,10 +3,10 @@
 //! Provides block header lookups and merkle root validation via a dedicated
 //! header service API. This is the primary source for header data in production.
 
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use crate::services::traits::BlockHeader;
 use crate::{Error, Result};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
 
 /// Block Header Service provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +74,8 @@ impl BlockHeaderService {
     /// Get the current blockchain height.
     pub async fn current_height(&self) -> Result<u32> {
         let url = self.build_url("/api/v1/chain/tip/height");
-        let response = self.build_request(&url)
+        let response = self
+            .build_request(&url)
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("BHS current_height: {}", e)))?;
@@ -86,16 +87,20 @@ impl BlockHeaderService {
             )));
         }
 
-        let text = response.text().await
+        let text = response
+            .text()
+            .await
             .map_err(|e| Error::ServiceError(format!("BHS parse error: {}", e)))?;
-        text.trim().parse::<u32>()
+        text.trim()
+            .parse::<u32>()
             .map_err(|e| Error::ServiceError(format!("BHS height parse: {}", e)))
     }
 
     /// Get block header by height.
     pub async fn chain_header_by_height(&self, height: u32) -> Result<BlockHeader> {
         let url = self.build_url(&format!("/api/v1/chain/header/byHeight?height={}", height));
-        let response = self.build_request(&url)
+        let response = self
+            .build_request(&url)
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("BHS header_by_height: {}", e)))?;
@@ -107,7 +112,9 @@ impl BlockHeaderService {
             )));
         }
 
-        response.json::<BlockHeader>().await
+        response
+            .json::<BlockHeader>()
+            .await
             .map_err(|e| Error::ServiceError(format!("BHS header parse: {}", e)))
     }
 
@@ -120,7 +127,8 @@ impl BlockHeaderService {
     /// Find the chain tip header.
     pub async fn find_chain_tip_header(&self) -> Result<BlockHeader> {
         let url = self.build_url("/api/v1/chain/header/tip");
-        let response = self.build_request(&url)
+        let response = self
+            .build_request(&url)
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("BHS chain_tip: {}", e)))?;
@@ -132,7 +140,9 @@ impl BlockHeaderService {
             )));
         }
 
-        response.json::<BlockHeader>().await
+        response
+            .json::<BlockHeader>()
+            .await
             .map_err(|e| Error::ServiceError(format!("BHS tip parse: {}", e)))
     }
 }

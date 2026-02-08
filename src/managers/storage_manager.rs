@@ -25,9 +25,9 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock};
 
 use bsv_sdk::wallet::{
-    AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs,
-    ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
-    ListOutputsArgs, ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs,
+    AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs, ListActionsArgs,
+    ListActionsResult, ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs,
+    ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs,
 };
 
 use crate::error::{Error, Result};
@@ -35,16 +35,16 @@ use crate::services::WalletServices;
 use chrono::{DateTime, Utc};
 
 use crate::storage::{
+    entities::{
+        TableCertificate, TableCertificateField, TableOutput, TableOutputBasket, TableProvenTxReq,
+        TableSettings, TableSyncState, TableUser,
+    },
     AuthId, FindCertificatesArgs, FindOutputBasketsArgs, FindOutputsArgs, FindProvenTxReqsArgs,
     MonitorStorage, ProcessSyncChunkResult, PurgeParams, PurgeResults, RequestSyncChunkArgs,
-    ReviewStatusResult, StorageCreateActionResult,
-    StorageInternalizeActionResult, StorageProcessActionArgs, StorageProcessActionResults,
-    SyncChunk, TrxToken, TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider,
-    WalletStorageReader, WalletStorageSync, WalletStorageWriter,
-    entities::{
-        TableCertificate, TableCertificateField, TableOutput, TableOutputBasket,
-        TableProvenTxReq, TableSettings, TableSyncState, TableUser,
-    },
+    ReviewStatusResult, StorageCreateActionResult, StorageInternalizeActionResult,
+    StorageProcessActionArgs, StorageProcessActionResults, SyncChunk, TrxToken,
+    TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider, WalletStorageReader,
+    WalletStorageSync, WalletStorageWriter,
 };
 
 /// A wrapper around a storage provider with cached state.
@@ -215,7 +215,9 @@ impl WalletStorageManager {
         if let Some(idx) = *active_index {
             if let Some(store) = stores.get(idx) {
                 if let (Some(settings), Some(user)) = (&store.settings, &store.user) {
-                    return user.active_storage.as_ref()
+                    return user
+                        .active_storage
+                        .as_ref()
                         .map(|a| a == &settings.storage_identity_key)
                         .unwrap_or(false)
                         && conflicting.is_empty();
@@ -267,7 +269,10 @@ impl WalletStorageManager {
         for store in stores.iter_mut() {
             if !store.is_available || store.settings.is_none() || store.user.is_none() {
                 let settings = store.storage.make_available().await?;
-                let (user, _) = store.storage.find_or_insert_user(&auth_id.identity_key).await?;
+                let (user, _) = store
+                    .storage
+                    .find_or_insert_user(&auth_id.identity_key)
+                    .await?;
                 store.settings = Some(settings);
                 store.user = Some(user);
                 store.is_available = true;
@@ -284,7 +289,12 @@ impl WalletStorageManager {
                 active_idx = Some(i);
             } else {
                 let user_active = store.user.as_ref().unwrap().active_storage.clone();
-                let store_identity = store.settings.as_ref().unwrap().storage_identity_key.clone();
+                let store_identity = store
+                    .settings
+                    .as_ref()
+                    .unwrap()
+                    .storage_identity_key
+                    .clone();
 
                 // Check if this store's user record selects it as active
                 if user_active.as_ref() == Some(&store_identity) {
@@ -293,7 +303,9 @@ impl WalletStorageManager {
                     let current_settings = current_active.settings.as_ref().unwrap();
                     let current_user = current_active.user.as_ref().unwrap();
 
-                    if current_user.active_storage.as_ref() != Some(&current_settings.storage_identity_key) {
+                    if current_user.active_storage.as_ref()
+                        != Some(&current_settings.storage_identity_key)
+                    {
                         // Swap: this store should be active
                         backups_temp.push(active_idx.unwrap());
                         active_idx = Some(i);
@@ -550,7 +562,10 @@ impl WalletStorageManager {
             provider.set_services(services.clone());
         }
 
-        self.stores.write().await.push(ManagedStorage::new(provider));
+        self.stores
+            .write()
+            .await
+            .push(ManagedStorage::new(provider));
         *self.is_available.write().await = false;
 
         self.make_available().await?;
@@ -573,7 +588,8 @@ impl WalletStorageManager {
 
             let is_enabled = if is_active {
                 if let (Some(settings), Some(user)) = (&store.settings, &store.user) {
-                    user.active_storage.as_ref() == Some(&settings.storage_identity_key) && conflicting_indices.is_empty()
+                    user.active_storage.as_ref() == Some(&settings.storage_identity_key)
+                        && conflicting_indices.is_empty()
                 } else {
                     false
                 }
@@ -729,7 +745,10 @@ impl WalletStorageManager {
         let backup_indices = self.backup_indices.read().await.clone();
         let stores = self.stores.read().await;
 
-        log.push_str(&format!("BACKUP CURRENT ACTIVE TO {} STORES\n", backup_indices.len()));
+        log.push_str(&format!(
+            "BACKUP CURRENT ACTIVE TO {} STORES\n",
+            backup_indices.len()
+        ));
 
         for idx in backup_indices {
             if let Some(backup) = stores.get(idx) {
@@ -910,11 +929,7 @@ impl WalletStorageReader for WalletStorageManager {
             .await
     }
 
-    async fn find_outputs(
-        &self,
-        auth: &AuthId,
-        args: FindOutputsArgs,
-    ) -> Result<Vec<TableOutput>> {
+    async fn find_outputs(&self, auth: &AuthId, args: FindOutputsArgs) -> Result<Vec<TableOutput>> {
         self.run_as_reader(|active| async move { active.find_outputs(auth, args).await })
             .await
     }
@@ -1028,9 +1043,9 @@ impl WalletStorageWriter for WalletStorageManager {
         auth: &AuthId,
         certificate: TableCertificate,
     ) -> Result<i64> {
-        self.run_as_writer(|active| async move {
-            active.insert_certificate(auth, certificate).await
-        })
+        self.run_as_writer(
+            |active| async move { active.insert_certificate(auth, certificate).await },
+        )
         .await
     }
 
@@ -1039,8 +1054,10 @@ impl WalletStorageWriter for WalletStorageManager {
         auth: &AuthId,
         field: TableCertificateField,
     ) -> Result<i64> {
-        self.run_as_writer(|active| async move { active.insert_certificate_field(auth, field).await })
-            .await
+        self.run_as_writer(
+            |active| async move { active.insert_certificate_field(auth, field).await },
+        )
+        .await
     }
 
     async fn relinquish_certificate(
@@ -1064,21 +1081,31 @@ impl WalletStorageWriter for WalletStorageManager {
     ) -> Result<()> {
         let txid_owned = txid.to_string();
         self.run_as_writer(|active| async move {
-            active.update_transaction_status_after_broadcast(&txid_owned, success).await
+            active
+                .update_transaction_status_after_broadcast(&txid_owned, success)
+                .await
         })
         .await
     }
 
-    async fn review_status(&self, auth: &AuthId, aged_limit: DateTime<Utc>) -> Result<ReviewStatusResult> {
+    async fn review_status(
+        &self,
+        auth: &AuthId,
+        aged_limit: DateTime<Utc>,
+    ) -> Result<ReviewStatusResult> {
         let auth = auth.clone();
-        self.run_as_writer(|active| async move { WalletStorageWriter::review_status(active.as_ref(), &auth, aged_limit).await })
-            .await
+        self.run_as_writer(|active| async move {
+            WalletStorageWriter::review_status(active.as_ref(), &auth, aged_limit).await
+        })
+        .await
     }
 
     async fn purge_data(&self, auth: &AuthId, params: PurgeParams) -> Result<PurgeResults> {
         let auth = auth.clone();
-        self.run_as_writer(|active| async move { WalletStorageWriter::purge_data(active.as_ref(), &auth, params).await })
-            .await
+        self.run_as_writer(|active| async move {
+            WalletStorageWriter::purge_data(active.as_ref(), &auth, params).await
+        })
+        .await
     }
     async fn begin_transaction(&self) -> Result<TrxToken> {
         self.run_as_writer(|active| async move { active.begin_transaction().await })
@@ -1173,10 +1200,8 @@ impl WalletStorageProvider for WalletStorageManager {
 #[async_trait]
 impl MonitorStorage for WalletStorageManager {
     async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
-        self.run_as_writer(|active| async move {
-            active.synchronize_transaction_statuses().await
-        })
-        .await
+        self.run_as_writer(|active| async move { active.synchronize_transaction_statuses().await })
+            .await
     }
 
     async fn send_waiting_transactions(
@@ -1190,23 +1215,19 @@ impl MonitorStorage for WalletStorageManager {
     }
 
     async fn abort_abandoned(&self, timeout: Duration) -> Result<()> {
-        self.run_as_writer(|active| async move {
-            active.abort_abandoned(timeout).await
-        })
-        .await
+        self.run_as_writer(|active| async move { active.abort_abandoned(timeout).await })
+            .await
     }
 
     async fn un_fail(&self) -> Result<()> {
-        self.run_as_writer(|active| async move {
-            active.un_fail().await
-        })
-        .await
+        self.run_as_writer(|active| async move { active.un_fail().await })
+            .await
     }
 
     async fn review_status(&self) -> Result<ReviewStatusResult> {
-        self.run_as_writer(|active| async move {
-            MonitorStorage::review_status(active.as_ref()).await
-        })
+        self.run_as_writer(
+            |active| async move { MonitorStorage::review_status(active.as_ref()).await },
+        )
         .await
     }
 
@@ -1225,19 +1246,17 @@ impl MonitorStorage for WalletStorageManager {
     ) -> Result<bool> {
         let tn = task_name.to_string();
         let iid = instance_id.to_string();
-        self.run_as_writer(|active| async move {
-            active.try_acquire_task_lock(&tn, &iid, ttl).await
-        })
+        self.run_as_writer(
+            |active| async move { active.try_acquire_task_lock(&tn, &iid, ttl).await },
+        )
         .await
     }
 
     async fn release_task_lock(&self, task_name: &str, instance_id: &str) -> Result<()> {
         let tn = task_name.to_string();
         let iid = instance_id.to_string();
-        self.run_as_writer(|active| async move {
-            active.release_task_lock(&tn, &iid).await
-        })
-        .await
+        self.run_as_writer(|active| async move { active.release_task_lock(&tn, &iid).await })
+            .await
     }
 }
 

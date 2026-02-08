@@ -30,7 +30,8 @@ pub type WalletBuilder = Arc<
     dyn Fn(
             Vec<u8>,
             PrivateKey,
-        ) -> Pin<Box<dyn Future<Output = Result<Arc<dyn WalletInterface + Send + Sync>>> + Send>>
+        )
+            -> Pin<Box<dyn Future<Output = Result<Arc<dyn WalletInterface + Send + Sync>>> + Send>>
         + Send
         + Sync,
 >;
@@ -153,9 +154,7 @@ impl SimpleWalletManager {
     /// Attempts to build the underlying wallet if both auth factors are present.
     async fn try_build_underlying(&self) -> Result<()> {
         if *self.authenticated.read().await {
-            return Err(Error::InvalidOperation(
-                "Already authenticated".to_string(),
-            ));
+            return Err(Error::InvalidOperation("Already authenticated".to_string()));
         }
 
         let primary_key = self.primary_key.read().await.clone();
@@ -195,7 +194,10 @@ impl SimpleWalletManager {
     }
 
     /// Gets the underlying wallet, checking originator is not admin.
-    pub async fn wallet_for_originator(&self, originator: &str) -> Result<Arc<dyn WalletInterface + Send + Sync>> {
+    pub async fn wallet_for_originator(
+        &self,
+        originator: &str,
+    ) -> Result<Arc<dyn WalletInterface + Send + Sync>> {
         if originator == self.admin_originator {
             return Err(Error::AccessDenied(
                 "External applications cannot use the admin originator".to_string(),
@@ -252,12 +254,11 @@ impl SimpleWalletManager {
         payload.extend_from_slice(primary_key);
 
         // Encrypt payload
-        let sym_key = SymmetricKey::from_bytes(&snapshot_key).map_err(|e| {
-            Error::InvalidOperation(format!("Failed to create key: {:?}", e))
-        })?;
-        let encrypted = sym_key.encrypt(&payload).map_err(|e| {
-            Error::InvalidOperation(format!("Failed to encrypt snapshot: {:?}", e))
-        })?;
+        let sym_key = SymmetricKey::from_bytes(&snapshot_key)
+            .map_err(|e| Error::InvalidOperation(format!("Failed to create key: {:?}", e)))?;
+        let encrypted = sym_key
+            .encrypt(&payload)
+            .map_err(|e| Error::InvalidOperation(format!("Failed to encrypt snapshot: {:?}", e)))?;
 
         // Build final snapshot: key (32 bytes) + encrypted payload
         let mut result = snapshot_key;
@@ -269,24 +270,23 @@ impl SimpleWalletManager {
     /// Decodes a snapshot to extract the primary key.
     fn decode_snapshot(snapshot: &[u8]) -> Result<Vec<u8>> {
         if snapshot.len() < 33 {
-            return Err(Error::InvalidArgument(
-                "Snapshot too short".to_string(),
-            ));
+            return Err(Error::InvalidArgument("Snapshot too short".to_string()));
         }
 
         let snapshot_key = &snapshot[0..32];
         let encrypted = &snapshot[32..];
 
         // Decrypt payload
-        let sym_key = SymmetricKey::from_bytes(snapshot_key).map_err(|e| {
-            Error::InvalidOperation(format!("Failed to create key: {:?}", e))
-        })?;
-        let decrypted = sym_key.decrypt(encrypted).map_err(|e| {
-            Error::InvalidOperation(format!("Failed to decrypt snapshot: {:?}", e))
-        })?;
+        let sym_key = SymmetricKey::from_bytes(snapshot_key)
+            .map_err(|e| Error::InvalidOperation(format!("Failed to create key: {:?}", e)))?;
+        let decrypted = sym_key
+            .decrypt(encrypted)
+            .map_err(|e| Error::InvalidOperation(format!("Failed to decrypt snapshot: {:?}", e)))?;
 
         if decrypted.is_empty() {
-            return Err(Error::InvalidArgument("Empty decrypted payload".to_string()));
+            return Err(Error::InvalidArgument(
+                "Empty decrypted payload".to_string(),
+            ));
         }
 
         // Parse payload

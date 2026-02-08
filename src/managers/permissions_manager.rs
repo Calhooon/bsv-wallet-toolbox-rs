@@ -682,7 +682,8 @@ impl WalletPermissionsManager {
         let handler_guard = self.permission_request_handler.read().await;
         let handler = handler_guard.as_ref().ok_or_else(|| {
             Error::AccessDenied(
-                "No permission request handler registered. Cannot request user consent.".to_string(),
+                "No permission request handler registered. Cannot request user consent."
+                    .to_string(),
             )
         })?;
 
@@ -1216,34 +1217,188 @@ mod tests {
 
     #[async_trait]
     impl WalletInterface for MockWallet {
-        async fn create_action(&self, _args: CreateActionArgs, _originator: &str) -> bsv_sdk::Result<CreateActionResult> { unimplemented!() }
-        async fn sign_action(&self, _args: SignActionArgs, _originator: &str) -> bsv_sdk::Result<SignActionResult> { unimplemented!() }
-        async fn abort_action(&self, _args: AbortActionArgs, _originator: &str) -> bsv_sdk::Result<AbortActionResult> { unimplemented!() }
-        async fn list_actions(&self, _args: ListActionsArgs, _originator: &str) -> bsv_sdk::Result<ListActionsResult> { unimplemented!() }
-        async fn internalize_action(&self, _args: InternalizeActionArgs, _originator: &str) -> bsv_sdk::Result<InternalizeActionResult> { unimplemented!() }
-        async fn list_outputs(&self, _args: ListOutputsArgs, _originator: &str) -> bsv_sdk::Result<ListOutputsResult> { unimplemented!() }
-        async fn relinquish_output(&self, _args: RelinquishOutputArgs, _originator: &str) -> bsv_sdk::Result<RelinquishOutputResult> { unimplemented!() }
-        async fn get_public_key(&self, _args: GetPublicKeyArgs, _originator: &str) -> bsv_sdk::Result<GetPublicKeyResult> { unimplemented!() }
-        async fn reveal_counterparty_key_linkage(&self, _args: interface::RevealCounterpartyKeyLinkageArgs, _originator: &str) -> bsv_sdk::Result<RevealCounterpartyKeyLinkageResult> { unimplemented!() }
-        async fn reveal_specific_key_linkage(&self, _args: interface::RevealSpecificKeyLinkageArgs, _originator: &str) -> bsv_sdk::Result<RevealSpecificKeyLinkageResult> { unimplemented!() }
-        async fn encrypt(&self, _args: EncryptArgs, _originator: &str) -> bsv_sdk::Result<EncryptResult> { unimplemented!() }
-        async fn decrypt(&self, _args: DecryptArgs, _originator: &str) -> bsv_sdk::Result<DecryptResult> { unimplemented!() }
-        async fn create_hmac(&self, _args: CreateHmacArgs, _originator: &str) -> bsv_sdk::Result<CreateHmacResult> { unimplemented!() }
-        async fn verify_hmac(&self, _args: VerifyHmacArgs, _originator: &str) -> bsv_sdk::Result<VerifyHmacResult> { unimplemented!() }
-        async fn create_signature(&self, _args: CreateSignatureArgs, _originator: &str) -> bsv_sdk::Result<CreateSignatureResult> { unimplemented!() }
-        async fn verify_signature(&self, _args: VerifySignatureArgs, _originator: &str) -> bsv_sdk::Result<VerifySignatureResult> { unimplemented!() }
-        async fn acquire_certificate(&self, _args: AcquireCertificateArgs, _originator: &str) -> bsv_sdk::Result<WalletCertificate> { unimplemented!() }
-        async fn list_certificates(&self, _args: ListCertificatesArgs, _originator: &str) -> bsv_sdk::Result<ListCertificatesResult> { unimplemented!() }
-        async fn prove_certificate(&self, _args: ProveCertificateArgs, _originator: &str) -> bsv_sdk::Result<ProveCertificateResult> { unimplemented!() }
-        async fn relinquish_certificate(&self, _args: RelinquishCertificateArgs, _originator: &str) -> bsv_sdk::Result<RelinquishCertificateResult> { unimplemented!() }
-        async fn discover_by_identity_key(&self, _args: DiscoverByIdentityKeyArgs, _originator: &str) -> bsv_sdk::Result<DiscoverCertificatesResult> { unimplemented!() }
-        async fn discover_by_attributes(&self, _args: DiscoverByAttributesArgs, _originator: &str) -> bsv_sdk::Result<DiscoverCertificatesResult> { unimplemented!() }
-        async fn is_authenticated(&self, _originator: &str) -> bsv_sdk::Result<AuthenticatedResult> { unimplemented!() }
-        async fn wait_for_authentication(&self, _originator: &str) -> bsv_sdk::Result<AuthenticatedResult> { unimplemented!() }
-        async fn get_height(&self, _originator: &str) -> bsv_sdk::Result<GetHeightResult> { unimplemented!() }
-        async fn get_header_for_height(&self, _args: GetHeaderArgs, _originator: &str) -> bsv_sdk::Result<GetHeaderResult> { unimplemented!() }
-        async fn get_network(&self, _originator: &str) -> bsv_sdk::Result<GetNetworkResult> { unimplemented!() }
-        async fn get_version(&self, _originator: &str) -> bsv_sdk::Result<GetVersionResult> { unimplemented!() }
+        async fn create_action(
+            &self,
+            _args: CreateActionArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<CreateActionResult> {
+            unimplemented!()
+        }
+        async fn sign_action(
+            &self,
+            _args: SignActionArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<SignActionResult> {
+            unimplemented!()
+        }
+        async fn abort_action(
+            &self,
+            _args: AbortActionArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<AbortActionResult> {
+            unimplemented!()
+        }
+        async fn list_actions(
+            &self,
+            _args: ListActionsArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<ListActionsResult> {
+            unimplemented!()
+        }
+        async fn internalize_action(
+            &self,
+            _args: InternalizeActionArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<InternalizeActionResult> {
+            unimplemented!()
+        }
+        async fn list_outputs(
+            &self,
+            _args: ListOutputsArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<ListOutputsResult> {
+            unimplemented!()
+        }
+        async fn relinquish_output(
+            &self,
+            _args: RelinquishOutputArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<RelinquishOutputResult> {
+            unimplemented!()
+        }
+        async fn get_public_key(
+            &self,
+            _args: GetPublicKeyArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<GetPublicKeyResult> {
+            unimplemented!()
+        }
+        async fn reveal_counterparty_key_linkage(
+            &self,
+            _args: interface::RevealCounterpartyKeyLinkageArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<RevealCounterpartyKeyLinkageResult> {
+            unimplemented!()
+        }
+        async fn reveal_specific_key_linkage(
+            &self,
+            _args: interface::RevealSpecificKeyLinkageArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<RevealSpecificKeyLinkageResult> {
+            unimplemented!()
+        }
+        async fn encrypt(
+            &self,
+            _args: EncryptArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<EncryptResult> {
+            unimplemented!()
+        }
+        async fn decrypt(
+            &self,
+            _args: DecryptArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<DecryptResult> {
+            unimplemented!()
+        }
+        async fn create_hmac(
+            &self,
+            _args: CreateHmacArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<CreateHmacResult> {
+            unimplemented!()
+        }
+        async fn verify_hmac(
+            &self,
+            _args: VerifyHmacArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<VerifyHmacResult> {
+            unimplemented!()
+        }
+        async fn create_signature(
+            &self,
+            _args: CreateSignatureArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<CreateSignatureResult> {
+            unimplemented!()
+        }
+        async fn verify_signature(
+            &self,
+            _args: VerifySignatureArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<VerifySignatureResult> {
+            unimplemented!()
+        }
+        async fn acquire_certificate(
+            &self,
+            _args: AcquireCertificateArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<WalletCertificate> {
+            unimplemented!()
+        }
+        async fn list_certificates(
+            &self,
+            _args: ListCertificatesArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<ListCertificatesResult> {
+            unimplemented!()
+        }
+        async fn prove_certificate(
+            &self,
+            _args: ProveCertificateArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<ProveCertificateResult> {
+            unimplemented!()
+        }
+        async fn relinquish_certificate(
+            &self,
+            _args: RelinquishCertificateArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<RelinquishCertificateResult> {
+            unimplemented!()
+        }
+        async fn discover_by_identity_key(
+            &self,
+            _args: DiscoverByIdentityKeyArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<DiscoverCertificatesResult> {
+            unimplemented!()
+        }
+        async fn discover_by_attributes(
+            &self,
+            _args: DiscoverByAttributesArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<DiscoverCertificatesResult> {
+            unimplemented!()
+        }
+        async fn is_authenticated(
+            &self,
+            _originator: &str,
+        ) -> bsv_sdk::Result<AuthenticatedResult> {
+            unimplemented!()
+        }
+        async fn wait_for_authentication(
+            &self,
+            _originator: &str,
+        ) -> bsv_sdk::Result<AuthenticatedResult> {
+            unimplemented!()
+        }
+        async fn get_height(&self, _originator: &str) -> bsv_sdk::Result<GetHeightResult> {
+            unimplemented!()
+        }
+        async fn get_header_for_height(
+            &self,
+            _args: GetHeaderArgs,
+            _originator: &str,
+        ) -> bsv_sdk::Result<GetHeaderResult> {
+            unimplemented!()
+        }
+        async fn get_network(&self, _originator: &str) -> bsv_sdk::Result<GetNetworkResult> {
+            unimplemented!()
+        }
+        async fn get_version(&self, _originator: &str) -> bsv_sdk::Result<GetVersionResult> {
+            unimplemented!()
+        }
     }
 
     fn make_manager(config: WalletPermissionsManagerConfig) -> WalletPermissionsManager {
@@ -1298,7 +1453,10 @@ mod tests {
             originator: "app.example.com".to_string(),
             display_originator: None,
             privileged: Some(false),
-            protocol_id: Some(Protocol::new(SecurityLevel::Counterparty, "test protocol".to_string())),
+            protocol_id: Some(Protocol::new(
+                SecurityLevel::Counterparty,
+                "test protocol".to_string(),
+            )),
             counterparty: None,
             basket: None,
             certificate: None,
@@ -1461,7 +1619,14 @@ mod tests {
         let manager = make_manager(WalletPermissionsManagerConfig::all_enabled());
         let proto = Protocol::new(SecurityLevel::App, "test".to_string());
         let result = manager
-            .ensure_protocol_permission("admin.wallet", false, &proto, None, None, PermissionUsageType::Signing)
+            .ensure_protocol_permission(
+                "admin.wallet",
+                false,
+                &proto,
+                None,
+                None,
+                PermissionUsageType::Signing,
+            )
             .await;
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -1472,7 +1637,14 @@ mod tests {
         let manager = make_manager(WalletPermissionsManagerConfig::all_enabled());
         let proto = Protocol::new(SecurityLevel::Silent, "test".to_string());
         let result = manager
-            .ensure_protocol_permission("app.example.com", false, &proto, None, None, PermissionUsageType::Signing)
+            .ensure_protocol_permission(
+                "app.example.com",
+                false,
+                &proto,
+                None,
+                None,
+                PermissionUsageType::Signing,
+            )
             .await;
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -1483,7 +1655,14 @@ mod tests {
         let manager = make_manager(WalletPermissionsManagerConfig::all_enabled());
         let proto = Protocol::new(SecurityLevel::App, "admin_secret".to_string());
         let result = manager
-            .ensure_protocol_permission("app.example.com", false, &proto, None, None, PermissionUsageType::Generic)
+            .ensure_protocol_permission(
+                "app.example.com",
+                false,
+                &proto,
+                None,
+                None,
+                PermissionUsageType::Generic,
+            )
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1497,7 +1676,14 @@ mod tests {
         let manager = make_manager(config);
         let proto = Protocol::new(SecurityLevel::App, "test".to_string());
         let result = manager
-            .ensure_protocol_permission("app.example.com", false, &proto, None, None, PermissionUsageType::Signing)
+            .ensure_protocol_permission(
+                "app.example.com",
+                false,
+                &proto,
+                None,
+                None,
+                PermissionUsageType::Signing,
+            )
             .await;
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -1530,7 +1716,12 @@ mod tests {
         config.seek_basket_listing_permissions = false;
         let manager = make_manager(config);
         let result = manager
-            .ensure_basket_access("app.example.com", "my_basket", None, BasketUsageType::Listing)
+            .ensure_basket_access(
+                "app.example.com",
+                "my_basket",
+                None,
+                BasketUsageType::Listing,
+            )
             .await;
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -1586,7 +1777,14 @@ mod tests {
         let manager = make_manager(WalletPermissionsManagerConfig::all_enabled());
         let proto = Protocol::new(SecurityLevel::App, "test".to_string());
         let result = manager
-            .ensure_protocol_permission("app.example.com", false, &proto, None, None, PermissionUsageType::Generic)
+            .ensure_protocol_permission(
+                "app.example.com",
+                false,
+                &proto,
+                None,
+                None,
+                PermissionUsageType::Generic,
+            )
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1623,13 +1821,27 @@ mod tests {
         manager.set_permission_request_handler(handler).await;
         let proto = Protocol::new(SecurityLevel::App, "test".to_string());
         let result = manager
-            .ensure_protocol_permission("app.example.com", false, &proto, None, None, PermissionUsageType::Generic)
+            .ensure_protocol_permission(
+                "app.example.com",
+                false,
+                &proto,
+                None,
+                None,
+                PermissionUsageType::Generic,
+            )
             .await;
         assert!(result.is_ok());
         assert!(result.unwrap());
         // Second call should hit cache
         let result2 = manager
-            .ensure_protocol_permission("app.example.com", false, &proto, None, None, PermissionUsageType::Generic)
+            .ensure_protocol_permission(
+                "app.example.com",
+                false,
+                &proto,
+                None,
+                None,
+                PermissionUsageType::Generic,
+            )
             .await;
         assert!(result2.is_ok());
         assert!(result2.unwrap());

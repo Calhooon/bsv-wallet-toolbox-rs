@@ -3,7 +3,7 @@
 
 ## Overview
 
-This module provides manager components that sit above the core storage, services, and wallet layers. These managers handle cross-cutting concerns like multi-storage synchronization, two-factor authentication, multi-profile support, settings persistence, permission control, WAB authentication, and operation logging. All managers are designed for 1:1 parity with the TypeScript `@bsv/wallet-toolbox`.
+This module provides manager components that sit above the core storage, services, and wallet layers. These managers handle cross-cutting concerns like multi-storage synchronization, two-factor authentication, multi-profile support, settings persistence, permission enforcement, WAB authentication, and operation logging. All managers are designed for 1:1 parity with the TypeScript `@bsv/wallet-toolbox`.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ This module provides manager components that sit above the core storage, service
 │  SimpleWalletManager           - Primary key + PKM authentication│
 │  CWIStyleWalletManager         - Multi-profile, password-based   │
 │  WalletAuthenticationManager   - WAB authentication integration  │
-│  WalletPermissionsManager      - BRC-98/99 permissions (stub)    │
+│  WalletPermissionsManager      - BRC-98/99 permission enforcement│
 │  WalletLogger                  - Operation logging               │
 ├─────────────────────────────────────────────────────────────────┤
 │                      Wallet + Storage + Services                │
@@ -28,12 +28,12 @@ This module provides manager components that sit above the core storage, service
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | 317 | Module declarations, re-exports, `WalletLogger`, `SetupWalletOptions`, `setup_wallet()` |
-| `storage_manager.rs` | 1240 | Multi-storage orchestration with active/backup semantics, lock queues, and MonitorStorage impl |
-| `cwi_style_wallet_manager.rs` | 767 | CWI-compatible multi-profile manager with PBKDF2 password derivation, UMP tokens, snapshots, JSON import/export |
-| `permissions_manager.rs` | 743 | BRC-98/99 permission types, operation-level flags, token verification/caching, and stub manager |
-| `settings_manager.rs` | 353 | Persistent wallet settings with mainnet/testnet defaults and string serialization |
+| `storage_manager.rs` | 1311 | Multi-storage orchestration with active/backup semantics, lock queues, MonitorStorage impl with task locking |
+| `cwi_style_wallet_manager.rs` | 760 | CWI-compatible multi-profile manager with PBKDF2 password derivation, UMP tokens, snapshots, JSON import/export |
+| `permissions_manager.rs` | 1978 | BRC-98/99 permission enforcement with DPACP/DBAP/DCAP/DSAP, in-memory cache (5-min TTL), permission request handler |
+| `settings_manager.rs` | 354 | Persistent wallet settings with mainnet/testnet defaults and string serialization |
 | `simple_wallet_manager.rs` | 336 | Two-factor authentication manager (primary key + privileged key) |
-| `auth_manager.rs` | 56 | WAB (Wallet Authentication Backend) integration wrapper |
+| `auth_manager.rs` | 58 | WAB (Wallet Authentication Backend) integration wrapper |
 
 ## Key Exports
 
@@ -78,16 +78,21 @@ pub use settings_manager::{
 - `Certifier` - Trusted identity certifier with name, description, public key, and trust level
 - `DEFAULT_SETTINGS` / `TESTNET_DEFAULT_SETTINGS` - Pre-configured default settings
 
-### Permissions Management (Stub)
+### Permissions Management
 
 ```rust
 pub use permissions_manager::{
-    GroupedPermissions, PermissionRequest, PermissionToken, PermissionsModule,
+    BasketUsageType, CertificateUsageType, GroupedPermissions, PermissionRequest,
+    PermissionRequestHandler, PermissionToken, PermissionUsageType, PermissionsModule,
     WalletPermissionsManager, WalletPermissionsManagerConfig,
 };
 ```
 
-- `WalletPermissionsManager` - Stub implementation with `check_permission()`, `check_permission_with_token()`, and token verification/caching
+- `WalletPermissionsManager` - BRC-98/99 enforcement with `ensure_protocol_permission()`, `ensure_basket_access()`, `ensure_certificate_access()`, `ensure_spending_permission()`, plus legacy `check_permission()` and `check_permission_with_token()`
+- `PermissionRequestHandler` - Async callback for user consent flows (returns `PermissionToken`)
+- `PermissionUsageType` - Protocol usage categories: `Signing`, `Encrypting`, `Hmac`, `PublicKey`, `IdentityKey`, `LinkageRevelation`, `Generic`
+- `BasketUsageType` - Basket operation categories: `Insertion`, `Removal`, `Listing`
+- `CertificateUsageType` - Certificate operation categories: `Disclosure`
 - `GroupedPermissions` - BRC-73 grouped permissions (spending, protocol, basket, certificate)
 - `PermissionRequest` - Permission request from an application (includes `operation` field)
 - `PermissionToken` - On-chain permission token (BRC-98/99)
@@ -176,7 +181,7 @@ Returned by `sync_from_reader` and `sync_to_writer`. Contains counts and a human
 - `WalletStorageWriter` - Delegates writes to active storage with writer lock (includes `review_status`, `purge_data`, `update_transaction_status_after_broadcast`, `begin_transaction`, `commit_transaction`, `rollback_transaction`)
 - `WalletStorageSync` - Delegates sync operations with sync lock
 - `WalletStorageProvider` - Partial implementation (some sync methods unimplemented)
-- `MonitorStorage` - Delegates monitor operations (`synchronize_transaction_statuses`, `send_waiting_transactions`, `abort_abandoned`, `un_fail`, `review_status`, `purge_data`) with writer lock
+- `MonitorStorage` - Delegates monitor operations (`synchronize_transaction_statuses`, `send_waiting_transactions`, `abort_abandoned`, `un_fail`, `review_status`, `purge_data`, `try_acquire_task_lock`, `release_task_lock`) with writer lock
 
 ## SimpleWalletManager Authentication Flow
 
@@ -299,22 +304,60 @@ load_from_string(json: &str) -> Result<()>  // Deserialize from JSON string
 reset()                                // Reset to default settings
 ```
 
-## WalletPermissionsManager (Stub)
+## WalletPermissionsManager
 
-**Security Warning**: This is a stub that does not enforce BRC-98/99 on-chain permission tokens. However, it supports operation-level permission gating via `check_permission()` and token-based permission checking via `check_permission_with_token()`.
+Full BRC-98/99 permission enforcement with four categories, in-memory caching, and pluggable consent flows.
 
-### Permission Types (BRC-98/99)
+### Permission Categories
+
+| Category | Abbrev | Method | Protects |
+|----------|--------|--------|----------|
+| Protocol Access | DPACP | `ensure_protocol_permission()` | Protocol usage at security levels |
+| Basket Access | DBAP | `ensure_basket_access()` | Output basket operations |
+| Certificate Access | DCAP | `ensure_certificate_access()` | Certificate field disclosure |
+| Spending Auth | DSAP | `ensure_spending_permission()` | Spending operations |
+
+### Enforcement Flow
+
+Each `ensure_*` method follows the same pattern:
+1. **Admin bypass** - Admin originator always allowed
+2. **Level/reserved check** - Security level 0 bypasses protocol checks; admin-reserved names blocked
+3. **Config flag bypass** - Per-usage-type config flags can disable specific checks
+4. **Cache check** - In-memory cache with 5-minute TTL (`CACHE_TTL_SECS`)
+5. **Permission request flow** - Invokes `PermissionRequestHandler` callback for user consent
+6. **Cache result** - Granted permissions are cached for subsequent calls
+
+### Permission Request Handler
 
 ```rust
-enum PermissionType {
-    Protocol,    // DPACP - Protocol access
-    Basket,      // DBAP - Basket access
-    Certificate, // DCAP - Certificate access
-    Spending,    // DSAP - Spending authorization
-}
+pub type PermissionRequestHandler = Arc<
+    dyn Fn(PermissionRequest) -> Pin<Box<dyn Future<Output = Result<PermissionToken>> + Send>>
+        + Send + Sync,
+>;
+
+manager.set_permission_request_handler(handler).await;
+manager.clear_permission_request_handler().await;
 ```
 
-### Operation-Level Permission Checking
+### Admin-Reserved Names
+
+```rust
+WalletPermissionsManager::is_admin_protocol(protocol)  // name starts with "admin"
+WalletPermissionsManager::is_admin_basket(basket)       // "default" or starts with "admin"
+```
+
+### Cache Operations
+
+```rust
+build_cache_key(type, originator, privileged, protocol, counterparty, basket, cert, satoshis) -> String
+is_permission_cached(key) -> bool          // Checks TTL + token expiry
+cache_permission(key, expiry)              // Store with expiry timestamp
+purge_expired_tokens()                     // Remove expired entries
+```
+
+Cache key formats: `proto:originator:privileged:level,name:counterparty`, `basket:originator:name`, `cert:originator:privileged:verifier:type:field1|field2`, `spend:originator:amount`
+
+### Legacy Operation-Level Checking
 
 `check_permission(request)` evaluates operation-level flags when `enforce_permissions` is true:
 
@@ -326,37 +369,24 @@ allow_acquire_certificate, allow_list_certificates, allow_prove_certificate,
 allow_relinquish_certificate, allow_discover, allow_crypto
 ```
 
-Admin originator always bypasses all checks.
-
-### Token-Based Permission Checking
+### Token Verification
 
 ```rust
 verify_token(token) -> Result<()>  // Validates txid, output_script non-empty, expiry not past
 check_permission_with_token(request, token) -> bool  // Verifies token + matches permission type
 ```
 
-`check_permission_with_token` verifies:
-1. Token structural validity (non-empty txid/output_script, not expired)
-2. Originator match between request and token
-3. Permission type match (protocol name, basket name, cert type, or spending amount)
-
-### Token Caching
-
-```rust
-cache_token(key, token)               // Store a token in the in-memory cache
-get_cached_token(key) -> Option<PermissionToken>  // Retrieve by key
-purge_expired_tokens()                 // Remove tokens past their expiry
-```
-
 ### Configuration Options
 
 `WalletPermissionsManagerConfig` has boolean flags for each permission category:
 - `seek_protocol_permissions_for_signing/encrypting/hmac`
+- `seek_permissions_for_key_linkage/public_key/identity_key_revelation`
+- `seek_permissions_for_identity_resolution`
 - `seek_basket_insertion/removal/listing_permissions`
+- `seek_permission_when_applying_action_labels/listing_actions_by_label`
 - `seek_certificate_disclosure/acquisition/relinquishment/listing_permissions`
-- `seek_spending_permissions`
-- `differentiate_privileged_operations`
-- `encrypt_wallet_metadata`
+- `seek_spending_permissions`, `seek_grouped_permission`
+- `differentiate_privileged_operations`, `encrypt_wallet_metadata`
 - `enforce_permissions` + per-operation `allow_*` flags
 
 Helper constructors:
@@ -368,6 +398,10 @@ WalletPermissionsManagerConfig::all_disabled()   // Permissive (default)
 ### Additional Permission Types
 
 ```rust
+PermissionType { Protocol, Basket, Certificate, Spending }
+PermissionUsageType { Signing, Encrypting, Hmac, PublicKey, IdentityKey, LinkageRevelation, Generic }
+BasketUsageType { Insertion, Removal, Listing }
+CertificateUsageType { Disclosure }
 SpendingAuthorization { amount: u64, description }
 ProtocolPermission { protocol_id, counterparty, description }
 BasketAccess { basket, description }
@@ -453,6 +487,36 @@ let bytes = manager.save().await?;
 manager.load(&bytes).await?;
 ```
 
+### Permission Enforcement
+
+```rust
+use bsv_wallet_toolbox::managers::{WalletPermissionsManager, WalletPermissionsManagerConfig, PermissionUsageType};
+
+let manager = WalletPermissionsManager::new(
+    underlying_wallet,
+    "admin.wallet".to_string(),
+    WalletPermissionsManagerConfig::all_enabled(),
+);
+
+// Set up consent handler
+manager.set_permission_request_handler(handler).await;
+
+// Check protocol permission (admin bypasses, SecurityLevel::Silent bypasses)
+let allowed = manager.ensure_protocol_permission(
+    "app.example.com", false, &protocol, None, None, PermissionUsageType::Signing,
+).await?;
+
+// Check basket access (admin-reserved baskets like "default" are blocked)
+let allowed = manager.ensure_basket_access(
+    "app.example.com", "my_basket", None, BasketUsageType::Listing,
+).await?;
+
+// Check spending authorization
+let allowed = manager.ensure_spending_permission(
+    "app.example.com", 50000, Some("Payment for service"),
+).await?;
+```
+
 ## Related Documentation
 
 - [../CLAUDE.md](../CLAUDE.md) - Parent module with crate overview
@@ -470,16 +534,16 @@ These managers match the TypeScript `@bsv/wallet-toolbox` implementations:
 - `WalletSettingsManager` - Settings persistence pattern
 - `WalletLogger` - Operation logging interface
 - `WalletAuthenticationManager` - WAB authentication integration
+- `WalletPermissionsManager` - BRC-98/99 permission enforcement
 
-### Stub Implementations
+### Stub / Skeleton Implementations
 
-- `WalletPermissionsManager` - Has operation-level `check_permission()` and token-based `check_permission_with_token()` but does not enforce full BRC-98/99 on-chain token creation/renewal
 - `WalletAuthenticationManager` - Thin wrapper; WAB protocol flow not yet implemented
 - `setup_wallet()` - Stub that logs setup intent only
 
 ### Concurrency Model
 
-All managers use `tokio::sync::RwLock` for async-safe interior mutability. The storage manager's lock queue system prevents deadlocks through ordered acquisition (reader → writer → sync). Lock timeout is 30 seconds.
+All managers use `tokio::sync::RwLock` for async-safe interior mutability. The storage manager's lock queue system prevents deadlocks through ordered acquisition (reader -> writer -> sync). Lock timeout is 30 seconds.
 
 ### Encryption
 

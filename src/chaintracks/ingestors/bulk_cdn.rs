@@ -3,17 +3,17 @@
 //! Downloads bulk block headers from Babbage CDN.
 //! Based on TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Ingest/BulkIngestorCDN.ts`
 
-use std::sync::Arc;
 use async_trait::async_trait;
-use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::Result;
 use crate::chaintracks::{
-    Chain, BlockHeader, HeightRange, LiveBlockHeader,
-    BulkIngestor, BulkSyncResult, ChaintracksStorage,
+    BlockHeader, BulkIngestor, BulkSyncResult, Chain, ChaintracksStorage, HeightRange,
+    LiveBlockHeader,
 };
+use crate::Result;
 
 /// Default CDN URL for block headers (Babbage Systems)
 pub const DEFAULT_CDN_URL: &str = "https://bsv-headers.babbage.systems/";
@@ -155,16 +155,19 @@ impl BulkCdnIngestor {
         let url = self.build_url(&self.options.json_resource);
         debug!("Fetching CDN file listing from: {}", url);
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .header("Accept", "application/json")
             .send()
             .await?;
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("CDN returned status {}: {}", response.status(), url)
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "CDN returned status {}: {}",
+                response.status(),
+                url
+            )));
         }
 
         let info: BulkHeaderFilesInfo = response.json().await?;
@@ -175,22 +178,22 @@ impl BulkCdnIngestor {
 
     /// Download a binary header file
     async fn download_file(&self, file: &BulkHeaderFileInfo) -> Result<Vec<u8>> {
-        let source = file.source_url.as_deref()
-            .unwrap_or(&self.options.cdn_url);
+        let source = file.source_url.as_deref().unwrap_or(&self.options.cdn_url);
         let url = format!("{}/{}", source.trim_end_matches('/'), file.file_name);
 
-        debug!("Downloading header file: {} (heights {}-{})",
-            file.file_name, file.from_height, file.to_height);
+        debug!(
+            "Downloading header file: {} (heights {}-{})",
+            file.file_name, file.from_height, file.to_height
+        );
 
-        let response = self.client
-            .get(&url)
-            .send()
-            .await?;
+        let response = self.client.get(&url).send().await?;
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("Failed to download {}: status {}", url, response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "Failed to download {}: status {}",
+                url,
+                response.status()
+            )));
         }
 
         let bytes = response.bytes().await?;
@@ -201,12 +204,18 @@ impl BulkCdnIngestor {
         if data.len() != expected_size {
             warn!(
                 "File {} size mismatch: expected {} bytes, got {}",
-                file.file_name, expected_size, data.len()
+                file.file_name,
+                expected_size,
+                data.len()
             );
         }
 
-        debug!("Downloaded {} bytes for heights {}-{}",
-            data.len(), file.from_height, file.to_height);
+        debug!(
+            "Downloaded {} bytes for heights {}-{}",
+            data.len(),
+            file.from_height,
+            file.to_height
+        );
 
         Ok(data)
     }
@@ -269,7 +278,7 @@ impl BulkCdnIngestor {
 
     /// Compute double SHA256 hash of header
     fn compute_block_hash(&self, header_bytes: &[u8]) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(header_bytes);
@@ -294,7 +303,8 @@ impl BulkCdnIngestor {
     ) -> Vec<BulkHeaderFileInfo> {
         let chain_str = self.options.chain.as_str();
 
-        files.iter()
+        files
+            .iter()
             .filter(|f| {
                 // Must be for correct chain
                 if f.chain != chain_str {
@@ -347,7 +357,10 @@ impl BulkIngestor for BulkCdnIngestor {
         before: u32,
         prior_live_headers: &[LiveBlockHeader],
     ) -> Result<BulkSyncResult> {
-        info!("CDN bulk sync: present_height={}, before={}", present_height, before);
+        info!(
+            "CDN bulk sync: present_height={}, before={}",
+            present_height, before
+        );
 
         // Fetch file listing if not cached
         {
@@ -367,7 +380,8 @@ impl BulkIngestor for BulkCdnIngestor {
             available_range
         } else {
             return Ok(BulkSyncResult {
-                live_headers: prior_live_headers.iter()
+                live_headers: prior_live_headers
+                    .iter()
                     .map(|h| h.clone().into())
                     .collect(),
                 done: false,
@@ -380,14 +394,17 @@ impl BulkIngestor for BulkCdnIngestor {
             needed.high.min(can_provide.high),
         );
 
-        let headers = self.fetch_headers(
-            before,
-            fetch_range.clone(),
-            Some(fetch_range),
-            prior_live_headers,
-        ).await?;
+        let headers = self
+            .fetch_headers(
+                before,
+                fetch_range.clone(),
+                Some(fetch_range),
+                prior_live_headers,
+            )
+            .await?;
 
-        let done = headers.last()
+        let done = headers
+            .last()
             .map(|h| h.height >= present_height)
             .unwrap_or(false);
 
@@ -413,7 +430,8 @@ impl BulkIngestor for BulkCdnIngestor {
         }
 
         let files_info = self.available_files.read().await;
-        let files = files_info.as_ref()
+        let files = files_info
+            .as_ref()
             .map(|i| i.files.clone())
             .unwrap_or_default();
 
@@ -442,8 +460,11 @@ impl BulkIngestor for BulkCdnIngestor {
         // Sort by height
         all_headers.sort_by_key(|h| h.height);
 
-        info!("Fetched {} headers from CDN for range {:?}",
-            all_headers.len(), fetch_range);
+        info!(
+            "Fetched {} headers from CDN for range {:?}",
+            all_headers.len(),
+            fetch_range
+        );
 
         Ok(all_headers)
     }
@@ -642,7 +663,10 @@ mod tests {
         let hash = ingestor.compute_block_hash(&genesis_bytes);
 
         // Genesis block hash (reversed for display)
-        assert_eq!(hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
+        assert_eq!(
+            hash,
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
     }
 
     #[tokio::test]

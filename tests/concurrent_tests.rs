@@ -17,14 +17,10 @@
 mod concurrent {
     use std::sync::Arc;
 
-    use bsv_wallet_toolbox::{
-        AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter,
-    };
-    use bsv_wallet_toolbox::storage::FindOutputsArgs;
+    use bsv_sdk::wallet::{AbortActionArgs, ListOutputsArgs};
     use bsv_wallet_toolbox::storage::entities::TableCertificate;
-    use bsv_sdk::wallet::{
-        AbortActionArgs, ListOutputsArgs,
-    };
+    use bsv_wallet_toolbox::storage::FindOutputsArgs;
+    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
     use chrono::Utc;
     use sqlx::Row;
 
@@ -109,11 +105,7 @@ mod concurrent {
     /// Helper: insert a proven_tx_req row.
     ///
     /// Includes raw_tx (NOT NULL in schema).
-    async fn insert_proven_tx_req(
-        storage: &StorageSqlx,
-        txid: &str,
-        status: &str,
-    ) -> i64 {
+    async fn insert_proven_tx_req(storage: &StorageSqlx, txid: &str, status: &str) -> i64 {
         let now = Utc::now();
         let result = sqlx::query(
             r#"
@@ -151,24 +143,23 @@ mod concurrent {
         // Task 1: insert a transaction and an output linked to it
         let h1 = tokio::spawn(async move {
             let txid1 = "a1".repeat(32);
-            let tx_id1 = insert_transaction(&s1, user_id, "create-action-1", "unproven", &txid1).await;
+            let tx_id1 =
+                insert_transaction(&s1, user_id, "create-action-1", "unproven", &txid1).await;
             let out_id1 = insert_output(&s1, user_id, tx_id1, &txid1, 0, 5000, true, None).await;
             // Verify both records exist for this task
-            let tx_check: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM transactions WHERE transaction_id = ?",
-            )
-            .bind(tx_id1)
-            .fetch_one(s1.pool())
-            .await
-            .unwrap();
+            let tx_check: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM transactions WHERE transaction_id = ?")
+                    .bind(tx_id1)
+                    .fetch_one(s1.pool())
+                    .await
+                    .unwrap();
             assert_eq!(tx_check.0, 1, "Task 1 transaction should exist");
-            let out_check: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM outputs WHERE output_id = ?",
-            )
-            .bind(out_id1)
-            .fetch_one(s1.pool())
-            .await
-            .unwrap();
+            let out_check: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM outputs WHERE output_id = ?")
+                    .bind(out_id1)
+                    .fetch_one(s1.pool())
+                    .await
+                    .unwrap();
             assert_eq!(out_check.0, 1, "Task 1 output should exist");
             (tx_id1, out_id1)
         });
@@ -176,24 +167,23 @@ mod concurrent {
         // Task 2: insert a different transaction and an output linked to it
         let h2 = tokio::spawn(async move {
             let txid2 = "b2".repeat(32);
-            let tx_id2 = insert_transaction(&s2, user_id, "create-action-2", "unproven", &txid2).await;
+            let tx_id2 =
+                insert_transaction(&s2, user_id, "create-action-2", "unproven", &txid2).await;
             let out_id2 = insert_output(&s2, user_id, tx_id2, &txid2, 0, 7000, true, None).await;
             // Verify both records exist for this task
-            let tx_check: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM transactions WHERE transaction_id = ?",
-            )
-            .bind(tx_id2)
-            .fetch_one(s2.pool())
-            .await
-            .unwrap();
+            let tx_check: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM transactions WHERE transaction_id = ?")
+                    .bind(tx_id2)
+                    .fetch_one(s2.pool())
+                    .await
+                    .unwrap();
             assert_eq!(tx_check.0, 1, "Task 2 transaction should exist");
-            let out_check: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM outputs WHERE output_id = ?",
-            )
-            .bind(out_id2)
-            .fetch_one(s2.pool())
-            .await
-            .unwrap();
+            let out_check: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM outputs WHERE output_id = ?")
+                    .bind(out_id2)
+                    .fetch_one(s2.pool())
+                    .await
+                    .unwrap();
             assert_eq!(out_check.0, 1, "Task 2 output should exist");
             (tx_id2, out_id2)
         });
@@ -206,48 +196,41 @@ mod concurrent {
         assert_ne!(out_id1, out_id2, "Outputs should have distinct IDs");
 
         // Verify total transaction count for this user (setup user + 2 new)
-        let tx_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM transactions WHERE user_id = ?",
-        )
-        .bind(user_id)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let tx_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM transactions WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         assert_eq!(
             tx_count.0, 2,
             "Exactly 2 transactions should exist (no missing or duplicated records)"
         );
 
         // Verify total output count for this user
-        let out_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM outputs WHERE user_id = ?",
-        )
-        .bind(user_id)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let out_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM outputs WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
         assert_eq!(
             out_count.0, 2,
             "Exactly 2 outputs should exist (no missing or duplicated records)"
         );
 
         // Verify satoshis are correct (no cross-contamination)
-        let sat1: (i64,) = sqlx::query_as(
-            "SELECT satoshis FROM outputs WHERE transaction_id = ?",
-        )
-        .bind(tx_id1)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let sat1: (i64,) = sqlx::query_as("SELECT satoshis FROM outputs WHERE transaction_id = ?")
+            .bind(tx_id1)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
         assert_eq!(sat1.0, 5000, "Task 1 output should have correct satoshis");
 
-        let sat2: (i64,) = sqlx::query_as(
-            "SELECT satoshis FROM outputs WHERE transaction_id = ?",
-        )
-        .bind(tx_id2)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let sat2: (i64,) = sqlx::query_as("SELECT satoshis FROM outputs WHERE transaction_id = ?")
+            .bind(tx_id2)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
         assert_eq!(sat2.0, 7000, "Task 2 output should have correct satoshis");
     }
 
@@ -267,17 +250,24 @@ mod concurrent {
         let fund_txid = "c".repeat(64);
         let fund_tx_id =
             insert_transaction(&storage, user_id, "fund-3", "completed", &fund_txid).await;
-        insert_output(&storage, user_id, fund_tx_id, &fund_txid, 0, 10000, true, None).await;
-        insert_output(&storage, user_id, fund_tx_id, &fund_txid, 1, 20000, true, None).await;
+        insert_output(
+            &storage, user_id, fund_tx_id, &fund_txid, 0, 10000, true, None,
+        )
+        .await;
+        insert_output(
+            &storage, user_id, fund_tx_id, &fund_txid, 1, 20000, true, None,
+        )
+        .await;
 
         // Assign outputs to the default basket
-        let basket_id: i64 =
-            sqlx::query("SELECT basket_id FROM output_baskets WHERE user_id = ? AND name = 'default'")
-                .bind(user_id)
-                .fetch_one(storage.pool())
-                .await
-                .unwrap()
-                .get("basket_id");
+        let basket_id: i64 = sqlx::query(
+            "SELECT basket_id FROM output_baskets WHERE user_id = ? AND name = 'default'",
+        )
+        .bind(user_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap()
+        .get("basket_id");
         sqlx::query("UPDATE outputs SET basket_id = ? WHERE user_id = ?")
             .bind(basket_id)
             .bind(user_id)
@@ -310,7 +300,11 @@ mod concurrent {
         let mut totals = vec![];
         for h in handles {
             let result = h.await.unwrap();
-            assert!(result.is_ok(), "list_outputs should succeed: {:?}", result.err());
+            assert!(
+                result.is_ok(),
+                "list_outputs should succeed: {:?}",
+                result.err()
+            );
             totals.push(result.unwrap().total_outputs);
         }
 
@@ -399,14 +393,13 @@ mod concurrent {
         // serialized in-memory mode, one task will always find the other's insert
         // OR both will insert (with different references). Either way, the txid
         // count should be stable and consistent.
-        let txid_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM transactions WHERE txid = ? AND user_id = ?",
-        )
-        .bind(&shared_txid)
-        .bind(user_id)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let txid_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM transactions WHERE txid = ? AND user_id = ?")
+                .bind(&shared_txid)
+                .bind(user_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
 
         // With serialized SQLite access, one of two outcomes:
         // - Both tasks got different transaction IDs (2 records, each with unique reference)
@@ -426,14 +419,13 @@ mod concurrent {
         }
 
         // Verify outputs: there should be exactly 2 outputs (vout=0 and vout=1)
-        let output_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM outputs WHERE txid = ? AND user_id = ?",
-        )
-        .bind(&shared_txid)
-        .bind(user_id)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let output_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM outputs WHERE txid = ? AND user_id = ?")
+                .bind(&shared_txid)
+                .bind(user_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         assert_eq!(
             output_count.0, 2,
             "Both outputs (vout=0, vout=1) should be created regardless of transaction race"
@@ -464,7 +456,8 @@ mod concurrent {
 
         // Create a funding transaction that owns the output
         let fund_txid = "d0".repeat(32);
-        let fund_tx_id = insert_transaction(&storage, user_id, "fund-abort", "completed", &fund_txid).await;
+        let fund_tx_id =
+            insert_transaction(&storage, user_id, "fund-abort", "completed", &fund_txid).await;
 
         // Create an unsigned transaction that "locks" the output by spending it
         let txid = "d".repeat(64);
@@ -472,7 +465,17 @@ mod concurrent {
         let tx_id = insert_transaction(&storage, user_id, &reference, "unsigned", &txid).await;
 
         // The output belongs to the funding tx but is locked (spent_by) by the unsigned tx
-        insert_output(&storage, user_id, fund_tx_id, &fund_txid, 0, 1000, false, Some(tx_id)).await;
+        insert_output(
+            &storage,
+            user_id,
+            fund_tx_id,
+            &fund_txid,
+            0,
+            1000,
+            false,
+            Some(tx_id),
+        )
+        .await;
 
         let s_abort1 = storage.clone();
         let s_abort2 = storage.clone();
@@ -483,16 +486,12 @@ mod concurrent {
 
         // Race two abort_action calls on the same transaction
         let abort_handle1 = tokio::spawn(async move {
-            let args = AbortActionArgs {
-                reference: ref1,
-            };
+            let args = AbortActionArgs { reference: ref1 };
             s_abort1.abort_action(&a_abort1, args).await
         });
 
         let abort_handle2 = tokio::spawn(async move {
-            let args = AbortActionArgs {
-                reference: ref2,
-            };
+            let args = AbortActionArgs { reference: ref2 };
             s_abort2.abort_action(&a_abort2, args).await
         });
 
@@ -506,17 +505,17 @@ mod concurrent {
         assert!(
             ok1 || ok2,
             "At least one abort must succeed: r1={:?}, r2={:?}",
-            abort_result1, abort_result2
+            abort_result1,
+            abort_result2
         );
 
         // Verify the transaction ended up in "failed" state
-        let final_status: (String,) = sqlx::query_as(
-            "SELECT status FROM transactions WHERE reference = ?",
-        )
-        .bind(&reference)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let final_status: (String,) =
+            sqlx::query_as("SELECT status FROM transactions WHERE reference = ?")
+                .bind(&reference)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
 
         assert_eq!(
             final_status.0, "failed",
@@ -524,14 +523,16 @@ mod concurrent {
         );
 
         // Verify the locked output was released back to spendable
-        let spendable: (i32,) = sqlx::query_as(
-            "SELECT spendable FROM outputs WHERE transaction_id = ? AND vout = 0"
-        )
-        .bind(fund_tx_id)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
-        assert_eq!(spendable.0, 1, "Locked output should be released (spendable=1) after abort");
+        let spendable: (i32,) =
+            sqlx::query_as("SELECT spendable FROM outputs WHERE transaction_id = ? AND vout = 0")
+                .bind(fund_tx_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            spendable.0, 1,
+            "Locked output should be released (spendable=1) after abort"
+        );
     }
 
     // =========================================================================
@@ -588,14 +589,16 @@ mod concurrent {
         );
 
         // Final status should be "unproven" (broadcast success)
-        let final_status: (String,) = sqlx::query_as(
-            "SELECT status FROM transactions WHERE txid = ?",
-        )
-        .bind(&txid)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
-        assert_eq!(final_status.0, "unproven", "Final status should be 'unproven' after broadcast success");
+        let final_status: (String,) =
+            sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            final_status.0, "unproven",
+            "Final status should be 'unproven' after broadcast success"
+        );
     }
 
     // =========================================================================
@@ -643,18 +646,26 @@ mod concurrent {
         let mut cert_ids = vec![];
         for h in handles {
             let result = h.await.unwrap();
-            assert!(result.is_ok(), "Certificate insert should succeed: {:?}", result.err());
+            assert!(
+                result.is_ok(),
+                "Certificate insert should succeed: {:?}",
+                result.err()
+            );
             cert_ids.push(result.unwrap());
         }
 
         // All certificate IDs should be unique
         cert_ids.sort();
         cert_ids.dedup();
-        assert_eq!(cert_ids.len(), 5, "All 5 certificates should have unique IDs");
+        assert_eq!(
+            cert_ids.len(),
+            5,
+            "All 5 certificates should have unique IDs"
+        );
 
         // Verify all 5 exist in the database
         let cert_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM certificates WHERE user_id = ? AND type LIKE 'fifo-type-%'"
+            "SELECT COUNT(*) FROM certificates WHERE user_id = ? AND type LIKE 'fifo-type-%'",
         )
         .bind(user_id)
         .fetch_one(storage.pool())
@@ -720,15 +731,25 @@ mod concurrent {
                 serial_number: "serial-001".to_string(),
                 certifier: "e".repeat(66),
             };
-            s_relinquish.relinquish_certificate(&a_relinquish, args).await
+            s_relinquish
+                .relinquish_certificate(&a_relinquish, args)
+                .await
         });
 
         let insert_result = insert_handle.await.unwrap();
         let relinquish_result = relinquish_handle.await.unwrap();
 
         // Both should succeed without deadlock
-        assert!(insert_result.is_ok(), "Insert should succeed: {:?}", insert_result.err());
-        assert!(relinquish_result.is_ok(), "Relinquish should succeed: {:?}", relinquish_result.err());
+        assert!(
+            insert_result.is_ok(),
+            "Insert should succeed: {:?}",
+            insert_result.err()
+        );
+        assert!(
+            relinquish_result.is_ok(),
+            "Relinquish should succeed: {:?}",
+            relinquish_result.err()
+        );
 
         // Verify certificate-1 is soft-deleted (via is_deleted flag)
         let deleted_count: (i64,) = sqlx::query_as(
@@ -737,7 +758,10 @@ mod concurrent {
         .fetch_one(storage.pool())
         .await
         .unwrap();
-        assert_eq!(deleted_count.0, 1, "Relinquished certificate should be soft-deleted");
+        assert_eq!(
+            deleted_count.0, 1,
+            "Relinquished certificate should be soft-deleted"
+        );
 
         // Verify certificate-2 exists and is not deleted
         let active_count: (i64,) = sqlx::query_as(
@@ -746,7 +770,10 @@ mod concurrent {
         .fetch_one(storage.pool())
         .await
         .unwrap();
-        assert_eq!(active_count.0, 1, "Newly inserted certificate should be active");
+        assert_eq!(
+            active_count.0, 1,
+            "Newly inserted certificate should be active"
+        );
     }
 
     // =========================================================================
@@ -767,8 +794,10 @@ mod concurrent {
         let fund_txid = "f0".repeat(32);
         let fund_tx_id =
             insert_transaction(&storage, user_id, "fund-contested", "completed", &fund_txid).await;
-        let utxo_id =
-            insert_output(&storage, user_id, fund_tx_id, &fund_txid, 0, 10000, true, None).await;
+        let utxo_id = insert_output(
+            &storage, user_id, fund_tx_id, &fund_txid, 0, 10000, true, None,
+        )
+        .await;
 
         let s1 = storage.clone();
         let s2 = storage.clone();
@@ -825,24 +854,26 @@ mod concurrent {
         );
 
         // Verify the UTXO is now spent (not spendable)
-        let spendable: (i32,) = sqlx::query_as(
-            "SELECT spendable FROM outputs WHERE output_id = ?",
-        )
-        .bind(utxo_id)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
-        assert_eq!(spendable.0, 0, "Contested UTXO should no longer be spendable");
+        let spendable: (i32,) = sqlx::query_as("SELECT spendable FROM outputs WHERE output_id = ?")
+            .bind(utxo_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            spendable.0, 0,
+            "Contested UTXO should no longer be spendable"
+        );
 
         // Verify spent_by references exactly one transaction
-        let spent_by: (i64,) = sqlx::query_as(
-            "SELECT spent_by FROM outputs WHERE output_id = ?",
-        )
-        .bind(utxo_id)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
-        assert!(spent_by.0 > 0, "spent_by should reference a valid transaction");
+        let spent_by: (i64,) = sqlx::query_as("SELECT spent_by FROM outputs WHERE output_id = ?")
+            .bind(utxo_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert!(
+            spent_by.0 > 0,
+            "spent_by should reference a valid transaction"
+        );
 
         // Verify only one transaction is referenced as the spender
         let spender_count: (i64,) = sqlx::query_as(
@@ -881,8 +912,7 @@ mod concurrent {
         inner_storage.make_available().await.unwrap();
 
         let identity_key = "a".repeat(66);
-        let inner_arc: Arc<dyn bsv_wallet_toolbox::MonitorStorage> =
-            Arc::new(inner_storage);
+        let inner_arc: Arc<dyn bsv_wallet_toolbox::MonitorStorage> = Arc::new(inner_storage);
 
         let manager = Arc::new(WalletStorageManager::new(
             identity_key.clone(),
@@ -915,11 +945,8 @@ mod concurrent {
         });
 
         // Use a short timeout to detect that the second writer is blocked
-        let timeout_result = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            contender_handle,
-        )
-        .await;
+        let timeout_result =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), contender_handle).await;
 
         // The second writer should NOT complete within 500ms because task 1
         // holds the lock for 5 seconds
@@ -1015,7 +1042,7 @@ mod concurrent {
 
         // Verify the writes persisted
         let cert_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM certificates WHERE user_id = ? AND is_deleted = 0"
+            "SELECT COUNT(*) FROM certificates WHERE user_id = ? AND is_deleted = 0",
         )
         .bind(user_id)
         .fetch_one(storage.pool())

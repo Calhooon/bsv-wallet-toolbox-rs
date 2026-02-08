@@ -129,13 +129,13 @@ impl Bitails {
 
         match response.status() {
             StatusCode::OK => {
-                let hex_str = response.text().await.map_err(|e| {
-                    Error::NetworkError(format!("Failed to read response: {}", e))
-                })?;
+                let hex_str = response
+                    .text()
+                    .await
+                    .map_err(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
 
-                let raw_tx = hex::decode(hex_str.trim()).map_err(|e| {
-                    Error::ValidationError(format!("Failed to decode hex: {}", e))
-                })?;
+                let raw_tx = hex::decode(hex_str.trim())
+                    .map_err(|e| Error::ValidationError(format!("Failed to decode hex: {}", e)))?;
 
                 // Validate txid
                 validate_txid(&raw_tx, txid)?;
@@ -178,9 +178,10 @@ impl Bitails {
 
         match response.status() {
             StatusCode::OK => {
-                let data: BitailsTscProof = response.json().await.map_err(|e| {
-                    Error::ServiceError(format!("Failed to parse proof: {}", e))
-                })?;
+                let data: BitailsTscProof = response
+                    .json()
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse proof: {}", e)))?;
 
                 // Convert to standard format
                 Ok(GetMerklePathResult {
@@ -230,9 +231,10 @@ impl Bitails {
 
         match response.status() {
             StatusCode::OK | StatusCode::CREATED => {
-                let results: Vec<BitailsBroadcastResult> = response.json().await.map_err(|e| {
-                    Error::ServiceError(format!("Failed to parse response: {}", e))
-                })?;
+                let results: Vec<BitailsBroadcastResult> = response
+                    .json()
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse response: {}", e)))?;
                 Ok(results)
             }
             status => Err(Error::ServiceError(format!(
@@ -448,9 +450,10 @@ impl Bitails {
             )));
         }
 
-        let data: BitailsNetworkInfo = response.json().await.map_err(|e| {
-            Error::ServiceError(format!("Failed to parse network info: {}", e))
-        })?;
+        let data: BitailsNetworkInfo = response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Failed to parse network info: {}", e)))?;
 
         Ok(data.blocks)
     }
@@ -469,9 +472,10 @@ impl Bitails {
 
         match response.status() {
             StatusCode::OK => {
-                let hex_str = response.text().await.map_err(|e| {
-                    Error::NetworkError(format!("Failed to read response: {}", e))
-                })?;
+                let hex_str = response
+                    .text()
+                    .await
+                    .map_err(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
 
                 let header_bytes = hex::decode(hex_str.trim()).map_err(|e| {
                     Error::ValidationError(format!("Failed to decode header hex: {}", e))
@@ -515,9 +519,10 @@ impl Bitails {
             )));
         }
 
-        let data: BitailsBlockInfo = response.json().await.map_err(|e| {
-            Error::ServiceError(format!("Failed to parse block info: {}", e))
-        })?;
+        let data: BitailsBlockInfo = response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Failed to parse block info: {}", e)))?;
 
         Ok((data.hash, data.height))
     }
@@ -527,10 +532,7 @@ impl Bitails {
     // =========================================================================
 
     /// Get transaction history for a script hash.
-    pub async fn get_script_hash_history(
-        &self,
-        hash: &str,
-    ) -> Result<GetScriptHashHistoryResult> {
+    pub async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
         validate_script_hash(hash)?;
 
         // Reverse hash from LE to BE
@@ -551,9 +553,10 @@ impl Bitails {
 
         match response.status() {
             StatusCode::OK => {
-                let data: Vec<BitailsHistoryItem> = response.json().await.map_err(|e| {
-                    Error::ServiceError(format!("Failed to parse history: {}", e))
-                })?;
+                let data: Vec<BitailsHistoryItem> = response
+                    .json()
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
 
                 let history = data
                     .into_iter()
@@ -588,10 +591,7 @@ impl Bitails {
     // =========================================================================
 
     /// Get status for multiple transaction IDs.
-    pub async fn get_status_for_txids(
-        &self,
-        txids: &[String],
-    ) -> Result<GetStatusForTxidsResult> {
+    pub async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
         let tip_height = self.get_current_height().await?;
 
         let mut results = Vec::new();
@@ -648,9 +648,10 @@ impl Bitails {
 
         match response.status() {
             StatusCode::OK => {
-                let data: BitailsTxInfo = response.json().await.map_err(|e| {
-                    Error::ServiceError(format!("Failed to parse tx info: {}", e))
-                })?;
+                let data: BitailsTxInfo = response
+                    .json()
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse tx info: {}", e)))?;
                 Ok(Some(data))
             }
             StatusCode::NOT_FOUND => Ok(None),
@@ -686,9 +687,10 @@ impl Bitails {
             )));
         }
 
-        let data: BitailsNetworkInfo = response.json().await.map_err(|e| {
-            Error::ServiceError(format!("Bitails parse: {}", e))
-        })?;
+        let data: BitailsNetworkInfo = response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Bitails parse: {}", e)))?;
 
         Ok(data.blocks)
     }
@@ -712,9 +714,10 @@ impl Bitails {
             )));
         }
 
-        response.json::<BlockHeader>().await.map_err(|e| {
-            Error::ServiceError(format!("Bitails header parse: {}", e))
-        })
+        response
+            .json::<BlockHeader>()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Bitails header parse: {}", e)))
     }
 
     /// Validate merkle root for height (lookup header and compare).
@@ -787,7 +790,10 @@ struct BitailsTxInfo {
 
 fn make_note(what: &str) -> HashMap<String, serde_json::Value> {
     let mut note = HashMap::new();
-    note.insert("what".to_string(), serde_json::Value::String(what.to_string()));
+    note.insert(
+        "what".to_string(),
+        serde_json::Value::String(what.to_string()),
+    );
     note.insert(
         "name".to_string(),
         serde_json::Value::String("Bitails".to_string()),

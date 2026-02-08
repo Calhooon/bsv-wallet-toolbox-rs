@@ -6,12 +6,12 @@
 //! - Bitails - Alternative merkle proof provider
 //! - BHS - Block Header Service for header lookups and merkle root validation
 
-pub mod whatsonchain;
 pub mod arc;
-pub mod bitails;
 pub mod bhs;
+pub mod bitails;
+pub mod whatsonchain;
 
-pub use whatsonchain::{WhatsOnChain, WhatsOnChainConfig};
 pub use arc::{Arc, ArcConfig};
+pub use bhs::{BhsConfig, BlockHeaderService};
 pub use bitails::{Bitails, BitailsConfig};
-pub use bhs::{BlockHeaderService, BhsConfig};
+pub use whatsonchain::{WhatsOnChain, WhatsOnChainConfig};

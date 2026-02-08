@@ -18,8 +18,8 @@ mod monitor_integration {
     use bsv_wallet_toolbox::services::mock::MockWalletServices;
     use bsv_wallet_toolbox::storage::StorageSqlx;
     use bsv_wallet_toolbox::{
-        MonitorOptions, TaskConfig, TransactionStatusUpdate, WalletServices,
-        WalletStorageProvider, WalletStorageWriter,
+        MonitorOptions, TaskConfig, TransactionStatusUpdate, WalletServices, WalletStorageProvider,
+        WalletStorageWriter,
     };
 
     /// Helper: create an in-memory StorageSqlx with migrations run and services set.

@@ -3,18 +3,15 @@
 //! Polls WhatsOnChain API for new block headers at regular intervals.
 //! Based on TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Ingest/LiveIngestorWhatsOnChainPoll.ts`
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
-use tokio::sync::{RwLock, broadcast};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 
+use crate::chaintracks::{BlockHeader, Chain, ChaintracksStorage, LiveBlockHeader, LiveIngestor};
 use crate::Result;
-use crate::chaintracks::{
-    Chain, BlockHeader, LiveBlockHeader,
-    LiveIngestor, ChaintracksStorage,
-};
 
 /// WhatsOnChain API base URLs
 pub const WOC_API_URL_MAIN: &str = "https://api.whatsonchain.com/v1/bsv/main";
@@ -70,7 +67,7 @@ impl Default for LivePollingOptions {
         LivePollingOptions {
             chain: Chain::Main,
             api_key: None,
-            poll_interval_secs: 60,  // Check every minute
+            poll_interval_secs: 60, // Check every minute
             timeout_secs: 30,
             user_agent: "BsvWalletToolbox/1.0".to_string(),
             idle_wait_ms: 100_000,
@@ -180,9 +177,10 @@ impl LivePollingIngestor {
         let response = self.client.get(&url).send().await?;
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("WOC block/headers returned status {}", response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "WOC block/headers returned status {}",
+                response.status()
+            )));
         }
 
         let headers: Vec<WocGetHeadersHeader> = response.json().await?;
@@ -201,9 +199,10 @@ impl LivePollingIngestor {
         }
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("WOC header lookup returned status {}", response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "WOC header lookup returned status {}",
+                response.status()
+            )));
         }
 
         let woc_header: WocGetHeadersHeader = response.json().await?;
@@ -211,12 +210,11 @@ impl LivePollingIngestor {
     }
 
     /// Run the polling loop
-    async fn polling_loop(
-        self: Arc<Self>,
-        live_headers: Arc<RwLock<Vec<BlockHeader>>>,
-    ) {
-        info!("Starting polling loop with interval {} seconds",
-            self.options.poll_interval_secs);
+    async fn polling_loop(self: Arc<Self>, live_headers: Arc<RwLock<Vec<BlockHeader>>>) {
+        info!(
+            "Starting polling loop with interval {} seconds",
+            self.options.poll_interval_secs
+        );
 
         while self.running.load(Ordering::SeqCst) {
             match self.poll_once(&live_headers).await {
@@ -244,15 +242,13 @@ impl LivePollingIngestor {
     }
 
     /// Perform a single poll
-    async fn poll_once(
-        &self,
-        live_headers: &Arc<RwLock<Vec<BlockHeader>>>,
-    ) -> Result<usize> {
+    async fn poll_once(&self, live_headers: &Arc<RwLock<Vec<BlockHeader>>>) -> Result<usize> {
         let headers = self.fetch_recent_headers().await?;
 
         // Find new headers not in last batch
         let last = self.last_headers.read().await;
-        let new_headers: Vec<WocGetHeadersHeader> = headers.iter()
+        let new_headers: Vec<WocGetHeadersHeader> = headers
+            .iter()
             .filter(|h| !last.iter().any(|lh| lh.hash == h.hash))
             .cloned()
             .collect();
@@ -265,8 +261,11 @@ impl LivePollingIngestor {
 
             for woc_header in &new_headers {
                 let header = woc_header_to_block_header(woc_header);
-                info!("New block detected: height={}, hash={}",
-                    header.height, &header.hash[..16]);
+                info!(
+                    "New block detected: height={}, hash={}",
+                    header.height,
+                    &header.hash[..16]
+                );
 
                 // Add to live headers (newest first)
                 live.insert(0, header.clone());
@@ -362,7 +361,9 @@ impl LivePollingIngestor {
 pub fn woc_header_to_block_header(woc: &WocGetHeadersHeader) -> BlockHeader {
     let bits = u32::from_str_radix(&woc.bits, 16).unwrap_or(0);
 
-    let previous_hash = woc.previous_block_hash.clone()
+    let previous_hash = woc
+        .previous_block_hash
+        .clone()
         .unwrap_or_else(|| "0".repeat(64));
 
     BlockHeader {
@@ -425,7 +426,8 @@ mod tests {
             height: 0,
             version: 1,
             version_hex: "00000001".to_string(),
-            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b".to_string(),
+            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+                .to_string(),
             time: 1231006505,
             median_time: 1231006505,
             nonce: 2083236893,
@@ -433,7 +435,9 @@ mod tests {
             difficulty: 1.0,
             chainwork: "0".repeat(64),
             previous_block_hash: None,
-            next_block_hash: Some("00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048".to_string()),
+            next_block_hash: Some(
+                "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048".to_string(),
+            ),
             n_tx: 1,
             num_tx: 1,
         };
@@ -493,22 +497,30 @@ mod tests {
             height: 1,
             version: 1,
             version_hex: "00000001".to_string(),
-            merkleroot: "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098".to_string(),
+            merkleroot: "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098"
+                .to_string(),
             time: 1231469665,
             median_time: 1231469665,
             nonce: 2573394689,
             bits: "1d00ffff".to_string(),
             difficulty: 1.0,
             chainwork: "0".repeat(64),
-            previous_block_hash: Some("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string()),
-            next_block_hash: Some("000000006a625f06636b8bb6ac7b960a8d03705d1ace08b1a19da3fdcc99ddbd".to_string()),
+            previous_block_hash: Some(
+                "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string(),
+            ),
+            next_block_hash: Some(
+                "000000006a625f06636b8bb6ac7b960a8d03705d1ace08b1a19da3fdcc99ddbd".to_string(),
+            ),
             n_tx: 1,
             num_tx: 1,
         };
 
         let header = woc_header_to_block_header(&woc);
         assert_eq!(header.height, 1);
-        assert_eq!(header.previous_hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
+        assert_eq!(
+            header.previous_hash,
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
     }
 
     #[test]

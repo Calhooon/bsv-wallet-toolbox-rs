@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use bsv_wallet_toolbox::services::GetBeefResult;
-use bsv_wallet_toolbox::{PostBeefResult, PostTxResultForTxid};
 use bsv_wallet_toolbox::storage::BeefVerificationMode;
+use bsv_wallet_toolbox::{PostBeefResult, PostTxResultForTxid};
 
 // =============================================================================
 // BEEF edge case tests
@@ -58,12 +58,15 @@ async fn test_beef_invalid_version() {
     assert!(result.beef.is_some());
     assert_eq!(result.beef.as_ref().unwrap().len(), 5);
     assert!(!result.has_proof);
-    assert!(result.error.as_ref().unwrap().contains("Invalid BEEF version"));
+    assert!(result
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("Invalid BEEF version"));
 
     // Verify the BEEF bytes are preserved through serialization
     let json = serde_json::to_string(&result).expect("Should serialize");
-    let deserialized: GetBeefResult =
-        serde_json::from_str(&json).expect("Should deserialize");
+    let deserialized: GetBeefResult = serde_json::from_str(&json).expect("Should deserialize");
     assert_eq!(deserialized.beef.as_ref().unwrap(), &invalid_beef_bytes);
 }
 
@@ -299,5 +302,8 @@ async fn test_beef_broadcast_result_serialization() {
     }
 
     // Verify default is Strict
-    assert_eq!(BeefVerificationMode::default(), BeefVerificationMode::Strict);
+    assert_eq!(
+        BeefVerificationMode::default(),
+        BeefVerificationMode::Strict
+    );
 }

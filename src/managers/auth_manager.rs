@@ -4,7 +4,9 @@
 //! authentication backend (WAB) support. This manager integrates with
 //! Wallet Authentication Backends for seamless user authentication flows.
 
-use super::cwi_style_wallet_manager::{CWIStyleWalletManager, CWIStyleWalletManagerConfig, CWIWalletBuilder};
+use super::cwi_style_wallet_manager::{
+    CWIStyleWalletManager, CWIStyleWalletManagerConfig, CWIWalletBuilder,
+};
 
 /// Wallet Authentication Manager for WAB (Wallet Authentication Backend) integration.
 ///

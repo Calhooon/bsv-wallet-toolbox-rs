@@ -191,8 +191,11 @@ impl WalletSigner {
             let pubkey = signing_key.public_key();
 
             // Build the unlocking script based on script type
-            let unlocking_script =
-                build_unlocking_script(locking_script, &signature.to_der(), &pubkey.to_compressed())?;
+            let unlocking_script = build_unlocking_script(
+                locking_script,
+                &signature.to_der(),
+                &pubkey.to_compressed(),
+            )?;
 
             // Insert the unlocking script into the transaction
             tx_data = insert_unlocking_script(&tx_data, vin as u32, &unlocking_script)?;
@@ -352,12 +355,17 @@ impl WalletSigner {
             use bsv_sdk::wallet::{Protocol, SecurityLevel};
 
             let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
-            let key_id = format!("{} {}", template.derivation_prefix, template.derivation_suffix);
+            let key_id = format!(
+                "{} {}",
+                template.derivation_prefix, template.derivation_suffix
+            );
 
             let signing_key = proto_wallet
                 .key_deriver()
                 .derive_private_key(&brc29_protocol, &key_id, &Counterparty::Self_)
-                .map_err(|e| Error::TransactionError(format!("Template key derivation failed: {}", e)))?;
+                .map_err(|e| {
+                    Error::TransactionError(format!("Template key derivation failed: {}", e))
+                })?;
 
             let pubkey = signing_key.public_key();
             let pubkey_bytes = pubkey.to_compressed();
@@ -381,7 +389,12 @@ impl WalletSigner {
                 }
             };
 
-            let sighash = compute_sighash(&tx_data, *input_index as u32, &locking_script, template.satoshis)?;
+            let sighash = compute_sighash(
+                &tx_data,
+                *input_index as u32,
+                &locking_script,
+                template.satoshis,
+            )?;
 
             let signature = signing_key
                 .sign(&sighash)
@@ -479,9 +492,7 @@ fn compute_sighash(
 }
 
 /// Parses a transaction into its components.
-fn parse_transaction(
-    tx_data: &[u8],
-) -> Result<(u32, Vec<TxInput>, Vec<TxOutput>, u32)> {
+fn parse_transaction(tx_data: &[u8]) -> Result<(u32, Vec<TxInput>, Vec<TxOutput>, u32)> {
     let mut offset = 0;
 
     // Version (4 bytes)
@@ -756,7 +767,11 @@ fn build_unlocking_script(
 }
 
 /// Inserts an unlocking script into a transaction at the specified input index.
-fn insert_unlocking_script(tx_data: &[u8], input_index: u32, unlocking_script: &[u8]) -> Result<Vec<u8>> {
+fn insert_unlocking_script(
+    tx_data: &[u8],
+    input_index: u32,
+    unlocking_script: &[u8],
+) -> Result<Vec<u8>> {
     // Parse the transaction
     let (version, inputs, outputs, locktime) = parse_transaction(tx_data)?;
 
@@ -846,7 +861,10 @@ mod tests {
         assert_eq!(read_varint(&[0xfd, 0xff, 0xff]).unwrap(), (65535, 3));
 
         // Four bytes
-        assert_eq!(read_varint(&[0xfe, 0x00, 0x00, 0x01, 0x00]).unwrap(), (65536, 5));
+        assert_eq!(
+            read_varint(&[0xfe, 0x00, 0x00, 0x01, 0x00]).unwrap(),
+            (65536, 5)
+        );
 
         // Eight bytes
         assert_eq!(
@@ -881,10 +899,9 @@ mod tests {
     fn test_double_sha256() {
         // Test vector: empty string
         let result = double_sha256(&[]);
-        let expected = hex::decode(
-            "5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456",
-        )
-        .unwrap();
+        let expected =
+            hex::decode("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456")
+                .unwrap();
         assert_eq!(result.to_vec(), expected);
     }
 

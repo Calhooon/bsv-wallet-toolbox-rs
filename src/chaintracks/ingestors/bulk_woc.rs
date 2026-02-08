@@ -3,17 +3,17 @@
 //! Uses WhatsOnChain API as a fallback for bulk header fetching.
 //! Based on TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Ingest/BulkIngestorWhatsOnChainCdn.ts`
 
-use std::sync::Arc;
 use async_trait::async_trait;
-use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::Result;
 use crate::chaintracks::{
-    Chain, BlockHeader, HeightRange, LiveBlockHeader,
-    BulkIngestor, BulkSyncResult, ChaintracksStorage,
+    BlockHeader, BulkIngestor, BulkSyncResult, Chain, ChaintracksStorage, HeightRange,
+    LiveBlockHeader,
 };
+use crate::Result;
 
 /// WhatsOnChain API base URL
 pub const WOC_API_URL_MAIN: &str = "https://api.whatsonchain.com/v1/bsv/main";
@@ -200,9 +200,10 @@ impl BulkWocIngestor {
         let response = self.client.get(&url).send().await?;
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("WOC chain/info returned status {}", response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "WOC chain/info returned status {}",
+                response.status()
+            )));
         }
 
         let info: WocChainInfo = response.json().await?;
@@ -240,9 +241,10 @@ impl BulkWocIngestor {
         }
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("WOC header lookup returned status {}", response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "WOC header lookup returned status {}",
+                response.status()
+            )));
         }
 
         let woc_header: WocHeaderResponse = response.json().await?;
@@ -257,13 +259,15 @@ impl BulkWocIngestor {
         let response = self.client.get(&url).send().await?;
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("WOC block/headers returned status {}", response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "WOC block/headers returned status {}",
+                response.status()
+            )));
         }
 
         let woc_headers: Vec<WocHeaderResponse> = response.json().await?;
-        let headers = woc_headers.iter()
+        let headers = woc_headers
+            .iter()
             .map(|h| self.convert_woc_header(h))
             .collect();
 
@@ -278,14 +282,17 @@ impl BulkWocIngestor {
         let response = self.client.get(&url).send().await?;
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("WOC headers/resources returned status {}", response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "WOC headers/resources returned status {}",
+                response.status()
+            )));
         }
 
         let links: WocHeaderByteFileLinks = response.json().await?;
 
-        let parsed: Vec<FileLink> = links.files.iter()
+        let parsed: Vec<FileLink> = links
+            .files
+            .iter()
             .filter_map(|url| self.parse_file_link(url))
             .collect();
 
@@ -331,9 +338,11 @@ impl BulkWocIngestor {
         let response = self.client.get(&link.url).send().await?;
 
         if !response.status().is_success() {
-            return Err(crate::Error::NetworkError(
-                format!("Failed to download {}: status {}", link.url, response.status())
-            ));
+            return Err(crate::Error::NetworkError(format!(
+                "Failed to download {}: status {}",
+                link.url,
+                response.status()
+            )));
         }
 
         let bytes = response.bytes().await?;
@@ -389,7 +398,7 @@ impl BulkWocIngestor {
 
     /// Compute double SHA256 hash of header
     fn compute_block_hash(&self, header_bytes: &[u8]) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(header_bytes);
@@ -410,7 +419,9 @@ impl BulkWocIngestor {
         // Parse bits from hex string
         let bits = u32::from_str_radix(&woc.bits, 16).unwrap_or(0);
 
-        let previous_hash = woc.previousblockhash.clone()
+        let previous_hash = woc
+            .previousblockhash
+            .clone()
             .unwrap_or_else(|| "0".repeat(64));
 
         BlockHeader {
@@ -439,11 +450,15 @@ impl BulkIngestor for BulkWocIngestor {
         before: u32,
         prior_live_headers: &[LiveBlockHeader],
     ) -> Result<BulkSyncResult> {
-        info!("WOC bulk sync: present_height={}, before={}", present_height, before);
+        info!(
+            "WOC bulk sync: present_height={}, before={}",
+            present_height, before
+        );
 
         if before >= present_height {
             return Ok(BulkSyncResult {
-                live_headers: prior_live_headers.iter()
+                live_headers: prior_live_headers
+                    .iter()
                     .map(|h| h.clone().into())
                     .collect(),
                 done: true,
@@ -452,14 +467,12 @@ impl BulkIngestor for BulkWocIngestor {
 
         let needed_range = HeightRange::new(before, present_height);
 
-        let headers = self.fetch_headers(
-            before,
-            needed_range,
-            None,
-            prior_live_headers,
-        ).await?;
+        let headers = self
+            .fetch_headers(before, needed_range, None, prior_live_headers)
+            .await?;
 
-        let done = headers.last()
+        let done = headers
+            .last()
             .map(|h| h.height >= present_height)
             .unwrap_or(false);
 
@@ -501,7 +514,8 @@ impl BulkIngestor for BulkWocIngestor {
             // Download and parse
             let data = self.download_header_file(link).await?;
 
-            let start_height = link.range
+            let start_height = link
+                .range
                 .as_ref()
                 .map(|r| r.low)
                 .or(last_height.map(|h| h + 1))
@@ -566,9 +580,7 @@ mod tests {
         let ingestor = BulkWocIngestor::new(BulkWocOptions::mainnet()).unwrap();
 
         // Test normal file
-        let link = ingestor.parse_file_link(
-            "https://example.com/headers/0_99999_headers.bin"
-        );
+        let link = ingestor.parse_file_link("https://example.com/headers/0_99999_headers.bin");
         assert!(link.is_some());
         let link = link.unwrap();
         assert!(!link.is_latest);
@@ -577,9 +589,7 @@ mod tests {
         assert_eq!(link.range.as_ref().unwrap().high, 99999);
 
         // Test latest file
-        let latest = ingestor.parse_file_link(
-            "https://example.com/headers/latest"
-        );
+        let latest = ingestor.parse_file_link("https://example.com/headers/latest");
         assert!(latest.is_some());
         assert!(latest.unwrap().is_latest);
     }
@@ -595,7 +605,8 @@ mod tests {
             height: 0,
             version: 1,
             version_hex: "00000001".to_string(),
-            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b".to_string(),
+            merkleroot: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+                .to_string(),
             time: 1231006505,
             median_time: 1231006505,
             nonce: 2083236893,
@@ -718,7 +729,10 @@ mod tests {
         let hash = ingestor.compute_block_hash(&genesis_bytes);
 
         // Genesis block hash (reversed for display)
-        assert_eq!(hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
+        assert_eq!(
+            hash,
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
     }
 
     #[tokio::test]
@@ -741,19 +755,27 @@ mod tests {
             height: 1,
             version: 1,
             version_hex: "00000001".to_string(),
-            merkleroot: "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098".to_string(),
+            merkleroot: "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098"
+                .to_string(),
             time: 1231469665,
             median_time: 1231469665,
             nonce: 2573394689,
             bits: "1d00ffff".to_string(),
             difficulty: 1.0,
             chainwork: "0".repeat(64),
-            previousblockhash: Some("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string()),
-            nextblockhash: Some("000000006a625f06636b8bb6ac7b960a8d03705d1ace08b1a19da3fdcc99ddbd".to_string()),
+            previousblockhash: Some(
+                "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string(),
+            ),
+            nextblockhash: Some(
+                "000000006a625f06636b8bb6ac7b960a8d03705d1ace08b1a19da3fdcc99ddbd".to_string(),
+            ),
         };
 
         let header = ingestor.convert_woc_header(&woc);
         assert_eq!(header.height, 1);
-        assert_eq!(header.previous_hash, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
+        assert_eq!(
+            header.previous_hash,
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
     }
 }

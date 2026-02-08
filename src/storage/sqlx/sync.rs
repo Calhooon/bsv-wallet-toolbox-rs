@@ -78,10 +78,7 @@ impl ChunkingState {
 type OffsetsLookup = HashMap<String, u32>;
 
 fn make_offsets_lookup(offsets: &[SyncOffset]) -> OffsetsLookup {
-    offsets
-        .iter()
-        .map(|o| (o.name.clone(), o.offset))
-        .collect()
+    offsets.iter().map(|o| (o.name.clone(), o.offset)).collect()
 }
 
 // =============================================================================
@@ -157,7 +154,14 @@ pub async fn get_sync_chunk_internal(
     // 1. Output Baskets (no dependencies)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::OUTPUT_BASKET) {
-            let baskets = fetch_baskets_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let baskets = fetch_baskets_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !baskets.is_empty() {
                 let size = estimate_size(&baskets);
                 state.add_items(baskets.len() as u32, size);
@@ -169,7 +173,14 @@ pub async fn get_sync_chunk_internal(
     // 2. Proven Txs (no dependencies)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::PROVEN_TX) {
-            let proven_txs = fetch_proven_txs_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let proven_txs = fetch_proven_txs_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !proven_txs.is_empty() {
                 let size = estimate_size(&proven_txs);
                 state.add_items(proven_txs.len() as u32, size);
@@ -181,7 +192,14 @@ pub async fn get_sync_chunk_internal(
     // 3. Proven Tx Reqs (no dependencies)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::PROVEN_TX_REQ) {
-            let reqs = fetch_proven_tx_reqs_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let reqs = fetch_proven_tx_reqs_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !reqs.is_empty() {
                 let size = estimate_size(&reqs);
                 state.add_items(reqs.len() as u32, size);
@@ -193,7 +211,14 @@ pub async fn get_sync_chunk_internal(
     // 4. Tx Labels (depends on user)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::TX_LABEL) {
-            let labels = fetch_tx_labels_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let labels = fetch_tx_labels_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !labels.is_empty() {
                 let size = estimate_size(&labels);
                 state.add_items(labels.len() as u32, size);
@@ -205,7 +230,14 @@ pub async fn get_sync_chunk_internal(
     // 5. Output Tags (depends on user)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::OUTPUT_TAG) {
-            let tags = fetch_output_tags_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let tags = fetch_output_tags_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !tags.is_empty() {
                 let size = estimate_size(&tags);
                 state.add_items(tags.len() as u32, size);
@@ -217,7 +249,14 @@ pub async fn get_sync_chunk_internal(
     // 6. Transactions (depends on user)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::TRANSACTION) {
-            let txs = fetch_transactions_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let txs = fetch_transactions_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !txs.is_empty() {
                 let size = estimate_size(&txs);
                 state.add_items(txs.len() as u32, size);
@@ -229,7 +268,14 @@ pub async fn get_sync_chunk_internal(
     // 7. Outputs (depends on transactions)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::OUTPUT) {
-            let outputs = fetch_outputs_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let outputs = fetch_outputs_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !outputs.is_empty() {
                 let size = estimate_size(&outputs);
                 state.add_items(outputs.len() as u32, size);
@@ -241,7 +287,14 @@ pub async fn get_sync_chunk_internal(
     // 8. Tx Label Maps (depends on transactions and labels)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::TX_LABEL_MAP) {
-            let maps = fetch_tx_label_maps_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let maps = fetch_tx_label_maps_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !maps.is_empty() {
                 let size = estimate_size(&maps);
                 state.add_items(maps.len() as u32, size);
@@ -253,7 +306,14 @@ pub async fn get_sync_chunk_internal(
     // 9. Output Tag Maps (depends on outputs and tags)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::OUTPUT_TAG_MAP) {
-            let maps = fetch_output_tag_maps_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let maps = fetch_output_tag_maps_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !maps.is_empty() {
                 let size = estimate_size(&maps);
                 state.add_items(maps.len() as u32, size);
@@ -265,7 +325,14 @@ pub async fn get_sync_chunk_internal(
     // 10. Certificates (depends on user)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::CERTIFICATE) {
-            let certs = fetch_certificates_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let certs = fetch_certificates_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !certs.is_empty() {
                 let size = estimate_size(&certs);
                 state.add_items(certs.len() as u32, size);
@@ -277,7 +344,14 @@ pub async fn get_sync_chunk_internal(
     // 11. Certificate Fields (depends on certificates)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::CERTIFICATE_FIELD) {
-            let fields = fetch_certificate_fields_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let fields = fetch_certificate_fields_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !fields.is_empty() {
                 let size = estimate_size(&fields);
                 state.add_items(fields.len() as u32, size);
@@ -289,7 +363,14 @@ pub async fn get_sync_chunk_internal(
     // 12. Commissions (depends on transactions)
     if state.can_add() {
         if let Some(&offset) = offsets.get(entity_names::COMMISSION) {
-            let commissions = fetch_commissions_for_sync(storage, user_id, args.since, offset, state.remaining_items()).await?;
+            let commissions = fetch_commissions_for_sync(
+                storage,
+                user_id,
+                args.since,
+                offset,
+                state.remaining_items(),
+            )
+            .await?;
             if !commissions.is_empty() {
                 let size = estimate_size(&commissions);
                 state.add_items(commissions.len() as u32, size);
@@ -367,7 +448,10 @@ pub async fn process_sync_chunk_internal(
         && chunk.output_tags.as_ref().is_none_or(|v| v.is_empty())
         && chunk.output_tag_maps.as_ref().is_none_or(|v| v.is_empty())
         && chunk.certificates.as_ref().is_none_or(|v| v.is_empty())
-        && chunk.certificate_fields.as_ref().is_none_or(|v| v.is_empty())
+        && chunk
+            .certificate_fields
+            .as_ref()
+            .is_none_or(|v| v.is_empty())
         && chunk.commissions.as_ref().is_none_or(|v| v.is_empty());
 
     if chunk_is_empty {
@@ -478,8 +562,11 @@ pub async fn process_sync_chunk_internal(
     if let Some(outputs) = &chunk.outputs {
         for output in outputs {
             let local_tx_id = transaction_id_map.get(&output.transaction_id).copied();
-            let local_basket_id = output.basket_id.and_then(|bid| basket_id_map.get(&bid).copied());
-            let upsert_result = upsert_output(storage, user_id, output, local_tx_id, local_basket_id).await?;
+            let local_basket_id = output
+                .basket_id
+                .and_then(|bid| basket_id_map.get(&bid).copied());
+            let upsert_result =
+                upsert_output(storage, user_id, output, local_tx_id, local_basket_id).await?;
             output_id_map.insert(output.output_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -543,7 +630,8 @@ pub async fn process_sync_chunk_internal(
         for field in fields {
             let local_cert_id = certificate_id_map.get(&field.certificate_id).copied();
             if let Some(cert_id) = local_cert_id {
-                let upsert_result = upsert_certificate_field(storage, user_id, field, cert_id).await?;
+                let upsert_result =
+                    upsert_certificate_field(storage, user_id, field, cert_id).await?;
                 if upsert_result.is_new {
                     result.inserts += 1;
                 } else {
@@ -958,7 +1046,11 @@ async fn fetch_outputs_for_sync(
             purpose: row.try_get("purpose").ok(),
             output_description: row.try_get("output_description").ok(),
             spent_by: row.try_get("spent_by").ok().flatten(),
-            sequence_number: row.try_get::<Option<i32>, _>("sequence_number").ok().flatten().map(|v| v as u32),
+            sequence_number: row
+                .try_get::<Option<i32>, _>("sequence_number")
+                .ok()
+                .flatten()
+                .map(|v| v as u32),
             spending_description: row.try_get("spending_description").ok(),
             spendable: row.get("spendable"),
             change: row.get("change"),
@@ -1378,7 +1470,10 @@ async fn upsert_proven_tx(storage: &StorageSqlx, ptx: &TableProvenTx) -> Result<
     }
 }
 
-async fn upsert_proven_tx_req(storage: &StorageSqlx, req: &TableProvenTxReq) -> Result<UpsertResult> {
+async fn upsert_proven_tx_req(
+    storage: &StorageSqlx,
+    req: &TableProvenTxReq,
+) -> Result<UpsertResult> {
     // Check if exists by txid
     let existing = sqlx::query(
         r#"
@@ -2097,18 +2192,54 @@ mod tests {
 
     fn make_test_offsets() -> Vec<SyncOffset> {
         vec![
-            SyncOffset { name: entity_names::OUTPUT_BASKET.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::PROVEN_TX.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::PROVEN_TX_REQ.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::TX_LABEL.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::OUTPUT_TAG.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::TRANSACTION.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::OUTPUT.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::TX_LABEL_MAP.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::OUTPUT_TAG_MAP.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::CERTIFICATE.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::CERTIFICATE_FIELD.to_string(), offset: 0 },
-            SyncOffset { name: entity_names::COMMISSION.to_string(), offset: 0 },
+            SyncOffset {
+                name: entity_names::OUTPUT_BASKET.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::PROVEN_TX.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::PROVEN_TX_REQ.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::TX_LABEL.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::OUTPUT_TAG.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::TRANSACTION.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::OUTPUT.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::TX_LABEL_MAP.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::OUTPUT_TAG_MAP.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::CERTIFICATE.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::CERTIFICATE_FIELD.to_string(),
+                offset: 0,
+            },
+            SyncOffset {
+                name: entity_names::COMMISSION.to_string(),
+                offset: 0,
+            },
         ]
     }
 
@@ -2266,7 +2397,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk).await.unwrap();
+        let result = process_sync_chunk_internal(&storage, args, chunk)
+            .await
+            .unwrap();
 
         assert!(result.done); // Empty chunk = sync complete
         assert_eq!(result.inserts, 1); // User was created
@@ -2299,21 +2432,21 @@ mod tests {
             from_storage_identity_key: "a".repeat(66),
             to_storage_identity_key: "c".repeat(66),
             user_identity_key: identity_key.clone(),
-            output_baskets: Some(vec![
-                TableOutputBasket {
-                    basket_id: 100, // Source ID
-                    user_id: 1,
-                    name: "custom_basket".to_string(),
-                    number_of_desired_utxos: 10,
-                    minimum_desired_utxo_value: 5000,
-                    created_at: now,
-                    updated_at: now,
-                },
-            ]),
+            output_baskets: Some(vec![TableOutputBasket {
+                basket_id: 100, // Source ID
+                user_id: 1,
+                name: "custom_basket".to_string(),
+                number_of_desired_utxos: 10,
+                minimum_desired_utxo_value: 5000,
+                created_at: now,
+                updated_at: now,
+            }]),
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk).await.unwrap();
+        let result = process_sync_chunk_internal(&storage, args, chunk)
+            .await
+            .unwrap();
 
         assert!(!result.done); // Not empty chunk
         assert_eq!(result.inserts, 2); // User + basket
@@ -2350,21 +2483,21 @@ mod tests {
             from_storage_identity_key: "a".repeat(66),
             to_storage_identity_key: "c".repeat(66),
             user_identity_key: identity_key.clone(),
-            output_baskets: Some(vec![
-                TableOutputBasket {
-                    basket_id: 100,
-                    user_id: 1,
-                    name: "custom_basket".to_string(),
-                    number_of_desired_utxos: 10,
-                    minimum_desired_utxo_value: 5000,
-                    created_at: now,
-                    updated_at: now,
-                },
-            ]),
+            output_baskets: Some(vec![TableOutputBasket {
+                basket_id: 100,
+                user_id: 1,
+                name: "custom_basket".to_string(),
+                number_of_desired_utxos: 10,
+                minimum_desired_utxo_value: 5000,
+                created_at: now,
+                updated_at: now,
+            }]),
             ..Default::default()
         };
 
-        let result1 = process_sync_chunk_internal(&storage, args.clone(), chunk1).await.unwrap();
+        let result1 = process_sync_chunk_internal(&storage, args.clone(), chunk1)
+            .await
+            .unwrap();
         assert_eq!(result1.inserts, 1); // basket only (user already exists)
 
         // Second sync - update basket with newer timestamp
@@ -2372,21 +2505,21 @@ mod tests {
             from_storage_identity_key: "a".repeat(66),
             to_storage_identity_key: "c".repeat(66),
             user_identity_key: identity_key.clone(),
-            output_baskets: Some(vec![
-                TableOutputBasket {
-                    basket_id: 100,
-                    user_id: 1,
-                    name: "custom_basket".to_string(),
-                    number_of_desired_utxos: 20, // Updated value
-                    minimum_desired_utxo_value: 10000, // Updated value
-                    created_at: now,
-                    updated_at: later, // Newer timestamp
-                },
-            ]),
+            output_baskets: Some(vec![TableOutputBasket {
+                basket_id: 100,
+                user_id: 1,
+                name: "custom_basket".to_string(),
+                number_of_desired_utxos: 20,       // Updated value
+                minimum_desired_utxo_value: 10000, // Updated value
+                created_at: now,
+                updated_at: later, // Newer timestamp
+            }]),
             ..Default::default()
         };
 
-        let result2 = process_sync_chunk_internal(&storage, args, chunk2).await.unwrap();
+        let result2 = process_sync_chunk_internal(&storage, args, chunk2)
+            .await
+            .unwrap();
         assert_eq!(result2.inserts, 0);
         assert_eq!(result2.updates, 1); // basket updated
     }
@@ -2418,69 +2551,73 @@ mod tests {
             from_storage_identity_key: "a".repeat(66),
             to_storage_identity_key: "c".repeat(66),
             user_identity_key: identity_key.clone(),
-            transactions: Some(vec![
-                TableTransaction {
-                    transaction_id: 999, // Source ID
-                    user_id: 1,
-                    txid: Some("a".repeat(64)),
-                    status: TransactionStatus::Completed,
-                    reference: "test_ref".to_string(),
-                    description: "Test transaction".to_string(),
-                    satoshis: 10000,
-                    version: 1,
-                    lock_time: 0,
-                    raw_tx: Some(vec![1, 2, 3]),
-                    input_beef: None,
-                    is_outgoing: true,
-                    proof_txid: None,
-                    created_at: now,
-                    updated_at: now,
-                },
-            ]),
-            outputs: Some(vec![
-                TableOutput {
-                    output_id: 888, // Source ID
-                    user_id: 1,
-                    transaction_id: 999, // References source transaction ID
-                    basket_id: None,
-                    txid: "a".repeat(64),
-                    vout: 0,
-                    satoshis: 5000,
-                    locking_script: Some(vec![0x76, 0xa9]),
-                    script_length: 25,
-                    script_offset: 0,
-                    output_type: "P2PKH".to_string(),
-                    provided_by: "you".to_string(),
-                    purpose: None,
-                    output_description: None,
-                    spent_by: None,
-                    sequence_number: None,
-                    spending_description: None,
-                    spendable: true,
-                    change: false,
-                    derivation_prefix: None,
-                    derivation_suffix: None,
-                    sender_identity_key: None,
-                    custom_instructions: None,
-                    created_at: now,
-                    updated_at: now,
-                },
-            ]),
+            transactions: Some(vec![TableTransaction {
+                transaction_id: 999, // Source ID
+                user_id: 1,
+                txid: Some("a".repeat(64)),
+                status: TransactionStatus::Completed,
+                reference: "test_ref".to_string(),
+                description: "Test transaction".to_string(),
+                satoshis: 10000,
+                version: 1,
+                lock_time: 0,
+                raw_tx: Some(vec![1, 2, 3]),
+                input_beef: None,
+                is_outgoing: true,
+                proof_txid: None,
+                created_at: now,
+                updated_at: now,
+            }]),
+            outputs: Some(vec![TableOutput {
+                output_id: 888, // Source ID
+                user_id: 1,
+                transaction_id: 999, // References source transaction ID
+                basket_id: None,
+                txid: "a".repeat(64),
+                vout: 0,
+                satoshis: 5000,
+                locking_script: Some(vec![0x76, 0xa9]),
+                script_length: 25,
+                script_offset: 0,
+                output_type: "P2PKH".to_string(),
+                provided_by: "you".to_string(),
+                purpose: None,
+                output_description: None,
+                spent_by: None,
+                sequence_number: None,
+                spending_description: None,
+                spendable: true,
+                change: false,
+                derivation_prefix: None,
+                derivation_suffix: None,
+                sender_identity_key: None,
+                custom_instructions: None,
+                created_at: now,
+                updated_at: now,
+            }]),
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk).await.unwrap();
+        let result = process_sync_chunk_internal(&storage, args, chunk)
+            .await
+            .unwrap();
 
         // User + transaction + output = 3 inserts
         assert_eq!(result.inserts, 3);
 
         // Verify output was created with correct local transaction_id
         let auth = AuthId::with_user_id(&identity_key, 1);
-        let outputs = storage.find_outputs(&auth, FindOutputsArgs {
-            txid: Some("a".repeat(64)),
-            vout: Some(0),
-            ..Default::default()
-        }).await.unwrap();
+        let outputs = storage
+            .find_outputs(
+                &auth,
+                FindOutputsArgs {
+                    txid: Some("a".repeat(64)),
+                    vout: Some(0),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(outputs.len(), 1);
         // transaction_id should be 1 (local ID), not 999 (source ID)
@@ -2534,9 +2671,7 @@ mod tests {
 
         // Create destination storage
         let dest = StorageSqlx::in_memory().await.unwrap();
-        dest.migrate("dest-storage", &"c".repeat(66))
-            .await
-            .unwrap();
+        dest.migrate("dest-storage", &"c".repeat(66)).await.unwrap();
         dest.make_available().await.unwrap();
 
         // Process chunk on destination
@@ -2550,16 +2685,29 @@ mod tests {
             offsets: vec![],
         };
 
-        let result = process_sync_chunk_internal(&dest, process_args, chunk).await.unwrap();
+        let result = process_sync_chunk_internal(&dest, process_args, chunk)
+            .await
+            .unwrap();
 
         // Should have synced user + baskets (inserts + updates)
         let total_changes = result.inserts + result.updates;
-        assert!(total_changes >= 3, "Expected at least 3 changes (user + 2 baskets), got {} inserts + {} updates", result.inserts, result.updates);
+        assert!(
+            total_changes >= 3,
+            "Expected at least 3 changes (user + 2 baskets), got {} inserts + {} updates",
+            result.inserts,
+            result.updates
+        );
 
         // Verify destination has the data
         let dest_auth = AuthId::with_user_id(&identity_key, 1);
-        let dest_baskets = dest.find_output_baskets(&dest_auth, FindOutputBasketsArgs::default()).await.unwrap();
+        let dest_baskets = dest
+            .find_output_baskets(&dest_auth, FindOutputBasketsArgs::default())
+            .await
+            .unwrap();
 
-        assert!(dest_baskets.iter().any(|b| b.name == "payments"), "payments basket not found in destination");
+        assert!(
+            dest_baskets.iter().any(|b| b.name == "payments"),
+            "payments basket not found in destination"
+        );
     }
 }

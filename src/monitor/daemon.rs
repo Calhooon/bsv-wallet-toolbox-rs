@@ -29,7 +29,9 @@ fn rand_byte() -> u8 {
         .unwrap_or_default()
         .subsec_nanos();
     // Mix counter with time for uniqueness
-    ((nanos as u64).wrapping_mul(6364136223846793005).wrapping_add(count)) as u8
+    ((nanos as u64)
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(count)) as u8
 }
 
 /// Background task scheduler for wallet transaction lifecycle management.
@@ -202,11 +204,8 @@ where
         // Start unfail task
         if self.options.tasks.unfail.enabled {
             let task = UnfailTask::new(self.storage.clone(), self.services.clone());
-            let handle = self.spawn_task(
-                TaskType::UnFail,
-                Arc::new(task),
-                &self.options.tasks.unfail,
-            );
+            let handle =
+                self.spawn_task(TaskType::UnFail, Arc::new(task), &self.options.tasks.unfail);
             handles.insert(TaskType::UnFail, handle);
         }
 
@@ -509,10 +508,7 @@ mod tests {
         assert!(opts.tasks.purge.enabled);
         assert!(opts.tasks.monitor_call_history.enabled);
         assert!(opts.tasks.sync_when_idle.enabled);
-        assert_eq!(
-            opts.fail_abandoned_timeout,
-            Duration::from_secs(5 * 60)
-        );
+        assert_eq!(opts.fail_abandoned_timeout, Duration::from_secs(5 * 60));
     }
 
     #[test]

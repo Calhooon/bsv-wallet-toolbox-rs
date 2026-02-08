@@ -9,6 +9,7 @@
 use crate::error::{Error, Result};
 use crate::storage::entities::TransactionStatus;
 use chrono::Utc;
+use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
 
 use bsv_sdk::wallet::{AbortActionArgs, AbortActionResult};
@@ -62,6 +63,10 @@ struct TransactionRecord {
 /// 2. Validates the transaction can be aborted
 /// 3. Releases locked outputs back to spendable state
 /// 4. Updates transaction status to 'failed'
+///
+/// All database operations are wrapped in a SQL transaction so that a crash
+/// mid-operation does not leave the database in an inconsistent state.
+/// If any step fails (via `?`), sqlx automatically rolls back on drop.
 pub async fn abort_action_internal(
     storage: &StorageSqlx,
     user_id: i64,
@@ -69,27 +74,38 @@ pub async fn abort_action_internal(
 ) -> Result<AbortActionResult> {
     let reference = &args.reference;
 
-    // Step 1: Find the transaction
-    let tx = find_transaction(storage, user_id, reference).await?;
+    // Begin a SQL transaction so that all mutations are atomic.
+    let mut db_tx = storage
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
-    let tx = tx.ok_or_else(|| {
-        Error::NotFound {
-            entity: "transaction".to_string(),
-            id: format!("reference or txid '{}'", reference),
-        }
+    // Step 1: Find the transaction
+    let tx = find_transaction(&mut db_tx, user_id, reference).await?;
+
+    let tx = tx.ok_or_else(|| Error::NotFound {
+        entity: "transaction".to_string(),
+        id: format!("reference or txid '{}'", reference),
     })?;
 
     // Step 2: Validate the transaction can be aborted
     validate_transaction_for_abort(&tx)?;
 
     // Step 3: Check that transaction outputs haven't been spent
-    check_outputs_not_spent(storage, tx.transaction_id).await?;
+    check_outputs_not_spent(&mut db_tx, tx.transaction_id).await?;
 
     // Step 4: Release locked outputs (make them spendable again)
-    release_locked_outputs(storage, tx.transaction_id).await?;
+    release_locked_outputs(&mut db_tx, tx.transaction_id).await?;
 
     // Step 5: Update transaction status to 'failed'
-    update_transaction_status_to_failed(storage, tx.transaction_id).await?;
+    update_transaction_status_to_failed(&mut db_tx, tx.transaction_id).await?;
+
+    // Commit the transaction to make all changes durable.
+    db_tx
+        .commit()
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
     Ok(AbortActionResult { aborted: true })
 }
@@ -103,12 +119,12 @@ pub async fn abort_action_internal(
 /// First searches by reference. If not found and the reference looks like
 /// a txid (64 hex characters), also searches by txid.
 async fn find_transaction(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     reference: &str,
 ) -> Result<Option<TransactionRecord>> {
     // First, try to find by reference
-    let tx = find_transaction_by_reference(storage, user_id, reference).await?;
+    let tx = find_transaction_by_reference(&mut *conn, user_id, reference).await?;
 
     if tx.is_some() {
         return Ok(tx);
@@ -116,7 +132,7 @@ async fn find_transaction(
 
     // If not found and reference looks like a txid, try finding by txid
     if is_potential_txid(reference) {
-        return find_transaction_by_txid(storage, user_id, reference).await;
+        return find_transaction_by_txid(&mut *conn, user_id, reference).await;
     }
 
     Ok(None)
@@ -124,7 +140,7 @@ async fn find_transaction(
 
 /// Find transaction by reference string.
 async fn find_transaction_by_reference(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     reference: &str,
 ) -> Result<Option<TransactionRecord>> {
@@ -137,7 +153,7 @@ async fn find_transaction_by_reference(
     )
     .bind(user_id)
     .bind(reference)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     match row {
@@ -152,7 +168,7 @@ async fn find_transaction_by_reference(
 
 /// Find transaction by txid.
 async fn find_transaction_by_txid(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     txid: &str,
 ) -> Result<Option<TransactionRecord>> {
@@ -165,7 +181,7 @@ async fn find_transaction_by_txid(
     )
     .bind(user_id)
     .bind(txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     match row {
@@ -234,7 +250,7 @@ fn validate_transaction_for_abort(tx: &TransactionRecord) -> Result<()> {
 }
 
 /// Check that the transaction's outputs have not been spent by another transaction.
-async fn check_outputs_not_spent(storage: &StorageSqlx, transaction_id: i64) -> Result<()> {
+async fn check_outputs_not_spent(conn: &mut SqliteConnection, transaction_id: i64) -> Result<()> {
     // Check if any outputs created by this transaction have been spent
     let row = sqlx::query(
         r#"
@@ -244,7 +260,7 @@ async fn check_outputs_not_spent(storage: &StorageSqlx, transaction_id: i64) -> 
         "#,
     )
     .bind(transaction_id)
-    .fetch_one(storage.pool())
+    .fetch_one(&mut *conn)
     .await?;
 
     let count: i64 = row.get("count");
@@ -262,7 +278,7 @@ async fn check_outputs_not_spent(storage: &StorageSqlx, transaction_id: i64) -> 
 ///
 /// This sets `spendable = true` and `spent_by = NULL` for outputs that
 /// were being spent by this transaction.
-async fn release_locked_outputs(storage: &StorageSqlx, transaction_id: i64) -> Result<()> {
+async fn release_locked_outputs(conn: &mut SqliteConnection, transaction_id: i64) -> Result<()> {
     let now = Utc::now();
 
     // Find outputs that were being spent by this transaction and release them
@@ -277,7 +293,7 @@ async fn release_locked_outputs(storage: &StorageSqlx, transaction_id: i64) -> R
     )
     .bind(now)
     .bind(transaction_id)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(())
@@ -285,7 +301,7 @@ async fn release_locked_outputs(storage: &StorageSqlx, transaction_id: i64) -> R
 
 /// Update transaction status to 'failed'.
 async fn update_transaction_status_to_failed(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     transaction_id: i64,
 ) -> Result<()> {
     let now = Utc::now();
@@ -299,7 +315,7 @@ async fn update_transaction_status_to_failed(
     )
     .bind(now)
     .bind(transaction_id)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(())
@@ -437,15 +453,8 @@ mod tests {
 
         // Create an unsigned outgoing transaction
         let reference = "test-abort-ref-1";
-        let tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unsigned",
-            true,
-            None,
-        )
-        .await;
+        let tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unsigned", true, None).await;
 
         // Create a previous transaction with outputs
         let prev_tx_id = insert_test_transaction(
@@ -459,7 +468,8 @@ mod tests {
         .await;
 
         // Create an output from the previous transaction that is being spent by our unsigned tx
-        let output_id = insert_test_output(&storage, user_id, prev_tx_id, 0, false, Some(tx_id)).await;
+        let output_id =
+            insert_test_output(&storage, user_id, prev_tx_id, 0, false, Some(tx_id)).await;
 
         // Verify initial state
         assert!(!is_output_spendable(&storage, output_id).await);
@@ -568,15 +578,8 @@ mod tests {
 
         // Create an unsigned outgoing transaction for user 1
         let reference = "test-abort-ref-4";
-        let _tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unsigned",
-            true,
-            None,
-        )
-        .await;
+        let _tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unsigned", true, None).await;
 
         // Create a second user
         let identity_key_2 = "b".repeat(66);
@@ -613,15 +616,8 @@ mod tests {
 
         // Create an unsigned outgoing transaction
         let reference = "test-abort-ref-5";
-        let tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unsigned",
-            true,
-            None,
-        )
-        .await;
+        let tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unsigned", true, None).await;
 
         // Create a previous completed transaction
         let prev_tx_id = insert_test_transaction(
@@ -635,9 +631,12 @@ mod tests {
         .await;
 
         // Create multiple outputs that are being spent by the unsigned tx
-        let output1_id = insert_test_output(&storage, user_id, prev_tx_id, 0, false, Some(tx_id)).await;
-        let output2_id = insert_test_output(&storage, user_id, prev_tx_id, 1, false, Some(tx_id)).await;
-        let output3_id = insert_test_output(&storage, user_id, prev_tx_id, 2, false, Some(tx_id)).await;
+        let output1_id =
+            insert_test_output(&storage, user_id, prev_tx_id, 0, false, Some(tx_id)).await;
+        let output2_id =
+            insert_test_output(&storage, user_id, prev_tx_id, 1, false, Some(tx_id)).await;
+        let output3_id =
+            insert_test_output(&storage, user_id, prev_tx_id, 2, false, Some(tx_id)).await;
 
         // Also create an output that is NOT being spent (should remain unchanged)
         let output4_id = insert_test_output(&storage, user_id, prev_tx_id, 3, true, None).await;
@@ -684,15 +683,8 @@ mod tests {
 
         // Create an unprocessed outgoing transaction
         let reference = "test-abort-ref-6";
-        let tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unprocessed",
-            true,
-            None,
-        )
-        .await;
+        let tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unprocessed", true, None).await;
 
         // Abort the transaction
         let result = abort_action_internal(
@@ -720,11 +712,7 @@ mod tests {
         // Create an unsigned incoming transaction (is_outgoing = false)
         let reference = "test-abort-ref-7";
         let _tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unsigned",
-            false, // incoming
+            &storage, user_id, reference, "unsigned", false, // incoming
             None,
         )
         .await;
@@ -802,15 +790,8 @@ mod tests {
 
         // Create a failed outgoing transaction
         let reference = "test-abort-ref-8";
-        let _tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "failed",
-            true,
-            None,
-        )
-        .await;
+        let _tx_id =
+            insert_test_transaction(&storage, user_id, reference, "failed", true, None).await;
 
         // Try to abort the transaction
         let result = abort_action_internal(
@@ -844,15 +825,9 @@ mod tests {
         // Create an unsigned outgoing transaction with a txid
         let reference = "test-abort-ref-9";
         let txid = "f".repeat(64);
-        let tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unsigned",
-            true,
-            Some(&txid),
-        )
-        .await;
+        let tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unsigned", true, Some(&txid))
+                .await;
 
         // Abort using the txid as reference
         let result = abort_action_internal(
@@ -879,15 +854,8 @@ mod tests {
 
         // Create a nosend outgoing transaction
         let reference = "test-abort-ref-10";
-        let tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "nosend",
-            true,
-            None,
-        )
-        .await;
+        let tx_id =
+            insert_test_transaction(&storage, user_id, reference, "nosend", true, None).await;
 
         // Abort the transaction
         let result = abort_action_internal(
@@ -996,15 +964,8 @@ mod tests {
 
         // Create an unfail outgoing transaction
         let reference = "test-abort-ref-13";
-        let tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unfail",
-            true,
-            None,
-        )
-        .await;
+        let tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unfail", true, None).await;
 
         // Abort the transaction
         let result = abort_action_internal(
@@ -1062,15 +1023,9 @@ mod tests {
         // Create an unsigned outgoing transaction for user 1 with a txid
         let reference = "test-abort-ref-15";
         let txid = "2".repeat(64);
-        let _tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unsigned",
-            true,
-            Some(&txid),
-        )
-        .await;
+        let _tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unsigned", true, Some(&txid))
+                .await;
 
         // Create a second user
         let identity_key_2 = "c".repeat(66);
@@ -1108,15 +1063,9 @@ mod tests {
         // Create an unproven outgoing transaction with a txid
         let reference = "test-abort-ref-16";
         let txid = "3".repeat(64);
-        let _tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unproven",
-            true,
-            Some(&txid),
-        )
-        .await;
+        let _tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unproven", true, Some(&txid))
+                .await;
 
         // Try to abort the transaction using txid
         let result = abort_action_internal(
@@ -1166,25 +1115,20 @@ mod tests {
 
         // Create an unsigned outgoing transaction that "spends" the output
         let reference = "test-abort-ref-17";
-        let tx_id = insert_test_transaction(
-            &storage,
-            user_id,
-            reference,
-            "unsigned",
-            true,
-            None,
-        )
-        .await;
+        let tx_id =
+            insert_test_transaction(&storage, user_id, reference, "unsigned", true, None).await;
 
         // Mark the output as being spent by the unsigned transaction
         let now = Utc::now();
-        sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ?, updated_at = ? WHERE output_id = ?")
-            .bind(tx_id)
-            .bind(now)
-            .bind(output_id)
-            .execute(storage.pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE outputs SET spendable = 0, spent_by = ?, updated_at = ? WHERE output_id = ?",
+        )
+        .bind(tx_id)
+        .bind(now)
+        .bind(output_id)
+        .execute(storage.pool())
+        .await
+        .unwrap();
 
         // Verify output is no longer spendable
         assert!(!is_output_spendable(&storage, output_id).await);

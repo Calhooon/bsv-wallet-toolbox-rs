@@ -199,14 +199,9 @@ where
         .map_err(|e| Error::ValidationError(format!("Invalid identity key: {}", e)))?;
 
     // Step 1: Prepare issuance action data
-    let prepared = prepare_issuance_action_data(
-        wallet,
-        &args,
-        &certifier,
-        &identity_pub_key,
-        originator,
-    )
-    .await?;
+    let prepared =
+        prepare_issuance_action_data(wallet, &args, &certifier, &identity_pub_key, originator)
+            .await?;
 
     // Step 2: Send HTTP POST to certifier
     let http_response = send_issuance_request(certifier_url, &prepared.body, identity_key).await?;
@@ -283,7 +278,10 @@ where
     // Encode certificate type as base64
     // The certificate_type is already a string - decode it to get the 32 bytes
     let cert_type_bytes = BASE64.decode(&args.certificate_type).map_err(|e| {
-        Error::ValidationError(format!("Invalid certificate_type (not valid base64): {}", e))
+        Error::ValidationError(format!(
+            "Invalid certificate_type (not valid base64): {}",
+            e
+        ))
     })?;
     if cert_type_bytes.len() != 32 {
         return Err(Error::ValidationError(format!(
@@ -358,10 +356,7 @@ where
 {
     use bsv_sdk::wallet::EncryptArgs;
 
-    let protocol = Protocol::new(
-        SecurityLevel::Counterparty,
-        "certificate field encryption",
-    );
+    let protocol = Protocol::new(SecurityLevel::Counterparty, "certificate field encryption");
 
     let mut encrypted_fields = HashMap::new();
     let mut master_keyring = HashMap::new();
@@ -383,10 +378,7 @@ where
             )
             .await
             .map_err(|e| {
-                Error::ValidationError(format!(
-                    "Failed to encrypt field '{}': {}",
-                    field_name, e
-                ))
+                Error::ValidationError(format!("Failed to encrypt field '{}': {}", field_name, e))
             })?;
 
         encrypted_fields.insert(field_name.clone(), encrypt_result.ciphertext.clone());
@@ -445,9 +437,10 @@ async fn send_issuance_request(
         .map(String::from);
 
     // Parse response JSON
-    let response_text = response.text().await.map_err(|e| {
-        Error::NetworkError(format!("Failed to read certifier response: {}", e))
-    })?;
+    let response_text = response
+        .text()
+        .await
+        .map_err(|e| Error::NetworkError(format!("Failed to read certifier response: {}", e)))?;
 
     let parsed: ProtocolIssuanceResponse = serde_json::from_str(&response_text).map_err(|e| {
         Error::ValidationError(format!(
@@ -511,9 +504,9 @@ fn parse_certificate_response(
     }
 
     // Decode serial number
-    let serial_bytes = BASE64.decode(&cert_resp.serial_number).map_err(|e| {
-        Error::ValidationError(format!("Failed to decode serial number: {}", e))
-    })?;
+    let serial_bytes = BASE64
+        .decode(&cert_resp.serial_number)
+        .map_err(|e| Error::ValidationError(format!("Failed to decode serial number: {}", e)))?;
     if serial_bytes.len() != 32 {
         return Err(Error::ValidationError(format!(
             "Invalid serial number length: expected 32, got {}",
@@ -524,9 +517,9 @@ fn parse_certificate_response(
     serial_number.copy_from_slice(&serial_bytes);
 
     // Decode certificate type
-    let cert_type_bytes = BASE64.decode(&cert_resp.cert_type).map_err(|e| {
-        Error::ValidationError(format!("Failed to decode certificate type: {}", e))
-    })?;
+    let cert_type_bytes = BASE64
+        .decode(&cert_resp.cert_type)
+        .map_err(|e| Error::ValidationError(format!("Failed to decode certificate type: {}", e)))?;
     if cert_type_bytes.len() != 32 {
         return Err(Error::ValidationError(format!(
             "Invalid certificate type length: expected 32, got {}",
@@ -544,10 +537,7 @@ fn parse_certificate_response(
         // Parse txid.vout format
         let parts: Vec<&str> = cert_resp.revocation_outpoint.split('.').collect();
         if parts.len() == 2 {
-            if let (Ok(txid_bytes), Ok(vout)) = (
-                hex::decode(parts[0]),
-                parts[1].parse::<u32>(),
-            ) {
+            if let (Ok(txid_bytes), Ok(vout)) = (hex::decode(parts[0]), parts[1].parse::<u32>()) {
                 if txid_bytes.len() == 32 {
                     let mut txid = [0u8; 32];
                     txid.copy_from_slice(&txid_bytes);
@@ -567,9 +557,8 @@ fn parse_certificate_response(
     }
 
     // Set signature
-    let signature_bytes = hex::decode(&cert_resp.signature).map_err(|e| {
-        Error::ValidationError(format!("Failed to decode signature: {}", e))
-    })?;
+    let signature_bytes = hex::decode(&cert_resp.signature)
+        .map_err(|e| Error::ValidationError(format!("Failed to decode signature: {}", e)))?;
     certificate.signature = Some(signature_bytes);
 
     Ok(ParseCertificateResponseResult {
@@ -614,24 +603,22 @@ where
 
     // 2. Verify serial number via HMAC
     // Data = clientNonceBytes + serverNonceBytes
-    let client_nonce_bytes = BASE64.decode(client_nonce).map_err(|e| {
-        Error::ValidationError(format!("Failed to decode client nonce: {}", e))
-    })?;
-    let server_nonce_bytes = BASE64.decode(&parsed.server_nonce).map_err(|e| {
-        Error::ValidationError(format!("Failed to decode server nonce: {}", e))
-    })?;
+    let client_nonce_bytes = BASE64
+        .decode(client_nonce)
+        .map_err(|e| Error::ValidationError(format!("Failed to decode client nonce: {}", e)))?;
+    let server_nonce_bytes = BASE64
+        .decode(&parsed.server_nonce)
+        .map_err(|e| Error::ValidationError(format!("Failed to decode server nonce: {}", e)))?;
 
-    let mut data_to_verify = Vec::with_capacity(client_nonce_bytes.len() + server_nonce_bytes.len());
+    let mut data_to_verify =
+        Vec::with_capacity(client_nonce_bytes.len() + server_nonce_bytes.len());
     data_to_verify.extend_from_slice(&client_nonce_bytes);
     data_to_verify.extend_from_slice(&server_nonce_bytes);
 
     // KeyID = serverNonce + clientNonce
     let hmac_key_id = format!("{}{}", parsed.server_nonce, client_nonce);
 
-    let protocol = Protocol::new(
-        SecurityLevel::Counterparty,
-        CERTIFICATE_ISSUANCE_PROTOCOL,
-    );
+    let protocol = Protocol::new(SecurityLevel::Counterparty, CERTIFICATE_ISSUANCE_PROTOCOL);
 
     let verify_result = wallet
         .verify_hmac(
@@ -645,9 +632,7 @@ where
             originator,
         )
         .await
-        .map_err(|e| {
-            Error::ValidationError(format!("Failed to verify HMAC signature: {}", e))
-        })?;
+        .map_err(|e| Error::ValidationError(format!("Failed to verify HMAC signature: {}", e)))?;
 
     if !verify_result.valid {
         return Err(Error::ValidationError(
@@ -776,10 +761,7 @@ where
 
     // Insert certificate fields
     for (field_name, field_value) in &parsed.cert_fields {
-        let master_key = master_keyring
-            .get(field_name)
-            .cloned()
-            .unwrap_or_default();
+        let master_key = master_keyring.get(field_name).cloned().unwrap_or_default();
 
         let field = TableCertificateField {
             certificate_field_id: 0, // Will be assigned by storage
@@ -820,12 +802,8 @@ mod tests {
         let request = ProtocolIssuanceRequest {
             cert_type: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
             client_nonce: "dGVzdC1ub25jZQ==".to_string(),
-            fields: HashMap::from([
-                ("name".to_string(), "ZW5jcnlwdGVkLW5hbWU=".to_string()),
-            ]),
-            master_keyring: HashMap::from([
-                ("name".to_string(), "bWFzdGVyLWtleQ==".to_string()),
-            ]),
+            fields: HashMap::from([("name".to_string(), "ZW5jcnlwdGVkLW5hbWU=".to_string())]),
+            master_keyring: HashMap::from([("name".to_string(), "bWFzdGVyLWtleQ==".to_string())]),
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -913,7 +891,10 @@ mod tests {
         }"#;
 
         let cert: CertificateResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(cert.cert_type, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        assert_eq!(
+            cert.cert_type,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        );
         assert_eq!(cert.fields.len(), 2);
         assert!(cert.fields.contains_key("name"));
         assert!(cert.fields.contains_key("email"));
@@ -951,7 +932,10 @@ mod tests {
             &BASE64.encode([0u8; 32]),
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid certifier"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid certifier"));
     }
 
     #[test]
@@ -984,7 +968,10 @@ mod tests {
             &BASE64.encode([99u8; 32]), // Different type
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid certificate type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid certificate type"));
     }
 
     #[test]
@@ -1024,7 +1011,8 @@ mod tests {
                 serial_number: invalid_serial,
                 subject: subject_key.public_key().to_hex(),
                 certifier: certifier_key.public_key().to_hex(),
-                revocation_outpoint: "0000000000000000000000000000000000000000000000000000000000000001.0".to_string(),
+                revocation_outpoint:
+                    "0000000000000000000000000000000000000000000000000000000000000001.0".to_string(),
                 fields: HashMap::new(),
                 signature: "3045022100".to_string(),
             }),
@@ -1039,7 +1027,10 @@ mod tests {
             &BASE64.encode([0u8; 32]),
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("serial number length"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("serial number length"));
     }
 
     #[tokio::test]
@@ -1053,7 +1044,8 @@ mod tests {
             "http://invalid-url-that-does-not-exist.local:12345",
             body,
             identity_key,
-        ).await;
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Failed to send"));
@@ -1089,7 +1081,10 @@ mod integration_tests {
             identity_key_header: Some("identity".to_string()),
         };
 
-        assert_eq!(http_response.identity_key_header, Some("identity".to_string()));
+        assert_eq!(
+            http_response.identity_key_header,
+            Some("identity".to_string())
+        );
         assert_eq!(http_response.body.protocol, "test");
     }
 }

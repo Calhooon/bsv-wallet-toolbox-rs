@@ -21,13 +21,13 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::chaintracks::Chain;
-use crate::services::traits::{
-    validate_txid, BlockHeader, BsvExchangeRate,
-    GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
-    GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid,
-    ScriptHistoryItem, TxStatusDetail, UtxoDetail,
-};
 use crate::lock_utils::{lock_read, lock_write};
+use crate::services::traits::{
+    validate_txid, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
+    GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
+    GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid, ScriptHistoryItem, TxStatusDetail,
+    UtxoDetail,
+};
 use crate::{Error, Result};
 
 /// Base URL for WhatsOnChain mainnet API.
@@ -140,13 +140,13 @@ impl WhatsOnChain {
 
         match response.status() {
             StatusCode::OK => {
-                let hex_str = response.text().await.map_err(|e| {
-                    Error::NetworkError(format!("Failed to read response: {}", e))
-                })?;
+                let hex_str = response
+                    .text()
+                    .await
+                    .map_err(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
 
-                let raw_tx = hex::decode(hex_str.trim()).map_err(|e| {
-                    Error::ValidationError(format!("Failed to decode hex: {}", e))
-                })?;
+                let raw_tx = hex::decode(hex_str.trim())
+                    .map_err(|e| Error::ValidationError(format!("Failed to decode hex: {}", e)))?;
 
                 // Validate txid
                 validate_txid(&raw_tx, txid)?;
@@ -183,9 +183,10 @@ impl WhatsOnChain {
 
         match response.status() {
             StatusCode::OK => {
-                let body = response.text().await.map_err(|e| {
-                    Error::NetworkError(format!("Failed to read response: {}", e))
-                })?;
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
 
                 if body.is_empty() {
                     // Unmined transaction
@@ -357,11 +358,7 @@ impl WhatsOnChain {
     }
 
     /// Post BEEF transaction (extracts raw txs and broadcasts sequentially).
-    pub async fn post_beef(
-        &self,
-        beef: &[u8],
-        txids: &[String],
-    ) -> Result<PostBeefResult> {
+    pub async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
         use bsv_sdk::transaction::Beef;
 
         let mut result = PostBeefResult {
@@ -406,7 +403,8 @@ impl WhatsOnChain {
                                 || err_msg.contains("already known");
                             PostTxResultForTxid {
                                 txid: txid.clone(),
-                                status: if is_double_spend { "success" } else { "error" }.to_string(),
+                                status: if is_double_spend { "success" } else { "error" }
+                                    .to_string(),
                                 double_spend: is_double_spend,
                                 competing_txs: None,
                                 data: Some(err_msg),
@@ -452,8 +450,7 @@ impl WhatsOnChain {
         outpoint: Option<&str>,
     ) -> Result<GetUtxoStatusResult> {
         // Convert output to script hash BE format
-        let script_hash =
-            crate::services::traits::convert_script_hash(output, output_format)?;
+        let script_hash = crate::services::traits::convert_script_hash(output, output_format)?;
 
         let url = format!("{}/script/{}/unspent/all", self.base_url, script_hash);
 
@@ -469,9 +466,10 @@ impl WhatsOnChain {
             });
         }
 
-        let data: WocUtxoStatusResponse = response.json().await.map_err(|e| {
-            Error::ServiceError(format!("Failed to parse UTXO response: {}", e))
-        })?;
+        let data: WocUtxoStatusResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Failed to parse UTXO response: {}", e)))?;
 
         let details: Vec<UtxoDetail> = data
             .result
@@ -491,7 +489,9 @@ impl WhatsOnChain {
             if parts.len() == 2 {
                 let op_txid = parts[0];
                 let op_vout: u32 = parts[1].parse().unwrap_or(u32::MAX);
-                details.iter().any(|d| d.txid == op_txid && d.index == op_vout)
+                details
+                    .iter()
+                    .any(|d| d.txid == op_txid && d.index == op_vout)
             } else {
                 !details.is_empty()
             }
@@ -513,10 +513,7 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Get status for multiple transaction IDs.
-    pub async fn get_status_for_txids(
-        &self,
-        txids: &[String],
-    ) -> Result<GetStatusForTxidsResult> {
+    pub async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
         let url = format!("{}/txs/status", self.base_url);
 
         let body = serde_json::json!({ "txids": txids });
@@ -540,9 +537,10 @@ impl WhatsOnChain {
             });
         }
 
-        let data: Vec<WocTxStatus> = response.json().await.map_err(|e| {
-            Error::ServiceError(format!("Failed to parse status response: {}", e))
-        })?;
+        let data: Vec<WocTxStatus> = response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Failed to parse status response: {}", e)))?;
 
         let results: Vec<TxStatusDetail> = txids
             .iter()
@@ -602,9 +600,10 @@ impl WhatsOnChain {
 
         match response.status() {
             StatusCode::OK => {
-                let data: WocScriptHistoryResponse = response.json().await.map_err(|e| {
-                    Error::ServiceError(format!("Failed to parse history: {}", e))
-                })?;
+                let data: WocScriptHistoryResponse = response
+                    .json()
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
 
                 Ok(data
                     .result
@@ -640,9 +639,10 @@ impl WhatsOnChain {
 
         match response.status() {
             StatusCode::OK => {
-                let data: WocScriptHistoryResponse = response.json().await.map_err(|e| {
-                    Error::ServiceError(format!("Failed to parse history: {}", e))
-                })?;
+                let data: WocScriptHistoryResponse = response
+                    .json()
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
 
                 Ok(data
                     .result
@@ -662,10 +662,7 @@ impl WhatsOnChain {
     }
 
     /// Get full transaction history (confirmed + unconfirmed) for a script hash.
-    pub async fn get_script_hash_history(
-        &self,
-        hash: &str,
-    ) -> Result<GetScriptHashHistoryResult> {
+    pub async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
         let mut history = self.get_script_hash_confirmed_history(hash).await?;
         let unconfirmed = self.get_script_hash_unconfirmed_history(hash).await?;
         history.extend(unconfirmed);
@@ -690,9 +687,10 @@ impl WhatsOnChain {
 
         match response.status() {
             StatusCode::OK => {
-                let data: WocBlockHeader = response.json().await.map_err(|e| {
-                    Error::ServiceError(format!("Failed to parse header: {}", e))
-                })?;
+                let data: WocBlockHeader = response
+                    .json()
+                    .await
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse header: {}", e)))?;
 
                 Ok(Some(data.into_block_header()))
             }
@@ -717,9 +715,10 @@ impl WhatsOnChain {
             )));
         }
 
-        response.json().await.map_err(|e| {
-            Error::ServiceError(format!("Failed to parse chain info: {}", e))
-        })
+        response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Failed to parse chain info: {}", e)))
     }
 
     // =========================================================================
@@ -727,10 +726,7 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Update and return BSV exchange rate.
-    pub async fn update_bsv_exchange_rate(
-        &self,
-        update_msecs: u64,
-    ) -> Result<f64> {
+    pub async fn update_bsv_exchange_rate(&self, update_msecs: u64) -> Result<f64> {
         // Check cached rate
         {
             let rate = lock_read(&self.exchange_rate)?;
@@ -752,9 +748,10 @@ impl WhatsOnChain {
             )));
         }
 
-        let data: WocExchangeRate = response.json().await.map_err(|e| {
-            Error::ServiceError(format!("Failed to parse exchange rate: {}", e))
-        })?;
+        let data: WocExchangeRate = response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Failed to parse exchange rate: {}", e)))?;
 
         if data.currency != "USD" {
             return Err(Error::ServiceError(
@@ -878,9 +875,7 @@ impl WocBlockHeader {
 
         BlockHeader {
             version: self.version,
-            previous_hash: self
-                .previousblockhash
-                .unwrap_or_else(|| "0".repeat(64)),
+            previous_hash: self.previousblockhash.unwrap_or_else(|| "0".repeat(64)),
             merkle_root: self.merkleroot,
             time: self.time,
             bits,
@@ -919,7 +914,10 @@ struct WocExchangeRate {
 
 fn make_note(what: &str) -> HashMap<String, serde_json::Value> {
     let mut note = HashMap::new();
-    note.insert("what".to_string(), serde_json::Value::String(what.to_string()));
+    note.insert(
+        "what".to_string(),
+        serde_json::Value::String(what.to_string()),
+    );
     note.insert(
         "name".to_string(),
         serde_json::Value::String("WoC".to_string()),

@@ -90,9 +90,13 @@
 //! - `get_version` - Wallet version string
 
 mod certificate_issuance;
+pub mod lookup;
 mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;
 
+pub use lookup::{HttpLookupResolver, OverlayCertificate, OverlayLookupResolver};
 pub use signer::{ScriptType, SignerInput, UnlockingScriptTemplate, WalletSigner};
-pub use wallet::{PendingTransaction, PrivilegedKeyManager, UtxoInfo, Wallet, WalletBalance, WalletOptions};
+pub use wallet::{
+    PendingTransaction, PrivilegedKeyManager, UtxoInfo, Wallet, WalletBalance, WalletOptions,
+};

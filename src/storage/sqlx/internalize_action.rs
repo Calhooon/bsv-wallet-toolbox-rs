@@ -16,7 +16,7 @@ use bsv_sdk::wallet::{
     BasketInsertion, InternalizeActionArgs, InternalizeActionResult, WalletPayment,
 };
 use chrono::Utc;
-use sqlx::Row;
+use sqlx::{Row, SqliteConnection};
 use std::collections::{HashMap, HashSet};
 
 use super::beef_verification::verify_beef_merkle_proofs;
@@ -61,9 +61,8 @@ pub async fn internalize_action_internal(
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
     // Step 1: Parse and validate the AtomicBEEF
-    let mut beef = Beef::from_binary(&args.tx).map_err(|e| {
-        Error::ValidationError(format!("Failed to parse AtomicBEEF: {}", e))
-    })?;
+    let mut beef = Beef::from_binary(&args.tx)
+        .map_err(|e| Error::ValidationError(format!("Failed to parse AtomicBEEF: {}", e)))?;
 
     // Get the atomic txid (target transaction)
     let txid = beef.atomic_txid.clone().ok_or_else(|| {
@@ -83,7 +82,8 @@ pub async fn internalize_action_internal(
             chain_tracker.as_ref(),
             BeefVerificationMode::Strict,
             &known_txids,
-        ).await?;
+        )
+        .await?;
         // Note: verify_beef_merkle_proofs returns Err on invalid proofs,
         // Ok(false) if no proofs to verify (empty BEEF), Ok(true) if valid.
         // Both Ok cases are acceptable for internalize_action since unproven
@@ -109,15 +109,30 @@ pub async fn internalize_action_internal(
             .map(|o| (o.satoshis.unwrap_or(0), o.locking_script.to_binary()))
             .collect();
 
-        (tx.outputs.len(), tx.version, tx.lock_time, tx.to_binary(), outputs)
+        (
+            tx.outputs.len(),
+            tx.version,
+            tx.lock_time,
+            tx.to_binary(),
+            outputs,
+        )
     };
     // tx is now dropped, safe to await
 
     // Step 2: Get the user's default (change) basket
+    // NOTE: This uses its own connection (known limitation).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
 
+    // Begin a SQL transaction to ensure atomicity of all subsequent DB operations.
+    // If any step fails or the function returns early, sqlx will auto-rollback on drop.
+    let mut tx = storage
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+
     // Step 3: Check for existing transaction
-    let existing_tx = find_existing_transaction(storage, user_id, &txid).await?;
+    let existing_tx = find_existing_transaction(&mut tx, user_id, &txid).await?;
     let is_merge = existing_tx.is_some();
 
     // Validate existing transaction status if merging
@@ -181,7 +196,7 @@ pub async fn internalize_action_internal(
 
     // Step 5: If merging, load existing outputs
     if is_merge {
-        let existing_outputs = load_existing_outputs(storage, user_id, &txid).await?;
+        let existing_outputs = load_existing_outputs(&mut tx, user_id, &txid).await?;
         for od in &mut outputs_data {
             if let Some(eo) = existing_outputs.iter().find(|o| o.vout == od.vout as i32) {
                 od.existing_output_id = Some(eo.output_id);
@@ -227,7 +242,10 @@ pub async fn internalize_action_internal(
     let status = if has_proof { "completed" } else { "unproven" };
 
     let transaction_id = if is_merge {
-        let tx_id = existing_tx.as_ref().unwrap().transaction_id;
+        let tx_id = existing_tx
+            .as_ref()
+            .expect("is_merge guarantees existing_tx is Some")
+            .transaction_id;
 
         // Update description
         let now = Utc::now();
@@ -237,7 +255,7 @@ pub async fn internalize_action_internal(
         .bind(&args.description)
         .bind(now)
         .bind(tx_id)
-        .execute(storage.pool())
+        .execute(&mut *tx)
         .await?;
 
         tx_id
@@ -275,7 +293,7 @@ pub async fn internalize_action_internal(
         .bind(input_beef_bytes)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(&mut *tx)
         .await?;
 
         result.last_insert_rowid()
@@ -284,7 +302,7 @@ pub async fn internalize_action_internal(
     // Step 8: Add labels
     if let Some(ref labels) = args.labels {
         for label in labels {
-            add_label(storage, user_id, transaction_id, label).await?;
+            add_label(&mut tx, user_id, transaction_id, label).await?;
         }
     }
 
@@ -294,7 +312,9 @@ pub async fn internalize_action_internal(
     for od in &outputs_data {
         match od.protocol.as_str() {
             WALLET_PAYMENT_PROTOCOL => {
-                let payment = od.payment.as_ref().unwrap();
+                let payment = od.payment.as_ref().ok_or(Error::ValidationError(
+                    "wallet payment missing paymentRemittance".into(),
+                ))?;
 
                 // Skip if already a change output
                 if od.existing_output_id.is_some()
@@ -322,7 +342,7 @@ pub async fn internalize_action_internal(
                     .bind(&payment.sender_identity_key)
                     .bind(now)
                     .bind(output_id)
-                    .execute(storage.pool())
+                    .execute(&mut *tx)
                     .await?;
                 } else {
                     // Create new output
@@ -351,18 +371,20 @@ pub async fn internalize_action_internal(
                     .bind(&payment.sender_identity_key)
                     .bind(now)
                     .bind(now)
-                    .execute(storage.pool())
+                    .execute(&mut *tx)
                     .await?;
                 }
             }
             BASKET_INSERTION_PROTOCOL => {
-                let insertion = od.insertion.as_ref().unwrap();
+                let insertion = od.insertion.as_ref().ok_or(Error::ValidationError(
+                    "basket insertion missing insertionRemittance".into(),
+                ))?;
 
                 // Get or create basket
                 let basket_id = if let Some(id) = baskets_cache.get(&insertion.basket) {
                     *id
                 } else {
-                    let id = get_or_create_basket_id(storage, user_id, &insertion.basket).await?;
+                    let id = get_or_create_basket_id(&mut tx, user_id, &insertion.basket).await?;
                     baskets_cache.insert(insertion.basket.clone(), id);
                     id
                 };
@@ -383,13 +405,13 @@ pub async fn internalize_action_internal(
                     .bind(&insertion.custom_instructions)
                     .bind(now)
                     .bind(output_id)
-                    .execute(storage.pool())
+                    .execute(&mut *tx)
                     .await?;
 
                     // Add tags
                     if let Some(ref tags) = insertion.tags {
                         for tag in tags {
-                            add_tag_to_output(storage, user_id, output_id, tag).await?;
+                            add_tag_to_output(&mut tx, user_id, output_id, tag).await?;
                         }
                     }
                 } else {
@@ -416,7 +438,7 @@ pub async fn internalize_action_internal(
                     .bind(&insertion.custom_instructions)
                     .bind(now)
                     .bind(now)
-                    .execute(storage.pool())
+                    .execute(&mut *tx)
                     .await?;
 
                     let output_id = result.last_insert_rowid();
@@ -424,7 +446,7 @@ pub async fn internalize_action_internal(
                     // Add tags
                     if let Some(ref tags) = insertion.tags {
                         for tag in tags {
-                            add_tag_to_output(storage, user_id, output_id, tag).await?;
+                            add_tag_to_output(&mut tx, user_id, output_id, tag).await?;
                         }
                     }
                 }
@@ -438,8 +460,13 @@ pub async fn internalize_action_internal(
     // output BEEFs for spending. This is especially important for unconfirmed
     // transactions where we need the ancestor chain.
     if !has_proof && !is_merge {
-        create_proven_tx_req(storage, &txid, &raw_tx, &args.tx).await?;
+        create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx).await?;
     }
+
+    // Commit the SQL transaction. All DB operations above are now atomically persisted.
+    tx.commit()
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
     Ok(StorageInternalizeActionResult {
         base: InternalizeActionResult { accepted: true },
@@ -457,7 +484,7 @@ pub async fn internalize_action_internal(
 
 /// Finds an existing transaction by user and txid.
 async fn find_existing_transaction(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     txid: &str,
 ) -> Result<Option<TableTransaction>> {
@@ -472,7 +499,7 @@ async fn find_existing_transaction(
     )
     .bind(user_id)
     .bind(txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     match row {
@@ -523,9 +550,9 @@ fn parse_transaction_status(status: &str) -> TransactionStatus {
 
 fn validate_merge_status(status: &TransactionStatus) -> Result<()> {
     match status {
-        TransactionStatus::Completed
-        | TransactionStatus::Unproven
-        | TransactionStatus::NoSend => Ok(()),
+        TransactionStatus::Completed | TransactionStatus::Unproven | TransactionStatus::NoSend => {
+            Ok(())
+        }
         _ => Err(Error::ValidationError(format!(
             "Target transaction of internalizeAction has invalid status: {:?}",
             status
@@ -535,7 +562,7 @@ fn validate_merge_status(status: &TransactionStatus) -> Result<()> {
 
 /// Loads existing outputs for a transaction.
 async fn load_existing_outputs(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     txid: &str,
 ) -> Result<Vec<TableOutput>> {
@@ -551,7 +578,7 @@ async fn load_existing_outputs(
     )
     .bind(user_id)
     .bind(txid)
-    .fetch_all(storage.pool())
+    .fetch_all(&mut *conn)
     .await?;
 
     let mut outputs = Vec::new();
@@ -572,7 +599,11 @@ async fn load_existing_outputs(
             purpose: row.try_get("purpose").ok(),
             output_description: row.try_get("output_description").ok(),
             spent_by: row.try_get("spent_by").ok().flatten(),
-            sequence_number: row.try_get::<Option<i32>, _>("sequence_number").ok().flatten().map(|v| v as u32),
+            sequence_number: row
+                .try_get::<Option<i32>, _>("sequence_number")
+                .ok()
+                .flatten()
+                .map(|v| v as u32),
             spending_description: row.try_get("spending_description").ok(),
             spendable: row.get("spendable"),
             change: row.get("change"),
@@ -590,7 +621,7 @@ async fn load_existing_outputs(
 
 /// Gets or creates a basket and returns its ID.
 async fn get_or_create_basket_id(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     name: &str,
 ) -> Result<i64> {
@@ -600,7 +631,7 @@ async fn get_or_create_basket_id(
     )
     .bind(user_id)
     .bind(name)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = row {
@@ -619,7 +650,7 @@ async fn get_or_create_basket_id(
     .bind(name)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(result.last_insert_rowid())
@@ -627,7 +658,7 @@ async fn get_or_create_basket_id(
 
 /// Adds a label to a transaction.
 async fn add_label(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     transaction_id: i64,
     label: &str,
@@ -640,7 +671,7 @@ async fn add_label(
     )
     .bind(user_id)
     .bind(label)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     let label_id = match label_row {
@@ -653,7 +684,7 @@ async fn add_label(
             .bind(label)
             .bind(now)
             .bind(now)
-            .execute(storage.pool())
+            .execute(&mut *conn)
             .await?;
 
             result.last_insert_rowid()
@@ -666,7 +697,7 @@ async fn add_label(
     )
     .bind(transaction_id)
     .bind(label_id)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if existing.is_none() {
@@ -677,7 +708,7 @@ async fn add_label(
         .bind(label_id)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(&mut *conn)
         .await?;
     }
 
@@ -686,7 +717,7 @@ async fn add_label(
 
 /// Adds a tag to an output.
 async fn add_tag_to_output(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     output_id: i64,
     tag: &str,
@@ -699,7 +730,7 @@ async fn add_tag_to_output(
     )
     .bind(user_id)
     .bind(tag)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     let tag_id = match tag_row {
@@ -712,7 +743,7 @@ async fn add_tag_to_output(
             .bind(tag)
             .bind(now)
             .bind(now)
-            .execute(storage.pool())
+            .execute(&mut *conn)
             .await?;
 
             result.last_insert_rowid()
@@ -725,7 +756,7 @@ async fn add_tag_to_output(
     )
     .bind(output_id)
     .bind(tag_id)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if existing.is_none() {
@@ -736,7 +767,7 @@ async fn add_tag_to_output(
         .bind(tag_id)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(&mut *conn)
         .await?;
     }
 
@@ -748,6 +779,9 @@ async fn add_tag_to_output(
 /// Returns all txids from transactions owned by the user that are in
 /// "completed" or "unproven" status. These are transactions the wallet
 /// already knows about and can trust.
+///
+/// NOTE: This function runs outside the SQL transaction (before `begin()`),
+/// using the pool directly. It is only called during BEEF verification.
 async fn get_known_txids(storage: &StorageSqlx, user_id: i64) -> Result<HashSet<String>> {
     let rows: Vec<String> = sqlx::query_scalar(
         r#"
@@ -768,7 +802,7 @@ async fn get_known_txids(storage: &StorageSqlx, user_id: i64) -> Result<HashSet<
 /// The input_beef is crucial for spending - it contains ancestor transactions
 /// that are needed to construct valid BEEFs for outputs of this transaction.
 async fn create_proven_tx_req(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     txid: &str,
     raw_tx: &[u8],
     input_beef: &[u8],
@@ -778,7 +812,7 @@ async fn create_proven_tx_req(
     // Check if already exists
     let existing = sqlx::query("SELECT proven_tx_req_id FROM proven_tx_reqs WHERE txid = ?")
         .bind(txid)
-        .fetch_optional(storage.pool())
+        .fetch_optional(&mut *conn)
         .await?;
 
     if existing.is_some() {
@@ -798,7 +832,7 @@ async fn create_proven_tx_req(
     .bind(input_beef)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(())
@@ -1296,14 +1330,13 @@ mod tests {
         assert_eq!(result.satoshis, 10000);
 
         // Verify both outputs were created
-        let output_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM outputs WHERE user_id = ? AND txid = ?",
-        )
-        .bind(user_id)
-        .bind(&txid)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let output_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM outputs WHERE user_id = ? AND txid = ?")
+                .bind(user_id)
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
 
         assert_eq!(output_count, 2);
     }

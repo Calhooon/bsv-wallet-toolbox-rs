@@ -14,8 +14,8 @@ use bsv_wallet_toolbox::services::{
         GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid, ScriptHistoryItem,
         TxStatusDetail, UtxoDetail,
     },
-    Arc, ArcConfig, Bitails, BitailsConfig, Chain, Services,
-    ServicesOptions, WhatsOnChain, WhatsOnChainConfig,
+    Arc, ArcConfig, Bitails, BitailsConfig, Chain, Services, ServicesOptions, WhatsOnChain,
+    WhatsOnChainConfig,
 };
 
 // =============================================================================
@@ -45,7 +45,10 @@ fn test_services_with_options() {
         .with_woc_api_key("test-api-key")
         .with_bitails_api_key("bitails-key");
 
-    assert_eq!(options.whatsonchain_api_key, Some("test-api-key".to_string()));
+    assert_eq!(
+        options.whatsonchain_api_key,
+        Some("test-api-key".to_string())
+    );
     assert_eq!(options.bitails_api_key, Some("bitails-key".to_string()));
 
     let services = Services::with_options(Chain::Main, options);
@@ -104,7 +107,10 @@ fn test_arc_gorillapool() {
 fn test_arc_with_config() {
     let config = ArcConfig::with_api_key("arc-api-key")
         .with_deployment_id("deployment-123")
-        .with_callback("https://example.com/callback", Some("callback-token".to_string()));
+        .with_callback(
+            "https://example.com/callback",
+            Some("callback-token".to_string()),
+        );
 
     assert_eq!(config.api_key, Some("arc-api-key".to_string()));
     assert_eq!(config.deployment_id, Some("deployment-123".to_string()));
@@ -185,7 +191,13 @@ fn test_service_collection_remove() {
     assert_eq!(collection.count(), 2);
 
     let names: Vec<_> = (0..collection.count())
-        .map(|i| collection.get_service_to_call(i).unwrap().provider_name.to_string())
+        .map(|i| {
+            collection
+                .get_service_to_call(i)
+                .unwrap()
+                .provider_name
+                .to_string()
+        })
         .collect();
     assert_eq!(names, vec!["p1", "p3"]);
 }
@@ -200,15 +212,21 @@ fn test_service_collection_move_to_last() {
     collection.move_to_last("p1");
 
     let names: Vec<_> = (0..collection.count())
-        .map(|i| collection.get_service_to_call(i).unwrap().provider_name.to_string())
+        .map(|i| {
+            collection
+                .get_service_to_call(i)
+                .unwrap()
+                .provider_name
+                .to_string()
+        })
         .collect();
     assert_eq!(names, vec!["p2", "p3", "p1"]);
 }
 
 #[test]
 fn test_service_collection_call_tracking() {
-    let mut collection = ServiceCollection::<String>::new("testService")
-        .with("provider1", "service1".to_string());
+    let mut collection =
+        ServiceCollection::<String>::new("testService").with("provider1", "service1".to_string());
 
     // Record success
     let mut call = ServiceCall::new();
@@ -390,13 +408,11 @@ fn test_block_header_to_binary() {
         version: 1,
         previous_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
-        merkle_root: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
-            .to_string(),
+        merkle_root: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b".to_string(),
         time: 1231006505,
         bits: 486604799,
         nonce: 2083236893,
-        hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
-            .to_string(),
+        hash: "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string(),
         height: 0,
     };
 
@@ -676,7 +692,11 @@ fn test_n_lock_time_is_final_logic() {
     // This test validates the exact logic used in n_lock_time_is_final
     const BLOCK_LIMIT: u32 = 500_000_000;
 
-    fn is_final_with_height_and_time(n_lock_time: u32, current_height: u32, current_time: u32) -> bool {
+    fn is_final_with_height_and_time(
+        n_lock_time: u32,
+        current_height: u32,
+        current_time: u32,
+    ) -> bool {
         if n_lock_time >= BLOCK_LIMIT {
             // Time-based locktime
             n_lock_time < current_time
@@ -701,7 +721,11 @@ fn test_n_lock_time_is_final_logic() {
     assert!(!is_final_with_height_and_time(1707000000, height, time)); // Future time
 
     // Edge case: exactly at threshold
-    assert!(is_final_with_height_and_time(BLOCK_LIMIT, height, time + BLOCK_LIMIT)); // Would need huge time
+    assert!(is_final_with_height_and_time(
+        BLOCK_LIMIT,
+        height,
+        time + BLOCK_LIMIT
+    )); // Would need huge time
 }
 
 #[test]
@@ -829,7 +853,11 @@ fn test_n_lock_time_input_from_raw_tx_max_sequence() {
     // Has sequence 0xFFFFFFFF (max) and locktime 0
     let raw_hex = "0100000001f12a690c788e61163f8404d8eace6483b837a7abd67b5ad7428dc8c07ee04f3c080000006b483045022100ed7b3b0ab8cb689e4cb884b647fb3820ad44a62a36210a4569b22484b3974c5b0220094c682cba5a9c649f0fd0b630a68fca8dd57c8f8b8304f1bf255e0f5a7b730a4121025a1db26875991c9678d1407a0414e15db323e30c69a331729bae1bb99dfef12affffffff0108030000000000001976a9148d4d91d5f0e47cdb44634af89b36a9b5332f6cfb88ac00000000";
     let result = NLockTimeInput::from_hex_tx(raw_hex);
-    assert!(result.is_ok(), "Failed to parse transaction: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse transaction: {:?}",
+        result.err()
+    );
     let input = result.unwrap();
     assert_eq!(input.lock_time, 0);
     assert!(input.all_sequences_final); // All inputs have max sequence (0xFFFFFFFF)
@@ -844,7 +872,11 @@ fn test_n_lock_time_input_from_raw_tx_non_max_sequence() {
     // Changed: ffffffff -> feffffff (sequence), 00000000 -> 64000000 (locktime=100)
     let raw_hex = "0100000001f12a690c788e61163f8404d8eace6483b837a7abd67b5ad7428dc8c07ee04f3c080000006b483045022100ed7b3b0ab8cb689e4cb884b647fb3820ad44a62a36210a4569b22484b3974c5b0220094c682cba5a9c649f0fd0b630a68fca8dd57c8f8b8304f1bf255e0f5a7b730a4121025a1db26875991c9678d1407a0414e15db323e30c69a331729bae1bb99dfef12afeffffff0108030000000000001976a9148d4d91d5f0e47cdb44634af89b36a9b5332f6cfb88ac64000000";
     let result = NLockTimeInput::from_hex_tx(raw_hex);
-    assert!(result.is_ok(), "Failed to parse transaction: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse transaction: {:?}",
+        result.err()
+    );
     let input = result.unwrap();
     assert_eq!(input.lock_time, 100);
     assert!(!input.all_sequences_final); // Not all inputs have max sequence (0xFFFFFFFE)
@@ -861,15 +893,15 @@ fn test_n_lock_time_input_from_hex_invalid() {
 
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_with_final_sequences() {
-    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
     use bsv_wallet_toolbox::services::traits::WalletServices;
+    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
 
     let services = Services::mainnet().unwrap();
 
     // Create NLockTimeInput with max sequence (all_sequences_final = true)
     // This simulates a transaction where all inputs have max sequence
     let input = NLockTimeInput {
-        lock_time: 2000000000, // Far future timestamp (~2033)
+        lock_time: 2000000000,     // Far future timestamp (~2033)
         all_sequences_final: true, // All inputs have max sequence
     };
 
@@ -880,14 +912,14 @@ async fn test_n_lock_time_is_final_for_tx_with_final_sequences() {
 
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_with_non_final_sequences() {
-    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
     use bsv_wallet_toolbox::services::traits::WalletServices;
+    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
 
     let services = Services::mainnet().unwrap();
 
     // Create NLockTimeInput with non-max sequence (all_sequences_final = false)
     let input = NLockTimeInput {
-        lock_time: 2000000000, // Far future timestamp (~2033)
+        lock_time: 2000000000,      // Far future timestamp (~2033)
         all_sequences_final: false, // Not all inputs have max sequence
     };
 
@@ -898,8 +930,8 @@ async fn test_n_lock_time_is_final_for_tx_with_non_final_sequences() {
 
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_from_raw_locktime() {
-    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
     use bsv_wallet_toolbox::services::traits::WalletServices;
+    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
 
     let services = Services::mainnet().unwrap();
 

@@ -2,19 +2,18 @@
 //!
 //! Based on TypeScript: `/Users/johncalhoun/bsv/wallet-toolbox/src/services/chaintracker/chaintracks/Chaintracks.ts`
 
-use std::sync::Arc;
+use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use async_trait::async_trait;
 
-use crate::Result;
 use super::{
-    Chain, ChaintracksOptions, ChaintracksInfo, BlockHeader, BaseBlockHeader,
-    LiveBlockHeader, calculate_work,
-    ChaintracksClient, ChaintracksManagement, ChaintracksStorage,
-    HeaderCallback, ReorgCallback, ReorgEvent,
+    calculate_work, BaseBlockHeader, BlockHeader, Chain, ChaintracksClient, ChaintracksInfo,
+    ChaintracksManagement, ChaintracksOptions, ChaintracksStorage, HeaderCallback, LiveBlockHeader,
+    ReorgCallback, ReorgEvent,
 };
+use crate::Result;
 
 /// Main Chaintracks orchestrator
 ///
@@ -49,12 +48,11 @@ pub struct Chaintracks {
 
 impl Chaintracks {
     /// Create a new Chaintracks instance with the given storage
-    pub fn new(
-        options: ChaintracksOptions,
-        storage: Box<dyn ChaintracksStorage>,
-    ) -> Self {
+    pub fn new(options: ChaintracksOptions, storage: Box<dyn ChaintracksStorage>) -> Self {
         if options.require_ingestors {
-            tracing::warn!("Chaintracks created - ingestor validation deferred to start_background_sync");
+            tracing::warn!(
+                "Chaintracks created - ingestor validation deferred to start_background_sync"
+            );
         }
 
         Chaintracks {
@@ -272,22 +270,20 @@ impl Chaintracks {
                         let block_header = base_header.to_block_header_at_height(0);
 
                         let genesis_hash = "0".repeat(64);
-                        let (height, previous_header_id) =
-                            if base_header.previous_hash == genesis_hash
-                                || base_header.previous_hash.is_empty()
+                        let (height, previous_header_id) = if base_header.previous_hash
+                            == genesis_hash
+                            || base_header.previous_hash.is_empty()
+                        {
+                            (0u32, None)
+                        } else {
+                            match stor
+                                .find_live_header_for_block_hash(&base_header.previous_hash)
+                                .await
                             {
-                                (0u32, None)
-                            } else {
-                                match stor
-                                    .find_live_header_for_block_hash(&base_header.previous_hash)
-                                    .await
-                                {
-                                    Ok(Some(parent)) => {
-                                        (parent.height + 1, Some(parent.header_id))
-                                    }
-                                    _ => (0u32, None),
-                                }
-                            };
+                                Ok(Some(parent)) => (parent.height + 1, Some(parent.header_id)),
+                                _ => (0u32, None),
+                            }
+                        };
 
                         let live_header = LiveBlockHeader {
                             version: base_header.version,
@@ -393,7 +389,9 @@ impl Chaintracks {
             tracing::warn!("No bulk ingestors configured - bulk sync will not be available");
         }
         if live_count == 0 {
-            tracing::warn!("No live ingestors configured - real-time header updates will not be available");
+            tracing::warn!(
+                "No live ingestors configured - real-time header updates will not be available"
+            );
         }
         Ok(())
     }
@@ -534,7 +532,10 @@ impl ChaintracksClient for Chaintracks {
         queue.push(header);
 
         // Notify subscribers that a header was queued for processing
-        tracing::debug!("Header with hash {} queued, notifying subscribers", block_header.hash);
+        tracing::debug!(
+            "Header with hash {} queued, notifying subscribers",
+            block_header.hash
+        );
         drop(queue); // Release the write lock before notifying
         self.notify_header_subscribers(&block_header).await;
 
@@ -899,8 +900,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_header_subscriber_notification() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
         let storage = Box::new(MemoryStorage::new(Chain::Test));
         let options = ChaintracksOptions::default_testnet();

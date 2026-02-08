@@ -173,7 +173,10 @@ mod tests {
         assert_eq!(TaskType::UnFail.as_str(), "unfail");
         assert_eq!(TaskType::Clock.as_str(), "clock");
         assert_eq!(TaskType::CheckNoSends.as_str(), "check_no_sends");
-        assert_eq!(TaskType::MonitorCallHistory.as_str(), "monitor_call_history");
+        assert_eq!(
+            TaskType::MonitorCallHistory.as_str(),
+            "monitor_call_history"
+        );
         assert_eq!(TaskType::NewHeader.as_str(), "new_header");
         assert_eq!(TaskType::Purge.as_str(), "purge");
         assert_eq!(TaskType::Reorg.as_str(), "reorg");

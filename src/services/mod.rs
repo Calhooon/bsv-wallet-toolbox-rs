@@ -27,47 +27,34 @@
 //! let result = services.post_beef(&beef_bytes, &["txid..."]).await?;
 //! ```
 
-pub mod traits;
+pub mod collection;
+pub mod mock;
+pub mod providers;
 #[allow(clippy::module_inception)]
 pub mod services;
-pub mod collection;
-pub mod providers;
-pub mod mock;
+pub mod traits;
 
 // Re-export Chain from chaintracks for convenience
 pub use crate::chaintracks::Chain;
 
 // Re-export main types
 pub use traits::{
+    BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
+    GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
+    GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult,
+    PostTxResultForTxid, ScriptHistoryItem, ServicesCallHistory, TxStatusDetail, UtxoDetail,
     WalletServices,
-    NLockTimeInput,
-    GetBeefResult,
-    GetMerklePathResult,
-    GetRawTxResult,
-    PostBeefResult,
-    PostTxResultForTxid,
-    GetUtxoStatusResult,
-    GetUtxoStatusOutputFormat,
-    GetStatusForTxidsResult,
-    TxStatusDetail,
-    GetScriptHashHistoryResult,
-    ScriptHistoryItem,
-    UtxoDetail,
-    BlockHeader,
-    BsvExchangeRate,
-    FiatCurrency,
-    FiatExchangeRates,
-    ServicesCallHistory,
 };
 
-pub use services::Services;
-pub use collection::{AdaptiveTimeoutConfig, ServiceCollection, ServiceToCall, ServiceCall, ServiceCallHistory, ProviderCallHistory};
-pub use providers::{
-    WhatsOnChain, WhatsOnChainConfig,
-    Arc, ArcConfig,
-    Bitails, BitailsConfig,
-    BlockHeaderService, BhsConfig,
+pub use collection::{
+    AdaptiveTimeoutConfig, ProviderCallHistory, ServiceCall, ServiceCallHistory, ServiceCollection,
+    ServiceToCall,
 };
+pub use providers::{
+    Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, WhatsOnChain,
+    WhatsOnChainConfig,
+};
+pub use services::Services;
 
 /// Configuration options for wallet services.
 #[derive(Debug, Clone)]
@@ -120,7 +107,7 @@ impl Default for ServicesOptions {
             arc_gorillapool_config: None,
             bhs_url: None,
             bhs_api_key: None,
-            bsv_update_msecs: 15 * 60 * 1000, // 15 minutes
+            bsv_update_msecs: 15 * 60 * 1000,       // 15 minutes
             fiat_update_msecs: 24 * 60 * 60 * 1000, // 24 hours (fiat rates change less frequently)
             fiat_exchange_rates: FiatExchangeRates::default(),
             timeout_config: AdaptiveTimeoutConfig::default(),

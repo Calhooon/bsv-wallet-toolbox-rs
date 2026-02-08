@@ -230,12 +230,10 @@ impl SqliteStorage {
 
             // Get previous header
             if let Some(prev_id) = header.previous_header_id {
-                let row = sqlx::query(
-                    "SELECT * FROM chaintracks_live_headers WHERE header_id = ?",
-                )
-                .bind(prev_id)
-                .fetch_optional(&self.pool)
-                .await?;
+                let row = sqlx::query("SELECT * FROM chaintracks_live_headers WHERE header_id = ?")
+                    .bind(prev_id)
+                    .fetch_optional(&self.pool)
+                    .await?;
 
                 current = row.map(|r| Self::row_to_header(&r));
             } else {
@@ -266,12 +264,11 @@ impl SqliteStorage {
     /// More efficient than `find_live_header_for_block_hash` when you only need
     /// to know if a header exists, not its full data.
     pub async fn live_header_exists(&self, hash: &str) -> Result<bool> {
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM chaintracks_live_headers WHERE hash = ? LIMIT 1",
-        )
-        .bind(hash)
-        .fetch_one(&self.pool)
-        .await?;
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM chaintracks_live_headers WHERE hash = ? LIMIT 1")
+                .bind(hash)
+                .fetch_one(&self.pool)
+                .await?;
 
         Ok(row.0 > 0)
     }
@@ -430,12 +427,11 @@ impl SqliteStorage {
 
             // Find previous header ID if we have the previous hash
             let previous_header_id: Option<i64> = if header.previous_hash != "0".repeat(64) {
-                let row: Option<(i64,)> = sqlx::query_as(
-                    "SELECT header_id FROM chaintracks_live_headers WHERE hash = ?",
-                )
-                .bind(&header.previous_hash)
-                .fetch_optional(&mut *tx)
-                .await?;
+                let row: Option<(i64,)> =
+                    sqlx::query_as("SELECT header_id FROM chaintracks_live_headers WHERE hash = ?")
+                        .bind(&header.previous_hash)
+                        .fetch_optional(&mut *tx)
+                        .await?;
                 row.map(|r| r.0)
             } else {
                 None
@@ -553,12 +549,10 @@ impl SqliteStorage {
 
     /// Get all headers at a specific height (including forks)
     pub async fn get_headers_at_height(&self, height: u32) -> Result<Vec<LiveBlockHeader>> {
-        let rows = sqlx::query(
-            "SELECT * FROM chaintracks_live_headers WHERE height = ?",
-        )
-        .bind(height as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT * FROM chaintracks_live_headers WHERE height = ?")
+            .bind(height as i64)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.iter().map(Self::row_to_header).collect())
     }
@@ -587,12 +581,10 @@ impl SqliteStorage {
 
     /// Find headers that build on a given hash (children)
     pub async fn find_children(&self, parent_hash: &str) -> Result<Vec<LiveBlockHeader>> {
-        let rows = sqlx::query(
-            "SELECT * FROM chaintracks_live_headers WHERE previous_hash = ?",
-        )
-        .bind(parent_hash)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT * FROM chaintracks_live_headers WHERE previous_hash = ?")
+            .bind(parent_hash)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.iter().map(Self::row_to_header).collect())
     }
@@ -727,11 +719,9 @@ impl ChaintracksStorageQuery for SqliteStorage {
     }
 
     async fn get_live_headers(&self) -> Result<Vec<LiveBlockHeader>> {
-        let rows = sqlx::query(
-            "SELECT * FROM chaintracks_live_headers ORDER BY height DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT * FROM chaintracks_live_headers ORDER BY height DESC")
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.iter().map(Self::row_to_header).collect())
     }
@@ -753,9 +743,7 @@ impl ChaintracksStorageQuery for SqliteStorage {
         .await?;
 
         match row {
-            Some((Some(min), Some(max))) => {
-                Ok(Some(HeightRange::new(min as u32, max as u32)))
-            }
+            Some((Some(min), Some(max))) => Ok(Some(HeightRange::new(min as u32, max as u32))),
             _ => Ok(None),
         }
     }
@@ -997,7 +985,10 @@ impl ChaintracksStorageIngest for SqliteStorage {
 
         let count = result.rows_affected() as u32;
         if count > 0 {
-            info!("Pruned {} inactive headers below height {}", count, threshold);
+            info!(
+                "Pruned {} inactive headers below height {}",
+                count, threshold
+            );
         }
 
         Ok(count)
@@ -1026,16 +1017,17 @@ impl ChaintracksStorageIngest for SqliteStorage {
         .await?;
 
         // Now delete the headers
-        let result = sqlx::query(
-            "DELETE FROM chaintracks_live_headers WHERE height <= ?",
-        )
-        .bind(max_height as i64)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query("DELETE FROM chaintracks_live_headers WHERE height <= ?")
+            .bind(max_height as i64)
+            .execute(&self.pool)
+            .await?;
 
         let count = result.rows_affected() as u32;
         if count > 0 {
-            warn!("Deleted {} headers at or below height {}", count, max_height);
+            warn!(
+                "Deleted {} headers at or below height {}",
+                count, max_height
+            );
         }
 
         Ok(count)
@@ -1364,8 +1356,16 @@ mod tests {
         assert_eq!(storage.header_count().await.unwrap(), 3);
 
         // Get the IDs
-        let header0 = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
-        let header1 = storage.find_live_header_for_block_hash("hash_1").await.unwrap().unwrap();
+        let header0 = storage
+            .find_live_header_for_block_hash("hash_0")
+            .await
+            .unwrap()
+            .unwrap();
+        let header1 = storage
+            .find_live_header_for_block_hash("hash_1")
+            .await
+            .unwrap()
+            .unwrap();
 
         // Delete headers 0 and 1
         let deleted = storage
@@ -1377,7 +1377,10 @@ mod tests {
         assert_eq!(storage.header_count().await.unwrap(), 1);
 
         // Verify remaining header
-        let remaining = storage.find_live_header_for_block_hash("hash_2").await.unwrap();
+        let remaining = storage
+            .find_live_header_for_block_hash("hash_2")
+            .await
+            .unwrap();
         assert!(remaining.is_some());
     }
 
@@ -1396,19 +1399,37 @@ mod tests {
         let header = create_test_header(0, &"0".repeat(64), "hash_0");
         storage.insert_header(header).await.unwrap();
 
-        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        let h = storage
+            .find_live_header_for_block_hash("hash_0")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(h.is_chain_tip);
 
         // Clear chain tip
-        storage.set_chain_tip_by_id(h.header_id, false).await.unwrap();
+        storage
+            .set_chain_tip_by_id(h.header_id, false)
+            .await
+            .unwrap();
 
-        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        let h = storage
+            .find_live_header_for_block_hash("hash_0")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!h.is_chain_tip);
 
         // Set it back
-        storage.set_chain_tip_by_id(h.header_id, true).await.unwrap();
+        storage
+            .set_chain_tip_by_id(h.header_id, true)
+            .await
+            .unwrap();
 
-        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        let h = storage
+            .find_live_header_for_block_hash("hash_0")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(h.is_chain_tip);
     }
 
@@ -1419,13 +1440,21 @@ mod tests {
         let header = create_test_header(0, &"0".repeat(64), "hash_0");
         storage.insert_header(header).await.unwrap();
 
-        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        let h = storage
+            .find_live_header_for_block_hash("hash_0")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(h.is_active);
 
         // Mark inactive
         storage.set_active_by_id(h.header_id, false).await.unwrap();
 
-        let h = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
+        let h = storage
+            .find_live_header_for_block_hash("hash_0")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!h.is_active);
     }
 
@@ -1450,7 +1479,11 @@ mod tests {
         assert_eq!(storage.header_count().await.unwrap(), 100);
 
         // Update chain tip
-        let tip = storage.update_chain_tip_to_highest().await.unwrap().unwrap();
+        let tip = storage
+            .update_chain_tip_to_highest()
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(tip.height, 99);
     }
 
@@ -1501,7 +1534,11 @@ mod tests {
 
         // Chain tip should be none or not the highest yet
         // Update to highest
-        let tip = storage.update_chain_tip_to_highest().await.unwrap().unwrap();
+        let tip = storage
+            .update_chain_tip_to_highest()
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(tip.height, 2);
         assert_eq!(tip.hash, "hash_2");
 
@@ -1571,7 +1608,11 @@ mod tests {
         }
 
         // Mark one as inactive
-        let h1 = storage.find_live_header_for_block_hash("hash_1").await.unwrap().unwrap();
+        let h1 = storage
+            .find_live_header_for_block_hash("hash_1")
+            .await
+            .unwrap()
+            .unwrap();
         storage.set_active_by_id(h1.header_id, false).await.unwrap();
 
         let active = storage.get_active_headers().await.unwrap();
@@ -1598,7 +1639,11 @@ mod tests {
         assert!(forks.is_empty());
 
         // Mark one as inactive (simulated fork)
-        let h1 = storage.find_live_header_for_block_hash("hash_1").await.unwrap().unwrap();
+        let h1 = storage
+            .find_live_header_for_block_hash("hash_1")
+            .await
+            .unwrap()
+            .unwrap();
         storage.set_active_by_id(h1.header_id, false).await.unwrap();
 
         let forks = storage.get_fork_headers().await.unwrap();
@@ -1644,13 +1689,25 @@ mod tests {
         assert_eq!(marked, 2); // heights 3 and 4
 
         // Verify
-        let h2 = storage.find_live_header_for_block_hash("hash_2").await.unwrap().unwrap();
+        let h2 = storage
+            .find_live_header_for_block_hash("hash_2")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(h2.is_active);
 
-        let h3 = storage.find_live_header_for_block_hash("hash_3").await.unwrap().unwrap();
+        let h3 = storage
+            .find_live_header_for_block_hash("hash_3")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!h3.is_active);
 
-        let h4 = storage.find_live_header_for_block_hash("hash_4").await.unwrap().unwrap();
+        let h4 = storage
+            .find_live_header_for_block_hash("hash_4")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!h4.is_active);
     }
 
@@ -1706,14 +1763,26 @@ mod tests {
         assert!(storage.find_chain_tip_header().await.unwrap().is_none());
         assert!(storage.find_chain_tip_hash().await.unwrap().is_none());
         assert!(storage.find_header_for_height(0).await.unwrap().is_none());
-        assert!(storage.find_live_header_for_block_hash("any").await.unwrap().is_none());
-        assert!(storage.find_live_header_for_merkle_root("any").await.unwrap().is_none());
+        assert!(storage
+            .find_live_header_for_block_hash("any")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(storage
+            .find_live_header_for_merkle_root("any")
+            .await
+            .unwrap()
+            .is_none());
         assert!(storage.get_headers_bytes(0, 10).await.unwrap().is_empty());
         assert!(storage.get_live_headers().await.unwrap().is_empty());
         assert!(storage.find_live_height_range().await.unwrap().is_none());
         assert_eq!(storage.header_count().await.unwrap(), 0);
         assert!(!storage.live_header_exists("any").await.unwrap());
-        assert!(storage.get_headers_by_height_range(0, 10).await.unwrap().is_empty());
+        assert!(storage
+            .get_headers_by_height_range(0, 10)
+            .await
+            .unwrap()
+            .is_empty());
         assert!(storage.get_headers_at_height(0).await.unwrap().is_empty());
         assert!(storage.get_active_headers().await.unwrap().is_empty());
         assert!(storage.get_fork_headers().await.unwrap().is_empty());
@@ -1735,10 +1804,22 @@ mod tests {
             storage.insert_header(header).await.unwrap();
         }
 
-        let h0 = storage.find_live_header_for_block_hash("hash_0").await.unwrap().unwrap();
-        let h2 = storage.find_live_header_for_block_hash("hash_2").await.unwrap().unwrap();
+        let h0 = storage
+            .find_live_header_for_block_hash("hash_0")
+            .await
+            .unwrap()
+            .unwrap();
+        let h2 = storage
+            .find_live_header_for_block_hash("hash_2")
+            .await
+            .unwrap()
+            .unwrap();
 
-        let ancestor = storage.find_common_ancestor(&h0, &h2).await.unwrap().unwrap();
+        let ancestor = storage
+            .find_common_ancestor(&h0, &h2)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(ancestor.hash, "hash_0");
     }
 
@@ -1759,10 +1840,13 @@ mod tests {
 
         // A new header extending the tip has 0 reorg depth
         let extending = create_test_header(3, "hash_2", "hash_3");
-        let depth = storage.find_reorg_depth(&LiveBlockHeader {
-            previous_hash: "hash_2".to_string(),
-            ..extending
-        }).await.unwrap();
+        let depth = storage
+            .find_reorg_depth(&LiveBlockHeader {
+                previous_hash: "hash_2".to_string(),
+                ..extending
+            })
+            .await
+            .unwrap();
         assert_eq!(depth, 0);
     }
 
@@ -1785,7 +1869,11 @@ mod tests {
         assert_eq!(inserted, 1000);
 
         // Update chain tip
-        let tip = storage.update_chain_tip_to_highest().await.unwrap().unwrap();
+        let tip = storage
+            .update_chain_tip_to_highest()
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(tip.height, 999);
 
         // Verify some lookups

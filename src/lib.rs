@@ -55,24 +55,20 @@
 //! }
 //! ```
 
+pub mod chaintracks;
 pub mod error;
 pub mod lock_utils;
-pub mod storage;
-pub mod chaintracks;
-pub mod services;
-pub mod wallet;
-pub mod monitor;
 pub mod managers;
+pub mod monitor;
+pub mod services;
+pub mod storage;
+pub mod wallet;
 
 pub use error::{Error, Result};
 
 // Re-export storage types
 pub use storage::{
-    AuthId,
-    MonitorStorage,
-    WalletStorageProvider,
-    WalletStorageReader,
-    WalletStorageSync,
+    AuthId, MonitorStorage, WalletStorageProvider, WalletStorageReader, WalletStorageSync,
     WalletStorageWriter,
 };
 
@@ -94,28 +90,25 @@ pub use bsv_sdk::wallet::{
 
 // Re-export Chaintracks types
 pub use chaintracks::{
-    Chaintracks, ChaintracksClient, ChaintracksInfo, ChaintracksManagement,
-    ChaintracksOptions, ChaintracksStorage, BaseBlockHeader, LiveBlockHeader,
-    HeightRange, InsertHeaderResult,
+    BaseBlockHeader, Chaintracks, ChaintracksClient, ChaintracksInfo, ChaintracksManagement,
+    ChaintracksOptions, ChaintracksStorage, HeightRange, InsertHeaderResult, LiveBlockHeader,
 };
 
 // Re-export Services types
 pub use services::{
-    Chain, Services, ServicesOptions,
-    WalletServices, NLockTimeInput,
-    GetMerklePathResult, GetRawTxResult, PostBeefResult, PostTxResultForTxid,
-    GetUtxoStatusResult, GetUtxoStatusOutputFormat, GetStatusForTxidsResult,
-    GetScriptHashHistoryResult, ScriptHistoryItem, UtxoDetail, TxStatusDetail,
-    BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates,
-    AdaptiveTimeoutConfig, ServiceCollection, ServiceCallHistory,
-    WhatsOnChain, WhatsOnChainConfig,
-    Arc, ArcConfig,
-    Bitails, BitailsConfig,
-    BlockHeaderService, BhsConfig,
+    AdaptiveTimeoutConfig, Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeader,
+    BlockHeaderService, BsvExchangeRate, Chain, FiatCurrency, FiatExchangeRates,
+    GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
+    GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult,
+    PostTxResultForTxid, ScriptHistoryItem, ServiceCallHistory, ServiceCollection, Services,
+    ServicesOptions, TxStatusDetail, UtxoDetail, WalletServices, WhatsOnChain, WhatsOnChainConfig,
 };
 
 // Re-export Wallet types
-pub use wallet::{Wallet, WalletBalance, WalletOptions, WalletSigner, UnlockingScriptTemplate, ScriptType, SignerInput, UtxoInfo};
+pub use wallet::{
+    HttpLookupResolver, OverlayCertificate, OverlayLookupResolver, ScriptType, SignerInput,
+    UnlockingScriptTemplate, UtxoInfo, Wallet, WalletBalance, WalletOptions, WalletSigner,
+};
 
 // Re-export Monitor types
 pub use monitor::{
@@ -124,24 +117,43 @@ pub use monitor::{
 
 // Re-export Managers types
 pub use managers::{
+    setup_wallet,
+    // Permissions manager
+    BasketUsageType,
+    // CWI-style wallet manager
+    CWIStyleWalletManager,
+    CWIStyleWalletManagerConfig,
+    CertificateUsageType,
     // Settings manager
-    Certifier, TrustSettings, WalletSettings, WalletSettingsManager,
-    WalletSettingsManagerConfig, WalletTheme, DEFAULT_SETTINGS, TESTNET_DEFAULT_SETTINGS,
+    Certifier,
+    GroupedPermissions,
     // Storage manager
-    ManagedStorage, WalletStorageManager,
+    ManagedStorage,
+    PermissionRequest,
+    PermissionRequestHandler,
+    PermissionToken,
+    PermissionUsageType,
+    PermissionsModule,
+    Profile,
+    // Setup helpers
+    SetupWalletOptions,
     // Simple wallet manager
     SimpleWalletManager,
-    // CWI-style wallet manager
-    CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile,
-    UmpToken, WalletSnapshot,
-    // Permissions manager
-    BasketUsageType, CertificateUsageType, GroupedPermissions, PermissionRequest,
-    PermissionRequestHandler, PermissionToken, PermissionUsageType, PermissionsModule,
-    WalletPermissionsManager, WalletPermissionsManagerConfig,
+    TrustSettings,
+    UmpToken,
     // Authentication manager
     WalletAuthenticationManager,
+    WalletLogEntry,
     // Logger
-    WalletLogger, WalletLogEntry,
-    // Setup helpers
-    SetupWalletOptions, setup_wallet,
+    WalletLogger,
+    WalletPermissionsManager,
+    WalletPermissionsManagerConfig,
+    WalletSettings,
+    WalletSettingsManager,
+    WalletSettingsManagerConfig,
+    WalletSnapshot,
+    WalletStorageManager,
+    WalletTheme,
+    DEFAULT_SETTINGS,
+    TESTNET_DEFAULT_SETTINGS,
 };

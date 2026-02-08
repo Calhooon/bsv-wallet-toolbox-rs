@@ -106,8 +106,7 @@ where
     async fn run(&self) -> Result<TaskResult> {
         let mut result = TaskResult::new();
         let now = chrono::Utc::now();
-        let process_threshold =
-            now - chrono::Duration::seconds(REORG_PROCESS_DELAY_SECS);
+        let process_threshold = now - chrono::Duration::seconds(REORG_PROCESS_DELAY_SECS);
 
         // Get headers that are ready to process
         let mut headers = self.deactivated_headers.write().await;

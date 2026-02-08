@@ -479,9 +479,18 @@ impl<S> ServiceCollection<S> {
         loop {
             let old_bits = self.avg_response_ms.load(Ordering::Relaxed);
             let old_avg = f64::from_bits(old_bits);
-            let new_avg = if old_avg <= 0.0 { sample } else { old_avg * 0.7 + sample * 0.3 };
+            let new_avg = if old_avg <= 0.0 {
+                sample
+            } else {
+                old_avg * 0.7 + sample * 0.3
+            };
             let new_bits = new_avg.to_bits();
-            match self.avg_response_ms.compare_exchange_weak(old_bits, new_bits, Ordering::Relaxed, Ordering::Relaxed) {
+            match self.avg_response_ms.compare_exchange_weak(
+                old_bits,
+                new_bits,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(_) => continue,
             }
@@ -492,7 +501,11 @@ impl<S> ServiceCollection<S> {
     pub fn avg_response_ms(&self) -> Option<f64> {
         let bits = self.avg_response_ms.load(Ordering::Relaxed);
         let avg = f64::from_bits(bits);
-        if avg <= 0.0 { None } else { Some(avg) }
+        if avg <= 0.0 {
+            None
+        } else {
+            Some(avg)
+        }
     }
 
     /// Get call history, optionally resetting counters.
@@ -625,7 +638,7 @@ mod tests {
 
         collection.next(); // Move to provider2 (index 1)
         collection.remove("provider2"); // Removes item at index 1, list becomes [p1, p3]
-        // Index 1 now points to provider3 (the item that was at index 2)
+                                        // Index 1 now points to provider3 (the item that was at index 2)
 
         assert_eq!(collection.count(), 2);
         assert_eq!(collection.current_name(), Some("provider3"));
@@ -650,8 +663,8 @@ mod tests {
 
     #[test]
     fn test_call_history_tracking() {
-        let mut collection = ServiceCollection::<String>::new("test")
-            .with("provider1", "service1".to_string());
+        let mut collection =
+            ServiceCollection::<String>::new("test").with("provider1", "service1".to_string());
 
         let mut call = ServiceCall::new();
         call.mark_success(Some("ok".to_string()));
@@ -700,18 +713,34 @@ mod tests {
 
     #[test]
     fn test_adaptive_timeout_within_bounds() {
-        let config = AdaptiveTimeoutConfig { min_timeout_ms: 1_000, max_timeout_ms: 10_000, multiplier: 2.0, initial_timeout_ms: 5_000 };
+        let config = AdaptiveTimeoutConfig {
+            min_timeout_ms: 1_000,
+            max_timeout_ms: 10_000,
+            multiplier: 2.0,
+            initial_timeout_ms: 5_000,
+        };
         let collection = ServiceCollection::<String>::with_timeout_config("test", config);
         collection.record_response_time(3000);
-        assert_eq!(collection.get_current_timeout(), Duration::from_millis(6_000));
+        assert_eq!(
+            collection.get_current_timeout(),
+            Duration::from_millis(6_000)
+        );
     }
 
     #[test]
     fn test_adaptive_timeout_max_clamp() {
-        let config = AdaptiveTimeoutConfig { min_timeout_ms: 1_000, max_timeout_ms: 10_000, multiplier: 2.0, initial_timeout_ms: 5_000 };
+        let config = AdaptiveTimeoutConfig {
+            min_timeout_ms: 1_000,
+            max_timeout_ms: 10_000,
+            multiplier: 2.0,
+            initial_timeout_ms: 5_000,
+        };
         let collection = ServiceCollection::<String>::with_timeout_config("test", config);
         collection.record_response_time(50_000);
-        assert_eq!(collection.get_current_timeout(), Duration::from_millis(10_000));
+        assert_eq!(
+            collection.get_current_timeout(),
+            Duration::from_millis(10_000)
+        );
     }
 
     #[test]

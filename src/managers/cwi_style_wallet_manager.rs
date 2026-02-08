@@ -204,7 +204,11 @@ impl WalletSnapshot {
     pub const CURRENT_VERSION: u8 = 2;
 
     /// Create a new V2 snapshot.
-    pub fn new(snapshot_key: Vec<u8>, active_profile_id: String, encrypted_payload: Vec<u8>) -> Self {
+    pub fn new(
+        snapshot_key: Vec<u8>,
+        active_profile_id: String,
+        encrypted_payload: Vec<u8>,
+    ) -> Self {
         Self {
             version: Self::CURRENT_VERSION,
             snapshot_key,
@@ -219,7 +223,8 @@ pub type CWIWalletBuilder = Arc<
     dyn Fn(
             Vec<u8>,
             PrivateKey,
-        ) -> Pin<Box<dyn Future<Output = Result<Arc<dyn WalletInterface + Send + Sync>>> + Send>>
+        )
+            -> Pin<Box<dyn Future<Output = Result<Arc<dyn WalletInterface + Send + Sync>>> + Send>>
         + Send
         + Sync,
 >;
@@ -492,12 +497,10 @@ impl CWIStyleWalletManager {
     /// Exports a profile as encrypted bytes.
     pub async fn export_profile(&self, profile_id: &[u8]) -> Result<Vec<u8>> {
         let profiles = self.profiles.read().await;
-        let profile = profiles
-            .get(profile_id)
-            .ok_or_else(|| Error::NotFound {
-                entity: "Profile".to_string(),
-                id: hex::encode(profile_id),
-            })?;
+        let profile = profiles.get(profile_id).ok_or_else(|| Error::NotFound {
+            entity: "Profile".to_string(),
+            id: hex::encode(profile_id),
+        })?;
 
         let json = serde_json::to_vec(profile).map_err(Error::JsonError)?;
 
@@ -529,8 +532,7 @@ impl CWIStyleWalletManager {
             .decrypt(encrypted)
             .map_err(|e| Error::InvalidOperation(format!("Decryption failed: {:?}", e)))?;
 
-        let profile: Profile =
-            serde_json::from_slice(&decrypted).map_err(Error::JsonError)?;
+        let profile: Profile = serde_json::from_slice(&decrypted).map_err(Error::JsonError)?;
 
         // Store the imported profile
         let mut profiles = self.profiles.write().await;
@@ -546,12 +548,10 @@ impl CWIStyleWalletManager {
     /// the data, making it suitable for internal backup operations.
     pub async fn export_profile_json(&self, profile_id: &[u8]) -> Result<Vec<u8>> {
         let profiles = self.profiles.read().await;
-        let profile = profiles
-            .get(profile_id)
-            .ok_or_else(|| Error::NotFound {
-                entity: "Profile".to_string(),
-                id: hex::encode(profile_id),
-            })?;
+        let profile = profiles.get(profile_id).ok_or_else(|| Error::NotFound {
+            entity: "Profile".to_string(),
+            id: hex::encode(profile_id),
+        })?;
 
         serde_json::to_vec(profile).map_err(Error::JsonError)
     }
@@ -562,8 +562,7 @@ impl CWIStyleWalletManager {
     /// manager. If a profile with the same ID already exists, it will be
     /// overwritten.
     pub async fn import_profile_json(&self, data: &[u8]) -> Result<Profile> {
-        let profile: Profile =
-            serde_json::from_slice(data).map_err(Error::JsonError)?;
+        let profile: Profile = serde_json::from_slice(data).map_err(Error::JsonError)?;
 
         let mut profiles = self.profiles.write().await;
         profiles.insert(profile.id.clone(), profile.clone());
@@ -586,8 +585,7 @@ impl CWIStyleWalletManager {
     /// Deserializes profiles from a JSON array and adds them to the manager.
     /// Existing profiles with the same IDs will be overwritten.
     pub async fn restore_all_profiles(&self, data: &[u8]) -> Result<Vec<Profile>> {
-        let restored: Vec<Profile> =
-            serde_json::from_slice(data).map_err(Error::JsonError)?;
+        let restored: Vec<Profile> = serde_json::from_slice(data).map_err(Error::JsonError)?;
 
         let mut profiles = self.profiles.write().await;
         for profile in &restored {
@@ -656,8 +654,7 @@ impl CWIStyleWalletManager {
             default_profile_id: Option<Vec<u8>>,
         }
 
-        let snapshot: Snapshot =
-            serde_json::from_slice(&decrypted).map_err(Error::JsonError)?;
+        let snapshot: Snapshot = serde_json::from_slice(&decrypted).map_err(Error::JsonError)?;
 
         let mut profiles = self.profiles.write().await;
         profiles.clear();
@@ -743,11 +740,7 @@ mod tests {
 
     #[test]
     fn test_wallet_snapshot() {
-        let snapshot = WalletSnapshot::new(
-            vec![0xAA; 32],
-            "profile-1".to_string(),
-            vec![0xBB; 64],
-        );
+        let snapshot = WalletSnapshot::new(vec![0xAA; 32], "profile-1".to_string(), vec![0xBB; 64]);
         assert_eq!(snapshot.version, WalletSnapshot::CURRENT_VERSION);
         assert_eq!(snapshot.version, 2);
         assert_eq!(snapshot.active_profile_id, "profile-1");

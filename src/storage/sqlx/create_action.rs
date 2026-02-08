@@ -4,15 +4,14 @@
 //! for the `StorageSqlx` wallet storage backend.
 
 use crate::error::{Error, Result};
-use crate::storage::entities::{
-    TableOutput, TableOutputBasket, TableOutputTag, TableTxLabel,
-};
+use crate::storage::entities::{TableOutput, TableOutputBasket, TableOutputTag, TableTxLabel};
 use crate::storage::traits::{
     FindOutputBasketsArgs, StorageCreateActionResult, StorageCreateTransactionInput,
     StorageCreateTransactionOutput, StorageProvidedBy,
 };
 use bsv_sdk::transaction::{Beef, ChainTracker, MerklePath};
 use chrono::Utc;
+use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
 use std::collections::HashSet;
 
@@ -291,10 +290,7 @@ fn validate_create_action_args(args: &bsv_sdk::wallet::CreateActionArgs) -> Resu
 // =============================================================================
 
 /// Calculates transaction size given input and output script lengths.
-fn calculate_transaction_size(
-    input_script_lengths: &[u32],
-    output_script_lengths: &[u32],
-) -> u64 {
+fn calculate_transaction_size(input_script_lengths: &[u32], output_script_lengths: &[u32]) -> u64 {
     // Transaction overhead: version (4) + locktime (4) + input count varint + output count varint
     let mut size: u64 = 4 + 4;
 
@@ -375,29 +371,40 @@ pub async fn create_action_internal(
     // Determine action flags
     let options = args.options.as_ref();
     let is_no_send = options.and_then(|o| o.no_send).unwrap_or(false);
-    let is_delayed = options.and_then(|o| o.accept_delayed_broadcast).unwrap_or(false);
+    let is_delayed = options
+        .and_then(|o| o.accept_delayed_broadcast)
+        .unwrap_or(false);
 
     // Step 2: Get or create default output basket
+    // NOTE: This uses its own pool connection (known limitation for first pass).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
+
+    // Begin SQL transaction to ensure atomicity of all subsequent DB writes.
+    // If the function returns an error (via `?`), `tx` is dropped and sqlx auto-rollbacks.
+    let mut tx = storage
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
     // Step 3: Process caller-provided outputs
     let extended_outputs = validate_and_extend_outputs(&args)?;
 
     // Step 4: Process caller-provided inputs
-    let extended_inputs = validate_and_extend_inputs(storage, user_id, &args).await?;
+    let extended_inputs = validate_and_extend_inputs(storage, &mut tx, user_id, &args).await?;
 
     // Step 5: Count available change outputs for targeting
     let available_change_count =
-        count_change_inputs(storage, user_id, change_basket.basket_id, !is_delayed).await?;
+        count_change_inputs(&mut tx, user_id, change_basket.basket_id, !is_delayed).await?;
 
     // Step 6: Create transaction record in DB
-    let transaction_id = create_transaction_record(storage, user_id, &args).await?;
+    let transaction_id = create_transaction_record(&mut tx, user_id, &args).await?;
 
     // Step 7: Create transaction labels
     if let Some(ref labels) = args.labels {
         for label in labels {
-            let tx_label = find_or_insert_tx_label(storage, user_id, label).await?;
-            find_or_insert_tx_label_map(storage, transaction_id, tx_label.label_id).await?;
+            let tx_label = find_or_insert_tx_label(&mut tx, user_id, label).await?;
+            find_or_insert_tx_label_map(&mut tx, transaction_id, tx_label.label_id).await?;
         }
     }
 
@@ -435,7 +442,7 @@ pub async fn create_action_internal(
     let derivation_prefix = random_derivation(16);
 
     let change_result = generate_change(
-        storage,
+        &mut tx,
         user_id,
         change_basket.basket_id,
         transaction_id,
@@ -449,7 +456,7 @@ pub async fn create_action_internal(
     for input in &extended_inputs {
         if let Some(ref output) = input.output {
             update_output_spent(
-                storage,
+                &mut tx,
                 output.output_id,
                 transaction_id,
                 input.input_description.as_deref(),
@@ -472,7 +479,7 @@ pub async fn create_action_internal(
     let satoshis = change_out_sats - change_in_sats;
 
     // Update transaction with calculated satoshis
-    update_transaction_satoshis(storage, transaction_id, satoshis).await?;
+    update_transaction_satoshis(&mut tx, transaction_id, satoshis).await?;
 
     // Step 11: Create output records
     let mut result_outputs = Vec::new();
@@ -481,14 +488,15 @@ pub async fn create_action_internal(
     // First, handle user-specified outputs
     for xo in &extended_outputs {
         let basket_id = if let Some(ref basket_name) = xo.basket {
-            let basket = find_or_insert_output_basket(storage, user_id, basket_name).await?;
+            let basket =
+                find_or_insert_output_basket(storage, &mut tx, user_id, basket_name).await?;
             Some(basket.basket_id)
         } else {
             None
         };
 
         let output_id = insert_output(
-            storage,
+            &mut tx,
             user_id,
             transaction_id,
             basket_id,
@@ -508,8 +516,8 @@ pub async fn create_action_internal(
 
         // Create tag associations
         for tag in &xo.tags {
-            let output_tag = find_or_insert_output_tag(storage, user_id, tag).await?;
-            find_or_insert_output_tag_map(storage, output_id, output_tag.tag_id).await?;
+            let output_tag = find_or_insert_output_tag(&mut tx, user_id, tag).await?;
+            find_or_insert_output_tag_map(&mut tx, output_id, output_tag.tag_id).await?;
         }
 
         result_outputs.push(StorageCreateTransactionOutput {
@@ -535,7 +543,7 @@ pub async fn create_action_internal(
         let vout = base_vout + i as u32;
 
         let _output_id = insert_output(
-            storage,
+            &mut tx,
             user_id,
             transaction_id,
             Some(change_basket.basket_id),
@@ -636,7 +644,7 @@ pub async fn create_action_internal(
     }
 
     // Get the transaction reference
-    let reference = get_transaction_reference(storage, transaction_id).await?;
+    let reference = get_transaction_reference(&mut tx, transaction_id).await?;
 
     // Extract BEEF-related options
     let return_txid_only = options.and_then(|o| o.return_txid_only).unwrap_or(false);
@@ -648,7 +656,7 @@ pub async fn create_action_internal(
     // Build input BEEF containing all input transactions with their merkle proofs
     // Verify BEEF against ChainTracker if provided (matches TypeScript/Go behavior)
     let input_beef = build_input_beef(
-        storage,
+        &mut tx,
         chain_tracker,
         &extended_inputs,
         &change_result.allocated_change_inputs,
@@ -662,13 +670,20 @@ pub async fn create_action_internal(
     // This matches the TypeScript behavior which stores inputBEEF at transaction creation
     if let Some(ref beef_bytes) = input_beef {
         let now = Utc::now();
-        sqlx::query("UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?")
-            .bind(beef_bytes)
-            .bind(now)
-            .bind(transaction_id)
-            .execute(storage.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?",
+        )
+        .bind(beef_bytes)
+        .bind(now)
+        .bind(transaction_id)
+        .execute(&mut *tx)
+        .await?;
     }
+
+    // Commit all changes atomically.
+    tx.commit()
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
     // Build final result
     Ok(StorageCreateActionResult {
@@ -679,11 +694,7 @@ pub async fn create_action_internal(
         outputs: result_outputs,
         derivation_prefix,
         input_beef,
-        no_send_change_output_vouts: if is_no_send {
-            Some(change_vouts)
-        } else {
-            None
-        },
+        no_send_change_output_vouts: if is_no_send { Some(change_vouts) } else { None },
     })
 }
 
@@ -721,6 +732,7 @@ fn validate_and_extend_outputs(
 /// For external inputs not in storage, looks up source output info from the input_beef.
 async fn validate_and_extend_inputs(
     storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     args: &bsv_sdk::wallet::CreateActionArgs,
 ) -> Result<Vec<ExtendedInput>> {
@@ -751,7 +763,7 @@ async fn validate_and_extend_inputs(
                 } else if out.script_offset > 0 && out.script_length > 0 && !out.txid.is_empty() {
                     // Script was cleared from output (too long), read from rawTx
                     get_locking_script_from_raw_tx(
-                        storage,
+                        &mut *conn,
                         &out.txid,
                         out.script_offset as usize,
                         out.script_length as usize,
@@ -840,7 +852,7 @@ async fn validate_and_extend_inputs(
 
 /// Counts available change inputs in the default basket.
 async fn count_change_inputs(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,
     require_spendable: bool,
@@ -868,7 +880,7 @@ async fn count_change_inputs(
     let row = sqlx::query(&sql)
         .bind(user_id)
         .bind(basket_id)
-        .fetch_one(storage.pool())
+        .fetch_one(&mut *conn)
         .await?;
 
     let count: i64 = row.get("count");
@@ -877,7 +889,7 @@ async fn count_change_inputs(
 
 /// Creates a new transaction record.
 async fn create_transaction_record(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     args: &bsv_sdk::wallet::CreateActionArgs,
 ) -> Result<i64> {
@@ -899,7 +911,7 @@ async fn create_transaction_record(
     .bind(&args.description)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(result.last_insert_rowid())
@@ -909,7 +921,7 @@ async fn create_transaction_record(
 /// This is needed when the output's locking_script was cleared (set to NULL)
 /// because it exceeded maxOutputScript length.
 async fn get_locking_script_from_raw_tx(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     txid: &str,
     offset: usize,
     length: usize,
@@ -917,7 +929,7 @@ async fn get_locking_script_from_raw_tx(
     // First try proven_tx_reqs (for pending transactions)
     let row = sqlx::query("SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?")
         .bind(txid)
-        .fetch_optional(storage.pool())
+        .fetch_optional(&mut *conn)
         .await?;
 
     if let Some(row) = row {
@@ -930,7 +942,7 @@ async fn get_locking_script_from_raw_tx(
     // Then try transactions table
     let row = sqlx::query("SELECT raw_tx FROM transactions WHERE txid = ?")
         .bind(txid)
-        .fetch_optional(storage.pool())
+        .fetch_optional(&mut *conn)
         .await?;
 
     if let Some(row) = row {
@@ -945,7 +957,7 @@ async fn get_locking_script_from_raw_tx(
     // Finally try proven_txs table
     let row = sqlx::query("SELECT raw_tx FROM proven_txs WHERE txid = ?")
         .bind(txid)
-        .fetch_optional(storage.pool())
+        .fetch_optional(&mut *conn)
         .await?;
 
     if let Some(row) = row {
@@ -962,10 +974,13 @@ async fn get_locking_script_from_raw_tx(
 }
 
 /// Gets the reference for a transaction.
-async fn get_transaction_reference(storage: &StorageSqlx, transaction_id: i64) -> Result<String> {
+async fn get_transaction_reference(
+    conn: &mut SqliteConnection,
+    transaction_id: i64,
+) -> Result<String> {
     let row = sqlx::query("SELECT reference FROM transactions WHERE transaction_id = ?")
         .bind(transaction_id)
-        .fetch_one(storage.pool())
+        .fetch_one(&mut *conn)
         .await?;
 
     Ok(row.get("reference"))
@@ -973,7 +988,7 @@ async fn get_transaction_reference(storage: &StorageSqlx, transaction_id: i64) -
 
 /// Updates transaction satoshis.
 async fn update_transaction_satoshis(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     transaction_id: i64,
     satoshis: i64,
 ) -> Result<()> {
@@ -983,7 +998,7 @@ async fn update_transaction_satoshis(
         .bind(satoshis)
         .bind(now)
         .bind(transaction_id)
-        .execute(storage.pool())
+        .execute(&mut *conn)
         .await?;
 
     Ok(())
@@ -991,7 +1006,7 @@ async fn update_transaction_satoshis(
 
 /// Marks an output as spent.
 async fn update_output_spent(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     output_id: i64,
     spent_by: i64,
     spending_description: Option<&str>,
@@ -1009,7 +1024,7 @@ async fn update_output_spent(
     .bind(spending_description)
     .bind(now)
     .bind(output_id)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(())
@@ -1017,7 +1032,7 @@ async fn update_output_spent(
 
 /// Finds or creates a transaction label.
 async fn find_or_insert_tx_label(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     label: &str,
 ) -> Result<TableTxLabel> {
@@ -1026,7 +1041,7 @@ async fn find_or_insert_tx_label(
     )
     .bind(user_id)
     .bind(label)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = row {
@@ -1047,7 +1062,7 @@ async fn find_or_insert_tx_label(
     .bind(label)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(TableTxLabel {
@@ -1061,7 +1076,7 @@ async fn find_or_insert_tx_label(
 
 /// Finds or creates a transaction label map entry.
 async fn find_or_insert_tx_label_map(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     transaction_id: i64,
     label_id: i64,
 ) -> Result<i64> {
@@ -1070,7 +1085,7 @@ async fn find_or_insert_tx_label_map(
     )
     .bind(transaction_id)
     .bind(label_id)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = row {
@@ -1085,7 +1100,7 @@ async fn find_or_insert_tx_label_map(
     .bind(label_id)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(result.last_insert_rowid())
@@ -1094,6 +1109,7 @@ async fn find_or_insert_tx_label_map(
 /// Finds or creates an output basket.
 async fn find_or_insert_output_basket(
     storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     name: &str,
 ) -> Result<TableOutputBasket> {
@@ -1120,7 +1136,7 @@ async fn find_or_insert_output_basket(
     .bind(name)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(TableOutputBasket {
@@ -1136,7 +1152,7 @@ async fn find_or_insert_output_basket(
 
 /// Finds or creates an output tag.
 async fn find_or_insert_output_tag(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     tag: &str,
 ) -> Result<TableOutputTag> {
@@ -1145,7 +1161,7 @@ async fn find_or_insert_output_tag(
     )
     .bind(user_id)
     .bind(tag)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = row {
@@ -1166,7 +1182,7 @@ async fn find_or_insert_output_tag(
     .bind(tag)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(TableOutputTag {
@@ -1180,7 +1196,7 @@ async fn find_or_insert_output_tag(
 
 /// Finds or creates an output tag map entry.
 async fn find_or_insert_output_tag_map(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     output_id: i64,
     tag_id: i64,
 ) -> Result<i64> {
@@ -1189,7 +1205,7 @@ async fn find_or_insert_output_tag_map(
     )
     .bind(output_id)
     .bind(tag_id)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = row {
@@ -1204,7 +1220,7 @@ async fn find_or_insert_output_tag_map(
     .bind(tag_id)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(result.last_insert_rowid())
@@ -1213,7 +1229,7 @@ async fn find_or_insert_output_tag_map(
 /// Inserts a new output record.
 #[allow(clippy::too_many_arguments)]
 async fn insert_output(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     transaction_id: i64,
     basket_id: Option<i64>,
@@ -1270,7 +1286,7 @@ async fn insert_output(
     .bind(spendable)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(&mut *conn)
     .await?;
 
     Ok(result.last_insert_rowid())
@@ -1288,7 +1304,7 @@ async fn insert_output(
 /// 3. If can't fund, remove change outputs one at a time
 /// 4. Distribute excess to change outputs
 async fn generate_change(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,
     transaction_id: i64,
@@ -1316,16 +1332,16 @@ async fn generate_change(
             .fixed_inputs
             .iter()
             .map(|i| i.unlocking_script_length)
-            .chain(std::iter::repeat(params.change_unlocking_script_length).take(alloc_inputs.len()))
+            .chain(
+                std::iter::repeat(params.change_unlocking_script_length).take(alloc_inputs.len()),
+            )
             .collect();
 
         let output_script_lengths: Vec<u32> = params
             .fixed_outputs
             .iter()
             .map(|o| o.locking_script_length)
-            .chain(
-                std::iter::repeat(params.change_locking_script_length).take(change_outs.len()),
-            )
+            .chain(std::iter::repeat(params.change_locking_script_length).take(change_outs.len()))
             .collect();
 
         let size = calculate_transaction_size(&input_script_lengths, &output_script_lengths);
@@ -1350,7 +1366,8 @@ async fn generate_change(
     // Step 1: Create change outputs based on targetNetCount first
     // "If we'd like to have more change outputs create them now.
     //  They may be removed if it turns out we can't fund them."
-    while (has_target_net_count && target_net > net_change_count(&change_outputs, &allocated_inputs))
+    while (has_target_net_count
+        && target_net > net_change_count(&change_outputs, &allocated_inputs))
         || (change_outputs.is_empty() && fee_excess > 0)
     {
         let satoshis = if change_outputs.is_empty() {
@@ -1376,7 +1393,7 @@ async fn generate_change(
     loop {
         // Release all allocated inputs (TypeScript: releaseAllocatedChangeInputs)
         for input in allocated_inputs.drain(..) {
-            release_change_input(storage, input.output_id).await?;
+            release_change_input(&mut *conn, input.output_id).await?;
         }
 
         // Recalculate after releasing
@@ -1389,11 +1406,15 @@ async fn generate_change(
             let add_output = has_target_net_count
                 && (net_change_count(&change_outputs, &allocated_inputs) - 1) < target_net;
 
-            let extra_for_output = if add_output { 2 * params.change_initial_satoshis } else { 0 };
+            let extra_for_output = if add_output {
+                2 * params.change_initial_satoshis
+            } else {
+                0
+            };
             let target_sats = (-fee_excess) as u64 + extra_for_output;
 
             let allocated = allocate_change_input(
-                storage,
+                &mut *conn,
                 user_id,
                 basket_id,
                 transaction_id,
@@ -1501,17 +1522,17 @@ async fn generate_change(
 }
 
 /// Releases a previously allocated change input.
-async fn release_change_input(storage: &StorageSqlx, output_id: i64) -> Result<()> {
+async fn release_change_input(conn: &mut SqliteConnection, output_id: i64) -> Result<()> {
     sqlx::query("UPDATE outputs SET spendable = 1, spent_by = NULL WHERE output_id = ?")
         .bind(output_id)
-        .execute(storage.pool())
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
 
 /// Allocates a change input from the default basket.
 async fn allocate_change_input(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,
     transaction_id: i64,
@@ -1550,7 +1571,7 @@ async fn allocate_change_input(
         .bind(basket_id)
         .bind(target_satoshis as i64)
         .bind(target_satoshis as i64)
-        .fetch_optional(storage.pool())
+        .fetch_optional(&mut *conn)
         .await?;
 
     if let Some(row) = row {
@@ -1571,7 +1592,7 @@ async fn allocate_change_input(
         .bind(transaction_id)
         .bind(now)
         .bind(output_id)
-        .execute(storage.pool())
+        .execute(&mut *conn)
         .await?;
 
         Ok(Some(AllocatedChangeInput {
@@ -1630,7 +1651,7 @@ struct BeefTxData {
 /// # Errors
 /// * `ValidationError` - If BEEF structure is invalid or merkle roots don't match chain
 async fn build_input_beef(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     chain_tracker: Option<&dyn ChainTracker>,
     extended_inputs: &[ExtendedInput],
     change_inputs: &[AllocatedChangeInput],
@@ -1707,7 +1728,7 @@ async fn build_input_beef(
 
         // First, try to get a stored BEEF and merge it directly.
         // This is the most efficient path - it contains all ancestors in one structure.
-        if let Some(stored_beef) = get_stored_beef(storage, &txid).await? {
+        if let Some(stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
             // Merge the entire stored BEEF - this includes all ancestors and any proofs
             beef.merge_beef(&stored_beef);
 
@@ -1722,7 +1743,7 @@ async fn build_input_beef(
         }
 
         // Fall back to individual transaction lookup
-        if let Some(tx_data) = get_tx_with_proof(storage, &txid).await? {
+        if let Some(tx_data) = get_tx_with_proof(&mut *conn, &txid).await? {
             // If we have a merkle proof, add both tx and proof - no need to recurse
             let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {
                 match MerklePath::from_binary(merkle_path_bytes) {
@@ -1750,7 +1771,9 @@ async fn build_input_beef(
                 // Parse the transaction to get its input txids
                 if let Ok(input_txids) = parse_input_txids(&tx_data.raw_tx) {
                     for input_txid in input_txids {
-                        if !processed_txids.contains(&input_txid) && !pending_txids.contains(&input_txid) {
+                        if !processed_txids.contains(&input_txid)
+                            && !pending_txids.contains(&input_txid)
+                        {
                             pending_txids.push(input_txid);
                         }
                     }
@@ -1875,7 +1898,9 @@ fn parse_input_txids(raw_tx: &[u8]) -> Result<Vec<String>> {
 /// Reads a variable-length integer from transaction data.
 fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u64> {
     if *offset >= data.len() {
-        return Err(Error::ValidationError("Unexpected end of transaction data".to_string()));
+        return Err(Error::ValidationError(
+            "Unexpected end of transaction data".to_string(),
+        ));
     }
 
     let first = data[*offset];
@@ -1885,27 +1910,42 @@ fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u64> {
         Ok(first as u64)
     } else if first == 0xfd {
         if *offset + 2 > data.len() {
-            return Err(Error::ValidationError("Unexpected end of transaction data".to_string()));
+            return Err(Error::ValidationError(
+                "Unexpected end of transaction data".to_string(),
+            ));
         }
         let val = u16::from_le_bytes([data[*offset], data[*offset + 1]]) as u64;
         *offset += 2;
         Ok(val)
     } else if first == 0xfe {
         if *offset + 4 > data.len() {
-            return Err(Error::ValidationError("Unexpected end of transaction data".to_string()));
+            return Err(Error::ValidationError(
+                "Unexpected end of transaction data".to_string(),
+            ));
         }
         let val = u32::from_le_bytes([
-            data[*offset], data[*offset + 1], data[*offset + 2], data[*offset + 3],
+            data[*offset],
+            data[*offset + 1],
+            data[*offset + 2],
+            data[*offset + 3],
         ]) as u64;
         *offset += 4;
         Ok(val)
     } else {
         if *offset + 8 > data.len() {
-            return Err(Error::ValidationError("Unexpected end of transaction data".to_string()));
+            return Err(Error::ValidationError(
+                "Unexpected end of transaction data".to_string(),
+            ));
         }
         let val = u64::from_le_bytes([
-            data[*offset], data[*offset + 1], data[*offset + 2], data[*offset + 3],
-            data[*offset + 4], data[*offset + 5], data[*offset + 6], data[*offset + 7],
+            data[*offset],
+            data[*offset + 1],
+            data[*offset + 2],
+            data[*offset + 3],
+            data[*offset + 4],
+            data[*offset + 5],
+            data[*offset + 6],
+            data[*offset + 7],
         ]);
         *offset += 8;
         Ok(val)
@@ -1931,7 +1971,7 @@ fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u64> {
 /// # Returns
 /// * `Ok(Some(BeefTxData))` - Transaction data if found
 /// * `Ok(None)` - If transaction not found in any table
-async fn get_tx_with_proof(storage: &StorageSqlx, txid: &str) -> Result<Option<BeefTxData>> {
+async fn get_tx_with_proof(conn: &mut SqliteConnection, txid: &str) -> Result<Option<BeefTxData>> {
     // First try proven_txs table - these have merkle proofs
     let proven_row = sqlx::query(
         r#"
@@ -1941,7 +1981,7 @@ async fn get_tx_with_proof(storage: &StorageSqlx, txid: &str) -> Result<Option<B
         "#,
     )
     .bind(txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = proven_row {
@@ -1963,7 +2003,7 @@ async fn get_tx_with_proof(storage: &StorageSqlx, txid: &str) -> Result<Option<B
         "#,
     )
     .bind(txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = tx_row {
@@ -2016,7 +2056,7 @@ async fn get_tx_with_proof(storage: &StorageSqlx, txid: &str) -> Result<Option<B
         "#,
     )
     .bind(txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = req_row {
@@ -2076,7 +2116,7 @@ async fn get_tx_with_proof(storage: &StorageSqlx, txid: &str) -> Result<Option<B
 /// # Returns
 /// * `Ok(Some(Beef))` - Stored BEEF if available
 /// * `Ok(None)` - If no stored BEEF found
-async fn get_stored_beef(storage: &StorageSqlx, txid: &str) -> Result<Option<Beef>> {
+async fn get_stored_beef(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Beef>> {
     // Try transactions table first
     let tx_row = sqlx::query(
         r#"
@@ -2086,7 +2126,7 @@ async fn get_stored_beef(storage: &StorageSqlx, txid: &str) -> Result<Option<Bee
         "#,
     )
     .bind(txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = tx_row {
@@ -2107,7 +2147,7 @@ async fn get_stored_beef(storage: &StorageSqlx, txid: &str) -> Result<Option<Bee
         "#,
     )
     .bind(txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = req_row {
@@ -2129,8 +2169,8 @@ async fn get_stored_beef(storage: &StorageSqlx, txid: &str) -> Result<Option<Bee
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bsv_sdk::wallet::{CreateActionOutput, CreateActionOptions};
     use crate::storage::traits::WalletStorageWriter;
+    use bsv_sdk::wallet::{CreateActionOptions, CreateActionOutput};
 
     #[test]
     fn test_var_int_size() {
@@ -2161,7 +2201,9 @@ mod tests {
         let d2 = random_derivation(16);
 
         // Should be base64 encoded
-        assert!(d1.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '='));
+        assert!(d1
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '='));
 
         // Should be different each time
         assert_ne!(d1, d2);
@@ -2364,7 +2406,8 @@ mod tests {
     #[test]
     fn test_validate_valid_output() {
         // Standard P2PKH locking script
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         let args = bsv_sdk::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
@@ -2389,7 +2432,8 @@ mod tests {
     #[test]
     fn test_validate_max_possible_satoshis_allowed() {
         // MAX_POSSIBLE_SATOSHIS is a special sentinel value that should be allowed
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         let args = bsv_sdk::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
@@ -2415,7 +2459,8 @@ mod tests {
     fn test_validate_input_missing_unlocking_script() {
         use bsv_sdk::wallet::{CreateActionInput, Outpoint};
 
-        let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6").unwrap();
+        let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6")
+            .unwrap();
         let mut txid_arr = [0u8; 32];
         txid_arr.copy_from_slice(&txid);
 
@@ -2423,7 +2468,10 @@ mod tests {
             description: "Test transaction".to_string(),
             input_beef: None,
             inputs: Some(vec![CreateActionInput {
-                outpoint: Outpoint { txid: txid_arr, vout: 0 },
+                outpoint: Outpoint {
+                    txid: txid_arr,
+                    vout: 0,
+                },
                 input_description: "Test input".to_string(),
                 unlocking_script: None,
                 unlocking_script_length: None,
@@ -2436,14 +2484,17 @@ mod tests {
             options: None,
         };
         let err = validate_create_action_args(&args).unwrap_err();
-        assert!(err.to_string().contains("unlockingScript or unlockingScriptLength required"));
+        assert!(err
+            .to_string()
+            .contains("unlockingScript or unlockingScriptLength required"));
     }
 
     #[test]
     fn test_validate_input_unlocking_script_length_mismatch() {
         use bsv_sdk::wallet::{CreateActionInput, Outpoint};
 
-        let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6").unwrap();
+        let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6")
+            .unwrap();
         let mut txid_arr = [0u8; 32];
         txid_arr.copy_from_slice(&txid);
 
@@ -2451,10 +2502,13 @@ mod tests {
             description: "Test transaction".to_string(),
             input_beef: None,
             inputs: Some(vec![CreateActionInput {
-                outpoint: Outpoint { txid: txid_arr, vout: 0 },
+                outpoint: Outpoint {
+                    txid: txid_arr,
+                    vout: 0,
+                },
                 input_description: "Test input".to_string(),
                 unlocking_script: Some(vec![0x00]), // 1 byte
-                unlocking_script_length: Some(2),    // but says 2
+                unlocking_script_length: Some(2),   // but says 2
                 sequence_number: None,
             }]),
             outputs: None,
@@ -2471,7 +2525,8 @@ mod tests {
     fn test_validate_duplicate_input_outpoints() {
         use bsv_sdk::wallet::{CreateActionInput, Outpoint};
 
-        let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6").unwrap();
+        let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6")
+            .unwrap();
         let mut txid_arr = [0u8; 32];
         txid_arr.copy_from_slice(&txid);
 
@@ -2480,14 +2535,20 @@ mod tests {
             input_beef: None,
             inputs: Some(vec![
                 CreateActionInput {
-                    outpoint: Outpoint { txid: txid_arr, vout: 0 },
+                    outpoint: Outpoint {
+                        txid: txid_arr,
+                        vout: 0,
+                    },
                     input_description: "Input 1".to_string(),
                     unlocking_script: Some(vec![0x00]),
                     unlocking_script_length: None,
                     sequence_number: None,
                 },
                 CreateActionInput {
-                    outpoint: Outpoint { txid: txid_arr, vout: 0 }, // Same outpoint
+                    outpoint: Outpoint {
+                        txid: txid_arr,
+                        vout: 0,
+                    }, // Same outpoint
                     input_description: "Input 2".to_string(),
                     unlocking_script: Some(vec![0x00]),
                     unlocking_script_length: None,
@@ -2508,7 +2569,8 @@ mod tests {
     fn test_validate_valid_input() {
         use bsv_sdk::wallet::{CreateActionInput, Outpoint};
 
-        let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6").unwrap();
+        let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6")
+            .unwrap();
         let mut txid_arr = [0u8; 32];
         txid_arr.copy_from_slice(&txid);
 
@@ -2516,7 +2578,10 @@ mod tests {
             description: "Test transaction".to_string(),
             input_beef: None,
             inputs: Some(vec![CreateActionInput {
-                outpoint: Outpoint { txid: txid_arr, vout: 0 },
+                outpoint: Outpoint {
+                    txid: txid_arr,
+                    vout: 0,
+                },
                 input_description: "Valid input".to_string(),
                 unlocking_script: None,
                 unlocking_script_length: Some(107), // P2PKH unlocking script length
@@ -2542,10 +2607,14 @@ mod tests {
         storage.make_available().await.unwrap();
 
         // Create a user
-        let (user, _) = storage.find_or_insert_user("02user_identity_key").await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
 
         // Create a simple action with one output
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         let args = bsv_sdk::wallet::CreateActionArgs {
             description: "Test transaction".to_string(),
@@ -2579,12 +2648,16 @@ mod tests {
         storage.migrate("test-wallet", "02test_key").await.unwrap();
         storage.make_available().await.unwrap();
 
-        let (user, _) = storage.find_or_insert_user("02user_identity_key").await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
 
         // First, seed the wallet with some change
         seed_change_output(&storage, user.user_id, 100_000).await;
 
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         let args = bsv_sdk::wallet::CreateActionArgs {
             description: "Test transaction with labels".to_string(),
@@ -2604,7 +2677,9 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args)
+            .await
+            .unwrap();
 
         assert!(!result.reference.is_empty());
         assert_eq!(result.version, 1);
@@ -2619,11 +2694,15 @@ mod tests {
         storage.migrate("test-wallet", "02test_key").await.unwrap();
         storage.make_available().await.unwrap();
 
-        let (user, _) = storage.find_or_insert_user("02user_identity_key").await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
 
         seed_change_output(&storage, user.user_id, 100_000).await;
 
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         let args = bsv_sdk::wallet::CreateActionArgs {
             description: "Test transaction with basket and tags".to_string(),
@@ -2643,14 +2722,22 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args)
+            .await
+            .unwrap();
 
         // Verify the output has the basket and tags
         assert!(!result.outputs.is_empty());
         let first_output = &result.outputs[0];
         assert_eq!(first_output.basket, Some("payments".to_string()));
-        assert_eq!(first_output.tags, vec!["tag1".to_string(), "tag2".to_string()]);
-        assert_eq!(first_output.custom_instructions, Some("{\"type\":\"custom\"}".to_string()));
+        assert_eq!(
+            first_output.tags,
+            vec!["tag1".to_string(), "tag2".to_string()]
+        );
+        assert_eq!(
+            first_output.custom_instructions,
+            Some("{\"type\":\"custom\"}".to_string())
+        );
     }
 
     #[tokio::test]
@@ -2659,11 +2746,15 @@ mod tests {
         storage.migrate("test-wallet", "02test_key").await.unwrap();
         storage.make_available().await.unwrap();
 
-        let (user, _) = storage.find_or_insert_user("02user_identity_key").await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
 
         seed_change_output(&storage, user.user_id, 100_000).await;
 
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         let args = bsv_sdk::wallet::CreateActionArgs {
             description: "Test noSend transaction".to_string(),
@@ -2693,7 +2784,9 @@ mod tests {
             }),
         };
 
-        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args)
+            .await
+            .unwrap();
 
         // For noSend, we should get change vouts
         assert!(result.no_send_change_output_vouts.is_some());
@@ -2705,11 +2798,15 @@ mod tests {
         storage.migrate("test-wallet", "02test_key").await.unwrap();
         storage.make_available().await.unwrap();
 
-        let (user, _) = storage.find_or_insert_user("02user_identity_key").await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
 
         seed_change_output(&storage, user.user_id, 200_000).await;
 
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         let args = bsv_sdk::wallet::CreateActionArgs {
             description: "Multiple outputs transaction".to_string(),
@@ -2747,7 +2844,9 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args)
+            .await
+            .unwrap();
 
         // Should have at least 3 outputs (user outputs) + change
         assert!(result.outputs.len() >= 3);
@@ -2764,11 +2863,15 @@ mod tests {
         storage.migrate("test-wallet", "02test_key").await.unwrap();
         storage.make_available().await.unwrap();
 
-        let (user, _) = storage.find_or_insert_user("02user_identity_key").await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
 
         seed_change_output(&storage, user.user_id, 100_000).await;
 
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         let args = bsv_sdk::wallet::CreateActionArgs {
             description: "Test with version/locktime".to_string(),
@@ -2788,7 +2891,9 @@ mod tests {
             options: None,
         };
 
-        let result = create_action_internal(&storage, None, user.user_id, args).await.unwrap();
+        let result = create_action_internal(&storage, None, user.user_id, args)
+            .await
+            .unwrap();
 
         assert_eq!(result.version, 2);
         assert_eq!(result.lock_time, 500000);
@@ -2797,7 +2902,10 @@ mod tests {
     // Helper function to seed a change output for testing
     async fn seed_change_output(storage: &StorageSqlx, user_id: i64, satoshis: i64) {
         let now = Utc::now();
-        let basket = storage.find_or_create_default_basket(user_id).await.unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user_id)
+            .await
+            .unwrap();
 
         // Create a fake completed transaction
         let tx_result = sqlx::query(
@@ -2818,7 +2926,8 @@ mod tests {
         let transaction_id = tx_result.last_insert_rowid();
 
         // Create a change output
-        let locking_script = hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
         sqlx::query(
             r#"
@@ -2844,12 +2953,7 @@ mod tests {
     }
 
     // Helper function to seed a proven transaction with merkle proof
-    async fn seed_proven_tx(
-        storage: &StorageSqlx,
-        txid: &str,
-        raw_tx: &[u8],
-        merkle_path: &[u8],
-    ) {
+    async fn seed_proven_tx(storage: &StorageSqlx, txid: &str, raw_tx: &[u8], merkle_path: &[u8]) {
         let now = Utc::now();
 
         sqlx::query(
@@ -2878,14 +2982,15 @@ mod tests {
         let extended_inputs: Vec<ExtendedInput> = vec![];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
-            None,           // chain_tracker - skip verification for this test
+            &mut *conn,
+            None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
-            None,           // user_input_beef
-            &[],            // known_txids
-            false,          // return_txid_only
+            None,  // user_input_beef
+            &[],   // known_txids
+            false, // return_txid_only
         )
         .await
         .unwrap();
@@ -2925,14 +3030,15 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
-            None,           // chain_tracker - skip verification for this test
+            &mut *conn,
+            None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
-            None,           // user_input_beef
-            &[],            // known_txids
-            false,          // return_txid_only
+            None,  // user_input_beef
+            &[],   // known_txids
+            false, // return_txid_only
         )
         .await
         .unwrap();
@@ -2989,9 +3095,18 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        let result = build_input_beef(&storage, None, &extended_inputs, &change_inputs, None, &[], false)
-            .await
-            .unwrap();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = build_input_beef(
+            &mut *conn,
+            None,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
 
         // Should return Some BEEF data (even without proof)
         assert!(result.is_some());
@@ -3051,9 +3166,18 @@ mod tests {
             sender_identity_key: None,
         }];
 
-        let result = build_input_beef(&storage, None, &extended_inputs, &change_inputs, None, &[], false)
-            .await
-            .unwrap();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = build_input_beef(
+            &mut *conn,
+            None,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
 
         // Should return Some BEEF data
         assert!(result.is_some());
@@ -3074,7 +3198,8 @@ mod tests {
 
         seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
 
-        let result = get_tx_with_proof(&storage, txid).await.unwrap();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = get_tx_with_proof(&mut *conn, txid).await.unwrap();
 
         assert!(result.is_some());
         let tx_data = result.unwrap();
@@ -3109,7 +3234,8 @@ mod tests {
         .await
         .unwrap();
 
-        let result = get_tx_with_proof(&storage, txid).await.unwrap();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = get_tx_with_proof(&mut *conn, txid).await.unwrap();
 
         assert!(result.is_some());
         let tx_data = result.unwrap();
@@ -3123,7 +3249,10 @@ mod tests {
         storage.migrate("test", "000000").await.unwrap();
         storage.make_available().await.unwrap();
 
-        let result = get_tx_with_proof(&storage, "nonexistent_txid").await.unwrap();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = get_tx_with_proof(&mut *conn, "nonexistent_txid")
+            .await
+            .unwrap();
 
         assert!(result.is_none());
     }
@@ -3146,8 +3275,10 @@ mod tests {
         let mut raw_tx = vec![];
         raw_tx.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
         raw_tx.push(0x01); // 1 input
-        // Input txid (will be reversed when parsed)
-        let input_txid_bytes = hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap();
+                           // Input txid (will be reversed when parsed)
+        let input_txid_bytes =
+            hex::decode("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
         raw_tx.extend_from_slice(&input_txid_bytes);
         raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // vout
         raw_tx.push(0x00); // empty script
@@ -3157,7 +3288,10 @@ mod tests {
 
         let txids = parse_input_txids(&raw_tx).unwrap();
         assert_eq!(txids.len(), 1);
-        assert_eq!(txids[0], "1111111111111111111111111111111111111111111111111111111111111111");
+        assert_eq!(
+            txids[0],
+            "1111111111111111111111111111111111111111111111111111111111111111"
+        );
     }
 
     #[test]
@@ -3168,14 +3302,18 @@ mod tests {
         raw_tx.push(0x02); // 2 inputs
 
         // First input
-        let input1_txid = hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap();
+        let input1_txid =
+            hex::decode("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
         raw_tx.extend_from_slice(&input1_txid);
         raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // vout
         raw_tx.push(0x00); // empty script
         raw_tx.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
 
         // Second input
-        let input2_txid = hex::decode("2222222222222222222222222222222222222222222222222222222222222222").unwrap();
+        let input2_txid =
+            hex::decode("2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap();
         raw_tx.extend_from_slice(&input2_txid);
         raw_tx.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // vout 1
         raw_tx.push(0x00); // empty script
@@ -3186,8 +3324,14 @@ mod tests {
 
         let txids = parse_input_txids(&raw_tx).unwrap();
         assert_eq!(txids.len(), 2);
-        assert_eq!(txids[0], "1111111111111111111111111111111111111111111111111111111111111111");
-        assert_eq!(txids[1], "2222222222222222222222222222222222222222222222222222222222222222");
+        assert_eq!(
+            txids[0],
+            "1111111111111111111111111111111111111111111111111111111111111111"
+        );
+        assert_eq!(
+            txids[1],
+            "2222222222222222222222222222222222222222222222222222222222222222"
+        );
     }
 
     #[test]
@@ -3239,7 +3383,7 @@ mod tests {
         let mut raw_tx2 = vec![];
         raw_tx2.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
         raw_tx2.push(0x01); // 1 input
-        // Input txid (txid1 in little-endian bytes)
+                            // Input txid (txid1 in little-endian bytes)
         let txid1_bytes = hex::decode(txid1).unwrap();
         let mut txid1_le = txid1_bytes.clone();
         txid1_le.reverse(); // Convert to little-endian
@@ -3281,9 +3425,18 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        let result = build_input_beef(&storage, None, &extended_inputs, &change_inputs, None, &[], false)
-            .await
-            .unwrap();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = build_input_beef(
+            &mut *conn,
+            None,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
 
         // Should return Some BEEF data containing both transactions
         assert!(result.is_some());
@@ -3317,9 +3470,10 @@ mod tests {
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
         // With return_txid_only = true, should return None regardless of inputs
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
-            None,           // chain_tracker - skip verification
+            &mut *conn,
+            None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
             None,
@@ -3361,9 +3515,10 @@ mod tests {
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
         // Build BEEF with the txid marked as known
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
-            None,           // chain_tracker - skip verification
+            &mut *conn,
+            None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
             None,
@@ -3380,7 +3535,10 @@ mod tests {
         // Parse the BEEF and verify the tx is txid-only
         let beef = Beef::from_binary(&beef_bytes).unwrap();
         let beef_tx = beef.find_txid(txid).unwrap();
-        assert!(beef_tx.is_txid_only(), "Known txid should be converted to txid-only");
+        assert!(
+            beef_tx.is_txid_only(),
+            "Known txid should be converted to txid-only"
+        );
     }
 
     #[tokio::test]
@@ -3415,9 +3573,10 @@ mod tests {
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
         // Build BEEF with user-provided inputBEEF
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
-            None,           // chain_tracker - skip verification
+            &mut *conn,
+            None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
             Some(&user_beef_bytes), // User provides BEEF for external input
@@ -3461,9 +3620,10 @@ mod tests {
         // Provide invalid BEEF bytes
         let invalid_beef = vec![0x00, 0x01, 0x02, 0x03];
 
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
-            None,           // chain_tracker - skip verification
+            &mut *conn,
+            None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
             Some(&invalid_beef),
@@ -3536,8 +3696,9 @@ mod tests {
         // This tests that the verification code path completes successfully
         let tracker = AlwaysValidChainTracker::new(100000);
 
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
+            &mut *conn,
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -3594,8 +3755,9 @@ mod tests {
         // so verification will be skipped entirely
         let tracker = MockChainTracker::new(100000);
 
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
+            &mut *conn,
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -3640,8 +3802,9 @@ mod tests {
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
         // With chain_tracker = None, verification is skipped
+        let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &storage,
+            &mut *conn,
             None,
             &extended_inputs,
             &change_inputs,
@@ -3658,4 +3821,3 @@ mod tests {
         assert!(beef_bytes.len() > 4);
     }
 }
-

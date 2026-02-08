@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use bsv_sdk::transaction::{ChainTracker, Transaction};
 use crate::{Error, Result};
+use bsv_sdk::transaction::{ChainTracker, Transaction};
 
 use super::collection::ServiceCallHistory;
 
@@ -164,14 +164,22 @@ pub trait WalletServices: Send + Sync {
     /// # Arguments
     /// * `txids` - List of transaction IDs to check
     /// * `use_next` - If true, skip to next service before starting service requests cycle
-    async fn get_status_for_txids(&self, txids: &[String], use_next: bool) -> Result<GetStatusForTxidsResult>;
+    async fn get_status_for_txids(
+        &self,
+        txids: &[String],
+        use_next: bool,
+    ) -> Result<GetStatusForTxidsResult>;
 
     /// Get transaction history for a script hash.
     ///
     /// # Arguments
     /// * `hash` - Script hash to get history for
     /// * `use_next` - If true, skip to next service before starting service requests cycle
-    async fn get_script_hash_history(&self, hash: &str, use_next: bool) -> Result<GetScriptHashHistoryResult>;
+    async fn get_script_hash_history(
+        &self,
+        hash: &str,
+        use_next: bool,
+    ) -> Result<GetScriptHashHistoryResult>;
 
     /// Get BSV/USD exchange rate.
     async fn get_bsv_exchange_rate(&self) -> Result<f64>;
@@ -415,9 +423,7 @@ mod serde_bytes_opt {
     {
         let opt: Option<String> = Option::deserialize(deserializer)?;
         match opt {
-            Some(s) => hex::decode(&s)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
+            Some(s) => hex::decode(&s).map(Some).map_err(serde::de::Error::custom),
             None => Ok(None),
         }
     }

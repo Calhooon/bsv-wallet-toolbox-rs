@@ -7,10 +7,13 @@ use async_trait::async_trait;
 use std::sync::{Arc as StdArc, RwLock};
 
 use crate::chaintracks::Chain;
-use bsv_sdk::transaction::ChainTracker;
+use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
-    providers::{Arc, Bitails, BitailsConfig, BlockHeaderService, BhsConfig, WhatsOnChain, WhatsOnChainConfig},
+    providers::{
+        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, WhatsOnChain,
+        WhatsOnChainConfig,
+    },
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
@@ -19,8 +22,8 @@ use crate::services::{
     },
     ServicesOptions,
 };
-use crate::lock_utils::{lock_read, lock_write};
 use crate::{Error, Result};
+use bsv_sdk::transaction::ChainTracker;
 
 /// Post BEEF mode for handling multiple broadcast services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -330,7 +333,10 @@ impl Services {
 
         // getRawTx: WoC, Bitails
         let mut raw_tx_services = ServiceCollection::new("getRawTx");
-        raw_tx_services.add("WhatsOnChain", StdArc::clone(&whatsonchain) as RawTxProvider);
+        raw_tx_services.add(
+            "WhatsOnChain",
+            StdArc::clone(&whatsonchain) as RawTxProvider,
+        );
         raw_tx_services.add("Bitails", StdArc::clone(&bitails) as RawTxProvider);
 
         // postBeef: GorillaPool (if available), TAAL, Bitails, WoC
@@ -340,7 +346,10 @@ impl Services {
         }
         post_beef_services.add("TaalArcBeef", StdArc::clone(&arc_taal) as PostBeefProvider);
         post_beef_services.add("Bitails", StdArc::clone(&bitails) as PostBeefProvider);
-        post_beef_services.add("WhatsOnChain", StdArc::clone(&whatsonchain) as PostBeefProvider);
+        post_beef_services.add(
+            "WhatsOnChain",
+            StdArc::clone(&whatsonchain) as PostBeefProvider,
+        );
 
         // getUtxoStatus: WoC
         let mut utxo_status_services = ServiceCollection::new("getUtxoStatus");
@@ -363,8 +372,10 @@ impl Services {
             "WhatsOnChain",
             StdArc::clone(&whatsonchain) as ScriptHashHistoryProvider,
         );
-        script_hash_history_services
-            .add("Bitails", StdArc::clone(&bitails) as ScriptHashHistoryProvider);
+        script_hash_history_services.add(
+            "Bitails",
+            StdArc::clone(&bitails) as ScriptHashHistoryProvider,
+        );
 
         let fiat_rates = options.fiat_exchange_rates.clone();
 
@@ -403,28 +414,18 @@ impl Services {
         Ok(ServicesCallHistory {
             version: 2,
             get_merkle_path: Some(
-                lock_write(&self.get_merkle_path_services)?
-                    .get_call_history(reset),
+                lock_write(&self.get_merkle_path_services)?.get_call_history(reset),
             ),
-            get_raw_tx: Some(
-                lock_write(&self.get_raw_tx_services)?
-                    .get_call_history(reset),
-            ),
-            post_beef: Some(
-                lock_write(&self.post_beef_services)?
-                    .get_call_history(reset),
-            ),
+            get_raw_tx: Some(lock_write(&self.get_raw_tx_services)?.get_call_history(reset)),
+            post_beef: Some(lock_write(&self.post_beef_services)?.get_call_history(reset)),
             get_utxo_status: Some(
-                lock_write(&self.get_utxo_status_services)?
-                    .get_call_history(reset),
+                lock_write(&self.get_utxo_status_services)?.get_call_history(reset),
             ),
             get_status_for_txids: Some(
-                lock_write(&self.get_status_for_txids_services)?
-                    .get_call_history(reset),
+                lock_write(&self.get_status_for_txids_services)?.get_call_history(reset),
             ),
             get_script_hash_history: Some(
-                lock_write(&self.get_script_hash_history_services)?
-                    .get_call_history(reset),
+                lock_write(&self.get_script_hash_history_services)?.get_call_history(reset),
             ),
         })
     }
@@ -565,9 +566,10 @@ impl WalletServices for Services {
         // Try Bitails
         match self.bitails.current_height().await {
             Ok(h) => Ok(h),
-            Err(e) => Err(Error::ServiceError(
-                format!("All height services failed. Last error: {}", e)
-            )),
+            Err(e) => Err(Error::ServiceError(format!(
+                "All height services failed. Last error: {}",
+                e
+            ))),
         }
     }
 
@@ -617,20 +619,17 @@ impl WalletServices for Services {
             match service.get_raw_tx(txid).await {
                 Ok(result) if result.raw_tx.is_some() => {
                     call.mark_success(None);
-                    lock_write(&self.get_raw_tx_services)?
-                        .add_call_success(&provider_name, call);
+                    lock_write(&self.get_raw_tx_services)?.add_call_success(&provider_name, call);
                     return Ok(result);
                 }
                 Ok(result) => {
                     call.mark_failure(Some("not found".to_string()));
-                    lock_write(&self.get_raw_tx_services)?
-                        .add_call_failure(&provider_name, call);
+                    lock_write(&self.get_raw_tx_services)?.add_call_failure(&provider_name, call);
                     last_error = result.error.clone();
                 }
                 Err(e) => {
                     call.mark_error(&e.to_string(), "ERROR");
-                    lock_write(&self.get_raw_tx_services)?
-                        .add_call_error(&provider_name, call);
+                    lock_write(&self.get_raw_tx_services)?.add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
                 }
             }
@@ -759,7 +758,9 @@ impl WalletServices for Services {
 
                 let parallel_results = futures::future::join_all(futures).await;
 
-                for ((_service_name, provider_name, _service), result) in all_services.iter().zip(parallel_results) {
+                for ((_service_name, provider_name, _service), result) in
+                    all_services.iter().zip(parallel_results)
+                {
                     let mut call = ServiceCall::new();
                     match result {
                         Ok(r) => {
@@ -814,7 +815,10 @@ impl WalletServices for Services {
         for retry in 0..2 {
             for (_service_name, provider_name, service) in &all_services {
                 let mut call = ServiceCall::new();
-                match service.get_utxo_status(output, output_format, outpoint).await {
+                match service
+                    .get_utxo_status(output, output_format, outpoint)
+                    .await
+                {
                     Ok(result) if result.status == "success" => {
                         call.mark_success(None);
                         lock_write(&self.get_utxo_status_services)?
@@ -850,7 +854,11 @@ impl WalletServices for Services {
         })
     }
 
-    async fn get_status_for_txids(&self, txids: &[String], use_next: bool) -> Result<GetStatusForTxidsResult> {
+    async fn get_status_for_txids(
+        &self,
+        txids: &[String],
+        use_next: bool,
+    ) -> Result<GetStatusForTxidsResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, StatusForTxidsProvider)> = {
             let mut services = lock_write(&self.get_status_for_txids_services)?;
@@ -899,7 +907,11 @@ impl WalletServices for Services {
         })
     }
 
-    async fn get_script_hash_history(&self, hash: &str, use_next: bool) -> Result<GetScriptHashHistoryResult> {
+    async fn get_script_hash_history(
+        &self,
+        hash: &str,
+        use_next: bool,
+    ) -> Result<GetScriptHashHistoryResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, ScriptHashHistoryProvider)> = {
             let mut services = lock_write(&self.get_script_hash_history_services)?;
@@ -1043,7 +1055,9 @@ impl WalletServices for Services {
                     txid: txid.to_string(),
                     beef: None,
                     has_proof: false,
-                    error: raw_tx_result.error.or_else(|| Some("Transaction not found".to_string())),
+                    error: raw_tx_result
+                        .error
+                        .or_else(|| Some("Transaction not found".to_string())),
                 });
             }
         };
@@ -1174,7 +1188,10 @@ mod tests {
         let rates = FiatExchangeRates::default();
 
         // USD to USD should be 1.0
-        assert_eq!(rates.get_rate(FiatCurrency::USD, Some(FiatCurrency::USD)), Some(1.0));
+        assert_eq!(
+            rates.get_rate(FiatCurrency::USD, Some(FiatCurrency::USD)),
+            Some(1.0)
+        );
 
         // EUR to USD should be the EUR rate
         let eur_rate = rates.get_rate(FiatCurrency::EUR, Some(FiatCurrency::USD));
@@ -1182,8 +1199,12 @@ mod tests {
         assert!(eur_rate.unwrap() > 0.0);
 
         // Inverse relationship
-        let eur_per_usd = rates.get_rate(FiatCurrency::EUR, Some(FiatCurrency::USD)).unwrap();
-        let usd_per_eur = rates.get_rate(FiatCurrency::USD, Some(FiatCurrency::EUR)).unwrap();
+        let eur_per_usd = rates
+            .get_rate(FiatCurrency::EUR, Some(FiatCurrency::USD))
+            .unwrap();
+        let usd_per_eur = rates
+            .get_rate(FiatCurrency::USD, Some(FiatCurrency::EUR))
+            .unwrap();
         assert!((eur_per_usd * usd_per_eur - 1.0).abs() < 0.001);
     }
 }

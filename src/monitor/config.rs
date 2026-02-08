@@ -41,8 +41,14 @@ impl std::fmt::Debug for MonitorOptions {
         f.debug_struct("MonitorOptions")
             .field("tasks", &self.tasks)
             .field("fail_abandoned_timeout", &self.fail_abandoned_timeout)
-            .field("on_tx_broadcasted", &self.on_tx_broadcasted.as_ref().map(|_| "Some(<callback>)"))
-            .field("on_tx_proven", &self.on_tx_proven.as_ref().map(|_| "Some(<callback>)"))
+            .field(
+                "on_tx_broadcasted",
+                &self.on_tx_broadcasted.as_ref().map(|_| "Some(<callback>)"),
+            )
+            .field(
+                "on_tx_proven",
+                &self.on_tx_proven.as_ref().map(|_| "Some(<callback>)"),
+            )
             .finish()
     }
 }
@@ -217,10 +223,16 @@ mod tests {
         assert_eq!(opts.tasks.new_header.interval, Duration::from_secs(60));
         assert!(!opts.tasks.new_header.start_immediately);
         assert_eq!(opts.tasks.reorg.interval, Duration::from_secs(60));
-        assert_eq!(opts.tasks.check_no_sends.interval, Duration::from_secs(86400));
+        assert_eq!(
+            opts.tasks.check_no_sends.interval,
+            Duration::from_secs(86400)
+        );
         assert_eq!(opts.tasks.review_status.interval, Duration::from_secs(900));
         assert_eq!(opts.tasks.purge.interval, Duration::from_secs(3600));
-        assert_eq!(opts.tasks.monitor_call_history.interval, Duration::from_secs(720));
+        assert_eq!(
+            opts.tasks.monitor_call_history.interval,
+            Duration::from_secs(720)
+        );
         assert_eq!(opts.tasks.sync_when_idle.interval, Duration::from_secs(60));
     }
 

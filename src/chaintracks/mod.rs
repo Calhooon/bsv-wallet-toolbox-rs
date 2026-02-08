@@ -29,17 +29,17 @@
 //! println!("Chain tip: {} at height {}", tip.hash, tip.height);
 //! ```
 
-mod types;
-mod traits;
-mod storage;
-mod ingestors;
 #[allow(clippy::module_inception)]
 mod chaintracks;
+mod ingestors;
+mod storage;
+mod traits;
+mod types;
 
-pub use types::*;
-pub use traits::*;
-pub use storage::*;
 pub use chaintracks::*;
+pub use storage::*;
+pub use traits::*;
+pub use types::*;
 
 // Re-export ingestor module for convenience
 pub mod ingestor {
@@ -49,14 +49,8 @@ pub mod ingestor {
 
 // Also re-export commonly used ingestor types at the top level
 pub use ingestors::{
-    BulkCdnIngestor,
-    BulkCdnOptions,
-    BulkWocIngestor,
-    BulkWocOptions,
-    LivePollingIngestor,
-    LivePollingOptions,
-    LiveWebSocketIngestor,
-    LiveWebSocketOptions,
+    BulkCdnIngestor, BulkCdnOptions, BulkWocIngestor, BulkWocOptions, LivePollingIngestor,
+    LivePollingOptions, LiveWebSocketIngestor, LiveWebSocketOptions,
 };
 
 // Re-export ChainTracker from bsv-sdk for convenience

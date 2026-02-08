@@ -161,9 +161,7 @@ pub async fn verify_txid_merkle_proof(
 mod tests {
     use super::*;
     use bsv_sdk::primitives::{sha256d, to_hex};
-    use bsv_sdk::transaction::{
-        ChainTrackerError, MerklePath, MockChainTracker, Transaction,
-    };
+    use bsv_sdk::transaction::{ChainTrackerError, MerklePath, MockChainTracker, Transaction};
     use std::collections::HashSet;
 
     // A mock ChainTracker that always returns true
@@ -232,9 +230,9 @@ mod tests {
         0x01, 0x00, 0x00, 0x00, // version
         0x01, // input count
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // prev txid (32 zero bytes)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0xff, 0xff, 0xff, 0xff, // vout (0xFFFFFFFF for coinbase)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff,
+        0xff, // vout (0xFFFFFFFF for coinbase)
         0x00, // script length
         0xff, 0xff, 0xff, 0xff, // sequence
         0x01, // output count
@@ -280,13 +278,9 @@ mod tests {
         let known = HashSet::new();
 
         // Even with an invalid tracker, Disabled mode should pass
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Disabled,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Disabled, &known)
+                .await;
 
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -298,13 +292,9 @@ mod tests {
         let tracker = AlwaysValidChainTracker;
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         // Empty BEEF has no proofs, returns Ok(false)
         assert!(result.is_ok());
@@ -343,13 +333,9 @@ mod tests {
         tracker.add_root(height, merkle_root.clone());
 
         let known = HashSet::new();
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
         assert!(result.unwrap(), "Expected true for valid BEEF");
@@ -371,13 +357,9 @@ mod tests {
         tracker.add_root(height, "ff".repeat(32));
 
         let known = HashSet::new();
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         // Should fail because the merkle root doesn't match
         assert!(result.is_err(), "Expected error for invalid merkle root");
@@ -415,13 +397,9 @@ mod tests {
         // verify_beef_merkle_proofs returns Ok(false) because bumps is empty.
         let tracker = AlwaysValidChainTracker;
         let known = HashSet::new();
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         // No BUMPs => returns Ok(false)
         assert!(result.is_ok());
@@ -434,13 +412,9 @@ mod tests {
 
         // Now we have a BUMP but the structure is invalid (the tx references
         // missing inputs and has no proof itself)
-        let result2 = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result2 =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         // Should fail because BEEF structure is invalid
         assert!(
@@ -459,13 +433,9 @@ mod tests {
 
         let tracker = AlwaysValidChainTracker;
         let known = HashSet::new();
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         // No BUMPs => returns Ok(false) indicating nothing to verify
         assert!(result.is_ok());
@@ -492,15 +462,15 @@ mod tests {
         tracker.add_root(height, merkle_root);
 
         let known = HashSet::new();
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
-        assert!(result.is_ok(), "Expected Ok for partial BEEF, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Expected Ok for partial BEEF, got: {:?}",
+            result
+        );
         assert!(result.unwrap(), "Expected true for valid partial BEEF");
     }
 
@@ -516,10 +486,7 @@ mod tests {
         let truncated = &binary[..binary.len() / 2];
 
         let parse_result = Beef::from_binary(truncated);
-        assert!(
-            parse_result.is_err(),
-            "Truncated BEEF should fail to parse"
-        );
+        assert!(parse_result.is_err(), "Truncated BEEF should fail to parse");
     }
 
     /// Test 7: BEEF with trailing garbage bytes.
@@ -554,7 +521,11 @@ mod tests {
                 .await;
 
                 // The core data is valid, so verification should pass
-                assert!(result.is_ok(), "Parsed BEEF should still verify: {:?}", result);
+                assert!(
+                    result.is_ok(),
+                    "Parsed BEEF should still verify: {:?}",
+                    result
+                );
             }
             Err(_) => {
                 // Parser rejected extra bytes - this is also acceptable behavior
@@ -593,13 +564,9 @@ mod tests {
         tracker.add_root(height, merkle_root);
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
         assert!(result.unwrap(), "Expected true for de-duplicated BEEF");
@@ -618,13 +585,9 @@ mod tests {
         tracker.add_root(height, merkle_root);
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
         assert!(result.unwrap(), "Expected true for single-tx BEEF");
@@ -677,15 +640,15 @@ mod tests {
         tracker.add_root(height, merkle_root);
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
-        assert!(result.is_ok(), "Expected Ok for multi-tx BEEF, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Expected Ok for multi-tx BEEF, got: {:?}",
+            result
+        );
         assert!(result.unwrap(), "Expected true for valid multi-tx BEEF");
     }
 
@@ -743,13 +706,9 @@ mod tests {
         let tracker = ErrorChainTracker;
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Disabled,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Disabled, &known)
+                .await;
 
         assert!(result.is_ok(), "Disabled mode should always succeed");
         assert!(
@@ -793,18 +752,11 @@ mod tests {
         let tracker = ErrorChainTracker;
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
-        assert!(
-            result.is_err(),
-            "Should propagate chain tracker errors"
-        );
+        assert!(result.is_err(), "Should propagate chain tracker errors");
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("ChainTracker verification failed"),
@@ -823,18 +775,11 @@ mod tests {
         let tracker = AlwaysInvalidChainTracker;
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
-        assert!(
-            result.is_err(),
-            "Should fail with always-invalid tracker"
-        );
+        assert!(result.is_err(), "Should fail with always-invalid tracker");
     }
 
     /// Verify BEEF serialization roundtrip preserves verification results.
@@ -852,22 +797,14 @@ mod tests {
         let known = HashSet::new();
 
         // Both original and roundtripped should verify
-        let result1 = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result1 =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
         assert!(result1.is_ok() && result1.unwrap());
 
-        let result2 = verify_beef_merkle_proofs(
-            &mut beef2,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result2 =
+            verify_beef_merkle_proofs(&mut beef2, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
         assert!(
             result2.is_ok() && result2.unwrap(),
             "Roundtripped BEEF should also verify"
@@ -935,13 +872,9 @@ mod tests {
         tracker.add_root(height2, root2);
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
         assert!(result.unwrap(), "Multi-bump BEEF should verify");
@@ -978,13 +911,9 @@ mod tests {
         // height2 root is missing from the tracker
 
         let known = HashSet::new();
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         assert!(
             result.is_err(),
@@ -1026,18 +955,14 @@ mod tests {
         // Create a coinbase-style merkle proof for this txid
         let bump = MerklePath::from_coinbase_txid(&txid, height);
         let merkle_root = bump.compute_root(Some(&txid)).unwrap();
-        assert_eq!(
-            merkle_root, txid,
-            "For coinbase-only block, root == txid"
-        );
+        assert_eq!(merkle_root, txid, "For coinbase-only block, root == txid");
 
         let mut beef = Beef::new();
         let bump_idx = beef.merge_bump(bump);
 
         // We need to add the tx's input too since it's not proven
         // The input txid is c997a5e5... which we add as txid-only
-        let input_txid =
-            "0437cd7f8525ceed2324359c2d0ba26006d92d856a9c20fa0241106ee5a597c9";
+        let input_txid = "0437cd7f8525ceed2324359c2d0ba26006d92d856a9c20fa0241106ee5a597c9";
         beef.merge_txid_only(input_txid.to_string());
         beef.merge_transaction(tx);
 
@@ -1050,13 +975,9 @@ mod tests {
         tracker.add_root(height, merkle_root);
         let known = HashSet::new();
 
-        let result = verify_beef_merkle_proofs(
-            &mut beef,
-            &tracker,
-            BeefVerificationMode::Strict,
-            &known,
-        )
-        .await;
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
 
         assert!(
             result.is_ok(),

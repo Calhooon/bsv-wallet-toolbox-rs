@@ -7,7 +7,9 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -19,9 +21,9 @@ use crate::storage::traits::*;
 
 use bsv_sdk::transaction::ChainTracker;
 use bsv_sdk::wallet::{
-    AbortActionArgs, AbortActionResult, InternalizeActionArgs,
-    ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
-    ListOutputsArgs, ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs,
+    AbortActionArgs, AbortActionResult, InternalizeActionArgs, ListActionsArgs, ListActionsResult,
+    ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,
+    RelinquishCertificateArgs, RelinquishOutputArgs,
 };
 
 /// Default maximum length for output scripts stored in the outputs table.
@@ -71,7 +73,11 @@ impl StorageSqlx {
     /// let storage = StorageSqlx::new("sqlite:wallet.db").await?;
     /// ```
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = SqlitePool::connect(database_url).await?;
+        let options = SqliteConnectOptions::from_str(database_url)
+            .map_err(|e| Error::DatabaseError(e.to_string()))?
+            .pragma("foreign_keys", "ON")
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await?;
 
         Ok(Self {
             pool,
@@ -126,7 +132,7 @@ impl StorageSqlx {
     ///
     /// Creates the database file if it doesn't exist.
     pub async fn open(path: &str) -> Result<Self> {
-        let url = format!("sqlite:{}?mode=rwc", path);
+        let url = format!("sqlite:{}", path);
         Self::new(&url).await
     }
 
@@ -215,11 +221,7 @@ impl StorageSqlx {
     }
 
     /// Insert a new user.
-    pub async fn insert_user(
-        &self,
-        identity_key: &str,
-        active_storage: &str,
-    ) -> Result<TableUser> {
+    pub async fn insert_user(&self, identity_key: &str, active_storage: &str) -> Result<TableUser> {
         let now = Utc::now();
 
         let result = sqlx::query(
@@ -472,7 +474,11 @@ impl StorageSqlx {
                 purpose: row.try_get("purpose").ok(),
                 output_description: row.try_get("output_description").ok(),
                 spent_by: row.try_get("spent_by").ok().flatten(),
-                sequence_number: row.try_get::<Option<i32>, _>("sequence_number").ok().flatten().map(|v| v as u32),
+                sequence_number: row
+                    .try_get::<Option<i32>, _>("sequence_number")
+                    .ok()
+                    .flatten()
+                    .map(|v| v as u32),
                 spending_description: row.try_get("spending_description").ok(),
                 spendable: row.get("spendable"),
                 change: row.get("change"),
@@ -528,7 +534,11 @@ impl StorageSqlx {
                 purpose: row.try_get("purpose").ok(),
                 output_description: row.try_get("output_description").ok(),
                 spent_by: row.try_get("spent_by").ok().flatten(),
-                sequence_number: row.try_get::<Option<i32>, _>("sequence_number").ok().flatten().map(|v| v as u32),
+                sequence_number: row
+                    .try_get::<Option<i32>, _>("sequence_number")
+                    .ok()
+                    .flatten()
+                    .map(|v| v as u32),
                 spending_description: row.try_get("spending_description").ok(),
                 spendable: row.get("spendable"),
                 change: row.get("change"),
@@ -950,7 +960,9 @@ impl StorageSqlx {
 #[async_trait]
 impl WalletStorageReader for StorageSqlx {
     fn is_available(&self) -> bool {
-        lock_read(&self.settings).map(|s| s.is_some()).unwrap_or(false)
+        lock_read(&self.settings)
+            .map(|s| s.is_some())
+            .unwrap_or(false)
     }
 
     fn get_settings(&self) -> &TableSettings {
@@ -973,7 +985,10 @@ impl WalletStorageReader for StorageSqlx {
     fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
         let guard = lock_read(&self.services)?;
         guard.clone().ok_or_else(|| {
-            Error::InvalidOperation("Must setServices first. Services are required for blockchain operations.".to_string())
+            Error::InvalidOperation(
+                "Must setServices first. Services are required for blockchain operations."
+                    .to_string(),
+            )
         })
     }
 
@@ -982,9 +997,7 @@ impl WalletStorageReader for StorageSqlx {
         auth: &AuthId,
         args: FindCertificatesArgs,
     ) -> Result<Vec<TableCertificate>> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
         self.find_certificates_internal(user_id, &args).await
     }
 
@@ -993,16 +1006,12 @@ impl WalletStorageReader for StorageSqlx {
         auth: &AuthId,
         args: FindOutputBasketsArgs,
     ) -> Result<Vec<TableOutputBasket>> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
         self.find_output_baskets_internal(user_id, &args).await
     }
 
     async fn find_outputs(&self, auth: &AuthId, args: FindOutputsArgs) -> Result<Vec<TableOutput>> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
         self.find_outputs_internal(user_id, &args).await
     }
 
@@ -1022,9 +1031,7 @@ impl WalletStorageReader for StorageSqlx {
             ActionStatus, Outpoint, QueryMode, WalletAction, WalletActionInput, WalletActionOutput,
         };
 
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
@@ -1238,7 +1245,7 @@ impl WalletStorageReader for StorageSqlx {
 
             let mut action = WalletAction {
                 txid,
-                satoshis,  // i64, can be negative for outgoing
+                satoshis, // i64, can be negative for outgoing
                 status,
                 is_outgoing: is_outgoing != 0,
                 description,
@@ -1416,9 +1423,7 @@ impl WalletStorageReader for StorageSqlx {
         use bsv_sdk::wallet::CertificateResult;
         use std::collections::HashMap;
 
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
@@ -1569,9 +1574,7 @@ impl WalletStorageReader for StorageSqlx {
     ) -> Result<ListOutputsResult> {
         use bsv_sdk::wallet::{Outpoint, OutputInclude, QueryMode, WalletOutput};
 
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
@@ -1999,9 +2002,7 @@ impl WalletStorageWriter for StorageSqlx {
         auth: &AuthId,
         args: AbortActionArgs,
     ) -> Result<AbortActionResult> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         super::abort_action::abort_action_internal(self, user_id, args).await
     }
@@ -2011,9 +2012,7 @@ impl WalletStorageWriter for StorageSqlx {
         auth: &AuthId,
         args: bsv_sdk::wallet::CreateActionArgs,
     ) -> Result<StorageCreateActionResult> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         // Get the ChainTracker for BEEF verification (if set)
         let chain_tracker = self.get_chain_tracker().await;
@@ -2029,9 +2028,7 @@ impl WalletStorageWriter for StorageSqlx {
         auth: &AuthId,
         args: StorageProcessActionArgs,
     ) -> Result<StorageProcessActionResults> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         super::process_action::process_action_internal(self, user_id, args).await
     }
@@ -2041,9 +2038,7 @@ impl WalletStorageWriter for StorageSqlx {
         auth: &AuthId,
         args: InternalizeActionArgs,
     ) -> Result<StorageInternalizeActionResult> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         super::internalize_action::internalize_action_internal(self, user_id, args).await
     }
@@ -2053,9 +2048,7 @@ impl WalletStorageWriter for StorageSqlx {
         auth: &AuthId,
         certificate: TableCertificate,
     ) -> Result<i64> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         // Verify the certificate belongs to this user
         if certificate.user_id != user_id {
@@ -2093,9 +2086,7 @@ impl WalletStorageWriter for StorageSqlx {
         auth: &AuthId,
         field: TableCertificateField,
     ) -> Result<i64> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         // Verify the field belongs to this user
         if field.user_id != user_id {
@@ -2130,9 +2121,7 @@ impl WalletStorageWriter for StorageSqlx {
         auth: &AuthId,
         args: RelinquishCertificateArgs,
     ) -> Result<i64> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         let now = Utc::now();
 
@@ -2156,9 +2145,7 @@ impl WalletStorageWriter for StorageSqlx {
     }
 
     async fn relinquish_output(&self, auth: &AuthId, args: RelinquishOutputArgs) -> Result<i64> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         let now = Utc::now();
 
@@ -2189,10 +2176,17 @@ impl WalletStorageWriter for StorageSqlx {
         txid: &str,
         success: bool,
     ) -> Result<()> {
-        super::process_action::update_transaction_status_after_broadcast_internal(self, txid, success).await
+        super::process_action::update_transaction_status_after_broadcast_internal(
+            self, txid, success,
+        )
+        .await
     }
 
-    async fn review_status(&self, auth: &AuthId, aged_limit: chrono::DateTime<chrono::Utc>) -> Result<ReviewStatusResult> {
+    async fn review_status(
+        &self,
+        auth: &AuthId,
+        aged_limit: chrono::DateTime<chrono::Utc>,
+    ) -> Result<ReviewStatusResult> {
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
         let mut log = String::new();
 
@@ -2210,7 +2204,10 @@ impl WalletStorageWriter for StorageSqlx {
         .await?;
 
         if !aged_reqs.is_empty() {
-            log.push_str(&format!("Found {} aged proven_tx_reqs needing attention.\n", aged_reqs.len()));
+            log.push_str(&format!(
+                "Found {} aged proven_tx_reqs needing attention.\n",
+                aged_reqs.len()
+            ));
         }
 
         // 2. Find transactions where status doesn't match proven_tx_req status
@@ -2240,17 +2237,31 @@ impl WalletStorageWriter for StorageSqlx {
                     .bind(tx_id)
                     .execute(self.pool())
                     .await?;
-                log.push_str(&format!("Fixed tx {}: unproven -> completed (proof exists).\n", txid));
-            } else if tx_status == "sending" && (req_status == "completed" || req_status == "unmined") {
+                log.push_str(&format!(
+                    "Fixed tx {}: unproven -> completed (proof exists).\n",
+                    txid
+                ));
+            } else if tx_status == "sending"
+                && (req_status == "completed" || req_status == "unmined")
+            {
                 // Transaction was sent; update status
-                let new_status = if req_status == "completed" { "completed" } else { "unproven" };
-                sqlx::query("UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?")
-                    .bind(new_status)
-                    .bind(chrono::Utc::now())
-                    .bind(tx_id)
-                    .execute(self.pool())
-                    .await?;
-                log.push_str(&format!("Fixed tx {}: sending -> {} (req={}).\n", txid, new_status, req_status));
+                let new_status = if req_status == "completed" {
+                    "completed"
+                } else {
+                    "unproven"
+                };
+                sqlx::query(
+                    "UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?",
+                )
+                .bind(new_status)
+                .bind(chrono::Utc::now())
+                .bind(tx_id)
+                .execute(self.pool())
+                .await?;
+                log.push_str(&format!(
+                    "Fixed tx {}: sending -> {} (req={}).\n",
+                    txid, new_status, req_status
+                ));
             }
         }
 
@@ -2282,7 +2293,10 @@ impl WalletStorageWriter for StorageSqlx {
         }
 
         if statuses.is_empty() {
-            return Ok(PurgeResults { count: 0, log: "No statuses selected for purge.\n".to_string() });
+            return Ok(PurgeResults {
+                count: 0,
+                log: "No statuses selected for purge.\n".to_string(),
+            });
         }
 
         // 1. Null out raw_tx on old completed transactions to save space
@@ -2304,7 +2318,10 @@ impl WalletStorageWriter for StorageSqlx {
             .await?;
             let rows = result.rows_affected() as u32;
             if rows > 0 {
-                log.push_str(&format!("Cleared raw_tx from {} completed transactions.\n", rows));
+                log.push_str(&format!(
+                    "Cleared raw_tx from {} completed transactions.\n",
+                    rows
+                ));
                 count += rows;
             }
         }
@@ -2329,12 +2346,10 @@ impl WalletStorageWriter for StorageSqlx {
         }
 
         // 3. Clean up old monitor events
-        let result = sqlx::query(
-            r#"DELETE FROM monitor_events WHERE created_at < ?"#,
-        )
-        .bind(cutoff)
-        .execute(self.pool())
-        .await?;
+        let result = sqlx::query(r#"DELETE FROM monitor_events WHERE created_at < ?"#)
+            .bind(cutoff)
+            .execute(self.pool())
+            .await?;
         let rows = result.rows_affected() as u32;
         if rows > 0 {
             log.push_str(&format!("Deleted {} old monitor events.\n", rows));
@@ -2392,18 +2407,18 @@ impl WalletStorageSync for StorageSqlx {
         storage_identity_key: &str,
         storage_name: &str,
     ) -> Result<(TableSyncState, bool)> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         self.find_or_insert_sync_state_internal(user_id, storage_identity_key, storage_name)
             .await
     }
 
-    async fn set_active(&self, auth: &AuthId, new_active_storage_identity_key: &str) -> Result<i64> {
-        let user_id = auth
-            .user_id
-            .ok_or(Error::AuthenticationRequired)?;
+    async fn set_active(
+        &self,
+        auth: &AuthId,
+        new_active_storage_identity_key: &str,
+    ) -> Result<i64> {
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
         self.update_user_active_storage(user_id, new_active_storage_identity_key)
             .await?;
@@ -2463,8 +2478,8 @@ impl WalletStorageProvider for StorageSqlx {
 // MonitorStorage Implementation
 // =============================================================================
 
-use std::time::Duration;
 use crate::storage::traits::{MonitorStorage, TxSynchronizedStatus};
+use std::time::Duration;
 
 #[async_trait]
 impl MonitorStorage for StorageSqlx {
@@ -2510,11 +2525,20 @@ impl MonitorStorage for StorageSqlx {
                         let now = chrono::Utc::now();
 
                         // Extract block info from header if available
-                        let block_height = proof_result.header.as_ref().map(|h| h.height).unwrap_or(0);
-                        let block_hash = proof_result.header.as_ref().map(|h| h.hash.clone()).unwrap_or_default();
+                        let block_height =
+                            proof_result.header.as_ref().map(|h| h.height).unwrap_or(0);
+                        let block_hash = proof_result
+                            .header
+                            .as_ref()
+                            .map(|h| h.hash.clone())
+                            .unwrap_or_default();
 
                         let merkle_path_bytes = merkle_path.as_bytes();
-                        let merkle_root = proof_result.header.as_ref().map(|h| h.merkle_root.clone()).unwrap_or_default();
+                        let merkle_root = proof_result
+                            .header
+                            .as_ref()
+                            .map(|h| h.merkle_root.clone())
+                            .unwrap_or_default();
 
                         sqlx::query(
                             r#"
@@ -2534,12 +2558,11 @@ impl MonitorStorage for StorageSqlx {
                         .await?;
 
                         // Get the proven_tx_id
-                        let proven_tx_id: Option<(i64,)> = sqlx::query_as(
-                            "SELECT proven_tx_id FROM proven_txs WHERE txid = ?"
-                        )
-                        .bind(txid)
-                        .fetch_optional(self.pool())
-                        .await?;
+                        let proven_tx_id: Option<(i64,)> =
+                            sqlx::query_as("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+                                .bind(txid)
+                                .fetch_optional(self.pool())
+                                .await?;
 
                         // Update proven_tx_req to completed
                         sqlx::query(
@@ -2645,7 +2668,8 @@ impl MonitorStorage for StorageSqlx {
         }
 
         // Filter by min_transaction_age
-        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(min_transaction_age).unwrap_or_default();
+        let cutoff = chrono::Utc::now()
+            - chrono::Duration::from_std(min_transaction_age).unwrap_or_default();
         let reqs: Vec<_> = reqs.into_iter().filter(|r| r.created_at < cutoff).collect();
 
         if reqs.is_empty() {
@@ -2669,7 +2693,7 @@ impl MonitorStorage for StorageSqlx {
                 _ => {
                     // Try to get from transaction table
                     let row: Option<(Vec<u8>,)> = sqlx::query_as(
-                        "SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL"
+                        "SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL",
                     )
                     .bind(&req.txid)
                     .fetch_optional(self.pool())
@@ -2733,9 +2757,9 @@ impl MonitorStorage for StorageSqlx {
                         });
                     } else {
                         // Check for double spend in any provider's results
-                        let is_double_spend = results_vec.iter().any(|r| {
-                            r.txid_results.iter().any(|tr| tr.double_spend)
-                        });
+                        let is_double_spend = results_vec
+                            .iter()
+                            .any(|r| r.txid_results.iter().any(|tr| tr.double_spend));
 
                         if is_double_spend {
                             sqlx::query("UPDATE proven_tx_reqs SET status = 'doubleSpend', updated_at = ? WHERE proven_tx_req_id = ?")
@@ -2829,15 +2853,13 @@ impl MonitorStorage for StorageSqlx {
 
             match self.abort_action(&auth, args).await {
                 Ok(_) => {
-                    tracing::debug!(
-                        "abort_abandoned: aborted transaction {}",
-                        tx_id
-                    );
+                    tracing::debug!("abort_abandoned: aborted transaction {}", tx_id);
                 }
                 Err(e) => {
                     tracing::warn!(
                         "abort_abandoned: failed to abort transaction {}: {}",
-                        tx_id, e
+                        tx_id,
+                        e
                     );
                 }
             }
@@ -2897,7 +2919,7 @@ impl MonitorStorage for StorageSqlx {
                         r#"
                         UPDATE outputs SET spendable = 1, updated_at = ?
                         WHERE txid = ? AND spendable = 0
-                        "#
+                        "#,
                     )
                     .bind(now)
                     .bind(&req.txid)
@@ -2916,7 +2938,10 @@ impl MonitorStorage for StorageSqlx {
                     .execute(self.pool())
                     .await?;
 
-                    tracing::debug!("un_fail: marked {} as invalid (not found on chain)", req.txid);
+                    tracing::debug!(
+                        "un_fail: marked {} as invalid (not found on chain)",
+                        req.txid
+                    );
                 }
             }
         }
@@ -2943,11 +2968,14 @@ impl MonitorStorage for StorageSqlx {
         .await?;
 
         if !rows.is_empty() {
-            log.push_str(&format!("Found {} transactions needing status sync\n", rows.len()));
+            log.push_str(&format!(
+                "Found {} transactions needing status sync\n",
+                rows.len()
+            ));
 
             for (txid, old_status) in &rows {
                 sqlx::query(
-                    "UPDATE transactions SET status = 'completed', updated_at = ? WHERE txid = ?"
+                    "UPDATE transactions SET status = 'completed', updated_at = ? WHERE txid = ?",
                 )
                 .bind(now)
                 .bind(txid)
@@ -2956,11 +2984,15 @@ impl MonitorStorage for StorageSqlx {
 
                 tracing::debug!(
                     "review_status: synced transaction {} from {} to completed",
-                    txid, old_status
+                    txid,
+                    old_status
                 );
             }
 
-            log.push_str(&format!("Updated {} transaction statuses to completed\n", rows.len()));
+            log.push_str(&format!(
+                "Updated {} transaction statuses to completed\n",
+                rows.len()
+            ));
         } else {
             log.push_str("No status mismatches found\n");
         }
@@ -2989,7 +3021,10 @@ impl MonitorStorage for StorageSqlx {
 
             let deleted = result.rows_affected() as u32;
             count += deleted;
-            log.push_str(&format!("Purged {} failed/invalid proven_tx_reqs\n", deleted));
+            log.push_str(&format!(
+                "Purged {} failed/invalid proven_tx_reqs\n",
+                deleted
+            ));
         }
 
         if params.purge_completed {
@@ -3010,7 +3045,10 @@ impl MonitorStorage for StorageSqlx {
 
             let cleaned = result.rows_affected() as u32;
             count += cleaned;
-            log.push_str(&format!("Cleaned raw data from {} completed proven_tx_reqs\n", cleaned));
+            log.push_str(&format!(
+                "Cleaned raw data from {} completed proven_tx_reqs\n",
+                cleaned
+            ));
         }
 
         Ok(PurgeResults { count, log })
@@ -3289,25 +3327,24 @@ impl StorageSqlx {
         };
 
         #[allow(clippy::type_complexity)]
-        let row: Option<(i64, i64, i64, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(base_query)
-            .bind(user_id)
-            .bind(basket_id)
-            .bind(transaction_id)
-            .bind(target_satoshis)
-            .bind(target_satoshis)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row: Option<(i64, i64, i64, Option<String>, Option<Vec<u8>>)> =
+            sqlx::query_as(base_query)
+                .bind(user_id)
+                .bind(basket_id)
+                .bind(transaction_id)
+                .bind(target_satoshis)
+                .bind(target_satoshis)
+                .fetch_optional(&self.pool)
+                .await?;
 
         match row {
             Some((output_id, _satoshis, _vout, _txid, _locking_script)) => {
                 // Mark the output as non-spendable (allocated to this transaction)
-                sqlx::query(
-                    "UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?"
-                )
-                .bind(transaction_id)
-                .bind(output_id)
-                .execute(&self.pool)
-                .await?;
+                sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
+                    .bind(transaction_id)
+                    .bind(output_id)
+                    .execute(&self.pool)
+                    .await?;
 
                 // Fetch the full output record
                 let full_row = sqlx::query("SELECT * FROM outputs WHERE output_id = ?")
@@ -3462,19 +3499,22 @@ impl StorageSqlx {
         .fetch_all(self.pool())
         .await?;
 
-        let fields = rows.iter().map(|row| {
-            let now = chrono::Utc::now();
-            TableCertificateField {
-                certificate_field_id: row.get("certificate_field_id"),
-                certificate_id: row.get("certificate_id"),
-                user_id: row.get("user_id"),
-                field_name: row.get("field_name"),
-                field_value: row.get("field_value"),
-                master_key: row.get("master_key"),
-                created_at: row.try_get("created_at").unwrap_or(now),
-                updated_at: row.try_get("updated_at").unwrap_or(now),
-            }
-        }).collect();
+        let fields = rows
+            .iter()
+            .map(|row| {
+                let now = chrono::Utc::now();
+                TableCertificateField {
+                    certificate_field_id: row.get("certificate_field_id"),
+                    certificate_id: row.get("certificate_id"),
+                    user_id: row.get("user_id"),
+                    field_name: row.get("field_name"),
+                    field_value: row.get("field_value"),
+                    master_key: row.get("master_key"),
+                    created_at: row.try_get("created_at").unwrap_or(now),
+                    updated_at: row.try_get("updated_at").unwrap_or(now),
+                }
+            })
+            .collect();
 
         Ok(fields)
     }
@@ -3482,24 +3522,22 @@ impl StorageSqlx {
     /// Get a raw transaction, preferring proven_tx but falling back to transactions table.
     pub async fn get_proven_or_raw_tx(&self, txid: &str) -> Result<Option<Vec<u8>>> {
         // First try proven_txs
-        let proven: Option<(Vec<u8>,)> = sqlx::query_as(
-            "SELECT raw_tx FROM proven_txs WHERE txid = ? AND raw_tx IS NOT NULL"
-        )
-        .bind(txid)
-        .fetch_optional(self.pool())
-        .await?;
+        let proven: Option<(Vec<u8>,)> =
+            sqlx::query_as("SELECT raw_tx FROM proven_txs WHERE txid = ? AND raw_tx IS NOT NULL")
+                .bind(txid)
+                .fetch_optional(self.pool())
+                .await?;
 
         if let Some((raw_tx,)) = proven {
             return Ok(Some(raw_tx));
         }
 
         // Fall back to transactions table
-        let tx: Option<(Vec<u8>,)> = sqlx::query_as(
-            "SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL"
-        )
-        .bind(txid)
-        .fetch_optional(self.pool())
-        .await?;
+        let tx: Option<(Vec<u8>,)> =
+            sqlx::query_as("SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL")
+                .bind(txid)
+                .fetch_optional(self.pool())
+                .await?;
 
         Ok(tx.map(|(raw_tx,)| raw_tx))
     }
@@ -3517,9 +3555,10 @@ impl StorageSqlx {
         let outputs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM outputs")
             .fetch_one(self.pool())
             .await?;
-        let certificates: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM certificates WHERE is_deleted = 0")
-            .fetch_one(self.pool())
-            .await?;
+        let certificates: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM certificates WHERE is_deleted = 0")
+                .fetch_one(self.pool())
+                .await?;
         let proven_txs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM proven_txs")
             .fetch_one(self.pool())
             .await?;
@@ -3542,8 +3581,9 @@ impl StorageSqlx {
     /// # Arguments
     /// * `older_than` - Remove events older than this duration
     pub async fn cleanup_monitor_events(&self, older_than: std::time::Duration) -> Result<u64> {
-        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(older_than)
-            .map_err(|e| Error::StorageError(format!("Invalid duration: {}", e)))?;
+        let cutoff = chrono::Utc::now()
+            - chrono::Duration::from_std(older_than)
+                .map_err(|e| Error::StorageError(format!("Invalid duration: {}", e)))?;
 
         let result = sqlx::query(
             r#"
@@ -3746,10 +3786,11 @@ mod tests {
         .unwrap();
 
         // Get the transaction ID
-        let tx_row = sqlx::query("SELECT transaction_id FROM transactions WHERE reference = 'test-ref-2'")
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
+        let tx_row =
+            sqlx::query("SELECT transaction_id FROM transactions WHERE reference = 'test-ref-2'")
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         let transaction_id: i64 = tx_row.get("transaction_id");
 
         // Insert a label
@@ -3807,7 +3848,11 @@ mod tests {
 
         assert_eq!(result.total_actions, 1);
         assert_eq!(result.actions.len(), 1);
-        assert!(result.actions[0].labels.as_ref().unwrap().contains(&"test_label".to_string()));
+        assert!(result.actions[0]
+            .labels
+            .as_ref()
+            .unwrap()
+            .contains(&"test_label".to_string()));
 
         // Query with non-existing label
         let result2 = storage
@@ -3970,10 +4015,12 @@ mod tests {
         .unwrap();
 
         // Get certificate ID
-        let cert_row = sqlx::query("SELECT certificate_id FROM certificates WHERE serial_number = 'serial123'")
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
+        let cert_row = sqlx::query(
+            "SELECT certificate_id FROM certificates WHERE serial_number = 'serial123'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
         let cert_id: i64 = cert_row.get("certificate_id");
 
         // Insert certificate fields
@@ -4007,11 +4054,32 @@ mod tests {
 
         assert_eq!(result.total_certificates, 1);
         assert_eq!(result.certificates.len(), 1);
-        assert_eq!(result.certificates[0].certificate.certificate_type, "test_type");
-        assert_eq!(result.certificates[0].certificate.serial_number, "serial123");
-        assert_eq!(result.certificates[0].certificate.fields.get("name").unwrap(), "John Doe");
+        assert_eq!(
+            result.certificates[0].certificate.certificate_type,
+            "test_type"
+        );
+        assert_eq!(
+            result.certificates[0].certificate.serial_number,
+            "serial123"
+        );
+        assert_eq!(
+            result.certificates[0]
+                .certificate
+                .fields
+                .get("name")
+                .unwrap(),
+            "John Doe"
+        );
         assert!(result.certificates[0].keyring.is_some());
-        assert_eq!(result.certificates[0].keyring.as_ref().unwrap().get("name").unwrap(), "master_key_123");
+        assert_eq!(
+            result.certificates[0]
+                .keyring
+                .as_ref()
+                .unwrap()
+                .get("name")
+                .unwrap(),
+            "master_key_123"
+        );
     }
 
     #[tokio::test]
@@ -4086,7 +4154,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result2.total_certificates, 1);
-        assert_eq!(result2.certificates[0].certificate.certificate_type, "type_b");
+        assert_eq!(
+            result2.certificates[0].certificate.certificate_type,
+            "type_b"
+        );
     }
 
     // =============================================================================
@@ -4193,10 +4264,12 @@ mod tests {
         .await
         .unwrap();
 
-        let tx_id: i64 = sqlx::query_scalar("SELECT transaction_id FROM transactions WHERE reference = 'ref123'")
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
+        let tx_id: i64 = sqlx::query_scalar(
+            "SELECT transaction_id FROM transactions WHERE reference = 'ref123'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
 
         // Insert commission
         let locking_script = vec![0x76, 0xa9, 0x14]; // Partial P2PKH
@@ -4208,7 +4281,10 @@ mod tests {
         assert!(commission_id > 0);
 
         // Get unredeemed commissions
-        let commissions = storage.get_unredeemed_commissions(user.user_id).await.unwrap();
+        let commissions = storage
+            .get_unredeemed_commissions(user.user_id)
+            .await
+            .unwrap();
         assert_eq!(commissions.len(), 1);
         assert_eq!(commissions[0].satoshis, 500);
         assert_eq!(commissions[0].key_offset, "offset_123");
@@ -4218,7 +4294,10 @@ mod tests {
         storage.redeem_commission(commission_id).await.unwrap();
 
         // Verify redeemed
-        let commissions = storage.get_unredeemed_commissions(user.user_id).await.unwrap();
+        let commissions = storage
+            .get_unredeemed_commissions(user.user_id)
+            .await
+            .unwrap();
         assert_eq!(commissions.len(), 0);
     }
 
@@ -4237,7 +4316,10 @@ mod tests {
             .await
             .unwrap();
         let event_id2 = storage
-            .log_monitor_event("task_completed", Some(r#"{"task": "sync", "duration_ms": 100}"#))
+            .log_monitor_event(
+                "task_completed",
+                Some(r#"{"task": "sync", "duration_ms": 100}"#),
+            )
             .await
             .unwrap();
         let event_id3 = storage
@@ -4270,10 +4352,7 @@ mod tests {
         storage.make_available().await.unwrap();
 
         // Log an event
-        storage
-            .log_monitor_event("test_event", None)
-            .await
-            .unwrap();
+        storage.log_monitor_event("test_event", None).await.unwrap();
 
         // Cleanup events older than 1 hour (should not delete recent event)
         let deleted = storage
@@ -4305,7 +4384,11 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(Error::InvalidOperation(msg)) => {
-                assert!(msg.contains("setServices"), "Error message should mention setServices: {}", msg);
+                assert!(
+                    msg.contains("setServices"),
+                    "Error message should mention setServices: {}",
+                    msg
+                );
             }
             Err(e) => panic!("Expected InvalidOperation error, got: {}", e),
             Ok(_) => panic!("Expected error, got Ok"),
@@ -4314,7 +4397,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_and_get_services() {
-        use crate::services::{Services, Chain};
+        use crate::services::{Chain, Services};
 
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage
@@ -4341,7 +4424,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_services_replaces_previous() {
-        use crate::services::{Services, Chain};
+        use crate::services::{Chain, Services};
 
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage
@@ -4377,7 +4460,10 @@ mod tests {
     #[tokio::test]
     async fn test_begin_transaction() {
         let storage = StorageSqlx::in_memory().await.unwrap();
-        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
         storage.make_available().await.unwrap();
         let token = storage.begin_transaction().await.unwrap();
         assert!(token.id() > 0);
@@ -4386,7 +4472,10 @@ mod tests {
     #[tokio::test]
     async fn test_commit_transaction() {
         let storage = StorageSqlx::in_memory().await.unwrap();
-        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
         storage.make_available().await.unwrap();
         let token = storage.begin_transaction().await.unwrap();
         let result = storage.commit_transaction(token).await;
@@ -4396,7 +4485,10 @@ mod tests {
     #[tokio::test]
     async fn test_rollback_transaction() {
         let storage = StorageSqlx::in_memory().await.unwrap();
-        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
         storage.make_available().await.unwrap();
         let token = storage.begin_transaction().await.unwrap();
         let result = storage.rollback_transaction(token).await;
@@ -4406,7 +4498,10 @@ mod tests {
     #[tokio::test]
     async fn test_trx_token_uniqueness() {
         let storage = StorageSqlx::in_memory().await.unwrap();
-        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
         storage.make_available().await.unwrap();
         let token1 = storage.begin_transaction().await.unwrap();
         let token2 = storage.begin_transaction().await.unwrap();
@@ -4418,14 +4513,21 @@ mod tests {
     #[tokio::test]
     async fn test_commit_invalid_token() {
         let storage = StorageSqlx::in_memory().await.unwrap();
-        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
         storage.make_available().await.unwrap();
         let bogus_token = TrxToken::new();
         let result = storage.commit_transaction(bogus_token).await;
         assert!(result.is_err());
         match result {
             Err(Error::InvalidOperation(msg)) => {
-                assert!(msg.contains("Unknown transaction token"), "Error should mention unknown token: {}", msg);
+                assert!(
+                    msg.contains("Unknown transaction token"),
+                    "Error should mention unknown token: {}",
+                    msg
+                );
             }
             Err(e) => panic!("Expected InvalidOperation error, got: {}", e),
             Ok(_) => panic!("Expected error for invalid token"),
@@ -4435,14 +4537,21 @@ mod tests {
     #[tokio::test]
     async fn test_rollback_invalid_token() {
         let storage = StorageSqlx::in_memory().await.unwrap();
-        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
         storage.make_available().await.unwrap();
         let bogus_token = TrxToken::new();
         let result = storage.rollback_transaction(bogus_token).await;
         assert!(result.is_err());
         match result {
             Err(Error::InvalidOperation(msg)) => {
-                assert!(msg.contains("Unknown transaction token"), "Error should mention unknown token: {}", msg);
+                assert!(
+                    msg.contains("Unknown transaction token"),
+                    "Error should mention unknown token: {}",
+                    msg
+                );
             }
             Err(e) => panic!("Expected InvalidOperation error, got: {}", e),
             Ok(_) => panic!("Expected error for invalid token"),

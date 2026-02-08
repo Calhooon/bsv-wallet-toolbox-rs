@@ -13,8 +13,7 @@ use std::time::Duration;
 use bsv_wallet_toolbox::services::{
     collection::{AdaptiveTimeoutConfig, ServiceCall, ServiceCollection},
     mock::{MockErrorKind, MockResponse, MockWalletServices},
-    Arc as ArcProvider, ArcConfig,
-    WalletServices,
+    Arc as ArcProvider, ArcConfig, WalletServices,
 };
 use bsv_wallet_toolbox::Error;
 
@@ -34,12 +33,7 @@ async fn test_service_500_error() {
         .create_async()
         .await;
 
-    let arc = ArcProvider::new(
-        server.url(),
-        Some(ArcConfig::default()),
-        Some("testArc"),
-    )
-    .unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let beef = vec![0x01, 0x00, 0x00, 0x00]; // minimal bytes
     let txids = vec!["a".repeat(64)];
@@ -75,12 +69,7 @@ async fn test_service_429_rate_limit() {
         .create_async()
         .await;
 
-    let arc = ArcProvider::new(
-        server.url(),
-        Some(ArcConfig::default()),
-        Some("testArc"),
-    )
-    .unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let beef = vec![0x01, 0x00, 0x00, 0x00];
     let txids = vec!["b".repeat(64)];
@@ -153,12 +142,7 @@ async fn test_json_error_response() {
         .create_async()
         .await;
 
-    let arc = ArcProvider::new(
-        server.url(),
-        Some(ArcConfig::default()),
-        Some("testArc"),
-    )
-    .unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let beef = vec![0x01, 0x00, 0x00, 0x00];
     let txids = vec!["d".repeat(64)];
@@ -209,8 +193,7 @@ async fn test_all_providers_fail_collection() {
             .build(),
     );
 
-    let mut collection =
-        ServiceCollection::<std::sync::Arc<MockWalletServices>>::new("postBeef");
+    let mut collection = ServiceCollection::<std::sync::Arc<MockWalletServices>>::new("postBeef");
     collection.add("provider1", std::sync::Arc::clone(&provider1));
     collection.add("provider2", std::sync::Arc::clone(&provider2));
     collection.add("provider3", std::sync::Arc::clone(&provider3));
@@ -476,12 +459,7 @@ async fn test_partial_truncated_response() {
         .create_async()
         .await;
 
-    let arc = ArcProvider::new(
-        server.url(),
-        Some(ArcConfig::default()),
-        Some("testArc"),
-    )
-    .unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let beef = vec![0x01, 0x00, 0x00, 0x00];
     let txids = vec!["e".repeat(64)];
@@ -495,10 +473,7 @@ async fn test_partial_truncated_response() {
             // If it somehow returns Ok, it should indicate an error in the result
             assert!(
                 beef_result.status == "error"
-                    || beef_result
-                        .txid_results
-                        .iter()
-                        .any(|r| r.service_error),
+                    || beef_result.txid_results.iter().any(|r| r.service_error),
                 "Truncated response should be treated as error"
             );
         }

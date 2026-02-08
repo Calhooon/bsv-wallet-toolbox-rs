@@ -58,10 +58,7 @@ impl OverlayCertificate {
                 serial_number: self.serial_number.clone(),
                 subject: self.subject.clone(),
                 certifier: self.certifier.clone(),
-                revocation_outpoint: self
-                    .revocation_outpoint
-                    .clone()
-                    .unwrap_or_default(),
+                revocation_outpoint: self.revocation_outpoint.clone().unwrap_or_default(),
                 fields: self.fields.clone(),
                 signature: self.signature.clone().unwrap_or_default(),
             },
@@ -101,10 +98,7 @@ pub trait OverlayLookupResolver: Send + Sync {
     ///
     /// Returns certificates where the subject matches the given identity key.
     /// Network errors are handled gracefully (returns empty vec).
-    async fn lookup_by_identity_key(
-        &self,
-        identity_key: &str,
-    ) -> Result<Vec<OverlayCertificate>>;
+    async fn lookup_by_identity_key(&self, identity_key: &str) -> Result<Vec<OverlayCertificate>>;
 
     /// Look up certificates by attributes.
     ///
@@ -121,14 +115,10 @@ pub trait OverlayLookupResolver: Send + Sync {
 // =============================================================================
 
 /// Default SLAP tracker hosts for mainnet.
-const MAINNET_LOOKUP_HOSTS: &[&str] = &[
-    "https://lookup.babbage.systems",
-];
+const MAINNET_LOOKUP_HOSTS: &[&str] = &["https://lookup.babbage.systems"];
 
 /// Default SLAP tracker hosts for testnet.
-const TESTNET_LOOKUP_HOSTS: &[&str] = &[
-    "https://staging-lookup.babbage.systems",
-];
+const TESTNET_LOOKUP_HOSTS: &[&str] = &["https://staging-lookup.babbage.systems"];
 
 /// HTTP-based lookup resolver that queries overlay services.
 ///
@@ -187,10 +177,7 @@ impl HttpLookupResolver {
     }
 
     /// Query the overlay endpoint and parse certificate results from the response.
-    async fn query_overlay(
-        &self,
-        query: serde_json::Value,
-    ) -> Result<Vec<OverlayCertificate>> {
+    async fn query_overlay(&self, query: serde_json::Value) -> Result<Vec<OverlayCertificate>> {
         let body = serde_json::json!({
             "service": "ls_identity",
             "query": query,
@@ -211,11 +198,7 @@ impl HttpLookupResolver {
             {
                 Ok(resp) => resp,
                 Err(e) => {
-                    tracing::debug!(
-                        "Overlay lookup to {} failed (trying next): {}",
-                        endpoint,
-                        e
-                    );
+                    tracing::debug!("Overlay lookup to {} failed (trying next): {}", endpoint, e);
                     continue;
                 }
             };
@@ -265,10 +248,7 @@ impl HttpLookupResolver {
 
 #[async_trait]
 impl OverlayLookupResolver for HttpLookupResolver {
-    async fn lookup_by_identity_key(
-        &self,
-        identity_key: &str,
-    ) -> Result<Vec<OverlayCertificate>> {
+    async fn lookup_by_identity_key(&self, identity_key: &str) -> Result<Vec<OverlayCertificate>> {
         let query = serde_json::json!({
             "identityKey": identity_key,
         });
@@ -331,9 +311,7 @@ fn parse_single_output(beef: &[u8], output_index: u32) -> Result<OverlayCertific
 
     // Parse the first field as JSON certificate
     let cert_json = String::from_utf8(decoded.fields[0].clone())
-        .map_err(|e| {
-            crate::Error::ServiceError(format!("Invalid UTF-8 in certificate: {}", e))
-        })?;
+        .map_err(|e| crate::Error::ServiceError(format!("Invalid UTF-8 in certificate: {}", e)))?;
 
     let cert: OverlayCertificate = serde_json::from_str(&cert_json)?;
     Ok(cert)
@@ -399,8 +377,10 @@ mod tests {
         assert_eq!(resolver.endpoints.len(), 1);
         assert_eq!(resolver.endpoints[0], "https://example.com");
 
-        let resolver_multi =
-            HttpLookupResolver::with_endpoints(vec!["https://a.com".into(), "https://b.com".into()]);
+        let resolver_multi = HttpLookupResolver::with_endpoints(vec![
+            "https://a.com".into(),
+            "https://b.com".into(),
+        ]);
         assert_eq!(resolver_multi.endpoints.len(), 2);
     }
 
@@ -441,10 +421,7 @@ mod tests {
         assert_eq!(identity_cert.certificate.serial_number, "abc123");
         assert_eq!(identity_cert.certificate.subject, "02aabbccdd");
         assert_eq!(identity_cert.certificate.certifier, "03eeff0011");
-        assert_eq!(
-            identity_cert.certificate.revocation_outpoint,
-            "deadbeef.0"
-        );
+        assert_eq!(identity_cert.certificate.revocation_outpoint, "deadbeef.0");
         assert_eq!(identity_cert.certificate.signature, "3045022100...");
         assert!(identity_cert.publicly_revealed_keyring.is_some());
         assert!(identity_cert.decrypted_fields.is_some());
@@ -563,9 +540,7 @@ mod tests {
 
     #[test]
     fn test_parse_overlay_answer_empty_output_list() {
-        let answer = LookupAnswer::OutputList {
-            outputs: vec![],
-        };
+        let answer = LookupAnswer::OutputList { outputs: vec![] };
         let certs = parse_overlay_answer(&answer).unwrap();
         assert!(certs.is_empty());
     }
@@ -623,10 +598,7 @@ mod tests {
             identity_certs[0].certificate.certificate_type,
             "social_cert"
         );
-        assert_eq!(
-            identity_certs[1].certificate.certificate_type,
-            "email_cert"
-        );
+        assert_eq!(identity_certs[1].certificate.certificate_type, "email_cert");
         // Same subject on both
         assert_eq!(identity_certs[0].certificate.subject, "02aabbccdd");
         assert_eq!(identity_certs[1].certificate.subject, "02aabbccdd");
