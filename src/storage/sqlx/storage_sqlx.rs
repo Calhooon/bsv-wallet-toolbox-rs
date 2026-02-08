@@ -3,7 +3,7 @@
 //! This module provides a storage backend using SQLx with SQLite support.
 //! It implements the `WalletStorageProvider` trait hierarchy.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -19,11 +19,15 @@ use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
-use bsv_sdk::transaction::ChainTracker;
+use bsv_sdk::transaction::{Beef, ChainTracker, MerklePath};
 use bsv_sdk::wallet::{
     AbortActionArgs, AbortActionResult, InternalizeActionArgs, ListActionsArgs, ListActionsResult,
     ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,
     RelinquishCertificateArgs, RelinquishOutputArgs,
+};
+
+use super::create_action::{
+    get_stored_beef, get_tx_with_proof, parse_input_txids, MAX_BEEF_RECURSION_DEPTH,
 };
 
 /// Default maximum length for output scripts stored in the outputs table.
@@ -1790,7 +1794,7 @@ impl WalletStorageReader for StorageSqlx {
 
         // Convert rows to WalletOutput
         let mut outputs: Vec<WalletOutput> = Vec::new();
-        let mut _txids_for_beef: Vec<String> = Vec::new();
+        let mut txids_for_beef: Vec<String> = Vec::new();
 
         for row in &output_rows {
             let output_id: i64 = row.get("output_id");
@@ -1818,7 +1822,7 @@ impl WalletStorageReader for StorageSqlx {
                     arr.copy_from_slice(&bytes);
                 }
                 if include_transactions {
-                    _txids_for_beef.push(txid_hex.clone());
+                    txids_for_beef.push(txid_hex.clone());
                 }
                 arr
             } else {
@@ -1872,11 +1876,91 @@ impl WalletStorageReader for StorageSqlx {
         }
 
         // Build BEEF if requested
-        // Note: Full BEEF implementation would require building a proper BEEF structure
-        // For now, we return None and let the caller construct BEEF if needed
-        let beef: Option<Vec<u8>> = if include_transactions {
-            // TODO: Implement BEEF construction
-            None
+        // When include_transactions is true (OutputInclude::EntireTransactions),
+        // we construct a BEEF containing each output's transaction along with
+        // its merkle proof (if proven) and recursively include ancestor
+        // transactions until we reach proven ancestors, matching the pattern
+        // used in create_action's build_input_beef.
+        let beef: Option<Vec<u8>> = if include_transactions && !txids_for_beef.is_empty() {
+            // Deduplicate txids
+            let unique_txids: Vec<String> = {
+                let mut seen = HashSet::new();
+                txids_for_beef
+                    .into_iter()
+                    .filter(|t| seen.insert(t.clone()))
+                    .collect()
+            };
+
+            let mut beef_struct = Beef::new();
+            let mut processed_txids: HashSet<String> = HashSet::new();
+            let mut pending_txids: Vec<String> = unique_txids;
+            let mut depth: usize = 0;
+
+            let mut conn = self.pool.acquire().await?;
+
+            while !pending_txids.is_empty() && depth < MAX_BEEF_RECURSION_DEPTH {
+                let txid = pending_txids.remove(0);
+
+                if processed_txids.contains(&txid) {
+                    continue;
+                }
+                processed_txids.insert(txid.clone());
+
+                // Skip if already in BEEF (from a previously merged stored BEEF)
+                if beef_struct.find_txid(&txid).is_some() {
+                    continue;
+                }
+
+                // Try to get a stored BEEF and merge it directly (most efficient path)
+                if let Some(stored_beef) = get_stored_beef(&mut conn, &txid).await? {
+                    beef_struct.merge_beef(&stored_beef);
+                    for beef_tx in &stored_beef.txs {
+                        processed_txids.insert(beef_tx.txid());
+                    }
+                    depth += 1;
+                    continue;
+                }
+
+                // Fall back to individual transaction lookup
+                if let Some(tx_data) = get_tx_with_proof(&mut conn, &txid).await? {
+                    let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {
+                        match MerklePath::from_binary(merkle_path_bytes) {
+                            Ok(merkle_path) => Some(beef_struct.merge_bump(merkle_path)),
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    beef_struct.merge_raw_tx(tx_data.raw_tx.clone(), bump_index);
+
+                    // If no merkle proof, recurse to ancestors so the BEEF
+                    // chain reaches proven transactions
+                    if bump_index.is_none() {
+                        if let Ok(input_txids) = parse_input_txids(&tx_data.raw_tx) {
+                            for input_txid in input_txids {
+                                if !processed_txids.contains(&input_txid)
+                                    && !pending_txids.contains(&input_txid)
+                                {
+                                    pending_txids.push(input_txid);
+                                }
+                            }
+                        }
+                    }
+                }
+                // If tx not found in any table, skip silently (it may be a
+                // coinbase or an external ancestor we don't have)
+
+                depth += 1;
+            }
+
+            let beef_bytes = beef_struct.to_binary();
+            // Only return BEEF if it contains data beyond the 4-byte header
+            if beef_bytes.len() > 4 {
+                Some(beef_bytes)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -3090,6 +3174,48 @@ impl MonitorStorage for StorageSqlx {
                 locks.remove(task_name);
             }
         }
+        Ok(())
+    }
+
+    async fn update_proven_tx_req_status(
+        &self,
+        proven_tx_req_id: i64,
+        new_status: ProvenTxReqStatus,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+        let status_str = match new_status {
+            ProvenTxReqStatus::Unmined => "unmined",
+            ProvenTxReqStatus::Completed => "completed",
+            ProvenTxReqStatus::Failed => "failed",
+            ProvenTxReqStatus::Invalid => "invalid",
+            ProvenTxReqStatus::Pending => "pending",
+            ProvenTxReqStatus::InProgress => "inProgress",
+            ProvenTxReqStatus::NotFound => "notFound",
+            ProvenTxReqStatus::Unsent => "unsent",
+            ProvenTxReqStatus::Sending => "sending",
+            ProvenTxReqStatus::Unknown => "unknown",
+            ProvenTxReqStatus::Callback => "callback",
+            ProvenTxReqStatus::Unconfirmed => "unconfirmed",
+            ProvenTxReqStatus::Unfail => "unfail",
+            ProvenTxReqStatus::NoSend => "noSend",
+            ProvenTxReqStatus::DoubleSpend => "doubleSpend",
+        };
+
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET status = ?, attempts = 0, updated_at = ? WHERE proven_tx_req_id = ?",
+        )
+        .bind(status_str)
+        .bind(now)
+        .bind(proven_tx_req_id)
+        .execute(self.pool())
+        .await?;
+
+        tracing::debug!(
+            proven_tx_req_id = proven_tx_req_id,
+            new_status = status_str,
+            "Updated proven_tx_req status"
+        );
+
         Ok(())
     }
 }

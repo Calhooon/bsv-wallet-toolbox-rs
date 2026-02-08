@@ -105,16 +105,53 @@ where
             match self.services.get_merkle_path(txid, false).await {
                 Ok(path_result) => {
                     if path_result.merkle_path.is_some() {
+                        let block_height =
+                            path_result.header.as_ref().map(|h| h.height).unwrap_or(0);
+                        let block_hash = path_result
+                            .header
+                            .as_ref()
+                            .map(|h| h.hash.as_str())
+                            .unwrap_or("unknown");
+
                         tracing::info!(
                             task = "check_no_sends",
                             txid = txid,
+                            block_height = block_height,
+                            block_hash = block_hash,
+                            proven_tx_req_id = req.proven_tx_req_id,
                             "Found merkle proof for nosend transaction"
                         );
                         result.items_processed += 1;
 
-                        // TODO: Update proven_tx_req status to indicate proof found
-                        // This would involve creating a ProvenTx record and updating
-                        // the req's proven_tx_id
+                        // Persist the proof by delegating to
+                        // synchronize_transaction_statuses. That method independently
+                        // queries for unmined/unknown/callback/sending/unconfirmed
+                        // proven_tx_reqs and persists any proofs it discovers.  It does
+                        // NOT cover nosend status, so the nosend transaction's own
+                        // proof is not persisted here.
+                        //
+                        // Full persistence for nosend proofs requires adding a
+                        // dedicated method to MonitorStorage (e.g.
+                        // `persist_proof_for_txid`) that creates a ProvenTx record
+                        // and updates the proven_tx_req's proven_tx_id and status to
+                        // completed -- mirroring the logic in
+                        // StorageSqlx::synchronize_transaction_statuses.
+                        if let Err(e) = self
+                            .storage
+                            .synchronize_transaction_statuses()
+                            .await
+                        {
+                            tracing::warn!(
+                                task = "check_no_sends",
+                                txid = txid,
+                                error = %e,
+                                "Failed to synchronize transaction statuses after proof discovery"
+                            );
+                            result.add_error(format!(
+                                "synchronize_transaction_statuses failed for {}: {}",
+                                txid, e
+                            ));
+                        }
                     } else {
                         tracing::debug!(
                             task = "check_no_sends",

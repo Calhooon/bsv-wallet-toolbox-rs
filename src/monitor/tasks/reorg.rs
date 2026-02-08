@@ -168,10 +168,33 @@ where
                             tracing::warn!(
                                 task = "reorg",
                                 txid = req.txid,
-                                "Transaction proof no longer valid after reorg"
+                                proven_tx_req_id = req.proven_tx_req_id,
+                                "Transaction proof no longer valid after reorg, demoting to unmined"
                             );
                             affected_count += 1;
-                            // TODO: Update transaction status to 'unmined' or 'unconfirmed'
+
+                            // Demote the proven_tx_req back to 'unmined' so the
+                            // CheckForProofs task will re-fetch the merkle proof
+                            // on its next cycle.
+                            if let Err(e) = self
+                                .storage
+                                .update_proven_tx_req_status(
+                                    req.proven_tx_req_id,
+                                    ProvenTxReqStatus::Unmined,
+                                )
+                                .await
+                            {
+                                tracing::error!(
+                                    task = "reorg",
+                                    txid = req.txid,
+                                    error = %e,
+                                    "Failed to update proven_tx_req status after reorg"
+                                );
+                                result.add_error(format!(
+                                    "Failed to update status for txid {}: {}",
+                                    req.txid, e
+                                ));
+                            }
                         }
                     }
                     Err(e) => {

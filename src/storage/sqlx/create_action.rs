@@ -1615,12 +1615,12 @@ async fn allocate_change_input(
 // =============================================================================
 
 /// Maximum recursion depth for ancestor fetching to prevent infinite loops.
-const MAX_BEEF_RECURSION_DEPTH: usize = 100;
+pub(super) const MAX_BEEF_RECURSION_DEPTH: usize = 100;
 
 /// Data for a transaction to include in BEEF.
-struct BeefTxData {
-    raw_tx: Vec<u8>,
-    merkle_path: Option<Vec<u8>>,
+pub(super) struct BeefTxData {
+    pub(super) raw_tx: Vec<u8>,
+    pub(super) merkle_path: Option<Vec<u8>>,
 }
 
 /// Builds input BEEF containing all input transactions with their merkle proofs.
@@ -1855,7 +1855,7 @@ async fn build_input_beef(
 /// # Returns
 /// * `Ok(Vec<String>)` - List of input txids (hex strings)
 /// * `Err` - If parsing fails
-fn parse_input_txids(raw_tx: &[u8]) -> Result<Vec<String>> {
+pub(super) fn parse_input_txids(raw_tx: &[u8]) -> Result<Vec<String>> {
     let mut txids = Vec::new();
     let mut offset = 4; // Skip version
 
@@ -1896,7 +1896,7 @@ fn parse_input_txids(raw_tx: &[u8]) -> Result<Vec<String>> {
 }
 
 /// Reads a variable-length integer from transaction data.
-fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u64> {
+pub(super) fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u64> {
     if *offset >= data.len() {
         return Err(Error::ValidationError(
             "Unexpected end of transaction data".to_string(),
@@ -1971,7 +1971,7 @@ fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u64> {
 /// # Returns
 /// * `Ok(Some(BeefTxData))` - Transaction data if found
 /// * `Ok(None)` - If transaction not found in any table
-async fn get_tx_with_proof(conn: &mut SqliteConnection, txid: &str) -> Result<Option<BeefTxData>> {
+pub(super) async fn get_tx_with_proof(conn: &mut SqliteConnection, txid: &str) -> Result<Option<BeefTxData>> {
     // First try proven_txs table - these have merkle proofs
     let proven_row = sqlx::query(
         r#"
@@ -2116,7 +2116,7 @@ async fn get_tx_with_proof(conn: &mut SqliteConnection, txid: &str) -> Result<Op
 /// # Returns
 /// * `Ok(Some(Beef))` - Stored BEEF if available
 /// * `Ok(None)` - If no stored BEEF found
-async fn get_stored_beef(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Beef>> {
+pub(super) async fn get_stored_beef(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Beef>> {
     // Try transactions table first
     let tx_row = sqlx::query(
         r#"

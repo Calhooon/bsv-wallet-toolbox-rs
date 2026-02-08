@@ -889,4 +889,33 @@ pub trait MonitorStorage: WalletStorageProvider {
         let _ = (task_name, instance_id);
         Ok(())
     }
+
+    /// Update the status of a proven transaction request.
+    ///
+    /// Used by the reorg task to demote a completed or other-status proven_tx_req
+    /// back to a retriable status (e.g., `Unmined`) when a blockchain reorganization
+    /// invalidates its proof. The `CheckForProofs` task will then re-fetch the proof
+    /// on its next cycle.
+    ///
+    /// The default implementation logs a warning but performs no update. Storage
+    /// backends that support direct status updates (e.g., `StorageSqlx`) should
+    /// override this method.
+    ///
+    /// # Arguments
+    ///
+    /// * `proven_tx_req_id` - The ID of the proven_tx_req to update
+    /// * `new_status` - The new status to set
+    async fn update_proven_tx_req_status(
+        &self,
+        proven_tx_req_id: i64,
+        new_status: ProvenTxReqStatus,
+    ) -> Result<()> {
+        // Default: log warning only. Concrete backends should override.
+        tracing::warn!(
+            proven_tx_req_id = proven_tx_req_id,
+            new_status = ?new_status,
+            "update_proven_tx_req_status called on storage that does not override this method"
+        );
+        Ok(())
+    }
 }

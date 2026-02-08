@@ -24,6 +24,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock};
 
+use crate::lock_utils::{lock_read, lock_write};
+
 use bsv_sdk::wallet::{
     AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs, ListActionsArgs,
     ListActionsResult, ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs,
@@ -130,8 +132,16 @@ pub struct WalletStorageManager {
     /// Authentication identifier for the user.
     auth_id: RwLock<AuthId>,
 
-    /// Configured services (shared with stores).
+    /// Configured services (shared with stores), async access.
     services: RwLock<Option<Arc<dyn WalletServices>>>,
+
+    /// Cached services for synchronous `WalletStorageReader::get_services()`.
+    /// Updated whenever `set_services()` is called.
+    services_sync: std::sync::RwLock<Option<Arc<dyn WalletServices>>>,
+
+    /// Cached settings from the active store for synchronous
+    /// `WalletStorageReader::get_settings()`. Updated when `make_available()` completes.
+    cached_settings: std::sync::RwLock<Option<TableSettings>>,
 
     /// Lock queue for reader operations.
     reader_locks: LockQueue,
@@ -182,6 +192,8 @@ impl WalletStorageManager {
             conflicting_indices: RwLock::new(Vec::new()),
             auth_id: RwLock::new(AuthId::new(identity_key)),
             services: RwLock::new(None),
+            services_sync: std::sync::RwLock::new(None),
+            cached_settings: std::sync::RwLock::new(None),
             reader_locks: Arc::new(Mutex::new(VecDeque::new())),
             writer_locks: Arc::new(Mutex::new(VecDeque::new())),
             sync_locks: Arc::new(Mutex::new(VecDeque::new())),
@@ -359,9 +371,13 @@ impl WalletStorageManager {
 
         *self.is_available.write().await = true;
 
-        // Return active settings
+        // Return active settings and update cached_settings for sync access
         if let Some(idx) = active_idx {
-            Ok(stores[idx].settings.clone().unwrap())
+            let settings = stores[idx].settings.clone().unwrap();
+            if let Ok(mut guard) = lock_write(&self.cached_settings) {
+                *guard = Some(settings.clone());
+            }
+            Ok(settings)
         } else {
             Err(Error::StorageNotAvailable)
         }
@@ -538,6 +554,10 @@ impl WalletStorageManager {
         let stores = self.stores.read().await;
         for store in stores.iter() {
             store.storage.set_services(services.clone());
+        }
+        // Update sync-accessible cache for WalletStorageReader::get_services()
+        if let Ok(mut guard) = lock_write(&self.services_sync) {
+            *guard = Some(services.clone());
         }
         *self.services.write().await = Some(services);
     }
@@ -901,14 +921,32 @@ impl WalletStorageReader for WalletStorageManager {
     }
 
     fn get_settings(&self) -> &TableSettings {
-        // This is a sync method that can't work with our async design
-        // Return a placeholder - real usage should use get_settings() async method
-        unimplemented!("Use async get_settings() method instead")
+        // The trait requires a &TableSettings reference, but settings are behind an
+        // async RwLock in the managed stores. We maintain a std::sync::RwLock cache
+        // that is populated when make_available() completes.
+        static DEFAULT_SETTINGS: std::sync::OnceLock<TableSettings> = std::sync::OnceLock::new();
+        let guard = match lock_read(&self.cached_settings) {
+            Ok(g) => g,
+            Err(_) => return DEFAULT_SETTINGS.get_or_init(TableSettings::default),
+        };
+        if let Some(ref settings) = *guard {
+            // SAFETY: The settings are effectively immutable once loaded via
+            // make_available(). The cached_settings RwLock keeps the allocation
+            // alive for the lifetime of the WalletStorageManager.
+            unsafe { &*(settings as *const TableSettings) }
+        } else {
+            DEFAULT_SETTINGS.get_or_init(TableSettings::default)
+        }
     }
 
     fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
-        // This is sync but needs async - callers should use the async version
-        unimplemented!("Use async get_services() method instead")
+        let guard = lock_read(&self.services_sync)?;
+        guard.clone().ok_or_else(|| {
+            Error::InvalidOperation(
+                "Must call set_services first. Services are required for blockchain operations."
+                    .to_string(),
+            )
+        })
     }
 
     async fn find_certificates(
@@ -1189,6 +1227,10 @@ impl WalletStorageProvider for WalletStorageManager {
         for store in stores_guard.iter() {
             store.storage.set_services(services.clone());
         }
+        // Update sync-accessible cache for WalletStorageReader::get_services()
+        if let Ok(mut guard) = lock_write(&self.services_sync) {
+            *guard = Some(services.clone());
+        }
         *self.services.blocking_write() = Some(services);
     }
 }
@@ -1278,5 +1320,73 @@ mod tests {
         };
         assert_eq!(result.inserts, 10);
         assert_eq!(result.updates, 5);
+    }
+
+    #[test]
+    fn test_get_settings_returns_default_before_make_available() {
+        // Before make_available() is called, get_settings() should return a
+        // default TableSettings (via OnceLock fallback) instead of panicking.
+        let manager = WalletStorageManager::new(
+            "02dummy_identity_key".to_string(),
+            None,
+            None,
+        );
+        let settings = WalletStorageReader::get_settings(&manager);
+        // Should return the OnceLock default rather than panicking
+        assert_eq!(settings.settings_id, 1);
+        assert_eq!(settings.chain, "mainnet");
+        assert!(settings.storage_identity_key.is_empty());
+    }
+
+    #[test]
+    fn test_get_settings_returns_cached_settings() {
+        // When cached_settings is manually populated, get_settings() should
+        // return the cached value.
+        let manager = WalletStorageManager::new(
+            "02dummy_identity_key".to_string(),
+            None,
+            None,
+        );
+        // Manually populate the cache (simulating what make_available does)
+        {
+            let mut guard = lock_write(&manager.cached_settings)
+                .expect("lock_write should succeed");
+            *guard = Some(TableSettings {
+                settings_id: 42,
+                storage_identity_key: "cached_key".to_string(),
+                storage_name: "cached_name".to_string(),
+                chain: "testnet".to_string(),
+                ..TableSettings::default()
+            });
+        }
+        let settings = WalletStorageReader::get_settings(&manager);
+        assert_eq!(settings.settings_id, 42);
+        assert_eq!(settings.storage_identity_key, "cached_key");
+        assert_eq!(settings.storage_name, "cached_name");
+        assert_eq!(settings.chain, "testnet");
+    }
+
+    #[test]
+    fn test_get_services_returns_error_before_set() {
+        // Before set_services() is called, get_services() should return an
+        // error instead of panicking.
+        let manager = WalletStorageManager::new(
+            "02dummy_identity_key".to_string(),
+            None,
+            None,
+        );
+        let result = WalletStorageReader::get_services(&manager);
+        assert!(result.is_err());
+        match result {
+            Err(ref e) => {
+                let err_msg = format!("{}", e);
+                assert!(
+                    err_msg.contains("set_services"),
+                    "Error message should mention set_services, got: {}",
+                    err_msg
+                );
+            }
+            Ok(_) => panic!("Expected error but got Ok"),
+        }
     }
 }

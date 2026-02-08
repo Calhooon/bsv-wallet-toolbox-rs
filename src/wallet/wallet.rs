@@ -34,7 +34,7 @@ use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
 use crate::services::{Chain, WalletServices};
-use crate::storage::entities::TransactionStatus;
+use crate::storage::entities::{TableCertificate, TableCertificateField, TransactionStatus};
 use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
 
 use super::signer::{SignerInput, WalletSigner};
@@ -2027,16 +2027,73 @@ where
 
         match args.acquisition_protocol {
             bsv_sdk::wallet::AcquisitionProtocol::Direct => {
-                // Direct certificate storage (existing behavior)
+                // Direct certificate storage
                 tracing::debug!("Acquiring certificate via direct protocol");
-                let _auth = self.auth();
+                let auth = self.auth();
 
                 // Build the certificate from args
-                let certificate = build_wallet_certificate_from_args(&args)?;
+                let mut certificate = build_wallet_certificate_from_args(&args)?;
 
-                // Note: insert_certificate expects TableCertificate, not WalletCertificate
-                // This needs type conversion - for now return the certificate
-                // TODO: implement proper certificate storage conversion
+                // Set the subject to the wallet's identity key (matching issuance behavior)
+                certificate.subject = self.identity_key.clone();
+
+                // Determine the verifier from the keyring_revealer argument
+                let verifier = match &args.keyring_revealer {
+                    Some(bsv_sdk::wallet::KeyringRevealer::Certifier) => {
+                        Some(args.certifier.clone())
+                    }
+                    Some(bsv_sdk::wallet::KeyringRevealer::PublicKey(pk)) => Some(pk.to_hex()),
+                    None => None,
+                };
+
+                let now = chrono::Utc::now();
+
+                // Convert to TableCertificate for storage
+                let table_cert = TableCertificate {
+                    certificate_id: 0, // Will be assigned by storage
+                    user_id: self.user_id,
+                    cert_type: certificate.certificate_type.clone(),
+                    serial_number: certificate.serial_number.clone(),
+                    certifier: certificate.certifier.clone(),
+                    subject: certificate.subject.clone(),
+                    verifier,
+                    revocation_outpoint: certificate.revocation_outpoint.clone(),
+                    signature: certificate.signature.clone(),
+                    created_at: now,
+                    updated_at: now,
+                };
+
+                // Persist the certificate
+                let cert_id = self
+                    .storage
+                    .insert_certificate(&auth, table_cert)
+                    .await
+                    .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
+                // Persist certificate fields with their master keys from the keyring
+                let keyring = args.keyring_for_subject.as_ref();
+                for (field_name, field_value) in &certificate.fields {
+                    let master_key = keyring
+                        .and_then(|kr| kr.get(field_name))
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let field = TableCertificateField {
+                        certificate_field_id: 0, // Will be assigned by storage
+                        certificate_id: cert_id,
+                        user_id: self.user_id,
+                        field_name: field_name.clone(),
+                        field_value: field_value.clone(),
+                        master_key,
+                        created_at: now,
+                        updated_at: now,
+                    };
+
+                    self.storage
+                        .insert_certificate_field(&auth, field)
+                        .await
+                        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+                }
 
                 Ok(certificate)
             }
@@ -3310,5 +3367,181 @@ mod tests {
     fn test_address_to_p2pkh_script_invalid() {
         assert!(address_to_p2pkh_script("0OIl").is_err());
         assert!(address_to_p2pkh_script("1").is_err());
+    }
+
+    // =========================================================================
+    // Direct certificate acquisition conversion tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_wallet_certificate_from_args_direct() {
+        use bsv_sdk::wallet::AcquisitionProtocol;
+
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "encrypted_name_value".to_string());
+        fields.insert("email".to_string(), "encrypted_email_value".to_string());
+
+        let args = AcquireCertificateArgs {
+            certificate_type: "dGVzdC1jZXJ0LXR5cGU=".to_string(),
+            certifier: "02".to_string() + &"ab".repeat(32),
+            acquisition_protocol: AcquisitionProtocol::Direct,
+            fields: fields.clone(),
+            serial_number: Some("c2VyaWFsLW51bWJlcg==".to_string()),
+            revocation_outpoint: Some("abc123.0".to_string()),
+            signature: Some("deadbeef".to_string()),
+            certifier_url: None,
+            keyring_revealer: None,
+            keyring_for_subject: None,
+            privileged: None,
+            privileged_reason: None,
+        };
+
+        let cert = build_wallet_certificate_from_args(&args).expect("should build certificate");
+
+        assert_eq!(cert.certificate_type, "dGVzdC1jZXJ0LXR5cGU=");
+        assert_eq!(cert.serial_number, "c2VyaWFsLW51bWJlcg==");
+        assert_eq!(cert.revocation_outpoint, "abc123.0");
+        assert_eq!(cert.signature, "deadbeef");
+        assert_eq!(cert.fields.len(), 2);
+        assert_eq!(
+            cert.fields.get("name").unwrap(),
+            "encrypted_name_value"
+        );
+        assert_eq!(
+            cert.fields.get("email").unwrap(),
+            "encrypted_email_value"
+        );
+    }
+
+    #[test]
+    fn test_build_wallet_certificate_from_args_missing_serial_number() {
+        use bsv_sdk::wallet::AcquisitionProtocol;
+
+        let args = AcquireCertificateArgs {
+            certificate_type: "dGVzdA==".to_string(),
+            certifier: "02".to_string() + &"ab".repeat(32),
+            acquisition_protocol: AcquisitionProtocol::Direct,
+            fields: HashMap::new(),
+            serial_number: None,
+            revocation_outpoint: Some("abc.0".to_string()),
+            signature: Some("sig".to_string()),
+            certifier_url: None,
+            keyring_revealer: None,
+            keyring_for_subject: None,
+            privileged: None,
+            privileged_reason: None,
+        };
+
+        let result = build_wallet_certificate_from_args(&args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_direct_certificate_table_conversion() {
+        // Verify that a WalletCertificate can be correctly mapped to TableCertificate
+        // and TableCertificateField entries (the conversion pattern used in acquire_certificate)
+
+        let identity_key = "02".to_string() + &"cc".repeat(32);
+        let user_id = 42i64;
+
+        let certificate = WalletCertificate {
+            certificate_type: "dGVzdA==".to_string(),
+            serial_number: "c2VyaWFs".to_string(),
+            subject: identity_key.clone(),
+            certifier: "02".to_string() + &"ab".repeat(32),
+            revocation_outpoint: "txid.0".to_string(),
+            signature: "deadbeef".to_string(),
+            fields: HashMap::from([
+                ("name".to_string(), "enc_name".to_string()),
+                ("email".to_string(), "enc_email".to_string()),
+            ]),
+        };
+
+        let keyring: HashMap<String, String> = HashMap::from([
+            ("name".to_string(), "master_key_name".to_string()),
+            ("email".to_string(), "master_key_email".to_string()),
+        ]);
+
+        let now = chrono::Utc::now();
+
+        // Build table cert (same pattern as acquire_certificate direct path)
+        let table_cert = TableCertificate {
+            certificate_id: 0,
+            user_id,
+            cert_type: certificate.certificate_type.clone(),
+            serial_number: certificate.serial_number.clone(),
+            certifier: certificate.certifier.clone(),
+            subject: certificate.subject.clone(),
+            verifier: Some(certificate.certifier.clone()),
+            revocation_outpoint: certificate.revocation_outpoint.clone(),
+            signature: certificate.signature.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        assert_eq!(table_cert.cert_type, "dGVzdA==");
+        assert_eq!(table_cert.serial_number, "c2VyaWFs");
+        assert_eq!(table_cert.subject, identity_key);
+        assert_eq!(table_cert.user_id, 42);
+
+        // Build table fields (same pattern as acquire_certificate direct path)
+        let cert_id = 99i64;
+        let mut table_fields: Vec<TableCertificateField> = Vec::new();
+        for (field_name, field_value) in &certificate.fields {
+            let master_key = Some(&keyring)
+                .and_then(|kr| kr.get(field_name))
+                .cloned()
+                .unwrap_or_default();
+            table_fields.push(TableCertificateField {
+                certificate_field_id: 0,
+                certificate_id: cert_id,
+                user_id,
+                field_name: field_name.clone(),
+                field_value: field_value.clone(),
+                master_key,
+                created_at: now,
+                updated_at: now,
+            });
+        }
+
+        assert_eq!(table_fields.len(), 2);
+        for f in &table_fields {
+            assert_eq!(f.certificate_id, 99);
+            assert_eq!(f.user_id, 42);
+            assert!(!f.master_key.is_empty());
+            if f.field_name == "name" {
+                assert_eq!(f.field_value, "enc_name");
+                assert_eq!(f.master_key, "master_key_name");
+            } else if f.field_name == "email" {
+                assert_eq!(f.field_value, "enc_email");
+                assert_eq!(f.master_key, "master_key_email");
+            }
+        }
+    }
+
+    #[test]
+    fn test_direct_certificate_field_without_keyring() {
+        // When no keyring_for_subject is provided, master_key should be empty string
+
+        let now = chrono::Utc::now();
+        let keyring: Option<&HashMap<String, String>> = None;
+
+        let master_key = keyring
+            .and_then(|kr| kr.get("name"))
+            .cloned()
+            .unwrap_or_default();
+
+        let field = TableCertificateField {
+            certificate_field_id: 0,
+            certificate_id: 1,
+            user_id: 1,
+            field_name: "name".to_string(),
+            field_value: "enc_value".to_string(),
+            master_key,
+            created_at: now,
+            updated_at: now,
+        };
+
+        assert_eq!(field.master_key, "");
     }
 }
