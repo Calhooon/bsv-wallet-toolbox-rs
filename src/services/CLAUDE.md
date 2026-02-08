@@ -13,7 +13,7 @@ The services module provides a unified interface for interacting with BSV blockc
 │  (Main orchestrator implementing WalletServices trait)          │
 ├─────────────────────────────────────────────────────────────────┤
 │                    ServiceCollection<T>                          │
-│  (Per-operation failover with call history tracking)            │
+│  (Per-operation failover with call history + adaptive timeouts) │
 ├───────────────┬───────────────┬───────────────┬─────────────────┤
 │ WhatsOnChain  │     ARC       │    Bitails    │      BHS        │
 │ - Raw TX      │ - BEEF Post   │ - Raw TX      │ - Height        │
@@ -27,17 +27,18 @@ The services module provides a unified interface for interacting with BSV blockc
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Module root with re-exports, `ServicesOptions` configuration, fiat currency types, and `Chain` re-export from chaintracks |
-| `traits.rs` | `WalletServices` trait definition, `NLockTimeInput` type, and all result types (`GetRawTxResult`, `PostBeefResult`, `GetBeefResult`, etc.) |
-| `services.rs` | `Services` struct implementing `WalletServices` with multi-provider orchestration |
-| `collection.rs` | `ServiceCollection<S>` generic failover container with call history tracking |
-| `providers/` | Individual provider implementations (WhatsOnChain, ARC, Bitails, BHS) |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `mod.rs` | 185 | Module root with re-exports, `ServicesOptions` config, `Chain` re-export |
+| `traits.rs` | 840 | `WalletServices` trait, `NLockTimeInput`, all result types, helper functions |
+| `services.rs` | 1166 | `Services` struct implementing `WalletServices` with multi-provider orchestration |
+| `collection.rs` | 733 | `ServiceCollection<S>` failover container with call history and adaptive timeouts |
+| `mock.rs` | 1433 | `MockWalletServices` for testing with configurable responses and call tracking |
+| `providers/` | - | Individual provider implementations (WhatsOnChain, ARC, Bitails, BHS) |
 
 ## Key Types
 
-### Services (services.rs:49)
+### Services (services.rs:80)
 
 Main orchestrator coordinating all blockchain operations:
 
@@ -56,7 +57,7 @@ pub struct Services {
 }
 ```
 
-**Factory Methods:**
+**Factory Methods (all return `Result<Self>`):**
 - `Services::new(chain)` - Create with chain-appropriate defaults
 - `Services::mainnet()` - Create with mainnet defaults
 - `Services::testnet()` - Create with testnet configuration
@@ -70,10 +71,10 @@ pub struct Services {
 - `get_utxo_status(output, format, outpoint, use_next)` - Check if output is unspent
 - `get_status_for_txids(txids, use_next)` - Check confirmation status of transactions
 - `get_script_hash_history(hash, use_next)` - Get transaction history for script
-- `get_bsv_exchange_rate()` - Get cached USD/BSV rate
-- `get_fiat_exchange_rate(currency, base)` - Get fiat exchange rate between currencies
+- `get_bsv_exchange_rate()` - Get cached USD/BSV rate (via WhatsOnChain)
+- `get_fiat_exchange_rate(currency, base)` - Get fiat exchange rate (auto-refreshes from API)
 - `get_height()` - Get current blockchain height (BHS -> WoC -> Bitails failover)
-- `hash_to_header(hash)` - Get block header by hash
+- `hash_to_header(hash)` - Get block header by hash (WoC -> Bitails)
 - `n_lock_time_is_final(n_lock_time)` - Check if raw nLockTime value allows mining
 - `n_lock_time_is_final_for_tx(input)` - Check nLockTime finality with sequence info
 - `get_services_call_history(reset)` - Get diagnostics for all service calls
@@ -137,9 +138,9 @@ pub struct NLockTimeInput {
 2. If nLockTime >= 500,000,000: Unix timestamp, final if in the past
 3. If nLockTime < 500,000,000: block height, final if current height > nLockTime
 
-### ServiceCollection (collection.rs:21)
+### ServiceCollection (collection.rs:47)
 
-Generic failover container maintaining ordered providers:
+Generic failover container maintaining ordered providers with adaptive timeout support:
 
 ```rust
 pub struct ServiceCollection<S> {
@@ -148,11 +149,14 @@ pub struct ServiceCollection<S> {
     index: usize,
     since: DateTime<Utc>,
     history_by_provider: HashMap<String, ProviderCallHistoryInternal>,
+    timeout_config: AdaptiveTimeoutConfig,
+    avg_response_ms: AtomicU64,  // EMA of response times
 }
 ```
 
 **Key Methods:**
-- `new(name)` - Create new collection
+- `new(name)` - Create new collection with default timeout config
+- `with_timeout_config(name, config)` - Create with custom adaptive timeout
 - `add(name, service)` / `with(name, service)` - Add provider to collection
 - `remove(name)` - Remove provider by name
 - `count()` / `is_empty()` - Collection size queries
@@ -168,7 +172,28 @@ pub struct ServiceCollection<S> {
 - `add_call_success/failure/error(provider, call)` - Record call outcome
 - `get_call_history(reset)` - Get statistics, optionally reset counters
 
-### SharedServiceCollection (collection.rs:474)
+**Adaptive Timeout Methods:**
+- `timeout_config()` / `set_timeout_config(config)` - Get/set timeout config
+- `get_current_timeout()` - Compute timeout from EMA (clamped to min/max)
+- `record_response_time(elapsed_ms)` - Update EMA (0.7 old + 0.3 new)
+- `avg_response_ms()` - Get current average response time (None if no data)
+
+### AdaptiveTimeoutConfig (collection.rs:21)
+
+Configuration for dynamic timeout adjustment based on response times:
+
+```rust
+pub struct AdaptiveTimeoutConfig {
+    pub min_timeout_ms: u64,       // Default: 5,000
+    pub max_timeout_ms: u64,       // Default: 60,000
+    pub multiplier: f64,           // Default: 2.0
+    pub initial_timeout_ms: u64,   // Default: 30,000
+}
+```
+
+Timeout = clamp(avg_response_ms * multiplier, min, max). Uses `initial_timeout_ms` when no response data is available.
+
+### SharedServiceCollection (collection.rs:574)
 
 Thread-safe wrapper for concurrent access:
 
@@ -176,7 +201,9 @@ Thread-safe wrapper for concurrent access:
 pub struct SharedServiceCollection<S>(pub Arc<RwLock<ServiceCollection<S>>>);
 ```
 
-### ServicesOptions (mod.rs:70)
+Methods: `new(collection)`, `read()`, `write()`. Implements `Clone`.
+
+### ServicesOptions (mod.rs:73)
 
 Configuration for service providers:
 
@@ -211,11 +238,7 @@ pub struct ServicesOptions {
 Supported fiat currencies for exchange rate conversions:
 
 ```rust
-pub enum FiatCurrency {
-    USD,
-    GBP,
-    EUR,
-}
+pub enum FiatCurrency { USD, GBP, EUR }
 ```
 
 **Methods:**
@@ -241,6 +264,52 @@ pub struct FiatExchangeRates {
 - `is_stale(max_age_msecs)` - Check if rates need refresh
 - `get_rate(currency, base)` - Get exchange rate between currencies
 
+## MockWalletServices (mock.rs:161)
+
+Full `WalletServices` implementation for testing with configurable responses, call tracking, and sequence support.
+
+```rust
+pub struct MockWalletServices {
+    chain_tracker: MockChainTracker,
+    height: u32,
+    post_beef_response: Mutex<MockResponse<Vec<PostBeefResult>>>,
+    get_raw_tx_response: Mutex<MockResponse<GetRawTxResult>>,
+    get_merkle_path_response: Mutex<MockResponse<GetMerklePathResult>>,
+    // ... responses for each method
+    call_history: Mutex<Vec<MockCallRecord>>,
+    call_counts: Mutex<HashMap<String, usize>>,
+}
+```
+
+**Construction:**
+- `MockWalletServices::new()` - All-success defaults (height=880,000)
+- `MockWalletServices::builder()` - Builder pattern for custom responses
+
+**Builder Methods (MockWalletServicesBuilder):**
+- `height(u32)` - Set blockchain height
+- `post_beef_success()` / `post_beef_network_error(msg)` / `post_beef_double_spend(txid, competing)` / `post_beef_already_known(txid)` / `post_beef_service_unavailable()` / `post_beef_rate_limited()` - Preset post_beef responses
+- `post_beef_response(MockResponse)` / `get_raw_tx_response(MockResponse)` / `get_merkle_path_response(MockResponse)` / `get_utxo_status_response(MockResponse)` / `get_status_for_txids_response(MockResponse)` / `get_script_hash_history_response(MockResponse)` - Custom responses
+- `get_raw_tx_error(kind, msg)` - Shorthand for error response
+
+**Call Inspection:**
+- `call_history()` - Get all `MockCallRecord` entries
+- `call_count(method)` - Count calls to a specific method
+- `total_calls()` - Total calls across all methods
+- `reset_history()` - Clear call records and counters
+
+**MockResponse Enum:**
+- `MockResponse::Success(T)` - Return value directly
+- `MockResponse::Error(MockErrorKind, String)` - Return an error
+- `MockResponse::Sequence(Vec<MockResponse<T>>)` - Ordered responses; repeats last when exhausted
+
+**MockErrorKind:** `NetworkError`, `ServiceError`, `BroadcastFailed`, `NoServicesAvailable`, `ValidationError`, `InvalidArgument`, `NotFound`, `TransactionError`, `Internal`
+
+**Helper Constructors:**
+- `success_post_beef_result(name, txids)` - Create successful PostBeefResult
+- `error_post_beef_result(name, error_msg)` - Create failed PostBeefResult
+- `double_spend_post_beef_result(name, txid, competing_tx)` - Create double-spend result
+- `already_known_post_beef_result(name, txid)` - Create "already known" result
+
 ## Result Types (traits.rs)
 
 | Type | Purpose |
@@ -248,8 +317,8 @@ pub struct FiatExchangeRates {
 | `GetRawTxResult` | Raw transaction bytes with provider name |
 | `GetMerklePathResult` | Merkle proof in TSC/BUMP format with optional header |
 | `GetBeefResult` | BEEF data with txid, proof status, and error info |
-| `PostBeefResult` | Broadcast result with per-txid status |
-| `PostTxResultForTxid` | Single transaction broadcast result with double-spend detection |
+| `PostBeefResult` | Broadcast result with per-txid status (`is_success()` helper) |
+| `PostTxResultForTxid` | Single transaction broadcast result with double-spend detection (`is_success()` helper) |
 | `GetUtxoStatusResult` | UTXO check with details list |
 | `UtxoDetail` | Individual UTXO info (txid, index, satoshis, height) |
 | `GetStatusForTxidsResult` | Batch transaction status check |
@@ -258,6 +327,7 @@ pub struct FiatExchangeRates {
 | `ScriptHistoryItem` | Single history entry (txid, height) |
 | `BlockHeader` | Parsed block header with all fields and `to_binary()` method |
 | `BsvExchangeRate` | Cached exchange rate with `is_stale()` check |
+| `GetUtxoStatusOutputFormat` | Enum: `HashLE` (default), `HashBE`, `Script` |
 
 ## Call Tracking Types (collection.rs)
 
@@ -269,7 +339,7 @@ pub struct FiatExchangeRates {
 | `CallCounts` | Statistics (success/failure/error counts with time range) |
 | `ProviderCallHistory` | Per-provider call history and statistics |
 | `ServiceCallHistory` | Complete history for a service collection |
-| `ServicesCallHistory` | Aggregated history across all service types |
+| `ServicesCallHistory` | Aggregated history across all service types (services.rs:37) |
 
 ## Provider Priority by Operation
 
@@ -343,7 +413,7 @@ pub fn validate_script_hash(hash: &str) -> Result<()>;
 pub fn convert_script_hash(output: &str, format: Option<GetUtxoStatusOutputFormat>) -> Result<String>;
 ```
 
-## PostBeefMode (services.rs:26)
+## PostBeefMode (services.rs:27)
 
 Controls broadcast behavior:
 
@@ -353,30 +423,6 @@ pub enum PostBeefMode {
     PromiseAll,    // Broadcast to all providers in parallel
 }
 ```
-
-## Error Handling
-
-All methods return `Result<T>` with these error variants:
-- `Error::NoServicesAvailable` - No providers configured for operation
-- `Error::NetworkError` - HTTP request failed
-- `Error::ServiceError` - Provider returned error
-- `Error::ValidationError` - Invalid txid, script hash, etc.
-- `Error::NotFound` - Resource not found (block header, etc.)
-- `Error::InvalidArgument` - Invalid input parameter
-
-## Call History Tracking
-
-Each `ServiceCollection` tracks:
-- Recent calls (up to 32) with timing and outcomes
-- Total counts (success/failure/error) since creation
-- Reset interval counts for monitoring windows
-- Provider-specific statistics
-
-Constants:
-- `MAX_CALL_HISTORY = 32` - Maximum recent calls per provider
-- `MAX_RESET_COUNTS = 32` - Maximum reset intervals to keep
-
-Use `get_services_call_history(reset)` to retrieve and optionally reset counters.
 
 ## Internal Service Traits (services.rs)
 
@@ -403,6 +449,40 @@ These are implemented by the provider types and used via type-erased `Arc<dyn Tr
 | `UtxoStatusService` | Y | - | - |
 | `StatusForTxidsService` | Y | - | Y |
 | `ScriptHashHistoryService` | Y | - | Y |
+
+## Error Handling
+
+All methods return `Result<T>` with these error variants:
+- `Error::NoServicesAvailable` - No providers configured for operation
+- `Error::NetworkError` - HTTP request failed
+- `Error::ServiceError` - Provider returned error
+- `Error::BroadcastFailed` - Transaction broadcast explicitly failed
+- `Error::ValidationError` - Invalid txid, script hash, etc.
+- `Error::NotFound` - Resource not found (block header, etc.)
+- `Error::InvalidArgument` - Invalid input parameter
+- `Error::TransactionError` - Transaction parsing/processing error
+- `Error::Internal` - Internal error
+
+## Call History Tracking
+
+Each `ServiceCollection` tracks:
+- Recent calls (up to 32) with timing and outcomes
+- Total counts (success/failure/error) since creation
+- Reset interval counts for monitoring windows
+- Provider-specific statistics
+- Adaptive timeout EMA for response times
+
+Constants:
+- `MAX_CALL_HISTORY = 32` - Maximum recent calls per provider
+- `MAX_RESET_COUNTS = 32` - Maximum reset intervals to keep
+
+Use `get_services_call_history(reset)` to retrieve and optionally reset counters.
+
+## Tests
+
+- `services.rs`: 5 unit tests (creation, options, fiat rates, currency parsing)
+- `collection.rs`: 11 unit tests (basic operations, remove, move_to_last, call history, adaptive timeouts, EMA convergence)
+- `mock.rs`: 15 integration tests (failover, double-spend, sequences, error categorization, call tracking)
 
 ## Related Documentation
 

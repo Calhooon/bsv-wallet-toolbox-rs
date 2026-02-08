@@ -9,13 +9,13 @@ use std::sync::{Arc as StdArc, RwLock};
 use crate::chaintracks::Chain;
 use bsv_sdk::transaction::ChainTracker;
 use crate::services::{
-    collection::{ServiceCall, ServiceCollection, ServiceCallHistory},
+    collection::{ServiceCall, ServiceCollection},
     providers::{Arc, Bitails, BitailsConfig, BlockHeaderService, BhsConfig, WhatsOnChain, WhatsOnChainConfig},
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
         GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult,
-        WalletServices,
+        ServicesCallHistory, WalletServices,
     },
     ServicesOptions,
 };
@@ -32,21 +32,39 @@ pub enum PostBeefMode {
     PromiseAll,
 }
 
-/// Services call history for diagnostics.
-#[derive(Debug, Clone, Default)]
-pub struct ServicesCallHistory {
-    pub version: u32,
-    pub get_merkle_path: Option<ServiceCallHistory>,
-    pub get_raw_tx: Option<ServiceCallHistory>,
-    pub post_beef: Option<ServiceCallHistory>,
-    pub get_utxo_status: Option<ServiceCallHistory>,
-    pub get_status_for_txids: Option<ServiceCallHistory>,
-    pub get_script_hash_history: Option<ServiceCallHistory>,
-}
-
-/// Main services orchestrator.
+/// Main services orchestrator for blockchain operations.
 ///
-/// Coordinates multiple blockchain service providers with automatic failover.
+/// Coordinates multiple blockchain service providers (WhatsOnChain, ARC, Bitails,
+/// Block Header Service) with automatic failover. Each operation type maintains
+/// an ordered list of providers via [`ServiceCollection`], which are tried
+/// sequentially until one succeeds.
+///
+/// `Services` implements the [`WalletServices`] trait and is the standard services
+/// backend for [`Wallet`](crate::Wallet).
+///
+/// # Factory Methods
+///
+/// | Method | Description |
+/// |--------|-------------|
+/// | [`Services::new`] | Create with chain-appropriate defaults |
+/// | [`Services::mainnet`] | Shorthand for mainnet defaults |
+/// | [`Services::testnet`] | Shorthand for testnet defaults |
+/// | [`Services::with_options`] | Create with custom [`ServicesOptions`] |
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bsv_wallet_toolbox::{Services, ServicesOptions, Chain};
+///
+/// // Quick mainnet setup
+/// let services = Services::mainnet()?;
+///
+/// // Custom configuration with API keys
+/// let options = ServicesOptions::mainnet()
+///     .with_woc_api_key("my-key")
+///     .with_bhs("https://bhs.babbage.systems", None);
+/// let services = Services::with_options(Chain::Main, options)?;
+/// ```
 pub struct Services {
     /// Network chain.
     pub chain: Chain,
@@ -1085,6 +1103,11 @@ impl WalletServices for Services {
             has_proof,
             error: None,
         })
+    }
+
+    fn get_services_call_history(&self, reset: bool) -> ServicesCallHistory {
+        // Delegate to the inherent method, falling back to empty on error
+        Services::get_services_call_history(self, reset).unwrap_or_default()
     }
 }
 

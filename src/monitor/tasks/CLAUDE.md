@@ -21,8 +21,8 @@ This module defines the monitor task system that runs periodic background operat
 │ NewHeader    │ SendWaiting  │ ReviewStatus │ Purge        │ MonitorCall      │
 │ (60s)        │ (5min)       │ (15min)      │ (1hr)        │ History (12min)  │
 │              │              │              │              │                  │
-│ Clock        │ CheckFor     │ UnFail       │ FailAbandoned│                  │
-│ (1s)         │ Proofs (60s) │ (10min)      │ (5min)       │                  │
+│ Clock        │ CheckFor     │ UnFail       │ FailAbandoned│ SyncWhenIdle     │
+│ (1s)         │ Proofs (60s) │ (10min)      │ (5min)       │ (60s)            │
 │              │              │              │              │                  │
 │ Reorg        │ CheckNo      │              │              │                  │
 │ (60s)        │ Sends (24hr) │              │              │                  │
@@ -39,24 +39,25 @@ This module defines the monitor task system that runs periodic background operat
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Module root with `MonitorTask` trait, `TaskResult`, and `TaskType` enum |
-| `check_for_proofs.rs` | `CheckForProofsTask` - fetches merkle proofs for unconfirmed transactions |
-| `check_no_sends.rs` | `CheckNoSendsTask` - retrieves proofs for 'nosend' transactions |
-| `clock.rs` | `ClockTask` - tracks minute-level clock events |
-| `fail_abandoned.rs` | `FailAbandonedTask` - marks abandoned transactions as failed |
-| `monitor_call_history.rs` | `MonitorCallHistoryTask` - logs service call statistics |
-| `new_header.rs` | `NewHeaderTask` - polls for new blockchain block headers |
-| `purge.rs` | `PurgeTask` - database maintenance, deletes expired data |
-| `reorg.rs` | `ReorgTask` - handles blockchain reorganizations |
-| `review_status.rs` | `ReviewStatusTask` - synchronizes transaction and proof status |
-| `send_waiting.rs` | `SendWaitingTask` - broadcasts transactions waiting to be sent |
-| `unfail.rs` | `UnfailTask` - recovers incorrectly failed transactions |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `mod.rs` | 183 | Module root with `MonitorTask` trait, `TaskResult`, and `TaskType` enum (12 variants) |
+| `check_for_proofs.rs` | 165 | `CheckForProofsTask` - fetches merkle proofs for unconfirmed transactions |
+| `check_no_sends.rs` | 165 | `CheckNoSendsTask` - retrieves proofs for 'nosend' transactions |
+| `clock.rs` | 113 | `ClockTask` - tracks minute-level clock events |
+| `fail_abandoned.rs` | 91 | `FailAbandonedTask` - marks abandoned transactions as failed |
+| `monitor_call_history.rs` | 181 | `MonitorCallHistoryTask<V>` - generic service call statistics logger |
+| `new_header.rs` | 181 | `NewHeaderTask` - polls for new blockchain block headers |
+| `purge.rs` | 154 | `PurgeTask` - database maintenance, deletes expired data |
+| `reorg.rs` | 257 | `ReorgTask` - handles blockchain reorganizations |
+| `review_status.rs` | 96 | `ReviewStatusTask` - synchronizes transaction and proof status |
+| `send_waiting.rs` | 138 | `SendWaitingTask` - broadcasts transactions waiting to be sent |
+| `sync_when_idle.rs` | 177 | `SyncWhenIdleTask` - triggers sync after idle periods |
+| `unfail.rs` | 95 | `UnfailTask` - recovers incorrectly failed transactions |
 
 ## Key Exports
 
-### MonitorTask Trait (mod.rs:64-83)
+### MonitorTask Trait (mod.rs:67-85)
 
 The core trait that all monitor tasks implement:
 
@@ -79,7 +80,7 @@ pub trait MonitorTask: Send + Sync {
 }
 ```
 
-### TaskResult (mod.rs:36-62)
+### TaskResult (mod.rs:38-64)
 
 Result structure returned by task execution. Derives `Default`.
 
@@ -96,7 +97,7 @@ pub struct TaskResult {
 - `TaskResult::with_count(n)` - Create result with processed count
 - `add_error(msg)` - Record a non-fatal error
 
-### TaskType Enum (mod.rs:86-135)
+### TaskType Enum (mod.rs:88-114)
 
 Identifies task types for scheduling and configuration. Implements `Display` and has an `as_str()` method.
 
@@ -114,6 +115,7 @@ pub enum TaskType {
     Purge,               // "purge"
     Reorg,               // "reorg"
     ReviewStatus,        // "review_status"
+    SyncWhenIdle,        // "sync_when_idle"
 }
 ```
 
@@ -129,13 +131,14 @@ pub enum TaskType {
 | `CheckNoSendsTask<S, V>` | `check_no_sends::CheckNoSendsTask` | 24 hours | Transaction |
 | `ClockTask` | `clock::ClockTask` | 1 second | Blockchain |
 | `FailAbandonedTask<S>` | `fail_abandoned::FailAbandonedTask` | 5 minutes | Maintenance |
-| `MonitorCallHistoryTask` | `monitor_call_history::MonitorCallHistoryTask` | 12 minutes | Service |
+| `MonitorCallHistoryTask<V>` | `monitor_call_history::MonitorCallHistoryTask` | 12 minutes | Service |
 | `NewHeaderTask<V>` | `new_header::NewHeaderTask` | 60 seconds | Blockchain |
 | `PurgeTask<S>` | `purge::PurgeTask` | 1 hour | Maintenance |
 | `ReorgTask<S, V>` | `reorg::ReorgTask` | 60 seconds | Blockchain |
 | `ReviewStatusTask<S>` | `review_status::ReviewStatusTask` | 15 minutes | Status |
 | `SendWaitingTask<S, V>` | `send_waiting::SendWaitingTask` | 5 minutes | Transaction |
 | `UnfailTask<S, V>` | `unfail::UnfailTask` | 10 minutes | Status |
+| `SyncWhenIdleTask` | `sync_when_idle::SyncWhenIdleTask` | 60 seconds | Service |
 
 ### Additional Exports
 
@@ -165,7 +168,7 @@ NewHeaderTask::new(services: Arc<V>) -> Self
 
 **State:**
 - `last_height: AtomicU32` - Last known chain height
-- `last_hash: RwLock<Option<String>>` - Last known chain tip hash
+- `last_hash: RwLock<Option<String>>` - Last known chain tip hash (`#[allow(dead_code)]`)
 - `stable_cycles: AtomicU32` - Consecutive cycles without new headers
 - `new_header_received: AtomicBool` - Flag for other tasks to check
 
@@ -415,11 +418,12 @@ FailAbandonedTask::new(storage: Arc<S>, timeout: Duration) -> Self
 
 Logs service call statistics for monitoring and debugging.
 
-**Note:** Requires concrete `Services` type (not generic `WalletServices` trait).
+**Type Parameters:**
+- `V: WalletServices` - Service provider (works with any implementation, not just concrete `Services`)
 
 **Constructor:**
 ```rust
-MonitorCallHistoryTask::new(services: Arc<Services>) -> Self
+MonitorCallHistoryTask::new(services: Arc<V>) -> Self
 ```
 
 **Behavior:**
@@ -431,6 +435,36 @@ MonitorCallHistoryTask::new(services: Arc<Services>) -> Self
    - `get_utxo_status` - UTXO status checks
 3. Tracks total_calls and total_errors across all providers
 4. Returns total_calls as `items_processed`
+
+#### SyncWhenIdleTask (sync_when_idle.rs)
+
+Triggers storage synchronization after idle periods. Mirrors the TypeScript `TaskSyncWhenIdle` from `@bsv/wallet-toolbox`. Fully wired into `mod.rs` with `TaskType::SyncWhenIdle` variant.
+
+**No generics** — standalone task with no storage or service dependencies.
+
+**Constants:**
+- `DEFAULT_IDLE_THRESHOLD_SECS: u64 = 120` - 2 minute idle threshold
+
+**Constructor:**
+```rust
+SyncWhenIdleTask::new() -> Self               // Default 2-minute threshold
+SyncWhenIdleTask::with_threshold(Duration) -> Self  // Custom threshold
+SyncWhenIdleTask::default() -> Self           // Implements Default (same as new())
+```
+
+**State:**
+- `last_activity: AtomicU64` - Unix timestamp of last recorded activity
+- `idle_threshold: Duration` - How long wallet must be idle before sync
+
+**Public Methods:**
+- `notify_activity()` - Reset idle timer (call on wallet activity)
+- `last_activity_timestamp()` - Get last activity time (seconds since epoch)
+
+**Behavior:**
+1. Checks if elapsed time since `last_activity` exceeds `idle_threshold`
+2. If idle: returns `TaskResult::with_count(1)` signaling sync should occur
+3. If active: returns empty result
+4. Actual sync is performed by the Monitor daemon, not this task
 
 ## Transaction Status Flow
 
@@ -501,12 +535,6 @@ S: MonitorStorage + 'static
 ```
 Used by: `FailAbandonedTask`, `PurgeTask`, `ReviewStatusTask`
 
-**Services only:**
-```rust
-V: WalletServices + 'static
-```
-Used by: `NewHeaderTask`
-
 **Both storage and services:**
 ```rust
 S: MonitorStorage + 'static
@@ -514,9 +542,31 @@ V: WalletServices + 'static
 ```
 Used by: `CheckForProofsTask`, `CheckNoSendsTask`, `ReorgTask`, `SendWaitingTask`, `UnfailTask`
 
-**No generics (concrete types only):**
+**Services only (`WalletServices`):**
+```rust
+V: WalletServices + 'static
+```
+Used by: `NewHeaderTask`, `MonitorCallHistoryTask`
+
+**No generics:**
 - `ClockTask` - No external dependencies
-- `MonitorCallHistoryTask` - Requires concrete `Services` type
+- `SyncWhenIdleTask` - No external dependencies
+
+## Tests
+
+- `mod.rs`: 4 unit tests — `TaskResult` constructors and `TaskType::as_str()` for all 12 variants
+- `check_for_proofs.rs`: 5 unit tests — `TaskResult` methods
+- `check_no_sends.rs`: 2 unit tests — interval constants
+- `clock.rs`: 3 tests (2 async) — first-run, same-minute, and default behavior
+- `fail_abandoned.rs`: 2 unit tests — name and interval
+- `monitor_call_history.rs`: 4 tests (1 async) — name, interval, run on fresh services, `ServicesCallHistory` default
+- `new_header.rs`: 2 tests (1 async) — interval and task initialization with `Services::mainnet()`
+- `purge.rs`: 2 unit tests — `PurgeConfig` defaults and interval
+- `reorg.rs`: 4 unit tests — interval, `MAX_RETRY_COUNT`, delay constant, `DeactivatedHeader` struct
+- `review_status.rs`: 1 unit test — interval
+- `send_waiting.rs`: 3 unit tests — name, interval, `DEFAULT_MIN_AGE_SECS`
+- `sync_when_idle.rs`: 5 tests (2 async) — name/interval, activity reset, idle/active behavior, defaults
+- `unfail.rs`: 2 unit tests — name and interval
 
 ## Related Documentation
 

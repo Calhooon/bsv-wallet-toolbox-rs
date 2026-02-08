@@ -95,4 +95,4 @@ mod signer;
 mod wallet;
 
 pub use signer::{ScriptType, SignerInput, UnlockingScriptTemplate, WalletSigner};
-pub use wallet::{PendingTransaction, PrivilegedKeyManager, Wallet, WalletOptions};
+pub use wallet::{PendingTransaction, PrivilegedKeyManager, UtxoInfo, Wallet, WalletBalance, WalletOptions};

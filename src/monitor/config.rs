@@ -83,6 +83,8 @@ pub struct TasksConfig {
     pub purge: TaskConfig,
     /// Monitor service call history task configuration.
     pub monitor_call_history: TaskConfig,
+    /// Sync-when-idle task configuration.
+    pub sync_when_idle: TaskConfig,
 }
 
 impl Default for TasksConfig {
@@ -143,6 +145,11 @@ impl Default for TasksConfig {
                 interval: Duration::from_secs(720), // 12 minutes
                 start_immediately: false,
             },
+            sync_when_idle: TaskConfig {
+                enabled: true,
+                interval: Duration::from_secs(60), // 1 minute
+                start_immediately: false,
+            },
         }
     }
 }
@@ -196,6 +203,7 @@ mod tests {
         assert!(opts.tasks.review_status.enabled);
         assert!(opts.tasks.purge.enabled);
         assert!(opts.tasks.monitor_call_history.enabled);
+        assert!(opts.tasks.sync_when_idle.enabled);
         assert_eq!(opts.fail_abandoned_timeout, Duration::from_secs(5 * 60));
         assert!(opts.on_tx_broadcasted.is_none());
         assert!(opts.on_tx_proven.is_none());
@@ -213,6 +221,7 @@ mod tests {
         assert_eq!(opts.tasks.review_status.interval, Duration::from_secs(900));
         assert_eq!(opts.tasks.purge.interval, Duration::from_secs(3600));
         assert_eq!(opts.tasks.monitor_call_history.interval, Duration::from_secs(720));
+        assert_eq!(opts.tasks.sync_when_idle.interval, Duration::from_secs(60));
     }
 
     #[test]

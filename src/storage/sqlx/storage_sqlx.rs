@@ -3,6 +3,8 @@
 //! This module provides a storage backend using SQLx with SQLite support.
 //! It implements the `WalletStorageProvider` trait hierarchy.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
@@ -48,6 +50,12 @@ pub struct StorageSqlx {
     /// When set, storage can perform BEEF verification, broadcast transactions,
     /// validate UTXOs, and look up block headers.
     services: std::sync::RwLock<Option<Arc<dyn WalletServices>>>,
+    /// Active transaction tokens for TrxToken scope tracking.
+    active_transactions: RwLock<HashMap<u64, ()>>,
+    /// In-memory task locks for multi-instance monitor support.
+    /// Maps task_name -> (instance_id, expiry).
+    #[allow(dead_code)]
+    task_locks: RwLock<HashMap<String, (String, std::time::Instant)>>,
 }
 
 impl StorageSqlx {
@@ -72,6 +80,8 @@ impl StorageSqlx {
             storage_name: std::sync::RwLock::new(String::new()),
             chain_tracker: RwLock::new(None),
             services: std::sync::RwLock::new(None),
+            active_transactions: RwLock::new(HashMap::new()),
+            task_locks: RwLock::new(HashMap::new()),
         })
     }
 
@@ -2337,6 +2347,37 @@ impl WalletStorageWriter for StorageSqlx {
 
         Ok(PurgeResults { count, log })
     }
+
+    async fn begin_transaction(&self) -> Result<TrxToken> {
+        let token = TrxToken::new();
+        let mut active = self.active_transactions.write().await;
+        active.insert(token.id(), ());
+        Ok(token)
+    }
+
+    async fn commit_transaction(&self, trx: TrxToken) -> Result<()> {
+        let mut active = self.active_transactions.write().await;
+        if active.remove(&trx.id()).is_some() {
+            Ok(())
+        } else {
+            Err(Error::InvalidOperation(format!(
+                "Unknown transaction token: {}",
+                trx.id()
+            )))
+        }
+    }
+
+    async fn rollback_transaction(&self, trx: TrxToken) -> Result<()> {
+        let mut active = self.active_transactions.write().await;
+        if active.remove(&trx.id()).is_some() {
+            Ok(())
+        } else {
+            Err(Error::InvalidOperation(format!(
+                "Unknown transaction token: {}",
+                trx.id()
+            )))
+        }
+    }
 }
 
 // =============================================================================
@@ -2973,6 +3014,45 @@ impl MonitorStorage for StorageSqlx {
         }
 
         Ok(PurgeResults { count, log })
+    }
+
+    async fn try_acquire_task_lock(
+        &self,
+        task_name: &str,
+        instance_id: &str,
+        ttl: Duration,
+    ) -> Result<bool> {
+        let now = std::time::Instant::now();
+        let mut locks = self.task_locks.write().await;
+
+        // Check if there's an existing lock
+        if let Some((holder, expiry)) = locks.get(task_name) {
+            if *expiry > now {
+                // Lock is still valid
+                if holder == instance_id {
+                    // We already hold it - extend the TTL
+                    locks.insert(task_name.to_string(), (instance_id.to_string(), now + ttl));
+                    return Ok(true);
+                }
+                // Another instance holds it
+                return Ok(false);
+            }
+            // Lock has expired - fall through to acquire
+        }
+
+        // Acquire the lock
+        locks.insert(task_name.to_string(), (instance_id.to_string(), now + ttl));
+        Ok(true)
+    }
+
+    async fn release_task_lock(&self, task_name: &str, instance_id: &str) -> Result<()> {
+        let mut locks = self.task_locks.write().await;
+        if let Some((holder, _)) = locks.get(task_name) {
+            if holder == instance_id {
+                locks.remove(task_name);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -4288,5 +4368,196 @@ mod tests {
 
         // Both should produce the same hash (hash_output_script is deterministic)
         assert_eq!(hash1, hash2);
+    }
+
+    // =============================================================================
+    // TrxToken / Transaction Scope Tests
+    // =============================================================================
+
+    #[tokio::test]
+    async fn test_begin_transaction() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage.make_available().await.unwrap();
+        let token = storage.begin_transaction().await.unwrap();
+        assert!(token.id() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_commit_transaction() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage.make_available().await.unwrap();
+        let token = storage.begin_transaction().await.unwrap();
+        let result = storage.commit_transaction(token).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_transaction() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage.make_available().await.unwrap();
+        let token = storage.begin_transaction().await.unwrap();
+        let result = storage.rollback_transaction(token).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_trx_token_uniqueness() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage.make_available().await.unwrap();
+        let token1 = storage.begin_transaction().await.unwrap();
+        let token2 = storage.begin_transaction().await.unwrap();
+        assert_ne!(token1.id(), token2.id());
+        storage.commit_transaction(token1).await.unwrap();
+        storage.commit_transaction(token2).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commit_invalid_token() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage.make_available().await.unwrap();
+        let bogus_token = TrxToken::new();
+        let result = storage.commit_transaction(bogus_token).await;
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidOperation(msg)) => {
+                assert!(msg.contains("Unknown transaction token"), "Error should mention unknown token: {}", msg);
+            }
+            Err(e) => panic!("Expected InvalidOperation error, got: {}", e),
+            Ok(_) => panic!("Expected error for invalid token"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rollback_invalid_token() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-storage", "0".repeat(64).as_str()).await.unwrap();
+        storage.make_available().await.unwrap();
+        let bogus_token = TrxToken::new();
+        let result = storage.rollback_transaction(bogus_token).await;
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidOperation(msg)) => {
+                assert!(msg.contains("Unknown transaction token"), "Error should mention unknown token: {}", msg);
+            }
+            Err(e) => panic!("Expected InvalidOperation error, got: {}", e),
+            Ok(_) => panic!("Expected error for invalid token"),
+        }
+    }
+
+    // =========================================================================
+    // Task Lock Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_task_lock_acquire_and_release() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        let ttl = Duration::from_secs(60);
+
+        // Acquire should succeed
+        let acquired = storage
+            .try_acquire_task_lock("test_task", "instance_a", ttl)
+            .await
+            .unwrap();
+        assert!(acquired);
+
+        // Release should succeed
+        storage
+            .release_task_lock("test_task", "instance_a")
+            .await
+            .unwrap();
+
+        // After release, another instance can acquire
+        let acquired = storage
+            .try_acquire_task_lock("test_task", "instance_b", ttl)
+            .await
+            .unwrap();
+        assert!(acquired);
+    }
+
+    #[tokio::test]
+    async fn test_task_lock_contention() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        let ttl = Duration::from_secs(60);
+
+        // Instance A acquires the lock
+        let acquired = storage
+            .try_acquire_task_lock("test_task", "instance_a", ttl)
+            .await
+            .unwrap();
+        assert!(acquired);
+
+        // Instance B should fail to acquire
+        let acquired = storage
+            .try_acquire_task_lock("test_task", "instance_b", ttl)
+            .await
+            .unwrap();
+        assert!(!acquired);
+
+        // Instance A can re-acquire (extend TTL)
+        let acquired = storage
+            .try_acquire_task_lock("test_task", "instance_a", ttl)
+            .await
+            .unwrap();
+        assert!(acquired);
+    }
+
+    #[tokio::test]
+    async fn test_task_lock_expiry() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+
+        // Acquire with a very short TTL
+        let ttl = Duration::from_millis(1);
+        let acquired = storage
+            .try_acquire_task_lock("test_task", "instance_a", ttl)
+            .await
+            .unwrap();
+        assert!(acquired);
+
+        // Wait for TTL to expire
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Instance B should now be able to acquire the expired lock
+        let acquired = storage
+            .try_acquire_task_lock("test_task", "instance_b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(acquired);
+    }
+
+    #[tokio::test]
+    async fn test_task_lock_different_tasks() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        let ttl = Duration::from_secs(60);
+
+        // Different tasks should have independent locks
+        let acquired_a = storage
+            .try_acquire_task_lock("task_one", "instance_a", ttl)
+            .await
+            .unwrap();
+        assert!(acquired_a);
+
+        let acquired_b = storage
+            .try_acquire_task_lock("task_two", "instance_a", ttl)
+            .await
+            .unwrap();
+        assert!(acquired_b);
+
+        // Another instance should be blocked on task_one but not task_three
+        let blocked = storage
+            .try_acquire_task_lock("task_one", "instance_b", ttl)
+            .await
+            .unwrap();
+        assert!(!blocked);
+
+        let ok = storage
+            .try_acquire_task_lock("task_three", "instance_b", ttl)
+            .await
+            .unwrap();
+        assert!(ok);
     }
 }

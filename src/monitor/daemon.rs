@@ -13,25 +13,71 @@ use crate::{Error, Result};
 
 use super::config::{MonitorOptions, TaskConfig};
 use super::tasks::{
-    CheckForProofsTask, CheckNoSendsTask, ClockTask, FailAbandonedTask, MonitorTask,
-    NewHeaderTask, PurgeTask, ReorgTask, ReviewStatusTask, SendWaitingTask, TaskResult, TaskType,
-    UnfailTask,
+    CheckForProofsTask, CheckNoSendsTask, ClockTask, FailAbandonedTask, MonitorCallHistoryTask,
+    MonitorTask, NewHeaderTask, PurgeTask, ReorgTask, ReviewStatusTask, SendWaitingTask,
+    SyncWhenIdleTask, TaskResult, TaskType, UnfailTask,
 };
 
-/// The Monitor daemon schedules and runs background tasks for wallet maintenance.
+/// Generate a pseudo-random byte using system time as entropy.
+/// This is NOT cryptographically secure - used only for instance IDs.
+fn rand_byte() -> u8 {
+    use std::sync::atomic::AtomicU64;
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    // Mix counter with time for uniqueness
+    ((nanos as u64).wrapping_mul(6364136223846793005).wrapping_add(count)) as u8
+}
+
+/// Background task scheduler for wallet transaction lifecycle management.
 ///
-/// It handles:
-/// - Checking for merkle proofs for unconfirmed transactions
-/// - Broadcasting pending transactions
-/// - Failing abandoned transactions
-/// - Recovering incorrectly failed transactions
-/// - Tracking clock/minute boundaries
-/// - Polling for new block headers
-/// - Handling blockchain reorganizations
-/// - Checking nosend transaction proofs
-/// - Reviewing and synchronizing transaction status
-/// - Purging expired data
-/// - Monitoring service call history
+/// The `Monitor` daemon spawns and manages recurring background tasks using `tokio`.
+/// It handles the full transaction lifecycle from broadcasting through proof
+/// verification, with automatic cleanup and recovery.
+///
+/// # Tasks
+///
+/// | Task | Default Interval | Purpose |
+/// |------|-----------------|--------|
+/// | `clock` | 1 second | Track minute boundaries for scheduling |
+/// | `check_for_proofs` | 1 minute | Fetch merkle proofs for unconfirmed transactions |
+/// | `new_header` | 1 minute | Poll for new block headers |
+/// | `reorg` | 1 minute | Handle blockchain reorganizations |
+/// | `send_waiting` | 5 minutes | Broadcast pending transactions |
+/// | `fail_abandoned` | 5 minutes | Mark stale transactions as failed |
+/// | `unfail` | 10 minutes | Recover incorrectly failed transactions |
+/// | `monitor_call_history` | 12 minutes | Log service call diagnostics |
+/// | `review_status` | 15 minutes | Synchronize transaction and proof status |
+/// | `purge` | 1 hour | Delete expired data |
+/// | `check_no_sends` | 24 hours | Check for externally mined nosend transactions |
+/// | `sync_when_idle` | 1 minute | Synchronize storage when wallet is idle |
+///
+/// # Type Parameters
+///
+/// - `S`: Storage backend implementing [`MonitorStorage`]
+/// - `V`: Services backend implementing [`WalletServices`]
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bsv_wallet_toolbox::monitor::{Monitor, MonitorOptions, TaskConfig};
+/// use std::sync::Arc;
+/// use std::time::Duration;
+///
+/// let monitor = Monitor::new(Arc::new(storage), Arc::new(services));
+///
+/// // Start all enabled background tasks
+/// monitor.start().await?;
+///
+/// // Or run all tasks once (useful for testing)
+/// let results = monitor.run_once().await?;
+///
+/// // Stop when done
+/// monitor.stop().await?;
+/// ```
 pub struct Monitor<S, V>
 where
     S: MonitorStorage + 'static,
@@ -42,6 +88,8 @@ where
     options: MonitorOptions,
     running: Arc<AtomicBool>,
     task_handles: RwLock<HashMap<TaskType, JoinHandle<()>>>,
+    /// Unique identifier for this monitor instance, used for distributed task locking.
+    instance_id: String,
 }
 
 impl<S, V> Monitor<S, V>
@@ -56,13 +104,26 @@ where
 
     /// Create a new Monitor with custom options.
     pub fn with_options(storage: Arc<S>, services: Arc<V>, options: MonitorOptions) -> Self {
+        // Generate a random 16-byte hex string as instance ID
+        let mut bytes = [0u8; 16];
+        for b in &mut bytes {
+            *b = rand_byte();
+        }
+        let instance_id = hex::encode(bytes);
+
         Self {
             storage,
             services,
             options,
             running: Arc::new(AtomicBool::new(false)),
             task_handles: RwLock::new(HashMap::new()),
+            instance_id,
         }
+    }
+
+    /// Get this monitor instance's unique identifier.
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
     }
 
     /// Start the monitor daemon.
@@ -179,9 +240,27 @@ where
             handles.insert(TaskType::Purge, handle);
         }
 
-        // Note: MonitorCallHistory requires concrete Services type, not generic WalletServices.
-        // It is not spawned here because the Monitor is generic over V: WalletServices.
-        // Users who need this task should spawn it separately with a concrete Services instance.
+        // Start sync_when_idle task
+        if self.options.tasks.sync_when_idle.enabled {
+            let task = SyncWhenIdleTask::new();
+            let handle = self.spawn_task(
+                TaskType::SyncWhenIdle,
+                Arc::new(task),
+                &self.options.tasks.sync_when_idle,
+            );
+            handles.insert(TaskType::SyncWhenIdle, handle);
+        }
+
+        // Start monitor_call_history task
+        if self.options.tasks.monitor_call_history.enabled {
+            let task = MonitorCallHistoryTask::new(self.services.clone());
+            let handle = self.spawn_task(
+                TaskType::MonitorCallHistory,
+                Arc::new(task),
+                &self.options.tasks.monitor_call_history,
+            );
+            handles.insert(TaskType::MonitorCallHistory, handle);
+        }
 
         Ok(())
     }
@@ -272,8 +351,17 @@ where
             results.insert(TaskType::Purge, result);
         }
 
-        // Note: MonitorCallHistory requires concrete Services type.
-        // It is skipped in run_once for the generic Monitor.
+        if self.options.tasks.sync_when_idle.enabled {
+            let task = SyncWhenIdleTask::new();
+            let result = task.run().await?;
+            results.insert(TaskType::SyncWhenIdle, result);
+        }
+
+        if self.options.tasks.monitor_call_history.enabled {
+            let task = MonitorCallHistoryTask::new(self.services.clone());
+            let result = task.run().await?;
+            results.insert(TaskType::MonitorCallHistory, result);
+        }
 
         Ok(results)
     }
@@ -281,7 +369,8 @@ where
     /// Spawn a task with the given configuration.
     ///
     /// The task is spawned as a tokio background task. Before the first run,
-    /// the task's optional `setup()` method is called. Each run logs results
+    /// the task's optional `setup()` method is called. Each run acquires a
+    /// distributed task lock (for multi-instance support) and logs results
     /// and any non-fatal errors encountered during execution.
     fn spawn_task(
         &self,
@@ -293,6 +382,8 @@ where
         let start_immediately = config.start_immediately;
         let running = self.running.clone();
         let task_name = task_type.as_str();
+        let storage = self.storage.clone();
+        let instance_id = self.instance_id.clone();
 
         tokio::spawn(async move {
             // Run optional async setup phase before first run
@@ -310,9 +401,38 @@ where
                 tokio::time::sleep(interval).await;
             }
 
+            // Use 2x interval as TTL so locks expire if an instance crashes
+            let lock_ttl = interval * 2;
+
             loop {
                 if !running.load(Ordering::Relaxed) {
                     break;
+                }
+
+                // Try to acquire the distributed task lock
+                let acquired = match storage
+                    .try_acquire_task_lock(task_name, &instance_id, lock_ttl)
+                    .await
+                {
+                    Ok(acquired) => acquired,
+                    Err(e) => {
+                        tracing::warn!(
+                            task = task_name,
+                            error = %e,
+                            "Failed to acquire task lock, skipping run"
+                        );
+                        tokio::time::sleep(interval).await;
+                        continue;
+                    }
+                };
+
+                if !acquired {
+                    tracing::debug!(
+                        task = task_name,
+                        "Task lock held by another instance, skipping"
+                    );
+                    tokio::time::sleep(interval).await;
+                    continue;
                 }
 
                 // Run the task
@@ -334,10 +454,6 @@ where
                                     error = error.as_str(),
                                     "Task error"
                                 );
-                                // Try to log to storage for persistent error tracking.
-                                // This is intentionally fire-and-forget (ok()) so that
-                                // storage logging failures don't break the task loop.
-                                // self.storage.log_monitor_event(task_name, error).await.ok();
                             }
                         }
                     }
@@ -348,6 +464,15 @@ where
                             "Task failed"
                         );
                     }
+                }
+
+                // Release the lock after task completes
+                if let Err(e) = storage.release_task_lock(task_name, &instance_id).await {
+                    tracing::warn!(
+                        task = task_name,
+                        error = %e,
+                        "Failed to release task lock"
+                    );
                 }
 
                 // Wait for next interval
@@ -383,6 +508,7 @@ mod tests {
         assert!(opts.tasks.review_status.enabled);
         assert!(opts.tasks.purge.enabled);
         assert!(opts.tasks.monitor_call_history.enabled);
+        assert!(opts.tasks.sync_when_idle.enabled);
         assert_eq!(
             opts.fail_abandoned_timeout,
             Duration::from_secs(5 * 60)
@@ -403,10 +529,33 @@ mod tests {
             TaskType::Purge,
             TaskType::Reorg,
             TaskType::ReviewStatus,
+            TaskType::SyncWhenIdle,
         ];
         for tt in &task_types {
             assert!(!tt.as_str().is_empty());
         }
-        assert_eq!(task_types.len(), 11);
+        assert_eq!(task_types.len(), 12);
+    }
+
+    #[test]
+    fn test_monitor_instance_id_is_unique() {
+        // Two monitors created in quick succession should have different instance IDs
+        // (due to counter + time mixing)
+        let id1 = {
+            let mut bytes = [0u8; 16];
+            for b in &mut bytes {
+                *b = rand_byte();
+            }
+            hex::encode(bytes)
+        };
+        let id2 = {
+            let mut bytes = [0u8; 16];
+            for b in &mut bytes {
+                *b = rand_byte();
+            }
+            hex::encode(bytes)
+        };
+        assert_ne!(id1, id2);
+        assert_eq!(id1.len(), 32); // 16 bytes = 32 hex chars
     }
 }

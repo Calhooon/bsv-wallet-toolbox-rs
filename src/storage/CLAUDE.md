@@ -16,7 +16,7 @@ This module provides the storage layer for the wallet toolbox, defining traits f
 
 | Submodule | Feature Flag | Purpose |
 |-----------|--------------|---------|
-| `entities/` | Always | Database entity structs for the wallet schema (18 table types) |
+| `entities/` | Always | Database entity structs for the wallet schema (16 table types) |
 | `sqlx/` | `sqlite` or `mysql` | Local database storage using SQLx |
 | `client/` | `remote` | Remote storage via JSON-RPC to storage.babbage.systems |
 
@@ -107,8 +107,10 @@ Background monitoring operations (extends `WalletStorageProvider`). Used by the 
 | `send_waiting_transactions()` | Broadcast transactions in unsent/sending status |
 | `abort_abandoned()` | Cancel stale unsigned/unprocessed transactions |
 | `un_fail()` | Attempt recovery of incorrectly failed transactions |
+| `review_status()` | Monitor-level status review across all users (no AuthId required) |
+| `purge_data()` | Monitor-level purge across all users (no AuthId required) |
 
-This trait mirrors Go's `MonitoredStorage` interface and encapsulates the full logic for each operation: querying, calling external services, and updating records.
+This trait mirrors Go's `MonitoredStorage` interface and encapsulates the full logic for each operation: querying, calling external services, and updating records. Note that `review_status()` and `purge_data()` here are monitor-level variants that operate without an `AuthId`, unlike the per-user versions on `WalletStorageWriter`.
 
 ## Key Types
 
@@ -253,7 +255,7 @@ Orchestrates multiple storage providers with active/backup semantics. Implemente
 
 ## Entities
 
-The `entities` submodule defines structs for the wallet schema (18 table types):
+The `entities` submodule defines structs for the wallet schema (16 table types):
 
 ### Core Tables
 
@@ -415,6 +417,17 @@ storage.abort_abandoned(Duration::from_secs(3600)).await?;
 
 // Attempt to recover incorrectly failed transactions
 storage.un_fail().await?;
+
+// Monitor-level review (no AuthId needed)
+let review = storage.review_status().await?;
+println!("{}", review.log);
+
+// Monitor-level purge (no AuthId needed)
+let purge_result = storage.purge_data(PurgeParams {
+    max_age_days: 30,
+    purge_completed: true,
+    purge_failed: true,
+}).await?;
 ```
 
 ## Feature Flags
@@ -427,7 +440,6 @@ storage.un_fail().await?;
 
 ## Related
 
-- `entities/CLAUDE.md` - Detailed entity documentation
 - `sqlx/CLAUDE.md` - SQLx storage implementation details
 - `client/CLAUDE.md` - Remote storage client details
 - `../chaintracks/CLAUDE.md` - Chain tracking for proofs

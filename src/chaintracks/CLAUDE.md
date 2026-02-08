@@ -11,9 +11,9 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module entry point; re-exports all public types, traits, ingestors, and `ChainTracker` from bsv-sdk |
-| `types.rs` | Core data structures: `Chain`, `BlockHeader`, `LiveBlockHeader`, `HeightRange`, `calculate_work()` |
-| `traits.rs` | Trait definitions: `ChaintracksClient`, `ChaintracksStorage`, `BulkIngestor`, `LiveIngestor`, `ChaintracksOptions` (with `readonly`/`require_ingestors` fields) |
-| `chaintracks.rs` | Main `Chaintracks` orchestrator implementing client and management interfaces |
+| `types.rs` | Core data structures: `Chain`, `BaseBlockHeader`, `BlockHeader`, `LiveBlockHeader`, `InsertHeaderResult`, `HeightRange`, `ChaintracksInfo`, `calculate_work()` (400 lines, 4 tests) |
+| `traits.rs` | Trait definitions: `ChaintracksClient`, `ChaintracksStorage`, `BulkIngestor`, `LiveIngestor`, `ChaintracksOptions`, `ReorgEvent`, `BulkSyncResult`, callback types |
+| `chaintracks.rs` | Main `Chaintracks` orchestrator implementing `ChaintracksClient` + `ChaintracksManagement` traits, background sync task, header processing pipeline (934 lines, 11 tests) |
 | `storage/mod.rs` | Storage backend module; exports `MemoryStorage` and `SqliteStorage` (feature-gated) |
 | `storage/memory.rs` | In-memory storage implementation with reorg handling, fork tracking, and batch operations |
 | `storage/sqlite.rs` | SQLite-based persistent storage (requires `sqlite` or `mysql` feature) |
@@ -85,7 +85,7 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 
 | Trait | Purpose |
 |-------|---------|
-| `ChaintracksClient` | Read-only client API: query headers, subscribe to events |
+| `ChaintracksClient` | Client API: query headers, add headers, subscribe to events |
 | `ChaintracksManagement` | Management API: destroy, validate, export |
 | `ChaintracksStorageQuery` | Storage read operations |
 | `ChaintracksStorageIngest` | Storage write operations |
@@ -106,8 +106,9 @@ Chaintracks is a Rust port of the TypeScript Chaintracks implementation, providi
 | `make_available()` | Initialize storage and prepare for use |
 | `set_bulk_ingestor_count(count)` | Set number of bulk ingestors (for status reporting) |
 | `set_live_ingestor_count(count)` | Set number of live ingestors (for status reporting) |
+| `process_pending_headers()` | Drain base header queue, compute hashes/heights, insert into storage, fire reorg callbacks |
 | `start_background_sync()` | Start background sync; validates ingestor config if `require_ingestors` is set, sets listening flag. Idempotent (no-op if already running) |
-| `stop_background_sync()` | Stop background sync and clear listening flag. Idempotent |
+| `stop_background_sync()` | Stop background sync and clear listening flag. Aborts background task. Idempotent |
 | `is_background_syncing()` | Check if background sync is currently running (non-async, uses `AtomicBool`) |
 | `validate_ingestor_config()` | Check ingestor counts and log warnings if none configured (does not error) |
 
@@ -342,7 +343,8 @@ Subscribers receive `ReorgEvent` notifications with full context.
 | BulkWocIngestor | Complete |
 | LivePollingIngestor | Complete |
 | LiveWebSocketIngestor | Complete |
-| Background sync lifecycle | Complete (`start_background_sync()` / `stop_background_sync()` / `is_background_syncing()`) |
+| Background sync lifecycle | Complete (`start_background_sync()` / `stop_background_sync()` / `is_background_syncing()` / `process_pending_headers()`) |
+| Header processing pipeline | Complete (queue → hash computation → parent lookup → storage insert → reorg detection → subscriber notification) |
 | Readonly mode | Complete (blocks writes when `readonly: true`) |
 | Full ingestor orchestration | Partial (headers added via `add_header()`, ingestor counts tracked; actual ingestor spawning deferred) |
 

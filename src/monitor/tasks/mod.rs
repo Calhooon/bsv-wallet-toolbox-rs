@@ -13,6 +13,7 @@ mod purge;
 mod reorg;
 mod review_status;
 mod send_waiting;
+mod sync_when_idle;
 mod unfail;
 
 pub use check_for_proofs::CheckForProofsTask;
@@ -25,6 +26,7 @@ pub use purge::{PurgeConfig, PurgeTask};
 pub use reorg::{DeactivatedHeader, ReorgTask};
 pub use review_status::ReviewStatusTask;
 pub use send_waiting::SendWaitingTask;
+pub use sync_when_idle::SyncWhenIdleTask;
 pub use unfail::UnfailTask;
 
 use async_trait::async_trait;
@@ -107,6 +109,8 @@ pub enum TaskType {
     Reorg,
     /// Review and sync transaction status.
     ReviewStatus,
+    /// Sync storage when wallet is idle.
+    SyncWhenIdle,
 }
 
 impl TaskType {
@@ -124,6 +128,7 @@ impl TaskType {
             TaskType::Purge => "purge",
             TaskType::Reorg => "reorg",
             TaskType::ReviewStatus => "review_status",
+            TaskType::SyncWhenIdle => "sync_when_idle",
         }
     }
 }
@@ -173,5 +178,6 @@ mod tests {
         assert_eq!(TaskType::Purge.as_str(), "purge");
         assert_eq!(TaskType::Reorg.as_str(), "reorg");
         assert_eq!(TaskType::ReviewStatus.as_str(), "review_status");
+        assert_eq!(TaskType::SyncWhenIdle.as_str(), "sync_when_idle");
     }
 }

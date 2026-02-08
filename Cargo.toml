@@ -80,3 +80,11 @@ mockito = "1.4"
 [[example]]
 name = "basic_wallet"
 path = "examples/basic_wallet.rs"
+
+[[example]]
+name = "monitor_demo"
+path = "examples/monitor_demo.rs"
+
+[[example]]
+name = "chaintracks_demo"
+path = "examples/chaintracks_demo.rs"

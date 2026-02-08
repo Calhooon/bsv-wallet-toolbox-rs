@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{MonitorTask, TaskResult};
-use crate::services::Services;
+use crate::services::WalletServices;
 use crate::Result;
 
 /// Task that monitors and logs service call history.
@@ -16,21 +16,23 @@ use crate::Result;
 /// Periodically retrieves call history from all configured services
 /// and logs statistics about successes, failures, and errors.
 ///
-/// Note: This task requires `Services` specifically (not the generic `WalletServices` trait)
-/// because `get_services_call_history` is only available on the concrete `Services` type.
-pub struct MonitorCallHistoryTask {
-    services: Arc<Services>,
+/// This task is generic over `V: WalletServices`, allowing it to work with
+/// any services implementation (concrete `Services`, mock, etc.). The
+/// `get_services_call_history` method is available on the `WalletServices`
+/// trait with a default that returns empty history.
+pub struct MonitorCallHistoryTask<V: WalletServices> {
+    services: Arc<V>,
 }
 
-impl MonitorCallHistoryTask {
+impl<V: WalletServices> MonitorCallHistoryTask<V> {
     /// Create a new monitor call history task.
-    pub fn new(services: Arc<Services>) -> Self {
+    pub fn new(services: Arc<V>) -> Self {
         Self { services }
     }
 }
 
 #[async_trait]
-impl MonitorTask for MonitorCallHistoryTask {
+impl<V: WalletServices + 'static> MonitorTask for MonitorCallHistoryTask<V> {
     fn name(&self) -> &'static str {
         "monitor_call_history"
     }
@@ -41,7 +43,7 @@ impl MonitorTask for MonitorCallHistoryTask {
 
     async fn run(&self) -> Result<TaskResult> {
         // Get service call history and reset counters
-        let history = self.services.get_services_call_history(true)?;
+        let history = self.services.get_services_call_history(true);
 
         let mut total_calls = 0u64;
         let mut total_errors = 0u64;
@@ -151,5 +153,29 @@ mod tests {
         let services = Services::mainnet().unwrap();
         let task = MonitorCallHistoryTask::new(Arc::new(services));
         assert_eq!(task.default_interval(), Duration::from_secs(12 * 60));
+    }
+
+    #[tokio::test]
+    async fn test_monitor_call_history_task_run_returns_empty_on_fresh_services() {
+        use crate::services::Services;
+
+        let services = Arc::new(Services::mainnet().unwrap());
+        let task = MonitorCallHistoryTask::new(services);
+        let result = task.run().await.unwrap();
+        // Fresh services should have zero calls logged
+        assert_eq!(result.items_processed, 0);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_services_call_history_default_is_empty() {
+        use crate::services::ServicesCallHistory;
+
+        // The default ServicesCallHistory should have all fields as None
+        let history = ServicesCallHistory::default();
+        assert!(history.get_merkle_path.is_none());
+        assert!(history.get_raw_tx.is_none());
+        assert!(history.post_beef.is_none());
+        assert!(history.get_utxo_status.is_none());
     }
 }

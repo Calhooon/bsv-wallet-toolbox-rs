@@ -107,7 +107,7 @@ pub use services::{
     GetUtxoStatusResult, GetUtxoStatusOutputFormat, GetStatusForTxidsResult,
     GetScriptHashHistoryResult, ScriptHistoryItem, UtxoDetail, TxStatusDetail,
     BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates,
-    ServiceCollection, ServiceCallHistory,
+    AdaptiveTimeoutConfig, ServiceCollection, ServiceCallHistory,
     WhatsOnChain, WhatsOnChainConfig,
     Arc, ArcConfig,
     Bitails, BitailsConfig,
@@ -115,7 +115,7 @@ pub use services::{
 };
 
 // Re-export Wallet types
-pub use wallet::{Wallet, WalletOptions, WalletSigner, UnlockingScriptTemplate, ScriptType, SignerInput};
+pub use wallet::{Wallet, WalletBalance, WalletOptions, WalletSigner, UnlockingScriptTemplate, ScriptType, SignerInput, UtxoInfo};
 
 // Re-export Monitor types
 pub use monitor::{
@@ -135,7 +135,8 @@ pub use managers::{
     CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile,
     UmpToken, WalletSnapshot,
     // Permissions manager
-    GroupedPermissions, PermissionRequest, PermissionToken, PermissionsModule,
+    BasketUsageType, CertificateUsageType, GroupedPermissions, PermissionRequest,
+    PermissionRequestHandler, PermissionToken, PermissionUsageType, PermissionsModule,
     WalletPermissionsManager, WalletPermissionsManagerConfig,
     // Authentication manager
     WalletAuthenticationManager,

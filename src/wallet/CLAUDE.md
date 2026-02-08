@@ -33,9 +33,14 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 │  - Field encryption and master keyring creation                 │
 │  - HMAC-based serial number verification                        │
 ├─────────────────────────────────────────────────────────────────┤
+│              Overlay Service Discovery (lookup.rs)              │
+│  - OverlayLookupResolver trait for SLAP/SHIP queries            │
+│  - HttpLookupResolver with endpoint failover                    │
+│  - BEEF/PushDrop certificate parsing                            │
+├─────────────────────────────────────────────────────────────────┤
 │              Scaffolding Types (future integration)             │
-│  - PrivilegedKeyManager trait (two-factor auth)                 │
-│  - LookupResolver (overlay certificate discovery)               │
+│  - PrivilegedKeyManager trait (two-factor auth, wired in)       │
+│  - LookupResolver (legacy stub in wallet.rs)                    │
 │  - WalletLogger (operation diagnostics)                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -44,10 +49,11 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mod.rs` | ~97 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput`, `ScriptType`, `UnlockingScriptTemplate` |
-| `wallet.rs` | ~2582 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, and helper functions |
-| `signer.rs` | ~966 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
+| `mod.rs` | ~98 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput`, `ScriptType`, `UnlockingScriptTemplate` |
+| `wallet.rs` | ~2726 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, and helper functions |
+| `signer.rs` | ~976 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1095 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
+| `lookup.rs` | ~638 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication. **Not yet wired into mod.rs** |
 
 ## Key Exports
 
@@ -68,6 +74,7 @@ where
     signer: WalletSigner,
     pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
     user_id: i64,
+    privileged_key_manager: Option<Arc<dyn PrivilegedKeyManager>>,
 }
 ```
 
@@ -76,6 +83,8 @@ Generic wallet implementation parameterized by:
 - `V` - Services backend (e.g., `Services`)
 
 The `user_id` field is resolved during construction via `storage.find_or_insert_user()` and used to build `AuthId` for all storage calls.
+
+The `privileged_key_manager` field is optional; when set via `set_privileged_key_manager()`, crypto operations at SecurityLevel >= 2 are routed through it for two-factor authentication.
 
 ### PendingTransaction
 
@@ -123,7 +132,7 @@ Handles transaction signing using key derivation from `ProtoWallet`. Signs input
 - `new(root_key: Option<PrivateKey>)` - Create a new signer (uses "anyone" key if None)
 - `sign_transaction(&self, unsigned_tx, inputs, proto_wallet) -> Result<Vec<u8>>` - Sign all inputs in a transaction, returns fully signed transaction bytes
 - `sign_input(&self, tx_data, input_index, input, proto_wallet) -> Result<Vec<u8>>` - Sign a single input, returns unlocking script bytes
-- `create_unlock_template(&self, prefix, suffix, script_type) -> UnlockingScriptTemplate` - Create a template for deferred signing
+- `create_unlock_template(&self, prefix, suffix, script_type, satoshis) -> UnlockingScriptTemplate` - Create a template for deferred signing
 - `apply_templates(&self, raw_tx, templates, proto_wallet) -> Result<Vec<u8>>` - Apply unlocking script templates to sign inputs
 
 ### UnlockingScriptTemplate & ScriptType
@@ -133,6 +142,7 @@ pub struct UnlockingScriptTemplate {
     pub derivation_prefix: String,
     pub derivation_suffix: String,
     pub script_type: ScriptType,
+    pub satoshis: u64,
 }
 
 pub enum ScriptType {
@@ -141,7 +151,7 @@ pub enum ScriptType {
 }
 ```
 
-Templates for deferred signing where the wallet controls the keys. Captures BRC-29 key derivation parameters and script type for later unlocking script generation.
+Templates for deferred signing where the wallet controls the keys. Captures BRC-29 key derivation parameters, script type, and satoshi value (required for BIP-143 sighash) for later unlocking script generation.
 
 ### SignerInput
 
@@ -163,8 +173,6 @@ Input metadata required for signing. Passed from storage results to the signer.
 
 ## Scaffolding Types (wallet.rs)
 
-These types are defined for future integration but not yet fully wired into the wallet flow:
-
 ### PrivilegedKeyManager Trait
 
 ```rust
@@ -180,15 +188,51 @@ pub trait PrivilegedKeyManager: Send + Sync {
 }
 ```
 
-For two-factor authentication where crypto operations at SecurityLevel >= 2 are routed through a separate key manager.
+For two-factor authentication where crypto operations at SecurityLevel >= 2 are routed through a separate key manager. The wallet stores an optional `Arc<dyn PrivilegedKeyManager>` and provides `set_privileged_key_manager()` / `privileged_key_manager()` accessors.
 
-### LookupResolver
+### LookupResolver (legacy stub)
 
-Overlay certificate discovery via HTTP. Has `new(hosts)` and `query(attributes)` methods. Currently a stub returning empty results.
+Overlay certificate discovery via HTTP in wallet.rs. Has `new(hosts)` and `query(attributes)` methods. Returns empty results with a `tracing::debug!` log. Superseded by the `OverlayLookupResolver` trait in `lookup.rs`.
 
 ### WalletLogger
 
 Structured operation logger with indented groups, timestamps, and log levels. Provides `group()`/`group_end()`, `log()`, `error()`, and `to_log_string()` methods.
+
+## Overlay Service Discovery (lookup.rs)
+
+The `lookup.rs` module provides trait-based overlay service lookups for `discover_by_identity_key` and `discover_by_attributes`. **Note: not yet declared in mod.rs** — the file exists but is not compiled into the module tree.
+
+### OverlayCertificate
+
+Wire format for certificates returned from overlay SLAP/SHIP services. Fields: `type_id`, `serial_number`, `subject`, `certifier`, `revocation_outpoint`, `fields`, `keyring`, `signature`, `decrypted_fields`. Provides:
+- `to_identity_certificate()` - Convert to SDK's `IdentityCertificate` format
+- `dedup_key()` - Returns `(type_id, serial_number)` tuple for deduplication
+
+### OverlayLookupResolver Trait
+
+```rust
+#[async_trait]
+pub trait OverlayLookupResolver: Send + Sync {
+    async fn lookup_by_identity_key(&self, identity_key: &str) -> Result<Vec<OverlayCertificate>>;
+    async fn lookup_by_attributes(&self, attributes: &HashMap<String, String>) -> Result<Vec<OverlayCertificate>>;
+}
+```
+
+### HttpLookupResolver
+
+Default implementation that queries overlay `/lookup` endpoints via HTTP POST. Features:
+- `new(endpoint)` / `with_endpoints(endpoints)` - Single or multi-endpoint
+- `for_network(preset)` / `mainnet()` / `testnet()` - Network preset constructors
+- Endpoint failover: tries each endpoint in order, skips on error
+- Parses BEEF-encoded PushDrop transaction outputs into `OverlayCertificate` structs
+- Default hosts: `https://lookup.babbage.systems` (mainnet), `https://staging-lookup.babbage.systems` (testnet)
+- 10-second request timeout per endpoint
+
+### Helper Functions
+
+- `parse_overlay_answer(answer)` - Parse `LookupAnswer` into certificates (handles `OutputList` variant)
+- `parse_single_output(beef, output_index)` - Parse single BEEF output via PushDrop decode
+- `dedup_certificates(certs)` - Deduplicate by `(type_id, serial_number)`, keeping first occurrence
 
 ## WalletInterface Methods
 
@@ -248,6 +292,19 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 | `get_header_for_height` | Block header at height from services |
 | `get_network` | Network (mainnet/testnet) |
 | `get_version` | Returns "bsv-wallet-toolbox-0.1.0" |
+
+## Additional Wallet Methods (beyond WalletInterface)
+
+| Method | Description |
+|--------|-------------|
+| `set_privileged_key_manager(manager)` | Set the privileged key manager for 2FA |
+| `privileged_key_manager()` | Get reference to privileged key manager |
+| `list_failed_actions()` | List txids with Failed status |
+| `list_no_send_actions()` | List txids with NoSend status |
+| `get_known_txids()` | List txids with Completed/Unproven/Sending status |
+| `destroy()` | Destroy wallet storage (delegates to `storage.destroy()`) |
+| `get_identity_key()` | Identity key as owned String |
+| `get_storage_identity()` | Returns `(storage_identity_key, storage_name)` tuple |
 
 ## Constants
 
@@ -387,7 +444,7 @@ let wallet = Wallet::with_chain(root_key, storage, services, WalletOptions::defa
 | `with_options(root_key, storage, services, options)` | Custom options, mainnet |
 | `with_chain(root_key, storage, services, options, chain)` | Full control over all parameters |
 
-Initialization flow: Creates `ProtoWallet` -> gets identity key -> creates `WalletSigner` -> verifies storage is available -> ensures user exists via `find_or_insert_user` -> stores `user_id`.
+Initialization flow: Creates `ProtoWallet` -> gets identity key -> creates `WalletSigner` -> verifies storage is available -> ensures user exists via `find_or_insert_user` -> stores `user_id` -> sets `privileged_key_manager` to None.
 
 ## Originator Validation
 
@@ -402,7 +459,7 @@ All `WalletInterface` methods require an `originator` string parameter:
 
 Some methods have limited or local-only implementations:
 - `discover_by_identity_key` - Local-only: queries storage and filters by subject matching identity_key
-- `discover_by_attributes` - Local-only: returns empty results (full implementation requires overlay service)
+- `discover_by_attributes` - Local-only: returns empty results (full implementation requires overlay service via `lookup.rs`)
 
 ### Pending Transaction Cache
 

@@ -31,8 +31,10 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `lib.rs` | 144 | Crate root with module declarations, re-exports, and crate-level documentation |
-| `error.rs` | 127 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, and validation errors |
+| `lib.rs` | 146 | Crate root with module declarations, re-exports, and crate-level documentation |
+| `error.rs` | 133 | Error types using `thiserror` with variants for storage, auth, service, transaction, sync, validation, and internal errors |
+| `utils.rs` | 128 | Security utilities: `constant_time_eq` for timing-safe byte comparisons (HMAC, tokens) |
+| `lock_utils.rs` | 20 | Safe `RwLock` acquisition helpers (`lock_read`, `lock_write`) that return `Error::Internal` instead of panicking on poison |
 
 ## Modules
 
@@ -56,11 +58,22 @@ pub use error::{Error, Result};
 - `Error` - Enum with categorized error variants (storage, auth, service, transaction, sync, validation)
 - `Result<T>` - Type alias for `std::result::Result<T, Error>`
 
+### Utilities
+
+```rust
+pub mod utils;       // constant_time_eq() for timing-safe byte comparisons
+pub mod lock_utils;  // lock_read(), lock_write() - safe RwLock helpers
+```
+
+- `utils::constant_time_eq(a, b)` - XOR-accumulation comparison to prevent timing side-channel attacks on HMACs, tokens, and key material
+- `lock_utils::lock_read(lock)` / `lock_utils::lock_write(lock)` - Convert poisoned `RwLock` errors into `Error::Internal` instead of panicking
+
 ### Storage Types
 
 ```rust
 pub use storage::{
     AuthId,                   // Authentication identifier for storage operations
+    MonitorStorage,           // Extended storage trait for monitor daemon operations
     WalletStorageProvider,    // Full storage interface (read + write + sync)
     WalletStorageReader,      // Read-only operations (find_*, list_*)
     WalletStorageWriter,      // Write operations (create_action, insert_certificate)
@@ -139,9 +152,12 @@ pub use services::{
 
 ```rust
 pub use wallet::{
-    Wallet,          // Full wallet implementation with WalletInterface
-    WalletOptions,   // Configuration options for wallet creation
-    WalletSigner,    // Transaction signing component
+    Wallet,                    // Full wallet implementation with WalletInterface
+    WalletOptions,             // Configuration options for wallet creation
+    WalletSigner,              // Transaction signing component
+    UnlockingScriptTemplate,   // Template for generating unlocking scripts
+    ScriptType,                // Script type enum (P2PKH, P2PK, etc.)
+    SignerInput,               // Input metadata for signing operations
 };
 ```
 
@@ -236,8 +252,8 @@ The `Error` enum in `error.rs` organizes errors by category:
 | Service | `ServiceError`, `NetworkError`, `BroadcastFailed`, `NoServicesAvailable` | External service calls |
 | Transaction | `TransactionError`, `InvalidTransactionStatus`, `InsufficientFunds` | Transaction processing |
 | Validation | `ValidationError`, `InvalidArgument`, `InvalidOperation` | Input validation and operation errors |
-| Sync | `SyncError`, `SyncConflict` | Multi-storage synchronization |
-| Wrapped | `SdkError`, `JsonError`, `IoError`, `SqlxError` (sqlite feature), `HttpError` | Errors from dependencies (`bsv_sdk`, `serde_json`, `std::io`, `sqlx`, `reqwest`) |
+| Sync | `SyncError`, `SyncConflict`, `LockTimeout` | Multi-storage synchronization and lock acquisition |
+| Wrapped | `SdkError`, `JsonError`, `IoError`, `SqlxError` (sqlite feature), `HttpError`, `Internal` | Errors from dependencies and internal failures (poisoned locks, etc.) |
 
 ## Usage
 
@@ -318,6 +334,8 @@ WalletStorageWriter     ← Write operations (create_action, insert_certificate,
 WalletStorageSync       ← Sync operations (get_sync_chunk, process_sync_chunk)
         ↑
 WalletStorageProvider   ← Full provider interface with identity/name
+        ↑
+MonitorStorage          ← Extended operations for the monitor daemon
 ```
 
 ## Related Documentation

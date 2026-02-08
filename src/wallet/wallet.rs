@@ -199,6 +199,35 @@ pub struct PendingTransaction {
 }
 
 // =============================================================================
+// Balance and UTXO Types
+// =============================================================================
+
+/// Summary of wallet balance and associated UTXOs.
+///
+/// Returned by [`Wallet::balance`] and [`Wallet::balance_and_utxos`].
+/// Mirrors the TypeScript `WalletBalance` type from `@bsv/wallet-toolbox`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletBalance {
+    /// Total satoshis across all spendable outputs in the default basket.
+    pub total: u64,
+    /// Individual UTXOs (only populated by `balance_and_utxos`, empty for `balance`).
+    pub utxos: Vec<UtxoInfo>,
+}
+
+/// Information about a single spendable UTXO.
+///
+/// Mirrors the TypeScript `{ satoshis, outpoint }` shape from `WalletBalance.utxos`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UtxoInfo {
+    /// Satoshi value of this output.
+    pub satoshis: u64,
+    /// Outpoint in `"txid.vout"` format.
+    pub outpoint: String,
+}
+
+// =============================================================================
 // WalletOptions
 // =============================================================================
 
@@ -293,12 +322,16 @@ where
     /// Used for two-factor authentication where crypto operations are routed
     /// through a separate key manager.
     privileged_key_manager: Option<Arc<dyn PrivilegedKeyManager>>,
+
+    /// Optional permissions manager for BRC-98/99 permission enforcement.
+    /// When set, wallet operations will check permissions before proceeding.
+    permissions_manager: Option<Arc<crate::managers::WalletPermissionsManager>>,
 }
 
 impl<S, V> Wallet<S, V>
 where
-    S: WalletStorageProvider + Send + Sync,
-    V: WalletServices + Send + Sync,
+    S: WalletStorageProvider + Send + Sync + 'static,
+    V: WalletServices + Send + Sync + 'static,
 {
     /// Creates a new Wallet instance.
     ///
@@ -390,6 +423,7 @@ where
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
             user_id: user.user_id,
             privileged_key_manager: None,
+            permissions_manager: None,
         })
     }
 
@@ -438,6 +472,247 @@ where
     /// Returns a reference to the privileged key manager, if set.
     pub fn privileged_key_manager(&self) -> Option<&Arc<dyn PrivilegedKeyManager>> {
         self.privileged_key_manager.as_ref()
+    }
+
+    // =========================================================================
+    // WS4.3 - Permissions Manager (BRC-98/99)
+    // =========================================================================
+
+    /// Sets the permissions manager for BRC-98/99 permission enforcement.
+    ///
+    /// When set, wallet operations will check permissions before proceeding.
+    /// This enables protocol access control (DPACP), basket access control (DBAP),
+    /// certificate access control (DCAP), and spending authorization (DSAP).
+    pub fn set_permissions_manager(
+        &mut self,
+        manager: Arc<crate::managers::WalletPermissionsManager>,
+    ) {
+        self.permissions_manager = Some(manager);
+    }
+
+    /// Returns a reference to the permissions manager, if set.
+    pub fn permissions_manager(
+        &self,
+    ) -> Option<&Arc<crate::managers::WalletPermissionsManager>> {
+        self.permissions_manager.as_ref()
+    }
+
+    /// Checks protocol permission if a permissions manager is set.
+    /// Returns Ok(()) if no manager is set or if permission is granted.
+    async fn check_protocol_permission(
+        &self,
+        originator: &str,
+        protocol: &Protocol,
+        counterparty: Option<&str>,
+        usage_type: crate::managers::PermissionUsageType,
+    ) -> Result<()> {
+        if let Some(ref pm) = self.permissions_manager {
+            pm.ensure_protocol_permission(
+                originator,
+                false, // not privileged by default
+                protocol,
+                counterparty,
+                None,
+                usage_type,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Checks basket access permission if a permissions manager is set.
+    async fn check_basket_permission(
+        &self,
+        originator: &str,
+        basket: &str,
+        usage_type: crate::managers::BasketUsageType,
+    ) -> Result<()> {
+        if let Some(ref pm) = self.permissions_manager {
+            pm.ensure_basket_access(originator, basket, None, usage_type)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Checks spending permission if a permissions manager is set.
+    async fn check_spending_permission(
+        &self,
+        originator: &str,
+        satoshis: u64,
+    ) -> Result<()> {
+        if let Some(ref pm) = self.permissions_manager {
+            pm.ensure_spending_permission(originator, satoshis, None)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Checks certificate access permission if a permissions manager is set.
+    async fn check_certificate_permission(
+        &self,
+        originator: &str,
+        privileged: bool,
+        verifier: &str,
+        cert_type: &str,
+        fields: &[String],
+        usage_type: crate::managers::CertificateUsageType,
+    ) -> Result<()> {
+        if let Some(ref pm) = self.permissions_manager {
+            pm.ensure_certificate_access(
+                originator,
+                privileged,
+                verifier,
+                cert_type,
+                fields,
+                None,
+                usage_type,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    // =========================================================================
+    // Balance and Sweep helpers (P3-07)
+    // =========================================================================
+
+    /// Returns the total spendable balance in satoshis from the default basket.
+    pub async fn balance(&self) -> Result<WalletBalance> {
+        let auth = self.auth();
+        let mut total: u64 = 0;
+        let mut offset = 0u32;
+        let limit = 1000u32;
+
+        loop {
+            let args = ListOutputsArgs {
+                basket: "default".to_string(),
+                tags: None,
+                tag_query_mode: None,
+                include: None,
+                include_custom_instructions: None,
+                include_tags: None,
+                include_labels: None,
+                limit: Some(limit),
+                offset: Some(offset as i32),
+                seek_permission: None,
+            };
+
+            let result = self.storage.list_outputs(&auth, args).await?;
+
+            for output in &result.outputs {
+                if output.spendable {
+                    total = total.saturating_add(output.satoshis);
+                }
+            }
+
+            if result.outputs.len() < limit as usize {
+                break;
+            }
+            offset += limit;
+        }
+
+        Ok(WalletBalance {
+            total,
+            utxos: Vec::new(),
+        })
+    }
+
+    /// Returns the total spendable balance and individual UTXOs from the default basket.
+    pub async fn balance_and_utxos(&self) -> Result<WalletBalance> {
+        let auth = self.auth();
+        let mut total: u64 = 0;
+        let mut utxos = Vec::new();
+        let mut offset = 0u32;
+        let limit = 1000u32;
+
+        loop {
+            let args = ListOutputsArgs {
+                basket: "default".to_string(),
+                tags: None,
+                tag_query_mode: None,
+                include: None,
+                include_custom_instructions: None,
+                include_tags: None,
+                include_labels: None,
+                limit: Some(limit),
+                offset: Some(offset as i32),
+                seek_permission: None,
+            };
+
+            let result = self.storage.list_outputs(&auth, args).await?;
+
+            for output in &result.outputs {
+                if output.spendable {
+                    total = total.saturating_add(output.satoshis);
+                    utxos.push(UtxoInfo {
+                        satoshis: output.satoshis,
+                        outpoint: output.outpoint.to_string(),
+                    });
+                }
+            }
+
+            if result.outputs.len() < limit as usize {
+                break;
+            }
+            offset += limit;
+        }
+
+        Ok(WalletBalance { total, utxos })
+    }
+
+    /// Sweeps all funds from this wallet to a target BSV address.
+    pub async fn sweep_to_address(&self, address: &str) -> Result<CreateActionResult> {
+        use bsv_sdk::wallet::{CreateActionOutput, CreateActionInput};
+
+        let balance_result = self.balance_and_utxos().await?;
+
+        if balance_result.total == 0 {
+            return Err(Error::InsufficientFunds {
+                needed: 1,
+                available: 0,
+            });
+        }
+
+        // Build inputs from all UTXOs
+        let mut inputs: Vec<CreateActionInput> = Vec::new();
+        for utxo in &balance_result.utxos {
+            let outpoint = Outpoint::from_string(&utxo.outpoint)
+                .map_err(|e| Error::ValidationError(format!("Invalid outpoint: {}", e)))?;
+            inputs.push(CreateActionInput {
+                outpoint,
+                input_description: "sweep".to_string(),
+                unlocking_script: None,
+                unlocking_script_length: Some(108), // P2PKH estimate
+                sequence_number: None,
+            });
+        }
+
+        let locking_script = address_to_p2pkh_script(address)?;
+
+        let outputs = vec![CreateActionOutput {
+            locking_script,
+            satoshis: balance_result.total,
+            output_description: format!("sweep to {}", address),
+            basket: None,
+            custom_instructions: None,
+            tags: None,
+        }];
+
+        let args = CreateActionArgs {
+            description: format!("Sweep {} satoshis to {}", balance_result.total, address),
+            input_beef: None,
+            inputs: Some(inputs),
+            outputs: Some(outputs),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let result = WalletInterface::create_action(self, args, "sweep").await
+            .map_err(|e| Error::TransactionError(e.to_string()))?;
+
+        Ok(result)
     }
 
     // =========================================================================
@@ -727,18 +1002,47 @@ where
     ) -> bsv_sdk::Result<GetPublicKeyResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        // BRC-98/99: Check protocol permission for public key revelation
+        if let Some(ref protocol_id) = args.protocol_id {
+            self.check_protocol_permission(
+                originator,
+                protocol_id,
+                None,
+                crate::managers::PermissionUsageType::PublicKey,
+            )
+            .await
+            .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        }
         self.proto_get_public_key(args)
     }
 
     async fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_sdk::Result<EncryptResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        // BRC-98/99: Check protocol permission for encryption
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Encrypting,
+        )
+        .await
+        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         self.proto_encrypt(args)
     }
 
     async fn decrypt(&self, args: DecryptArgs, originator: &str) -> bsv_sdk::Result<DecryptResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        // BRC-98/99: Check protocol permission for decryption
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Encrypting,
+        )
+        .await
+        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         self.proto_decrypt(args)
     }
 
@@ -749,6 +1053,15 @@ where
     ) -> bsv_sdk::Result<CreateHmacResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        // BRC-98/99: Check protocol permission for HMAC
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Hmac,
+        )
+        .await
+        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         self.proto_create_hmac(args)
     }
 
@@ -759,6 +1072,15 @@ where
     ) -> bsv_sdk::Result<VerifyHmacResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        // BRC-98/99: Check protocol permission for HMAC verification
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Hmac,
+        )
+        .await
+        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         self.proto_verify_hmac(args)
     }
 
@@ -769,6 +1091,15 @@ where
     ) -> bsv_sdk::Result<CreateSignatureResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+        // BRC-98/99: Check protocol permission for signing
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Signing,
+        )
+        .await
+        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
         self.proto_create_signature(args)
     }
 
@@ -877,6 +1208,36 @@ where
     ) -> bsv_sdk::Result<CreateActionResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
+        // BRC-98/99: Check spending permission based on total output satoshis
+        if self.permissions_manager.is_some() {
+            let total_satoshis: u64 = args
+                .outputs
+                .as_ref()
+                .map(|outputs| outputs.iter().map(|o| o.satoshis).sum())
+                .unwrap_or(0);
+
+            if total_satoshis > 0 {
+                self.check_spending_permission(originator, total_satoshis)
+                    .await
+                    .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+            }
+
+            // Also check basket access for any outputs that target specific baskets
+            if let Some(ref outputs) = args.outputs {
+                for output in outputs {
+                    if let Some(ref basket) = output.basket {
+                        self.check_basket_permission(
+                            originator,
+                            basket,
+                            crate::managers::BasketUsageType::Insertion,
+                        )
+                        .await
+                        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+                    }
+                }
+            }
+        }
 
         let auth = self.auth();
 
@@ -1550,6 +1911,15 @@ where
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
+        // BRC-98/99: Check basket access permission for listing
+        self.check_basket_permission(
+            originator,
+            &args.basket,
+            crate::managers::BasketUsageType::Listing,
+        )
+        .await
+        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
         let auth = self.auth();
 
         let result = self
@@ -1568,6 +1938,15 @@ where
     ) -> bsv_sdk::Result<RelinquishOutputResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
+        // BRC-98/99: Check basket access permission for removal
+        self.check_basket_permission(
+            originator,
+            &args.basket,
+            crate::managers::BasketUsageType::Removal,
+        )
+        .await
+        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let auth = self.auth();
 
@@ -1656,6 +2035,18 @@ where
     ) -> bsv_sdk::Result<ProveCertificateResult> {
         validate_originator(originator)
             .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
+
+        // BRC-98/99: Check certificate disclosure permission
+        self.check_certificate_permission(
+            originator,
+            args.privileged.unwrap_or(false),
+            &args.verifier,
+            &args.certificate.certificate_type,
+            &args.fields_to_reveal,
+            crate::managers::CertificateUsageType::Disclosure,
+        )
+        .await
+        .map_err(|e| bsv_sdk::Error::WalletError(e.to_string()))?;
 
         let auth = self.auth();
 
@@ -2230,6 +2621,79 @@ fn create_keyring_for_verifier(
 }
 
 // =============================================================================
+// Address Helpers
+// =============================================================================
+
+/// Decodes a Base58Check BSV address into a P2PKH locking script.
+fn address_to_p2pkh_script(address: &str) -> Result<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+    let mut result = [0u8; 25];
+    for &ch in address.as_bytes() {
+        let mut carry = ALPHABET
+            .iter()
+            .position(|&c| c == ch)
+            .ok_or_else(|| Error::ValidationError(format!("Invalid Base58 character: {}", ch as char)))?
+            as u32;
+
+        for byte in result.iter_mut().rev() {
+            carry += 58 * (*byte as u32);
+            *byte = (carry % 256) as u8;
+            carry /= 256;
+        }
+
+        if carry != 0 {
+            return Err(Error::ValidationError("Address too long".to_string()));
+        }
+    }
+
+    let leading_zeros = address.bytes().take_while(|&b| b == b'1').count();
+    let first_nonzero = result.iter().position(|&b| b != 0).unwrap_or(result.len());
+    if first_nonzero < leading_zeros {
+        return Err(Error::ValidationError("Invalid address encoding".to_string()));
+    }
+
+    let decoded = &result[(first_nonzero - leading_zeros)..];
+
+    if decoded.len() != 25 {
+        return Err(Error::ValidationError(format!(
+            "Invalid address length: expected 25, got {}",
+            decoded.len()
+        )));
+    }
+
+    let payload = &decoded[..21];
+    let checksum = &decoded[21..25];
+    let hash1 = Sha256::digest(payload);
+    let hash2 = Sha256::digest(hash1);
+    if &hash2[..4] != checksum {
+        return Err(Error::ValidationError("Invalid address checksum".to_string()));
+    }
+
+    let version = decoded[0];
+    if version != 0x00 && version != 0x6f {
+        return Err(Error::ValidationError(format!(
+            "Unsupported address version: 0x{:02x}",
+            version
+        )));
+    }
+
+    let pubkey_hash = &decoded[1..21];
+
+    let mut script = Vec::with_capacity(25);
+    script.push(0x76); // OP_DUP
+    script.push(0xa9); // OP_HASH160
+    script.push(0x14); // PUSH 20 bytes
+    script.extend_from_slice(pubkey_hash);
+    script.push(0x88); // OP_EQUALVERIFY
+    script.push(0xac); // OP_CHECKSIG
+
+    Ok(script)
+}
+
+// =============================================================================
 // Debug Implementation
 // =============================================================================
 
@@ -2723,4 +3187,83 @@ mod tests {
             assert!(!keyring.contains_key("organization"));
         }
     }
+
+    // =========================================================================
+    // Balance and Sweep tests
+    // =========================================================================
+
+    #[test]
+    fn test_wallet_balance_struct() {
+        let balance = WalletBalance {
+            total: 100_000,
+            utxos: vec![
+                UtxoInfo {
+                    satoshis: 60_000,
+                    outpoint: "abc123.0".to_string(),
+                },
+                UtxoInfo {
+                    satoshis: 40_000,
+                    outpoint: "def456.1".to_string(),
+                },
+            ],
+        };
+        assert_eq!(balance.total, 100_000);
+        assert_eq!(balance.utxos.len(), 2);
+        assert_eq!(balance.utxos[0].satoshis, 60_000);
+        assert_eq!(balance.utxos[1].outpoint, "def456.1");
+    }
+
+    #[test]
+    fn test_utxo_info_struct() {
+        let utxo = UtxoInfo {
+            satoshis: 50_000,
+            outpoint: "aabb.0".to_string(),
+        };
+        assert_eq!(utxo.satoshis, 50_000);
+        assert_eq!(utxo.outpoint, "aabb.0");
+    }
+
+    #[test]
+    fn test_wallet_balance_empty() {
+        let balance = WalletBalance {
+            total: 0,
+            utxos: Vec::new(),
+        };
+        assert_eq!(balance.total, 0);
+        assert!(balance.utxos.is_empty());
+    }
+
+    #[test]
+    fn test_wallet_balance_serialization() {
+        let balance = WalletBalance {
+            total: 12345,
+            utxos: vec![UtxoInfo {
+                satoshis: 12345,
+                outpoint: "txid.0".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&balance).expect("serialize");
+        assert!(json.contains("\"total\":12345"));
+        assert!(json.contains("\"satoshis\":12345"));
+        assert!(json.contains("\"outpoint\":\"txid.0\""));
+    }
+
+    #[test]
+    fn test_address_to_p2pkh_script_mainnet() {
+        let script = address_to_p2pkh_script("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+            .expect("valid address");
+        assert_eq!(script.len(), 25);
+        assert_eq!(script[0], 0x76); // OP_DUP
+        assert_eq!(script[1], 0xa9); // OP_HASH160
+        assert_eq!(script[2], 0x14); // PUSH 20 bytes
+        assert_eq!(script[23], 0x88); // OP_EQUALVERIFY
+        assert_eq!(script[24], 0xac); // OP_CHECKSIG
+    }
+
+    #[test]
+    fn test_address_to_p2pkh_script_invalid() {
+        assert!(address_to_p2pkh_script("0OIl").is_err());
+        assert!(address_to_p2pkh_script("1").is_err());
+    }
+
 }

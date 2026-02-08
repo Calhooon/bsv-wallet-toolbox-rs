@@ -28,10 +28,10 @@ This module provides manager components that sit above the core storage, service
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | 317 | Module declarations, re-exports, `WalletLogger`, `SetupWalletOptions`, `setup_wallet()` |
-| `storage_manager.rs` | 1131 | Multi-storage orchestration with active/backup semantics and lock queues |
-| `cwi_style_wallet_manager.rs` | 709 | CWI-compatible multi-profile manager with PBKDF2 password derivation, UMP tokens, snapshots |
-| `permissions_manager.rs` | 600 | BRC-98/99 permission types, operation-level flags, and stub manager |
-| `settings_manager.rs` | 339 | Persistent wallet settings with mainnet/testnet defaults |
+| `storage_manager.rs` | 1240 | Multi-storage orchestration with active/backup semantics, lock queues, and MonitorStorage impl |
+| `cwi_style_wallet_manager.rs` | 767 | CWI-compatible multi-profile manager with PBKDF2 password derivation, UMP tokens, snapshots, JSON import/export |
+| `permissions_manager.rs` | 743 | BRC-98/99 permission types, operation-level flags, token verification/caching, and stub manager |
+| `settings_manager.rs` | 353 | Persistent wallet settings with mainnet/testnet defaults and string serialization |
 | `simple_wallet_manager.rs` | 336 | Two-factor authentication manager (primary key + privileged key) |
 | `auth_manager.rs` | 56 | WAB (Wallet Authentication Backend) integration wrapper |
 
@@ -87,7 +87,7 @@ pub use permissions_manager::{
 };
 ```
 
-- `WalletPermissionsManager` - Stub implementation with `check_permission()` for operation-level gating
+- `WalletPermissionsManager` - Stub implementation with `check_permission()`, `check_permission_with_token()`, and token verification/caching
 - `GroupedPermissions` - BRC-73 grouped permissions (spending, protocol, basket, certificate)
 - `PermissionRequest` - Permission request from an application (includes `operation` field)
 - `PermissionToken` - On-chain permission token (BRC-98/99)
@@ -125,6 +125,8 @@ sync_locks     // Exclusive with readers + writers
 provider_locks // Highest precedence
 ```
 
+Lock timeout: 30 seconds (`LOCK_TIMEOUT_SECS`). Returns `Error::LockTimeout` on expiration.
+
 ### Storage Partitioning
 
 Stores are partitioned into three categories based on user's `activeStorage` setting:
@@ -159,13 +161,22 @@ get_conflicting_stores() -> Vec<String>
 set_services(services) / get_services() -> Result<Arc<dyn WalletServices>>
 ```
 
+### SyncResult
+
+```rust
+SyncResult { inserts: u32, updates: u32, log: String }
+```
+
+Returned by `sync_from_reader` and `sync_to_writer`. Contains counts and a human-readable log of sync operations performed.
+
 ### Trait Implementations
 
-`WalletStorageManager` implements the full storage provider trait hierarchy:
+`WalletStorageManager` implements the full storage trait hierarchy:
 - `WalletStorageReader` - Delegates reads to active storage with reader lock
-- `WalletStorageWriter` - Delegates writes to active storage with writer lock (includes `review_status`, `purge_data`, `update_transaction_status_after_broadcast`)
+- `WalletStorageWriter` - Delegates writes to active storage with writer lock (includes `review_status`, `purge_data`, `update_transaction_status_after_broadcast`, `begin_transaction`, `commit_transaction`, `rollback_transaction`)
 - `WalletStorageSync` - Delegates sync operations with sync lock
 - `WalletStorageProvider` - Partial implementation (some sync methods unimplemented)
+- `MonitorStorage` - Delegates monitor operations (`synchronize_transaction_statuses`, `send_waiting_transactions`, `abort_abandoned`, `un_fail`, `review_status`, `purge_data`) with writer lock
 
 ## SimpleWalletManager Authentication Flow
 
@@ -210,6 +221,10 @@ get_default_profile_id() -> Option<Vec<u8>>
 set_default_profile_id(profile_id) -> Result<()>
 export_profile(profile_id) -> Result<Vec<u8>>      // Encrypt profile data
 import_profile(data, password) -> Result<Profile>  // Decrypt and store
+export_profile_json(profile_id) -> Result<Vec<u8>> // Unencrypted JSON export
+import_profile_json(data) -> Result<Profile>       // Unencrypted JSON import
+backup_all_profiles() -> Result<Vec<u8>>           // JSON array of all profiles
+restore_all_profiles(data) -> Result<Vec<Profile>> // Restore from JSON array
 destroy()                                          // Return to unauthenticated
 ```
 
@@ -274,9 +289,19 @@ WalletSettings {
 }
 ```
 
+### Persistence Methods
+
+```rust
+save() -> Result<Vec<u8>>              // Serialize to JSON bytes
+load(data: &[u8]) -> Result<()>        // Deserialize from JSON bytes
+save_to_string() -> Result<String>     // Serialize to JSON string
+load_from_string(json: &str) -> Result<()>  // Deserialize from JSON string
+reset()                                // Reset to default settings
+```
+
 ## WalletPermissionsManager (Stub)
 
-**Security Warning**: This is a stub that does not enforce BRC-98/99 on-chain permission tokens. However, it does support basic operation-level permission gating via `check_permission()`.
+**Security Warning**: This is a stub that does not enforce BRC-98/99 on-chain permission tokens. However, it supports operation-level permission gating via `check_permission()` and token-based permission checking via `check_permission_with_token()`.
 
 ### Permission Types (BRC-98/99)
 
@@ -302,6 +327,26 @@ allow_relinquish_certificate, allow_discover, allow_crypto
 ```
 
 Admin originator always bypasses all checks.
+
+### Token-Based Permission Checking
+
+```rust
+verify_token(token) -> Result<()>  // Validates txid, output_script non-empty, expiry not past
+check_permission_with_token(request, token) -> bool  // Verifies token + matches permission type
+```
+
+`check_permission_with_token` verifies:
+1. Token structural validity (non-empty txid/output_script, not expired)
+2. Originator match between request and token
+3. Permission type match (protocol name, basket name, cert type, or spending amount)
+
+### Token Caching
+
+```rust
+cache_token(key, token)               // Store a token in the in-memory cache
+get_cached_token(key) -> Option<PermissionToken>  // Retrieve by key
+purge_expired_tokens()                 // Remove tokens past their expiry
+```
 
 ### Configuration Options
 
@@ -428,13 +473,13 @@ These managers match the TypeScript `@bsv/wallet-toolbox` implementations:
 
 ### Stub Implementations
 
-- `WalletPermissionsManager` - Has operation-level `check_permission()` but does not enforce full BRC-98/99 on-chain tokens
+- `WalletPermissionsManager` - Has operation-level `check_permission()` and token-based `check_permission_with_token()` but does not enforce full BRC-98/99 on-chain token creation/renewal
 - `WalletAuthenticationManager` - Thin wrapper; WAB protocol flow not yet implemented
 - `setup_wallet()` - Stub that logs setup intent only
 
 ### Concurrency Model
 
-All managers use `tokio::sync::RwLock` for async-safe interior mutability. The storage manager's lock queue system prevents deadlocks through ordered acquisition.
+All managers use `tokio::sync::RwLock` for async-safe interior mutability. The storage manager's lock queue system prevents deadlocks through ordered acquisition (reader → writer → sync). Lock timeout is 30 seconds.
 
 ### Encryption
 

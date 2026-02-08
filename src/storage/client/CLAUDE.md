@@ -6,20 +6,20 @@
 
 This module provides `StorageClient`, a remote storage implementation that communicates with
 BSV wallet storage servers (e.g., `storage.babbage.systems`) using JSON-RPC 2.0 over HTTPS.
-It implements the full `WalletStorageProvider` trait hierarchy, enabling wallets to persist
-state to remote infrastructure with BRC-104 mutual authentication via `Peer`.
+It implements the full `WalletStorageProvider` + `MonitorStorage` trait hierarchy, enabling
+wallets to persist state to remote infrastructure with BRC-104 mutual authentication via `Peer`.
 
 The client is the recommended approach for production wallet applications that need reliable,
 persistent storage without managing local databases.
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Module exports and usage documentation |
-| `auth.rs` | BRC-31 authentication: nonce creation, request signing, response verification |
-| `json_rpc.rs` | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) |
-| `storage_client.rs` | `StorageClient` implementation of `WalletStorageProvider` |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `mod.rs` | 61 | Module exports and usage documentation |
+| `auth.rs` | 969 | BRC-31 authentication: nonce creation, request signing, response verification |
+| `json_rpc.rs` | 296 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) |
+| `storage_client.rs` | 2640 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
 
 ## Key Exports
 
@@ -155,11 +155,13 @@ StorageClient<W: WalletInterface>
 ```
 WalletStorageReader     ← find_certificates, find_outputs, list_actions, etc.
         ↑
-WalletStorageWriter     ← make_available, create_action, process_action, etc.
+WalletStorageWriter     ← make_available, create_action, process_action, begin/commit/rollback_transaction, etc.
         ↑
 WalletStorageSync       ← get_sync_chunk, process_sync_chunk, set_active
         ↑
 WalletStorageProvider   ← Full provider interface
+
+MonitorStorage          ← synchronize_transaction_statuses, send_waiting, task locking, etc.
 ```
 
 ### JSON-RPC Methods Called
@@ -190,10 +192,21 @@ The client calls these remote methods via `rpc_call()`:
 | `updateTransactionStatusAfterBroadcast` | Writer | Update tx status post-broadcast |
 | `reviewStatus` | Writer | Review aged transaction statuses |
 | `purgeData` | Writer | Purge old/completed data |
+| `beginStorageTransaction` | Writer | Begin a storage transaction, returns `TrxToken` |
+| `commitStorageTransaction` | Writer | Commit a storage transaction |
+| `rollbackStorageTransaction` | Writer | Rollback a storage transaction |
 | `findOrInsertSyncStateAuth` | Sync | Find/create sync state |
 | `setActive` | Sync | Set active storage |
 | `getSyncChunk` | Sync | Get sync data chunk |
 | `processSyncChunk` | Sync | Apply sync data chunk |
+| `synchronizeTransactionStatuses` | Monitor | Synchronize tx statuses across storages |
+| `sendWaitingTransactions` | Monitor | Send transactions waiting to be broadcast |
+| `abortAbandoned` | Monitor | Abort transactions abandoned beyond timeout |
+| `unFail` | Monitor | Reset failed transactions for retry |
+| `monitorReviewStatus` | Monitor | Review transaction statuses (monitor variant) |
+| `monitorPurgeData` | Monitor | Purge old data (monitor variant) |
+| `tryAcquireTaskLock` | Monitor | Acquire distributed task lock (multi-instance) |
+| `releaseTaskLock` | Monitor | Release distributed task lock |
 | `updateProvenTxReqWithNewProvenTx` | Helper | Update proven tx request |
 
 ### StorageClient Helper Methods
@@ -393,18 +406,25 @@ The HMAC nonce format is: `base64(random_16_bytes || hmac_16_bytes)` where HMAC 
 
 ## Testing
 
-The module includes comprehensive unit tests:
+The module includes comprehensive unit tests across all three source files:
 
 ### Test Categories
 
-| Category | Count | Coverage |
-|----------|-------|----------|
-| JSON-RPC serialization | 4 | Request/response format, error handling |
-| Auth module | 35+ | Nonce, timestamp, signing data, headers, replay protection |
-| Storage client BRC-31 | 9 | Header names, version, nonce creation, timestamps, signing |
-| Method formats | 22+ | All JSON-RPC method request/response formats |
-| Entity types | 15+ | Table entity serialization/deserialization |
-| ValidCreateActionArgs | 7 | Flag derivation, serialization, custom flags |
+| Category | File | Count | Coverage |
+|----------|------|-------|----------|
+| JSON-RPC serialization | `json_rpc.rs` | 4 | Request/response format, error codes |
+| Nonce creation | `auth.rs` | 3 | Uniqueness, base64 encoding, bulk uniqueness |
+| Timestamp validation | `auth.rs` | 5 | Current, old, future, edge-of-expiry, slight future |
+| Signing data | `auth.rs` | 8 | Determinism, body/method/path/timestamp/nonce inclusion, empty/large body |
+| Auth headers | `auth.rs` | 3 | Tuple conversion, header names, BRC-31 spec compliance |
+| Response headers | `auth.rs` | 6 | Completeness checks (each missing field), valid/invalid/none identity key |
+| Replay protection | `auth.rs` | 2 | Different nonces, same nonce different timestamps |
+| Auth integration | `auth.rs` | 2 | Full header creation flow, verification result creation |
+| Constants | `auth.rs` | 4 | AUTH_VERSION, AUTH_PROTOCOL_ID, NONCE_PROTOCOL_ID, MAX_TIMESTAMP_AGE |
+| Storage client BRC-31 | `storage_client.rs` | 9 | Header names, version, nonce, timestamps, signing data, headers struct, replay |
+| Method formats | `storage_client.rs` | 22 | All JSON-RPC method request/response formats |
+| Entity types | `storage_client.rs` | 15+ | Table entity serialization/deserialization |
+| ValidCreateActionArgs | `storage_client.rs` | 7 | Default flags, noSend, delayed, sendWith, remix, serialization, custom flags |
 
 ### Running Tests
 

@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use bsv_sdk::transaction::{ChainTracker, Transaction};
 use crate::{Error, Result};
 
+use super::collection::ServiceCallHistory;
+
 // =============================================================================
 // nLockTime Input Types
 // =============================================================================
@@ -79,6 +81,28 @@ impl NLockTimeInput {
         })?;
         Self::from_raw_tx(&bytes)
     }
+}
+
+/// Aggregated call history across all service types.
+///
+/// Used for diagnostics and monitoring of service provider performance.
+/// The default implementation returns empty history.
+#[derive(Debug, Clone, Default)]
+pub struct ServicesCallHistory {
+    /// Version of the history format.
+    pub version: u32,
+    /// Call history for getMerklePath service.
+    pub get_merkle_path: Option<ServiceCallHistory>,
+    /// Call history for getRawTx service.
+    pub get_raw_tx: Option<ServiceCallHistory>,
+    /// Call history for postBeef service.
+    pub post_beef: Option<ServiceCallHistory>,
+    /// Call history for getUtxoStatus service.
+    pub get_utxo_status: Option<ServiceCallHistory>,
+    /// Call history for getStatusForTxids service.
+    pub get_status_for_txids: Option<ServiceCallHistory>,
+    /// Call history for getScriptHashHistory service.
+    pub get_script_hash_history: Option<ServiceCallHistory>,
 }
 
 /// Main trait for wallet service operations.
@@ -238,6 +262,20 @@ pub trait WalletServices: Send + Sync {
     /// # Returns
     /// * `Ok(GetBeefResult)` - The BEEF data and metadata
     async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult>;
+
+    /// Get aggregated service call history for diagnostics.
+    ///
+    /// Returns call statistics for all service types. If `reset` is true,
+    /// the counters are reset after reading.
+    ///
+    /// The default implementation returns empty history, which is appropriate
+    /// for mock implementations or services that don't track call history.
+    ///
+    /// # Arguments
+    /// * `reset` - If true, reset the call counters after reading
+    fn get_services_call_history(&self, _reset: bool) -> ServicesCallHistory {
+        ServicesCallHistory::default()
+    }
 }
 
 // =============================================================================

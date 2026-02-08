@@ -39,8 +39,8 @@ use crate::storage::{
     MonitorStorage, ProcessSyncChunkResult, PurgeParams, PurgeResults, RequestSyncChunkArgs,
     ReviewStatusResult, StorageCreateActionResult,
     StorageInternalizeActionResult, StorageProcessActionArgs, StorageProcessActionResults,
-    SyncChunk, TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider, WalletStorageReader,
-    WalletStorageSync, WalletStorageWriter,
+    SyncChunk, TrxToken, TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider,
+    WalletStorageReader, WalletStorageSync, WalletStorageWriter,
     entities::{
         TableCertificate, TableCertificateField, TableOutput, TableOutputBasket,
         TableProvenTxReq, TableSettings, TableSyncState, TableUser,
@@ -1080,6 +1080,20 @@ impl WalletStorageWriter for WalletStorageManager {
         self.run_as_writer(|active| async move { WalletStorageWriter::purge_data(active.as_ref(), &auth, params).await })
             .await
     }
+    async fn begin_transaction(&self) -> Result<TrxToken> {
+        self.run_as_writer(|active| async move { active.begin_transaction().await })
+            .await
+    }
+
+    async fn commit_transaction(&self, trx: TrxToken) -> Result<()> {
+        self.run_as_writer(|active| async move { active.commit_transaction(trx).await })
+            .await
+    }
+
+    async fn rollback_transaction(&self, trx: TrxToken) -> Result<()> {
+        self.run_as_writer(|active| async move { active.rollback_transaction(trx).await })
+            .await
+    }
 }
 
 #[async_trait]
@@ -1199,6 +1213,29 @@ impl MonitorStorage for WalletStorageManager {
     async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults> {
         self.run_as_writer(|active| async move {
             MonitorStorage::purge_data(active.as_ref(), params).await
+        })
+        .await
+    }
+
+    async fn try_acquire_task_lock(
+        &self,
+        task_name: &str,
+        instance_id: &str,
+        ttl: std::time::Duration,
+    ) -> Result<bool> {
+        let tn = task_name.to_string();
+        let iid = instance_id.to_string();
+        self.run_as_writer(|active| async move {
+            active.try_acquire_task_lock(&tn, &iid, ttl).await
+        })
+        .await
+    }
+
+    async fn release_task_lock(&self, task_name: &str, instance_id: &str) -> Result<()> {
+        let tn = task_name.to_string();
+        let iid = instance_id.to_string();
+        self.run_as_writer(|active| async move {
+            active.release_task_lock(&tn, &iid).await
         })
         .await
     }

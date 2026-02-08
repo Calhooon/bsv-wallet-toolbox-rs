@@ -57,10 +57,11 @@ pub use traits::{
     BsvExchangeRate,
     FiatCurrency,
     FiatExchangeRates,
+    ServicesCallHistory,
 };
 
 pub use services::Services;
-pub use collection::{ServiceCollection, ServiceToCall, ServiceCall, ServiceCallHistory, ProviderCallHistory};
+pub use collection::{AdaptiveTimeoutConfig, ServiceCollection, ServiceToCall, ServiceCall, ServiceCallHistory, ProviderCallHistory};
 pub use providers::{
     WhatsOnChain, WhatsOnChainConfig,
     Arc, ArcConfig,
@@ -103,6 +104,9 @@ pub struct ServicesOptions {
 
     /// Initial fiat exchange rates
     pub fiat_exchange_rates: FiatExchangeRates,
+
+    /// Adaptive timeout configuration for service collections
+    pub timeout_config: AdaptiveTimeoutConfig,
 }
 
 impl Default for ServicesOptions {
@@ -119,6 +123,7 @@ impl Default for ServicesOptions {
             bsv_update_msecs: 15 * 60 * 1000, // 15 minutes
             fiat_update_msecs: 24 * 60 * 60 * 1000, // 24 hours (fiat rates change less frequently)
             fiat_exchange_rates: FiatExchangeRates::default(),
+            timeout_config: AdaptiveTimeoutConfig::default(),
         }
     }
 }
@@ -180,6 +185,12 @@ impl ServicesOptions {
     pub fn with_bhs(mut self, url: impl Into<String>, api_key: Option<String>) -> Self {
         self.bhs_url = Some(url.into());
         self.bhs_api_key = api_key;
+        self
+    }
+
+    /// Set adaptive timeout configuration.
+    pub fn with_timeout_config(mut self, config: AdaptiveTimeoutConfig) -> Self {
+        self.timeout_config = config;
         self
     }
 }

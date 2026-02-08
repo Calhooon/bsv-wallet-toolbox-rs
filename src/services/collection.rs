@@ -6,13 +6,39 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 /// Maximum number of call history entries to keep per provider.
 const MAX_CALL_HISTORY: usize = 32;
 
 /// Maximum number of reset intervals to keep.
 const MAX_RESET_COUNTS: usize = 32;
+
+/// Configuration for adaptive timeout behavior.
+#[derive(Debug, Clone)]
+pub struct AdaptiveTimeoutConfig {
+    /// Minimum timeout in milliseconds.
+    pub min_timeout_ms: u64,
+    /// Maximum timeout in milliseconds.
+    pub max_timeout_ms: u64,
+    /// Multiplier applied to average response time.
+    pub multiplier: f64,
+    /// Initial timeout in milliseconds.
+    pub initial_timeout_ms: u64,
+}
+
+impl Default for AdaptiveTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            min_timeout_ms: 5_000,
+            max_timeout_ms: 60_000,
+            multiplier: 2.0,
+            initial_timeout_ms: 30_000,
+        }
+    }
+}
 
 /// A collection of service providers with failover support.
 ///
@@ -34,6 +60,12 @@ pub struct ServiceCollection<S> {
 
     /// History of calls by provider name.
     history_by_provider: HashMap<String, ProviderCallHistoryInternal>,
+
+    /// Adaptive timeout configuration.
+    timeout_config: AdaptiveTimeoutConfig,
+
+    /// EMA of response times (f64 bits in AtomicU64).
+    avg_response_ms: AtomicU64,
 }
 
 /// A named service provider.
@@ -221,6 +253,24 @@ impl<S> ServiceCollection<S> {
             index: 0,
             since: Utc::now(),
             history_by_provider: HashMap::new(),
+            timeout_config: AdaptiveTimeoutConfig::default(),
+            avg_response_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Create with custom timeout config.
+    pub fn with_timeout_config(
+        service_name: impl Into<String>,
+        timeout_config: AdaptiveTimeoutConfig,
+    ) -> Self {
+        Self {
+            service_name: service_name.into(),
+            services: Vec::new(),
+            index: 0,
+            since: Utc::now(),
+            history_by_provider: HashMap::new(),
+            timeout_config,
+            avg_response_ms: AtomicU64::new(0),
         }
     }
 
@@ -399,6 +449,52 @@ impl<S> ServiceCollection<S> {
         }
     }
 
+    /// Get adaptive timeout config.
+    pub fn timeout_config(&self) -> &AdaptiveTimeoutConfig {
+        &self.timeout_config
+    }
+
+    /// Set adaptive timeout config.
+    pub fn set_timeout_config(&mut self, config: AdaptiveTimeoutConfig) {
+        self.timeout_config = config;
+    }
+
+    /// Get current adaptive timeout.
+    pub fn get_current_timeout(&self) -> Duration {
+        let avg_bits = self.avg_response_ms.load(Ordering::Relaxed);
+        let avg = f64::from_bits(avg_bits);
+        if avg <= 0.0 {
+            return Duration::from_millis(self.timeout_config.initial_timeout_ms);
+        }
+        let computed = avg * self.timeout_config.multiplier;
+        let clamped = computed
+            .max(self.timeout_config.min_timeout_ms as f64)
+            .min(self.timeout_config.max_timeout_ms as f64);
+        Duration::from_millis(clamped as u64)
+    }
+
+    /// Record response time, update EMA (0.7/0.3).
+    pub fn record_response_time(&self, elapsed_ms: u64) {
+        let sample = elapsed_ms as f64;
+        loop {
+            let old_bits = self.avg_response_ms.load(Ordering::Relaxed);
+            let old_avg = f64::from_bits(old_bits);
+            let new_avg = if old_avg <= 0.0 { sample } else { old_avg * 0.7 + sample * 0.3 };
+            let new_bits = new_avg.to_bits();
+            match self.avg_response_ms.compare_exchange_weak(old_bits, new_bits, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Get current avg response time (None if no data).
+    pub fn avg_response_ms(&self) -> Option<f64> {
+        let bits = self.avg_response_ms.load(Ordering::Relaxed);
+        let avg = f64::from_bits(bits);
+        if avg <= 0.0 { None } else { Some(avg) }
+    }
+
     /// Get call history, optionally resetting counters.
     pub fn get_call_history(&mut self, reset: bool) -> ServiceCallHistory {
         let now = Utc::now();
@@ -468,6 +564,8 @@ impl<S: Clone> ServiceCollection<S> {
             index: 0, // Always start at beginning for clones
             since: Utc::now(),
             history_by_provider: HashMap::new(),
+            timeout_config: self.timeout_config.clone(),
+            avg_response_ms: AtomicU64::new(self.avg_response_ms.load(Ordering::Relaxed)),
         }
     }
 }
@@ -574,5 +672,62 @@ mod tests {
         assert_eq!(provider_history.total_counts.failure, 2);
         assert_eq!(provider_history.total_counts.error, 1);
         assert_eq!(provider_history.calls.len(), 3);
+    }
+
+    #[test]
+    fn test_adaptive_timeout_defaults() {
+        let config = AdaptiveTimeoutConfig::default();
+        assert_eq!(config.min_timeout_ms, 5_000);
+        assert_eq!(config.max_timeout_ms, 60_000);
+        assert!((config.multiplier - 2.0).abs() < f64::EPSILON);
+        assert_eq!(config.initial_timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn test_adaptive_timeout_initial() {
+        let collection = ServiceCollection::<String>::new("test");
+        let timeout = collection.get_current_timeout();
+        assert_eq!(timeout, Duration::from_millis(30_000));
+    }
+
+    #[test]
+    fn test_adaptive_timeout_after_recording() {
+        let collection = ServiceCollection::<String>::new("test");
+        collection.record_response_time(100);
+        let timeout = collection.get_current_timeout();
+        assert_eq!(timeout, Duration::from_millis(5_000));
+    }
+
+    #[test]
+    fn test_adaptive_timeout_within_bounds() {
+        let config = AdaptiveTimeoutConfig { min_timeout_ms: 1_000, max_timeout_ms: 10_000, multiplier: 2.0, initial_timeout_ms: 5_000 };
+        let collection = ServiceCollection::<String>::with_timeout_config("test", config);
+        collection.record_response_time(3000);
+        assert_eq!(collection.get_current_timeout(), Duration::from_millis(6_000));
+    }
+
+    #[test]
+    fn test_adaptive_timeout_max_clamp() {
+        let config = AdaptiveTimeoutConfig { min_timeout_ms: 1_000, max_timeout_ms: 10_000, multiplier: 2.0, initial_timeout_ms: 5_000 };
+        let collection = ServiceCollection::<String>::with_timeout_config("test", config);
+        collection.record_response_time(50_000);
+        assert_eq!(collection.get_current_timeout(), Duration::from_millis(10_000));
+    }
+
+    #[test]
+    fn test_ema_convergence() {
+        let collection = ServiceCollection::<String>::new("test");
+        collection.record_response_time(1000);
+        assert!((collection.avg_response_ms().unwrap() - 1000.0).abs() < 0.01);
+        collection.record_response_time(1000);
+        assert!((collection.avg_response_ms().unwrap() - 1000.0).abs() < 0.01);
+        collection.record_response_time(2000);
+        assert!((collection.avg_response_ms().unwrap() - 1300.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_avg_response_none_initially() {
+        let collection = ServiceCollection::<String>::new("test");
+        assert!(collection.avg_response_ms().is_none());
     }
 }

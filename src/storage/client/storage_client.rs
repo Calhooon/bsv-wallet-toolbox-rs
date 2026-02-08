@@ -983,6 +983,23 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
         )
         .await
     }
+    async fn begin_transaction(&self) -> Result<TrxToken> {
+        self.rpc_call::<Value>("beginStorageTransaction", vec![])
+            .await
+            .map(|_| TrxToken::new())
+    }
+
+    async fn commit_transaction(&self, _trx: TrxToken) -> Result<()> {
+        self.rpc_call::<Value>("commitStorageTransaction", vec![])
+            .await
+            .map(|_| ())
+    }
+
+    async fn rollback_transaction(&self, _trx: TrxToken) -> Result<()> {
+        self.rpc_call::<Value>("rollbackStorageTransaction", vec![])
+            .await
+            .map(|_| ())
+    }
 }
 
 // =============================================================================
@@ -1135,6 +1152,34 @@ impl<W: WalletInterface + Clone + 'static> MonitorStorage for StorageClient<W> {
         self.rpc_call(
             "monitorPurgeData",
             vec![Self::to_value(&params)?],
+        )
+        .await
+    }
+
+    async fn try_acquire_task_lock(
+        &self,
+        task_name: &str,
+        instance_id: &str,
+        ttl: std::time::Duration,
+    ) -> Result<bool> {
+        self.rpc_call(
+            "tryAcquireTaskLock",
+            vec![
+                Self::to_value(&task_name)?,
+                Self::to_value(&instance_id)?,
+                Self::to_value(&ttl.as_millis())?,
+            ],
+        )
+        .await
+    }
+
+    async fn release_task_lock(&self, task_name: &str, instance_id: &str) -> Result<()> {
+        self.rpc_call(
+            "releaseTaskLock",
+            vec![
+                Self::to_value(&task_name)?,
+                Self::to_value(&instance_id)?,
+            ],
         )
         .await
     }

@@ -10,7 +10,7 @@ The monitor module provides a daemon-based task scheduler for running recurring 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Monitor<S, V>                            │
-│  (S: WalletStorageProvider, V: WalletServices)                  │
+│  (S: MonitorStorage, V: WalletServices)                         │
 ├─────────────────────────────────────────────────────────────────┤
 │  start() / stop() / run_once() / is_running()                   │
 │  Manages task lifecycle and scheduling                          │
@@ -32,7 +32,7 @@ The monitor module provides a daemon-based task scheduler for running recurring 
                                 │
                     ┌───────────┴───────────┐
                     ▼                       ▼
-            WalletStorageProvider    WalletServices
+              MonitorStorage         WalletServices
             (find_proven_tx_reqs)    (get_merkle_path)
 ```
 
@@ -56,7 +56,7 @@ Both receive a `TransactionStatusUpdate` with txid, status, and optional proof d
 
 | Submodule | Purpose |
 |-----------|---------|
-| `tasks/` | Individual task implementations, each implementing `MonitorTask` trait |
+| `tasks/` | Individual task implementations, each implementing `MonitorTask` trait (12 files: 11 exported tasks + `sync_when_idle.rs` standalone) |
 
 ## Key Types
 
@@ -67,13 +67,13 @@ The main daemon struct that schedules and runs background tasks.
 ```rust
 pub struct Monitor<S, V>
 where
-    S: WalletStorageProvider + 'static,
+    S: MonitorStorage + 'static,
     V: WalletServices + 'static,
 {
     storage: Arc<S>,
     services: Arc<V>,
     options: MonitorOptions,
-    running: AtomicBool,
+    running: Arc<AtomicBool>,
     task_handles: RwLock<HashMap<TaskType, JoinHandle<()>>>,
 }
 ```
@@ -95,7 +95,7 @@ Configuration for the daemon.
 ```rust
 pub struct MonitorOptions {
     pub tasks: TasksConfig,
-    pub fail_abandoned_timeout: Duration,  // Default: 24 hours
+    pub fail_abandoned_timeout: Duration,  // Default: 5 minutes
     pub on_tx_broadcasted: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
     pub on_tx_proven: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
 }
@@ -257,7 +257,7 @@ Marks abandoned transactions as failed to release locked UTXOs.
 | Property | Value |
 |----------|-------|
 | Default interval | 5 minutes |
-| Timeout | Configurable via `MonitorOptions.fail_abandoned_timeout` (default 24 hours) |
+| Timeout | Configurable via `MonitorOptions.fail_abandoned_timeout` (default 5 minutes) |
 
 **Workflow:**
 1. Calculate cutoff time based on configured timeout
@@ -441,6 +441,32 @@ Logs service call history for monitoring and diagnostics.
    - `get_utxo_status`
 3. Log total summary
 
+#### SyncWhenIdleTask (standalone, not wired)
+
+Triggers storage synchronization after idle periods. Mirrors the TypeScript `TaskSyncWhenIdle`.
+
+| Property | Value |
+|----------|-------|
+| Default interval | 1 minute |
+| Idle threshold | 2 minutes (configurable) |
+| State | `last_activity: AtomicU64` |
+
+**Note:** This task exists in `tasks/sync_when_idle.rs` but is **not** declared in `tasks/mod.rs`, **not** exported, and **not** spawned by the daemon. It is a standalone implementation for future integration.
+
+**Workflow:**
+1. Track last wallet activity timestamp via `notify_activity()`
+2. Each run, check if idle threshold has been exceeded
+3. If idle, log sync trigger and return `items_processed = 1`
+4. If active, return empty result (no-op)
+
+**Constructors:**
+- `SyncWhenIdleTask::new()` - Create with default 2-minute threshold
+- `SyncWhenIdleTask::with_threshold(duration)` - Create with custom idle threshold
+
+**Public Methods:**
+- `notify_activity()` - Reset idle timer (call on wallet activity)
+- `last_activity_timestamp()` - Get last activity unix timestamp
+
 ## Usage
 
 ### Basic Usage with Default Options
@@ -548,7 +574,7 @@ The monitor uses `tracing` for structured logging:
 ### Thread Safety
 
 The `Monitor` struct uses:
-- `AtomicBool` for the running flag to allow lock-free status checks
+- `Arc<AtomicBool>` for the running flag, shared with spawned tasks for lock-free status checks
 - `RwLock<HashMap>` for task handles to allow concurrent reads with exclusive writes
 
 Individual tasks use:

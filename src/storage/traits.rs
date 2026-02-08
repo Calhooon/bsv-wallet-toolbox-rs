@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bsv_sdk::wallet::{
@@ -17,6 +18,41 @@ use bsv_sdk::wallet::{
 use crate::error::Result;
 use crate::services::WalletServices;
 use crate::storage::entities::*;
+
+// =============================================================================
+// Transaction Token
+// =============================================================================
+
+/// Global counter for TrxToken ID generation.
+static NEXT_TRX_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Opaque transaction scope token.
+///
+/// When provided to storage operations, they execute within the same database
+/// transaction. Mirrors the TypeScript `TrxToken` interface from
+/// `WalletStorage.interfaces.ts`.
+///
+/// Callers obtain a token via [`WalletStorageWriter::begin_transaction`],
+/// and must eventually call [`WalletStorageWriter::commit_transaction`] or
+/// [`WalletStorageWriter::rollback_transaction`] to close the scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TrxToken {
+    id: u64,
+}
+
+impl TrxToken {
+    /// Create a new unique TrxToken.
+    pub(crate) fn new() -> Self {
+        Self {
+            id: NEXT_TRX_ID.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+
+    /// Get the unique ID of this token.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
 
 // =============================================================================
 // Authentication
@@ -584,6 +620,30 @@ pub trait WalletStorageWriter: WalletStorageReader {
     /// * `auth` - The authenticated user
     /// * `params` - Parameters controlling what to purge
     async fn purge_data(&self, auth: &AuthId, params: PurgeParams) -> Result<PurgeResults>;
+
+    /// Begin a new storage transaction scope.
+    ///
+    /// Returns a [`TrxToken`] that can be passed to subsequent storage operations
+    /// to group them into a single atomic unit of work. The caller must eventually
+    /// call [`commit_transaction`](Self::commit_transaction) or
+    /// [`rollback_transaction`](Self::rollback_transaction) to close the scope.
+    ///
+    /// Mirrors TypeScript `beginStorageTransaction()`.
+    async fn begin_transaction(&self) -> Result<TrxToken>;
+
+    /// Commit a previously begun transaction scope.
+    ///
+    /// All operations performed under this [`TrxToken`] are made permanent.
+    /// Returns an error if the token is unknown (already committed/rolled back
+    /// or never created).
+    async fn commit_transaction(&self, trx: TrxToken) -> Result<()>;
+
+    /// Roll back a previously begun transaction scope.
+    ///
+    /// All operations performed under this [`TrxToken`] are discarded.
+    /// Returns an error if the token is unknown (already committed/rolled back
+    /// or never created).
+    async fn rollback_transaction(&self, trx: TrxToken) -> Result<()>;
 }
 
 // =============================================================================
@@ -807,4 +867,41 @@ pub trait MonitorStorage: WalletStorageProvider {
     ///
     /// * `params` - Parameters controlling what to purge
     async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults>;
+
+    /// Try to acquire a distributed lock for a monitor task.
+    ///
+    /// Used for multi-instance support: when multiple monitor daemons run
+    /// against the same storage, only one should execute each task at a time.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_name` - The name of the task to lock (e.g., "check_for_proofs")
+    /// * `instance_id` - The unique ID of the monitor instance requesting the lock
+    /// * `ttl` - Time-to-live for the lock; it auto-expires after this duration
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if the lock was acquired, `Ok(false)` if another instance holds it.
+    async fn try_acquire_task_lock(
+        &self,
+        task_name: &str,
+        instance_id: &str,
+        ttl: Duration,
+    ) -> Result<bool> {
+        // Default: always acquire (single-instance mode)
+        let _ = (task_name, instance_id, ttl);
+        Ok(true)
+    }
+
+    /// Release a previously acquired task lock.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_name` - The name of the task to unlock
+    /// * `instance_id` - The unique ID of the monitor instance releasing the lock
+    async fn release_task_lock(&self, task_name: &str, instance_id: &str) -> Result<()> {
+        // Default: no-op (single-instance mode)
+        let _ = (task_name, instance_id);
+        Ok(())
+    }
 }

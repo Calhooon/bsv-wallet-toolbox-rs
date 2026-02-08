@@ -10,13 +10,13 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (3507 lines) |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (4292 lines) |
 | `create_action.rs` | Transaction creation implementation (3661 lines) |
 | `process_action.rs` | Signed transaction processing (1418 lines) |
 | `abort_action.rs` | Transaction abort/cancellation (1249 lines) |
 | `internalize_action.rs` | External transaction internalization (1310 lines) |
 | `sync.rs` | Multi-storage synchronization (2565 lines) |
-| `beef_verification.rs` | BEEF merkle proof verification (257 lines) |
+| `beef_verification.rs` | BEEF merkle proof verification (1068 lines) |
 | `migrations/001_initial.sql` | Initial schema with 16 tables |
 
 ## Key Exports
@@ -39,6 +39,7 @@ pub struct StorageSqlx {
 - `new(database_url: &str)` - Create from SQLite URL (e.g., `"sqlite:wallet.db"`)
 - `in_memory()` - Create in-memory database (useful for testing)
 - `open(path: &str)` - Open file-based database (creates if not exists)
+- `pool()` - Get a reference to the underlying connection pool
 
 **ChainTracker methods:**
 - `set_chain_tracker(tracker)` - Set ChainTracker for BEEF verification
@@ -80,7 +81,7 @@ MonitorStorage          - Background monitoring operations
 | Method | Description |
 |--------|-------------|
 | `is_available()` | Check if storage is initialized |
-| `get_settings()` | Get cached settings |
+| `get_settings()` | Get cached settings (OnceLock fallback to default) |
 | `get_services()` | Get WalletServices instance (error if not set) |
 | `find_certificates()` | Query certificates by certifier/type |
 | `find_output_baskets()` | Query output baskets by name |
@@ -91,23 +92,23 @@ MonitorStorage          - Background monitoring operations
 | `list_outputs()` | List spendable outputs with tags and labels (tag ANY/ALL filtering via CTE) |
 
 ### WalletStorageWriter Methods
-| Method | Description | Status |
-|--------|-------------|--------|
-| `make_available()` | Initialize and load settings | Complete |
-| `migrate()` | Run schema migrations | Complete |
-| `destroy()` | Drop all tables | Complete |
-| `find_or_insert_user()` | Get or create user by identity key | Complete |
-| `insert_certificate()` | Insert new certificate | Complete |
-| `insert_certificate_field()` | Insert certificate field with keyring | Complete |
-| `relinquish_certificate()` | Soft-delete certificate | Complete |
-| `relinquish_output()` | Remove output from basket | Complete |
-| `abort_action()` | Abort pending transaction, release locked outputs | Complete (delegates) |
-| `create_action()` | Create new transaction with inputs/outputs | Complete (delegates) |
-| `process_action()` | Process signed transaction | Complete (delegates) |
-| `internalize_action()` | Internalize external transaction into wallet | Complete (delegates) |
-| `update_transaction_status_after_broadcast()` | Update tx status after broadcast success/failure | Complete (delegates) |
-| `review_status()` | Review aged transaction statuses | Stub |
-| `purge_data()` | Purge old data | Stub |
+| Method | Description |
+|--------|-------------|
+| `make_available()` | Initialize and load settings |
+| `migrate()` | Run schema migrations |
+| `destroy()` | Drop all tables |
+| `find_or_insert_user()` | Get or create user by identity key |
+| `insert_certificate()` | Insert new certificate |
+| `insert_certificate_field()` | Insert certificate field with keyring |
+| `relinquish_certificate()` | Soft-delete certificate |
+| `relinquish_output()` | Remove output from basket |
+| `abort_action()` | Abort pending transaction, release locked outputs (delegates to abort_action.rs) |
+| `create_action()` | Create new transaction with inputs/outputs (delegates to create_action.rs) |
+| `process_action()` | Process signed transaction (delegates to process_action.rs) |
+| `internalize_action()` | Internalize external transaction into wallet (delegates to internalize_action.rs) |
+| `update_transaction_status_after_broadcast()` | Update tx status after broadcast success/failure (delegates to process_action.rs) |
+| `review_status()` | Sync proven_tx_req completion status to transaction table |
+| `purge_data()` | Purge old failed/invalid proven_tx_reqs, clean completed raw data |
 
 ### WalletStorageSync Methods
 | Method | Description |
@@ -125,12 +126,12 @@ MonitorStorage          - Background monitoring operations
 | `set_services()` | Set WalletServices for blockchain operations |
 
 ### MonitorStorage Methods
-| Method | Description | Status |
-|--------|-------------|--------|
-| `synchronize_transaction_statuses()` | Find transactions needing proof sync (unmined, unknown, callback, sending, unconfirmed) | Stub (requires services) |
-| `send_waiting_transactions()` | Find unsent transactions ready for broadcast (unsent, sending status) | Stub (requires services) |
-| `abort_abandoned()` | Abort unsigned/unprocessed transactions older than timeout | Implemented |
-| `un_fail()` | Process transactions marked for unfail retry | Stub (requires services) |
+| Method | Description |
+|--------|-------------|
+| `synchronize_transaction_statuses()` | Query unmined/unknown/callback/sending/unconfirmed proven_tx_reqs, call `services.get_merkle_path()`, update proven_txs/proven_tx_reqs/transactions on proof found, increment attempts or mark invalid after 10 failures |
+| `send_waiting_transactions()` | Query unsent/sending proven_tx_reqs older than min age, build BEEF from raw_tx + input_beef, broadcast via `services.post_beef()`, handle double-spend detection |
+| `abort_abandoned()` | Query unsigned/unprocessed outgoing transactions older than timeout, abort each via `abort_action` |
+| `un_fail()` | Query unfail proven_tx_reqs, check chain for merkle path via services, restore to unmined/unproven if found, mark invalid if not |
 
 ### Utility Methods (on `StorageSqlx` directly)
 | Method | Description | Status |
@@ -213,7 +214,7 @@ pub async fn process_action_internal(
 - Status determination: nosend/delayed/immediate modes
 - Batch support and re-broadcast (is_new_tx=false)
 
-### Status Determination (BUG-003 Fix Applied)
+### Status Determination
 | Condition | Transaction Status | ProvenTxReq Status |
 |-----------|-------------------|-------------------|
 | is_no_send && !is_send_with | nosend | nosend |
@@ -381,7 +382,7 @@ let storage = StorageSqlx::open("wallet.db").await?;  // or in_memory()
 storage.migrate("my-wallet", &storage_identity_key).await?;
 storage.make_available().await?;
 
-// Set services for blockchain operations (required for BEEF verification, broadcasting, etc.)
+// Set services for blockchain operations (required for MonitorStorage methods)
 let services = Arc::new(Services::new(Chain::Main)?);
 storage.set_services(services);
 
@@ -416,6 +417,12 @@ Feature `sqlite` (default) enables SQLite support. MySQL is planned but not yet 
 
 ## Implementation Notes
 
+### Lock Utilities
+All `std::sync::RwLock` access goes through `lock_utils::{lock_read, lock_write}` helpers (from `src/lock_utils.rs`), which convert poisoned lock errors into `crate::Error` instead of panicking.
+
+### Unsafe Pointer Casts
+Three trait methods (`get_settings`, `storage_identity_key`, `storage_name`) use controlled unsafe pointer casts because the trait signatures require `&self` returns but internal state is behind `RwLock`. This is safe because these values are effectively immutable after `make_available()`. A `OnceLock<TableSettings>` provides a safe default fallback for `get_settings()` when settings are not yet loaded.
+
 ### Soft Deletes
 Certificates and baskets use `is_deleted` flag for soft deletes rather than actual row removal. This preserves history for sync operations.
 
@@ -425,23 +432,29 @@ The `find_*` and `list_*` methods build SQL dynamically based on provided filter
 ### Settings Caching
 Settings are loaded once via `make_available()` and cached in an `RwLock`. The `get_settings()` method returns a reference to cached data.
 
-### Unsafe Pointer Casts
-The trait signatures require `&self` returns but internal state uses `RwLock`. The implementation uses controlled unsafe pointer casts in `get_settings()`, `storage_identity_key()`, and `storage_name()`. This is safe because settings don't change after `make_available()`.
-
 ### MonitorStorage Integration
-The `MonitorStorage` trait enables background task integration. Only `abort_abandoned()` is fully implemented; the other three methods (`synchronize_transaction_statuses`, `send_waiting_transactions`, `un_fail`) are stubs because full implementation requires services access that is handled by the monitor daemon tasks in `src/monitor/tasks/`.
+All four `MonitorStorage` methods are fully implemented:
+- `synchronize_transaction_statuses` - queries chain via services, updates proof records
+- `send_waiting_transactions` - broadcasts via `services.post_beef()`, handles double-spend
+- `abort_abandoned` - queries and aborts stale unsigned/unprocessed transactions
+- `un_fail` - checks chain via services, restores or invalidates failed transactions
+
+The `review_status` and `purge_data` methods on `WalletStorageWriter` are also fully implemented:
+- `review_status` - syncs completed proven_tx_req status to associated transactions
+- `purge_data` - deletes old failed/invalid proven_tx_reqs, cleans raw data from completed ones
 
 ### Services Dependency
-Operations requiring blockchain access (BEEF verification, broadcasting, header lookups) require `WalletServices` to be set via `set_services()`. Calling `get_services()` before setting returns an error.
+Operations requiring blockchain access (BEEF verification, broadcasting, header lookups, MonitorStorage methods) require `WalletServices` to be set via `set_services()`. Calling `get_services()` before setting returns an error.
 
 ## Tests
 
-Total: 141 tests across all modules.
+Total: 166 tests across all modules.
 
 | Module | Tests | Key Coverage |
 |--------|-------|--------------|
 | `create_action.rs` | 45 | Validation, fee calculation, BEEF building, Go test parity |
 | `process_action.rs` | 35 | txid computation, VarInt parsing, script offsets, Go test parity |
+| `beef_verification.rs` | 25 | Merkle proof verification, verification modes, edge cases |
 | `storage_sqlx.rs` | 22 | CRUD operations, list methods, certificate filters, monitor ops, services integration |
 | `abort_action.rs` | 19 | Status validation, UTXO release, lookup by txid |
 | `internalize_action.rs` | 11 | Wallet payment, basket insertion, merge scenarios |

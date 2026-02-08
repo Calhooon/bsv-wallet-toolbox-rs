@@ -67,7 +67,8 @@ pub use cwi_style_wallet_manager::{
 };
 
 pub use permissions_manager::{
-    GroupedPermissions, PermissionRequest, PermissionToken, PermissionsModule,
+    BasketUsageType, CertificateUsageType, GroupedPermissions, PermissionRequest,
+    PermissionRequestHandler, PermissionToken, PermissionUsageType, PermissionsModule,
     WalletPermissionsManager, WalletPermissionsManagerConfig,
 };
 
