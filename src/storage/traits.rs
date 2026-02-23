@@ -171,6 +171,16 @@ pub struct FindProvenTxReqsArgs {
     pub txids: Option<Vec<String>>,
 }
 
+/// Arguments for finding transactions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindTransactionsArgs {
+    #[serde(flatten)]
+    pub base: FindSincePagedArgs,
+    pub status: Option<Vec<TransactionStatus>>,
+    pub no_raw_tx: Option<bool>,
+}
+
 // =============================================================================
 // Storage Results
 // =============================================================================
@@ -484,6 +494,12 @@ pub trait WalletStorageReader: Send + Sync {
         &self,
         args: FindProvenTxReqsArgs,
     ) -> Result<Vec<TableProvenTxReq>>;
+
+    /// Find transactions matching criteria.
+    async fn find_transactions(
+        &self,
+        args: FindTransactionsArgs,
+    ) -> Result<Vec<TableTransaction>>;
 
     /// List actions (transactions) for the user.
     async fn list_actions(&self, auth: &AuthId, args: ListActionsArgs)

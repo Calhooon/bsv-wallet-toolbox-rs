@@ -1470,8 +1470,27 @@ async fn generate_change(
             break;
         }
 
-        // Try to remove pointless churn: change inputs that fund only one change output
-        // (Simplified version - just continue to next iteration to try again)
+        // Starvation removed all desired change outputs but we have excess sats.
+        // Try to create a single change output to capture the excess instead of
+        // donating it all to miners. The change output itself costs extra bytes,
+        // so verify we still have a positive excess after adding it.
+        if change_outputs.is_empty() && fee_excess > 0 {
+            change_outputs.push(ChangeOutput {
+                satoshis: 1, // Minimum; Step 3 will distribute the real excess
+                vout: params.fixed_outputs.len() as u32,
+                derivation_prefix: derivation_prefix.to_string(),
+                derivation_suffix: random_derivation(16),
+            });
+            let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
+            if new_excess >= 0 {
+                fee_excess = new_excess;
+            } else {
+                // Can't afford a change output; excess goes to miners
+                change_outputs.pop();
+            }
+        }
+
+        break;
     }
 
     // Check if we still can't fund the transaction
@@ -1726,23 +1745,26 @@ async fn build_input_beef(
             continue;
         }
 
-        // First, try to get a stored BEEF and merge it directly.
-        // This is the most efficient path - it contains all ancestors in one structure.
+        // First, try to get a stored BEEF and merge its ancestors directly.
+        // The stored BEEF (input_beef) contains the ancestors OF this txid,
+        // but not the txid's own transaction - so we still fall through to
+        // get_tx_with_proof below to add the transaction itself.
         if let Some(stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
-            // Merge the entire stored BEEF - this includes all ancestors and any proofs
             beef.merge_beef(&stored_beef);
 
-            // Mark all txids from the stored BEEF as processed
             for beef_tx in &stored_beef.txs {
                 processed_txids.insert(beef_tx.txid());
             }
 
-            // Continue to next pending txid - no need for recursive lookup
-            depth += 1;
-            continue;
+            // Check if the stored BEEF happened to include this txid too
+            if beef.find_txid(&txid).is_some() {
+                depth += 1;
+                continue;
+            }
+            // Otherwise fall through to add the transaction itself
         }
 
-        // Fall back to individual transaction lookup
+        // Individual transaction lookup
         if let Some(tx_data) = get_tx_with_proof(&mut *conn, &txid).await? {
             // If we have a merkle proof, add both tx and proof - no need to recurse
             let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {

@@ -11,8 +11,8 @@ use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
-        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, WhatsOnChain,
-        WhatsOnChainConfig,
+        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
+        ChaintracksConfig, ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
@@ -24,6 +24,7 @@ use crate::services::{
 };
 use crate::{Error, Result};
 use bsv_sdk::transaction::ChainTracker;
+
 
 /// Post BEEF mode for handling multiple broadcast services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -114,6 +115,9 @@ pub struct Services {
 
     /// Cached fiat exchange rates.
     fiat_exchange_rates: RwLock<FiatExchangeRates>,
+
+    /// Chaintracks service client (optional).
+    pub chaintracks: Option<StdArc<ChaintracksServiceClient>>,
 
     /// Post BEEF mode.
     pub post_beef_mode: PostBeefMode,
@@ -321,6 +325,17 @@ impl Services {
             None
         };
 
+        // Create Chaintracks client if URL is configured
+        let chaintracks = if let Some(ref ct_url) = options.chaintracks_url {
+            let ct_config = ChaintracksConfig {
+                url: ct_url.clone(),
+                api_key: None,
+            };
+            Some(StdArc::new(ChaintracksServiceClient::new(ct_config)))
+        } else {
+            None
+        };
+
         // Build service collections
 
         // getMerklePath: WoC, Bitails
@@ -387,6 +402,7 @@ impl Services {
             arc_gorillapool,
             bitails,
             bhs,
+            chaintracks,
             get_merkle_path_services: RwLock::new(merkle_path_services),
             get_raw_tx_services: RwLock::new(raw_tx_services),
             post_beef_services: RwLock::new(post_beef_services),
@@ -544,7 +560,6 @@ impl Services {
 #[async_trait]
 impl WalletServices for Services {
     async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker> {
-        // In a full implementation, this would return the configured Chaintracks instance
         Err(Error::ServiceError(
             "ChainTracker not configured in Services".to_string(),
         ))
@@ -573,10 +588,23 @@ impl WalletServices for Services {
         }
     }
 
-    async fn get_header_for_height(&self, _height: u32) -> Result<Vec<u8>> {
-        // This would need Chaintracks integration
+    async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>> {
+        // Try Chaintracks first
+        if let Some(ref ct) = self.chaintracks {
+            match ct.find_header_for_height(height).await {
+                Ok(header) => return Ok(header.to_binary()),
+                Err(e) => tracing::debug!("Chaintracks header failed, trying BHS: {}", e),
+            }
+        }
+        // Fall back to BHS
+        if let Some(ref bhs) = self.bhs {
+            match bhs.chain_header_by_height(height).await {
+                Ok(header) => return Ok(header.to_binary()),
+                Err(e) => tracing::debug!("BHS header failed: {}", e),
+            }
+        }
         Err(Error::ServiceError(
-            "get_header_for_height requires Chaintracks".to_string(),
+            "get_header_for_height: no header service configured".to_string(),
         ))
     }
 
@@ -1039,8 +1067,69 @@ impl WalletServices for Services {
     }
 
     async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult> {
-        use bsv_sdk::transaction::{Beef, MerklePath, Transaction};
+        use bsv_sdk::transaction::{Beef, MerklePath, MerklePathLeaf, Transaction};
         use std::collections::HashSet;
+
+        /// TSC proof format returned by providers (WhatsOnChain, Bitails).
+        #[derive(Debug, serde::Deserialize)]
+        struct TscProof {
+            index: u64,
+            #[serde(rename = "txOrId")]
+            tx_or_id: String,
+            target: String,
+            nodes: Vec<String>,
+        }
+
+        /// Parse a JSON-serialized TSC proof string into a MerklePath.
+        fn parse_tsc_proof_to_merkle_path(
+            json_str: &str,
+            block_height: u32,
+        ) -> std::result::Result<MerklePath, String> {
+            let proof: TscProof =
+                serde_json::from_str(json_str).map_err(|e| format!("Invalid TSC proof JSON: {}", e))?;
+
+            if proof.nodes.is_empty() {
+                return Err("empty nodes list".to_string());
+            }
+
+            let txid = &proof.tx_or_id;
+            if txid.len() != 64 || hex::decode(txid).is_err() {
+                return Err("invalid txid in TSC proof".to_string());
+            }
+
+            let mut path: Vec<Vec<MerklePathLeaf>> = Vec::new();
+            let mut current_offset = proof.index;
+
+            for (level, node) in proof.nodes.iter().enumerate() {
+                let mut leaves = Vec::new();
+
+                if level == 0 {
+                    let txid_leaf = MerklePathLeaf::new_txid(current_offset, txid.clone());
+                    leaves.push(txid_leaf);
+                }
+
+                let sibling_offset = if current_offset % 2 == 0 {
+                    current_offset + 1
+                } else {
+                    current_offset - 1
+                };
+
+                if node == "*" {
+                    leaves.push(MerklePathLeaf::new_duplicate(sibling_offset));
+                } else {
+                    if node.len() != 64 || hex::decode(node).is_err() {
+                        return Err("invalid node hash in TSC proof".to_string());
+                    }
+                    leaves.push(MerklePathLeaf::new(sibling_offset, node.clone()));
+                }
+
+                leaves.sort_by_key(|l| l.offset);
+                path.push(leaves);
+                current_offset /= 2;
+            }
+
+            MerklePath::new(block_height, path).map_err(|e| format!("{}", e))
+        }
 
         // Build known txids lookup set for O(1) checking
         let known_set: HashSet<&str> = known_txids.iter().map(|s| s.as_str()).collect();
@@ -1083,13 +1172,40 @@ impl WalletServices for Services {
         // Create BEEF
         let mut beef = Beef::new();
 
-        // If we have a merkle path, parse and add it
-        let bump_index = if let Some(merkle_path_hex) = &merkle_result.merkle_path {
-            if let Ok(merkle_path) = MerklePath::from_hex(merkle_path_hex) {
-                // Add the merkle path (BUMP) to the BEEF and get the index
+        // If we have a merkle path, parse and add it.
+        // Providers may return BRC-74 hex or JSON-serialized TSC proof strings.
+        // Try hex first (backwards compatible), then fall back to JSON TSC proof parsing.
+        let bump_index = if let Some(merkle_path_str) = &merkle_result.merkle_path {
+            if let Ok(merkle_path) = MerklePath::from_hex(merkle_path_str) {
                 Some(beef.merge_bump(merkle_path))
             } else {
-                None
+                // Try parsing as JSON TSC proof
+                let parsed = serde_json::from_str::<TscProof>(merkle_path_str).ok();
+                if let Some(proof) = parsed {
+                    // Get block height: prefer header from merkle_result, otherwise look up via target hash
+                    let block_height = if let Some(header) = &merkle_result.header {
+                        Some(header.height)
+                    } else {
+                        // Look up block header using the TSC proof's target (block hash)
+                        self.hash_to_header(&proof.target)
+                            .await
+                            .ok()
+                            .map(|h| h.height)
+                    };
+                    if let Some(height) = block_height {
+                        parse_tsc_proof_to_merkle_path(merkle_path_str, height)
+                            .ok()
+                            .map(|mp| beef.merge_bump(mp))
+                    } else {
+                        tracing::warn!(
+                            "Could not determine block height for TSC proof (target: {})",
+                            proof.target
+                        );
+                        None
+                    }
+                } else {
+                    None
+                }
             }
         } else {
             None

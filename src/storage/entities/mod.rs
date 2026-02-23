@@ -6,15 +6,20 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+fn default_datetime() -> DateTime<Utc> {
+    DateTime::UNIX_EPOCH
+}
+
 // =============================================================================
 // Transaction Status
 // =============================================================================
 
 /// Status of a transaction in the wallet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TransactionStatus {
     /// Transaction is complete and confirmed.
+    #[default]
     Completed,
     /// Transaction is unprocessed (not yet signed/broadcast).
     Unprocessed,
@@ -25,8 +30,10 @@ pub enum TransactionStatus {
     /// Transaction is unsigned.
     Unsigned,
     /// Transaction is marked as no-send (not to be broadcast).
+    #[serde(alias = "nosend")]
     NoSend,
     /// Transaction has a non-final nLockTime.
+    #[serde(alias = "nonfinal")]
     NonFinal,
     /// Transaction failed.
     Failed,
@@ -52,10 +59,13 @@ impl TransactionStatus {
 }
 
 /// Status of a proven transaction request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// TS values: sending, unsent, nosend, unknown, nonfinal, unprocessed,
+///            unmined, callback, unconfirmed, completed, invalid, doubleSpend, unfail
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProvenTxReqStatus {
     /// Request is pending.
+    #[default]
     Pending,
     /// Request is in progress.
     InProgress,
@@ -80,11 +90,19 @@ pub enum ProvenTxReqStatus {
     /// Marked for unfail processing.
     Unfail,
     /// Transaction should not be sent.
+    #[serde(alias = "noSend")]
+    #[serde(rename = "nosend")]
     NoSend,
     /// Transaction is invalid.
     Invalid,
     /// Transaction is a double spend.
     DoubleSpend,
+    /// Transaction has a non-final nLockTime.
+    #[serde(alias = "nonFinal")]
+    #[serde(rename = "nonfinal")]
+    NonFinal,
+    /// Transaction is unprocessed (not yet signed/broadcast).
+    Unprocessed,
 }
 
 // =============================================================================
@@ -149,7 +167,7 @@ impl Default for TableSettings {
 
 /// Transaction record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct TableTransaction {
     pub transaction_id: i64,
     pub user_id: i64,
@@ -164,26 +182,60 @@ pub struct TableTransaction {
     pub input_beef: Option<Vec<u8>>,
     pub is_outgoing: bool,
     pub proof_txid: Option<String>,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
+}
+
+impl Default for TableTransaction {
+    fn default() -> Self {
+        Self {
+            transaction_id: 0,
+            user_id: 0,
+            txid: None,
+            status: TransactionStatus::default(),
+            reference: String::new(),
+            description: String::new(),
+            satoshis: 0,
+            version: 0,
+            lock_time: 0,
+            raw_tx: None,
+            input_beef: None,
+            is_outgoing: false,
+            proof_txid: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
 }
 
 /// Output (UTXO) record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableOutput {
+    #[serde(default)]
     pub output_id: i64,
+    #[serde(default)]
     pub user_id: i64,
+    #[serde(default)]
     pub transaction_id: i64,
     pub basket_id: Option<i64>,
+    #[serde(default)]
     pub txid: String,
+    #[serde(default)]
     pub vout: i32,
+    #[serde(default)]
     pub satoshis: i64,
     pub locking_script: Option<Vec<u8>>,
+    #[serde(default)]
     pub script_length: i32,
+    #[serde(default)]
     pub script_offset: i32,
+    #[serde(default)]
     pub output_type: String,
     /// Who provided this output: "you", "storage", or "you-and-storage".
+    #[serde(default)]
     pub provided_by: String,
     /// Purpose of this output.
     pub purpose: Option<String>,
@@ -195,13 +247,17 @@ pub struct TableOutput {
     pub sequence_number: Option<u32>,
     /// Description of how this output was spent.
     pub spending_description: Option<String>,
+    #[serde(default)]
     pub spendable: bool,
+    #[serde(default)]
     pub change: bool,
     pub derivation_prefix: Option<String>,
     pub derivation_suffix: Option<String>,
     pub sender_identity_key: Option<String>,
     pub custom_instructions: Option<String>,
+    #[serde(default = "default_datetime", alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(default = "default_datetime", alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -212,9 +268,13 @@ pub struct TableOutputBasket {
     pub basket_id: i64,
     pub user_id: i64,
     pub name: String,
+    #[serde(alias = "numberOfDesiredUTXOs")]
     pub number_of_desired_utxos: i32,
+    #[serde(alias = "minimumDesiredUTXOValue")]
     pub minimum_desired_utxo_value: i64,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -222,10 +282,13 @@ pub struct TableOutputBasket {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableOutputTag {
+    #[serde(alias = "outputTagId")]
     pub tag_id: i64,
     pub user_id: i64,
     pub tag: String,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -233,10 +296,14 @@ pub struct TableOutputTag {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableOutputTagMap {
+    #[serde(default)]
     pub output_tag_map_id: i64,
     pub output_id: i64,
+    #[serde(alias = "outputTagId")]
     pub tag_id: i64,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -244,10 +311,13 @@ pub struct TableOutputTagMap {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableTxLabel {
+    #[serde(alias = "txLabelId")]
     pub label_id: i64,
     pub user_id: i64,
     pub label: String,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -255,10 +325,14 @@ pub struct TableTxLabel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableTxLabelMap {
+    #[serde(default)]
     pub tx_label_map_id: i64,
     pub transaction_id: i64,
+    #[serde(alias = "txLabelId")]
     pub label_id: i64,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -276,9 +350,13 @@ pub struct TableProvenTx {
     pub index: i64,
     pub block_hash: String,
     pub merkle_root: String,
+    #[serde(default)]
     pub merkle_path: Vec<u8>,
+    #[serde(default)]
     pub raw_tx: Vec<u8>,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -286,12 +364,18 @@ pub struct TableProvenTx {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableProvenTxReq {
+    #[serde(default)]
     pub proven_tx_req_id: i64,
+    #[serde(default)]
     pub txid: String,
+    #[serde(default)]
     pub status: ProvenTxReqStatus,
+    #[serde(default)]
     pub attempts: i32,
+    #[serde(default)]
     pub history: String,
     /// Whether notifications have been sent for this request.
+    #[serde(default)]
     pub notified: bool,
     /// JSON string matching TS ProvenTxReqNotifyApi. Default "".
     #[serde(default)]
@@ -303,7 +387,9 @@ pub struct TableProvenTxReq {
     pub proven_tx_id: Option<i64>,
     /// Batch identifier for grouping transactions to broadcast together.
     pub batch: Option<String>,
+    #[serde(default = "default_datetime", alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(default = "default_datetime", alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -317,6 +403,7 @@ pub struct TableProvenTxReq {
 pub struct TableCertificate {
     pub certificate_id: i64,
     pub user_id: i64,
+    #[serde(alias = "type")]
     pub cert_type: String,
     pub serial_number: String,
     pub certifier: String,
@@ -324,7 +411,9 @@ pub struct TableCertificate {
     pub verifier: Option<String>,
     pub revocation_outpoint: String,
     pub signature: String,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -332,13 +421,16 @@ pub struct TableCertificate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableCertificateField {
+    #[serde(default)]
     pub certificate_field_id: i64,
     pub certificate_id: i64,
     pub user_id: i64,
     pub field_name: String,
     pub field_value: String,
     pub master_key: String,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -364,7 +456,9 @@ pub struct TableSyncState {
     pub satoshis: Option<i64>,
     pub error_local: Option<String>,
     pub error_other: Option<String>,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -380,10 +474,13 @@ pub struct TableCommission {
     pub user_id: i64,
     pub transaction_id: i64,
     pub satoshis: i64,
+    #[serde(default, alias = "lockingScript")]
     pub payer_locking_script: Vec<u8>,
     pub key_offset: String,
     pub is_redeemed: bool,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 

@@ -39,9 +39,9 @@ use chrono::{DateTime, Utc};
 use crate::storage::{
     entities::{
         TableCertificate, TableCertificateField, TableOutput, TableOutputBasket, TableProvenTxReq,
-        TableSettings, TableSyncState, TableUser,
+        TableSettings, TableSyncState, TableTransaction, TableUser,
     },
-    AuthId, FindCertificatesArgs, FindOutputBasketsArgs, FindOutputsArgs, FindProvenTxReqsArgs,
+    AuthId, FindCertificatesArgs, FindOutputBasketsArgs, FindOutputsArgs, FindProvenTxReqsArgs, FindTransactionsArgs,
     MonitorStorage, ProcessSyncChunkResult, PurgeParams, PurgeResults, RequestSyncChunkArgs,
     ReviewStatusResult, StorageCreateActionResult, StorageInternalizeActionResult,
     StorageProcessActionArgs, StorageProcessActionResults, SyncChunk, TrxToken,
@@ -977,6 +977,14 @@ impl WalletStorageReader for WalletStorageManager {
         args: FindProvenTxReqsArgs,
     ) -> Result<Vec<TableProvenTxReq>> {
         self.run_as_reader(|active| async move { active.find_proven_tx_reqs(args).await })
+            .await
+    }
+
+    async fn find_transactions(
+        &self,
+        args: FindTransactionsArgs,
+    ) -> Result<Vec<TableTransaction>> {
+        self.run_as_reader(|active| async move { active.find_transactions(args).await })
             .await
     }
 

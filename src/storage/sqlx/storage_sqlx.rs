@@ -1026,6 +1026,14 @@ impl WalletStorageReader for StorageSqlx {
         self.find_proven_tx_reqs_internal(&args).await
     }
 
+    async fn find_transactions(
+        &self,
+        _args: FindTransactionsArgs,
+    ) -> Result<Vec<TableTransaction>> {
+        // TODO: Implement for SQLite storage
+        Ok(vec![])
+    }
+
     async fn list_actions(
         &self,
         auth: &AuthId,
@@ -3197,8 +3205,10 @@ impl MonitorStorage for StorageSqlx {
             ProvenTxReqStatus::Callback => "callback",
             ProvenTxReqStatus::Unconfirmed => "unconfirmed",
             ProvenTxReqStatus::Unfail => "unfail",
-            ProvenTxReqStatus::NoSend => "noSend",
+            ProvenTxReqStatus::NoSend => "nosend",
             ProvenTxReqStatus::DoubleSpend => "doubleSpend",
+            ProvenTxReqStatus::NonFinal => "nonfinal",
+            ProvenTxReqStatus::Unprocessed => "unprocessed",
         };
 
         sqlx::query(

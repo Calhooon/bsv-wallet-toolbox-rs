@@ -84,6 +84,10 @@ pub enum Error {
     #[error("Transaction error: {0}")]
     TransactionError(String),
 
+    /// Transaction signing failed (e.g., derived key does not match locking script).
+    #[error("Signing error: {0}")]
+    SigningError(String),
+
     /// The transaction has an invalid or unexpected status for the requested operation.
     #[error("Invalid transaction status: {0}")]
     InvalidTransactionStatus(String),

@@ -190,11 +190,16 @@ impl WalletSigner {
             // Get the public key for the unlocking script
             let pubkey = signing_key.public_key();
 
+            // Validate that the derived pubkey matches the locking script (P2PKH only)
+            let pubkey_compressed = pubkey.to_compressed();
+            let pubkey_hash = hash160(&pubkey_compressed);
+            validate_p2pkh_pubkey_match(&pubkey_hash, locking_script)?;
+
             // Build the unlocking script based on script type
             let unlocking_script = build_unlocking_script(
                 locking_script,
                 &signature.to_der(),
-                &pubkey.to_compressed(),
+                &pubkey_compressed,
             )?;
 
             // Insert the unlocking script into the transaction
@@ -284,7 +289,12 @@ impl WalletSigner {
 
         let pubkey = signing_key.public_key();
 
-        build_unlocking_script(locking_script, &signature.to_der(), &pubkey.to_compressed())
+        // Validate that the derived pubkey matches the locking script (P2PKH only)
+        let pubkey_compressed = pubkey.to_compressed();
+        let pubkey_hash = hash160(&pubkey_compressed);
+        validate_p2pkh_pubkey_match(&pubkey_hash, locking_script)?;
+
+        build_unlocking_script(locking_script, &signature.to_der(), &pubkey_compressed)
     }
 
     /// Create an unlocking script template for deferred signing.
@@ -446,7 +456,7 @@ fn compute_sighash(
     let mut outputs_data = Vec::new();
     for output in &outputs {
         outputs_data.extend_from_slice(&output.satoshis.to_le_bytes());
-        outputs_data.push(output.script.len() as u8);
+        write_varint(&mut outputs_data, output.script.len() as u64);
         outputs_data.extend_from_slice(&output.script);
     }
     let hash_outputs = double_sha256(&outputs_data);
@@ -469,7 +479,7 @@ fn compute_sighash(
     preimage.extend_from_slice(&input.vout.to_le_bytes());
 
     // scriptCode (the locking script being spent)
-    preimage.push(locking_script.len() as u8);
+    write_varint(&mut preimage, locking_script.len() as u64);
     preimage.extend_from_slice(locking_script);
 
     // value (satoshis)
@@ -700,6 +710,32 @@ fn hash160(data: &[u8]) -> [u8; 20] {
     result
 }
 
+/// Validates that the derived public key's hash160 matches the P2PKH locking script.
+/// P2PKH format: 76 a9 14 <20-byte-hash160> 88 ac
+///
+/// For non-P2PKH scripts (not matching the 25-byte pattern), validation is skipped.
+/// For P2PKH scripts, a mismatch between the derived pubkey hash and the script hash
+/// is an error -- this catches wrong key derivation before broadcasting.
+fn validate_p2pkh_pubkey_match(pubkey_hash160: &[u8; 20], locking_script: &[u8]) -> Result<()> {
+    if locking_script.len() == 25
+        && locking_script[0] == 0x76
+        && locking_script[1] == 0xa9
+        && locking_script[2] == 0x14
+        && locking_script[23] == 0x88
+        && locking_script[24] == 0xac
+    {
+        let script_hash160 = &locking_script[3..23];
+        if pubkey_hash160 != script_hash160 {
+            return Err(Error::SigningError(format!(
+                "Derived pubkey hash160 {} does not match locking script hash160 {}",
+                hex::encode(pubkey_hash160),
+                hex::encode(script_hash160)
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Builds an unlocking script based on the locking script type.
 fn build_unlocking_script(
     locking_script: &[u8],
@@ -782,7 +818,7 @@ fn insert_unlocking_script(
     result.extend_from_slice(&version.to_le_bytes());
 
     // Input count
-    result.push(inputs.len() as u8);
+    write_varint(&mut result, inputs.len() as u64);
 
     // Inputs
     for (i, input) in inputs.iter().enumerate() {
@@ -808,7 +844,7 @@ fn insert_unlocking_script(
     }
 
     // Output count
-    result.push(outputs.len() as u8);
+    write_varint(&mut result, outputs.len() as u64);
 
     // Outputs
     for output in &outputs {

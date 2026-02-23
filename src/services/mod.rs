@@ -51,8 +51,8 @@ pub use collection::{
     ServiceToCall,
 };
 pub use providers::{
-    Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, WhatsOnChain,
-    WhatsOnChainConfig,
+    Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
+    ChaintracksConfig, ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
 };
 pub use services::Services;
 
@@ -83,6 +83,9 @@ pub struct ServicesOptions {
     /// Block Header Service API key (optional)
     pub bhs_api_key: Option<String>,
 
+    /// Chaintracks URL (optional) — e.g. `https://api.calhouninfra.com`
+    pub chaintracks_url: Option<String>,
+
     /// BSV exchange rate cache duration in milliseconds
     pub bsv_update_msecs: u64,
 
@@ -107,6 +110,7 @@ impl Default for ServicesOptions {
             arc_gorillapool_config: None,
             bhs_url: None,
             bhs_api_key: None,
+            chaintracks_url: None,
             bsv_update_msecs: 15 * 60 * 1000,       // 15 minutes
             fiat_update_msecs: 24 * 60 * 60 * 1000, // 24 hours (fiat rates change less frequently)
             fiat_exchange_rates: FiatExchangeRates::default(),
@@ -172,6 +176,12 @@ impl ServicesOptions {
     pub fn with_bhs(mut self, url: impl Into<String>, api_key: Option<String>) -> Self {
         self.bhs_url = Some(url.into());
         self.bhs_api_key = api_key;
+        self
+    }
+
+    /// Set Chaintracks URL for block header lookups.
+    pub fn with_chaintracks_url(mut self, url: impl Into<String>) -> Self {
+        self.chaintracks_url = Some(url.into());
         self
     }
 
