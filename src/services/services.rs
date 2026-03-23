@@ -11,8 +11,8 @@ use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
-        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
-        ChaintracksConfig, ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
+        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
+        ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
@@ -24,7 +24,6 @@ use crate::services::{
 };
 use crate::{Error, Result};
 use bsv_rs::transaction::ChainTracker;
-
 
 /// Post BEEF mode for handling multiple broadcast services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1085,8 +1084,8 @@ impl WalletServices for Services {
             json_str: &str,
             block_height: u32,
         ) -> std::result::Result<MerklePath, String> {
-            let proof: TscProof =
-                serde_json::from_str(json_str).map_err(|e| format!("Invalid TSC proof JSON: {}", e))?;
+            let proof: TscProof = serde_json::from_str(json_str)
+                .map_err(|e| format!("Invalid TSC proof JSON: {}", e))?;
 
             if proof.nodes.is_empty() {
                 return Err("empty nodes list".to_string());
@@ -1108,7 +1107,7 @@ impl WalletServices for Services {
                     leaves.push(txid_leaf);
                 }
 
-                let sibling_offset = if current_offset % 2 == 0 {
+                let sibling_offset = if current_offset.is_multiple_of(2) {
                     current_offset + 1
                 } else {
                     current_offset - 1

@@ -249,7 +249,7 @@ impl Bitails {
         let raw_hex = hex::encode(raw_tx);
         let txid = crate::services::traits::txid_from_raw_tx(raw_tx);
 
-        let results = self.post_raws(&[raw_hex.clone()]).await?;
+        let results = self.post_raws(std::slice::from_ref(&raw_hex)).await?;
 
         if results.len() != 1 {
             return Ok(PostTxResultForTxid {

@@ -1371,10 +1371,7 @@ mod tests {
         ) -> bsv_rs::Result<DiscoverCertificatesResult> {
             unimplemented!()
         }
-        async fn is_authenticated(
-            &self,
-            _originator: &str,
-        ) -> bsv_rs::Result<AuthenticatedResult> {
+        async fn is_authenticated(&self, _originator: &str) -> bsv_rs::Result<AuthenticatedResult> {
             unimplemented!()
         }
         async fn wait_for_authentication(

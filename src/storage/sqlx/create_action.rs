@@ -1332,20 +1332,24 @@ async fn generate_change(
             .fixed_inputs
             .iter()
             .map(|i| i.unlocking_script_length)
-            .chain(
-                std::iter::repeat(params.change_unlocking_script_length).take(alloc_inputs.len()),
-            )
+            .chain(std::iter::repeat_n(
+                params.change_unlocking_script_length,
+                alloc_inputs.len(),
+            ))
             .collect();
 
         let output_script_lengths: Vec<u32> = params
             .fixed_outputs
             .iter()
             .map(|o| o.locking_script_length)
-            .chain(std::iter::repeat(params.change_locking_script_length).take(change_outs.len()))
+            .chain(std::iter::repeat_n(
+                params.change_locking_script_length,
+                change_outs.len(),
+            ))
             .collect();
 
         let size = calculate_transaction_size(&input_script_lengths, &output_script_lengths);
-        let fee_required = (size * params.fee_rate + 999) / 1000; // Ceiling division
+        let fee_required = (size * params.fee_rate).div_ceil(1000);
 
         let fee_excess = input_sats as i64 - output_sats as i64 - fee_required as i64;
 
@@ -1390,7 +1394,7 @@ async fn generate_change(
 
     // Step 2: Fund the transaction (starvation loop with funding loop)
     // This is the outer "for (;;)" loop in TypeScript
-    loop {
+    'funding: {
         // Release all allocated inputs (TypeScript: releaseAllocatedChangeInputs)
         for input in allocated_inputs.drain(..) {
             release_change_input(&mut *conn, input.output_id).await?;
@@ -1455,7 +1459,7 @@ async fn generate_change(
 
         // Check if we're done (balanced/overbalanced or impossible)
         if fee_excess >= 0 || change_outputs.is_empty() {
-            break;
+            break 'funding;
         }
 
         // Remove change outputs one at a time (starvation)
@@ -1467,7 +1471,7 @@ async fn generate_change(
 
         if fee_excess < 0 {
             // Not enough available funding even with no change outputs
-            break;
+            break 'funding;
         }
 
         // Starvation removed all desired change outputs but we have excess sats.
@@ -1489,8 +1493,6 @@ async fn generate_change(
                 change_outputs.pop();
             }
         }
-
-        break;
     }
 
     // Check if we still can't fund the transaction
@@ -1993,7 +1995,10 @@ pub(super) fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u
 /// # Returns
 /// * `Ok(Some(BeefTxData))` - Transaction data if found
 /// * `Ok(None)` - If transaction not found in any table
-pub(super) async fn get_tx_with_proof(conn: &mut SqliteConnection, txid: &str) -> Result<Option<BeefTxData>> {
+pub(super) async fn get_tx_with_proof(
+    conn: &mut SqliteConnection,
+    txid: &str,
+) -> Result<Option<BeefTxData>> {
     // First try proven_txs table - these have merkle proofs
     let proven_row = sqlx::query(
         r#"
@@ -2138,7 +2143,10 @@ pub(super) async fn get_tx_with_proof(conn: &mut SqliteConnection, txid: &str) -
 /// # Returns
 /// * `Ok(Some(Beef))` - Stored BEEF if available
 /// * `Ok(None)` - If no stored BEEF found
-pub(super) async fn get_stored_beef(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Beef>> {
+pub(super) async fn get_stored_beef(
+    conn: &mut SqliteConnection,
+    txid: &str,
+) -> Result<Option<Beef>> {
     // Try transactions table first
     let tx_row = sqlx::query(
         r#"

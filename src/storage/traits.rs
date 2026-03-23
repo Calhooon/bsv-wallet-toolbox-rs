@@ -496,10 +496,7 @@ pub trait WalletStorageReader: Send + Sync {
     ) -> Result<Vec<TableProvenTxReq>>;
 
     /// Find transactions matching criteria.
-    async fn find_transactions(
-        &self,
-        args: FindTransactionsArgs,
-    ) -> Result<Vec<TableTransaction>>;
+    async fn find_transactions(&self, args: FindTransactionsArgs) -> Result<Vec<TableTransaction>>;
 
     /// List actions (transactions) for the user.
     async fn list_actions(&self, auth: &AuthId, args: ListActionsArgs)

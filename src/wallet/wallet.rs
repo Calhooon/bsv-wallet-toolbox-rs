@@ -1423,9 +1423,7 @@ where
                         let can_downgrade = beef.txs.iter().all(|tx| !tx.is_txid_only());
 
                         // Force downgrade to V1 for ARC compatibility
-                        if can_downgrade
-                            && beef.version != bsv_rs::transaction::BEEF_V1
-                        {
+                        if can_downgrade && beef.version != bsv_rs::transaction::BEEF_V1 {
                             beef.version = bsv_rs::transaction::BEEF_V1;
                         }
 
@@ -1462,7 +1460,9 @@ where
                                     .iter()
                                     .filter(|r| r.status != "success")
                                     .map(|r| {
-                                        let txid_errors: String = r.txid_results.iter()
+                                        let txid_errors: String = r
+                                            .txid_results
+                                            .iter()
                                             .filter(|tx| tx.status != "success")
                                             .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
                                             .collect::<Vec<_>>()
@@ -1803,7 +1803,9 @@ where
                                         .iter()
                                         .filter(|r| r.status != "success")
                                         .map(|r| {
-                                            let txid_errors: String = r.txid_results.iter()
+                                            let txid_errors: String = r
+                                                .txid_results
+                                                .iter()
                                                 .filter(|tx| tx.status != "success")
                                                 .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
                                                 .collect::<Vec<_>>()
@@ -3466,14 +3468,8 @@ mod tests {
         assert_eq!(cert.revocation_outpoint, "abc123.0");
         assert_eq!(cert.signature, "deadbeef");
         assert_eq!(cert.fields.len(), 2);
-        assert_eq!(
-            cert.fields.get("name").unwrap(),
-            "encrypted_name_value"
-        );
-        assert_eq!(
-            cert.fields.get("email").unwrap(),
-            "encrypted_email_value"
-        );
+        assert_eq!(cert.fields.get("name").unwrap(), "encrypted_name_value");
+        assert_eq!(cert.fields.get("email").unwrap(), "encrypted_email_value");
     }
 
     #[test]
