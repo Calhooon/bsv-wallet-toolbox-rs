@@ -5,7 +5,7 @@
 //!
 //! Run with: `cargo run --example basic_wallet`
 
-use bsv_wallet_toolbox::{Chain, Services, ServicesOptions};
+use bsv_wallet_toolbox_rs::{Chain, Services, ServicesOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("BSV Wallet Toolbox - Basic Example");

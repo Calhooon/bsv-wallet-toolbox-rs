@@ -18,9 +18,9 @@ mod concurrent {
     use std::sync::Arc;
 
     use bsv_rs::wallet::{AbortActionArgs, ListOutputsArgs};
-    use bsv_wallet_toolbox::storage::entities::TableCertificate;
-    use bsv_wallet_toolbox::storage::FindOutputsArgs;
-    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
+    use bsv_wallet_toolbox_rs::storage::entities::TableCertificate;
+    use bsv_wallet_toolbox_rs::storage::FindOutputsArgs;
+    use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
     use chrono::Utc;
     use sqlx::Row;
 
@@ -901,7 +901,7 @@ mod concurrent {
     // =========================================================================
     #[tokio::test]
     async fn test_lock_queue_concurrent_operations_complete() {
-        use bsv_wallet_toolbox::WalletStorageManager;
+        use bsv_wallet_toolbox_rs::WalletStorageManager;
 
         // Create an in-memory StorageSqlx for the WalletStorageManager
         let inner_storage = StorageSqlx::in_memory().await.unwrap();
@@ -912,7 +912,7 @@ mod concurrent {
         inner_storage.make_available().await.unwrap();
 
         let identity_key = "a".repeat(66);
-        let inner_arc: Arc<dyn bsv_wallet_toolbox::MonitorStorage> = Arc::new(inner_storage);
+        let inner_arc: Arc<dyn bsv_wallet_toolbox_rs::MonitorStorage> = Arc::new(inner_storage);
 
         let manager = Arc::new(WalletStorageManager::new(
             identity_key.clone(),
@@ -927,7 +927,7 @@ mod concurrent {
             m1.run_as_writer(|_active| async move {
                 // Hold the lock for 5 seconds (much longer than our test timeout)
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                Ok::<_, bsv_wallet_toolbox::Error>(())
+                Ok::<_, bsv_wallet_toolbox_rs::Error>(())
             })
             .await
         });
@@ -939,7 +939,7 @@ mod concurrent {
         let m2 = manager.clone();
         let contender_handle = tokio::spawn(async move {
             m2.run_as_writer(|_active| async move {
-                Ok::<_, bsv_wallet_toolbox::Error>("contender_succeeded")
+                Ok::<_, bsv_wallet_toolbox_rs::Error>("contender_succeeded")
             })
             .await
         });
@@ -956,7 +956,7 @@ mod concurrent {
         );
 
         // Verify the LockTimeout error type exists and formats correctly
-        let timeout_err = bsv_wallet_toolbox::Error::LockTimeout(
+        let timeout_err = bsv_wallet_toolbox_rs::Error::LockTimeout(
             "Timed out after 30s waiting for writer lock".to_string(),
         );
         let msg = format!("{}", timeout_err);

@@ -589,7 +589,7 @@ mod tests {
             decrypted_fields: HashMap::new(),
         };
 
-        let certs = vec![cert1, cert2];
+        let certs = [cert1, cert2];
         let identity_certs: Vec<IdentityCertificate> =
             certs.iter().map(|c| c.to_identity_certificate()).collect();
 

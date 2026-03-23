@@ -13,16 +13,16 @@ mod reorg {
     use chrono::Utc;
 
     use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
-    use bsv_wallet_toolbox::monitor::tasks::{DeactivatedHeader, MonitorTask, ReorgTask};
-    use bsv_wallet_toolbox::services::traits::GetBeefResult;
-    use bsv_wallet_toolbox::services::{
+    use bsv_wallet_toolbox_rs::monitor::tasks::{DeactivatedHeader, MonitorTask, ReorgTask};
+    use bsv_wallet_toolbox_rs::services::traits::GetBeefResult;
+    use bsv_wallet_toolbox_rs::services::{
         BlockHeader, FiatCurrency, GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult,
         GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput,
         PostBeefResult, WalletServices,
     };
-    use bsv_wallet_toolbox::storage::entities::ProvenTxReqStatus;
-    use bsv_wallet_toolbox::storage::FindProvenTxReqsArgs;
-    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
+    use bsv_wallet_toolbox_rs::storage::entities::ProvenTxReqStatus;
+    use bsv_wallet_toolbox_rs::storage::FindProvenTxReqsArgs;
+    use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     // =========================================================================
     // Mock WalletServices for testing
@@ -107,21 +107,21 @@ mod reorg {
 
     #[async_trait]
     impl WalletServices for MockServices {
-        async fn get_chain_tracker(&self) -> bsv_wallet_toolbox::Result<&dyn ChainTracker> {
-            Err(bsv_wallet_toolbox::Error::ServiceError(
+        async fn get_chain_tracker(&self) -> bsv_wallet_toolbox_rs::Result<&dyn ChainTracker> {
+            Err(bsv_wallet_toolbox_rs::Error::ServiceError(
                 "MockServices does not provide ChainTracker".to_string(),
             ))
         }
 
-        async fn get_height(&self) -> bsv_wallet_toolbox::Result<u32> {
+        async fn get_height(&self) -> bsv_wallet_toolbox_rs::Result<u32> {
             Ok(800000)
         }
 
-        async fn get_header_for_height(&self, _height: u32) -> bsv_wallet_toolbox::Result<Vec<u8>> {
+        async fn get_header_for_height(&self, _height: u32) -> bsv_wallet_toolbox_rs::Result<Vec<u8>> {
             Ok(vec![0u8; 80])
         }
 
-        async fn hash_to_header(&self, _hash: &str) -> bsv_wallet_toolbox::Result<BlockHeader> {
+        async fn hash_to_header(&self, _hash: &str) -> bsv_wallet_toolbox_rs::Result<BlockHeader> {
             Ok(BlockHeader {
                 hash: "h".repeat(64),
                 height: 800000,
@@ -138,7 +138,7 @@ mod reorg {
             &self,
             _txid: &str,
             _use_next: bool,
-        ) -> bsv_wallet_toolbox::Result<GetMerklePathResult> {
+        ) -> bsv_wallet_toolbox_rs::Result<GetMerklePathResult> {
             self.call_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let guard = self.merkle_result.read().await;
@@ -158,7 +158,7 @@ mod reorg {
             &self,
             _txid: &str,
             _use_next: bool,
-        ) -> bsv_wallet_toolbox::Result<GetRawTxResult> {
+        ) -> bsv_wallet_toolbox_rs::Result<GetRawTxResult> {
             Ok(GetRawTxResult {
                 raw_tx: None,
                 name: "mock".to_string(),
@@ -171,7 +171,7 @@ mod reorg {
             &self,
             _beef: &[u8],
             _txids: &[String],
-        ) -> bsv_wallet_toolbox::Result<Vec<PostBeefResult>> {
+        ) -> bsv_wallet_toolbox_rs::Result<Vec<PostBeefResult>> {
             Ok(vec![])
         }
 
@@ -181,7 +181,7 @@ mod reorg {
             _output_format: Option<GetUtxoStatusOutputFormat>,
             _outpoint: Option<&str>,
             _use_next: bool,
-        ) -> bsv_wallet_toolbox::Result<GetUtxoStatusResult> {
+        ) -> bsv_wallet_toolbox_rs::Result<GetUtxoStatusResult> {
             Ok(GetUtxoStatusResult {
                 status: "success".to_string(),
                 is_utxo: Some(true),
@@ -195,7 +195,7 @@ mod reorg {
             &self,
             _txids: &[String],
             _use_next: bool,
-        ) -> bsv_wallet_toolbox::Result<GetStatusForTxidsResult> {
+        ) -> bsv_wallet_toolbox_rs::Result<GetStatusForTxidsResult> {
             Ok(GetStatusForTxidsResult {
                 results: vec![],
                 name: "mock".to_string(),
@@ -208,7 +208,7 @@ mod reorg {
             &self,
             _hash: &str,
             _use_next: bool,
-        ) -> bsv_wallet_toolbox::Result<GetScriptHashHistoryResult> {
+        ) -> bsv_wallet_toolbox_rs::Result<GetScriptHashHistoryResult> {
             Ok(GetScriptHashHistoryResult {
                 history: vec![],
                 name: "mock".to_string(),
@@ -217,7 +217,7 @@ mod reorg {
             })
         }
 
-        async fn get_bsv_exchange_rate(&self) -> bsv_wallet_toolbox::Result<f64> {
+        async fn get_bsv_exchange_rate(&self) -> bsv_wallet_toolbox_rs::Result<f64> {
             Ok(50.0)
         }
 
@@ -225,7 +225,7 @@ mod reorg {
             &self,
             _currency: FiatCurrency,
             _base: Option<FiatCurrency>,
-        ) -> bsv_wallet_toolbox::Result<f64> {
+        ) -> bsv_wallet_toolbox_rs::Result<f64> {
             Ok(1.0)
         }
 
@@ -238,21 +238,21 @@ mod reorg {
             _txid: &str,
             _vout: u32,
             _locking_script: &[u8],
-        ) -> bsv_wallet_toolbox::Result<bool> {
+        ) -> bsv_wallet_toolbox_rs::Result<bool> {
             Ok(true)
         }
 
         async fn n_lock_time_is_final(
             &self,
             _n_lock_time: u32,
-        ) -> bsv_wallet_toolbox::Result<bool> {
+        ) -> bsv_wallet_toolbox_rs::Result<bool> {
             Ok(true)
         }
 
         async fn n_lock_time_is_final_for_tx(
             &self,
             _input: NLockTimeInput,
-        ) -> bsv_wallet_toolbox::Result<bool> {
+        ) -> bsv_wallet_toolbox_rs::Result<bool> {
             Ok(true)
         }
 
@@ -260,7 +260,7 @@ mod reorg {
             &self,
             txid: &str,
             _known_txids: &[String],
-        ) -> bsv_wallet_toolbox::Result<GetBeefResult> {
+        ) -> bsv_wallet_toolbox_rs::Result<GetBeefResult> {
             Ok(GetBeefResult {
                 name: "mock".to_string(),
                 txid: txid.to_string(),
