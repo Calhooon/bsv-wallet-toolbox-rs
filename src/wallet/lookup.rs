@@ -137,7 +137,7 @@ impl HttpLookupResolver {
     ///
     /// # Arguments
     ///
-    /// * `endpoint` - The overlay service URL (e.g., "https://lookup.babbage.systems")
+    /// * `endpoint` - The overlay service URL (e.g., `https://lookup.babbage.systems`)
     pub fn new(endpoint: &str) -> Self {
         Self {
             endpoints: vec![endpoint.to_string()],

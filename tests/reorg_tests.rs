@@ -117,7 +117,10 @@ mod reorg {
             Ok(800000)
         }
 
-        async fn get_header_for_height(&self, _height: u32) -> bsv_wallet_toolbox_rs::Result<Vec<u8>> {
+        async fn get_header_for_height(
+            &self,
+            _height: u32,
+        ) -> bsv_wallet_toolbox_rs::Result<Vec<u8>> {
             Ok(vec![0u8; 80])
         }
 
