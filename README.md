@@ -77,7 +77,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bsv-wallet-toolbox = { git = "https://github.com/Calgooon/rust-wallet-toolbox" }
+bsv-wallet-toolbox-rs = "0.1"
 ```
 
 ## Database Schema
