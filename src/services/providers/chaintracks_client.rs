@@ -6,7 +6,7 @@
 use crate::services::traits::BlockHeader;
 use crate::{Error, Result};
 use async_trait::async_trait;
-use bsv_sdk::transaction::{ChainTracker, ChainTrackerError};
+use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 

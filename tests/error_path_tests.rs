@@ -153,13 +153,13 @@ async fn test_error_display() {
 
 #[tokio::test]
 async fn test_error_conversion_from_sdk() {
-    // Test that bsv_sdk errors can be converted into our Error type.
+    // Test that bsv_rs errors can be converted into our Error type.
     // We construct a synthetic scenario using Error::from for SDK errors.
-    // Since bsv_sdk::Error is opaque, we test this indirectly by verifying
+    // Since bsv_rs::Error is opaque, we test this indirectly by verifying
     // the SdkError variant exists and wraps the error.
 
     // Create an Error that looks like an SDK error via our own construction
-    // (We cannot easily construct bsv_sdk::Error directly in integration tests,
+    // (We cannot easily construct bsv_rs::Error directly in integration tests,
     // but we can verify the variant pattern exists by matching.)
     let e = Error::Internal("SDK-like error occurred".to_string());
 

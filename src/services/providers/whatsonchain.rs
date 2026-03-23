@@ -359,7 +359,7 @@ impl WhatsOnChain {
 
     /// Post BEEF transaction (extracts raw txs and broadcasts sequentially).
     pub async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
-        use bsv_sdk::transaction::Beef;
+        use bsv_rs::transaction::Beef;
 
         let mut result = PostBeefResult {
             name: "WoC".to_string(),

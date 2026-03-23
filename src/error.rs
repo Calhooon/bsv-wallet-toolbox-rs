@@ -131,7 +131,7 @@ pub enum Error {
     // ===================
     /// An error from the underlying `bsv-sdk` crate.
     #[error("SDK error: {0}")]
-    SdkError(#[from] bsv_sdk::Error),
+    SdkError(#[from] bsv_rs::Error),
 
     /// A JSON serialization or deserialization error.
     #[error("JSON error: {0}")]

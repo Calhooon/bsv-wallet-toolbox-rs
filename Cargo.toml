@@ -19,7 +19,7 @@ full = ["sqlite", "mysql", "remote"]
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits
-bsv_sdk = { version = "0.2", package = "bsv-rs", features = ["full", "http"] }
+bsv-rs = { version = "0.3", features = ["full", "http"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

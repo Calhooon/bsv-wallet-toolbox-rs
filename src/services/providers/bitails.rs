@@ -358,7 +358,7 @@ impl Bitails {
     /// Parses the BEEF to extract raw transactions and broadcasts each one
     /// via the raw transaction endpoint.
     pub async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
-        use bsv_sdk::transaction::Beef;
+        use bsv_rs::transaction::Beef;
 
         let mut result = PostBeefResult {
             name: "Bitails".to_string(),

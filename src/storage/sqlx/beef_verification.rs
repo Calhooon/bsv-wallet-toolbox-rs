@@ -3,7 +3,7 @@
 //! This module provides functions for verifying BEEF (Background Evaluation
 //! Extended Format) merkle proofs against a ChainTracker.
 
-use bsv_sdk::transaction::{Beef, ChainTracker};
+use bsv_rs::transaction::{Beef, ChainTracker};
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
@@ -160,8 +160,8 @@ pub async fn verify_txid_merkle_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bsv_sdk::primitives::{sha256d, to_hex};
-    use bsv_sdk::transaction::{ChainTrackerError, MerklePath, MockChainTracker, Transaction};
+    use bsv_rs::primitives::{sha256d, to_hex};
+    use bsv_rs::transaction::{ChainTrackerError, MerklePath, MockChainTracker, Transaction};
     use std::collections::HashSet;
 
     // A mock ChainTracker that always returns true
@@ -612,7 +612,7 @@ mod tests {
 
         // Build a child tx that spends the parent
         // We need to construct a raw tx whose first input references parent_txid
-        let parent_txid_bytes = bsv_sdk::primitives::from_hex(&parent_txid).unwrap();
+        let parent_txid_bytes = bsv_rs::primitives::from_hex(&parent_txid).unwrap();
         let mut parent_txid_le = parent_txid_bytes;
         parent_txid_le.reverse(); // txid is stored little-endian in raw tx
 

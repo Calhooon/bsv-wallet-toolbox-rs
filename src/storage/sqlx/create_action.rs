@@ -9,7 +9,7 @@ use crate::storage::traits::{
     FindOutputBasketsArgs, StorageCreateActionResult, StorageCreateTransactionInput,
     StorageCreateTransactionOutput, StorageProvidedBy,
 };
-use bsv_sdk::transaction::{Beef, ChainTracker, MerklePath};
+use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
 use chrono::Utc;
 use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
@@ -139,7 +139,7 @@ struct ChangeOutput {
 // =============================================================================
 
 /// Validates create action arguments.
-fn validate_create_action_args(args: &bsv_sdk::wallet::CreateActionArgs) -> Result<()> {
+fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArgs) -> Result<()> {
     // Validate description length
     if args.description.len() < MIN_DESCRIPTION_LENGTH {
         return Err(Error::ValidationError(format!(
@@ -363,7 +363,7 @@ pub async fn create_action_internal(
     storage: &StorageSqlx,
     chain_tracker: Option<&dyn ChainTracker>,
     user_id: i64,
-    args: bsv_sdk::wallet::CreateActionArgs,
+    args: bsv_rs::wallet::CreateActionArgs,
 ) -> Result<StorageCreateActionResult> {
     // Step 1: Validate all inputs
     validate_create_action_args(&args)?;
@@ -704,7 +704,7 @@ pub async fn create_action_internal(
 
 /// Validates and extends output specifications.
 fn validate_and_extend_outputs(
-    args: &bsv_sdk::wallet::CreateActionArgs,
+    args: &bsv_rs::wallet::CreateActionArgs,
 ) -> Result<Vec<ExtendedOutput>> {
     let mut extended = Vec::new();
 
@@ -734,9 +734,9 @@ async fn validate_and_extend_inputs(
     storage: &StorageSqlx,
     conn: &mut SqliteConnection,
     user_id: i64,
-    args: &bsv_sdk::wallet::CreateActionArgs,
+    args: &bsv_rs::wallet::CreateActionArgs,
 ) -> Result<Vec<ExtendedInput>> {
-    use bsv_sdk::transaction::Beef;
+    use bsv_rs::transaction::Beef;
 
     let mut extended = Vec::new();
 
@@ -891,7 +891,7 @@ async fn count_change_inputs(
 async fn create_transaction_record(
     conn: &mut SqliteConnection,
     user_id: i64,
-    args: &bsv_sdk::wallet::CreateActionArgs,
+    args: &bsv_rs::wallet::CreateActionArgs,
 ) -> Result<i64> {
     let now = Utc::now();
     let reference = random_reference();
@@ -2192,7 +2192,7 @@ pub(super) async fn get_stored_beef(conn: &mut SqliteConnection, txid: &str) -> 
 mod tests {
     use super::*;
     use crate::storage::traits::WalletStorageWriter;
-    use bsv_sdk::wallet::{CreateActionOptions, CreateActionOutput};
+    use bsv_rs::wallet::{CreateActionOptions, CreateActionOutput};
 
     #[test]
     fn test_var_int_size() {
@@ -2233,7 +2233,7 @@ mod tests {
 
     #[test]
     fn test_validate_description_too_short() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "abc".to_string(),
             input_beef: None,
             inputs: None,
@@ -2249,7 +2249,7 @@ mod tests {
 
     #[test]
     fn test_validate_description_too_long() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "a".repeat(2001),
             input_beef: None,
             inputs: None,
@@ -2265,7 +2265,7 @@ mod tests {
 
     #[test]
     fn test_validate_description_valid() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2280,7 +2280,7 @@ mod tests {
 
     #[test]
     fn test_validate_empty_label() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2296,7 +2296,7 @@ mod tests {
 
     #[test]
     fn test_validate_label_too_long() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2312,7 +2312,7 @@ mod tests {
 
     #[test]
     fn test_validate_output_empty_locking_script() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2335,7 +2335,7 @@ mod tests {
 
     #[test]
     fn test_validate_output_satoshis_too_high() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2358,7 +2358,7 @@ mod tests {
 
     #[test]
     fn test_validate_output_description_too_short() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2381,7 +2381,7 @@ mod tests {
 
     #[test]
     fn test_validate_output_empty_basket() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2404,7 +2404,7 @@ mod tests {
 
     #[test]
     fn test_validate_output_empty_tag() {
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2431,7 +2431,7 @@ mod tests {
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2457,7 +2457,7 @@ mod tests {
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Valid description".to_string(),
             input_beef: None,
             inputs: None,
@@ -2479,14 +2479,14 @@ mod tests {
 
     #[test]
     fn test_validate_input_missing_unlocking_script() {
-        use bsv_sdk::wallet::{CreateActionInput, Outpoint};
+        use bsv_rs::wallet::{CreateActionInput, Outpoint};
 
         let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6")
             .unwrap();
         let mut txid_arr = [0u8; 32];
         txid_arr.copy_from_slice(&txid);
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test transaction".to_string(),
             input_beef: None,
             inputs: Some(vec![CreateActionInput {
@@ -2513,14 +2513,14 @@ mod tests {
 
     #[test]
     fn test_validate_input_unlocking_script_length_mismatch() {
-        use bsv_sdk::wallet::{CreateActionInput, Outpoint};
+        use bsv_rs::wallet::{CreateActionInput, Outpoint};
 
         let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6")
             .unwrap();
         let mut txid_arr = [0u8; 32];
         txid_arr.copy_from_slice(&txid);
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test transaction".to_string(),
             input_beef: None,
             inputs: Some(vec![CreateActionInput {
@@ -2545,14 +2545,14 @@ mod tests {
 
     #[test]
     fn test_validate_duplicate_input_outpoints() {
-        use bsv_sdk::wallet::{CreateActionInput, Outpoint};
+        use bsv_rs::wallet::{CreateActionInput, Outpoint};
 
         let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6")
             .unwrap();
         let mut txid_arr = [0u8; 32];
         txid_arr.copy_from_slice(&txid);
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test transaction".to_string(),
             input_beef: None,
             inputs: Some(vec![
@@ -2589,14 +2589,14 @@ mod tests {
 
     #[test]
     fn test_validate_valid_input() {
-        use bsv_sdk::wallet::{CreateActionInput, Outpoint};
+        use bsv_rs::wallet::{CreateActionInput, Outpoint};
 
         let txid = hex::decode("756754d5ad8f00e05c36d89a852971c0a1dc0c10f20cd7840ead347aff475ef6")
             .unwrap();
         let mut txid_arr = [0u8; 32];
         txid_arr.copy_from_slice(&txid);
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test transaction".to_string(),
             input_beef: None,
             inputs: Some(vec![CreateActionInput {
@@ -2638,7 +2638,7 @@ mod tests {
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test transaction".to_string(),
             input_beef: None,
             inputs: None,
@@ -2681,7 +2681,7 @@ mod tests {
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test transaction with labels".to_string(),
             input_beef: None,
             inputs: None,
@@ -2726,7 +2726,7 @@ mod tests {
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test transaction with basket and tags".to_string(),
             input_beef: None,
             inputs: None,
@@ -2778,7 +2778,7 @@ mod tests {
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test noSend transaction".to_string(),
             input_beef: None,
             inputs: None,
@@ -2830,7 +2830,7 @@ mod tests {
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Multiple outputs transaction".to_string(),
             input_beef: None,
             inputs: None,
@@ -2895,7 +2895,7 @@ mod tests {
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
 
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test with version/locktime".to_string(),
             input_beef: None,
             inputs: None,
@@ -3070,7 +3070,7 @@ mod tests {
         let beef_bytes = result.unwrap();
 
         // BEEF V2 starts with magic bytes (little endian: 0x0100BEEF or 0x0200BEEF)
-        // In practice, bsv_sdk uses 0xEFBE0002 for V2 in little endian
+        // In practice, bsv_rs uses 0xEFBE0002 for V2 in little endian
         assert!(beef_bytes.len() > 4);
     }
 
@@ -3669,7 +3669,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_input_beef_with_valid_chain_tracker() {
-        use bsv_sdk::transaction::AlwaysValidChainTracker;
+        use bsv_rs::transaction::AlwaysValidChainTracker;
 
         // Test that BEEF verification passes with AlwaysValidChainTracker
         // We use unproven transactions (no merkle path) to avoid structural validation issues
@@ -3739,7 +3739,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_input_beef_skips_verification_when_no_bumps() {
-        use bsv_sdk::transaction::MockChainTracker;
+        use bsv_rs::transaction::MockChainTracker;
 
         // Test that BEEF verification is SKIPPED when there are no bumps (merkle proofs)
         // This is because there are no merkle roots to verify against the chain.

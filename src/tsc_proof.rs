@@ -4,7 +4,7 @@
 //! `index`, `nodes`, `target`, `txOrId`). The wallet needs BRC-74 BUMP binary
 //! format for BEEF construction. This module bridges that gap.
 
-use bsv_sdk::transaction::{MerklePath, MerklePathLeaf};
+use bsv_rs::transaction::{MerklePath, MerklePathLeaf};
 
 /// Convert a TSC proof JSON string to BUMP binary bytes.
 ///

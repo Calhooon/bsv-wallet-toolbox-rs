@@ -8,10 +8,10 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 
-use bsv_sdk::overlay::{LookupAnswer, NetworkPreset};
-use bsv_sdk::script::templates::PushDrop;
-use bsv_sdk::transaction::Transaction;
-use bsv_sdk::wallet::{IdentityCertificate, WalletCertificate};
+use bsv_rs::overlay::{LookupAnswer, NetworkPreset};
+use bsv_rs::script::templates::PushDrop;
+use bsv_rs::transaction::Transaction;
+use bsv_rs::wallet::{IdentityCertificate, WalletCertificate};
 
 use crate::Result;
 

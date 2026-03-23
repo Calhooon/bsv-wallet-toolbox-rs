@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use bsv_sdk::wallet::{Protocol, SecurityLevel, WalletInterface};
+use bsv_rs::wallet::{Protocol, SecurityLevel, WalletInterface};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -1207,7 +1207,7 @@ impl WalletPermissionsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bsv_sdk::wallet::*;
+    use bsv_rs::wallet::*;
 
     // =========================================================================
     // Mock Wallet for testing
@@ -1221,182 +1221,182 @@ mod tests {
             &self,
             _args: CreateActionArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<CreateActionResult> {
+        ) -> bsv_rs::Result<CreateActionResult> {
             unimplemented!()
         }
         async fn sign_action(
             &self,
             _args: SignActionArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<SignActionResult> {
+        ) -> bsv_rs::Result<SignActionResult> {
             unimplemented!()
         }
         async fn abort_action(
             &self,
             _args: AbortActionArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<AbortActionResult> {
+        ) -> bsv_rs::Result<AbortActionResult> {
             unimplemented!()
         }
         async fn list_actions(
             &self,
             _args: ListActionsArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<ListActionsResult> {
+        ) -> bsv_rs::Result<ListActionsResult> {
             unimplemented!()
         }
         async fn internalize_action(
             &self,
             _args: InternalizeActionArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<InternalizeActionResult> {
+        ) -> bsv_rs::Result<InternalizeActionResult> {
             unimplemented!()
         }
         async fn list_outputs(
             &self,
             _args: ListOutputsArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<ListOutputsResult> {
+        ) -> bsv_rs::Result<ListOutputsResult> {
             unimplemented!()
         }
         async fn relinquish_output(
             &self,
             _args: RelinquishOutputArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<RelinquishOutputResult> {
+        ) -> bsv_rs::Result<RelinquishOutputResult> {
             unimplemented!()
         }
         async fn get_public_key(
             &self,
             _args: GetPublicKeyArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<GetPublicKeyResult> {
+        ) -> bsv_rs::Result<GetPublicKeyResult> {
             unimplemented!()
         }
         async fn reveal_counterparty_key_linkage(
             &self,
             _args: interface::RevealCounterpartyKeyLinkageArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<RevealCounterpartyKeyLinkageResult> {
+        ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
             unimplemented!()
         }
         async fn reveal_specific_key_linkage(
             &self,
             _args: interface::RevealSpecificKeyLinkageArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<RevealSpecificKeyLinkageResult> {
+        ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
             unimplemented!()
         }
         async fn encrypt(
             &self,
             _args: EncryptArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<EncryptResult> {
+        ) -> bsv_rs::Result<EncryptResult> {
             unimplemented!()
         }
         async fn decrypt(
             &self,
             _args: DecryptArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<DecryptResult> {
+        ) -> bsv_rs::Result<DecryptResult> {
             unimplemented!()
         }
         async fn create_hmac(
             &self,
             _args: CreateHmacArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<CreateHmacResult> {
+        ) -> bsv_rs::Result<CreateHmacResult> {
             unimplemented!()
         }
         async fn verify_hmac(
             &self,
             _args: VerifyHmacArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<VerifyHmacResult> {
+        ) -> bsv_rs::Result<VerifyHmacResult> {
             unimplemented!()
         }
         async fn create_signature(
             &self,
             _args: CreateSignatureArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<CreateSignatureResult> {
+        ) -> bsv_rs::Result<CreateSignatureResult> {
             unimplemented!()
         }
         async fn verify_signature(
             &self,
             _args: VerifySignatureArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<VerifySignatureResult> {
+        ) -> bsv_rs::Result<VerifySignatureResult> {
             unimplemented!()
         }
         async fn acquire_certificate(
             &self,
             _args: AcquireCertificateArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<WalletCertificate> {
+        ) -> bsv_rs::Result<WalletCertificate> {
             unimplemented!()
         }
         async fn list_certificates(
             &self,
             _args: ListCertificatesArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<ListCertificatesResult> {
+        ) -> bsv_rs::Result<ListCertificatesResult> {
             unimplemented!()
         }
         async fn prove_certificate(
             &self,
             _args: ProveCertificateArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<ProveCertificateResult> {
+        ) -> bsv_rs::Result<ProveCertificateResult> {
             unimplemented!()
         }
         async fn relinquish_certificate(
             &self,
             _args: RelinquishCertificateArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<RelinquishCertificateResult> {
+        ) -> bsv_rs::Result<RelinquishCertificateResult> {
             unimplemented!()
         }
         async fn discover_by_identity_key(
             &self,
             _args: DiscoverByIdentityKeyArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<DiscoverCertificatesResult> {
+        ) -> bsv_rs::Result<DiscoverCertificatesResult> {
             unimplemented!()
         }
         async fn discover_by_attributes(
             &self,
             _args: DiscoverByAttributesArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<DiscoverCertificatesResult> {
+        ) -> bsv_rs::Result<DiscoverCertificatesResult> {
             unimplemented!()
         }
         async fn is_authenticated(
             &self,
             _originator: &str,
-        ) -> bsv_sdk::Result<AuthenticatedResult> {
+        ) -> bsv_rs::Result<AuthenticatedResult> {
             unimplemented!()
         }
         async fn wait_for_authentication(
             &self,
             _originator: &str,
-        ) -> bsv_sdk::Result<AuthenticatedResult> {
+        ) -> bsv_rs::Result<AuthenticatedResult> {
             unimplemented!()
         }
-        async fn get_height(&self, _originator: &str) -> bsv_sdk::Result<GetHeightResult> {
+        async fn get_height(&self, _originator: &str) -> bsv_rs::Result<GetHeightResult> {
             unimplemented!()
         }
         async fn get_header_for_height(
             &self,
             _args: GetHeaderArgs,
             _originator: &str,
-        ) -> bsv_sdk::Result<GetHeaderResult> {
+        ) -> bsv_rs::Result<GetHeaderResult> {
             unimplemented!()
         }
-        async fn get_network(&self, _originator: &str) -> bsv_sdk::Result<GetNetworkResult> {
+        async fn get_network(&self, _originator: &str) -> bsv_rs::Result<GetNetworkResult> {
             unimplemented!()
         }
-        async fn get_version(&self, _originator: &str) -> bsv_sdk::Result<GetVersionResult> {
+        async fn get_version(&self, _originator: &str) -> bsv_rs::Result<GetVersionResult> {
             unimplemented!()
         }
     }

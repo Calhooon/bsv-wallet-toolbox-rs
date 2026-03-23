@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use bsv_sdk::wallet::{
+use bsv_rs::wallet::{
     AbortActionArgs, AbortActionResult, InternalizeActionArgs, InternalizeActionResult,
     ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
     ListOutputsArgs, ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs,
@@ -546,7 +546,7 @@ pub trait WalletStorageWriter: WalletStorageReader {
     async fn create_action(
         &self,
         auth: &AuthId,
-        args: bsv_sdk::wallet::CreateActionArgs,
+        args: bsv_rs::wallet::CreateActionArgs,
     ) -> Result<StorageCreateActionResult>;
 
     /// Process an action after signing.

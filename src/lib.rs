@@ -35,7 +35,7 @@
 //!
 //! ```rust,ignore
 //! use bsv_wallet_toolbox::{Wallet, StorageSqlx, Services};
-//! use bsv_sdk::wallet::WalletInterface;
+//! use bsv_rs::wallet::WalletInterface;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -81,7 +81,7 @@ pub use storage::StorageSqlx;
 pub use storage::StorageClient;
 
 // Re-export commonly used bsv-sdk types
-pub use bsv_sdk::wallet::{
+pub use bsv_rs::wallet::{
     AbortActionArgs, AbortActionResult, CreateActionArgs, CreateActionResult,
     InternalizeActionArgs, InternalizeActionResult, ListActionsArgs, ListActionsResult,
     ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,

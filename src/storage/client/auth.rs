@@ -25,8 +25,8 @@
 //! to ensure the response came from the authentic server.
 
 use crate::error::{Error, Result};
-use bsv_sdk::primitives::{from_hex, to_hex, PublicKey};
-use bsv_sdk::wallet::{
+use bsv_rs::primitives::{from_hex, to_hex, PublicKey};
+use bsv_rs::wallet::{
     Counterparty, CreateHmacArgs, CreateSignatureArgs, GetPublicKeyArgs, Protocol, SecurityLevel,
     VerifySignatureArgs, WalletInterface,
 };

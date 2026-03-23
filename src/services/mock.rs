@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use bsv_sdk::transaction::{ChainTracker, ChainTrackerError};
+use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 
 use crate::services::traits::{
     sha256, BlockHeader, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,

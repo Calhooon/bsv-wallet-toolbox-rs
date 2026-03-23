@@ -12,7 +12,7 @@ use chrono::Utc;
 use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
 
-use bsv_sdk::wallet::{AbortActionArgs, AbortActionResult};
+use bsv_rs::wallet::{AbortActionArgs, AbortActionResult};
 
 use super::StorageSqlx;
 

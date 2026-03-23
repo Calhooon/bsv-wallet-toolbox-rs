@@ -23,7 +23,7 @@ use crate::services::{
     ServicesOptions,
 };
 use crate::{Error, Result};
-use bsv_sdk::transaction::ChainTracker;
+use bsv_rs::transaction::ChainTracker;
 
 
 /// Post BEEF mode for handling multiple broadcast services.
@@ -1067,7 +1067,7 @@ impl WalletServices for Services {
     }
 
     async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult> {
-        use bsv_sdk::transaction::{Beef, MerklePath, MerklePathLeaf, Transaction};
+        use bsv_rs::transaction::{Beef, MerklePath, MerklePathLeaf, Transaction};
         use std::collections::HashSet;
 
         /// TSC proof format returned by providers (WhatsOnChain, Bitails).

@@ -11,8 +11,8 @@
 use crate::error::{Error, Result};
 use crate::storage::entities::{TableOutput, TableTransaction, TransactionStatus};
 use crate::storage::traits::{BeefVerificationMode, StorageInternalizeActionResult};
-use bsv_sdk::transaction::Beef;
-use bsv_sdk::wallet::{
+use bsv_rs::transaction::Beef;
+use bsv_rs::wallet::{
     BasketInsertion, InternalizeActionArgs, InternalizeActionResult, WalletPayment,
 };
 use chrono::Utc;
@@ -847,9 +847,9 @@ mod tests {
     use super::*;
     use crate::storage::sqlx::StorageSqlx;
     use crate::storage::traits::WalletStorageWriter;
-    use bsv_sdk::script::{LockingScript, UnlockingScript};
-    use bsv_sdk::transaction::{Beef, Transaction, TransactionInput, TransactionOutput};
-    use bsv_sdk::wallet::{BasketInsertion, InternalizeOutput, WalletPayment};
+    use bsv_rs::script::{LockingScript, UnlockingScript};
+    use bsv_rs::transaction::{Beef, Transaction, TransactionInput, TransactionOutput};
+    use bsv_rs::wallet::{BasketInsertion, InternalizeOutput, WalletPayment};
 
     /// Helper to create test storage.
     async fn create_test_storage() -> StorageSqlx {

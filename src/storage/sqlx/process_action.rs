@@ -1145,7 +1145,7 @@ mod tests {
 
     use super::super::StorageSqlx;
     use crate::storage::traits::WalletStorageWriter;
-    use bsv_sdk::wallet::CreateActionOutput;
+    use bsv_rs::wallet::CreateActionOutput;
 
     fn create_raw_transaction(output_scripts: &[&[u8]]) -> Vec<u8> {
         let mut tx = Vec::new();
@@ -1173,7 +1173,7 @@ mod tests {
 
         let locking_script =
             hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
-        let args = bsv_sdk::wallet::CreateActionArgs {
+        let args = bsv_rs::wallet::CreateActionArgs {
             description: "Test transaction for process_action".to_string(),
             input_beef: None,
             inputs: None,

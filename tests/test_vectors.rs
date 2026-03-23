@@ -27,7 +27,7 @@ fn load_test_vectors(relative_path: &str) -> Value {
 
 mod create_action_validation {
 
-    use bsv_sdk::wallet::{
+    use bsv_rs::wallet::{
         CreateActionArgs, CreateActionInput, CreateActionOptions, CreateActionOutput, Outpoint,
     };
     use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageWriter};
@@ -643,7 +643,7 @@ mod create_action_defaults {
 
 mod list_outputs_validation {
     use super::*;
-    use bsv_sdk::wallet::ListOutputsArgs;
+    use bsv_rs::wallet::ListOutputsArgs;
     use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     /// Helper to set up an in-memory storage with a test user.
@@ -730,8 +730,8 @@ mod list_outputs_validation {
         let args = ListOutputsArgs {
             basket: "default".to_string(),
             tags: Some(vec!["tag1".to_string(), "tag2".to_string()]),
-            tag_query_mode: Some(bsv_sdk::wallet::QueryMode::Any),
-            include: Some(bsv_sdk::wallet::OutputInclude::LockingScripts),
+            tag_query_mode: Some(bsv_rs::wallet::QueryMode::Any),
+            include: Some(bsv_rs::wallet::OutputInclude::LockingScripts),
             include_custom_instructions: Some(false),
             include_tags: Some(true),
             include_labels: Some(true),
@@ -812,7 +812,7 @@ mod list_outputs_validation {
 
 mod list_actions_validation {
     use super::*;
-    use bsv_sdk::wallet::ListActionsArgs;
+    use bsv_rs::wallet::ListActionsArgs;
     use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     /// Helper to set up an in-memory storage with a test user.
@@ -837,7 +837,7 @@ mod list_actions_validation {
         let (storage, auth) = setup_storage().await;
         let args = ListActionsArgs {
             labels: vec!["valid-label".to_string()],
-            label_query_mode: Some(bsv_sdk::wallet::QueryMode::Any),
+            label_query_mode: Some(bsv_rs::wallet::QueryMode::Any),
             include_labels: None,
             include_inputs: None,
             include_input_source_locking_scripts: None,
@@ -868,7 +868,7 @@ mod list_actions_validation {
         let (storage, auth) = setup_storage().await;
         let args = ListActionsArgs {
             labels: vec![],
-            label_query_mode: Some(bsv_sdk::wallet::QueryMode::All),
+            label_query_mode: Some(bsv_rs::wallet::QueryMode::All),
             include_labels: None,
             include_inputs: None,
             include_input_source_locking_scripts: None,
@@ -894,7 +894,7 @@ mod list_actions_validation {
         let (storage, auth) = setup_storage().await;
         let args = ListActionsArgs {
             labels: vec![],
-            label_query_mode: Some(bsv_sdk::wallet::QueryMode::Any),
+            label_query_mode: Some(bsv_rs::wallet::QueryMode::Any),
             include_labels: Some(false),
             include_inputs: Some(false),
             include_input_source_locking_scripts: Some(false),
@@ -920,7 +920,7 @@ mod list_actions_validation {
         let (storage, auth) = setup_storage().await;
         let args = ListActionsArgs {
             labels: vec![],
-            label_query_mode: Some(bsv_sdk::wallet::QueryMode::Any),
+            label_query_mode: Some(bsv_rs::wallet::QueryMode::Any),
             include_labels: Some(true),
             include_inputs: Some(true),
             include_input_source_locking_scripts: Some(true),
@@ -979,8 +979,8 @@ mod list_actions_validation {
 
 mod brc29_key_derivation {
     use super::*;
-    use bsv_sdk::primitives::PrivateKey;
-    use bsv_sdk::wallet::{Counterparty, KeyDeriver, Protocol, SecurityLevel};
+    use bsv_rs::primitives::PrivateKey;
+    use bsv_rs::wallet::{Counterparty, KeyDeriver, Protocol, SecurityLevel};
 
     fn load_brc29_vectors() -> Value {
         load_test_vectors("test_vectors/keys/brc29.json")
@@ -1097,7 +1097,7 @@ mod brc29_key_derivation {
         let suffix = inputs["keyId"]["derivationSuffix"].as_str().unwrap();
         let expected_address = test_case["expected_outputs"]["address"].as_str().unwrap();
 
-        let sender_pub = bsv_sdk::primitives::PublicKey::from_hex(sender_pub_hex).unwrap();
+        let sender_pub = bsv_rs::primitives::PublicKey::from_hex(sender_pub_hex).unwrap();
         let recipient_priv = PrivateKey::from_hex(recipient_priv_hex).unwrap();
 
         // Derive the key for the recipient using BRC-29 protocol
@@ -1139,7 +1139,7 @@ mod brc29_key_derivation {
         let suffix = inputs["keyId"]["derivationSuffix"].as_str().unwrap();
         let expected_address = test_case["expected_outputs"]["address"].as_str().unwrap();
 
-        let sender_pub = bsv_sdk::primitives::PublicKey::from_hex(sender_pub_hex).unwrap();
+        let sender_pub = bsv_rs::primitives::PublicKey::from_hex(sender_pub_hex).unwrap();
         let recipient_priv = PrivateKey::from_hex(recipient_priv_hex).unwrap();
 
         let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
@@ -1181,7 +1181,7 @@ mod brc29_key_derivation {
         let expected_address = test_case["expected_outputs"]["address"].as_str().unwrap();
 
         let sender_priv = PrivateKey::from_hex(sender_priv_hex).unwrap();
-        let recipient_pub = bsv_sdk::primitives::PublicKey::from_hex(recipient_pub_hex).unwrap();
+        let recipient_pub = bsv_rs::primitives::PublicKey::from_hex(recipient_pub_hex).unwrap();
 
         let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
         let key_id = format!("{} {}", prefix, suffix);
@@ -1220,7 +1220,7 @@ mod brc29_key_derivation {
         let expected_address = test_case["expected_outputs"]["address"].as_str().unwrap();
 
         let sender_priv = PrivateKey::from_hex(sender_priv_hex).unwrap();
-        let recipient_pub = bsv_sdk::primitives::PublicKey::from_hex(recipient_pub_hex).unwrap();
+        let recipient_pub = bsv_rs::primitives::PublicKey::from_hex(recipient_pub_hex).unwrap();
 
         let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
         let key_id = format!("{} {}", prefix, suffix);
@@ -1346,7 +1346,7 @@ mod brc29_key_derivation {
 
 mod test_users {
     use super::*;
-    use bsv_sdk::primitives::PrivateKey;
+    use bsv_rs::primitives::PrivateKey;
 
     fn load_users() -> Value {
         load_test_vectors("test_vectors/keys/test_users.json")
@@ -1475,7 +1475,7 @@ mod test_users {
             66,
             "Identity key should be 66 hex chars"
         );
-        let _pub_key = bsv_sdk::primitives::PublicKey::from_hex(identity_key)
+        let _pub_key = bsv_rs::primitives::PublicKey::from_hex(identity_key)
             .expect("User identity key should be a valid public key");
 
         // Verify the anyone identity key matches the generator point
@@ -1526,7 +1526,7 @@ mod test_users {
 
 mod merkle_path {
     use super::*;
-    use bsv_sdk::transaction::{MerklePath, MerklePathLeaf};
+    use bsv_rs::transaction::{MerklePath, MerklePathLeaf};
 
     fn load_merkle_vectors() -> Value {
         load_test_vectors("test_vectors/transactions/merkle_path.json")
@@ -1875,7 +1875,7 @@ mod merkle_path {
 #[cfg(feature = "remote")]
 mod valid_create_action_args {
     use super::*;
-    use bsv_sdk::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
+    use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
     use bsv_wallet_toolbox::storage::client::ValidCreateActionArgs;
 
     #[test]

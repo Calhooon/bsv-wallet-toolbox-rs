@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::services::traits::{GetMerklePathResult, PostBeefResult, PostTxResultForTxid};
 use crate::{Error, Result};
-use bsv_sdk::transaction::{Beef, BEEF_V1};
+use bsv_rs::transaction::{Beef, BEEF_V1};
 
 /// TAAL ARC mainnet URL.
 pub const ARC_TAAL_MAINNET: &str = "https://arc.taal.com";

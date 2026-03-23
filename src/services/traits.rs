@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::{Error, Result};
-use bsv_sdk::transaction::{ChainTracker, Transaction};
+use bsv_rs::transaction::{ChainTracker, Transaction};
 
 use super::collection::ServiceCallHistory;
 

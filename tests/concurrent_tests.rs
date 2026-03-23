@@ -17,7 +17,7 @@
 mod concurrent {
     use std::sync::Arc;
 
-    use bsv_sdk::wallet::{AbortActionArgs, ListOutputsArgs};
+    use bsv_rs::wallet::{AbortActionArgs, ListOutputsArgs};
     use bsv_wallet_toolbox::storage::entities::TableCertificate;
     use bsv_wallet_toolbox::storage::FindOutputsArgs;
     use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
@@ -679,7 +679,7 @@ mod concurrent {
     // =========================================================================
     #[tokio::test]
     async fn test_concurrent_certificate_insert_and_relinquish() {
-        use bsv_sdk::wallet::RelinquishCertificateArgs;
+        use bsv_rs::wallet::RelinquishCertificateArgs;
 
         let (storage, auth) = setup_storage().await;
         let user_id = auth.user_id.unwrap();

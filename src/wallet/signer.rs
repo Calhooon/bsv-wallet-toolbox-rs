@@ -3,8 +3,8 @@
 //! This module provides the `WalletSigner` struct for signing transaction inputs
 //! using derived keys from the wallet's ProtoWallet.
 
-use bsv_sdk::primitives::PrivateKey;
-use bsv_sdk::wallet::{Counterparty, KeyDeriverApi, ProtoWallet};
+use bsv_rs::primitives::PrivateKey;
+use bsv_rs::wallet::{Counterparty, KeyDeriverApi, ProtoWallet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -147,7 +147,7 @@ impl WalletSigner {
             // Determine the counterparty from sender_identity_key
             let counterparty = if let Some(ref sender_key) = input.sender_identity_key {
                 // If there's a sender key, use it as counterparty
-                let pubkey = bsv_sdk::primitives::PublicKey::from_hex(sender_key)
+                let pubkey = bsv_rs::primitives::PublicKey::from_hex(sender_key)
                     .map_err(|e| Error::ValidationError(format!("Invalid sender key: {}", e)))?;
                 Counterparty::Other(pubkey)
             } else {
@@ -161,7 +161,7 @@ impl WalletSigner {
             // - Protocol name: "3241645161d8"
             // - Key ID: "{derivation_prefix} {derivation_suffix}" (WITH SPACE)
             // This produces invoice number: "2-3241645161d8-{prefix} {suffix}"
-            use bsv_sdk::wallet::{Protocol, SecurityLevel};
+            use bsv_rs::wallet::{Protocol, SecurityLevel};
 
             let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
             let key_id = format!("{} {}", derivation_prefix, derivation_suffix);
@@ -261,7 +261,7 @@ impl WalletSigner {
         })?;
 
         let counterparty = if let Some(ref sender_key) = input.sender_identity_key {
-            let pubkey = bsv_sdk::primitives::PublicKey::from_hex(sender_key)
+            let pubkey = bsv_rs::primitives::PublicKey::from_hex(sender_key)
                 .map_err(|e| Error::ValidationError(format!("Invalid sender key: {}", e)))?;
             Counterparty::Other(pubkey)
         } else {
@@ -271,7 +271,7 @@ impl WalletSigner {
         // Derive the private key using BRC-29 (SABPPP) protocol
         // Same as sign_transaction: SecurityLevel::Counterparty, protocol "3241645161d8"
         // Key ID: "{derivation_prefix} {derivation_suffix}" (WITH SPACE)
-        use bsv_sdk::wallet::{Protocol, SecurityLevel};
+        use bsv_rs::wallet::{Protocol, SecurityLevel};
 
         let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
         let key_id = format!("{} {}", derivation_prefix, derivation_suffix);
@@ -362,7 +362,7 @@ impl WalletSigner {
             );
 
             // Derive the signing key using BRC-29 protocol
-            use bsv_sdk::wallet::{Protocol, SecurityLevel};
+            use bsv_rs::wallet::{Protocol, SecurityLevel};
 
             let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
             let key_id = format!(

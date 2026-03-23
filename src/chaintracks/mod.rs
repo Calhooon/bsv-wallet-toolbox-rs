@@ -54,4 +54,4 @@ pub use ingestors::{
 };
 
 // Re-export ChainTracker from bsv-sdk for convenience
-pub use bsv_sdk::transaction::ChainTracker;
+pub use bsv_rs::transaction::ChainTracker;

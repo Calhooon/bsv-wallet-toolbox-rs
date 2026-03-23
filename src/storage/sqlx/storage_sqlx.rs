@@ -19,8 +19,8 @@ use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
-use bsv_sdk::transaction::{Beef, ChainTracker, MerklePath};
-use bsv_sdk::wallet::{
+use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
+use bsv_rs::wallet::{
     AbortActionArgs, AbortActionResult, InternalizeActionArgs, ListActionsArgs, ListActionsResult,
     ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,
     RelinquishCertificateArgs, RelinquishOutputArgs,
@@ -1039,7 +1039,7 @@ impl WalletStorageReader for StorageSqlx {
         auth: &AuthId,
         args: ListActionsArgs,
     ) -> Result<ListActionsResult> {
-        use bsv_sdk::wallet::{
+        use bsv_rs::wallet::{
             ActionStatus, Outpoint, QueryMode, WalletAction, WalletActionInput, WalletActionOutput,
         };
 
@@ -1432,7 +1432,7 @@ impl WalletStorageReader for StorageSqlx {
         auth: &AuthId,
         args: ListCertificatesArgs,
     ) -> Result<ListCertificatesResult> {
-        use bsv_sdk::wallet::CertificateResult;
+        use bsv_rs::wallet::CertificateResult;
         use std::collections::HashMap;
 
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
@@ -1545,7 +1545,7 @@ impl WalletStorageReader for StorageSqlx {
                 }
             }
 
-            let wallet_cert = bsv_sdk::wallet::WalletCertificate {
+            let wallet_cert = bsv_rs::wallet::WalletCertificate {
                 certificate_type: cert_type,
                 subject,
                 serial_number,
@@ -1584,7 +1584,7 @@ impl WalletStorageReader for StorageSqlx {
         auth: &AuthId,
         args: ListOutputsArgs,
     ) -> Result<ListOutputsResult> {
-        use bsv_sdk::wallet::{Outpoint, OutputInclude, QueryMode, WalletOutput};
+        use bsv_rs::wallet::{Outpoint, OutputInclude, QueryMode, WalletOutput};
 
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
@@ -2102,7 +2102,7 @@ impl WalletStorageWriter for StorageSqlx {
     async fn create_action(
         &self,
         auth: &AuthId,
-        args: bsv_sdk::wallet::CreateActionArgs,
+        args: bsv_rs::wallet::CreateActionArgs,
     ) -> Result<StorageCreateActionResult> {
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
@@ -2803,10 +2803,10 @@ impl MonitorStorage for StorageSqlx {
             // Build BEEF from raw_tx and input_beef
             let beef_bytes = if let Some(ref input_beef) = req.input_beef {
                 // Merge raw_tx into input_beef to create broadcast-ready BEEF
-                use bsv_sdk::transaction::Beef;
+                use bsv_rs::transaction::Beef;
                 match Beef::from_binary(input_beef) {
                     Ok(mut beef) => {
-                        if let Ok(tx) = bsv_sdk::transaction::Transaction::from_binary(&raw_tx) {
+                        if let Ok(tx) = bsv_rs::transaction::Transaction::from_binary(&raw_tx) {
                             beef.merge_transaction(tx);
                         }
                         beef.to_binary()

@@ -11,8 +11,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use bsv_sdk::primitives::{PrivateKey, SymmetricKey};
-use bsv_sdk::wallet::WalletInterface;
+use bsv_rs::primitives::{PrivateKey, SymmetricKey};
+use bsv_rs::wallet::WalletInterface;
 use chrono::{DateTime, Utc};
 use ring::pbkdf2;
 use serde::{Deserialize, Serialize};

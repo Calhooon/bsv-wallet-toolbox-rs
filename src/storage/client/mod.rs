@@ -22,8 +22,8 @@
 //!
 //! ```rust,ignore
 //! use bsv_wallet_toolbox::storage::client::StorageClient;
-//! use bsv_sdk::wallet::ProtoWallet;
-//! use bsv_sdk::primitives::PrivateKey;
+//! use bsv_rs::wallet::ProtoWallet;
+//! use bsv_rs::primitives::PrivateKey;
 //!
 //! // Create a wallet for authentication
 //! let wallet = ProtoWallet::new(Some(PrivateKey::from_wif("...")?));
@@ -41,7 +41,7 @@
 //! let auth = client.create_auth_id_with_user(user.user_id).await?;
 //!
 //! // List outputs for the user
-//! use bsv_sdk::wallet::ListOutputsArgs;
+//! use bsv_rs::wallet::ListOutputsArgs;
 //! let outputs = client.list_outputs(&auth, ListOutputsArgs::default()).await?;
 //! ```
 

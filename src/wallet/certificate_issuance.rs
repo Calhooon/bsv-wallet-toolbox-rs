@@ -25,9 +25,9 @@
 use std::collections::HashMap;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use bsv_sdk::auth::certificates::Certificate;
-use bsv_sdk::primitives::PublicKey;
-use bsv_sdk::wallet::{
+use bsv_rs::auth::certificates::Certificate;
+use bsv_rs::primitives::PublicKey;
+use bsv_rs::wallet::{
     AcquireCertificateArgs, Counterparty, Protocol, SecurityLevel, VerifyHmacArgs,
     WalletCertificate, WalletInterface,
 };
@@ -354,7 +354,7 @@ async fn create_certificate_fields_for_issuance<W>(
 where
     W: WalletInterface + Send + Sync,
 {
-    use bsv_sdk::wallet::EncryptArgs;
+    use bsv_rs::wallet::EncryptArgs;
 
     let protocol = Protocol::new(SecurityLevel::Counterparty, "certificate field encryption");
 
@@ -542,7 +542,7 @@ fn parse_certificate_response(
                     let mut txid = [0u8; 32];
                     txid.copy_from_slice(&txid_bytes);
                     certificate.revocation_outpoint =
-                        Some(bsv_sdk::wallet::Outpoint::new(txid, vout));
+                        Some(bsv_rs::wallet::Outpoint::new(txid, vout));
                 }
             }
         }
@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn test_parse_certificate_response_certifier_mismatch() {
-        use bsv_sdk::primitives::PrivateKey;
+        use bsv_rs::primitives::PrivateKey;
 
         // Use real key pairs for valid public keys
         let certifier_key = PrivateKey::random();
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn test_parse_certificate_response_type_mismatch() {
-        use bsv_sdk::primitives::PrivateKey;
+        use bsv_rs::primitives::PrivateKey;
 
         let certifier_key = PrivateKey::random();
         let subject_key = PrivateKey::random();
@@ -995,7 +995,7 @@ mod tests {
     #[test]
     fn test_serial_number_length_validation() {
         // Test that invalid serial number length is rejected
-        use bsv_sdk::primitives::PrivateKey;
+        use bsv_rs::primitives::PrivateKey;
 
         // Create a minimal valid-looking response with wrong serial number length
         let certifier_key = PrivateKey::random();

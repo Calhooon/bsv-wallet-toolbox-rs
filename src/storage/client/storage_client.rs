@@ -26,10 +26,10 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{oneshot, RwLock};
 
-use bsv_sdk::auth::transports::HttpRequest;
-use bsv_sdk::auth::{Peer, PeerOptions, SimplifiedFetchTransport};
-use bsv_sdk::primitives::{to_base64, PublicKey};
-use bsv_sdk::wallet::{
+use bsv_rs::auth::transports::HttpRequest;
+use bsv_rs::auth::{Peer, PeerOptions, SimplifiedFetchTransport};
+use bsv_rs::primitives::{to_base64, PublicKey};
+use bsv_rs::wallet::{
     AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs, ListActionsArgs,
     ListActionsResult, ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs,
     ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs, WalletInterface,
@@ -80,11 +80,11 @@ pub struct ValidCreateActionArgs {
 
     /// Input specifications.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub inputs: Option<Vec<bsv_sdk::wallet::CreateActionInput>>,
+    pub inputs: Option<Vec<bsv_rs::wallet::CreateActionInput>>,
 
     /// Output specifications.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub outputs: Option<Vec<bsv_sdk::wallet::CreateActionOutput>>,
+    pub outputs: Option<Vec<bsv_rs::wallet::CreateActionOutput>>,
 
     /// Transaction lock time.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,7 +100,7 @@ pub struct ValidCreateActionArgs {
 
     /// Action options.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<bsv_sdk::wallet::CreateActionOptions>,
+    pub options: Option<bsv_rs::wallet::CreateActionOptions>,
 
     // === Internal state flags (required by server) ===
     /// True when creating a new transaction with inputs/outputs.
@@ -221,8 +221,8 @@ pub const TESTNET_URL: &str = "https://staging-storage.babbage.systems";
 ///
 /// ```rust,ignore
 /// use bsv_wallet_toolbox::storage::client::StorageClient;
-/// use bsv_sdk::wallet::ProtoWallet;
-/// use bsv_sdk::primitives::PrivateKey;
+/// use bsv_rs::wallet::ProtoWallet;
+/// use bsv_rs::primitives::PrivateKey;
 ///
 /// let wallet = ProtoWallet::new(Some(PrivateKey::from_wif("...")?));
 /// let client = StorageClient::new(wallet, StorageClient::MAINNET_URL);
@@ -372,7 +372,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
     /// Gets the identity key of the wallet (hex string).
     pub async fn get_identity_key(&self) -> Result<String> {
-        use bsv_sdk::wallet::GetPublicKeyArgs;
+        use bsv_rs::wallet::GetPublicKeyArgs;
 
         let result = self
             .wallet
@@ -523,7 +523,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
         // Parse the HTTP response from the payload
         let http_response =
-            bsv_sdk::auth::transports::HttpResponse::from_payload(&response_payload)
+            bsv_rs::auth::transports::HttpResponse::from_payload(&response_payload)
                 .map_err(|e| Error::StorageError(format!("Failed to parse response: {}", e)))?;
 
         tracing::trace!(
@@ -2439,7 +2439,7 @@ mod tests {
 
     #[test]
     fn test_valid_create_action_args_default_flags() {
-        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput};
+        use bsv_rs::wallet::{CreateActionArgs, CreateActionOutput};
 
         // Create args with outputs (typical case)
         let args = CreateActionArgs {
@@ -2476,7 +2476,7 @@ mod tests {
 
     #[test]
     fn test_valid_create_action_args_with_no_send() {
-        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
+        use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
 
         let args = CreateActionArgs {
             description: "NoSend transaction".to_string(),
@@ -2517,7 +2517,7 @@ mod tests {
 
     #[test]
     fn test_valid_create_action_args_with_delayed_broadcast() {
-        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
+        use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
 
         let args = CreateActionArgs {
             description: "Delayed broadcast tx".to_string(),
@@ -2557,7 +2557,7 @@ mod tests {
 
     #[test]
     fn test_valid_create_action_args_with_send_with() {
-        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
+        use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
 
         let args = CreateActionArgs {
             description: "SendWith transaction".to_string(),
@@ -2597,7 +2597,7 @@ mod tests {
 
     #[test]
     fn test_valid_create_action_args_remix_change() {
-        use bsv_sdk::wallet::CreateActionArgs;
+        use bsv_rs::wallet::CreateActionArgs;
 
         // No inputs and no outputs = remix change
         let args = CreateActionArgs {
@@ -2620,7 +2620,7 @@ mod tests {
 
     #[test]
     fn test_valid_create_action_args_serialization() {
-        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput};
+        use bsv_rs::wallet::{CreateActionArgs, CreateActionOutput};
 
         let args = CreateActionArgs {
             description: "Test transaction".to_string(),
@@ -2660,7 +2660,7 @@ mod tests {
 
     #[test]
     fn test_valid_create_action_args_with_custom_flags() {
-        use bsv_sdk::wallet::{CreateActionArgs, CreateActionOutput};
+        use bsv_rs::wallet::{CreateActionArgs, CreateActionOutput};
 
         let args = CreateActionArgs {
             description: "Custom flags test".to_string(),

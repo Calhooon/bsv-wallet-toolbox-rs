@@ -12,7 +12,7 @@ mod reorg {
     use async_trait::async_trait;
     use chrono::Utc;
 
-    use bsv_sdk::transaction::{ChainTracker, ChainTrackerError};
+    use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
     use bsv_wallet_toolbox::monitor::tasks::{DeactivatedHeader, MonitorTask, ReorgTask};
     use bsv_wallet_toolbox::services::traits::GetBeefResult;
     use bsv_wallet_toolbox::services::{

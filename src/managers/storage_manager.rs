@@ -26,7 +26,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::lock_utils::{lock_read, lock_write};
 
-use bsv_sdk::wallet::{
+use bsv_rs::wallet::{
     AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs, ListActionsArgs,
     ListActionsResult, ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs,
     ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs,
