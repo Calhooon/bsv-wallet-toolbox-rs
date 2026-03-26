@@ -95,7 +95,9 @@ mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;
 
-pub use lookup::{dedup_certificates, HttpLookupResolver, OverlayCertificate, OverlayLookupResolver};
+pub use lookup::{
+    dedup_certificates, HttpLookupResolver, OverlayCertificate, OverlayLookupResolver,
+};
 pub use signer::{ScriptType, SignerInput, UnlockingScriptTemplate, WalletSigner};
 pub use wallet::{
     PendingTransaction, PrivilegedKeyManager, UtxoInfo, Wallet, WalletBalance, WalletOptions,

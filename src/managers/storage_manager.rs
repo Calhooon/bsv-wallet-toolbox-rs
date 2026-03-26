@@ -41,12 +41,12 @@ use crate::storage::{
         TableCertificate, TableCertificateField, TableOutput, TableOutputBasket, TableProvenTxReq,
         TableSettings, TableSyncState, TableTransaction, TableUser,
     },
-    AuthId, FindCertificatesArgs, FindOutputBasketsArgs, FindOutputsArgs, FindProvenTxReqsArgs, FindTransactionsArgs,
-    MonitorStorage, ProcessSyncChunkResult, PurgeParams, PurgeResults, RequestSyncChunkArgs,
-    ReviewStatusResult, StorageCreateActionResult, StorageInternalizeActionResult,
-    StorageProcessActionArgs, StorageProcessActionResults, SyncChunk, TrxToken,
-    TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider, WalletStorageReader,
-    WalletStorageSync, WalletStorageWriter,
+    AuthId, FindCertificatesArgs, FindOutputBasketsArgs, FindOutputsArgs, FindProvenTxReqsArgs,
+    FindTransactionsArgs, MonitorStorage, ProcessSyncChunkResult, PurgeParams, PurgeResults,
+    RequestSyncChunkArgs, ReviewStatusResult, StorageCreateActionResult,
+    StorageInternalizeActionResult, StorageProcessActionArgs, StorageProcessActionResults,
+    SyncChunk, TrxToken, TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider,
+    WalletStorageReader, WalletStorageSync, WalletStorageWriter,
 };
 
 /// A wrapper around a storage provider with cached state.
@@ -980,10 +980,7 @@ impl WalletStorageReader for WalletStorageManager {
             .await
     }
 
-    async fn find_transactions(
-        &self,
-        args: FindTransactionsArgs,
-    ) -> Result<Vec<TableTransaction>> {
+    async fn find_transactions(&self, args: FindTransactionsArgs) -> Result<Vec<TableTransaction>> {
         self.run_as_reader(|active| async move { active.find_transactions(args).await })
             .await
     }
@@ -1086,9 +1083,9 @@ impl WalletStorageWriter for WalletStorageManager {
 
     async fn mark_internalized_tx_failed(&self, txid: &str) -> Result<()> {
         let txid_owned = txid.to_string();
-        self.run_as_writer(|active| async move {
-            active.mark_internalized_tx_failed(&txid_owned).await
-        })
+        self.run_as_writer(
+            |active| async move { active.mark_internalized_tx_failed(&txid_owned).await },
+        )
         .await
     }
 
@@ -1297,9 +1294,9 @@ impl MonitorStorage for WalletStorageManager {
     }
 
     async fn compact_input_beefs(&self) -> Result<u32> {
-        self.run_as_writer(
-            |active| async move { MonitorStorage::compact_input_beefs(active.as_ref()).await },
-        )
+        self.run_as_writer(|active| async move {
+            MonitorStorage::compact_input_beefs(active.as_ref()).await
+        })
         .await
     }
 
@@ -1349,11 +1346,7 @@ mod tests {
     fn test_get_settings_returns_default_before_make_available() {
         // Before make_available() is called, get_settings() should return a
         // default TableSettings (via OnceLock fallback) instead of panicking.
-        let manager = WalletStorageManager::new(
-            "02dummy_identity_key".to_string(),
-            None,
-            None,
-        );
+        let manager = WalletStorageManager::new("02dummy_identity_key".to_string(), None, None);
         let settings = WalletStorageReader::get_settings(&manager);
         // Should return the OnceLock default rather than panicking
         assert_eq!(settings.settings_id, 1);
@@ -1365,15 +1358,11 @@ mod tests {
     fn test_get_settings_returns_cached_settings() {
         // When cached_settings is manually populated, get_settings() should
         // return the cached value.
-        let manager = WalletStorageManager::new(
-            "02dummy_identity_key".to_string(),
-            None,
-            None,
-        );
+        let manager = WalletStorageManager::new("02dummy_identity_key".to_string(), None, None);
         // Manually populate the cache (simulating what make_available does)
         {
-            let mut guard = lock_write(&manager.cached_settings)
-                .expect("lock_write should succeed");
+            let mut guard =
+                lock_write(&manager.cached_settings).expect("lock_write should succeed");
             *guard = Some(TableSettings {
                 settings_id: 42,
                 storage_identity_key: "cached_key".to_string(),
@@ -1393,11 +1382,7 @@ mod tests {
     fn test_get_services_returns_error_before_set() {
         // Before set_services() is called, get_services() should return an
         // error instead of panicking.
-        let manager = WalletStorageManager::new(
-            "02dummy_identity_key".to_string(),
-            None,
-            None,
-        );
+        let manager = WalletStorageManager::new("02dummy_identity_key".to_string(), None, None);
         let result = WalletStorageReader::get_services(&manager);
         assert!(result.is_err());
         match result {

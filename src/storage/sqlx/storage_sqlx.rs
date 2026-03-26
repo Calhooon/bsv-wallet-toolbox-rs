@@ -2824,7 +2824,8 @@ impl MonitorStorage for StorageSqlx {
                 None => {
                     tracing::warn!(
                         "Failed to convert merkle_path JSON to BUMP for proven_tx {} (txid={})",
-                        proven_tx_id, txid
+                        proven_tx_id,
+                        txid
                     );
                 }
             }
@@ -2833,7 +2834,8 @@ impl MonitorStorage for StorageSqlx {
         if repaired_count > 0 {
             tracing::info!(
                 "Repaired {}/{} proven_txs: JSON merkle_path → BUMP binary",
-                repaired_count, repair_txs.len()
+                repaired_count,
+                repair_txs.len()
             );
         }
 
@@ -3294,8 +3296,7 @@ impl MonitorStorage for StorageSqlx {
             let mut upgraded = 0u32;
 
             for chunk in unproven_txids.chunks(400) {
-                let placeholders: String =
-                    chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let query_str = format!(
                     "SELECT txid, merkle_path FROM proven_txs WHERE txid IN ({})",
                     placeholders
@@ -3306,12 +3307,16 @@ impl MonitorStorage for StorageSqlx {
                     query = query.bind(txid);
                 }
 
-                let proof_rows: Vec<(String, Vec<u8>)> =
-                    query.fetch_all(self.pool()).await?.into_iter().map(|row| {
+                let proof_rows: Vec<(String, Vec<u8>)> = query
+                    .fetch_all(self.pool())
+                    .await?
+                    .into_iter()
+                    .map(|row| {
                         let txid: String = sqlx::Row::get(&row, "txid");
                         let mp: Vec<u8> = sqlx::Row::get(&row, "merkle_path");
                         (txid, mp)
-                    }).collect();
+                    })
+                    .collect();
 
                 for (txid, merkle_path_bytes) in &proof_rows {
                     if let Ok(merkle_path) = MerklePath::from_binary(merkle_path_bytes) {

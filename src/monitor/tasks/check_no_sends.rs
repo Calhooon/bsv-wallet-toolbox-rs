@@ -136,11 +136,7 @@ where
                         // and updates the proven_tx_req's proven_tx_id and status to
                         // completed -- mirroring the logic in
                         // StorageSqlx::synchronize_transaction_statuses.
-                        if let Err(e) = self
-                            .storage
-                            .synchronize_transaction_statuses()
-                            .await
-                        {
+                        if let Err(e) = self.storage.synchronize_transaction_statuses().await {
                             tracing::warn!(
                                 task = "check_no_sends",
                                 txid = txid,

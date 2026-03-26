@@ -1788,7 +1788,7 @@ mod tests {
         assert!(script_offset.is_some(), "script_offset should be set");
         assert!(script_length.is_some(), "script_length should be set");
         assert_eq!(script_length.unwrap(), 25); // P2PKH script length
-        // nosend outputs are NOT marked spendable until the tx is actually broadcast
+                                                // nosend outputs are NOT marked spendable until the tx is actually broadcast
         assert!(!spendable, "nosend output should not be marked spendable");
     }
 

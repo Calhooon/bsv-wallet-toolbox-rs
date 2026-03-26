@@ -11,8 +11,8 @@ use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
-        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
-        ChaintracksConfig, ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
+        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
+        ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
@@ -24,7 +24,6 @@ use crate::services::{
 };
 use crate::{Error, Result};
 use bsv_rs::transaction::ChainTracker;
-
 
 /// Post BEEF mode for handling multiple broadcast services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -706,7 +705,9 @@ impl WalletServices for Services {
                         if result.header.is_none() {
                             if let Some(ref mp) = result.merkle_path {
                                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(mp) {
-                                    if let Some(target) = json.get("target").and_then(|t| t.as_str()) {
+                                    if let Some(target) =
+                                        json.get("target").and_then(|t| t.as_str())
+                                    {
                                         match self.hash_to_header(target).await {
                                             Ok(header) => {
                                                 tracing::debug!(
@@ -734,7 +735,8 @@ impl WalletServices for Services {
                             if mp.starts_with('{') || mp.starts_with('[') {
                                 // TSC proof JSON — convert to BUMP hex
                                 if let Some(header) = &result.header {
-                                    match crate::tsc_proof::tsc_json_to_bump_hex(mp, header.height) {
+                                    match crate::tsc_proof::tsc_json_to_bump_hex(mp, header.height)
+                                    {
                                         Some(bump_hex) => {
                                             tracing::debug!(
                                                 "Converted TSC proof to BUMP hex ({} chars) for txid {}",
@@ -1145,8 +1147,8 @@ impl WalletServices for Services {
             json_str: &str,
             block_height: u32,
         ) -> std::result::Result<MerklePath, String> {
-            let proof: TscProof =
-                serde_json::from_str(json_str).map_err(|e| format!("Invalid TSC proof JSON: {}", e))?;
+            let proof: TscProof = serde_json::from_str(json_str)
+                .map_err(|e| format!("Invalid TSC proof JSON: {}", e))?;
 
             if proof.nodes.is_empty() {
                 return Err("empty nodes list".to_string());

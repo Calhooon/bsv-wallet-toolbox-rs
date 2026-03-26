@@ -138,11 +138,9 @@ impl ChaintracksServiceClient {
     /// Find block header by height.
     pub async fn find_header_for_height(&self, height: u32) -> Result<BlockHeader> {
         let url = self.build_url(&format!("/findHeaderHexForHeight?height={}", height));
-        let response = self
-            .build_request(&url)
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Chaintracks findHeaderHexForHeight: {}", e)))?;
+        let response = self.build_request(&url).send().await.map_err(|e| {
+            Error::NetworkError(format!("Chaintracks findHeaderHexForHeight: {}", e))
+        })?;
 
         if !response.status().is_success() {
             return Err(Error::ServiceError(format!(
@@ -175,11 +173,9 @@ impl ChaintracksServiceClient {
     /// Find the chain tip header.
     pub async fn find_chain_tip_header(&self) -> Result<BlockHeader> {
         let url = self.build_url("/findChainTipHeaderHex");
-        let response = self
-            .build_request(&url)
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Chaintracks findChainTipHeaderHex: {}", e)))?;
+        let response = self.build_request(&url).send().await.map_err(|e| {
+            Error::NetworkError(format!("Chaintracks findChainTipHeaderHex: {}", e))
+        })?;
 
         if !response.status().is_success() {
             return Err(Error::ServiceError(format!(
@@ -209,13 +205,9 @@ impl ChaintracksServiceClient {
     /// Find block header by block hash.
     pub async fn find_header_for_block_hash(&self, hash: &str) -> Result<BlockHeader> {
         let url = self.build_url(&format!("/findHeaderHexForBlockHash?hash={}", hash));
-        let response = self
-            .build_request(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                Error::NetworkError(format!("Chaintracks findHeaderHexForBlockHash: {}", e))
-            })?;
+        let response = self.build_request(&url).send().await.map_err(|e| {
+            Error::NetworkError(format!("Chaintracks findHeaderHexForBlockHash: {}", e))
+        })?;
 
         if !response.status().is_success() {
             return Err(Error::ServiceError(format!(

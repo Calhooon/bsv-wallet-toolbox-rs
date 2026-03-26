@@ -164,12 +164,14 @@ impl HttpLookupResolver {
     /// Create a new resolver for the given network preset with default SLAP trackers.
     pub fn for_network(preset: NetworkPreset) -> Self {
         let slap_trackers = match preset {
-            NetworkPreset::Mainnet => {
-                MAINNET_SLAP_TRACKERS.iter().map(|s| s.to_string()).collect()
-            }
-            NetworkPreset::Testnet => {
-                TESTNET_SLAP_TRACKERS.iter().map(|s| s.to_string()).collect()
-            }
+            NetworkPreset::Mainnet => MAINNET_SLAP_TRACKERS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            NetworkPreset::Testnet => TESTNET_SLAP_TRACKERS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             NetworkPreset::Local => vec!["http://localhost:8080".to_string()],
         };
         Self {
@@ -229,7 +231,11 @@ impl HttpLookupResolver {
             let json: serde_json::Value = match response.json().await {
                 Ok(j) => j,
                 Err(e) => {
-                    tracing::debug!("SLAP response from {} not JSON (trying next): {}", tracker, e);
+                    tracing::debug!(
+                        "SLAP response from {} not JSON (trying next): {}",
+                        tracker,
+                        e
+                    );
                     continue;
                 }
             };
@@ -258,10 +264,7 @@ impl HttpLookupResolver {
             }
         }
 
-        tracing::debug!(
-            "No SLAP trackers returned competent hosts for {}",
-            service
-        );
+        tracing::debug!("No SLAP trackers returned competent hosts for {}", service);
         vec![]
     }
 

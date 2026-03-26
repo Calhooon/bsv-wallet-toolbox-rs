@@ -1390,6 +1390,7 @@ async fn generate_change(
 
     // Step 2: Fund the transaction (starvation loop with funding loop)
     // This is the outer "for (;;)" loop in TypeScript
+    #[allow(clippy::never_loop)]
     loop {
         // Release all allocated inputs (TypeScript: releaseAllocatedChangeInputs)
         for input in allocated_inputs.drain(..) {
@@ -2013,7 +2014,10 @@ pub(super) fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u
 /// # Returns
 /// * `Ok(Some(BeefTxData))` - Transaction data if found
 /// * `Ok(None)` - If transaction not found in any table
-pub(super) async fn get_tx_with_proof(conn: &mut SqliteConnection, txid: &str) -> Result<Option<BeefTxData>> {
+pub(super) async fn get_tx_with_proof(
+    conn: &mut SqliteConnection,
+    txid: &str,
+) -> Result<Option<BeefTxData>> {
     // First try proven_txs table - these have merkle proofs
     let proven_row = sqlx::query(
         r#"
@@ -2230,7 +2234,10 @@ pub(super) async fn compact_stored_beef(
 /// # Returns
 /// * `Ok(Some(Beef))` - Stored BEEF if available
 /// * `Ok(None)` - If no stored BEEF found
-pub(super) async fn get_stored_beef(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Beef>> {
+pub(super) async fn get_stored_beef(
+    conn: &mut SqliteConnection,
+    txid: &str,
+) -> Result<Option<Beef>> {
     // Try transactions table first
     let tx_row = sqlx::query(
         r#"

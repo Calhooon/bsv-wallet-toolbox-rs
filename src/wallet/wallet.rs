@@ -1393,9 +1393,7 @@ where
                         let can_downgrade = beef.txs.iter().all(|tx| !tx.is_txid_only());
 
                         // Force downgrade to V1 for ARC compatibility
-                        if can_downgrade
-                            && beef.version != bsv_rs::transaction::BEEF_V1
-                        {
+                        if can_downgrade && beef.version != bsv_rs::transaction::BEEF_V1 {
                             beef.version = bsv_rs::transaction::BEEF_V1;
                         }
 
@@ -1432,7 +1430,9 @@ where
                                     .iter()
                                     .filter(|r| r.status != "success")
                                     .map(|r| {
-                                        let txid_errors: String = r.txid_results.iter()
+                                        let txid_errors: String = r
+                                            .txid_results
+                                            .iter()
                                             .filter(|tx| tx.status != "success")
                                             .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
                                             .collect::<Vec<_>>()
@@ -1773,7 +1773,9 @@ where
                                         .iter()
                                         .filter(|r| r.status != "success")
                                         .map(|r| {
-                                            let txid_errors: String = r.txid_results.iter()
+                                            let txid_errors: String = r
+                                                .txid_results
+                                                .iter()
                                                 .filter(|tx| tx.status != "success")
                                                 .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
                                                 .collect::<Vec<_>>()
@@ -1932,34 +1934,52 @@ where
                     if vout >= tx.outputs.len() {
                         return Err(bsv_rs::Error::WalletError(format!(
                             "output_index {} exceeds transaction output count {}",
-                            vout, tx.outputs.len()
+                            vout,
+                            tx.outputs.len()
                         )));
                     }
                     let script = tx.outputs[vout].locking_script.as_script().to_binary();
                     // Only validate P2PKH (25 bytes: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG)
-                    if script.len() == 25 && script[0] == 0x76 && script[1] == 0xa9
-                        && script[2] == 0x14 && script[23] == 0x88 && script[24] == 0xac
+                    if script.len() == 25
+                        && script[0] == 0x76
+                        && script[1] == 0xa9
+                        && script[2] == 0x14
+                        && script[23] == 0x88
+                        && script[24] == 0xac
                     {
                         let counterparty = if !payment.sender_identity_key.is_empty() {
                             Counterparty::Other(
                                 PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
-                                    bsv_rs::Error::WalletError(format!("Invalid sender_identity_key: {}", e))
+                                    bsv_rs::Error::WalletError(format!(
+                                        "Invalid sender_identity_key: {}",
+                                        e
+                                    ))
                                 })?,
                             )
                         } else {
                             Counterparty::Self_
                         };
                         let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
-                        let key_id = format!("{} {}", payment.derivation_prefix, payment.derivation_suffix);
-                        let derived = self.proto_wallet.key_deriver().derive_public_key(
-                            &protocol, &key_id, &counterparty, true,
-                        ).map_err(|e| {
-                            bsv_rs::Error::WalletError(format!("BRC-29 key derivation failed: {}", e))
-                        })?;
+                        let key_id = format!(
+                            "{} {}",
+                            payment.derivation_prefix, payment.derivation_suffix
+                        );
+                        let derived = self
+                            .proto_wallet
+                            .key_deriver()
+                            .derive_public_key(&protocol, &key_id, &counterparty, true)
+                            .map_err(|e| {
+                                bsv_rs::Error::WalletError(format!(
+                                    "BRC-29 key derivation failed: {}",
+                                    e
+                                ))
+                            })?;
                         if derived.hash160()[..] != script[3..23] {
                             return Err(bsv_rs::Error::WalletError(format!(
                                 "Derivation mismatch for output {}: derived {} != script {}",
-                                vout, hex::encode(derived.hash160()), hex::encode(&script[3..23])
+                                vout,
+                                hex::encode(derived.hash160()),
+                                hex::encode(&script[3..23])
                             )));
                         }
                     }
@@ -2410,12 +2430,8 @@ where
 
         // 2. Overlay discovery: query ls_identity via SLAP resolution
         let resolver = match self.chain {
-            Chain::Main => {
-                crate::wallet::lookup::HttpLookupResolver::mainnet()
-            }
-            Chain::Test => {
-                crate::wallet::lookup::HttpLookupResolver::testnet()
-            }
+            Chain::Main => crate::wallet::lookup::HttpLookupResolver::mainnet(),
+            Chain::Test => crate::wallet::lookup::HttpLookupResolver::testnet(),
         };
 
         let overlay_certs = match resolver.lookup_by_identity_key(&identity_key_hex).await {
@@ -2449,12 +2465,8 @@ where
 
         // Overlay discovery: query ls_identity via SLAP resolution
         let resolver = match self.chain {
-            Chain::Main => {
-                crate::wallet::lookup::HttpLookupResolver::mainnet()
-            }
-            Chain::Test => {
-                crate::wallet::lookup::HttpLookupResolver::testnet()
-            }
+            Chain::Main => crate::wallet::lookup::HttpLookupResolver::mainnet(),
+            Chain::Test => crate::wallet::lookup::HttpLookupResolver::testnet(),
         };
 
         let certificates = match resolver.lookup_by_attributes(&args.attributes).await {
@@ -3519,14 +3531,8 @@ mod tests {
         assert_eq!(cert.revocation_outpoint, "abc123.0");
         assert_eq!(cert.signature, "deadbeef");
         assert_eq!(cert.fields.len(), 2);
-        assert_eq!(
-            cert.fields.get("name").unwrap(),
-            "encrypted_name_value"
-        );
-        assert_eq!(
-            cert.fields.get("email").unwrap(),
-            "encrypted_email_value"
-        );
+        assert_eq!(cert.fields.get("name").unwrap(), "encrypted_name_value");
+        assert_eq!(cert.fields.get("email").unwrap(), "encrypted_email_value");
     }
 
     #[test]

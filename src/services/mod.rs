@@ -51,8 +51,8 @@ pub use collection::{
     ServiceToCall,
 };
 pub use providers::{
-    Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
-    ChaintracksConfig, ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
+    Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
+    ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
 };
 pub use services::Services;
 
