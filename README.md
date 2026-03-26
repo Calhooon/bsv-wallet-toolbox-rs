@@ -174,10 +174,10 @@ cargo test -- --nocapture
 | StorageClient | ✅ Complete | 52 |
 | Services Layer | ✅ Complete | 36 |
 | Chaintracks | ✅ Complete | 102 |
-| **Wallet** | 🚧 In Progress | - |
-| **Monitor** | 📋 Planned | - |
+| **Wallet** | ✅ Complete | 78 |
+| **Monitor** | ✅ Complete | 25 |
 
-**Total: 185 tests passing**
+**Total: 547 tests passing**
 
 ## Architecture
 
