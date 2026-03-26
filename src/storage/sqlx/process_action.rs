@@ -376,22 +376,23 @@ async fn update_output_with_script_offset(
     script_offset: i32,
     script_length: i32,
     max_output_script: i32,
-    should_clear_script: bool,
+    spendable: bool,
 ) -> Result<()> {
     let now = Utc::now();
-    let clear_script = should_clear_script && script_length > max_output_script;
+    let spendable_val: i32 = if spendable { 1 } else { 0 };
+    let clear_script = script_length > max_output_script;
 
     if clear_script {
         sqlx::query(
-            "UPDATE outputs SET txid = ?, script_offset = ?, script_length = ?, locking_script = NULL, spendable = 1, updated_at = ? WHERE output_id = ?",
+            "UPDATE outputs SET txid = ?, script_offset = ?, script_length = ?, locking_script = NULL, spendable = ?, updated_at = ? WHERE output_id = ?",
         )
-        .bind(txid).bind(script_offset).bind(script_length).bind(now).bind(output_id)
+        .bind(txid).bind(script_offset).bind(script_length).bind(spendable_val).bind(now).bind(output_id)
         .execute(&mut *conn).await?;
     } else {
         sqlx::query(
-            "UPDATE outputs SET txid = ?, script_offset = ?, script_length = ?, spendable = 1, updated_at = ? WHERE output_id = ?",
+            "UPDATE outputs SET txid = ?, script_offset = ?, script_length = ?, spendable = ?, updated_at = ? WHERE output_id = ?",
         )
-        .bind(txid).bind(script_offset).bind(script_length).bind(now).bind(output_id)
+        .bind(txid).bind(script_offset).bind(script_length).bind(spendable_val).bind(now).bind(output_id)
         .execute(&mut *conn).await?;
     }
     Ok(())
@@ -409,15 +410,18 @@ async fn update_change_output_with_locking_script(
     script_offset: i32,
     script_length: i32,
     locking_script: &[u8],
+    spendable: bool,
 ) -> Result<()> {
     let now = Utc::now();
+    let spendable_val: i32 = if spendable { 1 } else { 0 };
     sqlx::query(
-        "UPDATE outputs SET txid = ?, script_offset = ?, script_length = ?, locking_script = ?, spendable = 1, updated_at = ? WHERE output_id = ?",
+        "UPDATE outputs SET txid = ?, script_offset = ?, script_length = ?, locking_script = ?, spendable = ?, updated_at = ? WHERE output_id = ?",
     )
     .bind(txid)
     .bind(script_offset)
     .bind(script_length)
     .bind(locking_script)
+    .bind(spendable_val)
     .bind(now)
     .bind(output_id)
     .execute(&mut *conn)
@@ -630,6 +634,9 @@ pub async fn process_action_internal(
         update_transaction_with_signed_data(&mut tx, found_tx.transaction_id, txid, tx_status)
             .await?;
 
+        // nosend outputs stay spendable=false until the tx is actually broadcast
+        let mark_spendable = !(args.is_no_send && !args.is_send_with);
+
         let settings = storage.get_settings();
         for output in &outputs {
             let vout = output.vout as usize;
@@ -648,6 +655,7 @@ pub async fn process_action_internal(
                         offset.offset as i32,
                         offset.length as i32,
                         locking_script,
+                        mark_spendable,
                     )
                     .await?;
                 } else {
@@ -659,7 +667,7 @@ pub async fn process_action_internal(
                         offset.offset as i32,
                         offset.length as i32,
                         settings.max_output_script,
-                        true,
+                        mark_spendable,
                     )
                     .await?;
                 }
@@ -1780,7 +1788,8 @@ mod tests {
         assert!(script_offset.is_some(), "script_offset should be set");
         assert!(script_length.is_some(), "script_length should be set");
         assert_eq!(script_length.unwrap(), 25); // P2PKH script length
-        assert!(spendable, "output should be marked spendable");
+        // nosend outputs are NOT marked spendable until the tx is actually broadcast
+        assert!(!spendable, "nosend output should not be marked spendable");
     }
 
     /// Test proven_tx_req status based on different modes
