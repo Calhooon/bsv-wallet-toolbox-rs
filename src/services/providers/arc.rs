@@ -344,73 +344,9 @@ impl Arc {
             beef.to_vec()
         };
 
-        // Post BEEF to the dedicated /v1/tx/beef endpoint as raw binary
-        let url = format!("{}/v1/tx/beef", self.url);
-        let mut headers = self.get_headers();
-        headers.insert("Content-Type", "application/octet-stream".parse().unwrap());
-
-        // Determine txid from provided list
-        let txid = txids
-            .last()
-            .cloned()
-            .unwrap_or_default();
-
-        let post_result = match self
-            .client
-            .post(&url)
-            .headers(headers)
-            .timeout(std::time::Duration::from_secs(30))
-            .body(beef_to_post)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let status_code = resp.status();
-                let body_text = resp.text().await.unwrap_or_default();
-
-                if status_code.is_success() {
-                    PostTxResultForTxid {
-                        txid: txid.clone(),
-                        status: "success".to_string(),
-                        double_spend: false,
-                        competing_txs: None,
-                        data: Some(body_text),
-                        service_error: false,
-                        block_hash: None,
-                        block_height: None,
-                        notes: vec![make_note(&self.name, "postBeefSuccess")],
-                    }
-                } else {
-                    PostTxResultForTxid {
-                        txid: txid.clone(),
-                        status: "error".to_string(),
-                        double_spend: false,
-                        competing_txs: None,
-                        data: Some(format!(
-                            "ARC error: HTTP {} {} - {}",
-                            status_code.as_u16(),
-                            status_code.canonical_reason().unwrap_or(""),
-                            body_text
-                        )),
-                        service_error: true,
-                        block_hash: None,
-                        block_height: None,
-                        notes: vec![make_note(&self.name, "postBeefHttpError")],
-                    }
-                }
-            }
-            Err(e) => PostTxResultForTxid {
-                txid: txid.clone(),
-                status: "error".to_string(),
-                double_spend: false,
-                competing_txs: None,
-                data: Some(format!("Request failed: {}", e)),
-                service_error: true,
-                block_hash: None,
-                block_height: None,
-                notes: vec![make_note(&self.name, "postBeefRequestFailed")],
-            },
-        };
+        // Convert BEEF to hex and post via the standard raw tx endpoint
+        let beef_hex = hex::encode(&beef_to_post);
+        let post_result = self.post_raw_tx(&beef_hex, Some(txids)).await?;
 
         result.status = post_result.status.clone();
         result.txid_results.push(post_result.clone());
