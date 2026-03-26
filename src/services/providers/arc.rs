@@ -344,8 +344,10 @@ impl Arc {
             beef.to_vec()
         };
 
-        // Convert BEEF to hex and post via the standard raw tx endpoint
+        // Convert BEEF to hex
         let beef_hex = hex::encode(&beef_to_post);
+
+        // Post the BEEF
         let post_result = self.post_raw_tx(&beef_hex, Some(txids)).await?;
 
         result.status = post_result.status.clone();
