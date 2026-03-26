@@ -14,9 +14,9 @@ use crate::{Error, Result};
 
 use super::config::{MonitorOptions, TaskConfig};
 use super::tasks::{
-    CheckForProofsTask, CheckNoSendsTask, ClockTask, FailAbandonedTask, MonitorCallHistoryTask,
-    MonitorTask, NewHeaderTask, PurgeTask, ReorgTask, ReviewStatusTask, SendWaitingTask,
-    SyncWhenIdleTask, TaskResult, TaskType, UnfailTask,
+    CheckForProofsTask, CheckNoSendsTask, ClockTask, CompactBeefTask, FailAbandonedTask,
+    MonitorCallHistoryTask, MonitorTask, NewHeaderTask, PurgeTask, ReorgTask, ReviewStatusTask,
+    SendWaitingTask, SyncWhenIdleTask, TaskResult, TaskType, UnfailTask,
 };
 
 /// Generate random bytes using the `rand` crate's thread-local CSPRNG.
@@ -163,6 +163,9 @@ where
             ));
         }
 
+        // Set services on storage so storage-based operations can access blockchain services.
+        self.storage.set_services(self.services.clone());
+
         let mut handles = self.task_handles.write().await;
 
         // Start clock task
@@ -262,6 +265,17 @@ where
             let handle =
                 self.spawn_task(TaskType::Purge, Arc::new(task), &self.options.tasks.purge);
             handles.insert(TaskType::Purge, handle);
+        }
+
+        // Start compact_beef task
+        if self.options.tasks.compact_beef.enabled {
+            let task = CompactBeefTask::new(self.storage.clone());
+            let handle = self.spawn_task(
+                TaskType::CompactBeef,
+                Arc::new(task),
+                &self.options.tasks.compact_beef,
+            );
+            handles.insert(TaskType::CompactBeef, handle);
         }
 
         // Start sync_when_idle task
@@ -387,6 +401,12 @@ where
             let task = PurgeTask::new(self.storage.clone());
             let result = task.run().await?;
             results.insert(TaskType::Purge, result);
+        }
+
+        if self.options.tasks.compact_beef.enabled {
+            let task = CompactBeefTask::new(self.storage.clone());
+            let result = task.run().await?;
+            results.insert(TaskType::CompactBeef, result);
         }
 
         if self.options.tasks.sync_when_idle.enabled {

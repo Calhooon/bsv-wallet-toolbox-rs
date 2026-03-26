@@ -51,7 +51,7 @@ where
     async fn run(&self) -> Result<TaskResult> {
         let mut errors = Vec::new();
 
-        match MonitorStorage::compact_input_beefs(self.storage.as_ref()).await {
+        match <dyn MonitorStorage>::compact_input_beefs(self.storage.as_ref()).await {
             Ok(count) => {
                 if count > 0 {
                     tracing::info!(

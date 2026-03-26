@@ -87,6 +87,8 @@ pub struct TasksConfig {
     pub review_status: TaskConfig,
     /// Purge old data task configuration.
     pub purge: TaskConfig,
+    /// Compact stored input_beef blobs task configuration.
+    pub compact_beef: TaskConfig,
     /// Monitor service call history task configuration.
     pub monitor_call_history: TaskConfig,
     /// Sync-when-idle task configuration.
@@ -144,6 +146,11 @@ impl Default for TasksConfig {
             purge: TaskConfig {
                 enabled: true,
                 interval: Duration::from_secs(3600), // 1 hour
+                start_immediately: false,
+            },
+            compact_beef: TaskConfig {
+                enabled: true,
+                interval: Duration::from_secs(15 * 60), // 15 minutes
                 start_immediately: false,
             },
             monitor_call_history: TaskConfig {

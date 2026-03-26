@@ -838,6 +838,49 @@ async fn create_proven_tx_req(
     Ok(())
 }
 
+/// Mark an internalized transaction as failed after broadcast failure.
+///
+/// This function:
+/// 1. Sets the transaction status to 'failed'
+/// 2. Marks all outputs created by this transaction as unspendable (spendable = 0)
+/// 3. Sets the proven_tx_req status to 'invalid'
+pub async fn mark_internalized_tx_failed(storage: &StorageSqlx, txid: &str) -> Result<()> {
+    let now = Utc::now();
+
+    // 1. Mark transaction as failed
+    sqlx::query("UPDATE transactions SET status = 'failed', updated_at = ? WHERE txid = ?")
+        .bind(now)
+        .bind(txid)
+        .execute(storage.pool())
+        .await?;
+
+    // 2. Mark created outputs as unspendable
+    sqlx::query(
+        r#"
+        UPDATE outputs SET spendable = 0, updated_at = ?
+        WHERE txid = ?
+        "#,
+    )
+    .bind(now)
+    .bind(txid)
+    .execute(storage.pool())
+    .await?;
+
+    // 3. Mark proven_tx_req as invalid
+    sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', updated_at = ? WHERE txid = ?")
+        .bind(now)
+        .bind(txid)
+        .execute(storage.pool())
+        .await?;
+
+    tracing::info!(
+        txid = %txid,
+        "Marked internalized transaction as failed: tx=failed, outputs=unspendable, proven_tx_req=invalid"
+    );
+
+    Ok(())
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

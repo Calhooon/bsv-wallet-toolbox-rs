@@ -2135,6 +2135,10 @@ impl WalletStorageWriter for StorageSqlx {
         super::internalize_action::internalize_action_internal(self, user_id, args).await
     }
 
+    async fn mark_internalized_tx_failed(&self, txid: &str) -> Result<()> {
+        super::internalize_action::mark_internalized_tx_failed(self, txid).await
+    }
+
     async fn insert_certificate(
         &self,
         auth: &AuthId,
@@ -2604,7 +2608,7 @@ impl MonitorStorage for StorageSqlx {
         );
 
         let mut results = Vec::new();
-        let max_attempts = 10;
+        let max_attempts = 144; // ~2.4 hours at 60s intervals (matches JS reference for mainnet)
 
         for req in &reqs {
             let txid = &req.txid;
@@ -2625,7 +2629,10 @@ impl MonitorStorage for StorageSqlx {
                             .map(|h| h.hash.clone())
                             .unwrap_or_default();
 
-                        let merkle_path_bytes = merkle_path.as_bytes();
+                        // merkle_path should be BUMP hex after services.rs conversion.
+                        // Decode hex → binary for storage. Fallback to raw bytes if not hex.
+                        let merkle_path_bytes = hex::decode(merkle_path)
+                            .unwrap_or_else(|_| merkle_path.as_bytes().to_vec());
                         let merkle_root = proof_result
                             .header
                             .as_ref()
@@ -2634,15 +2641,21 @@ impl MonitorStorage for StorageSqlx {
 
                         sqlx::query(
                             r#"
-                            INSERT OR IGNORE INTO proven_txs (txid, height, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, (SELECT raw_tx FROM transactions WHERE txid = ? LIMIT 1), ?, ?)
+                            INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+                            VALUES (?, ?, 0, ?, ?,  ?,
+                                COALESCE(
+                                    (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
+                                    (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
+                                ),
+                                ?, ?)
                             "#,
                         )
                         .bind(txid)
                         .bind(block_height as i64)
                         .bind(&block_hash)
                         .bind(&merkle_root)
-                        .bind(merkle_path_bytes)
+                        .bind(&merkle_path_bytes)
+                        .bind(txid)
                         .bind(txid)
                         .bind(now)
                         .bind(now)

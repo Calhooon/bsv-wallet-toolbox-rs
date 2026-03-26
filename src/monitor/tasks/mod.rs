@@ -6,6 +6,7 @@
 mod check_for_proofs;
 mod check_no_sends;
 mod clock;
+mod compact_beef;
 mod fail_abandoned;
 mod monitor_call_history;
 mod new_header;
@@ -19,6 +20,7 @@ mod unfail;
 pub use check_for_proofs::CheckForProofsTask;
 pub use check_no_sends::CheckNoSendsTask;
 pub use clock::ClockTask;
+pub use compact_beef::CompactBeefTask;
 pub use fail_abandoned::FailAbandonedTask;
 pub use monitor_call_history::MonitorCallHistoryTask;
 pub use new_header::NewHeaderTask;
@@ -99,6 +101,8 @@ pub enum TaskType {
     Clock,
     /// Check for 'nosend' transaction proofs.
     CheckNoSends,
+    /// Compact stored input_beef blobs.
+    CompactBeef,
     /// Monitor service call history.
     MonitorCallHistory,
     /// Poll for new block headers.
@@ -123,6 +127,7 @@ impl TaskType {
             TaskType::UnFail => "unfail",
             TaskType::Clock => "clock",
             TaskType::CheckNoSends => "check_no_sends",
+            TaskType::CompactBeef => "compact_beef",
             TaskType::MonitorCallHistory => "monitor_call_history",
             TaskType::NewHeader => "new_header",
             TaskType::Purge => "purge",
@@ -173,6 +178,7 @@ mod tests {
         assert_eq!(TaskType::UnFail.as_str(), "unfail");
         assert_eq!(TaskType::Clock.as_str(), "clock");
         assert_eq!(TaskType::CheckNoSends.as_str(), "check_no_sends");
+        assert_eq!(TaskType::CompactBeef.as_str(), "compact_beef");
         assert_eq!(
             TaskType::MonitorCallHistory.as_str(),
             "monitor_call_history"

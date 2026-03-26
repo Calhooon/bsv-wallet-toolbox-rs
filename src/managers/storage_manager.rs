@@ -1081,6 +1081,14 @@ impl WalletStorageWriter for WalletStorageManager {
             .await
     }
 
+    async fn mark_internalized_tx_failed(&self, txid: &str) -> Result<()> {
+        let txid_owned = txid.to_string();
+        self.run_as_writer(|active| async move {
+            active.mark_internalized_tx_failed(&txid_owned).await
+        })
+        .await
+    }
+
     async fn insert_certificate(
         &self,
         auth: &AuthId,

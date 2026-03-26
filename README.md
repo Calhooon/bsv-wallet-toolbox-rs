@@ -3,7 +3,7 @@
 > Rust implementation of the BSV wallet toolbox, providing storage and services for BSV wallets
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![Tests](https://img.shields.io/badge/tests-185%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-547%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
 ## Overview

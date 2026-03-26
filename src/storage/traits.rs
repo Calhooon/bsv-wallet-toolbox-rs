@@ -560,6 +560,13 @@ pub trait WalletStorageWriter: WalletStorageReader {
         args: InternalizeActionArgs,
     ) -> Result<StorageInternalizeActionResult>;
 
+    /// Mark an internalized transaction as failed after broadcast failure.
+    ///
+    /// Sets tx status to 'failed', marks created outputs as unspendable,
+    /// and sets proven_tx_req to 'invalid'. This prevents ghost UTXOs from
+    /// poisoning subsequent transactions.
+    async fn mark_internalized_tx_failed(&self, txid: &str) -> Result<()>;
+
     /// Insert a certificate.
     async fn insert_certificate(&self, auth: &AuthId, certificate: TableCertificate)
         -> Result<i64>;
@@ -865,6 +872,19 @@ pub trait MonitorStorage: WalletStorageProvider {
     ///
     /// * `params` - Parameters controlling what to purge
     async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults>;
+
+    /// Compact stored input_beef blobs by trimming proven ancestors.
+    ///
+    /// Only compacts input_beef for completed proof requests (fully proven
+    /// transactions) to avoid interfering with pending broadcasts.
+    ///
+    /// # Returns
+    ///
+    /// The number of input_beef blobs that were compacted.
+    async fn compact_input_beefs(&self) -> Result<u32> {
+        // Default: no-op
+        Ok(0)
+    }
 
     /// Try to acquire a distributed lock for a monitor task.
     ///

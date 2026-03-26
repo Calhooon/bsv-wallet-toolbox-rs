@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::primitives::PublicKey;
+use bsv_rs::wallet::KeyDeriverApi;
 use bsv_rs::wallet::{
     interface::{
         RevealCounterpartyKeyLinkageArgs as InterfaceRevealCounterpartyArgs,
@@ -1955,6 +1956,50 @@ where
             }
         }
 
+        // Validate derivation metadata matches locking scripts (death spiral prevention).
+        // If the derived key doesn't match the script, this UTXO can never be signed.
+        if let Ok(tx) = bsv_rs::transaction::Transaction::from_beef(&args.tx, None) {
+            for output in &args.outputs {
+                if let Some(ref payment) = output.payment_remittance {
+                    let vout = output.output_index as usize;
+                    if vout >= tx.outputs.len() {
+                        return Err(bsv_rs::Error::WalletError(format!(
+                            "output_index {} exceeds transaction output count {}",
+                            vout, tx.outputs.len()
+                        )));
+                    }
+                    let script = tx.outputs[vout].locking_script.as_script().to_binary();
+                    // Only validate P2PKH (25 bytes: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG)
+                    if script.len() == 25 && script[0] == 0x76 && script[1] == 0xa9
+                        && script[2] == 0x14 && script[23] == 0x88 && script[24] == 0xac
+                    {
+                        let counterparty = if !payment.sender_identity_key.is_empty() {
+                            Counterparty::Other(
+                                PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
+                                    bsv_rs::Error::WalletError(format!("Invalid sender_identity_key: {}", e))
+                                })?,
+                            )
+                        } else {
+                            Counterparty::Self_
+                        };
+                        let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+                        let key_id = format!("{} {}", payment.derivation_prefix, payment.derivation_suffix);
+                        let derived = self.proto_wallet.key_deriver().derive_public_key(
+                            &protocol, &key_id, &counterparty, true,
+                        ).map_err(|e| {
+                            bsv_rs::Error::WalletError(format!("BRC-29 key derivation failed: {}", e))
+                        })?;
+                        if derived.hash160()[..] != script[3..23] {
+                            return Err(bsv_rs::Error::WalletError(format!(
+                                "Derivation mismatch for output {}: derived {} != script {}",
+                                vout, hex::encode(derived.hash160()), hex::encode(&script[3..23])
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
         let auth = self.auth();
 
         // Save a copy of the BEEF bytes before args is moved into storage.
@@ -1981,7 +2026,7 @@ where
                 beef_len = beef_bytes.len(),
                 "Broadcasting internalized transaction via post_beef"
             );
-            match self.services.post_beef(&beef_bytes, &txid_strings).await {
+            let broadcast_failed = match self.services.post_beef(&beef_bytes, &txid_strings).await {
                 Ok(results) => {
                     let any_success = results.iter().any(|r| r.status == "success");
                     if any_success {
@@ -1989,6 +2034,7 @@ where
                             txid = %txid,
                             "Internalized transaction broadcast successfully"
                         );
+                        false
                     } else {
                         let errors: Vec<_> = results
                             .iter()
@@ -2000,13 +2046,27 @@ where
                             errors = ?errors,
                             "Internalized transaction broadcast returned no successes"
                         );
+                        true
                     }
                 }
                 Err(e) => {
                     tracing::warn!(
                         txid = %txid,
                         error = %e,
-                        "Internalized transaction broadcast failed (non-fatal, will retry)"
+                        "Internalized transaction broadcast failed"
+                    );
+                    true
+                }
+            };
+
+            // If broadcast failed, mark the tx as failed and its outputs as
+            // unspendable to prevent ghost UTXOs from poisoning future txs.
+            if broadcast_failed {
+                if let Err(e) = self.storage.mark_internalized_tx_failed(&txid).await {
+                    tracing::error!(
+                        txid = %txid,
+                        error = %e,
+                        "Failed to mark internalized tx as failed after broadcast failure"
                     );
                 }
             }
