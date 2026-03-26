@@ -1,7 +1,7 @@
 //! Wallet Module
 //!
 //! This module provides the main [`Wallet`] struct that implements the full
-//! `WalletInterface` trait from `bsv_rs::wallet`. The Wallet combines:
+//! [`WalletInterface`] trait from `bsv_rs::wallet`. The Wallet combines:
 //!
 //! - **ProtoWallet**: For cryptographic operations (key derivation, signing, encryption)
 //! - **Storage**: For persistent state (UTXOs, transactions, certificates)
@@ -95,7 +95,7 @@ mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;
 
-pub use lookup::{HttpLookupResolver, OverlayCertificate, OverlayLookupResolver};
+pub use lookup::{dedup_certificates, HttpLookupResolver, OverlayCertificate, OverlayLookupResolver};
 pub use signer::{ScriptType, SignerInput, UnlockingScriptTemplate, WalletSigner};
 pub use wallet::{
     PendingTransaction, PrivilegedKeyManager, UtxoInfo, Wallet, WalletBalance, WalletOptions,

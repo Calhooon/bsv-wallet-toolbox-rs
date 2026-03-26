@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use bsv_wallet_toolbox_rs::{PostBeefResult, PostTxResultForTxid};
+use bsv_wallet_toolbox::{PostBeefResult, PostTxResultForTxid};
 
 // =============================================================================
 // PostBeefResult double-spend field tests
@@ -145,7 +145,7 @@ async fn test_post_beef_result_serialization() {
 #[tokio::test]
 async fn test_transaction_status_values() {
     // Verify all expected TransactionStatus variants can be serialized/deserialized
-    use bsv_wallet_toolbox_rs::storage::entities::{ProvenTxReqStatus, TransactionStatus};
+    use bsv_wallet_toolbox::storage::entities::{ProvenTxReqStatus, TransactionStatus};
 
     // Test TransactionStatus variants and their string representations
     let statuses = vec![

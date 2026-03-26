@@ -37,6 +37,7 @@ use crate::error::{Error, Result};
 use crate::services::{Chain, WalletServices};
 use crate::storage::entities::{TableCertificate, TableCertificateField, TransactionStatus};
 use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
+use crate::wallet::lookup::OverlayLookupResolver;
 
 use super::signer::{SignerInput, WalletSigner};
 
@@ -94,38 +95,6 @@ pub trait PrivilegedKeyManager: Send + Sync {
         args: VerifySignatureArgs,
         originator: &str,
     ) -> std::result::Result<VerifySignatureResult, bsv_rs::Error>;
-}
-
-// =============================================================================
-// LookupResolver
-// =============================================================================
-
-/// Lookup resolver for overlay certificate discovery.
-#[allow(dead_code)]
-pub struct LookupResolver {
-    client: reqwest::Client,
-    hosts: Vec<String>,
-}
-
-#[allow(dead_code)]
-impl LookupResolver {
-    pub fn new(hosts: Vec<String>) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            hosts,
-        }
-    }
-
-    pub async fn query(
-        &self,
-        _attributes: &std::collections::HashMap<String, String>,
-    ) -> Result<Vec<bsv_rs::wallet::IdentityCertificate>> {
-        // Stub: overlay lookup not yet connected
-        let _ = &self.client;
-        let _ = &self.hosts;
-        tracing::debug!("LookupResolver query called - overlay integration pending");
-        Ok(vec![])
-    }
 }
 
 // =============================================================================
@@ -1424,7 +1393,9 @@ where
                         let can_downgrade = beef.txs.iter().all(|tx| !tx.is_txid_only());
 
                         // Force downgrade to V1 for ARC compatibility
-                        if can_downgrade && beef.version != bsv_rs::transaction::BEEF_V1 {
+                        if can_downgrade
+                            && beef.version != bsv_rs::transaction::BEEF_V1
+                        {
                             beef.version = bsv_rs::transaction::BEEF_V1;
                         }
 
@@ -1461,9 +1432,7 @@ where
                                     .iter()
                                     .filter(|r| r.status != "success")
                                     .map(|r| {
-                                        let txid_errors: String = r
-                                            .txid_results
-                                            .iter()
+                                        let txid_errors: String = r.txid_results.iter()
                                             .filter(|tx| tx.status != "success")
                                             .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
                                             .collect::<Vec<_>>()
@@ -1804,9 +1773,7 @@ where
                                         .iter()
                                         .filter(|r| r.status != "success")
                                         .map(|r| {
-                                            let txid_errors: String = r
-                                                .txid_results
-                                                .iter()
+                                            let txid_errors: String = r.txid_results.iter()
                                                 .filter(|tx| tx.status != "success")
                                                 .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
                                                 .collect::<Vec<_>>()
@@ -1965,52 +1932,34 @@ where
                     if vout >= tx.outputs.len() {
                         return Err(bsv_rs::Error::WalletError(format!(
                             "output_index {} exceeds transaction output count {}",
-                            vout,
-                            tx.outputs.len()
+                            vout, tx.outputs.len()
                         )));
                     }
                     let script = tx.outputs[vout].locking_script.as_script().to_binary();
                     // Only validate P2PKH (25 bytes: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG)
-                    if script.len() == 25
-                        && script[0] == 0x76
-                        && script[1] == 0xa9
-                        && script[2] == 0x14
-                        && script[23] == 0x88
-                        && script[24] == 0xac
+                    if script.len() == 25 && script[0] == 0x76 && script[1] == 0xa9
+                        && script[2] == 0x14 && script[23] == 0x88 && script[24] == 0xac
                     {
                         let counterparty = if !payment.sender_identity_key.is_empty() {
                             Counterparty::Other(
                                 PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
-                                    bsv_rs::Error::WalletError(format!(
-                                        "Invalid sender_identity_key: {}",
-                                        e
-                                    ))
+                                    bsv_rs::Error::WalletError(format!("Invalid sender_identity_key: {}", e))
                                 })?,
                             )
                         } else {
                             Counterparty::Self_
                         };
                         let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
-                        let key_id = format!(
-                            "{} {}",
-                            payment.derivation_prefix, payment.derivation_suffix
-                        );
-                        let derived = self
-                            .proto_wallet
-                            .key_deriver()
-                            .derive_public_key(&protocol, &key_id, &counterparty, true)
-                            .map_err(|e| {
-                                bsv_rs::Error::WalletError(format!(
-                                    "BRC-29 key derivation failed: {}",
-                                    e
-                                ))
-                            })?;
+                        let key_id = format!("{} {}", payment.derivation_prefix, payment.derivation_suffix);
+                        let derived = self.proto_wallet.key_deriver().derive_public_key(
+                            &protocol, &key_id, &counterparty, true,
+                        ).map_err(|e| {
+                            bsv_rs::Error::WalletError(format!("BRC-29 key derivation failed: {}", e))
+                        })?;
                         if derived.hash160()[..] != script[3..23] {
                             return Err(bsv_rs::Error::WalletError(format!(
                                 "Derivation mismatch for output {}: derived {} != script {}",
-                                vout,
-                                hex::encode(derived.hash160()),
-                                hex::encode(&script[3..23])
+                                vout, hex::encode(derived.hash160()), hex::encode(&script[3..23])
                             )));
                         }
                     }
@@ -2418,11 +2367,10 @@ where
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
         validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
 
-        // Local-only discovery: query certificates from storage where subject matches identity_key
-        // Full overlay discovery would query the ls_identity overlay service
         let auth = self.auth();
+        let identity_key_hex = &args.identity_key;
 
-        // Build query args to find certificates
+        // 1. Local discovery: query certificates from storage where subject matches
         let find_args = crate::storage::FindCertificatesArgs {
             base: crate::storage::FindSincePagedArgs {
                 paged: Some(crate::storage::Paged {
@@ -2441,17 +2389,9 @@ where
             .await
             .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
 
-        // Filter certificates where subject matches the identity_key
-        let identity_key_hex = hex::encode(&args.identity_key);
-        let matching_certs: Vec<_> = certs
+        let local_certs: Vec<bsv_rs::wallet::IdentityCertificate> = certs
             .into_iter()
-            .filter(|cert| cert.subject == identity_key_hex)
-            .collect();
-
-        // Convert to IdentityCertificate format
-        // WalletCertificate uses Strings, so we can directly use the stored values
-        let certificates: Vec<bsv_rs::wallet::IdentityCertificate> = matching_certs
-            .iter()
+            .filter(|cert| cert.subject == *identity_key_hex)
             .map(|cert| bsv_rs::wallet::IdentityCertificate {
                 certificate: WalletCertificate {
                     certificate_type: cert.cert_type.clone(),
@@ -2468,6 +2408,32 @@ where
             })
             .collect();
 
+        // 2. Overlay discovery: query ls_identity via SLAP resolution
+        let resolver = match self.chain {
+            Chain::Main => {
+                crate::wallet::lookup::HttpLookupResolver::mainnet()
+            }
+            Chain::Test => {
+                crate::wallet::lookup::HttpLookupResolver::testnet()
+            }
+        };
+
+        let overlay_certs = match resolver.lookup_by_identity_key(&identity_key_hex).await {
+            Ok(certs) => certs
+                .into_iter()
+                .map(|c| c.to_identity_certificate())
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                tracing::debug!("Overlay lookup failed (using local only): {}", e);
+                vec![]
+            }
+        };
+
+        // 3. Merge and deduplicate
+        let mut all_certs = local_certs;
+        all_certs.extend(overlay_certs);
+        let certificates = crate::wallet::lookup::dedup_certificates(all_certs);
+
         Ok(DiscoverCertificatesResult {
             total_certificates: certificates.len() as u32,
             certificates,
@@ -2481,23 +2447,30 @@ where
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
         validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
 
-        // Local-only discovery: query certificates from storage and filter by attributes
-        // Full overlay discovery would query the ls_identity overlay service
-        //
-        // Note: This is a limited local-only implementation. Full discovery requires
-        // querying the ls_identity overlay service which is not yet implemented.
-        // For now, return empty results as we can't efficiently search by attributes
-        // without the overlay service index.
+        // Overlay discovery: query ls_identity via SLAP resolution
+        let resolver = match self.chain {
+            Chain::Main => {
+                crate::wallet::lookup::HttpLookupResolver::mainnet()
+            }
+            Chain::Test => {
+                crate::wallet::lookup::HttpLookupResolver::testnet()
+            }
+        };
 
-        // Log the intent
-        tracing::debug!(
-            "discover_by_attributes: local-only mode, attributes={:?}",
-            args.attributes
-        );
+        let certificates = match resolver.lookup_by_attributes(&args.attributes).await {
+            Ok(certs) => certs
+                .into_iter()
+                .map(|c| c.to_identity_certificate())
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                tracing::debug!("Overlay attribute lookup failed: {}", e);
+                vec![]
+            }
+        };
 
         Ok(DiscoverCertificatesResult {
-            total_certificates: 0,
-            certificates: vec![],
+            total_certificates: certificates.len() as u32,
+            certificates,
         })
     }
 
@@ -3546,8 +3519,14 @@ mod tests {
         assert_eq!(cert.revocation_outpoint, "abc123.0");
         assert_eq!(cert.signature, "deadbeef");
         assert_eq!(cert.fields.len(), 2);
-        assert_eq!(cert.fields.get("name").unwrap(), "encrypted_name_value");
-        assert_eq!(cert.fields.get("email").unwrap(), "encrypted_email_value");
+        assert_eq!(
+            cert.fields.get("name").unwrap(),
+            "encrypted_name_value"
+        );
+        assert_eq!(
+            cert.fields.get("email").unwrap(),
+            "encrypted_email_value"
+        );
     }
 
     #[test]

@@ -10,12 +10,12 @@
 
 use std::time::Duration;
 
-use bsv_wallet_toolbox_rs::services::{
+use bsv_wallet_toolbox::services::{
     collection::{AdaptiveTimeoutConfig, ServiceCall, ServiceCollection},
     mock::{MockErrorKind, MockResponse, MockWalletServices},
     Arc as ArcProvider, ArcConfig, WalletServices,
 };
-use bsv_wallet_toolbox_rs::Error;
+use bsv_wallet_toolbox::Error;
 
 // =============================================================================
 // Test 1: Service 500 error via mockito (ARC provider)

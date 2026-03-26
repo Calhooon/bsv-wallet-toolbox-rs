@@ -3,7 +3,7 @@
 //! Tests verifying that error types can be constructed, display useful messages,
 //! and convert correctly from wrapped error sources.
 
-use bsv_wallet_toolbox_rs::Error;
+use bsv_wallet_toolbox::Error;
 
 // =============================================================================
 // Error variant construction tests

@@ -496,7 +496,10 @@ pub trait WalletStorageReader: Send + Sync {
     ) -> Result<Vec<TableProvenTxReq>>;
 
     /// Find transactions matching criteria.
-    async fn find_transactions(&self, args: FindTransactionsArgs) -> Result<Vec<TableTransaction>>;
+    async fn find_transactions(
+        &self,
+        args: FindTransactionsArgs,
+    ) -> Result<Vec<TableTransaction>>;
 
     /// List actions (transactions) for the user.
     async fn list_actions(&self, auth: &AuthId, args: ListActionsArgs)
@@ -873,10 +876,12 @@ pub trait MonitorStorage: WalletStorageProvider {
     /// * `params` - Parameters controlling what to purge
     async fn purge_data(&self, params: PurgeParams) -> Result<PurgeResults>;
 
-    /// Compact stored input_beef blobs by trimming proven ancestors.
+    /// Compact stored input_beef blobs by upgrading unproven transactions
+    /// with now-available merkle proofs and trimming unnecessary ancestors.
     ///
-    /// Only compacts input_beef for completed proof requests (fully proven
-    /// transactions) to avoid interfering with pending broadcasts.
+    /// This retroactively compacts input_beef blobs in `proven_tx_reqs` for
+    /// completed transactions. Only processes completed proof requests to
+    /// avoid interfering with pending broadcasts.
     ///
     /// # Returns
     ///

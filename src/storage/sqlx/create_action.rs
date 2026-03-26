@@ -1332,24 +1332,20 @@ async fn generate_change(
             .fixed_inputs
             .iter()
             .map(|i| i.unlocking_script_length)
-            .chain(std::iter::repeat_n(
-                params.change_unlocking_script_length,
-                alloc_inputs.len(),
-            ))
+            .chain(
+                std::iter::repeat(params.change_unlocking_script_length).take(alloc_inputs.len()),
+            )
             .collect();
 
         let output_script_lengths: Vec<u32> = params
             .fixed_outputs
             .iter()
             .map(|o| o.locking_script_length)
-            .chain(std::iter::repeat_n(
-                params.change_locking_script_length,
-                change_outs.len(),
-            ))
+            .chain(std::iter::repeat(params.change_locking_script_length).take(change_outs.len()))
             .collect();
 
         let size = calculate_transaction_size(&input_script_lengths, &output_script_lengths);
-        let fee_required = (size * params.fee_rate).div_ceil(1000);
+        let fee_required = (size * params.fee_rate + 999) / 1000; // Ceiling division
 
         let fee_excess = input_sats as i64 - output_sats as i64 - fee_required as i64;
 
@@ -1394,7 +1390,7 @@ async fn generate_change(
 
     // Step 2: Fund the transaction (starvation loop with funding loop)
     // This is the outer "for (;;)" loop in TypeScript
-    'funding: {
+    loop {
         // Release all allocated inputs (TypeScript: releaseAllocatedChangeInputs)
         for input in allocated_inputs.drain(..) {
             release_change_input(&mut *conn, input.output_id).await?;
@@ -1459,7 +1455,7 @@ async fn generate_change(
 
         // Check if we're done (balanced/overbalanced or impossible)
         if fee_excess >= 0 || change_outputs.is_empty() {
-            break 'funding;
+            break;
         }
 
         // Remove change outputs one at a time (starvation)
@@ -1471,7 +1467,7 @@ async fn generate_change(
 
         if fee_excess < 0 {
             // Not enough available funding even with no change outputs
-            break 'funding;
+            break;
         }
 
         // Starvation removed all desired change outputs but we have excess sats.
@@ -1493,6 +1489,8 @@ async fn generate_change(
                 change_outputs.pop();
             }
         }
+
+        break;
     }
 
     // Check if we still can't fund the transaction
@@ -1636,7 +1634,8 @@ async fn allocate_change_input(
 // =============================================================================
 
 /// Maximum recursion depth for ancestor fetching to prevent infinite loops.
-pub(super) const MAX_BEEF_RECURSION_DEPTH: usize = 100;
+/// Matches the TypeScript reference implementation (maxRecursionDepth = 12).
+pub(super) const MAX_BEEF_RECURSION_DEPTH: usize = 12;
 
 /// Data for a transaction to include in BEEF.
 pub(super) struct BeefTxData {
@@ -1685,19 +1684,24 @@ async fn build_input_beef(
         return Ok(None);
     }
 
-    // Collect unique input txids
-    let mut pending_txids: Vec<String> = Vec::new();
+    // Collect unique input txids with their chain depth.
+    // Depth tracks how far each txid is from the direct inputs (depth 0).
+    // This matches the TypeScript reference which uses actual recursion depth,
+    // not a flat counter — a tx with 10 inputs at depth 0 doesn't count as depth 10.
+    let mut pending_txids: Vec<(String, usize)> = Vec::new();
     let mut processed_txids: HashSet<String> = HashSet::new();
 
     for input in extended_inputs {
         if !processed_txids.contains(&input.txid) {
-            pending_txids.push(input.txid.clone());
+            pending_txids.push((input.txid.clone(), 0));
         }
     }
 
     for input in change_inputs {
-        if !processed_txids.contains(&input.txid) && !pending_txids.contains(&input.txid) {
-            pending_txids.push(input.txid.clone());
+        if !processed_txids.contains(&input.txid)
+            && !pending_txids.iter().any(|(t, _)| t == &input.txid)
+        {
+            pending_txids.push((input.txid.clone(), 0));
         }
     }
 
@@ -1733,9 +1737,20 @@ async fn build_input_beef(
     // Process transactions - for each unproven tx, we need to add its ancestors.
     // Optimization: If we have a stored BEEF (from internalize_action), merge it directly
     // rather than recursively fetching each ancestor. This matches TypeScript behavior.
-    let mut depth = 0;
-    while !pending_txids.is_empty() && depth < MAX_BEEF_RECURSION_DEPTH {
-        let txid = pending_txids.remove(0);
+    // Depth is tracked per-txid (actual chain distance from direct inputs), matching
+    // the TypeScript reference's recursive depth tracking.
+    while let Some((txid, depth)) = pending_txids.first().cloned() {
+        pending_txids.remove(0);
+
+        if depth >= MAX_BEEF_RECURSION_DEPTH {
+            // Exceeded max chain depth — skip this ancestor.
+            // Matches TS which throws; we log and continue to produce a partial BEEF.
+            eprintln!(
+                "Warning: BEEF recursion depth {} exceeded limit {} for txid {}",
+                depth, MAX_BEEF_RECURSION_DEPTH, txid
+            );
+            continue;
+        }
 
         if processed_txids.contains(&txid) {
             continue;
@@ -1751,7 +1766,12 @@ async fn build_input_beef(
         // The stored BEEF (input_beef) contains the ancestors OF this txid,
         // but not the txid's own transaction - so we still fall through to
         // get_tx_with_proof below to add the transaction itself.
-        if let Some(stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
+        //
+        // Optimization: compact the stored BEEF by upgrading unproven txs that
+        // now have merkle proofs in proven_txs, then trim unnecessary ancestors.
+        if let Some(mut stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
+            compact_stored_beef(&mut *conn, &mut stored_beef).await?;
+
             beef.merge_beef(&stored_beef);
 
             for beef_tx in &stored_beef.txs {
@@ -1760,7 +1780,6 @@ async fn build_input_beef(
 
             // Check if the stored BEEF happened to include this txid too
             if beef.find_txid(&txid).is_some() {
-                depth += 1;
                 continue;
             }
             // Otherwise fall through to add the transaction itself
@@ -1793,12 +1812,13 @@ async fn build_input_beef(
             // so the recipient can trace back to proven transactions
             if bump_index.is_none() {
                 // Parse the transaction to get its input txids
+                // Children are one level deeper in the chain
                 if let Ok(input_txids) = parse_input_txids(&tx_data.raw_tx) {
                     for input_txid in input_txids {
                         if !processed_txids.contains(&input_txid)
-                            && !pending_txids.contains(&input_txid)
+                            && !pending_txids.iter().any(|(t, _)| t == &input_txid)
                         {
-                            pending_txids.push(input_txid);
+                            pending_txids.push((input_txid, depth + 1));
                         }
                     }
                 }
@@ -1806,8 +1826,6 @@ async fn build_input_beef(
         }
         // If transaction not found in storage AND not in user BEEF, that's an error
         // for user-provided inputs, but OK for ancestors (they might be proven elsewhere)
-
-        depth += 1;
     }
 
     // Verify BEEF against ChainTracker before trimming known_txids
@@ -1995,10 +2013,7 @@ pub(super) fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u
 /// # Returns
 /// * `Ok(Some(BeefTxData))` - Transaction data if found
 /// * `Ok(None)` - If transaction not found in any table
-pub(super) async fn get_tx_with_proof(
-    conn: &mut SqliteConnection,
-    txid: &str,
-) -> Result<Option<BeefTxData>> {
+pub(super) async fn get_tx_with_proof(conn: &mut SqliteConnection, txid: &str) -> Result<Option<BeefTxData>> {
     // First try proven_txs table - these have merkle proofs
     let proven_row = sqlx::query(
         r#"
@@ -2129,6 +2144,78 @@ pub(super) async fn get_tx_with_proof(
     Ok(None)
 }
 
+/// Compacts a stored BEEF by upgrading unproven transactions with current
+/// merkle proofs from the `proven_txs` table, then trimming unnecessary
+/// ancestor transactions.
+///
+/// When a stored BEEF was created, some of its transactions may have been
+/// unproven (awaiting mining). Over time, those transactions get mined and
+/// their proofs are stored in `proven_txs`. This function:
+///
+/// 1. Finds unproven transactions in the BEEF
+/// 2. Checks `proven_txs` for newly-available merkle proofs
+/// 3. Upgrades those transactions with their BUMPs
+/// 4. Trims ancestor transactions that are no longer needed (because their
+///    dependents are now self-proving via BUMPs)
+///
+/// This can dramatically reduce BEEF size: a 200KB stored BEEF with long
+/// unproven ancestor chains can shrink to a few KB once ancestors are proven.
+pub(super) async fn compact_stored_beef(
+    conn: &mut SqliteConnection,
+    beef: &mut Beef,
+) -> Result<()> {
+    // Collect unproven txids in the BEEF
+    let unproven_txids: Vec<String> = beef
+        .txs
+        .iter()
+        .filter(|tx| tx.bump_index().is_none() && !tx.is_txid_only())
+        .map(|tx| tx.txid())
+        .collect();
+
+    if unproven_txids.is_empty() {
+        return Ok(());
+    }
+
+    let mut upgraded = 0u32;
+
+    // Batch query proven_txs for all unproven txids
+    // SQLite bind param limit is 999, batch in chunks of 400
+    for chunk in unproven_txids.chunks(400) {
+        let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query_str = format!(
+            "SELECT txid, merkle_path FROM proven_txs WHERE txid IN ({})",
+            placeholders
+        );
+
+        let mut query = sqlx::query(&query_str);
+        for txid in chunk {
+            query = query.bind(txid);
+        }
+
+        let rows = query.fetch_all(&mut *conn).await?;
+
+        for row in &rows {
+            let txid: String = row.get("txid");
+            let merkle_path_bytes: Vec<u8> = row.get("merkle_path");
+
+            if let Ok(merkle_path) = MerklePath::from_binary(&merkle_path_bytes) {
+                let bump_index = beef.merge_bump(merkle_path);
+                if let Some(tx) = beef.find_txid_mut(&txid) {
+                    tx.set_bump_index(Some(bump_index));
+                    upgraded += 1;
+                }
+            }
+        }
+    }
+
+    // If we upgraded any transactions, trim unnecessary ancestors
+    if upgraded > 0 {
+        beef.trim_known_proven();
+    }
+
+    Ok(())
+}
+
 /// Retrieves a stored BEEF for a transaction if available.
 ///
 /// This is an optimization - instead of recursively fetching each ancestor,
@@ -2143,10 +2230,7 @@ pub(super) async fn get_tx_with_proof(
 /// # Returns
 /// * `Ok(Some(Beef))` - Stored BEEF if available
 /// * `Ok(None)` - If no stored BEEF found
-pub(super) async fn get_stored_beef(
-    conn: &mut SqliteConnection,
-    txid: &str,
-) -> Result<Option<Beef>> {
+pub(super) async fn get_stored_beef(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Beef>> {
     // Try transactions table first
     let tx_row = sqlx::query(
         r#"
@@ -3014,7 +3098,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
@@ -3062,7 +3146,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
@@ -3127,7 +3211,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None,
             &extended_inputs,
             &change_inputs,
@@ -3198,7 +3282,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None,
             &extended_inputs,
             &change_inputs,
@@ -3229,7 +3313,7 @@ mod tests {
         seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let result = get_tx_with_proof(&mut conn, txid).await.unwrap();
+        let result = get_tx_with_proof(&mut *conn, txid).await.unwrap();
 
         assert!(result.is_some());
         let tx_data = result.unwrap();
@@ -3265,7 +3349,7 @@ mod tests {
         .unwrap();
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let result = get_tx_with_proof(&mut conn, txid).await.unwrap();
+        let result = get_tx_with_proof(&mut *conn, txid).await.unwrap();
 
         assert!(result.is_some());
         let tx_data = result.unwrap();
@@ -3280,7 +3364,7 @@ mod tests {
         storage.make_available().await.unwrap();
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let result = get_tx_with_proof(&mut conn, "nonexistent_txid")
+        let result = get_tx_with_proof(&mut *conn, "nonexistent_txid")
             .await
             .unwrap();
 
@@ -3457,7 +3541,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None,
             &extended_inputs,
             &change_inputs,
@@ -3502,7 +3586,7 @@ mod tests {
         // With return_txid_only = true, should return None regardless of inputs
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -3547,7 +3631,7 @@ mod tests {
         // Build BEEF with the txid marked as known
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -3605,7 +3689,7 @@ mod tests {
         // Build BEEF with user-provided inputBEEF
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -3652,7 +3736,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -3728,7 +3812,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -3787,7 +3871,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -3834,7 +3918,7 @@ mod tests {
         // With chain_tracker = None, verification is skipped
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut conn,
+            &mut *conn,
             None,
             &extended_inputs,
             &change_inputs,

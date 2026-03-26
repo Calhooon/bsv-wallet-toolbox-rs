@@ -62,6 +62,7 @@ pub mod managers;
 pub mod monitor;
 pub mod services;
 pub mod storage;
+pub mod tsc_proof;
 pub mod wallet;
 
 pub use error::{Error, Result};

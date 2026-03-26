@@ -196,8 +196,11 @@ impl WalletSigner {
             validate_p2pkh_pubkey_match(&pubkey_hash, locking_script)?;
 
             // Build the unlocking script based on script type
-            let unlocking_script =
-                build_unlocking_script(locking_script, &signature.to_der(), &pubkey_compressed)?;
+            let unlocking_script = build_unlocking_script(
+                locking_script,
+                &signature.to_der(),
+                &pubkey_compressed,
+            )?;
 
             // Insert the unlocking script into the transaction
             tx_data = insert_unlocking_script(&tx_data, vin as u32, &unlocking_script)?;

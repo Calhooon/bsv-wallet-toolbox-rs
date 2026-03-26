@@ -522,8 +522,9 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         };
 
         // Parse the HTTP response from the payload
-        let http_response = bsv_rs::auth::transports::HttpResponse::from_payload(&response_payload)
-            .map_err(|e| Error::StorageError(format!("Failed to parse response: {}", e)))?;
+        let http_response =
+            bsv_rs::auth::transports::HttpResponse::from_payload(&response_payload)
+                .map_err(|e| Error::StorageError(format!("Failed to parse response: {}", e)))?;
 
         tracing::trace!(
             method = method,
@@ -708,34 +709,23 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageReader for StorageClient
         // Flatten base (FindSincePagedArgs) fields
         let base_val = serde_json::to_value(&args.base)?;
         if let serde_json::Value::Object(map) = base_val {
-            for (k, v) in map {
-                wire_args[&k] = v;
-            }
+            for (k, v) in map { wire_args[&k] = v; }
         }
         // Build the partial sub-object with filter fields
         let mut partial = serde_json::json!({});
-        if let Some(uid) = args.user_id {
-            partial["userId"] = serde_json::json!(uid);
-        }
-        if let Some(bid) = args.basket_id {
-            partial["basketId"] = serde_json::json!(bid);
-        }
-        if let Some(ref txid) = args.txid {
-            partial["txid"] = serde_json::json!(txid);
-        }
-        if let Some(vout) = args.vout {
-            partial["vout"] = serde_json::json!(vout);
-        }
+        if let Some(uid) = args.user_id { partial["userId"] = serde_json::json!(uid); }
+        if let Some(bid) = args.basket_id { partial["basketId"] = serde_json::json!(bid); }
+        if let Some(ref txid) = args.txid { partial["txid"] = serde_json::json!(txid); }
+        if let Some(vout) = args.vout { partial["vout"] = serde_json::json!(vout); }
         wire_args["partial"] = partial;
         // Top-level optional fields
-        if let Some(ns) = args.no_script {
-            wire_args["noScript"] = serde_json::json!(ns);
-        }
-        if let Some(ref ts) = args.tx_status {
-            wire_args["txStatus"] = serde_json::to_value(ts)?;
-        }
-        self.rpc_call("findOutputsAuth", vec![Self::to_value(auth)?, wire_args])
-            .await
+        if let Some(ns) = args.no_script { wire_args["noScript"] = serde_json::json!(ns); }
+        if let Some(ref ts) = args.tx_status { wire_args["txStatus"] = serde_json::to_value(ts)?; }
+        self.rpc_call(
+            "findOutputsAuth",
+            vec![Self::to_value(auth)?, wire_args],
+        )
+        .await
     }
 
     async fn find_proven_tx_reqs(
@@ -761,10 +751,14 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageReader for StorageClient
         if let Some(ref txids) = args.txids {
             wire_args["txids"] = serde_json::to_value(txids)?;
         }
-        self.rpc_call("findProvenTxReqs", vec![wire_args]).await
+        self.rpc_call("findProvenTxReqs", vec![wire_args])
+            .await
     }
 
-    async fn find_transactions(&self, args: FindTransactionsArgs) -> Result<Vec<TableTransaction>> {
+    async fn find_transactions(
+        &self,
+        args: FindTransactionsArgs,
+    ) -> Result<Vec<TableTransaction>> {
         // TS server expects: { ...base, partial: {}, status?, noRawTx? }
         let mut wire_args = serde_json::json!({});
         let base_val = serde_json::to_value(&args.base)?;
@@ -780,7 +774,8 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageReader for StorageClient
         if let Some(no_raw_tx) = args.no_raw_tx {
             wire_args["noRawTx"] = serde_json::Value::Bool(no_raw_tx);
         }
-        self.rpc_call("findTransactions", vec![wire_args]).await
+        self.rpc_call("findTransactions", vec![wire_args])
+            .await
     }
 
     async fn list_actions(
@@ -961,6 +956,31 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
             vec![Self::to_value(auth)?, Self::to_value(&args)?],
         )
         .await
+    }
+
+    async fn mark_internalized_tx_failed(&self, txid: &str) -> Result<()> {
+        let result: Result<()> = self
+            .rpc_call(
+                "markInternalizedTxFailed",
+                vec![Value::String(txid.to_string())],
+            )
+            .await;
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Server may not implement this method yet - treat as non-fatal
+                let msg = e.to_string();
+                if msg.contains("-32601") || msg.contains("Method not found") {
+                    tracing::warn!(
+                        txid = txid,
+                        "Server does not support markInternalizedTxFailed, skipping"
+                    );
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     async fn insert_certificate(

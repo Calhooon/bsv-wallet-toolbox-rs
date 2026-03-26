@@ -838,7 +838,15 @@ async fn create_proven_tx_req(
     Ok(())
 }
 
+// =============================================================================
+// Failed Broadcast Cleanup
+// =============================================================================
+
 /// Mark an internalized transaction as failed after broadcast failure.
+///
+/// Unlike outgoing transactions (which restore spent inputs on failure),
+/// internalized transactions are *incoming* — their created outputs need to be
+/// marked unspendable so they don't poison future transactions.
 ///
 /// This function:
 /// 1. Sets the transaction status to 'failed'
@@ -855,6 +863,7 @@ pub async fn mark_internalized_tx_failed(storage: &StorageSqlx, txid: &str) -> R
         .await?;
 
     // 2. Mark created outputs as unspendable
+    // Use a subquery to find the transaction_id, then update outputs for that tx.
     sqlx::query(
         r#"
         UPDATE outputs SET spendable = 0, updated_at = ?

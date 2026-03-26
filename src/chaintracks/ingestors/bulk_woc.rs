@@ -302,7 +302,7 @@ impl BulkWocIngestor {
     /// Parse a file link URL
     fn parse_file_link(&self, url: &str) -> Option<FileLink> {
         let parsed = url::Url::parse(url).ok()?;
-        let file_name = parsed.path_segments()?.next_back()?.to_string();
+        let file_name = parsed.path_segments()?.last()?.to_string();
 
         // Check if this is the "latest" file
         if file_name == "latest" {

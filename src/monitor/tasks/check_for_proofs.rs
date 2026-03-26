@@ -6,8 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::services::WalletServices;
-use crate::storage::entities::ProvenTxReqStatus;
-use crate::storage::{FindProvenTxReqsArgs, MonitorStorage};
+use crate::storage::MonitorStorage;
 use crate::Result;
 
 use super::{MonitorTask, TaskResult};
@@ -55,74 +54,38 @@ where
     }
 
     async fn run(&self) -> Result<TaskResult> {
-        let mut items_processed = 0;
         let mut errors = Vec::new();
 
-        // Find transactions that need proofs
-        let statuses = vec![
-            ProvenTxReqStatus::Unmined,
-            ProvenTxReqStatus::Unknown,
-            ProvenTxReqStatus::Callback,
-            ProvenTxReqStatus::Sending,
-            ProvenTxReqStatus::Unconfirmed,
-        ];
-
-        let args = FindProvenTxReqsArgs {
-            status: Some(statuses),
-            ..Default::default()
-        };
-
-        let reqs = match self.storage.find_proven_tx_reqs(args).await {
-            Ok(reqs) => reqs,
+        // Use storage.synchronize_transaction_statuses() which does the complete flow:
+        // 1. Finds ProvenTxReqs needing proofs (unmined, unknown, callback, sending, unconfirmed)
+        // 2. Fetches merkle proofs from services
+        // 3. On proof found: inserts ProvenTx, updates ProvenTxReq to "completed",
+        //    updates Transaction to "completed"
+        // 4. On no proof: increments attempts, marks as "invalid" after max retries
+        match self.storage.synchronize_transaction_statuses().await {
+            Ok(results) => {
+                let items_processed = results.len() as u32;
+                for result in &results {
+                    tracing::info!(
+                        txid = %result.txid,
+                        status = ?result.status,
+                        block_height = ?result.block_height,
+                        "Transaction status synchronized"
+                    );
+                }
+                Ok(TaskResult {
+                    items_processed,
+                    errors,
+                })
+            }
             Err(e) => {
-                errors.push(format!("find_proven_tx_reqs failed: {}", e));
-                return Ok(TaskResult {
+                errors.push(format!("synchronize_transaction_statuses failed: {}", e));
+                Ok(TaskResult {
                     items_processed: 0,
                     errors,
-                });
-            }
-        };
-
-        if reqs.is_empty() {
-            return Ok(TaskResult {
-                items_processed: 0,
-                errors,
-            });
-        }
-
-        tracing::debug!(
-            task = "check_for_proofs",
-            count = reqs.len(),
-            "Checking for merkle proofs"
-        );
-
-        for req in reqs {
-            let txid = &req.txid;
-
-            // Try to get merkle path from services
-            match self.services.get_merkle_path(txid, false).await {
-                Ok(merkle_result) => {
-                    if merkle_result.merkle_path.is_some() {
-                        tracing::info!(
-                            txid = %txid,
-                            status = ?req.status,
-                            "Transaction status synchronized - proof found"
-                        );
-                        items_processed += 1;
-                    } else {
-                        tracing::debug!(txid = %txid, "No merkle proof available yet");
-                    }
-                }
-                Err(e) => {
-                    errors.push(format!("Failed to get merkle path for {}: {}", txid, e));
-                }
+                })
             }
         }
-
-        Ok(TaskResult {
-            items_processed,
-            errors,
-        })
     }
 }
 

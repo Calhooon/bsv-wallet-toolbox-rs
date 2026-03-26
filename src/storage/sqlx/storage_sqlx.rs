@@ -80,6 +80,9 @@ impl StorageSqlx {
         let options = SqliteConnectOptions::from_str(database_url)
             .map_err(|e| Error::DatabaseError(e.to_string()))?
             .pragma("foreign_keys", "ON")
+            .pragma("journal_mode", "WAL")
+            .pragma("busy_timeout", "5000")
+            .pragma("synchronous", "NORMAL")
             .create_if_missing(true);
         let pool = SqlitePool::connect_with(options).await?;
 
@@ -434,14 +437,14 @@ impl StorageSqlx {
         query = query.bind(user_id);
 
         // Bind other parameters based on what was added
-        if let Some(basket_id) = args.basket_id {
-            query = query.bind(basket_id);
+        if args.basket_id.is_some() {
+            query = query.bind(args.basket_id.unwrap());
         }
-        if let Some(ref txid) = args.txid {
-            query = query.bind(txid);
+        if args.txid.is_some() {
+            query = query.bind(args.txid.as_ref().unwrap());
         }
-        if let Some(vout) = args.vout {
-            query = query.bind(vout as i32);
+        if args.vout.is_some() {
+            query = query.bind(args.vout.unwrap() as i32);
         }
         if let Some(statuses) = &args.tx_status {
             for status in statuses {
@@ -2597,7 +2600,7 @@ impl MonitorStorage for StorageSqlx {
         let reqs = self.find_proven_tx_reqs(args).await?;
 
         if reqs.is_empty() {
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
 
         let services = self.get_services()?;
@@ -2751,6 +2754,89 @@ impl MonitorStorage for StorageSqlx {
             }
         }
 
+        // Repair existing proven_txs that have JSON merkle_paths instead of BUMP binary.
+        // This fixes records created before the TSC→BUMP conversion was added in services.rs.
+        // Detection: JSON starts with 0x7B ('{'), BUMP binary starts with a varint block height.
+        let repair_txs: Vec<(i64, Vec<u8>, i64, String)> = sqlx::query_as(
+            "SELECT proven_tx_id, merkle_path, height, txid FROM proven_txs WHERE merkle_path IS NOT NULL AND substr(hex(merkle_path), 1, 2) = '7B' LIMIT 200"
+        )
+            .fetch_all(self.pool())
+            .await?;
+
+        let mut repaired_count = 0u32;
+        for (proven_tx_id, merkle_path_bytes, height, txid) in &repair_txs {
+            // Check if merkle_path is JSON (starts with '{') — needs conversion
+            if merkle_path_bytes.first() != Some(&0x7B) {
+                continue; // Already BUMP binary, skip
+            }
+
+            let merkle_path_str = match std::str::from_utf8(merkle_path_bytes) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Use stored height if available, otherwise resolve from target
+            let block_height = if *height > 0 {
+                *height as u32
+            } else {
+                // Fall back to resolving header from target
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(merkle_path_str) {
+                    if let Some(target) = json.get("target").and_then(|t| t.as_str()) {
+                        match services.hash_to_header(target).await {
+                            Ok(header) => {
+                                let now = chrono::Utc::now();
+                                sqlx::query(
+                                    "UPDATE proven_txs SET height = ?, block_hash = ?, merkle_root = ?, updated_at = ? WHERE proven_tx_id = ?"
+                                )
+                                    .bind(header.height as i64)
+                                    .bind(&header.hash)
+                                    .bind(&header.merkle_root)
+                                    .bind(now)
+                                    .bind(proven_tx_id)
+                                    .execute(self.pool())
+                                    .await?;
+                                header.height
+                            }
+                            Err(_) => continue,
+                        }
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            };
+
+            // Convert JSON → BUMP binary
+            match crate::tsc_proof::tsc_json_to_bump_binary(merkle_path_str, block_height) {
+                Some(bump_bytes) => {
+                    let now = chrono::Utc::now();
+                    sqlx::query(
+                        "UPDATE proven_txs SET merkle_path = ?, updated_at = ? WHERE proven_tx_id = ?"
+                    )
+                        .bind(&bump_bytes)
+                        .bind(now)
+                        .bind(proven_tx_id)
+                        .execute(self.pool())
+                        .await?;
+                    repaired_count += 1;
+                }
+                None => {
+                    tracing::warn!(
+                        "Failed to convert merkle_path JSON to BUMP for proven_tx {} (txid={})",
+                        proven_tx_id, txid
+                    );
+                }
+            }
+        }
+
+        if repaired_count > 0 {
+            tracing::info!(
+                "Repaired {}/{} proven_txs: JSON merkle_path → BUMP binary",
+                repaired_count, repair_txs.len()
+            );
+        }
+
         Ok(results)
     }
 
@@ -2838,10 +2924,7 @@ impl MonitorStorage for StorageSqlx {
                 .await?;
 
             // Broadcast via services - returns Vec<PostBeefResult> (one per provider)
-            match services
-                .post_beef(&beef_bytes, std::slice::from_ref(&req.txid))
-                .await
-            {
+            match services.post_beef(&beef_bytes, &[req.txid.clone()]).await {
                 Ok(results_vec) => {
                     // Check if any provider returned success
                     let success = results_vec.iter().any(|r| r.is_success());
@@ -3160,6 +3243,121 @@ impl MonitorStorage for StorageSqlx {
         }
 
         Ok(PurgeResults { count, log })
+    }
+
+    async fn compact_input_beefs(&self) -> Result<u32> {
+        use bsv_rs::transaction::{Beef, MerklePath};
+
+        // Find completed proven_tx_reqs with non-null input_beef.
+        // Process in batches of 50 to avoid holding the connection too long.
+        let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+            r#"
+            SELECT proven_tx_req_id, input_beef
+            FROM proven_tx_reqs
+            WHERE status = 'completed'
+              AND input_beef IS NOT NULL
+              AND LENGTH(input_beef) > 1000
+            ORDER BY LENGTH(input_beef) DESC
+            LIMIT 50
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let mut compacted = 0u32;
+
+        for (req_id, beef_bytes) in &rows {
+            let mut beef = match Beef::from_binary(beef_bytes) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            let original_size = beef_bytes.len();
+
+            // Find unproven txids in this BEEF
+            let unproven_txids: Vec<String> = beef
+                .txs
+                .iter()
+                .filter(|tx| tx.bump_index().is_none() && !tx.is_txid_only())
+                .map(|tx| tx.txid())
+                .collect();
+
+            if unproven_txids.is_empty() {
+                continue;
+            }
+
+            // Check proven_txs for available proofs (batch query)
+            let mut upgraded = 0u32;
+
+            for chunk in unproven_txids.chunks(400) {
+                let placeholders: String =
+                    chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let query_str = format!(
+                    "SELECT txid, merkle_path FROM proven_txs WHERE txid IN ({})",
+                    placeholders
+                );
+
+                let mut query = sqlx::query(&query_str);
+                for txid in chunk {
+                    query = query.bind(txid);
+                }
+
+                let proof_rows: Vec<(String, Vec<u8>)> =
+                    query.fetch_all(self.pool()).await?.into_iter().map(|row| {
+                        let txid: String = sqlx::Row::get(&row, "txid");
+                        let mp: Vec<u8> = sqlx::Row::get(&row, "merkle_path");
+                        (txid, mp)
+                    }).collect();
+
+                for (txid, merkle_path_bytes) in &proof_rows {
+                    if let Ok(merkle_path) = MerklePath::from_binary(merkle_path_bytes) {
+                        let bump_index = beef.merge_bump(merkle_path);
+                        if let Some(tx) = beef.find_txid_mut(txid) {
+                            tx.set_bump_index(Some(bump_index));
+                            upgraded += 1;
+                        }
+                    }
+                }
+            }
+
+            if upgraded == 0 {
+                continue;
+            }
+
+            // Trim unnecessary ancestors
+            beef.trim_known_proven();
+
+            let new_bytes = beef.to_binary();
+            let new_size = new_bytes.len();
+
+            // Only update if we actually saved space
+            if new_size < original_size {
+                let now = chrono::Utc::now();
+                sqlx::query(
+                    "UPDATE proven_tx_reqs SET input_beef = ?, updated_at = ? WHERE proven_tx_req_id = ?"
+                )
+                .bind(&new_bytes)
+                .bind(now)
+                .bind(req_id)
+                .execute(self.pool())
+                .await?;
+
+                compacted += 1;
+                tracing::debug!(
+                    req_id = req_id,
+                    original_kb = original_size / 1024,
+                    new_kb = new_size / 1024,
+                    savings_pct = ((original_size - new_size) * 100) / original_size,
+                    "Compacted input_beef"
+                );
+            }
+        }
+
+        Ok(compacted)
     }
 
     async fn try_acquire_task_lock(

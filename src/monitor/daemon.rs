@@ -163,7 +163,8 @@ where
             ));
         }
 
-        // Set services on storage so storage-based operations can access blockchain services.
+        // Set services on storage so storage-based operations (synchronize_transaction_statuses,
+        // send_waiting_transactions, etc.) can access blockchain services.
         self.storage.set_services(self.services.clone());
 
         let mut handles = self.task_handles.write().await;

@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
-use bsv_wallet_toolbox_rs::services::GetBeefResult;
-use bsv_wallet_toolbox_rs::storage::BeefVerificationMode;
-use bsv_wallet_toolbox_rs::{PostBeefResult, PostTxResultForTxid};
+use bsv_wallet_toolbox::services::GetBeefResult;
+use bsv_wallet_toolbox::storage::BeefVerificationMode;
+use bsv_wallet_toolbox::{PostBeefResult, PostTxResultForTxid};
 
 // =============================================================================
 // BEEF edge case tests

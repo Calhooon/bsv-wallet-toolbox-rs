@@ -11,8 +11,8 @@ use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
-        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
-        ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
+        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
+        ChaintracksConfig, ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
@@ -24,6 +24,7 @@ use crate::services::{
 };
 use crate::{Error, Result};
 use bsv_rs::transaction::ChainTracker;
+
 
 /// Post BEEF mode for handling multiple broadcast services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -697,6 +698,66 @@ impl WalletServices for Services {
                         call.mark_success(None);
                         lock_write(&self.get_merkle_path_services)?
                             .add_call_success(&provider_name, call);
+
+                        // If the provider didn't resolve the block header,
+                        // extract the block hash from the proof's "target"
+                        // field and resolve it via hash_to_header.
+                        let mut result = result;
+                        if result.header.is_none() {
+                            if let Some(ref mp) = result.merkle_path {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(mp) {
+                                    if let Some(target) = json.get("target").and_then(|t| t.as_str()) {
+                                        match self.hash_to_header(target).await {
+                                            Ok(header) => {
+                                                tracing::debug!(
+                                                    "Resolved block header for target {}: height={}",
+                                                    target, header.height
+                                                );
+                                                result.header = Some(header);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "Failed to resolve block header for target {}: {}",
+                                                    target, e
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Convert TSC proof JSON to BUMP hex if needed.
+                        // WoC and Bitails return raw TSC JSON; ARC returns BUMP hex.
+                        // BEEF construction requires BUMP binary, so we convert here.
+                        if let Some(ref mp) = result.merkle_path {
+                            if mp.starts_with('{') || mp.starts_with('[') {
+                                // TSC proof JSON — convert to BUMP hex
+                                if let Some(header) = &result.header {
+                                    match crate::tsc_proof::tsc_json_to_bump_hex(mp, header.height) {
+                                        Some(bump_hex) => {
+                                            tracing::debug!(
+                                                "Converted TSC proof to BUMP hex ({} chars) for txid {}",
+                                                bump_hex.len(), txid
+                                            );
+                                            result.merkle_path = Some(bump_hex);
+                                        }
+                                        None => {
+                                            tracing::warn!(
+                                                "Failed to convert TSC proof to BUMP for txid {}",
+                                                txid
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    tracing::warn!(
+                                        "Cannot convert TSC proof to BUMP without block height for txid {}",
+                                        txid
+                                    );
+                                }
+                            }
+                        }
+
                         return Ok(result);
                     } else {
                         call.mark_failure(Some("no proof".to_string()));
@@ -1084,8 +1145,8 @@ impl WalletServices for Services {
             json_str: &str,
             block_height: u32,
         ) -> std::result::Result<MerklePath, String> {
-            let proof: TscProof = serde_json::from_str(json_str)
-                .map_err(|e| format!("Invalid TSC proof JSON: {}", e))?;
+            let proof: TscProof =
+                serde_json::from_str(json_str).map_err(|e| format!("Invalid TSC proof JSON: {}", e))?;
 
             if proof.nodes.is_empty() {
                 return Err("empty nodes list".to_string());
@@ -1107,7 +1168,7 @@ impl WalletServices for Services {
                     leaves.push(txid_leaf);
                 }
 
-                let sibling_offset = if current_offset.is_multiple_of(2) {
+                let sibling_offset = if current_offset % 2 == 0 {
                     current_offset + 1
                 } else {
                     current_offset - 1

@@ -5,7 +5,7 @@
 //!
 //! Run with: `cargo run --example chaintracks_demo`
 
-use bsv_wallet_toolbox_rs::chaintracks::ChaintracksOptions;
+use bsv_wallet_toolbox::chaintracks::ChaintracksOptions;
 
 fn main() {
     println!("BSV Wallet Toolbox - Chaintracks Demo");
