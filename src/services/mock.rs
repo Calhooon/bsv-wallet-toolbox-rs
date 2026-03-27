@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use bsv_wallet_toolbox::services::mock::{MockWalletServices, MockErrorKind};
+//! use bsv_wallet_toolbox_rs::services::mock::{MockWalletServices, MockErrorKind};
 //!
 //! let mock = MockWalletServices::builder()
 //!     .post_beef_success()

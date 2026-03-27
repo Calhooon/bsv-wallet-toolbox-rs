@@ -243,7 +243,7 @@ pub type CWIWalletBuilder = Arc<
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::managers::{CWIStyleWalletManager, CWIStyleWalletManagerConfig};
+/// use bsv_wallet_toolbox_rs::managers::{CWIStyleWalletManager, CWIStyleWalletManagerConfig};
 ///
 /// let manager = CWIStyleWalletManager::new(
 ///     "admin.wallet".to_string(),

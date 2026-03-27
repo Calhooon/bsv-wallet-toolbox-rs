@@ -18,7 +18,7 @@ use super::cwi_style_wallet_manager::{
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::managers::{WalletAuthenticationManager, CWIStyleWalletManagerConfig};
+/// use bsv_wallet_toolbox_rs::managers::{WalletAuthenticationManager, CWIStyleWalletManagerConfig};
 ///
 /// let manager = WalletAuthenticationManager::new(
 ///     "admin.wallet".to_string(),

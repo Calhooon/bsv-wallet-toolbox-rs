@@ -6,7 +6,7 @@
 //!
 //! Run with: `cargo run --example monitor_demo`
 
-use bsv_wallet_toolbox::monitor::{MonitorOptions, TaskConfig};
+use bsv_wallet_toolbox_rs::monitor::{MonitorOptions, TaskConfig};
 use std::time::Duration;
 
 fn main() {

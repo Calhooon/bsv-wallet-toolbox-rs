@@ -242,7 +242,7 @@ pub trait WalletServices: Send + Sync {
     ///
     /// # Example
     /// ```rust,ignore
-    /// use bsv_wallet_toolbox::services::{NLockTimeInput, WalletServices};
+    /// use bsv_wallet_toolbox_rs::services::{NLockTimeInput, WalletServices};
     ///
     /// // From a Transaction
     /// let input = NLockTimeInput::from_transaction(&tx);

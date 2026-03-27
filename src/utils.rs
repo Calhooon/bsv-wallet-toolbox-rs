@@ -39,7 +39,7 @@
 /// # Examples
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::utils::constant_time_eq;
+/// use bsv_wallet_toolbox_rs::utils::constant_time_eq;
 ///
 /// assert!(constant_time_eq(b"hello", b"hello"));
 /// assert!(!constant_time_eq(b"hello", b"world"));

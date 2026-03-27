@@ -220,7 +220,7 @@ pub const TESTNET_URL: &str = "https://staging-storage.babbage.systems";
 /// ## Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::storage::client::StorageClient;
+/// use bsv_wallet_toolbox_rs::storage::client::StorageClient;
 /// use bsv_rs::wallet::ProtoWallet;
 /// use bsv_rs::primitives::PrivateKey;
 ///

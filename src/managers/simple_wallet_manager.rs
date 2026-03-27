@@ -55,7 +55,7 @@ pub type WalletBuilder = Arc<
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::managers::SimpleWalletManager;
+/// use bsv_wallet_toolbox_rs::managers::SimpleWalletManager;
 ///
 /// let manager = SimpleWalletManager::new(
 ///     "wallet.admin".to_string(),

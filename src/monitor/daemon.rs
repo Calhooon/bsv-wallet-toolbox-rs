@@ -89,7 +89,7 @@ impl MonitorHealth {
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::monitor::{Monitor, MonitorOptions, TaskConfig};
+/// use bsv_wallet_toolbox_rs::monitor::{Monitor, MonitorOptions, TaskConfig};
 /// use std::sync::Arc;
 /// use std::time::Duration;
 ///

@@ -97,7 +97,7 @@ type LockQueue = Arc<tokio::sync::Semaphore>;
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::managers::WalletStorageManager;
+/// use bsv_wallet_toolbox_rs::managers::WalletStorageManager;
 ///
 /// // Create manager with active and backup storages
 /// let manager = WalletStorageManager::new(

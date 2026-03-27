@@ -34,7 +34,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use bsv_wallet_toolbox::{Wallet, StorageSqlx, Services};
+//! use bsv_wallet_toolbox_rs::{Wallet, StorageSqlx, Services};
 //! use bsv_rs::wallet::WalletInterface;
 //!
 //! #[tokio::main]

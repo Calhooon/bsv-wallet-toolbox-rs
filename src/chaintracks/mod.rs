@@ -19,7 +19,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use bsv_wallet_toolbox::chaintracks::{Chaintracks, ChaintracksOptions};
+//! use bsv_wallet_toolbox_rs::chaintracks::{Chaintracks, ChaintracksOptions};
 //!
 //! let options = ChaintracksOptions::default_mainnet();
 //! let chaintracks = Chaintracks::new(options).await?;

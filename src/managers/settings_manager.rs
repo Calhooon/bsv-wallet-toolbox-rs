@@ -149,7 +149,7 @@ impl Default for WalletSettingsManagerConfig {
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::managers::{WalletSettingsManager, WalletSettings};
+/// use bsv_wallet_toolbox_rs::managers::{WalletSettingsManager, WalletSettings};
 ///
 /// let manager = WalletSettingsManager::new(None);
 ///

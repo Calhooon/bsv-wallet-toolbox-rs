@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use bsv_wallet_toolbox::services::{Services, ServicesOptions, Chain};
+//! use bsv_wallet_toolbox_rs::services::{Services, ServicesOptions, Chain};
 //!
 //! // Create mainnet services with defaults
 //! let services = Services::new(Chain::Main, ServicesOptions::default());

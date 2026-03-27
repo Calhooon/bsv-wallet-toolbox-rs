@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use bsv_wallet_toolbox::storage::sqlx::StorageSqlx;
+//! use bsv_wallet_toolbox_rs::storage::sqlx::StorageSqlx;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {

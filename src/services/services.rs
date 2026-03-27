@@ -57,7 +57,7 @@ pub enum PostBeefMode {
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::{Services, ServicesOptions, Chain};
+/// use bsv_wallet_toolbox_rs::{Services, ServicesOptions, Chain};
 ///
 /// // Quick mainnet setup
 /// let services = Services::mainnet()?;

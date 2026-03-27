@@ -468,7 +468,7 @@ impl WalletPermissionsManagerConfig {
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox::managers::{WalletPermissionsManager, WalletPermissionsManagerConfig};
+/// use bsv_wallet_toolbox_rs::managers::{WalletPermissionsManager, WalletPermissionsManagerConfig};
 ///
 /// let manager = WalletPermissionsManager::new(
 ///     underlying_wallet,
