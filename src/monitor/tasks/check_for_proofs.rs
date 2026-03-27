@@ -25,7 +25,7 @@ where
     V: WalletServices + 'static,
 {
     storage: Arc<S>,
-    services: Arc<V>,
+    _services: Arc<V>,
 }
 
 impl<S, V> CheckForProofsTask<S, V>
@@ -35,7 +35,7 @@ where
 {
     /// Create a new CheckForProofsTask.
     pub fn new(storage: Arc<S>, services: Arc<V>) -> Self {
-        Self { storage, services }
+        Self { storage, _services: services }
     }
 }
 

@@ -66,11 +66,7 @@ impl ChunkingState {
     }
 
     fn remaining_items(&self) -> u32 {
-        if self.items_count >= self.max_items {
-            0
-        } else {
-            self.max_items - self.items_count
-        }
+        self.max_items.saturating_sub(self.items_count)
     }
 }
 

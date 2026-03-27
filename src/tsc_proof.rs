@@ -86,7 +86,7 @@ fn tsc_proof_to_merkle_path(
         }
 
         // Determine sibling offset
-        let sibling_offset = if current_offset % 2 == 0 {
+        let sibling_offset = if current_offset.is_multiple_of(2) {
             current_offset + 1
         } else {
             current_offset - 1

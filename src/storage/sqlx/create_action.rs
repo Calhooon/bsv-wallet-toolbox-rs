@@ -1333,7 +1333,7 @@ async fn generate_change(
             .iter()
             .map(|i| i.unlocking_script_length)
             .chain(
-                std::iter::repeat(params.change_unlocking_script_length).take(alloc_inputs.len()),
+                std::iter::repeat_n(params.change_unlocking_script_length, alloc_inputs.len()),
             )
             .collect();
 
@@ -1341,11 +1341,11 @@ async fn generate_change(
             .fixed_outputs
             .iter()
             .map(|o| o.locking_script_length)
-            .chain(std::iter::repeat(params.change_locking_script_length).take(change_outs.len()))
+            .chain(std::iter::repeat_n(params.change_locking_script_length, change_outs.len()))
             .collect();
 
         let size = calculate_transaction_size(&input_script_lengths, &output_script_lengths);
-        let fee_required = (size * params.fee_rate + 999) / 1000; // Ceiling division
+        let fee_required = (size * params.fee_rate).div_ceil(1000); // Ceiling division
 
         let fee_excess = input_sats as i64 - output_sats as i64 - fee_required as i64;
 

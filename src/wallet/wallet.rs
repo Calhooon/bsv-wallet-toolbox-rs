@@ -2434,7 +2434,7 @@ where
             Chain::Test => crate::wallet::lookup::HttpLookupResolver::testnet(),
         };
 
-        let overlay_certs = match resolver.lookup_by_identity_key(&identity_key_hex).await {
+        let overlay_certs = match resolver.lookup_by_identity_key(identity_key_hex).await {
             Ok(certs) => certs
                 .into_iter()
                 .map(|c| c.to_identity_certificate())

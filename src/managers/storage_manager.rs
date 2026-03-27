@@ -16,13 +16,12 @@
 //! - **Sync Lock**: For synchronization operations (exclusive with all)
 //! - **Provider Lock**: For StorageProvider-level operations (highest precedence)
 
-use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use crate::lock_utils::{lock_read, lock_write};
 
@@ -82,7 +81,9 @@ impl ManagedStorage {
 const LOCK_TIMEOUT_SECS: u64 = 30;
 
 /// Lock queue for managing concurrent access.
-type LockQueue = Arc<Mutex<VecDeque<tokio::sync::oneshot::Sender<()>>>>;
+/// Uses a Semaphore(1) for FIFO mutual exclusion with automatic release on drop.
+/// This ensures locks are released even when tasks are aborted or panic.
+type LockQueue = Arc<tokio::sync::Semaphore>;
 
 /// Manages multiple storage providers with active/backup semantics.
 ///
@@ -194,10 +195,10 @@ impl WalletStorageManager {
             services: RwLock::new(None),
             services_sync: std::sync::RwLock::new(None),
             cached_settings: std::sync::RwLock::new(None),
-            reader_locks: Arc::new(Mutex::new(VecDeque::new())),
-            writer_locks: Arc::new(Mutex::new(VecDeque::new())),
-            sync_locks: Arc::new(Mutex::new(VecDeque::new())),
-            provider_locks: Arc::new(Mutex::new(VecDeque::new())),
+            reader_locks: Arc::new(tokio::sync::Semaphore::new(1)),
+            writer_locks: Arc::new(tokio::sync::Semaphore::new(1)),
+            sync_locks: Arc::new(tokio::sync::Semaphore::new(1)),
+            provider_locks: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -269,7 +270,9 @@ impl WalletStorageManager {
         *self.conflicting_indices.write().await = Vec::new();
 
         let mut stores = self.stores.write().await;
-        let auth_id = self.auth_id.read().await;
+        // Read identity key upfront and release the read lock immediately,
+        // because we need a write lock on auth_id later (line ~364).
+        let identity_key = self.auth_id.read().await.identity_key.clone();
 
         if stores.is_empty() {
             return Err(Error::InvalidArgument(
@@ -283,7 +286,7 @@ impl WalletStorageManager {
                 let settings = store.storage.make_available().await?;
                 let (user, _) = store
                     .storage
-                    .find_or_insert_user(&auth_id.identity_key)
+                    .find_or_insert_user(&identity_key)
                     .await?;
                 store.settings = Some(settings);
                 store.user = Some(user);
@@ -419,46 +422,25 @@ impl WalletStorageManager {
     /// Acquires a lock from the specified queue with a timeout.
     ///
     /// Returns an error if the lock cannot be acquired within `LOCK_TIMEOUT_SECS` seconds.
-    async fn acquire_lock(queue: &LockQueue, lock_name: &str) -> Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let should_wait;
-
+    async fn acquire_lock(
+        queue: &LockQueue,
+        lock_name: &str,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit> {
+        match tokio::time::timeout(
+            Duration::from_secs(LOCK_TIMEOUT_SECS),
+            Arc::clone(queue).acquire_owned(),
+        )
+        .await
         {
-            let mut q = queue.lock().await;
-            should_wait = !q.is_empty();
-            q.push_back(tx);
-        }
-
-        if should_wait {
-            match tokio::time::timeout(Duration::from_secs(LOCK_TIMEOUT_SECS), rx).await {
-                Ok(_) => Ok(()),
-                Err(_) => {
-                    // Remove our sender from the queue since we're giving up
-                    // Note: the sender may have already been consumed, so we just
-                    // report the timeout.
-                    Err(Error::LockTimeout(format!(
-                        "Timed out after {}s waiting for {} lock",
-                        LOCK_TIMEOUT_SECS, lock_name
-                    )))
-                }
-            }
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Releases a lock from the specified queue.
-    async fn release_lock(queue: &LockQueue) {
-        let next_sender;
-        {
-            let mut q = queue.lock().await;
-            q.pop_front(); // Remove current holder's sender (which was already consumed)
-            next_sender = q.pop_front(); // Get next waiter's sender
-        }
-
-        // Notify next waiter outside the lock
-        if let Some(sender) = next_sender {
-            let _ = sender.send(());
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_closed)) => Err(Error::LockTimeout(format!(
+                "Semaphore closed for {} lock",
+                lock_name
+            ))),
+            Err(_elapsed) => Err(Error::LockTimeout(format!(
+                "Timed out after {}s waiting for {} lock",
+                LOCK_TIMEOUT_SECS, lock_name
+            ))),
         }
     }
 
@@ -468,20 +450,15 @@ impl WalletStorageManager {
         F: FnOnce(Arc<dyn MonitorStorage>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
-        Self::acquire_lock(&self.reader_locks, "reader").await?;
+        let _reader_permit = Self::acquire_lock(&self.reader_locks, "reader").await?;
 
-        let result = async {
-            if !*self.is_available.read().await {
-                self.make_available().await?;
-            }
-
-            let active = self.get_active().await?;
-            f(active).await
+        if !*self.is_available.read().await {
+            self.make_available().await?;
         }
-        .await;
 
-        Self::release_lock(&self.reader_locks).await;
-        result
+        let active = self.get_active().await?;
+        f(active).await
+        // _reader_permit drops here — lock released automatically, even on abort/panic
     }
 
     /// Runs a closure with writer lock.
@@ -490,30 +467,16 @@ impl WalletStorageManager {
         F: FnOnce(Arc<dyn MonitorStorage>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
-        Self::acquire_lock(&self.reader_locks, "reader").await?;
-        let result = match Self::acquire_lock(&self.writer_locks, "writer").await {
-            Ok(()) => {
-                let inner_result = async {
-                    if !*self.is_available.read().await {
-                        self.make_available().await?;
-                    }
+        let _reader_permit = Self::acquire_lock(&self.reader_locks, "reader").await?;
+        let _writer_permit = Self::acquire_lock(&self.writer_locks, "writer").await?;
 
-                    let active = self.get_active().await?;
-                    f(active).await
-                }
-                .await;
+        if !*self.is_available.read().await {
+            self.make_available().await?;
+        }
 
-                Self::release_lock(&self.writer_locks).await;
-                inner_result
-            }
-            Err(e) => {
-                Self::release_lock(&self.reader_locks).await;
-                return Err(e);
-            }
-        };
-
-        Self::release_lock(&self.reader_locks).await;
-        result
+        let active = self.get_active().await?;
+        f(active).await
+        // permits drop here — locks released automatically, even on abort/panic
     }
 
     /// Runs a closure with sync lock.
@@ -522,31 +485,17 @@ impl WalletStorageManager {
         F: FnOnce(Arc<dyn MonitorStorage>) -> Fut,
         Fut: Future<Output = Result<R>>,
     {
-        Self::acquire_lock(&self.reader_locks, "reader").await?;
-        if let Err(e) = Self::acquire_lock(&self.writer_locks, "writer").await {
-            Self::release_lock(&self.reader_locks).await;
-            return Err(e);
-        }
-        if let Err(e) = Self::acquire_lock(&self.sync_locks, "sync").await {
-            Self::release_lock(&self.writer_locks).await;
-            Self::release_lock(&self.reader_locks).await;
-            return Err(e);
+        let _reader_permit = Self::acquire_lock(&self.reader_locks, "reader").await?;
+        let _writer_permit = Self::acquire_lock(&self.writer_locks, "writer").await?;
+        let _sync_permit = Self::acquire_lock(&self.sync_locks, "sync").await?;
+
+        if !*self.is_available.read().await {
+            self.make_available().await?;
         }
 
-        let result = async {
-            if !*self.is_available.read().await {
-                self.make_available().await?;
-            }
-
-            let active = self.get_active().await?;
-            f(active).await
-        }
-        .await;
-
-        Self::release_lock(&self.sync_locks).await;
-        Self::release_lock(&self.writer_locks).await;
-        Self::release_lock(&self.reader_locks).await;
-        result
+        let active = self.get_active().await?;
+        f(active).await
+        // permits drop here — locks released automatically, even on abort/panic
     }
 
     /// Sets the wallet services for all storage providers.

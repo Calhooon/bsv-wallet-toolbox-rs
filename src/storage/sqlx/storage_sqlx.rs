@@ -437,14 +437,14 @@ impl StorageSqlx {
         query = query.bind(user_id);
 
         // Bind other parameters based on what was added
-        if args.basket_id.is_some() {
-            query = query.bind(args.basket_id.unwrap());
+        if let Some(basket_id) = args.basket_id {
+            query = query.bind(basket_id);
         }
-        if args.txid.is_some() {
-            query = query.bind(args.txid.as_ref().unwrap());
+        if let Some(ref txid) = args.txid {
+            query = query.bind(txid);
         }
-        if args.vout.is_some() {
-            query = query.bind(args.vout.unwrap() as i32);
+        if let Some(vout) = args.vout {
+            query = query.bind(vout as i32);
         }
         if let Some(statuses) = &args.tx_status {
             for status in statuses {
@@ -2926,7 +2926,7 @@ impl MonitorStorage for StorageSqlx {
                 .await?;
 
             // Broadcast via services - returns Vec<PostBeefResult> (one per provider)
-            match services.post_beef(&beef_bytes, &[req.txid.clone()]).await {
+            match services.post_beef(&beef_bytes, std::slice::from_ref(&req.txid)).await {
                 Ok(results_vec) => {
                     // Check if any provider returned success
                     let success = results_vec.iter().any(|r| r.is_success());

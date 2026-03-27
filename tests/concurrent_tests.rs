@@ -18,9 +18,9 @@ mod concurrent {
     use std::sync::Arc;
 
     use bsv_rs::wallet::{AbortActionArgs, ListOutputsArgs};
-    use bsv_wallet_toolbox::storage::entities::TableCertificate;
-    use bsv_wallet_toolbox::storage::FindOutputsArgs;
-    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
+    use bsv_wallet_toolbox_rs::storage::entities::TableCertificate;
+    use bsv_wallet_toolbox_rs::storage::FindOutputsArgs;
+    use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
     use chrono::Utc;
     use sqlx::Row;
 
@@ -899,24 +899,18 @@ mod concurrent {
     // detect that the second writer is blocked. Verifies Error::LockTimeout
     // exists and formats correctly.
     // =========================================================================
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_lock_queue_concurrent_operations_complete() {
-        use bsv_wallet_toolbox::WalletStorageManager;
+        use bsv_wallet_toolbox_rs::WalletStorageManager;
 
-        // Create an in-memory StorageSqlx for the WalletStorageManager
-        let inner_storage = StorageSqlx::in_memory().await.unwrap();
-        inner_storage
-            .migrate("test-lock", &"0".repeat(64))
-            .await
-            .unwrap();
-        inner_storage.make_available().await.unwrap();
-
-        let identity_key = "a".repeat(66);
-        let inner_arc: Arc<dyn bsv_wallet_toolbox::MonitorStorage> = Arc::new(inner_storage);
+        // Test the semaphore-based lock mechanism directly using a storage
+        // instance that's already been set up via the standard test helper.
+        let (storage, _auth) = setup_storage().await;
+        let identity_key = _auth.identity_key.clone();
 
         let manager = Arc::new(WalletStorageManager::new(
             identity_key.clone(),
-            Some(inner_arc),
+            Some(storage as Arc<dyn bsv_wallet_toolbox_rs::MonitorStorage>),
             None,
         ));
         manager.make_available().await.unwrap();
@@ -927,19 +921,19 @@ mod concurrent {
             m1.run_as_writer(|_active| async move {
                 // Hold the lock for 5 seconds (much longer than our test timeout)
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                Ok::<_, bsv_wallet_toolbox::Error>(())
+                Ok::<_, bsv_wallet_toolbox_rs::Error>(())
             })
             .await
         });
 
         // Give task 1 a moment to acquire the lock
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Task 2: try to acquire the writer lock - should be blocked
         let m2 = manager.clone();
         let contender_handle = tokio::spawn(async move {
             m2.run_as_writer(|_active| async move {
-                Ok::<_, bsv_wallet_toolbox::Error>("contender_succeeded")
+                Ok::<_, bsv_wallet_toolbox_rs::Error>("contender_succeeded")
             })
             .await
         });
@@ -956,7 +950,7 @@ mod concurrent {
         );
 
         // Verify the LockTimeout error type exists and formats correctly
-        let timeout_err = bsv_wallet_toolbox::Error::LockTimeout(
+        let timeout_err = bsv_wallet_toolbox_rs::Error::LockTimeout(
             "Timed out after 30s waiting for writer lock".to_string(),
         );
         let msg = format!("{}", timeout_err);
@@ -971,14 +965,16 @@ mod concurrent {
             msg
         );
 
-        // Clean up: abort the long-running holder so the test doesn't hang
+        // Clean up: abort the long-running holder.
+        // With the Semaphore-based lock queue, the permit is automatically
+        // released when the holder task is aborted (Drop on OwnedSemaphorePermit).
         holder_handle.abort();
     }
 
     // =========================================================================
     // Test 10: Reader-writer interleaving - reads do not block on writes
     // =========================================================================
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_reader_writer_interleaving() {
         let (storage, auth) = setup_storage().await;
         let user_id = auth.user_id.unwrap();

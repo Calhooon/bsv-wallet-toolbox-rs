@@ -635,7 +635,7 @@ pub async fn process_action_internal(
             .await?;
 
         // nosend outputs stay spendable=false until the tx is actually broadcast
-        let mark_spendable = !(args.is_no_send && !args.is_send_with);
+        let mark_spendable = !args.is_no_send || args.is_send_with;
 
         let settings = storage.get_settings();
         for output in &outputs {
