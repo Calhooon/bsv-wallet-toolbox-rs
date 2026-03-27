@@ -1,7 +1,7 @@
 //! Wallet Module
 //!
 //! This module provides the main [`Wallet`] struct that implements the full
-//! [`WalletInterface`] trait from `bsv_rs::wallet`. The Wallet combines:
+//! [`WalletInterface`](bsv_rs::wallet::WalletInterface) trait from `bsv_rs::wallet`. The Wallet combines:
 //!
 //! - **ProtoWallet**: For cryptographic operations (key derivation, signing, encryption)
 //! - **Storage**: For persistent state (UTXOs, transactions, certificates)
