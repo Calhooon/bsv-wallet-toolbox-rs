@@ -1332,16 +1332,20 @@ async fn generate_change(
             .fixed_inputs
             .iter()
             .map(|i| i.unlocking_script_length)
-            .chain(
-                std::iter::repeat_n(params.change_unlocking_script_length, alloc_inputs.len()),
-            )
+            .chain(std::iter::repeat_n(
+                params.change_unlocking_script_length,
+                alloc_inputs.len(),
+            ))
             .collect();
 
         let output_script_lengths: Vec<u32> = params
             .fixed_outputs
             .iter()
             .map(|o| o.locking_script_length)
-            .chain(std::iter::repeat_n(params.change_locking_script_length, change_outs.len()))
+            .chain(std::iter::repeat_n(
+                params.change_locking_script_length,
+                change_outs.len(),
+            ))
             .collect();
 
         let size = calculate_transaction_size(&input_script_lengths, &output_script_lengths);
@@ -3105,7 +3109,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
@@ -3153,7 +3157,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
@@ -3218,7 +3222,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None,
             &extended_inputs,
             &change_inputs,
@@ -3289,7 +3293,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None,
             &extended_inputs,
             &change_inputs,
@@ -3320,7 +3324,7 @@ mod tests {
         seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let result = get_tx_with_proof(&mut *conn, txid).await.unwrap();
+        let result = get_tx_with_proof(&mut conn, txid).await.unwrap();
 
         assert!(result.is_some());
         let tx_data = result.unwrap();
@@ -3356,7 +3360,7 @@ mod tests {
         .unwrap();
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let result = get_tx_with_proof(&mut *conn, txid).await.unwrap();
+        let result = get_tx_with_proof(&mut conn, txid).await.unwrap();
 
         assert!(result.is_some());
         let tx_data = result.unwrap();
@@ -3371,7 +3375,7 @@ mod tests {
         storage.make_available().await.unwrap();
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let result = get_tx_with_proof(&mut *conn, "nonexistent_txid")
+        let result = get_tx_with_proof(&mut conn, "nonexistent_txid")
             .await
             .unwrap();
 
@@ -3548,7 +3552,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None,
             &extended_inputs,
             &change_inputs,
@@ -3593,7 +3597,7 @@ mod tests {
         // With return_txid_only = true, should return None regardless of inputs
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -3638,7 +3642,7 @@ mod tests {
         // Build BEEF with the txid marked as known
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -3696,7 +3700,7 @@ mod tests {
         // Build BEEF with user-provided inputBEEF
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -3743,7 +3747,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -3819,7 +3823,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -3878,7 +3882,7 @@ mod tests {
 
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -3925,7 +3929,7 @@ mod tests {
         // With chain_tracker = None, verification is skipped
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
-            &mut *conn,
+            &mut conn,
             None,
             &extended_inputs,
             &change_inputs,

@@ -284,10 +284,7 @@ impl WalletStorageManager {
         for store in stores.iter_mut() {
             if !store.is_available || store.settings.is_none() || store.user.is_none() {
                 let settings = store.storage.make_available().await?;
-                let (user, _) = store
-                    .storage
-                    .find_or_insert_user(&identity_key)
-                    .await?;
+                let (user, _) = store.storage.find_or_insert_user(&identity_key).await?;
                 store.settings = Some(settings);
                 store.user = Some(user);
                 store.is_available = true;

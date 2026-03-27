@@ -2926,7 +2926,10 @@ impl MonitorStorage for StorageSqlx {
                 .await?;
 
             // Broadcast via services - returns Vec<PostBeefResult> (one per provider)
-            match services.post_beef(&beef_bytes, std::slice::from_ref(&req.txid)).await {
+            match services
+                .post_beef(&beef_bytes, std::slice::from_ref(&req.txid))
+                .await
+            {
                 Ok(results_vec) => {
                     // Check if any provider returned success
                     let success = results_vec.iter().any(|r| r.is_success());

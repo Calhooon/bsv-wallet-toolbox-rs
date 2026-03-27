@@ -35,7 +35,10 @@ where
 {
     /// Create a new CheckForProofsTask.
     pub fn new(storage: Arc<S>, services: Arc<V>) -> Self {
-        Self { storage, _services: services }
+        Self {
+            storage,
+            _services: services,
+        }
     }
 }
 
