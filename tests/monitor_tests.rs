@@ -13,11 +13,11 @@ mod monitor_integration {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use bsv_wallet_toolbox::monitor::tasks::TaskType;
-    use bsv_wallet_toolbox::monitor::Monitor;
-    use bsv_wallet_toolbox::services::mock::MockWalletServices;
-    use bsv_wallet_toolbox::storage::StorageSqlx;
-    use bsv_wallet_toolbox::{
+    use bsv_wallet_toolbox_rs::monitor::tasks::TaskType;
+    use bsv_wallet_toolbox_rs::monitor::Monitor;
+    use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
+    use bsv_wallet_toolbox_rs::storage::StorageSqlx;
+    use bsv_wallet_toolbox_rs::{
         MonitorOptions, TaskConfig, TransactionStatusUpdate, WalletServices, WalletStorageProvider,
         WalletStorageWriter,
     };
@@ -238,15 +238,15 @@ mod monitor_integration {
     /// return a merkle path, run CheckForProofsTask, and verify items_processed > 0.
     #[tokio::test]
     async fn check_for_proofs_integration() {
-        use bsv_wallet_toolbox::services::mock::MockResponse;
-        use bsv_wallet_toolbox::GetMerklePathResult;
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        use bsv_wallet_toolbox_rs::GetMerklePathResult;
 
         // Configure mock to return a merkle path.
         let mock = MockWalletServices::builder()
             .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
                 name: Some("MockProvider".to_string()),
                 merkle_path: Some("deadbeef01020304".to_string()),
-                header: Some(bsv_wallet_toolbox::BlockHeader {
+                header: Some(bsv_wallet_toolbox_rs::BlockHeader {
                     version: 1,
                     previous_hash: "0".repeat(64),
                     merkle_root: "a".repeat(64),
@@ -313,8 +313,8 @@ mod monitor_integration {
     /// broadcast, run SendWaitingTask, and verify status is updated.
     #[tokio::test]
     async fn send_waiting_integration() {
-        use bsv_wallet_toolbox::services::mock::MockResponse;
-        use bsv_wallet_toolbox::PostBeefResult;
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        use bsv_wallet_toolbox_rs::PostBeefResult;
 
         // Mock that returns success for post_beef.
         let mock = MockWalletServices::builder()

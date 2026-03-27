@@ -30,7 +30,7 @@ mod create_action_validation {
     use bsv_rs::wallet::{
         CreateActionArgs, CreateActionInput, CreateActionOptions, CreateActionOutput, Outpoint,
     };
-    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageWriter};
+    use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, WalletStorageWriter};
 
     /// Helper to set up an in-memory storage with a test user.
     async fn setup_storage() -> (StorageSqlx, AuthId) {
@@ -644,7 +644,7 @@ mod create_action_defaults {
 mod list_outputs_validation {
     use super::*;
     use bsv_rs::wallet::ListOutputsArgs;
-    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
+    use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     /// Helper to set up an in-memory storage with a test user.
     async fn setup_storage() -> (StorageSqlx, AuthId) {
@@ -813,7 +813,7 @@ mod list_outputs_validation {
 mod list_actions_validation {
     use super::*;
     use bsv_rs::wallet::ListActionsArgs;
-    use bsv_wallet_toolbox::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
+    use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     /// Helper to set up an in-memory storage with a test user.
     async fn setup_storage() -> (StorageSqlx, AuthId) {
@@ -1876,7 +1876,7 @@ mod merkle_path {
 mod valid_create_action_args {
     use super::*;
     use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
-    use bsv_wallet_toolbox::storage::client::ValidCreateActionArgs;
+    use bsv_wallet_toolbox_rs::storage::client::ValidCreateActionArgs;
 
     #[test]
     fn tv_default_flags_match_test_vectors() {

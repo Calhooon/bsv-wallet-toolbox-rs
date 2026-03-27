@@ -6,7 +6,7 @@
 //! - Service collection failover behavior
 //! - Result type serialization
 
-use bsv_wallet_toolbox::services::{
+use bsv_wallet_toolbox_rs::services::{
     collection::{ServiceCall, ServiceCollection},
     traits::{
         BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
@@ -507,7 +507,7 @@ async fn test_whatsonchain_get_exchange_rate() {
 #[tokio::test]
 #[ignore = "Requires network access"]
 async fn test_services_get_height() {
-    use bsv_wallet_toolbox::services::traits::WalletServices;
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
     let services = Services::mainnet().unwrap();
     let result = services.get_height().await;
@@ -522,7 +522,7 @@ async fn test_services_get_height() {
 
 #[test]
 fn test_get_beef_result_success_with_proof() {
-    use bsv_wallet_toolbox::services::GetBeefResult;
+    use bsv_wallet_toolbox_rs::services::GetBeefResult;
 
     let result = GetBeefResult {
         name: "Services".to_string(),
@@ -540,7 +540,7 @@ fn test_get_beef_result_success_with_proof() {
 
 #[test]
 fn test_get_beef_result_success_without_proof() {
-    use bsv_wallet_toolbox::services::GetBeefResult;
+    use bsv_wallet_toolbox_rs::services::GetBeefResult;
 
     let result = GetBeefResult {
         name: "Services".to_string(),
@@ -557,7 +557,7 @@ fn test_get_beef_result_success_without_proof() {
 
 #[test]
 fn test_get_beef_result_error_tx_not_found() {
-    use bsv_wallet_toolbox::services::GetBeefResult;
+    use bsv_wallet_toolbox_rs::services::GetBeefResult;
 
     let result = GetBeefResult {
         name: "Services".to_string(),
@@ -575,7 +575,7 @@ fn test_get_beef_result_error_tx_not_found() {
 
 #[test]
 fn test_get_beef_result_error_parse_failed() {
-    use bsv_wallet_toolbox::services::GetBeefResult;
+    use bsv_wallet_toolbox_rs::services::GetBeefResult;
 
     let result = GetBeefResult {
         name: "Services".to_string(),
@@ -592,7 +592,7 @@ fn test_get_beef_result_error_parse_failed() {
 
 #[test]
 fn test_get_beef_result_serialization() {
-    use bsv_wallet_toolbox::services::GetBeefResult;
+    use bsv_wallet_toolbox_rs::services::GetBeefResult;
 
     let result = GetBeefResult {
         name: "WoC".to_string(),
@@ -752,7 +752,7 @@ fn test_n_lock_time_sequence_affects_finality() {
 #[tokio::test]
 #[ignore = "Requires network access"]
 async fn test_services_get_beef_mined_transaction() {
-    use bsv_wallet_toolbox::services::traits::WalletServices;
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
     let services = Services::mainnet().unwrap();
 
@@ -771,7 +771,7 @@ async fn test_services_get_beef_mined_transaction() {
 #[tokio::test]
 #[ignore = "Requires network access"]
 async fn test_services_get_beef_with_known_txids() {
-    use bsv_wallet_toolbox::services::traits::WalletServices;
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
     let services = Services::mainnet().unwrap();
 
@@ -789,7 +789,7 @@ async fn test_services_get_beef_with_known_txids() {
 #[tokio::test]
 #[ignore = "Requires network access"]
 async fn test_services_get_beef_nonexistent_tx() {
-    use bsv_wallet_toolbox::services::traits::WalletServices;
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
     let services = Services::mainnet().unwrap();
 
@@ -807,7 +807,7 @@ async fn test_services_get_beef_nonexistent_tx() {
 #[tokio::test]
 #[ignore = "Requires network access"]
 async fn test_services_n_lock_time_finality_integration() {
-    use bsv_wallet_toolbox::services::traits::WalletServices;
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
     let services = Services::mainnet().unwrap();
 
@@ -838,7 +838,7 @@ async fn test_services_n_lock_time_finality_integration() {
 
 #[test]
 fn test_n_lock_time_input_from_lock_time() {
-    use bsv_wallet_toolbox::services::NLockTimeInput;
+    use bsv_wallet_toolbox_rs::services::NLockTimeInput;
 
     let input = NLockTimeInput::from_lock_time(500);
     assert_eq!(input.lock_time, 500);
@@ -847,7 +847,7 @@ fn test_n_lock_time_input_from_lock_time() {
 
 #[test]
 fn test_n_lock_time_input_from_raw_tx_max_sequence() {
-    use bsv_wallet_toolbox::services::NLockTimeInput;
+    use bsv_wallet_toolbox_rs::services::NLockTimeInput;
 
     // Real BSV transaction from mainnet (txid: ecb7b03ba0d8696548f4479508a69b6d1dedd878b91a54fcdd3752e98dc1bc2b)
     // Has sequence 0xFFFFFFFF (max) and locktime 0
@@ -865,7 +865,7 @@ fn test_n_lock_time_input_from_raw_tx_max_sequence() {
 
 #[test]
 fn test_n_lock_time_input_from_raw_tx_non_max_sequence() {
-    use bsv_wallet_toolbox::services::NLockTimeInput;
+    use bsv_wallet_toolbox_rs::services::NLockTimeInput;
 
     // Same real transaction but with modified sequence (0xFFFFFFFE) and locktime (100)
     // Original: ecb7b03ba0d8696548f4479508a69b6d1dedd878b91a54fcdd3752e98dc1bc2b
@@ -884,7 +884,7 @@ fn test_n_lock_time_input_from_raw_tx_non_max_sequence() {
 
 #[test]
 fn test_n_lock_time_input_from_hex_invalid() {
-    use bsv_wallet_toolbox::services::NLockTimeInput;
+    use bsv_wallet_toolbox_rs::services::NLockTimeInput;
 
     // Invalid hex should error
     let result = NLockTimeInput::from_hex_tx("not_valid_hex!");
@@ -893,8 +893,8 @@ fn test_n_lock_time_input_from_hex_invalid() {
 
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_with_final_sequences() {
-    use bsv_wallet_toolbox::services::traits::WalletServices;
-    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
+    use bsv_wallet_toolbox_rs::services::{NLockTimeInput, Services};
 
     let services = Services::mainnet().unwrap();
 
@@ -912,8 +912,8 @@ async fn test_n_lock_time_is_final_for_tx_with_final_sequences() {
 
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_with_non_final_sequences() {
-    use bsv_wallet_toolbox::services::traits::WalletServices;
-    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
+    use bsv_wallet_toolbox_rs::services::{NLockTimeInput, Services};
 
     let services = Services::mainnet().unwrap();
 
@@ -930,8 +930,8 @@ async fn test_n_lock_time_is_final_for_tx_with_non_final_sequences() {
 
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_from_raw_locktime() {
-    use bsv_wallet_toolbox::services::traits::WalletServices;
-    use bsv_wallet_toolbox::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
+    use bsv_wallet_toolbox_rs::services::{NLockTimeInput, Services};
 
     let services = Services::mainnet().unwrap();
 
