@@ -3945,4 +3945,182 @@ mod tests {
         let beef_bytes = result.unwrap();
         assert!(beef_bytes.len() > 4);
     }
+
+    // =============================================================================
+    // Tests for nosend UTXO exclusion (nosend outputs must NOT be selected)
+    // =============================================================================
+
+    /// Helper: seed a change output whose parent transaction has the given status.
+    /// Uses a unique txid derived from `tag` to avoid collisions.
+    async fn seed_change_output_with_status(
+        storage: &StorageSqlx,
+        user_id: i64,
+        satoshis: i64,
+        status: &str,
+        tag: &str,
+    ) {
+        let now = Utc::now();
+        let basket = storage
+            .find_or_create_default_basket(user_id)
+            .await
+            .unwrap();
+
+        // Build a unique 64-hex-char txid from the tag
+        let txid = format!("{:0>64}", tag);
+
+        let tx_result = sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, created_at, updated_at)
+            VALUES (?, ?, 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(status)
+        .bind(satoshis)
+        .bind(&txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        let transaction_id = tx_result.last_insert_rowid();
+
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO outputs (
+                user_id, transaction_id, basket_id, vout, satoshis, locking_script,
+                txid, type, spendable, change, derivation_prefix, derivation_suffix,
+                provided_by, purpose, output_description, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 0, ?, ?, ?, 'P2PKH', 1, 1, 'prefix123', 'suffix456', 'storage', 'change', 'seeded change', ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(transaction_id)
+        .bind(basket.basket_id)
+        .bind(satoshis)
+        .bind(&locking_script)
+        .bind(&txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_nosend_outputs_not_selected_for_spending() {
+        // A change output whose parent tx has status 'nosend' must NOT appear
+        // in UTXO selection (count_change_inputs should return 0,
+        // allocate_change_input should return None).
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user.user_id)
+            .await
+            .unwrap();
+
+        // Seed a change output with a 'nosend' parent transaction
+        seed_change_output_with_status(&storage, user.user_id, 100_000, "nosend", "aa01").await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+
+        // count_change_inputs should see 0 available outputs
+        let count = count_change_inputs(&mut conn, user.user_id, basket.basket_id, true)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "nosend outputs must not be counted as available");
+
+        // allocate_change_input should return None
+        let allocated = allocate_change_input(
+            &mut conn,
+            user.user_id,
+            basket.basket_id,
+            9999, // dummy transaction_id for allocation
+            50_000,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            allocated.is_none(),
+            "nosend outputs must not be allocated for spending"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_completed_outputs_still_selected() {
+        // Positive control: a change output whose parent tx has status 'completed'
+        // MUST be selected by count_change_inputs and allocate_change_input.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user.user_id)
+            .await
+            .unwrap();
+
+        // Seed a change output with a 'completed' parent transaction
+        seed_change_output_with_status(&storage, user.user_id, 100_000, "completed", "bb01").await;
+
+        // Create a dummy "spending" transaction so allocate_change_input can set spent_by
+        // without violating the foreign key constraint.
+        let now = Utc::now();
+        let spending_tx = sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, created_at, updated_at)
+            VALUES (?, 'unsigned', 'spending_ref', 1, 0, 1, 0, 'Spending tx', ?, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind("cc00000000000000000000000000000000000000000000000000000000000001")
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        let spending_tx_id = spending_tx.last_insert_rowid();
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+
+        // count_change_inputs should see 1 available output
+        let count = count_change_inputs(&mut conn, user.user_id, basket.basket_id, true)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "completed outputs must be counted as available");
+
+        // allocate_change_input should return Some
+        let allocated = allocate_change_input(
+            &mut conn,
+            user.user_id,
+            basket.basket_id,
+            spending_tx_id,
+            50_000,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            allocated.is_some(),
+            "completed outputs must be allocatable for spending"
+        );
+
+        let input = allocated.unwrap();
+        assert_eq!(input.satoshis, 100_000);
+    }
 }

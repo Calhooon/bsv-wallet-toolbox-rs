@@ -1900,4 +1900,180 @@ mod tests {
             assert_eq!(status, "unprocessed");
         }
     }
+
+    // =========================================================================
+    // Broadcast Status Update Tests
+    // =========================================================================
+
+    /// Helper: set up a fully processed transaction ready for broadcast status update.
+    /// Returns (storage, txid, transaction_id) where:
+    /// - The seed (input) output has spendable=0, spent_by=transaction_id
+    /// - The transaction's own output has spendable=1 (immediate mode)
+    /// - proven_tx_req exists with status 'unprocessed'
+    async fn setup_processed_transaction() -> (StorageSqlx, String, i64) {
+        let (storage, user_id, reference) = setup_storage_with_action().await;
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let raw_tx = create_raw_transaction(&[&locking_script]);
+        let txid = compute_txid(&raw_tx);
+
+        let args = StorageProcessActionArgs {
+            is_new_tx: true,
+            is_send_with: false,
+            is_no_send: false,
+            is_delayed: false,
+            reference: Some(reference.clone()),
+            txid: Some(txid.clone()),
+            raw_tx: Some(raw_tx),
+            send_with: vec![],
+        };
+
+        process_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        let tx_row = sqlx::query("SELECT transaction_id FROM transactions WHERE reference = ?")
+            .bind(&reference)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let transaction_id: i64 = tx_row.get("transaction_id");
+
+        (storage, txid, transaction_id)
+    }
+
+    /// Test that broadcast failure restores input outputs, marks own outputs
+    /// unspendable, and sets transaction status to 'failed'.
+    #[tokio::test]
+    async fn test_broadcast_failure_marks_change_outputs_unspendable() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        // Sanity: before broadcast update, the tx's own output should be spendable
+        let own_output = sqlx::query(
+            "SELECT spendable FROM outputs WHERE transaction_id = ? AND spent_by IS NULL",
+        )
+        .bind(transaction_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        let spendable_before: bool = own_output.get("spendable");
+        assert!(
+            spendable_before,
+            "own output should be spendable before broadcast failure"
+        );
+
+        // Sanity: the input (seed) output should be marked as spent (spendable=0, spent_by set)
+        let input_output =
+            sqlx::query("SELECT spendable, spent_by FROM outputs WHERE spent_by = ?")
+                .bind(transaction_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        let input_spendable: bool = input_output.get("spendable");
+        assert!(
+            !input_spendable,
+            "input output should be non-spendable (spent) before broadcast failure"
+        );
+
+        // --- Act: broadcast failed ---
+        update_transaction_status_after_broadcast_internal(&storage, &txid, false)
+            .await
+            .unwrap();
+
+        // --- Verify: input outputs restored to spendable ---
+        // The seed output was spent_by this transaction; it should now be restored
+        // (spent_by = NULL, spendable = 1). We find it by its seed txid.
+        let restored_input = sqlx::query(
+            "SELECT spendable, spent_by FROM outputs WHERE txid = '0000000000000000000000000000000000000000000000000000000000000001'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        let restored_spendable: bool = restored_input.get("spendable");
+        let restored_spent_by: Option<i64> = restored_input.get("spent_by");
+        assert!(
+            restored_spendable,
+            "input output should be restored to spendable after broadcast failure"
+        );
+        assert!(
+            restored_spent_by.is_none(),
+            "input output spent_by should be cleared after broadcast failure"
+        );
+
+        // --- Verify: transaction's own outputs marked unspendable (NEW behavior) ---
+        let own_output_after =
+            sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
+                .bind(transaction_id)
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        let own_spendable_after: bool = own_output_after.get("spendable");
+        assert!(
+            !own_spendable_after,
+            "transaction's own output should be marked unspendable after broadcast failure"
+        );
+
+        // --- Verify: transaction status is 'failed' ---
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let status: String = tx_row.get("status");
+        assert_eq!(status, "failed");
+
+        // --- Verify: proven_tx_req status is 'invalid' ---
+        let req_row = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let req_status: String = req_row.get("status");
+        assert_eq!(req_status, "invalid");
+    }
+
+    /// Test that broadcast success keeps outputs spendable and sets
+    /// transaction status to 'unproven'.
+    #[tokio::test]
+    async fn test_broadcast_success_keeps_outputs_spendable() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        // --- Act: broadcast succeeded ---
+        update_transaction_status_after_broadcast_internal(&storage, &txid, true)
+            .await
+            .unwrap();
+
+        // --- Verify: transaction's own output remains spendable ---
+        let own_output =
+            sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
+                .bind(transaction_id)
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        let spendable: bool = own_output.get("spendable");
+        assert!(
+            spendable,
+            "transaction's own output should remain spendable after broadcast success"
+        );
+
+        // --- Verify: transaction status is 'unproven' ---
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let status: String = tx_row.get("status");
+        assert_eq!(status, "unproven");
+
+        // --- Verify: proven_tx_req status is 'unmined' ---
+        let req_row = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let req_status: String = req_row.get("status");
+        assert_eq!(req_status, "unmined");
+    }
 }
