@@ -81,6 +81,7 @@ mod review_status {
     }
 
     /// Helper: insert an output with an optional spent_by reference.
+    #[allow(clippy::too_many_arguments)]
     async fn insert_output(
         storage: &StorageSqlx,
         user_id: i64,
@@ -249,8 +250,8 @@ mod review_status {
             "#,
         )
         .bind(txid)
-        .bind(&"b".repeat(64))
-        .bind(&"a".repeat(64))
+        .bind("b".repeat(64))
+        .bind("a".repeat(64))
         .bind(now)
         .bind(now)
         .execute(storage.pool())
