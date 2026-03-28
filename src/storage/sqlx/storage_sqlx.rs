@@ -3122,8 +3122,7 @@ impl MonitorStorage for StorageSqlx {
                     for row in &output_rows {
                         let output_id: i64 = row.get("output_id");
                         let vout: i32 = row.get("vout");
-                        let locking_script: Option<Vec<u8>> =
-                            row.get("locking_script");
+                        let locking_script: Option<Vec<u8>> = row.get("locking_script");
                         let script = locking_script.as_deref().unwrap_or(&[]);
                         let is_utxo = services
                             .is_utxo(&req.txid, vout as u32, script)
@@ -3150,12 +3149,11 @@ impl MonitorStorage for StorageSqlx {
                     // Re-mark inputs consumed by this tx as spent (they were
                     // released when the tx was originally marked failed, but the
                     // tx actually made it to chain).
-                    let tx_row = sqlx::query(
-                        "SELECT transaction_id FROM transactions WHERE txid = ?",
-                    )
-                    .bind(&req.txid)
-                    .fetch_optional(self.pool())
-                    .await?;
+                    let tx_row =
+                        sqlx::query("SELECT transaction_id FROM transactions WHERE txid = ?")
+                            .bind(&req.txid)
+                            .fetch_optional(self.pool())
+                            .await?;
                     if let Some(tx_row) = tx_row {
                         let transaction_id: i64 = tx_row.get("transaction_id");
                         // Find outputs that this tx originally spent (their txid+vout
