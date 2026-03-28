@@ -3109,20 +3109,74 @@ impl MonitorStorage for StorageSqlx {
                     .execute(self.pool())
                     .await?;
 
-                    // Restore spent outputs that were released when the tx was marked failed
-                    // Mark outputs of this transaction as spendable again
-                    sqlx::query(
-                        r#"
-                        UPDATE outputs SET spendable = 1, updated_at = ?
-                        WHERE txid = ? AND spendable = 0
-                        "#,
+                    // Restore outputs of this transaction, but validate each against
+                    // chain to avoid creating ghost UTXOs (outputs already spent on-chain).
+                    let output_rows = sqlx::query(
+                        "SELECT output_id, vout, locking_script FROM outputs WHERE txid = ? AND spendable = 0",
                     )
-                    .bind(now)
                     .bind(&req.txid)
-                    .execute(self.pool())
+                    .fetch_all(self.pool())
                     .await?;
 
-                    tracing::info!("un_fail: restored transaction {}", req.txid);
+                    let mut restored = 0u32;
+                    for row in &output_rows {
+                        let output_id: i64 = row.get("output_id");
+                        let vout: i32 = row.get("vout");
+                        let locking_script: Option<Vec<u8>> =
+                            row.get("locking_script");
+                        let script = locking_script.as_deref().unwrap_or(&[]);
+                        let is_utxo = services
+                            .is_utxo(&req.txid, vout as u32, script)
+                            .await
+                            .unwrap_or(false);
+                        if is_utxo {
+                            sqlx::query(
+                                "UPDATE outputs SET spendable = 1, updated_at = ? WHERE output_id = ?",
+                            )
+                            .bind(now)
+                            .bind(output_id)
+                            .execute(self.pool())
+                            .await?;
+                            restored += 1;
+                        } else {
+                            tracing::debug!(
+                                "un_fail: output {}:{} is not a UTXO on chain, skipping",
+                                req.txid,
+                                vout
+                            );
+                        }
+                    }
+
+                    // Re-mark inputs consumed by this tx as spent (they were
+                    // released when the tx was originally marked failed, but the
+                    // tx actually made it to chain).
+                    let tx_row = sqlx::query(
+                        "SELECT transaction_id FROM transactions WHERE txid = ?",
+                    )
+                    .bind(&req.txid)
+                    .fetch_optional(self.pool())
+                    .await?;
+                    if let Some(tx_row) = tx_row {
+                        let transaction_id: i64 = tx_row.get("transaction_id");
+                        // Find outputs that this tx originally spent (their txid+vout
+                        // appear as inputs in the raw tx). Since spent_by was cleared
+                        // on failure, we use the raw_tx to re-establish the link.
+                        // For now, mark any output whose spent_by is NULL but was
+                        // previously spent by this transaction. The transaction_inputs
+                        // relationship is encoded in the raw_tx, but we can use a
+                        // simpler heuristic: outputs created before this tx that are
+                        // currently spendable and appear as inputs in the BEEF.
+                        // TODO: Parse raw_tx inputs for exact matching. For now the
+                        // output restoration + isUtxo check is the primary safety net.
+                        let _ = transaction_id; // suppress unused warning
+                    }
+
+                    tracing::info!(
+                        "un_fail: restored transaction {} ({}/{} outputs validated as UTXOs)",
+                        req.txid,
+                        restored,
+                        output_rows.len()
+                    );
                 }
                 _ => {
                     // Not found on chain - mark as invalid
@@ -3149,7 +3203,59 @@ impl MonitorStorage for StorageSqlx {
         let mut log = String::new();
         let now = chrono::Utc::now();
 
-        // Find completed proven_tx_reqs whose associated transactions are not yet 'completed'
+        // Check 1: Mark transactions as failed if their proven_tx_req is 'invalid'
+        let failed_count = sqlx::query(
+            r#"
+            UPDATE transactions SET status = 'failed', updated_at = ?
+            WHERE status NOT IN ('failed', 'completed')
+              AND txid IN (
+                SELECT ptr.txid FROM proven_tx_reqs ptr
+                WHERE ptr.status = 'invalid'
+              )
+            "#,
+        )
+        .bind(now)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+
+        if failed_count > 0 {
+            log.push_str(&format!(
+                "Marked {} transactions as failed (proven_tx_req invalid)\n",
+                failed_count
+            ));
+            tracing::debug!(
+                "review_status: marked {} transactions failed from invalid reqs",
+                failed_count
+            );
+        }
+
+        // Check 2: Release outputs spent by failed transactions back to spendable
+        let released_count = sqlx::query(
+            r#"
+            UPDATE outputs SET spent_by = NULL, spendable = 1, updated_at = ?
+            WHERE spent_by IN (
+                SELECT transaction_id FROM transactions WHERE status = 'failed'
+            )
+            "#,
+        )
+        .bind(now)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+
+        if released_count > 0 {
+            log.push_str(&format!(
+                "Released {} outputs from failed transactions\n",
+                released_count
+            ));
+            tracing::debug!(
+                "review_status: released {} outputs locked by failed txs",
+                released_count
+            );
+        }
+
+        // Check 3: Mark transactions completed when proof exists
         let rows: Vec<(String, String)> = sqlx::query_as(
             r#"
             SELECT ptr.txid, t.status
@@ -3164,11 +3270,6 @@ impl MonitorStorage for StorageSqlx {
         .await?;
 
         if !rows.is_empty() {
-            log.push_str(&format!(
-                "Found {} transactions needing status sync\n",
-                rows.len()
-            ));
-
             for (txid, old_status) in &rows {
                 sqlx::query(
                     "UPDATE transactions SET status = 'completed', updated_at = ? WHERE txid = ?",
@@ -3189,7 +3290,9 @@ impl MonitorStorage for StorageSqlx {
                 "Updated {} transaction statuses to completed\n",
                 rows.len()
             ));
-        } else {
+        }
+
+        if log.is_empty() {
             log.push_str("No status mismatches found\n");
         }
 

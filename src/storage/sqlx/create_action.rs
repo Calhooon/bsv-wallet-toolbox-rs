@@ -871,7 +871,7 @@ async fn count_change_inputs(
         WHERE o.user_id = ?
           AND o.basket_id = ?
           AND o.change = 1
-          AND t.status IN ('completed', 'unproven', 'nosend', 'sending')
+          AND t.status IN ('completed', 'unproven', 'sending')
           {}
         "#,
         spendable_clause
@@ -1580,7 +1580,7 @@ async fn allocate_change_input(
           AND o.basket_id = ?
           AND o.change = 1
           AND o.spent_by IS NULL
-          AND t.status IN ('completed', 'unproven', 'nosend', 'sending')
+          AND t.status IN ('completed', 'unproven', 'sending')
           {}
         ORDER BY
             CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,

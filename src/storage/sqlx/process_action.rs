@@ -860,6 +860,16 @@ pub async fn update_transaction_status_after_broadcast_internal(
             .execute(&mut *tx)
             .await?;
 
+            // Mark this transaction's own outputs (change, etc.) as unspendable.
+            // They can never be spent since the parent tx was not broadcast.
+            sqlx::query(
+                "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+            )
+            .bind(now)
+            .bind(transaction_id)
+            .execute(&mut *tx)
+            .await?;
+
             // Update transaction status to failed
             sqlx::query(
                 "UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?",
