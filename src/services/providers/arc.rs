@@ -230,7 +230,8 @@ impl Arc {
                     Error::ServiceError(format!("Failed to parse ARC response: {}", e))
                 })?;
 
-                let is_double_spend = data.tx_status == "DOUBLE_SPEND_ATTEMPTED";
+                let is_double_spend = data.tx_status == "DOUBLE_SPEND_ATTEMPTED"
+                    || data.tx_status == "SEEN_IN_ORPHAN_MEMPOOL";
 
                 if is_double_spend {
                     Ok(PostTxResultForTxid {
@@ -320,36 +321,76 @@ impl Arc {
             notes: Vec::new(),
         };
 
-        // ARC compatibility fix: GorillaPool ARC (go-sdk v1.2.12) has two bugs:
-        // 1. Panics on BEEF V2 (fixed in go-sdk v1.2.20 but ARC hasn't updated)
-        // 2. Uses re-serialized BEEF length as bytesUsed, but Go SDK strips deep
-        //    ancestors during round-trip. Extra txs cause bytesUsed mismatch and
-        //    ARC tries to parse leftover bytes as a raw transaction → script error.
-        // Fix: trim unnecessary ancestors + force V1 before posting.
-        let beef_to_post = {
-            use bsv_rs::transaction::{Beef, BEEF_V1};
+        // Match Go wallet-toolbox pattern: extract new tx from BEEF, hydrate its
+        // inputs with source_transaction from proven parents, serialize as Extended
+        // Format (EF), and post that. EF embeds parent UTXO data inline so the node
+        // can validate without looking up ancestors. This avoids ARC's BEEF parsing
+        // bugs (V2 panic, bytesUsed mismatch) and SEEN_IN_ORPHAN_MEMPOOL.
+        let post_result = {
+            use bsv_rs::transaction::Beef;
             match Beef::from_binary(beef) {
-                Ok(mut parsed) => {
-                    // Remove deep ancestors that aren't needed (proven parents are
-                    // self-sufficient). This matches Go SDK's ParseBeef→Bytes() output.
-                    parsed.trim_known_proven();
+                Ok(beef_parsed) => {
+                    // Find the new (unproven) transaction — no bump_index
+                    let new_btx = beef_parsed
+                        .txs
+                        .iter()
+                        .rev()
+                        .find(|btx| btx.bump_index().is_none() && !btx.is_txid_only());
 
-                    let can_downgrade = parsed.txs.iter().all(|tx| !tx.is_txid_only());
-                    if can_downgrade && parsed.version != BEEF_V1 {
-                        parsed.version = BEEF_V1;
-                        result.notes.push(make_note(&self.name, "postBeefV2ToV1"));
+                    match new_btx.and_then(|btx| btx.tx().cloned()) {
+                        Some(mut new_tx) => {
+                            // Hydrate: attach source_transaction for each input
+                            let mut hydrated = true;
+                            for input in &mut new_tx.inputs {
+                                if let Ok(parent_txid) = input.get_source_txid() {
+                                    if let Some(parent_btx) =
+                                        beef_parsed.find_txid(&parent_txid)
+                                    {
+                                        if let Some(parent_tx) = parent_btx.tx() {
+                                            input.source_transaction =
+                                                Some(Box::new(parent_tx.clone()));
+                                            continue;
+                                        }
+                                    }
+                                }
+                                hydrated = false;
+                                break;
+                            }
+
+                            if hydrated {
+                                match new_tx.to_hex_ef() {
+                                    Ok(ef_hex) => {
+                                        result
+                                            .notes
+                                            .push(make_note(&self.name, "postBeefAsEF"));
+                                        self.post_raw_tx(&ef_hex, Some(txids)).await?
+                                    }
+                                    Err(_) => {
+                                        // EF serialization failed — fall back to BEEF
+                                        let beef_hex = hex::encode(beef);
+                                        self.post_raw_tx(&beef_hex, Some(txids)).await?
+                                    }
+                                }
+                            } else {
+                                // Couldn't hydrate all inputs — fall back to BEEF
+                                let beef_hex = hex::encode(beef);
+                                self.post_raw_tx(&beef_hex, Some(txids)).await?
+                            }
+                        }
+                        None => {
+                            // No new tx found — fall back to BEEF
+                            let beef_hex = hex::encode(beef);
+                            self.post_raw_tx(&beef_hex, Some(txids)).await?
+                        }
                     }
-                    parsed.to_binary()
                 }
-                Err(_) => beef.to_vec(), // Can't parse — send as-is
+                Err(_) => {
+                    // Can't parse BEEF — send as-is
+                    let beef_hex = hex::encode(beef);
+                    self.post_raw_tx(&beef_hex, Some(txids)).await?
+                }
             }
         };
-
-        // Convert BEEF to hex
-        let beef_hex = hex::encode(&beef_to_post);
-
-        // Post the BEEF
-        let post_result = self.post_raw_tx(&beef_hex, Some(txids)).await?;
 
         result.status = post_result.status.clone();
         result.txid_results.push(post_result.clone());
