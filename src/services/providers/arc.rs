@@ -343,9 +343,7 @@ impl Arc {
                             let mut hydrated = true;
                             for input in &mut new_tx.inputs {
                                 if let Ok(parent_txid) = input.get_source_txid() {
-                                    if let Some(parent_btx) =
-                                        beef_parsed.find_txid(&parent_txid)
-                                    {
+                                    if let Some(parent_btx) = beef_parsed.find_txid(&parent_txid) {
                                         if let Some(parent_tx) = parent_btx.tx() {
                                             input.source_transaction =
                                                 Some(Box::new(parent_tx.clone()));
@@ -360,9 +358,7 @@ impl Arc {
                             if hydrated {
                                 match new_tx.to_hex_ef() {
                                     Ok(ef_hex) => {
-                                        result
-                                            .notes
-                                            .push(make_note(&self.name, "postBeefAsEF"));
+                                        result.notes.push(make_note(&self.name, "postBeefAsEF"));
                                         self.post_raw_tx(&ef_hex, Some(txids)).await?
                                     }
                                     Err(_) => {

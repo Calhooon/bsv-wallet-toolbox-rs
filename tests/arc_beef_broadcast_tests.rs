@@ -35,7 +35,10 @@ fn build_single_tx_beef(version: u32) -> (Vec<u8>, String) {
 ///
 /// Returns (beef_binary, child_txid, parent_txid).
 fn build_parent_child_beef() -> (Vec<u8>, String, String) {
-    build_parent_child_beef_with_output(1_000_000_000, "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac")
+    build_parent_child_beef_with_output(
+        1_000_000_000,
+        "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac",
+    )
 }
 
 /// Helper: build a parent-child BEEF with a specific satoshi amount and locking script hex
@@ -125,14 +128,11 @@ async fn test_post_beef_sends_ef_format() {
             r#"{{"txid": "{}", "txStatus": "SEEN_ON_NETWORK", "extraInfo": ""}}"#,
             child_txid
         ))
-        .match_body(mockito::Matcher::Regex(
-            "010000000000000000ef".to_string(),
-        ))
+        .match_body(mockito::Matcher::Regex("010000000000000000ef".to_string()))
         .create_async()
         .await;
 
-    let arc =
-        ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let result = arc
         .post_beef(&beef_bytes, std::slice::from_ref(&child_txid))
@@ -185,8 +185,7 @@ async fn test_post_beef_v1_proven_only_sent_as_beef() {
         .create_async()
         .await;
 
-    let arc =
-        ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let result = arc
         .post_beef(&beef_v1_bytes, std::slice::from_ref(&txid))
@@ -266,8 +265,7 @@ async fn test_post_beef_trim_removes_deep_ancestors() {
         .create_async()
         .await;
 
-    let arc =
-        ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let result = arc
         .post_beef(&beef_bytes, std::slice::from_ref(&txid))
@@ -303,8 +301,7 @@ async fn test_post_beef_orphan_mempool_treated_as_error() {
         .create_async()
         .await;
 
-    let arc =
-        ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let result = arc
         .post_beef(&beef_bytes, std::slice::from_ref(&child_txid))
@@ -357,8 +354,7 @@ async fn test_post_beef_double_spend_still_error() {
         .create_async()
         .await;
 
-    let arc =
-        ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let result = arc
         .post_beef(&beef_bytes, std::slice::from_ref(&child_txid))
@@ -399,12 +395,7 @@ async fn test_post_beef_double_spend_still_error() {
 async fn test_post_beef_various_success_statuses() {
     // ARC can return several "success" statuses. Verify they all map to success.
     // Note: SEEN_IN_ORPHAN_MEMPOOL is now treated as error (matching TS/Go).
-    let success_statuses = [
-        "SEEN_ON_NETWORK",
-        "STORED",
-        "MINED",
-        "ANNOUNCED_TO_NETWORK",
-    ];
+    let success_statuses = ["SEEN_ON_NETWORK", "STORED", "MINED", "ANNOUNCED_TO_NETWORK"];
 
     for status in success_statuses {
         let (beef_bytes, child_txid, _parent_txid) = build_parent_child_beef();
@@ -471,8 +462,7 @@ async fn test_post_beef_ef_fallback_on_unparseable() {
         .create_async()
         .await;
 
-    let arc =
-        ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let result = arc
         .post_beef(&garbage_bytes, std::slice::from_ref(&txid))
@@ -538,8 +528,7 @@ async fn test_post_beef_v2_with_txid_only_sent_as_is() {
         .create_async()
         .await;
 
-    let arc =
-        ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let result = arc
         .post_beef(&beef_bytes, std::slice::from_ref(&txid))
@@ -635,8 +624,7 @@ async fn test_post_beef_ef_embeds_parent_utxo() {
         .create_async()
         .await;
 
-    let arc =
-        ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
 
     let result = arc
         .post_beef(&beef_bytes, std::slice::from_ref(&child_txid))
