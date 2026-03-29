@@ -16,7 +16,6 @@ use uuid::Uuid;
 
 use crate::services::traits::{GetMerklePathResult, PostBeefResult, PostTxResultForTxid};
 use crate::{Error, Result};
-use bsv_rs::transaction::{Beef, BEEF_V1};
 
 /// TAAL ARC mainnet URL.
 pub const ARC_TAAL_MAINNET: &str = "https://arc.taal.com";
@@ -231,8 +230,7 @@ impl Arc {
                     Error::ServiceError(format!("Failed to parse ARC response: {}", e))
                 })?;
 
-                let is_double_spend = data.tx_status == "DOUBLE_SPEND_ATTEMPTED"
-                    || data.tx_status == "SEEN_IN_ORPHAN_MEMPOOL";
+                let is_double_spend = data.tx_status == "DOUBLE_SPEND_ATTEMPTED";
 
                 if is_double_spend {
                     Ok(PostTxResultForTxid {
@@ -322,26 +320,29 @@ impl Arc {
             notes: Vec::new(),
         };
 
-        // Convert V2 to V1 if possible (no txid-only transactions)
-        // BEEF v1 starts with 0100BEEF, v2 with 0200BEEF
-        let beef_to_post = if beef.len() >= 4 && beef[0..4] == [0x02, 0x00, 0xBE, 0xEF] {
-            result
-                .notes
-                .push(make_note(&self.name, "postBeefV2Detected"));
-            if let Ok(mut parsed_beef) = Beef::from_binary(beef) {
-                let can_downgrade = parsed_beef.txs.iter().all(|tx| !tx.is_txid_only());
-                if can_downgrade {
-                    parsed_beef.version = BEEF_V1;
-                    result.notes.push(make_note(&self.name, "postBeefV2ToV1"));
-                    parsed_beef.to_binary()
-                } else {
-                    beef.to_vec()
+        // ARC compatibility fix: GorillaPool ARC (go-sdk v1.2.12) has two bugs:
+        // 1. Panics on BEEF V2 (fixed in go-sdk v1.2.20 but ARC hasn't updated)
+        // 2. Uses re-serialized BEEF length as bytesUsed, but Go SDK strips deep
+        //    ancestors during round-trip. Extra txs cause bytesUsed mismatch and
+        //    ARC tries to parse leftover bytes as a raw transaction → script error.
+        // Fix: trim unnecessary ancestors + force V1 before posting.
+        let beef_to_post = {
+            use bsv_rs::transaction::{Beef, BEEF_V1};
+            match Beef::from_binary(beef) {
+                Ok(mut parsed) => {
+                    // Remove deep ancestors that aren't needed (proven parents are
+                    // self-sufficient). This matches Go SDK's ParseBeef→Bytes() output.
+                    parsed.trim_known_proven();
+
+                    let can_downgrade = parsed.txs.iter().all(|tx| !tx.is_txid_only());
+                    if can_downgrade && parsed.version != BEEF_V1 {
+                        parsed.version = BEEF_V1;
+                        result.notes.push(make_note(&self.name, "postBeefV2ToV1"));
+                    }
+                    parsed.to_binary()
                 }
-            } else {
-                beef.to_vec()
+                Err(_) => beef.to_vec(), // Can't parse — send as-is
             }
-        } else {
-            beef.to_vec()
         };
 
         // Convert BEEF to hex

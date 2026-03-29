@@ -1389,10 +1389,8 @@ where
                     Ok(mut beef) => {
                         beef.merge_raw_tx(signed_tx.clone(), None);
 
-                        // Check if V2->V1 downgrade is possible
+                        // Force V1 for ARC compatibility
                         let can_downgrade = beef.txs.iter().all(|tx| !tx.is_txid_only());
-
-                        // Force downgrade to V1 for ARC compatibility
                         if can_downgrade && beef.version != bsv_rs::transaction::BEEF_V1 {
                             beef.version = bsv_rs::transaction::BEEF_V1;
                         }
@@ -1413,6 +1411,30 @@ where
             if !no_send && !accept_delayed_broadcast {
                 let broadcast_success = if let Some(ref beef_bytes) = full_beef_bytes {
                     let txid_strings = vec![txid.clone()];
+                    // DEBUG: Validate BEEF structure and dump to file
+                    match bsv_rs::transaction::Beef::from_binary(beef_bytes) {
+                        Ok(parsed) => {
+                            // Dump BEEF to /tmp for analysis
+                            let dump_path = format!("/tmp/beef-{}.hex", &txid[..8]);
+                            let _ = std::fs::write(&dump_path, hex::encode(beef_bytes));
+                            tracing::info!(
+                                txid = %txid,
+                                beef_version = parsed.version,
+                                num_bumps = parsed.bumps.len(),
+                                num_txs = parsed.txs.len(),
+                                beef_len = beef_bytes.len(),
+                                dump_path = %dump_path,
+                                "BEEF dumped for analysis"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                txid = %txid,
+                                error = %e,
+                                "BEEF pre-broadcast validation FAILED"
+                            );
+                        }
+                    }
                     tracing::debug!(
                         txid = %txid,
                         beef_len = beef_bytes.len(),

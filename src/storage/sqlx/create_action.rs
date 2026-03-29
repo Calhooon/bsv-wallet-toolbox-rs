@@ -2067,9 +2067,12 @@ pub(super) async fn get_tx_with_proof(
                 if let Some(bump) = beef.find_bump(txid) {
                     // Found merkle proof in stored BEEF!
                     if let Some(beef_tx) = beef.find_txid(txid) {
-                        if let Some(tx) = beef_tx.tx() {
+                        // Use raw_tx() to preserve original bytes — do NOT
+                        // re-serialize via tx().to_binary() as it can produce
+                        // different bytes for non-standard scripts (PushDrop etc.)
+                        if let Some(raw) = beef_tx.raw_tx() {
                             return Ok(Some(BeefTxData {
-                                raw_tx: tx.to_binary(),
+                                raw_tx: raw.to_vec(),
                                 merkle_path: Some(bump.to_binary()),
                             }));
                         }
@@ -2078,9 +2081,9 @@ pub(super) async fn get_tx_with_proof(
 
                 // No proof in BEEF, but we can still get the raw transaction
                 if let Some(beef_tx) = beef.find_txid(txid) {
-                    if let Some(tx) = beef_tx.tx() {
+                    if let Some(raw) = beef_tx.raw_tx() {
                         return Ok(Some(BeefTxData {
-                            raw_tx: tx.to_binary(),
+                            raw_tx: raw.to_vec(),
                             merkle_path: None,
                         }));
                     }
@@ -2119,9 +2122,9 @@ pub(super) async fn get_tx_with_proof(
                 // Check if BEEF contains a merkle proof for this txid
                 if let Some(bump) = beef.find_bump(txid) {
                     if let Some(beef_tx) = beef.find_txid(txid) {
-                        if let Some(tx) = beef_tx.tx() {
+                        if let Some(raw) = beef_tx.raw_tx() {
                             return Ok(Some(BeefTxData {
-                                raw_tx: tx.to_binary(),
+                                raw_tx: raw.to_vec(),
                                 merkle_path: Some(bump.to_binary()),
                             }));
                         }
@@ -2130,9 +2133,9 @@ pub(super) async fn get_tx_with_proof(
 
                 // No proof, but try to get raw tx from BEEF
                 if let Some(beef_tx) = beef.find_txid(txid) {
-                    if let Some(tx) = beef_tx.tx() {
+                    if let Some(raw) = beef_tx.raw_tx() {
                         return Ok(Some(BeefTxData {
-                            raw_tx: tx.to_binary(),
+                            raw_tx: raw.to_vec(),
                             merkle_path: None,
                         }));
                     }
