@@ -57,6 +57,8 @@ mod monitor_integration {
         opts.tasks.review_status = TaskConfig::disabled();
         opts.tasks.purge = TaskConfig::disabled();
         opts.tasks.monitor_call_history = TaskConfig::disabled();
+        opts.tasks.compact_beef = TaskConfig::disabled();
+        opts.tasks.sync_when_idle = TaskConfig::disabled();
         opts
     }
 
