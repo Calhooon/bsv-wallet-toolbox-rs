@@ -1,6 +1,6 @@
 [package]
 name = "bsv-wallet-toolbox-rs"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2021"
 authors = ["John Calhoun <dev@calhounjohn.com>"]
 description = "Storage and services for BSV wallets - Rust implementation of @bsv/wallet-toolbox"
