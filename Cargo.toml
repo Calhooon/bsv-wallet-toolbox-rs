@@ -1,6 +1,6 @@
 [package]
 name = "bsv-wallet-toolbox-rs"
-version = "0.3.11"
+version = "0.3.12"
 edition = "2021"
 authors = ["John Calhoun <dev@calhounjohn.com>"]
 description = "Storage and services for BSV wallets - Rust implementation of @bsv/wallet-toolbox"
@@ -19,7 +19,7 @@ full = ["sqlite", "mysql", "remote"]
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits
-bsv-rs = { version = "0.3.2", features = ["full", "http"] }
+bsv-rs = { version = "0.3.3", features = ["full", "http"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
