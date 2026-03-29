@@ -272,12 +272,13 @@ mod review_status {
         let now = Utc::now();
 
         // Get or create the default basket
-        let existing: Option<(i64,)> =
-            sqlx::query_as("SELECT basket_id FROM output_baskets WHERE name = 'default' AND user_id = ?")
-                .bind(user_id)
-                .fetch_optional(storage.pool())
-                .await
-                .unwrap();
+        let existing: Option<(i64,)> = sqlx::query_as(
+            "SELECT basket_id FROM output_baskets WHERE name = 'default' AND user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(storage.pool())
+        .await
+        .unwrap();
         let basket_id = match existing {
             Some(row) => row,
             None => {
@@ -288,18 +289,19 @@ mod review_status {
                     .execute(storage.pool())
                     .await
                     .unwrap();
-                sqlx::query_as("SELECT basket_id FROM output_baskets WHERE name = 'default' AND user_id = ?")
-                    .bind(user_id)
-                    .fetch_one(storage.pool())
-                    .await
-                    .unwrap()
+                sqlx::query_as(
+                    "SELECT basket_id FROM output_baskets WHERE name = 'default' AND user_id = ?",
+                )
+                .bind(user_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap()
             }
         };
 
         // Create a transaction in 'sending' status (stuck broadcast)
         let sending_txid = "ee".repeat(32);
-        let sending_tx_id =
-            insert_transaction(&storage, user_id, &sending_txid, "sending").await;
+        let sending_tx_id = insert_transaction(&storage, user_id, &sending_txid, "sending").await;
 
         // Create a change output from the sending transaction (this is the phantom)
         sqlx::query(
@@ -357,9 +359,16 @@ mod review_status {
         .unwrap();
 
         // Only the completed tx's output should be selected
-        assert_eq!(rows.len(), 1, "Should find exactly 1 selectable change output");
+        assert_eq!(
+            rows.len(),
+            1,
+            "Should find exactly 1 selectable change output"
+        );
         assert_eq!(rows[0].0, 30000, "Should select the completed tx output");
-        assert_eq!(rows[0].1, good_txid, "Selected output should be from completed tx");
+        assert_eq!(
+            rows[0].1, good_txid,
+            "Selected output should be from completed tx"
+        );
     }
 
     // =========================================================================
@@ -415,24 +424,16 @@ mod review_status {
 
         // Create a change output from the sending tx (phantom)
         insert_output(
-            &storage,
-            user_id,
-            tx_id,
-            &txid,
-            1,
-            90_000,
+            &storage, user_id, tx_id, &txid, 1, 90_000,
             true, // marked spendable — this is the bug
             None,
         )
         .await;
 
         // Run abort_abandoned with a 5-minute timeout (tx is 1 hour old, should be caught)
-        MonitorStorage::abort_abandoned(
-            storage.as_ref(),
-            std::time::Duration::from_secs(300),
-        )
-        .await
-        .unwrap();
+        MonitorStorage::abort_abandoned(storage.as_ref(), std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
 
         // Transaction should now be failed
         let row: (String,) = sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
@@ -446,26 +447,24 @@ mod review_status {
         );
 
         // Change output should be non-spendable (phantom prevention)
-        let row: (bool,) = sqlx::query_as(
-            "SELECT spendable FROM outputs WHERE txid = ? AND vout = 1",
-        )
-        .bind(&txid)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let row: (bool,) =
+            sqlx::query_as("SELECT spendable FROM outputs WHERE txid = ? AND vout = 1")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         assert!(
             !row.0,
             "Change output from failed sending tx should be non-spendable"
         );
 
         // Input UTXO should be restored
-        let row: (bool, Option<i64>) = sqlx::query_as(
-            "SELECT spendable, spent_by FROM outputs WHERE txid = ? AND vout = 0",
-        )
-        .bind(&source_txid)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+        let row: (bool, Option<i64>) =
+            sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE txid = ? AND vout = 0")
+                .bind(&source_txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         assert!(row.0, "Input UTXO should be restored to spendable");
         assert!(row.1.is_none(), "Input UTXO spent_by should be NULL");
     }

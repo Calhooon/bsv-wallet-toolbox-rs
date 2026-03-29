@@ -3041,7 +3041,12 @@ impl MonitorStorage for StorageSqlx {
                 }
                 Err(e) => {
                     let attempts = req.attempts + 1;
-                    tracing::warn!("Failed to broadcast tx {} (attempt {}): {}", req.txid, attempts, e);
+                    tracing::warn!(
+                        "Failed to broadcast tx {} (attempt {}): {}",
+                        req.txid,
+                        attempts,
+                        e
+                    );
 
                     if attempts > 6 {
                         // Too many retries — give up
