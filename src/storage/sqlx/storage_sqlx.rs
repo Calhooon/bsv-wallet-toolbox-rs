@@ -779,7 +779,7 @@ impl StorageSqlx {
         let mut sql = String::from(
             r#"
             SELECT proven_tx_req_id, proven_tx_id, txid, status, attempts, history,
-                   notified, created_at, updated_at
+                   notified, raw_tx, input_beef, batch, notify, created_at, updated_at
             FROM proven_tx_reqs
             WHERE 1=1
             "#,
@@ -2907,15 +2907,19 @@ impl MonitorStorage for StorageSqlx {
                 use bsv_rs::transaction::Beef;
                 match Beef::from_binary(input_beef) {
                     Ok(mut beef) => {
-                        if let Ok(tx) = bsv_rs::transaction::Transaction::from_binary(&raw_tx) {
-                            beef.merge_transaction(tx);
-                        }
+                        beef.merge_raw_tx(raw_tx.clone(), None);
                         beef.to_binary()
                     }
-                    Err(_) => raw_tx.clone(),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse input_beef for txid {}: {e}", req.txid);
+                        continue;
+                    }
                 }
             } else {
-                raw_tx.clone()
+                // No input_beef — cannot broadcast as BEEF. Skip instead of
+                // sending raw tx bytes to a BEEF endpoint (causes parse errors).
+                tracing::warn!("No input_beef for txid {} — skipping broadcast", req.txid);
+                continue;
             };
 
             // Update status to sending
