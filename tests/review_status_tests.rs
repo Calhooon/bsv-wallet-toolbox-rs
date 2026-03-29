@@ -260,6 +260,220 @@ mod review_status {
         result.last_insert_rowid()
     }
 
+    // =========================================================================
+    // Test: UTXO selection excludes 'sending' parent transactions
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_sending_tx_change_outputs_excluded_from_utxo_selection() {
+        let (storage, auth) = setup_storage().await;
+        let user_id = auth.user_id.unwrap();
+
+        let now = Utc::now();
+
+        // Get or create the default basket
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT basket_id FROM output_baskets WHERE name = 'default' AND user_id = ?")
+                .bind(user_id)
+                .fetch_optional(storage.pool())
+                .await
+                .unwrap();
+        let basket_id = match existing {
+            Some(row) => row,
+            None => {
+                sqlx::query("INSERT INTO output_baskets (user_id, name, is_deleted, created_at, updated_at) VALUES (?, 'default', 0, ?, ?)")
+                    .bind(user_id)
+                    .bind(now)
+                    .bind(now)
+                    .execute(storage.pool())
+                    .await
+                    .unwrap();
+                sqlx::query_as("SELECT basket_id FROM output_baskets WHERE name = 'default' AND user_id = ?")
+                    .bind(user_id)
+                    .fetch_one(storage.pool())
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Create a transaction in 'sending' status (stuck broadcast)
+        let sending_txid = "ee".repeat(32);
+        let sending_tx_id =
+            insert_transaction(&storage, user_id, &sending_txid, "sending").await;
+
+        // Create a change output from the sending transaction (this is the phantom)
+        sqlx::query(
+            r#"INSERT INTO outputs (user_id, transaction_id, basket_id, txid, vout, satoshis,
+                                    script_length, script_offset, type, provided_by, purpose,
+                                    spendable, change, locking_script, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 1, 50000, 25, 0, 'P2PKH', 'you', 'change', 1, 1,
+                       X'76a914000000000000000000000000000000000000000088ac', ?, ?)"#,
+        )
+        .bind(user_id)
+        .bind(sending_tx_id)
+        .bind(basket_id.0)
+        .bind(&sending_txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // Create a completed transaction with a change output (this should be selectable)
+        let good_txid = "ff".repeat(32);
+        let good_tx_id = insert_transaction(&storage, user_id, &good_txid, "completed").await;
+
+        sqlx::query(
+            r#"INSERT INTO outputs (user_id, transaction_id, basket_id, txid, vout, satoshis,
+                                    script_length, script_offset, type, provided_by, purpose,
+                                    spendable, change, locking_script, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 1, 30000, 25, 0, 'P2PKH', 'you', 'change', 1, 1,
+                       X'76a914000000000000000000000000000000000000000088ac', ?, ?)"#,
+        )
+        .bind(user_id)
+        .bind(good_tx_id)
+        .bind(basket_id.0)
+        .bind(&good_txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // Query change outputs the same way create_action does (excluding 'sending')
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            r#"SELECT o.satoshis, o.txid
+               FROM outputs o
+               JOIN transactions t ON o.transaction_id = t.transaction_id
+               WHERE o.user_id = ? AND o.basket_id = ? AND o.change = 1
+                 AND o.spent_by IS NULL AND o.spendable = 1
+                 AND t.status IN ('completed', 'unproven')
+               ORDER BY o.satoshis ASC"#,
+        )
+        .bind(user_id)
+        .bind(basket_id.0)
+        .fetch_all(storage.pool())
+        .await
+        .unwrap();
+
+        // Only the completed tx's output should be selected
+        assert_eq!(rows.len(), 1, "Should find exactly 1 selectable change output");
+        assert_eq!(rows[0].0, 30000, "Should select the completed tx output");
+        assert_eq!(rows[0].1, good_txid, "Selected output should be from completed tx");
+    }
+
+    // =========================================================================
+    // Test: abort_abandoned includes 'sending' transactions
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_abort_abandoned_includes_sending_status() {
+        let (storage, auth) = setup_storage().await;
+        let user_id = auth.user_id.unwrap();
+
+        // Create a 'sending' transaction that's old enough to be abandoned
+        let old_time = Utc::now() - chrono::Duration::hours(1);
+        let txid = "ab".repeat(32);
+        let reference = uuid::Uuid::new_v4().to_string();
+        let result = sqlx::query(
+            r#"INSERT INTO transactions (user_id, txid, status, reference, description, satoshis,
+                                          version, lock_time, is_outgoing, created_at, updated_at)
+               VALUES (?, ?, 'sending', ?, 'stuck sending tx', -1000, 1, 0, 1, ?, ?)"#,
+        )
+        .bind(user_id)
+        .bind(&txid)
+        .bind(&reference)
+        .bind(old_time)
+        .bind(old_time)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        let tx_id = result.last_insert_rowid();
+
+        // Verify it exists as 'sending'
+        let row: (String,) = sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(row.0, "sending");
+
+        // Create an input UTXO that was locked by the sending tx
+        let source_txid = "cd".repeat(32);
+        let source_tx_id = insert_transaction(&storage, user_id, &source_txid, "completed").await;
+        insert_output(
+            &storage,
+            user_id,
+            source_tx_id,
+            &source_txid,
+            0,
+            100_000,
+            false, // locked by spending tx
+            Some(tx_id),
+        )
+        .await;
+
+        // Create a change output from the sending tx (phantom)
+        insert_output(
+            &storage,
+            user_id,
+            tx_id,
+            &txid,
+            1,
+            90_000,
+            true, // marked spendable — this is the bug
+            None,
+        )
+        .await;
+
+        // Run abort_abandoned with a 5-minute timeout (tx is 1 hour old, should be caught)
+        MonitorStorage::abort_abandoned(
+            storage.as_ref(),
+            std::time::Duration::from_secs(300),
+        )
+        .await
+        .unwrap();
+
+        // Transaction should now be failed
+        let row: (String,) = sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            row.0, "failed",
+            "Stale sending transaction should be marked 'failed'"
+        );
+
+        // Change output should be non-spendable (phantom prevention)
+        let row: (bool,) = sqlx::query_as(
+            "SELECT spendable FROM outputs WHERE txid = ? AND vout = 1",
+        )
+        .bind(&txid)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert!(
+            !row.0,
+            "Change output from failed sending tx should be non-spendable"
+        );
+
+        // Input UTXO should be restored
+        let row: (bool, Option<i64>) = sqlx::query_as(
+            "SELECT spendable, spent_by FROM outputs WHERE txid = ? AND vout = 0",
+        )
+        .bind(&source_txid)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert!(row.0, "Input UTXO should be restored to spendable");
+        assert!(row.1.is_none(), "Input UTXO spent_by should be NULL");
+    }
+
+    // =========================================================================
+    // Test 3: Check 3 — Mark transactions completed when proof exists
+    // =========================================================================
+
     #[tokio::test]
     async fn test_review_status_syncs_completed_proof() {
         let (storage, auth) = setup_storage().await;

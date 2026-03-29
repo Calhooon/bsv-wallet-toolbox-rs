@@ -2957,14 +2957,76 @@ impl MonitorStorage for StorageSqlx {
                             .iter()
                             .any(|r| r.txid_results.iter().any(|tr| tr.double_spend));
 
+                        // Check for definitive rejection (invalid tx, not just service error)
+                        let is_invalid = results_vec.iter().any(|r| {
+                            r.txid_results.iter().any(|tr| {
+                                // ARC 46x codes = definitive tx rejection
+                                tr.status.contains("46") || tr.status.contains("invalid")
+                            })
+                        });
+
+                        let attempts = req.attempts + 1;
+
                         if is_double_spend {
                             sqlx::query("UPDATE proven_tx_reqs SET status = 'doubleSpend', updated_at = ? WHERE proven_tx_req_id = ?")
                                 .bind(now)
                                 .bind(req.proven_tx_req_id)
                                 .execute(self.pool())
                                 .await?;
+                        } else if is_invalid || attempts > 6 {
+                            // Definitive rejection or too many retries — mark invalid
+                            // and transition transaction to failed with output cleanup
+                            sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+                                .bind(attempts as i64)
+                                .bind(now)
+                                .bind(req.proven_tx_req_id)
+                                .execute(self.pool())
+                                .await?;
+
+                            // Transition transaction from sending to failed
+                            let tx_row: Option<(i64,)> = sqlx::query_as(
+                                "SELECT transaction_id FROM transactions WHERE txid = ? AND status = 'sending'",
+                            )
+                            .bind(&req.txid)
+                            .fetch_optional(self.pool())
+                            .await?;
+
+                            if let Some((transaction_id,)) = tx_row {
+                                // Mark change outputs non-spendable (phantom UTXO prevention)
+                                sqlx::query(
+                                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+                                )
+                                .bind(now)
+                                .bind(transaction_id)
+                                .execute(self.pool())
+                                .await?;
+
+                                // Restore input UTXOs
+                                sqlx::query(
+                                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
+                                )
+                                .bind(now)
+                                .bind(transaction_id)
+                                .execute(self.pool())
+                                .await?;
+
+                                // Mark transaction as failed
+                                sqlx::query(
+                                    "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+                                )
+                                .bind(now)
+                                .bind(transaction_id)
+                                .execute(self.pool())
+                                .await?;
+
+                                tracing::info!(
+                                    "send_waiting: tx {} failed after {} attempts — inputs restored, change outputs marked non-spendable",
+                                    req.txid, attempts
+                                );
+                            }
                         } else {
-                            sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = attempts + 1, updated_at = ? WHERE proven_tx_req_id = ?")
+                            sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+                                .bind(attempts as i64)
                                 .bind(now)
                                 .bind(req.proven_tx_req_id)
                                 .execute(self.pool())
@@ -2978,12 +3040,63 @@ impl MonitorStorage for StorageSqlx {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to broadcast tx {}: {}", req.txid, e);
-                    sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = attempts + 1, updated_at = ? WHERE proven_tx_req_id = ?")
-                        .bind(now)
-                        .bind(req.proven_tx_req_id)
-                        .execute(self.pool())
+                    let attempts = req.attempts + 1;
+                    tracing::warn!("Failed to broadcast tx {} (attempt {}): {}", req.txid, attempts, e);
+
+                    if attempts > 6 {
+                        // Too many retries — give up
+                        sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+                            .bind(attempts as i64)
+                            .bind(now)
+                            .bind(req.proven_tx_req_id)
+                            .execute(self.pool())
+                            .await?;
+
+                        let tx_row: Option<(i64,)> = sqlx::query_as(
+                            "SELECT transaction_id FROM transactions WHERE txid = ? AND status = 'sending'",
+                        )
+                        .bind(&req.txid)
+                        .fetch_optional(self.pool())
                         .await?;
+
+                        if let Some((transaction_id,)) = tx_row {
+                            sqlx::query(
+                                "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+                            )
+                            .bind(now)
+                            .bind(transaction_id)
+                            .execute(self.pool())
+                            .await?;
+
+                            sqlx::query(
+                                "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
+                            )
+                            .bind(now)
+                            .bind(transaction_id)
+                            .execute(self.pool())
+                            .await?;
+
+                            sqlx::query(
+                                "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+                            )
+                            .bind(now)
+                            .bind(transaction_id)
+                            .execute(self.pool())
+                            .await?;
+
+                            tracing::info!(
+                                "send_waiting: tx {} abandoned after {} attempts — inputs restored, outputs cleaned",
+                                req.txid, attempts
+                            );
+                        }
+                    } else {
+                        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+                            .bind(attempts as i64)
+                            .bind(now)
+                            .bind(req.proven_tx_req_id)
+                            .execute(self.pool())
+                            .await?;
+                    }
 
                     send_with_results.push(SendWithResult {
                         txid: req.txid.clone(),
@@ -3018,7 +3131,7 @@ impl MonitorStorage for StorageSqlx {
             cutoff
         );
 
-        // Query transactions older than cutoff in abortable statuses
+        // Query transactions older than cutoff in standard abortable statuses.
         let rows: Vec<(i64, i64, String)> = sqlx::query_as(
             r#"
             SELECT transaction_id, user_id, reference
@@ -3032,20 +3145,12 @@ impl MonitorStorage for StorageSqlx {
         .fetch_all(self.pool())
         .await?;
 
-        let count = rows.len();
-        if count == 0 {
-            return Ok(());
-        }
-
-        tracing::info!(
-            "abort_abandoned: found {} abandoned transactions to abort",
-            count
-        );
-
-        // Abort each abandoned transaction
-        for (tx_id, user_id, reference) in rows {
-            let auth = AuthId::with_user_id("admin", user_id);
-            let args = AbortActionArgs { reference };
+        // Abort each abandoned transaction via normal abort_action path
+        for (tx_id, user_id, reference) in &rows {
+            let auth = AuthId::with_user_id("admin", *user_id);
+            let args = AbortActionArgs {
+                reference: reference.clone(),
+            };
 
             match self.abort_action(&auth, args).await {
                 Ok(_) => {
@@ -3059,6 +3164,70 @@ impl MonitorStorage for StorageSqlx {
                     );
                 }
             }
+        }
+
+        // Handle stale 'sending' transactions separately.
+        // These can't go through abort_action (it rejects 'sending' status),
+        // so we do direct DB cleanup: mark change outputs non-spendable,
+        // restore input UTXOs, and transition to 'failed'.
+        let sending_rows: Vec<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT transaction_id
+            FROM transactions
+            WHERE status = 'sending'
+              AND is_outgoing = 1
+              AND created_at < ?
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_all(self.pool())
+        .await?;
+
+        if !sending_rows.is_empty() {
+            let now = Utc::now();
+            tracing::info!(
+                "abort_abandoned: cleaning up {} stale 'sending' transactions",
+                sending_rows.len()
+            );
+
+            for (transaction_id,) in &sending_rows {
+                // Mark change outputs non-spendable (phantom UTXO prevention)
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+                )
+                .bind(now)
+                .bind(transaction_id)
+                .execute(self.pool())
+                .await?;
+
+                // Restore input UTXOs locked by this transaction
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
+                )
+                .bind(now)
+                .bind(transaction_id)
+                .execute(self.pool())
+                .await?;
+
+                // Mark transaction as failed
+                sqlx::query(
+                    "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+                )
+                .bind(now)
+                .bind(transaction_id)
+                .execute(self.pool())
+                .await?;
+            }
+        }
+
+        let total = rows.len() + sending_rows.len();
+        if total > 0 {
+            tracing::info!(
+                "abort_abandoned: processed {} abandoned transactions ({} aborted, {} stale sending cleaned)",
+                total,
+                rows.len(),
+                sending_rows.len()
+            );
         }
 
         Ok(())
