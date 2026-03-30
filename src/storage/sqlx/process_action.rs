@@ -101,10 +101,8 @@ impl BroadcastOutcome {
 /// 4. Otherwise → ServiceError (transient, will retry)
 pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcome {
     // Collect all per-txid results across providers
-    let all_txid_results: Vec<&PostTxResultForTxid> = results
-        .iter()
-        .flat_map(|r| r.txid_results.iter())
-        .collect();
+    let all_txid_results: Vec<&PostTxResultForTxid> =
+        results.iter().flat_map(|r| r.txid_results.iter()).collect();
 
     // 1. Any success?
     let any_success = results.iter().any(|r| r.is_success());
@@ -144,9 +142,9 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
     }
 
     // 3. Any definitive rejection? (ARC 46x status codes = tx-level rejection)
-    let is_invalid = all_txid_results.iter().any(|tr| {
-        !tr.service_error && (tr.status.contains("46") || tr.status.contains("invalid"))
-    });
+    let is_invalid = all_txid_results
+        .iter()
+        .any(|tr| !tr.service_error && (tr.status.contains("46") || tr.status.contains("invalid")));
     if is_invalid {
         return BroadcastOutcome::InvalidTx { details };
     }
@@ -2194,9 +2192,13 @@ mod tests {
         let (storage, txid, transaction_id) = setup_processed_transaction().await;
 
         // --- Act: broadcast succeeded ---
-        update_transaction_status_after_broadcast_internal(&storage, &txid, &BroadcastOutcome::Success)
-            .await
-            .unwrap();
+        update_transaction_status_after_broadcast_internal(
+            &storage,
+            &txid,
+            &BroadcastOutcome::Success,
+        )
+        .await
+        .unwrap();
 
         // --- Verify: transaction's own output remains spendable ---
         let own_output =
@@ -2257,7 +2259,12 @@ mod tests {
         }
     }
 
-    fn make_error_result(name: &str, double_spend: bool, service_error: bool, status: &str) -> PostBeefResult {
+    fn make_error_result(
+        name: &str,
+        double_spend: bool,
+        service_error: bool,
+        status: &str,
+    ) -> PostBeefResult {
         PostBeefResult {
             name: name.to_string(),
             status: "error".to_string(),
@@ -2442,12 +2449,13 @@ mod tests {
         assert!(restored.get::<Option<i64>, _>("spent_by").is_none());
 
         // --- Verify: own outputs marked unspendable ---
-        let own = sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
-            .bind(transaction_id)
-            .bind(&txid)
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
+        let own =
+            sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
+                .bind(transaction_id)
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         assert!(!own.get::<bool, _>("spendable"));
 
         // --- Verify: transaction is 'failed' ---
@@ -2480,12 +2488,13 @@ mod tests {
             .unwrap();
 
         // Own outputs (change) should stay spendable — the tx may still succeed
-        let own = sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
-            .bind(transaction_id)
-            .bind(&txid)
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
+        let own =
+            sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
+                .bind(transaction_id)
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         assert!(
             own.get::<bool, _>("spendable"),
             "own outputs must stay spendable on service error"
