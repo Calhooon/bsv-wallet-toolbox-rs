@@ -2083,16 +2083,21 @@ where
                 }
             };
 
-            // If broadcast failed, mark the tx as failed and its outputs as
-            // unspendable to prevent ghost UTXOs from poisoning future txs.
+            // Broadcast failure is non-fatal for internalized transactions.
+            // The sender (e.g., x402 server) already broadcast the tx — our
+            // broadcast is just a courtesy to speed up confirmation. The outputs
+            // are valid and should remain spendable. The background proof monitor
+            // will eventually confirm the tx or detect a genuine double-spend.
+            //
+            // Previously this called mark_internalized_tx_failed() which set
+            // spendable=0 and status='failed', permanently killing valid refund
+            // outputs. This caused UTXO starvation on wallets with high x402
+            // payment volume (e.g., agent wallets).
             if broadcast_failed {
-                if let Err(e) = self.storage.mark_internalized_tx_failed(&txid).await {
-                    tracing::error!(
-                        txid = %txid,
-                        error = %e,
-                        "Failed to mark internalized tx as failed after broadcast failure"
-                    );
-                }
+                tracing::info!(
+                    txid = %txid,
+                    "Internalized tx broadcast failed — outputs kept spendable (sender already broadcast)"
+                );
             }
         }
 
