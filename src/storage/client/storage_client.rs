@@ -1035,8 +1035,11 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
     async fn update_transaction_status_after_broadcast(
         &self,
         txid: &str,
-        success: bool,
+        outcome: &crate::storage::sqlx::BroadcastOutcome,
     ) -> Result<()> {
+        // For remote client, map outcome to the legacy bool protocol.
+        // Remote servers may not support the classified outcome yet.
+        let success = outcome.is_success();
         let result: Result<()> = self
             .rpc_call(
                 "updateTransactionStatusAfterBroadcast",

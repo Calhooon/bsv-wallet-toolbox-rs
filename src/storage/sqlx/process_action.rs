@@ -18,6 +18,7 @@
 //! preventing partial updates that would leave the database in an inconsistent state.
 
 use crate::error::{Error, Result};
+use crate::services::traits::{PostBeefResult, PostTxResultForTxid};
 use crate::storage::entities::TransactionStatus;
 use crate::storage::traits::{
     SendWithResult, StorageProcessActionArgs, StorageProcessActionResults, WalletStorageReader,
@@ -27,6 +28,132 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection};
 
 use super::StorageSqlx;
+
+// =============================================================================
+// Broadcast Outcome Classification
+// =============================================================================
+
+/// Classified result of a broadcast attempt.
+///
+/// Matches the classification pattern used by the TS and Go reference
+/// wallet-toolbox implementations. Transient failures (ServiceError) keep
+/// inputs locked for background retry; permanent failures (DoubleSpend,
+/// InvalidTx) restore inputs immediately.
+#[derive(Debug, Clone)]
+pub enum BroadcastOutcome {
+    /// At least one provider accepted the transaction.
+    Success,
+    /// All providers returned service/network errors (transient — will retry).
+    ServiceError { details: Vec<String> },
+    /// A provider reported a double-spend (permanent).
+    DoubleSpend {
+        competing_txs: Vec<String>,
+        details: Vec<String>,
+    },
+    /// A provider definitively rejected the transaction (permanent).
+    InvalidTx { details: Vec<String> },
+}
+
+impl BroadcastOutcome {
+    /// Returns true if the broadcast was accepted by at least one provider.
+    pub fn is_success(&self) -> bool {
+        matches!(self, BroadcastOutcome::Success)
+    }
+
+    /// Returns true if the failure is transient and should be retried.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, BroadcastOutcome::ServiceError { .. })
+    }
+
+    /// Build a human-readable error message with per-provider details.
+    pub fn error_message(&self, txid: &str) -> Option<String> {
+        match self {
+            BroadcastOutcome::Success => None,
+            BroadcastOutcome::ServiceError { details } => Some(format!(
+                "Transaction broadcast for txid {} returned service errors (will retry): {}",
+                txid,
+                details.join("; ")
+            )),
+            BroadcastOutcome::DoubleSpend {
+                competing_txs,
+                details,
+            } => Some(format!(
+                "Transaction broadcast failed for txid {}: double spend detected. Competing txs: [{}]. Details: {}",
+                txid,
+                competing_txs.join(", "),
+                details.join("; ")
+            )),
+            BroadcastOutcome::InvalidTx { details } => Some(format!(
+                "Transaction broadcast failed for txid {}: transaction rejected. Details: {}",
+                txid,
+                details.join("; ")
+            )),
+        }
+    }
+}
+
+/// Classify broadcast results from multiple providers into a single outcome.
+///
+/// Priority order (matching TS/Go reference implementations):
+/// 1. Any success → Success
+/// 2. Any double-spend → DoubleSpend (permanent)
+/// 3. Any definitive rejection (ARC 46x codes) → InvalidTx (permanent)
+/// 4. Otherwise → ServiceError (transient, will retry)
+pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcome {
+    // Collect all per-txid results across providers
+    let all_txid_results: Vec<&PostTxResultForTxid> = results
+        .iter()
+        .flat_map(|r| r.txid_results.iter())
+        .collect();
+
+    // 1. Any success?
+    let any_success = results.iter().any(|r| r.is_success());
+    if any_success {
+        return BroadcastOutcome::Success;
+    }
+
+    // Collect error details from all providers
+    let details: Vec<String> = results
+        .iter()
+        .filter(|r| !r.is_success())
+        .map(|r| {
+            let txid_errors: String = r
+                .txid_results
+                .iter()
+                .filter(|tx| tx.status != "success")
+                .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("{}: {} [{}]", r.name, r.status, txid_errors)
+        })
+        .collect();
+
+    // 2. Any double-spend?
+    let is_double_spend = all_txid_results.iter().any(|tr| tr.double_spend);
+    if is_double_spend {
+        let competing_txs: Vec<String> = all_txid_results
+            .iter()
+            .filter_map(|tr| tr.competing_txs.as_ref())
+            .flatten()
+            .cloned()
+            .collect();
+        return BroadcastOutcome::DoubleSpend {
+            competing_txs,
+            details,
+        };
+    }
+
+    // 3. Any definitive rejection? (ARC 46x status codes = tx-level rejection)
+    let is_invalid = all_txid_results.iter().any(|tr| {
+        !tr.service_error && (tr.status.contains("46") || tr.status.contains("invalid"))
+    });
+    if is_invalid {
+        return BroadcastOutcome::InvalidTx { details };
+    }
+
+    // 4. Everything else is a transient service error
+    BroadcastOutcome::ServiceError { details }
+}
 
 // =============================================================================
 // Constants
@@ -802,18 +929,16 @@ fn generate_batch_id() -> String {
 /// This function is called by the wallet layer after attempting to broadcast a transaction.
 /// All database mutations are wrapped in a single SQL transaction for crash safety.
 ///
-/// On success:
-/// - Sets transaction status to 'unproven'
-/// - Sets proven_tx_req status to 'unmined'
-///
-/// On failure:
-/// - Sets transaction status to 'failed'
-/// - Sets proven_tx_req status to 'invalid'
-/// - Restores spent inputs to spendable state (clears spent_by)
+/// Behavior varies by `BroadcastOutcome`:
+/// - **Success**: tx→'unproven', req→'unmined'
+/// - **ServiceError** (transient): tx stays 'sending', req→'sending', inputs stay locked.
+///   The `SendWaitingTask` background monitor will pick these up and retry.
+/// - **DoubleSpend** (permanent): tx→'failed', req→'doubleSpend', inputs restored.
+/// - **InvalidTx** (permanent): tx→'failed', req→'invalid', inputs restored.
 pub async fn update_transaction_status_after_broadcast_internal(
     storage: &StorageSqlx,
     txid: &str,
-    success: bool,
+    outcome: &BroadcastOutcome,
 ) -> Result<()> {
     let mut tx = storage
         .pool()
@@ -823,71 +948,97 @@ pub async fn update_transaction_status_after_broadcast_internal(
 
     let now = Utc::now();
 
-    if success {
-        // Broadcast succeeded - update to unproven/unmined
-        sqlx::query("UPDATE transactions SET status = ?, updated_at = ? WHERE txid = ?")
-            .bind(TransactionStatus::Unproven.as_str())
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *tx)
-            .await?;
+    match outcome {
+        BroadcastOutcome::Success => {
+            // Broadcast succeeded — update to unproven/unmined
+            sqlx::query("UPDATE transactions SET status = ?, updated_at = ? WHERE txid = ?")
+                .bind(TransactionStatus::Unproven.as_str())
+                .bind(now)
+                .bind(txid)
+                .execute(&mut *tx)
+                .await?;
 
-        sqlx::query("UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?")
-            .bind(proven_tx_req_status::UNMINED)
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *tx)
-            .await?;
-    } else {
-        // Broadcast failed - mark as failed and restore inputs
-
-        // First, get the transaction_id
-        let row = sqlx::query("SELECT transaction_id FROM transactions WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *tx)
-            .await?;
-
-        if let Some(row) = row {
-            let transaction_id: i64 = row.get("transaction_id");
-
-            // Restore spent inputs: set spendable = true and clear spent_by
-            // for outputs that were being spent by this transaction
-            sqlx::query(
-                "UPDATE outputs SET spendable = 1, spent_by = NULL, spending_description = NULL, updated_at = ? WHERE spent_by = ?",
-            )
-            .bind(now)
-            .bind(transaction_id)
-            .execute(&mut *tx)
-            .await?;
-
-            // Mark this transaction's own outputs (change, etc.) as unspendable.
-            // They can never be spent since the parent tx was not broadcast.
-            sqlx::query(
-                "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
-            )
-            .bind(now)
-            .bind(transaction_id)
-            .execute(&mut *tx)
-            .await?;
-
-            // Update transaction status to failed
-            sqlx::query(
-                "UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?",
-            )
-            .bind(TransactionStatus::Failed.as_str())
-            .bind(now)
-            .bind(transaction_id)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query("UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?")
+                .bind(proven_tx_req_status::UNMINED)
+                .bind(now)
+                .bind(txid)
+                .execute(&mut *tx)
+                .await?;
         }
 
-        // Update proven_tx_req status to invalid
-        sqlx::query("UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?")
-            .bind("invalid")
+        BroadcastOutcome::ServiceError { .. } => {
+            // Transient failure — keep tx in 'sending', set req to 'sending'.
+            // Inputs stay locked. SendWaitingTask will retry.
+            // (Transaction status is already 'sending' from process_action, so only
+            // update proven_tx_req and bump attempts.)
+            sqlx::query(
+                "UPDATE proven_tx_reqs SET status = ?, attempts = attempts + 1, updated_at = ? WHERE txid = ?",
+            )
+            .bind(proven_tx_req_status::SENDING)
             .bind(now)
             .bind(txid)
             .execute(&mut *tx)
             .await?;
+
+            tracing::info!(
+                txid = %txid,
+                "Broadcast returned service error — transaction stays 'sending' for retry"
+            );
+        }
+
+        BroadcastOutcome::DoubleSpend { .. } | BroadcastOutcome::InvalidTx { .. } => {
+            // Permanent failure — mark as failed and restore inputs
+            let req_status = match outcome {
+                BroadcastOutcome::DoubleSpend { .. } => "doubleSpend",
+                _ => "invalid",
+            };
+
+            // Get the transaction_id for output updates
+            let row = sqlx::query("SELECT transaction_id FROM transactions WHERE txid = ?")
+                .bind(txid)
+                .fetch_optional(&mut *tx)
+                .await?;
+
+            if let Some(row) = row {
+                let transaction_id: i64 = row.get("transaction_id");
+
+                // Restore spent inputs: set spendable = true and clear spent_by
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 1, spent_by = NULL, spending_description = NULL, updated_at = ? WHERE spent_by = ?",
+                )
+                .bind(now)
+                .bind(transaction_id)
+                .execute(&mut *tx)
+                .await?;
+
+                // Mark this transaction's own outputs (change, etc.) as unspendable
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+                )
+                .bind(now)
+                .bind(transaction_id)
+                .execute(&mut *tx)
+                .await?;
+
+                // Update transaction status to failed
+                sqlx::query(
+                    "UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?",
+                )
+                .bind(TransactionStatus::Failed.as_str())
+                .bind(now)
+                .bind(transaction_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            // Update proven_tx_req status
+            sqlx::query("UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?")
+                .bind(req_status)
+                .bind(now)
+                .bind(txid)
+                .execute(&mut *tx)
+                .await?;
+        }
     }
 
     tx.commit()
@@ -1975,8 +2126,11 @@ mod tests {
             "input output should be non-spendable (spent) before broadcast failure"
         );
 
-        // --- Act: broadcast failed ---
-        update_transaction_status_after_broadcast_internal(&storage, &txid, false)
+        // --- Act: broadcast failed (permanent — InvalidTx) ---
+        let outcome = BroadcastOutcome::InvalidTx {
+            details: vec!["test: ARC rejected transaction".to_string()],
+        };
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
             .await
             .unwrap();
 
@@ -2040,7 +2194,7 @@ mod tests {
         let (storage, txid, transaction_id) = setup_processed_transaction().await;
 
         // --- Act: broadcast succeeded ---
-        update_transaction_status_after_broadcast_internal(&storage, &txid, true)
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &BroadcastOutcome::Success)
             .await
             .unwrap();
 
@@ -2075,5 +2229,266 @@ mod tests {
             .unwrap();
         let req_status: String = req_row.get("status");
         assert_eq!(req_status, "unmined");
+    }
+
+    // =========================================================================
+    // BroadcastOutcome classification tests
+    // =========================================================================
+
+    use crate::services::traits::{PostBeefResult, PostTxResultForTxid};
+
+    fn make_success_result(name: &str) -> PostBeefResult {
+        PostBeefResult {
+            name: name.to_string(),
+            status: "success".to_string(),
+            txid_results: vec![PostTxResultForTxid {
+                txid: "abc123".to_string(),
+                status: "success".to_string(),
+                double_spend: false,
+                competing_txs: None,
+                data: None,
+                service_error: false,
+                block_hash: None,
+                block_height: None,
+                notes: vec![],
+            }],
+            error: None,
+            notes: vec![],
+        }
+    }
+
+    fn make_error_result(name: &str, double_spend: bool, service_error: bool, status: &str) -> PostBeefResult {
+        PostBeefResult {
+            name: name.to_string(),
+            status: "error".to_string(),
+            txid_results: vec![PostTxResultForTxid {
+                txid: "abc123".to_string(),
+                status: status.to_string(),
+                double_spend,
+                competing_txs: if double_spend {
+                    Some(vec!["competing_txid_1".to_string()])
+                } else {
+                    None
+                },
+                data: Some(format!("Error from {}", name)),
+                service_error,
+                block_hash: None,
+                block_height: None,
+                notes: vec![],
+            }],
+            error: None,
+            notes: vec![],
+        }
+    }
+
+    #[test]
+    fn test_classify_success() {
+        let results = vec![make_success_result("taal")];
+        let outcome = classify_broadcast_results(&results);
+        assert!(outcome.is_success());
+        assert!(!outcome.is_transient());
+    }
+
+    #[test]
+    fn test_classify_double_spend() {
+        let results = vec![make_error_result("taal", true, false, "error")];
+        let outcome = classify_broadcast_results(&results);
+        assert!(matches!(outcome, BroadcastOutcome::DoubleSpend { .. }));
+        if let BroadcastOutcome::DoubleSpend { competing_txs, .. } = &outcome {
+            assert_eq!(competing_txs, &["competing_txid_1"]);
+        }
+    }
+
+    #[test]
+    fn test_classify_invalid_tx() {
+        let results = vec![make_error_result("taal", false, false, "460")];
+        let outcome = classify_broadcast_results(&results);
+        assert!(matches!(outcome, BroadcastOutcome::InvalidTx { .. }));
+    }
+
+    #[test]
+    fn test_classify_service_error() {
+        let results = vec![make_error_result("taal", false, true, "error")];
+        let outcome = classify_broadcast_results(&results);
+        assert!(matches!(outcome, BroadcastOutcome::ServiceError { .. }));
+        assert!(outcome.is_transient());
+    }
+
+    #[test]
+    fn test_classify_mixed_double_spend_takes_priority() {
+        // One provider says double-spend, another says service error
+        let results = vec![
+            make_error_result("taal", true, false, "error"),
+            make_error_result("gorilla", false, true, "error"),
+        ];
+        let outcome = classify_broadcast_results(&results);
+        assert!(matches!(outcome, BroadcastOutcome::DoubleSpend { .. }));
+    }
+
+    #[test]
+    fn test_classify_success_overrides_errors() {
+        // One provider succeeds, another fails
+        let results = vec![
+            make_success_result("taal"),
+            make_error_result("gorilla", false, true, "error"),
+        ];
+        let outcome = classify_broadcast_results(&results);
+        assert!(outcome.is_success());
+    }
+
+    #[test]
+    fn test_classify_empty_results() {
+        let results: Vec<PostBeefResult> = vec![];
+        let outcome = classify_broadcast_results(&results);
+        // No results = no success, no double spend, no invalid → service error
+        assert!(matches!(outcome, BroadcastOutcome::ServiceError { .. }));
+    }
+
+    #[test]
+    fn test_error_message_includes_details() {
+        let outcome = BroadcastOutcome::DoubleSpend {
+            competing_txs: vec!["tx1".to_string(), "tx2".to_string()],
+            details: vec!["taal: error [DOUBLE_SPEND]".to_string()],
+        };
+        let msg = outcome.error_message("abc123").unwrap();
+        assert!(msg.contains("abc123"));
+        assert!(msg.contains("double spend"));
+        assert!(msg.contains("tx1"));
+        assert!(msg.contains("tx2"));
+    }
+
+    // =========================================================================
+    // Differentiated broadcast outcome status update tests
+    // =========================================================================
+
+    /// Test that ServiceError keeps inputs locked and sets req to 'sending'.
+    /// This is the key divergence fix — transient failures no longer restore inputs.
+    #[tokio::test]
+    async fn test_service_error_keeps_inputs_locked() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        // Verify inputs are currently locked (spendable=0)
+        let input_before = sqlx::query("SELECT spendable FROM outputs WHERE spent_by = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert!(!input_before.get::<bool, _>("spendable"));
+
+        // --- Act: service error (transient) ---
+        let outcome = BroadcastOutcome::ServiceError {
+            details: vec!["taal: timeout".to_string()],
+        };
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // --- Verify: inputs stay LOCKED (not restored) ---
+        let input_after = sqlx::query("SELECT spendable FROM outputs WHERE spent_by = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert!(
+            !input_after.get::<bool, _>("spendable"),
+            "inputs must stay locked on service error for retry"
+        );
+
+        // --- Verify: proven_tx_req status is 'sending' (retry eligible) ---
+        let req_row = sqlx::query("SELECT status, attempts FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(req_row.get::<String, _>("status"), "sending");
+        // Attempts should have been incremented (initial value from process_action + 1)
+        assert!(
+            req_row.get::<i32, _>("attempts") >= 1,
+            "attempts should be bumped on service error"
+        );
+
+        // --- Verify: transaction stays in 'sending' (not 'failed') ---
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        // Transaction was set to 'sending' by process_action; service error doesn't change it
+        assert_eq!(tx_row.get::<String, _>("status"), "sending");
+    }
+
+    /// Test that DoubleSpend restores inputs and sets req to 'doubleSpend'.
+    #[tokio::test]
+    async fn test_double_spend_restores_inputs() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        // --- Act: double spend (permanent) ---
+        let outcome = BroadcastOutcome::DoubleSpend {
+            competing_txs: vec!["competing_abc".to_string()],
+            details: vec!["taal: DOUBLE_SPEND_ATTEMPTED".to_string()],
+        };
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // --- Verify: inputs restored ---
+        let restored = sqlx::query(
+            "SELECT spendable, spent_by FROM outputs WHERE txid = '0000000000000000000000000000000000000000000000000000000000000001'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert!(restored.get::<bool, _>("spendable"));
+        assert!(restored.get::<Option<i64>, _>("spent_by").is_none());
+
+        // --- Verify: own outputs marked unspendable ---
+        let own = sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
+            .bind(transaction_id)
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert!(!own.get::<bool, _>("spendable"));
+
+        // --- Verify: transaction is 'failed' ---
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(tx_row.get::<String, _>("status"), "failed");
+
+        // --- Verify: proven_tx_req is 'doubleSpend' ---
+        let req = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(req.get::<String, _>("status"), "doubleSpend");
+    }
+
+    /// Test that ServiceError does NOT mark own outputs as unspendable.
+    #[tokio::test]
+    async fn test_service_error_keeps_own_outputs_spendable() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        let outcome = BroadcastOutcome::ServiceError {
+            details: vec!["network timeout".to_string()],
+        };
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // Own outputs (change) should stay spendable — the tx may still succeed
+        let own = sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
+            .bind(transaction_id)
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert!(
+            own.get::<bool, _>("spendable"),
+            "own outputs must stay spendable on service error"
+        );
     }
 }

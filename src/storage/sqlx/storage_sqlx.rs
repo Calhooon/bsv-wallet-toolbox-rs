@@ -2273,10 +2273,10 @@ impl WalletStorageWriter for StorageSqlx {
     async fn update_transaction_status_after_broadcast(
         &self,
         txid: &str,
-        success: bool,
+        outcome: &super::BroadcastOutcome,
     ) -> Result<()> {
         super::process_action::update_transaction_status_after_broadcast_internal(
-            self, txid, success,
+            self, txid, outcome,
         )
         .await
     }

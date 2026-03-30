@@ -36,6 +36,7 @@ use tokio::sync::RwLock;
 use crate::error::{Error, Result};
 use crate::services::{Chain, WalletServices};
 use crate::storage::entities::{TableCertificate, TableCertificateField, TransactionStatus};
+use crate::storage::sqlx::{classify_broadcast_results, BroadcastOutcome};
 use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
 use crate::wallet::lookup::OverlayLookupResolver;
 
@@ -1409,12 +1410,11 @@ where
             // Broadcast the transaction if not no_send and not delayed
             // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
             if !no_send && !accept_delayed_broadcast {
-                let broadcast_success = if let Some(ref beef_bytes) = full_beef_bytes {
+                let broadcast_outcome = if let Some(ref beef_bytes) = full_beef_bytes {
                     let txid_strings = vec![txid.clone()];
                     // DEBUG: Validate BEEF structure and dump to file
                     match bsv_rs::transaction::Beef::from_binary(beef_bytes) {
                         Ok(parsed) => {
-                            // Dump BEEF to /tmp for analysis
                             let dump_path = format!("/tmp/beef-{}.hex", &txid[..8]);
                             let _ = std::fs::write(&dump_path, hex::encode(beef_bytes));
                             tracing::info!(
@@ -1442,61 +1442,73 @@ where
                     );
                     match self.services.post_beef(beef_bytes, &txid_strings).await {
                         Ok(results) => {
-                            // BUG-005 FIX: Check if at least one provider succeeded
-                            let any_success = results.iter().any(|r| r.status == "success");
-                            if any_success {
-                                tracing::info!(txid = %txid, "Transaction broadcast successfully");
-                                true
-                            } else {
-                                let errors: Vec<_> = results
-                                    .iter()
-                                    .filter(|r| r.status != "success")
-                                    .map(|r| {
-                                        let txid_errors: String = r
-                                            .txid_results
-                                            .iter()
-                                            .filter(|tx| tx.status != "success")
-                                            .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
-                                            .collect::<Vec<_>>()
-                                            .join("; ");
-                                        format!("{}: {} [{}]", r.name, r.status, txid_errors)
-                                    })
-                                    .collect();
-                                tracing::error!(
-                                    txid = %txid,
-                                    errors = ?errors,
-                                    "All broadcast providers returned non-success status"
-                                );
-                                false
+                            let outcome = classify_broadcast_results(&results);
+                            match &outcome {
+                                BroadcastOutcome::Success => {
+                                    tracing::info!(txid = %txid, "Transaction broadcast successfully");
+                                }
+                                BroadcastOutcome::ServiceError { details } => {
+                                    tracing::warn!(
+                                        txid = %txid,
+                                        errors = ?details,
+                                        "Broadcast returned service errors — will retry via SendWaitingTask"
+                                    );
+                                }
+                                BroadcastOutcome::DoubleSpend { details, .. } => {
+                                    tracing::error!(
+                                        txid = %txid,
+                                        errors = ?details,
+                                        "Broadcast detected double spend"
+                                    );
+                                }
+                                BroadcastOutcome::InvalidTx { details } => {
+                                    tracing::error!(
+                                        txid = %txid,
+                                        errors = ?details,
+                                        "Broadcast rejected — transaction invalid"
+                                    );
+                                }
                             }
+                            outcome
                         }
                         Err(e) => {
-                            tracing::error!(txid = %txid, error = %e, "Broadcast failed");
-                            false
+                            // Network/service error is transient — will retry
+                            tracing::warn!(txid = %txid, error = %e, "Broadcast service error — will retry");
+                            BroadcastOutcome::ServiceError {
+                                details: vec![e.to_string()],
+                            }
                         }
                     }
                 } else {
                     tracing::warn!(txid = %txid, "No BEEF available for broadcast");
-                    false
+                    BroadcastOutcome::InvalidTx {
+                        details: vec!["No BEEF available for broadcast".to_string()],
+                    }
                 };
 
-                // Update transaction status based on broadcast result
-                // On success: status -> 'unproven', inputs stay spent
-                // On failure: status -> 'failed', inputs restored to spendable
+                // Update transaction status based on classified broadcast outcome
                 if let Err(e) = self
                     .storage
-                    .update_transaction_status_after_broadcast(&txid, broadcast_success)
+                    .update_transaction_status_after_broadcast(&txid, &broadcast_outcome)
                     .await
                 {
                     tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
                 }
 
-                // If broadcast failed, return an error
-                if !broadcast_success {
-                    return Err(bsv_rs::Error::WalletError(format!(
-                        "Transaction broadcast failed for txid {}. Transaction marked as failed and inputs restored.",
-                        txid
-                    )));
+                // On permanent failure, return an error with details
+                // On service error (transient), the tx stays in 'sending' for retry — not an error
+                match &broadcast_outcome {
+                    BroadcastOutcome::DoubleSpend { .. } | BroadcastOutcome::InvalidTx { .. } => {
+                        return Err(bsv_rs::Error::WalletError(
+                            broadcast_outcome
+                                .error_message(&txid)
+                                .unwrap_or_else(|| format!(
+                                    "Transaction broadcast failed for txid {}. Transaction marked as failed and inputs restored.",
+                                    txid
+                                )),
+                        ));
+                    }
+                    _ => {} // Success or ServiceError — continue
                 }
             }
 
@@ -1773,77 +1785,80 @@ where
         // If not no_send and not delayed, broadcast the transaction
         // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
         if !is_no_send && !is_delayed {
-            let broadcast_success = if let Some(ref input_beef_bytes) = pending_tx.input_beef {
+            let broadcast_outcome = if let Some(ref input_beef_bytes) = pending_tx.input_beef {
                 // Create a new BEEF that includes both the signed tx and its ancestors
                 match bsv_rs::transaction::Beef::from_binary(input_beef_bytes) {
                     Ok(mut broadcast_beef) => {
-                        // Add the signed transaction (no bump index since it's new/unproven)
                         broadcast_beef.merge_raw_tx(signed_tx.clone(), None);
-
-                        // Serialize and broadcast
                         let beef_bytes = broadcast_beef.to_binary();
                         let txid_strings = vec![txid.clone()];
                         match self.services.post_beef(&beef_bytes, &txid_strings).await {
                             Ok(results) => {
-                                // BUG-005 FIX: Check if at least one provider succeeded
-                                let any_success = results.iter().any(|r| r.status == "success");
-                                if any_success {
-                                    tracing::info!(txid = %txid, "Transaction broadcast successfully (sign_action)");
-                                    true
-                                } else {
-                                    let errors: Vec<_> = results
-                                        .iter()
-                                        .filter(|r| r.status != "success")
-                                        .map(|r| {
-                                            let txid_errors: String = r
-                                                .txid_results
-                                                .iter()
-                                                .filter(|tx| tx.status != "success")
-                                                .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
-                                                .collect::<Vec<_>>()
-                                                .join("; ");
-                                            format!("{}: {} [{}]", r.name, r.status, txid_errors)
-                                        })
-                                        .collect();
-                                    tracing::error!(
-                                        txid = %txid,
-                                        errors = ?errors,
-                                        "All broadcast providers returned non-success status (sign_action)"
-                                    );
-                                    false
+                                let outcome = classify_broadcast_results(&results);
+                                match &outcome {
+                                    BroadcastOutcome::Success => {
+                                        tracing::info!(txid = %txid, "Transaction broadcast successfully (sign_action)");
+                                    }
+                                    BroadcastOutcome::ServiceError { details } => {
+                                        tracing::warn!(
+                                            txid = %txid,
+                                            errors = ?details,
+                                            "Broadcast returned service errors — will retry (sign_action)"
+                                        );
+                                    }
+                                    BroadcastOutcome::DoubleSpend { details, .. } => {
+                                        tracing::error!(txid = %txid, errors = ?details, "Double spend detected (sign_action)");
+                                    }
+                                    BroadcastOutcome::InvalidTx { details } => {
+                                        tracing::error!(txid = %txid, errors = ?details, "Transaction rejected (sign_action)");
+                                    }
                                 }
+                                outcome
                             }
                             Err(e) => {
-                                tracing::error!(txid = %txid, error = %e, "Broadcast failed (sign_action)");
-                                false
+                                tracing::warn!(txid = %txid, error = %e, "Broadcast service error — will retry (sign_action)");
+                                BroadcastOutcome::ServiceError {
+                                    details: vec![e.to_string()],
+                                }
                             }
                         }
                     }
                     Err(e) => {
                         tracing::error!(txid = %txid, error = %e, "Failed to parse input BEEF (sign_action)");
-                        false
+                        BroadcastOutcome::InvalidTx {
+                            details: vec![format!("Failed to parse input BEEF: {}", e)],
+                        }
                     }
                 }
             } else {
                 tracing::warn!(txid = %txid, "No input_beef available for broadcast (sign_action)");
-                false
+                BroadcastOutcome::InvalidTx {
+                    details: vec!["No input_beef available for broadcast".to_string()],
+                }
             };
 
-            // Update transaction status based on broadcast result
+            // Update transaction status based on classified broadcast outcome
             if let Err(e) = self
                 .storage
-                .update_transaction_status_after_broadcast(&txid, broadcast_success)
+                .update_transaction_status_after_broadcast(&txid, &broadcast_outcome)
                 .await
             {
                 tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
             }
 
-            // If broadcast failed, return an error
-            if !broadcast_success {
-                return Err(bsv_rs::Error::WalletError(format!(
-                    "Transaction broadcast failed for txid {}. Transaction marked as failed and inputs restored.",
-                    txid
-                )));
+            // On permanent failure, return an error with details
+            match &broadcast_outcome {
+                BroadcastOutcome::DoubleSpend { .. } | BroadcastOutcome::InvalidTx { .. } => {
+                    return Err(bsv_rs::Error::WalletError(
+                        broadcast_outcome
+                            .error_message(&txid)
+                            .unwrap_or_else(|| format!(
+                                "Transaction broadcast failed for txid {}. Transaction marked as failed and inputs restored.",
+                                txid
+                            )),
+                    ));
+                }
+                _ => {} // Success or ServiceError — continue
             }
         }
 

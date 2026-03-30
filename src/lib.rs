@@ -73,9 +73,9 @@ pub use storage::{
     WalletStorageWriter,
 };
 
-// Re-export StorageSqlx when sqlite or mysql feature is enabled
+// Re-export StorageSqlx and BroadcastOutcome when sqlite or mysql feature is enabled
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
-pub use storage::StorageSqlx;
+pub use storage::{classify_broadcast_results, BroadcastOutcome, StorageSqlx};
 
 // Re-export StorageClient when remote feature is enabled
 #[cfg(feature = "remote")]

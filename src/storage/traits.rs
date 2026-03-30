@@ -591,19 +591,20 @@ pub trait WalletStorageWriter: WalletStorageReader {
     /// Update transaction status after broadcast attempt.
     ///
     /// This method is called by the wallet layer after attempting to broadcast a transaction.
-    /// It updates the transaction and proven_tx_req statuses based on whether the broadcast
-    /// succeeded or failed.
+    /// It updates the transaction and proven_tx_req statuses based on the classified outcome.
     ///
-    /// On success: Sets transaction status to 'unproven' and proven_tx_req to 'unmined'.
-    /// On failure: Sets transaction status to 'failed' and restores spent inputs to spendable.
+    /// - Success: tx→'unproven', req→'unmined'
+    /// - ServiceError (transient): tx stays 'sending', req→'sending', inputs stay locked for retry
+    /// - DoubleSpend (permanent): tx→'failed', req→'doubleSpend', inputs restored
+    /// - InvalidTx (permanent): tx→'failed', req→'invalid', inputs restored
     ///
     /// # Arguments
     /// * `txid` - The transaction ID
-    /// * `success` - Whether the broadcast succeeded
+    /// * `outcome` - The classified broadcast result
     async fn update_transaction_status_after_broadcast(
         &self,
         txid: &str,
-        success: bool,
+        outcome: &crate::storage::sqlx::BroadcastOutcome,
     ) -> Result<()>;
 
     /// Review storage status and clean up aged items.

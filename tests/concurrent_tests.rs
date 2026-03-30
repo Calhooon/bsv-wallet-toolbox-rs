@@ -562,7 +562,10 @@ mod concurrent {
         // Race: broadcast success vs abort
         let broadcast_handle = tokio::spawn(async move {
             s_broadcast
-                .update_transaction_status_after_broadcast(&txid_clone, true)
+                .update_transaction_status_after_broadcast(
+                    &txid_clone,
+                    &bsv_wallet_toolbox_rs::BroadcastOutcome::Success,
+                )
                 .await
         });
 
