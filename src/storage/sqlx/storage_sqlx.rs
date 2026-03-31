@@ -27,7 +27,8 @@ use bsv_rs::wallet::{
 };
 
 use super::create_action::{
-    get_stored_beef, get_tx_with_proof, parse_input_txids, MAX_BEEF_RECURSION_DEPTH,
+    get_stored_beef, get_tx_with_proof, parse_input_txids, rebuild_beef_for_broadcast,
+    MAX_BEEF_RECURSION_DEPTH,
 };
 
 /// Default maximum length for output scripts stored in the outputs table.
@@ -2901,25 +2902,90 @@ impl MonitorStorage for StorageSqlx {
                 }
             };
 
-            // Build BEEF from raw_tx and input_beef
-            let beef_bytes = if let Some(ref input_beef) = req.input_beef {
-                // Merge raw_tx into input_beef to create broadcast-ready BEEF
-                use bsv_rs::transaction::Beef;
-                match Beef::from_binary(input_beef) {
-                    Ok(mut beef) => {
-                        beef.merge_raw_tx(raw_tx.clone(), None);
-                        beef.to_binary()
-                    }
+            // Rebuild BEEF from current DB state at broadcast time.
+            // This matches Go's GetBEEFForTxIDs approach: instead of just upgrading
+            // proofs on txs already in the stored BEEF (compact_stored_beef), we walk
+            // the full ancestor chain from scratch. This picks up:
+            //   - Ancestors that were missing when input_beef was first built
+            //   - Merkle proofs that arrived after create_action
+            //   - Transactions internalized from other actions
+            let beef_bytes = {
+                // Extract input txids from the raw transaction
+                let input_txids = match parse_input_txids(&raw_tx) {
+                    Ok(txids) => txids,
                     Err(e) => {
-                        tracing::warn!("Failed to parse input_beef for txid {}: {e}", req.txid);
+                        tracing::warn!(
+                            "send_waiting: failed to parse inputs from raw_tx for {}: {e}",
+                            req.txid
+                        );
                         continue;
                     }
+                };
+
+                if input_txids.is_empty() {
+                    // Coinbase or no inputs — cannot build BEEF
+                    tracing::warn!(
+                        "No input txids parsed for txid {} — skipping broadcast",
+                        req.txid
+                    );
+                    continue;
                 }
-            } else {
-                // No input_beef — cannot broadcast as BEEF. Skip instead of
-                // sending raw tx bytes to a BEEF endpoint (causes parse errors).
-                tracing::warn!("No input_beef for txid {} — skipping broadcast", req.txid);
-                continue;
+
+                // Rebuild BEEF from DB state
+                let mut conn = self.pool().acquire().await?;
+                let mut beef = match rebuild_beef_for_broadcast(&mut conn, &input_txids, Some(self))
+                    .await
+                {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(
+                            "send_waiting: rebuild_beef_for_broadcast failed for {}: {e}",
+                            req.txid
+                        );
+                        // Fall back to stored input_beef + compact if rebuild fails
+                        if let Some(ref input_beef) = req.input_beef {
+                            match Beef::from_binary(input_beef) {
+                                Ok(mut fallback_beef) => {
+                                    if let Err(e2) = super::create_action::compact_stored_beef(
+                                        &mut conn,
+                                        &mut fallback_beef,
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(
+                                                "send_waiting: compact fallback also failed for {}: {e2}",
+                                                req.txid
+                                            );
+                                    }
+                                    fallback_beef
+                                }
+                                Err(e2) => {
+                                    tracing::warn!(
+                                        "send_waiting: fallback parse also failed for {}: {e2}",
+                                        req.txid
+                                    );
+                                    continue;
+                                }
+                            }
+                        } else {
+                            continue;
+                        }
+                    }
+                };
+
+                // Merge the transaction being broadcast into the BEEF
+                beef.merge_raw_tx(raw_tx.clone(), None);
+
+                // Validate BEEF structure before broadcast (diagnostic)
+                if let Err(e) = validate_beef_for_broadcast(&beef, &req.txid) {
+                    tracing::warn!(
+                        "send_waiting: BEEF validation warning for {}: {}",
+                        req.txid,
+                        e
+                    );
+                }
+
+                beef.to_binary()
             };
 
             // Update status to sending
@@ -2972,14 +3038,127 @@ impl MonitorStorage for StorageSqlx {
                         let attempts = req.attempts + 1;
 
                         if is_double_spend {
+                            // Double-spend: reconcile against chain first (like the
+                            // immediate broadcast path does), then UTXO-verify inputs.
+                            let reconciled =
+                                super::process_action::reconcile_tx_status_via_services(
+                                    &*services, &req.txid,
+                                )
+                                .await;
+
+                            if reconciled {
+                                // Tx is actually alive on chain — treat as success
+                                sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
+                                    .bind(now)
+                                    .bind(req.proven_tx_req_id)
+                                    .execute(self.pool())
+                                    .await?;
+                                sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
+                                    .bind(now)
+                                    .bind(&req.txid)
+                                    .execute(self.pool())
+                                    .await?;
+                                tracing::info!(
+                                    "send_waiting: tx {} reported as double-spend but found alive on chain — treating as success",
+                                    req.txid
+                                );
+                                send_with_results.push(SendWithResult {
+                                    txid: req.txid.clone(),
+                                    status: "unproven".to_string(),
+                                });
+                                continue;
+                            }
+
+                            // Confirmed double-spend — UTXO-verify before restoring inputs
                             sqlx::query("UPDATE proven_tx_reqs SET status = 'doubleSpend', updated_at = ? WHERE proven_tx_req_id = ?")
                                 .bind(now)
                                 .bind(req.proven_tx_req_id)
                                 .execute(self.pool())
                                 .await?;
+
+                            let tx_row: Option<(i64,)> = sqlx::query_as(
+                                "SELECT transaction_id FROM transactions WHERE txid = ?",
+                            )
+                            .bind(&req.txid)
+                            .fetch_optional(self.pool())
+                            .await?;
+
+                            if let Some((transaction_id,)) = tx_row {
+                                // Mark change outputs non-spendable
+                                sqlx::query(
+                                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+                                )
+                                .bind(now)
+                                .bind(transaction_id)
+                                .execute(self.pool())
+                                .await?;
+
+                                // UTXO-verified restore: only restore inputs confirmed unspent
+                                let input_rows = sqlx::query(
+                                    r#"
+                                    SELECT o.output_id, t.txid AS source_txid, o.vout, o.locking_script
+                                    FROM outputs o
+                                    JOIN transactions t ON o.transaction_id = t.transaction_id
+                                    WHERE o.spent_by = ?
+                                    "#,
+                                )
+                                .bind(transaction_id)
+                                .fetch_all(self.pool())
+                                .await?;
+
+                                let mut restored = 0u32;
+                                for input_row in &input_rows {
+                                    let output_id: i64 = input_row.get("output_id");
+                                    let source_txid: String = input_row.get("source_txid");
+                                    let vout: i32 = input_row.get("vout");
+                                    let locking_script: Option<Vec<u8>> =
+                                        input_row.get("locking_script");
+                                    let script = locking_script.as_deref().unwrap_or(&[]);
+
+                                    let is_utxo = services
+                                        .is_utxo(&source_txid, vout as u32, script)
+                                        .await
+                                        .unwrap_or(false);
+
+                                    if is_utxo {
+                                        sqlx::query(
+                                            "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
+                                        )
+                                        .bind(now)
+                                        .bind(output_id)
+                                        .execute(self.pool())
+                                        .await?;
+                                        restored += 1;
+                                    } else {
+                                        tracing::info!(
+                                            "send_waiting: input {}:{} consumed on-chain — NOT restoring",
+                                            source_txid, vout
+                                        );
+                                    }
+
+                                    // Rate limit: ~3 req/sec
+                                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                                }
+
+                                // Mark transaction as failed
+                                sqlx::query(
+                                    "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+                                )
+                                .bind(now)
+                                .bind(transaction_id)
+                                .execute(self.pool())
+                                .await?;
+
+                                tracing::info!(
+                                    "send_waiting: tx {} double-spend confirmed — {}/{} inputs restored (UTXO-verified)",
+                                    req.txid, restored, input_rows.len()
+                                );
+                            }
                         } else if is_invalid || attempts > 6 {
                             // Definitive rejection or too many retries — mark invalid
-                            // and transition transaction to failed with output cleanup
+                            // and transition transaction to failed with output cleanup.
+                            // Safe to blindly restore: tx was malformed or never broadcast
+                            // successfully, inputs weren't spent by a competitor.
                             sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
                                 .bind(attempts as i64)
                                 .bind(now)
@@ -3005,7 +3184,7 @@ impl MonitorStorage for StorageSqlx {
                                 .execute(self.pool())
                                 .await?;
 
-                                // Restore input UTXOs
+                                // Restore input UTXOs (safe for invalid/exhausted retries)
                                 sqlx::query(
                                     "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
                                 )
@@ -3178,10 +3357,14 @@ impl MonitorStorage for StorageSqlx {
         // Handle stale 'sending' transactions separately.
         // These can't go through abort_action (it rejects 'sending' status),
         // so we do direct DB cleanup: mark change outputs non-spendable,
-        // restore input UTXOs, and transition to 'failed'.
-        let sending_rows: Vec<(i64,)> = sqlx::query_as(
+        // restore input UTXOs (with UTXO verification), and transition to 'failed'.
+        //
+        // Because these transactions may have been broadcast and double-spent,
+        // we verify each input via is_utxo() before restoring. This prevents
+        // the feedback loop where dead UTXOs are re-marked as spendable.
+        let sending_rows: Vec<(i64, String)> = sqlx::query_as(
             r#"
-            SELECT transaction_id
+            SELECT transaction_id, txid
             FROM transactions
             WHERE status = 'sending'
               AND is_outgoing = 1
@@ -3199,7 +3382,10 @@ impl MonitorStorage for StorageSqlx {
                 sending_rows.len()
             );
 
-            for (transaction_id,) in &sending_rows {
+            // Get services for UTXO verification (best-effort)
+            let services = self.get_services().ok();
+
+            for (transaction_id, txid) in &sending_rows {
                 // Mark change outputs non-spendable (phantom UTXO prevention)
                 sqlx::query(
                     "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
@@ -3209,14 +3395,70 @@ impl MonitorStorage for StorageSqlx {
                 .execute(self.pool())
                 .await?;
 
-                // Restore input UTXOs locked by this transaction
-                sqlx::query(
-                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
-                )
-                .bind(now)
-                .bind(transaction_id)
-                .execute(self.pool())
-                .await?;
+                // UTXO-verified restore of input UTXOs.
+                // These transactions were in 'sending' and may have been broadcast,
+                // so we verify each input is still unspent before restoring.
+                if let Some(ref svc) = services {
+                    let input_rows = sqlx::query(
+                        r#"
+                        SELECT o.output_id, t.txid AS source_txid, o.vout, o.locking_script
+                        FROM outputs o
+                        JOIN transactions t ON o.transaction_id = t.transaction_id
+                        WHERE o.spent_by = ?
+                        "#,
+                    )
+                    .bind(transaction_id)
+                    .fetch_all(self.pool())
+                    .await?;
+
+                    let mut restored = 0u32;
+                    for input_row in &input_rows {
+                        let output_id: i64 = input_row.get("output_id");
+                        let source_txid: String = input_row.get("source_txid");
+                        let vout: i32 = input_row.get("vout");
+                        let locking_script: Option<Vec<u8>> = input_row.get("locking_script");
+                        let script = locking_script.as_deref().unwrap_or(&[]);
+
+                        let is_utxo = svc
+                            .is_utxo(&source_txid, vout as u32, script)
+                            .await
+                            .unwrap_or(false);
+
+                        if is_utxo {
+                            sqlx::query(
+                                "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
+                            )
+                            .bind(now)
+                            .bind(output_id)
+                            .execute(self.pool())
+                            .await?;
+                            restored += 1;
+                        } else {
+                            tracing::info!(
+                                "abort_abandoned: input {}:{} not a UTXO — NOT restoring",
+                                source_txid,
+                                vout
+                            );
+                        }
+
+                        // Rate limit: ~3 req/sec
+                        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                    }
+
+                    tracing::info!(
+                        "abort_abandoned: tx {} — {}/{} inputs restored (UTXO-verified)",
+                        txid,
+                        restored,
+                        input_rows.len()
+                    );
+                } else {
+                    // No services available — fail-safe: do NOT restore inputs.
+                    // They'll be picked up on the next run when services are available.
+                    tracing::warn!(
+                        "abort_abandoned: tx {} — services unavailable, inputs stay locked",
+                        txid
+                    );
+                }
 
                 // Mark transaction as failed
                 sqlx::query(
@@ -3406,30 +3648,19 @@ impl MonitorStorage for StorageSqlx {
             );
         }
 
-        // Check 2: Release outputs spent by failed transactions back to spendable
-        let released_count = sqlx::query(
-            r#"
-            UPDATE outputs SET spent_by = NULL, spendable = 1, updated_at = ?
-            WHERE spent_by IN (
-                SELECT transaction_id FROM transactions WHERE status = 'failed'
-            )
-            "#,
-        )
-        .bind(now)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
-
-        if released_count > 0 {
-            log.push_str(&format!(
-                "Released {} outputs from failed transactions\n",
-                released_count
-            ));
-            tracing::debug!(
-                "review_status: released {} outputs locked by failed txs",
-                released_count
-            );
-        }
+        // Check 2: REMOVED — blind re-marking of doubleSpend inputs creates a
+        // feedback loop. Previously this ran:
+        //   UPDATE outputs SET spent_by = NULL, spendable = 1
+        //   WHERE spent_by IN (SELECT transaction_id FROM transactions WHERE status = 'failed')
+        //
+        // This is the most dangerous path: it runs every ~15 minutes and blanket
+        // re-marks ALL outputs from failed txs as spendable, including those consumed
+        // on-chain by competing transactions (doubleSpend). The wallet then picks them
+        // up again, broadcasts, gets doubleSpend again → infinite loop.
+        //
+        // Inputs from failed txs are now restored ONLY via UTXO-verified rollback
+        // paths in: update_transaction_status_after_broadcast (process_action.rs),
+        // send_waiting_transactions, and abort_abandoned.
 
         // Check 3: Mark transactions completed when proof exists
         let rows: Vec<(String, String)> = sqlx::query_as(
@@ -4234,6 +4465,102 @@ impl StorageSqlx {
 
         Ok(result.rows_affected())
     }
+}
+
+// =============================================================================
+// BEEF Validation
+// =============================================================================
+
+/// Validate BEEF structure before broadcast (diagnostic — does not block broadcast).
+///
+/// Checks:
+/// 1. BEEF contains exactly 1 unproven (leaf) transaction — the one being broadcast
+/// 2. All inputs of the leaf tx have source transactions in the BEEF
+/// 3. Source transactions either have merkle proofs (bump_index) or are themselves
+///    in the BEEF with proofs
+///
+/// Returns `Ok(())` if valid, `Err(message)` with details of what's missing.
+pub fn validate_beef_for_broadcast(beef: &Beef, txid: &str) -> std::result::Result<(), String> {
+    use bsv_rs::transaction::Transaction;
+
+    // Find unproven (leaf) transactions — those without a bump_index and not txid-only
+    let unproven: Vec<&bsv_rs::transaction::BeefTx> = beef
+        .txs
+        .iter()
+        .filter(|tx| tx.bump_index().is_none() && !tx.is_txid_only())
+        .collect();
+
+    if unproven.is_empty() {
+        return Err(format!(
+            "BEEF for {} has no unproven leaf transaction",
+            txid
+        ));
+    }
+    if unproven.len() > 1 {
+        let ids: Vec<String> = unproven.iter().map(|t| t.txid()).collect();
+        return Err(format!(
+            "BEEF for {} has {} unproven transactions (expected 1): {:?}",
+            txid,
+            unproven.len(),
+            ids
+        ));
+    }
+
+    let leaf = unproven[0];
+    let leaf_txid = leaf.txid();
+
+    // Parse the leaf transaction to check its inputs
+    let raw_bytes = match leaf.raw_tx() {
+        Some(bytes) => bytes,
+        None => {
+            return Err(format!(
+                "BEEF for {}: leaf tx {} has no raw bytes",
+                txid, leaf_txid
+            ));
+        }
+    };
+    let parsed = match Transaction::from_binary(raw_bytes) {
+        Ok(tx) => tx,
+        Err(e) => {
+            return Err(format!(
+                "BEEF for {}: failed to parse leaf tx {}: {}",
+                txid, leaf_txid, e
+            ));
+        }
+    };
+
+    // Check each input has its source in the BEEF
+    let mut missing_sources = Vec::new();
+    for (i, input) in parsed.inputs.iter().enumerate() {
+        let source_txid = input
+            .source_txid
+            .as_deref()
+            .or_else(|| input.source_transaction.as_ref().map(|_| "embedded"))
+            .unwrap_or("unknown");
+
+        if source_txid == "unknown" {
+            missing_sources.push(format!("input[{}]: no source txid", i));
+            continue;
+        }
+        if source_txid == "embedded" {
+            continue; // source transaction is inline
+        }
+
+        // Check if the source txid exists in the BEEF
+        if beef.find_txid(source_txid).is_none() {
+            missing_sources.push(format!("input[{}]: source {} not in BEEF", i, source_txid));
+        }
+    }
+
+    if !missing_sources.is_empty() {
+        return Err(format!(
+            "BEEF for {} missing source transactions: {}",
+            txid,
+            missing_sources.join("; ")
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -5305,5 +5632,170 @@ mod tests {
             .await
             .unwrap();
         assert!(ok);
+    }
+
+    // =========================================================================
+    // send_waiting_transactions doubleSpend + UTXO verification
+    // =========================================================================
+
+    // NOTE: A full integration test for send_waiting_transactions encountering a
+    // doubleSpend with UTXO-verified rollback would require:
+    //   1. A proven parent tx in `proven_txs` (with raw_tx + merkle_path for BEEF rebuild)
+    //   2. A child tx in `transactions` + `proven_tx_reqs` with status='unprocessed'
+    //   3. The child's raw_tx must be parseable and reference the parent's txid as input
+    //   4. Outputs for the parent marked as spent_by the child
+    //   5. Mock services: post_beef → double-spend, get_status_for_txids → no match,
+    //      is_utxo → Sequence(true, false) for partial restore
+    //
+    // The core UTXO-verified rollback logic is already tested by:
+    //   - test_double_spend_partial_utxo_verification (partial is_utxo results)
+    //   - test_double_spend_restores_inputs (all inputs verified)
+    //   - test_double_spend_no_services_keeps_inputs_locked (fail-safe)
+    //
+    // The send_waiting path reuses the same pattern inline. A full end-to-end
+    // test is deferred because it requires BEEF rebuild infrastructure (proven_txs
+    // with valid merkle paths) wired through the entire broadcast pipeline.
+
+    // =========================================================================
+    // validate_beef_for_broadcast Tests
+    // =========================================================================
+
+    /// Minimal valid coinbase-like transaction bytes (no real inputs).
+    const MINIMAL_TX_BYTES: &[u8] = &[
+        0x01, 0x00, 0x00, 0x00, // version
+        0x01, // input count
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // prev txid (32 zero bytes)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff,
+        0xff, // vout (0xFFFFFFFF for coinbase)
+        0x00, // script length
+        0xff, 0xff, 0xff, 0xff, // sequence
+        0x01, // output count
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // satoshis
+        0x00, // script length
+        0x00, 0x00, 0x00, 0x00, // locktime
+    ];
+
+    /// Compute the txid (double-SHA256, reversed) of raw transaction bytes.
+    fn test_compute_txid(raw_tx: &[u8]) -> String {
+        use bsv_rs::primitives::{sha256d, to_hex};
+        let hash = sha256d(raw_tx);
+        let mut reversed = hash;
+        reversed.reverse();
+        to_hex(&reversed)
+    }
+
+    /// Test validate_beef_for_broadcast with a valid BEEF: 1 unproven leaf + 1 proven parent.
+    #[test]
+    fn test_validate_beef_for_broadcast_valid() {
+        use bsv_rs::transaction::{Beef, MerklePath};
+
+        let height = 800_000u32;
+
+        // Build the parent tx (proven, coinbase-like)
+        let parent_raw = MINIMAL_TX_BYTES.to_vec();
+        let parent_txid = test_compute_txid(&parent_raw);
+        let parent_bump = MerklePath::from_coinbase_txid(&parent_txid, height);
+
+        // Build a child tx that spends the parent
+        let parent_txid_bytes = bsv_rs::primitives::from_hex(&parent_txid).unwrap();
+        let mut parent_txid_le = parent_txid_bytes;
+        parent_txid_le.reverse(); // txid stored little-endian in raw tx
+
+        let mut child_raw = Vec::new();
+        child_raw.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
+        child_raw.push(0x01); // input count
+        child_raw.extend_from_slice(&parent_txid_le); // prev txid (parent)
+        child_raw.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // vout = 0
+        child_raw.push(0x00); // script length = 0
+        child_raw.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        child_raw.push(0x01); // output count
+        child_raw.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // sats
+        child_raw.push(0x00); // script length = 0
+        child_raw.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // locktime
+
+        let child_txid = test_compute_txid(&child_raw);
+
+        let mut beef = Beef::new();
+        let bump_index = beef.merge_bump(parent_bump);
+        beef.merge_raw_tx(parent_raw, Some(bump_index)); // parent (proven)
+        beef.merge_raw_tx(child_raw, None); // child (unproven leaf)
+
+        // Validation should pass: 1 unproven leaf whose input parent is in the BEEF
+        let result = validate_beef_for_broadcast(&beef, &child_txid);
+        assert!(
+            result.is_ok(),
+            "Expected valid BEEF, got error: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test validate_beef_for_broadcast with 0 unproven transactions (all proven).
+    #[test]
+    fn test_validate_beef_for_broadcast_no_unproven() {
+        use bsv_rs::transaction::{Beef, MerklePath};
+
+        let height = 800_000u32;
+        let raw_tx = MINIMAL_TX_BYTES.to_vec();
+        let txid = test_compute_txid(&raw_tx);
+        let bump = MerklePath::from_coinbase_txid(&txid, height);
+
+        let mut beef = Beef::new();
+        let bump_index = beef.merge_bump(bump);
+        beef.merge_raw_tx(raw_tx, Some(bump_index)); // proven — no unproven leaves
+
+        let result = validate_beef_for_broadcast(&beef, &txid);
+        assert!(
+            result.is_err(),
+            "Expected error for BEEF with no unproven leaf"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("no unproven leaf"),
+            "Error should mention 'no unproven leaf', got: {}",
+            err
+        );
+    }
+
+    /// Test validate_beef_for_broadcast with a missing parent (input source not in BEEF).
+    #[test]
+    fn test_validate_beef_for_broadcast_missing_parent() {
+        use bsv_rs::transaction::Beef;
+
+        // Build a child tx that references a parent NOT in the BEEF.
+        // Use a dummy parent txid that won't be in the BEEF.
+        let fake_parent_txid = "ab".repeat(32);
+        let fake_parent_bytes = bsv_rs::primitives::from_hex(&fake_parent_txid).unwrap();
+        let mut fake_parent_le = fake_parent_bytes;
+        fake_parent_le.reverse();
+
+        let mut child_raw = Vec::new();
+        child_raw.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
+        child_raw.push(0x01); // input count
+        child_raw.extend_from_slice(&fake_parent_le); // prev txid (missing from BEEF)
+        child_raw.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // vout = 0
+        child_raw.push(0x00); // script length = 0
+        child_raw.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        child_raw.push(0x01); // output count
+        child_raw.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // sats
+        child_raw.push(0x00); // script length = 0
+        child_raw.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // locktime
+
+        let child_txid = test_compute_txid(&child_raw);
+
+        let mut beef = Beef::new();
+        beef.merge_raw_tx(child_raw, None); // child only, no parent
+
+        let result = validate_beef_for_broadcast(&beef, &child_txid);
+        assert!(
+            result.is_err(),
+            "Expected error for BEEF with missing parent"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("missing source"),
+            "Error should mention 'missing source', got: {}",
+            err
+        );
     }
 }

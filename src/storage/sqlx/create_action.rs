@@ -1650,106 +1650,25 @@ pub(super) struct BeefTxData {
     pub(super) merkle_path: Option<Vec<u8>>,
 }
 
-/// Builds input BEEF containing all input transactions with their merkle proofs.
+/// Core BFS ancestor walk for BEEF construction.
 ///
-/// Collects unique input txids from both user-provided inputs and allocated change inputs,
-/// then recursively fetches all ancestor transactions until we reach transactions with
-/// merkle proofs or can't find any more ancestors in storage.
+/// Given a queue of `(txid, depth)` pairs, walks the ancestor chain using:
+/// - Stored BEEFs (`get_stored_beef`) — merged and compacted
+/// - Individual tx+proof lookups (`get_tx_with_proof`)
+/// - Network fallback (`try_network_fallback`) when local lookup fails
 ///
-/// This matches the TypeScript/Go `validateRequiredInputs` and `getBeefForTransaction` behavior:
-/// 1. First merges user-provided inputBEEF (contains proofs for external inputs)
-/// 2. Then adds storage transactions for known inputs
-/// 3. Verifies BEEF against ChainTracker (merkle roots match block headers)
-/// 4. Finally trims known_txids to txid-only format to reduce BEEF size
+/// For unproven transactions, recurses into their inputs up to `MAX_BEEF_RECURSION_DEPTH`.
+/// Direct inputs (depth 0) that cannot be found cause an error; deeper ancestors just warn.
 ///
-/// # Arguments
-/// * `storage` - The storage backend to query
-/// * `chain_tracker` - Optional chain tracker for merkle root verification (if None, skips verification)
-/// * `extended_inputs` - User-provided inputs
-/// * `change_inputs` - Allocated change inputs from storage
-/// * `user_input_beef` - Optional user-provided BEEF with proofs for external inputs
-/// * `known_txids` - TXIDs the recipient already has (will be trimmed to txid-only)
-/// * `return_txid_only` - If true, skip BEEF construction entirely
-/// * `storage` - Optional storage backend for network fallback when local lookup fails
-///
-/// # Returns
-/// * `Ok(Some(beef_bytes))` - BEEF binary data if there are inputs
-/// * `Ok(None)` - If there are no inputs or return_txid_only is true
-///
-/// # Errors
-/// * `ValidationError` - If BEEF structure is invalid or merkle roots don't match chain
-/// * `TransactionError` - If a direct input (depth 0) cannot be found in any source
-#[allow(clippy::too_many_arguments)]
-async fn build_input_beef(
+/// This is the shared core used by both `build_input_beef` (create_action) and
+/// `rebuild_beef_for_broadcast` (send_waiting_transactions).
+async fn beef_bfs_walk(
     conn: &mut SqliteConnection,
-    chain_tracker: Option<&dyn ChainTracker>,
-    extended_inputs: &[ExtendedInput],
-    change_inputs: &[AllocatedChangeInput],
-    user_input_beef: Option<&[u8]>,
-    known_txids: &[String],
-    return_txid_only: bool,
+    beef: &mut Beef,
+    pending_txids: &mut Vec<(String, usize)>,
+    processed_txids: &mut HashSet<String>,
     storage: Option<&StorageSqlx>,
-) -> Result<Option<Vec<u8>>> {
-    // Gap #3: If return_txid_only, skip BEEF construction entirely
-    if return_txid_only {
-        return Ok(None);
-    }
-
-    // Collect unique input txids with their chain depth.
-    // Depth tracks how far each txid is from the direct inputs (depth 0).
-    // This matches the TypeScript reference which uses actual recursion depth,
-    // not a flat counter — a tx with 10 inputs at depth 0 doesn't count as depth 10.
-    let mut pending_txids: Vec<(String, usize)> = Vec::new();
-    let mut processed_txids: HashSet<String> = HashSet::new();
-
-    for input in extended_inputs {
-        if !processed_txids.contains(&input.txid) {
-            pending_txids.push((input.txid.clone(), 0));
-        }
-    }
-
-    for input in change_inputs {
-        if !processed_txids.contains(&input.txid)
-            && !pending_txids.iter().any(|(t, _)| t == &input.txid)
-        {
-            pending_txids.push((input.txid.clone(), 0));
-        }
-    }
-
-    if pending_txids.is_empty() {
-        return Ok(None);
-    }
-
-    // Create BEEF structure (V2 format)
-    let mut beef = Beef::new();
-
-    // Gap #1: Merge user-provided inputBEEF FIRST
-    // This contains proofs for external inputs not in our storage
-    if let Some(input_beef_bytes) = user_input_beef {
-        if !input_beef_bytes.is_empty() {
-            match Beef::from_binary(input_beef_bytes) {
-                Ok(user_beef) => {
-                    beef.merge_beef(&user_beef);
-                    // Mark txids from user BEEF as already processed
-                    for tx in &user_beef.txs {
-                        processed_txids.insert(tx.txid());
-                    }
-                }
-                Err(e) => {
-                    return Err(Error::ValidationError(format!(
-                        "inputBEEF: invalid BEEF format: {}",
-                        e
-                    )));
-                }
-            }
-        }
-    }
-
-    // Process transactions - for each unproven tx, we need to add its ancestors.
-    // Optimization: If we have a stored BEEF (from internalize_action), merge it directly
-    // rather than recursively fetching each ancestor. This matches TypeScript behavior.
-    // Depth is tracked per-txid (actual chain distance from direct inputs), matching
-    // the TypeScript reference's recursive depth tracking.
+) -> Result<()> {
     while let Some((txid, depth)) = pending_txids.first().cloned() {
         pending_txids.remove(0);
 
@@ -1859,6 +1778,159 @@ async fn build_input_beef(
             );
         }
     }
+
+    Ok(())
+}
+
+/// Rebuild BEEF from current DB state for the given input txids.
+///
+/// Used by `send_waiting_transactions` to build fresh BEEF at broadcast time,
+/// matching Go's `GetBEEFForTxIDs` approach. Instead of just upgrading proofs
+/// on txs already in the stored BEEF (compact_stored_beef), this rebuilds the
+/// full ancestor chain from scratch using current DB state.
+///
+/// # Arguments
+/// * `conn` - SQLite connection
+/// * `input_txids` - Input txids extracted from the raw transaction being broadcast
+/// * `storage` - Optional storage backend for network fallback
+///
+/// # Returns
+/// A fully-built `Beef` containing all ancestors with their merkle proofs.
+pub(super) async fn rebuild_beef_for_broadcast(
+    conn: &mut SqliteConnection,
+    input_txids: &[String],
+    storage: Option<&StorageSqlx>,
+) -> Result<Beef> {
+    let mut beef = Beef::new();
+    let mut processed_txids: HashSet<String> = HashSet::new();
+    let mut pending_txids: Vec<(String, usize)> = Vec::new();
+
+    for txid in input_txids {
+        if !processed_txids.contains(txid) && !pending_txids.iter().any(|(t, _)| t == txid) {
+            pending_txids.push((txid.clone(), 0));
+        }
+    }
+
+    if pending_txids.is_empty() {
+        return Ok(beef);
+    }
+
+    beef_bfs_walk(
+        conn,
+        &mut beef,
+        &mut pending_txids,
+        &mut processed_txids,
+        storage,
+    )
+    .await?;
+
+    Ok(beef)
+}
+
+/// Builds input BEEF containing all input transactions with their merkle proofs.
+///
+/// Collects unique input txids from both user-provided inputs and allocated change inputs,
+/// then recursively fetches all ancestor transactions until we reach transactions with
+/// merkle proofs or can't find any more ancestors in storage.
+///
+/// This matches the TypeScript/Go `validateRequiredInputs` and `getBeefForTransaction` behavior:
+/// 1. First merges user-provided inputBEEF (contains proofs for external inputs)
+/// 2. Then adds storage transactions for known inputs
+/// 3. Verifies BEEF against ChainTracker (merkle roots match block headers)
+/// 4. Finally trims known_txids to txid-only format to reduce BEEF size
+///
+/// # Arguments
+/// * `storage` - The storage backend to query
+/// * `chain_tracker` - Optional chain tracker for merkle root verification (if None, skips verification)
+/// * `extended_inputs` - User-provided inputs
+/// * `change_inputs` - Allocated change inputs from storage
+/// * `user_input_beef` - Optional user-provided BEEF with proofs for external inputs
+/// * `known_txids` - TXIDs the recipient already has (will be trimmed to txid-only)
+/// * `return_txid_only` - If true, skip BEEF construction entirely
+/// * `storage` - Optional storage backend for network fallback when local lookup fails
+///
+/// # Returns
+/// * `Ok(Some(beef_bytes))` - BEEF binary data if there are inputs
+/// * `Ok(None)` - If there are no inputs or return_txid_only is true
+///
+/// # Errors
+/// * `ValidationError` - If BEEF structure is invalid or merkle roots don't match chain
+/// * `TransactionError` - If a direct input (depth 0) cannot be found in any source
+#[allow(clippy::too_many_arguments)]
+async fn build_input_beef(
+    conn: &mut SqliteConnection,
+    chain_tracker: Option<&dyn ChainTracker>,
+    extended_inputs: &[ExtendedInput],
+    change_inputs: &[AllocatedChangeInput],
+    user_input_beef: Option<&[u8]>,
+    known_txids: &[String],
+    return_txid_only: bool,
+    storage: Option<&StorageSqlx>,
+) -> Result<Option<Vec<u8>>> {
+    // Gap #3: If return_txid_only, skip BEEF construction entirely
+    if return_txid_only {
+        return Ok(None);
+    }
+
+    // Collect unique input txids with their chain depth.
+    // Depth tracks how far each txid is from the direct inputs (depth 0).
+    // This matches the TypeScript reference which uses actual recursion depth,
+    // not a flat counter — a tx with 10 inputs at depth 0 doesn't count as depth 10.
+    let mut pending_txids: Vec<(String, usize)> = Vec::new();
+    let mut processed_txids: HashSet<String> = HashSet::new();
+
+    for input in extended_inputs {
+        if !processed_txids.contains(&input.txid) {
+            pending_txids.push((input.txid.clone(), 0));
+        }
+    }
+
+    for input in change_inputs {
+        if !processed_txids.contains(&input.txid)
+            && !pending_txids.iter().any(|(t, _)| t == &input.txid)
+        {
+            pending_txids.push((input.txid.clone(), 0));
+        }
+    }
+
+    if pending_txids.is_empty() {
+        return Ok(None);
+    }
+
+    // Create BEEF structure (V2 format)
+    let mut beef = Beef::new();
+
+    // Gap #1: Merge user-provided inputBEEF FIRST
+    // This contains proofs for external inputs not in our storage
+    if let Some(input_beef_bytes) = user_input_beef {
+        if !input_beef_bytes.is_empty() {
+            match Beef::from_binary(input_beef_bytes) {
+                Ok(user_beef) => {
+                    beef.merge_beef(&user_beef);
+                    // Mark txids from user BEEF as already processed
+                    for tx in &user_beef.txs {
+                        processed_txids.insert(tx.txid());
+                    }
+                }
+                Err(e) => {
+                    return Err(Error::ValidationError(format!(
+                        "inputBEEF: invalid BEEF format: {}",
+                        e
+                    )));
+                }
+            }
+        }
+    }
+
+    // Delegate the BFS ancestor walk to the shared core function.
+    beef_bfs_walk(
+        &mut *conn,
+        &mut beef,
+        &mut pending_txids,
+        &mut processed_txids,
+        storage,
+    )
+    .await?;
 
     // Verify BEEF against ChainTracker before trimming known_txids
     // This matches TypeScript/Go behavior: verify after building, before returning
@@ -4806,6 +4878,96 @@ mod tests {
         assert!(
             stored.is_some(),
             "Network-fetched tx should be stored locally in proven_tx_reqs"
+        );
+    }
+
+    // =========================================================================
+    // rebuild_beef_for_broadcast Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_rebuild_beef_for_broadcast_with_proven_tx() {
+        // Set up DB with a proven_txs entry, then call rebuild_beef_for_broadcast.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        // Use a real coinbase tx so the raw_tx parses correctly
+        let raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000\
+             ffffffff0704ffff001d0104ffffffff\
+             0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66\
+             fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf23\
+             42c858eeac00000000",
+        )
+        .unwrap();
+        let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        // Create a valid MerklePath for this tx and serialize it
+        let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(txid, 100_000);
+        let merkle_path_bytes = bump.to_binary();
+
+        seed_proven_tx(&storage, txid, &raw_tx, &merkle_path_bytes).await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let beef = rebuild_beef_for_broadcast(&mut conn, &[txid.to_string()], None)
+            .await
+            .unwrap();
+
+        // The tx should be in the BEEF
+        assert!(
+            beef.find_txid(txid).is_some(),
+            "Rebuilt BEEF must contain the requested txid"
+        );
+
+        // The tx should have a bump (merkle proof)
+        let beef_tx = beef.find_txid(txid).unwrap();
+        assert!(
+            beef_tx.bump_index().is_some(),
+            "Rebuilt BEEF tx should have a merkle proof (bump_index)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_beef_for_broadcast_empty_txids() {
+        // Calling with empty txids should return an empty BEEF
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let beef = rebuild_beef_for_broadcast(&mut conn, &[], None)
+            .await
+            .unwrap();
+
+        assert!(
+            beef.txs.is_empty(),
+            "Empty input txids should produce an empty BEEF"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_beef_for_broadcast_missing_txid() {
+        // Calling with a txid not in storage should handle gracefully
+        // (no crash, returns BEEF without the missing tx — network fallback
+        // requires storage param which we pass as None here)
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = rebuild_beef_for_broadcast(
+            &mut conn,
+            &["0000000000000000000000000000000000000000000000000000000000ffffff".to_string()],
+            None,
+        )
+        .await;
+
+        // Without network fallback (storage=None), a missing txid at depth 0
+        // should error because it's a direct input
+        assert!(
+            result.is_err(),
+            "Missing direct input txid without network fallback should error"
         );
     }
 }

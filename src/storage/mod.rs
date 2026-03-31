@@ -40,7 +40,9 @@ pub use traits::*;
 
 // Re-export storage implementations
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
-pub use sqlx::{classify_broadcast_results, BroadcastOutcome, StorageSqlx};
+pub use sqlx::{
+    classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome, StorageSqlx,
+};
 
 #[cfg(feature = "remote")]
 pub use client::StorageClient;

@@ -1,8 +1,8 @@
 //! Tests for the `review_status()` method on StorageSqlx (MonitorStorage trait).
 //!
-//! These tests verify the three checks performed by review_status:
+//! These tests verify the checks performed by review_status:
 //! 1. Mark transactions as 'failed' when their proven_tx_req is 'invalid'
-//! 2. Release outputs spent by failed transactions (spendable=1, spent_by=NULL)
+//! 2. (REMOVED) Blind release of outputs from failed txs — replaced by UTXO-verified rollback
 //! 3. Mark transactions completed when proof exists (proven_tx_req completed with proven_tx_id)
 
 #[cfg(feature = "sqlite")]
@@ -170,6 +170,15 @@ mod review_status {
     // =========================================================================
 
     #[tokio::test]
+    /// Verify that review_status NO LONGER blindly releases outputs from failed txs.
+    ///
+    /// The old behavior (blanket `UPDATE outputs SET spendable=1 WHERE spent_by IN
+    /// (failed txs)`) was removed because it creates a double-spend feedback loop:
+    /// inputs consumed on-chain by competing transactions would be re-marked as
+    /// spendable, causing the wallet to re-spend them endlessly.
+    ///
+    /// Inputs from failed txs are now only restored via UTXO-verified rollback paths
+    /// in update_transaction_status_after_broadcast, send_waiting, and abort_abandoned.
     async fn test_review_status_releases_outputs_from_failed_tx() {
         let (storage, auth) = setup_storage().await;
         let user_id = auth.user_id.unwrap();
@@ -215,24 +224,28 @@ mod review_status {
             .await
             .unwrap();
 
-        // Verify the log mentions releasing outputs
+        // Verify the log does NOT mention releasing outputs (blanket release removed)
         assert!(
-            result.log.contains("Released"),
-            "Log should mention releasing outputs, got: {}",
+            !result.log.contains("Released"),
+            "review_status should no longer blindly release outputs from failed txs, got: {}",
             result.log
         );
 
-        // Verify: output is now spendable=1 and spent_by=NULL
+        // Verify: output remains locked (NOT released by review_status)
         let row: (bool, Option<i64>) =
             sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE txid = ? AND vout = 0")
                 .bind(&source_txid)
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        assert!(row.0, "Output should be spendable after failed tx cleanup");
         assert!(
-            row.1.is_none(),
-            "Output spent_by should be NULL after failed tx cleanup"
+            !row.0,
+            "Output should remain locked — review_status no longer blindly releases"
+        );
+        assert_eq!(
+            row.1,
+            Some(spending_tx_id),
+            "Output spent_by should still reference the failed tx"
         );
     }
 
@@ -376,9 +389,19 @@ mod review_status {
     // =========================================================================
 
     #[tokio::test]
+    /// Test that abort_abandoned handles stale 'sending' transactions with UTXO verification.
+    ///
+    /// With mock services providing is_utxo=true, inputs should be restored.
+    /// Change outputs should be marked non-spendable (phantom prevention).
     async fn test_abort_abandoned_includes_sending_status() {
+        use bsv_wallet_toolbox_rs::WalletStorageProvider;
+
         let (storage, auth) = setup_storage().await;
         let user_id = auth.user_id.unwrap();
+
+        // Configure mock services so is_utxo returns true (default mock behavior)
+        let mock = bsv_wallet_toolbox_rs::services::mock::MockWalletServices::builder().build();
+        storage.set_services(Arc::new(mock));
 
         // Create a 'sending' transaction that's old enough to be abandoned
         let old_time = Utc::now() - chrono::Duration::hours(1);
@@ -458,7 +481,7 @@ mod review_status {
             "Change output from failed sending tx should be non-spendable"
         );
 
-        // Input UTXO should be restored
+        // Input UTXO should be restored (mock is_utxo returns true)
         let row: (bool, Option<i64>) =
             sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE txid = ? AND vout = 0")
                 .bind(&source_txid)

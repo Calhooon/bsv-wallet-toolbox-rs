@@ -183,6 +183,9 @@ pub struct MockWalletServices {
     /// Response for get_script_hash_history calls.
     get_script_hash_history_response: Mutex<MockResponse<GetScriptHashHistoryResult>>,
 
+    /// Response for is_utxo calls.
+    is_utxo_response: Mutex<MockResponse<bool>>,
+
     /// Record of all calls made.
     call_history: Mutex<Vec<MockCallRecord>>,
 
@@ -260,6 +263,7 @@ pub struct MockWalletServicesBuilder {
     get_utxo_status_response: MockResponse<GetUtxoStatusResult>,
     get_status_for_txids_response: MockResponse<GetStatusForTxidsResult>,
     get_script_hash_history_response: MockResponse<GetScriptHashHistoryResult>,
+    is_utxo_response: MockResponse<bool>,
 }
 
 impl Default for MockWalletServicesBuilder {
@@ -305,6 +309,7 @@ impl Default for MockWalletServicesBuilder {
                 error: None,
                 history: vec![],
             }),
+            is_utxo_response: MockResponse::Success(true),
         }
     }
 }
@@ -440,6 +445,12 @@ impl MockWalletServicesBuilder {
         self
     }
 
+    /// Set the response for is_utxo calls.
+    pub fn is_utxo_response(mut self, response: MockResponse<bool>) -> Self {
+        self.is_utxo_response = response;
+        self
+    }
+
     /// Build the MockWalletServices.
     pub fn build(self) -> MockWalletServices {
         MockWalletServices {
@@ -453,6 +464,7 @@ impl MockWalletServicesBuilder {
             get_utxo_status_response: Mutex::new(self.get_utxo_status_response),
             get_status_for_txids_response: Mutex::new(self.get_status_for_txids_response),
             get_script_hash_history_response: Mutex::new(self.get_script_hash_history_response),
+            is_utxo_response: Mutex::new(self.is_utxo_response),
             call_history: Mutex::new(Vec::new()),
             call_counts: Mutex::new(HashMap::new()),
         }
@@ -694,16 +706,19 @@ impl WalletServices for MockWalletServices {
     }
 
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool> {
-        self.record_call(
-            "is_utxo",
-            vec![
-                txid.to_string(),
-                format!("{}", vout),
-                format!("script_len={}", locking_script.len()),
-            ],
-            true,
-        );
-        Ok(true)
+        let call_index = self.get_call_index("is_utxo");
+        let response = self.is_utxo_response.lock().unwrap();
+        let result = response.resolve(call_index);
+        let args = vec![
+            txid.to_string(),
+            format!("{}", vout),
+            format!("script_len={}", locking_script.len()),
+        ];
+        match &result {
+            Ok(_) => self.record_call("is_utxo", args, true),
+            Err(_) => self.record_call("is_utxo", args, false),
+        }
+        result
     }
 
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool> {

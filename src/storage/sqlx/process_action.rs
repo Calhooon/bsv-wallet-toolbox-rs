@@ -954,6 +954,18 @@ async fn reconcile_tx_status(storage: &StorageSqlx, txid: &str) -> bool {
         }
     };
 
+    reconcile_tx_status_via_services(&*services, txid).await
+}
+
+/// Check whether a transaction is alive in the mempool or mined, using the
+/// provided services directly. This is the shared implementation used by both
+/// the immediate broadcast path and `send_waiting_transactions`.
+///
+/// Returns `true` if the tx is found alive, `false` otherwise.
+pub(super) async fn reconcile_tx_status_via_services(
+    services: &dyn crate::services::WalletServices,
+    txid: &str,
+) -> bool {
     let txids = vec![txid.to_string()];
     match services.get_status_for_txids(&txids, false).await {
         Ok(result) => {
@@ -984,6 +996,117 @@ async fn reconcile_tx_status(storage: &StorageSqlx, txid: &str) -> bool {
     }
 }
 
+/// For a double-spend failure, query which inputs of the failed transaction are
+/// still unspent on-chain (i.e., the competing tx didn't consume them).
+///
+/// Returns the `output_id` values that are safe to restore to `spendable = 1`.
+/// Inputs that fail the is_utxo check (or where the check errors) are NOT
+/// included — fail-safe: keep them locked rather than risk a re-spend loop.
+///
+/// Follows the same is_utxo() pattern used by `un_fail()` in storage_sqlx.rs.
+/// Rate-limited to ~3 requests/second to avoid WoC throttling.
+async fn utxo_verified_input_ids(storage: &StorageSqlx, txid: &str) -> Vec<i64> {
+    use crate::storage::traits::WalletStorageReader;
+
+    let services = match storage.get_services() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                txid = %txid,
+                error = %e,
+                "UTXO verification skipped (services unavailable) — inputs stay locked"
+            );
+            return Vec::new();
+        }
+    };
+
+    // Get the transaction_id for this txid
+    let transaction_id: i64 =
+        match sqlx::query("SELECT transaction_id FROM transactions WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(storage.pool())
+            .await
+        {
+            Ok(Some(row)) => row.get("transaction_id"),
+            _ => return Vec::new(),
+        };
+
+    // Query the input outputs (those spent by this transaction)
+    let input_rows = match sqlx::query(
+        r#"
+        SELECT o.output_id, t.txid AS source_txid, o.vout, o.locking_script
+        FROM outputs o
+        JOIN transactions t ON o.transaction_id = t.transaction_id
+        WHERE o.spent_by = ?
+        "#,
+    )
+    .bind(transaction_id)
+    .fetch_all(storage.pool())
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                txid = %txid,
+                error = %e,
+                "UTXO verification: failed to query inputs — inputs stay locked"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut verified = Vec::new();
+
+    for row in &input_rows {
+        let output_id: i64 = row.get("output_id");
+        let source_txid: String = row.get("source_txid");
+        let vout: i32 = row.get("vout");
+        let locking_script: Option<Vec<u8>> = row.get("locking_script");
+        let script = locking_script.as_deref().unwrap_or(&[]);
+
+        match services.is_utxo(&source_txid, vout as u32, script).await {
+            Ok(true) => {
+                tracing::debug!(
+                    txid = %txid,
+                    source = %source_txid,
+                    vout = vout,
+                    "UTXO verified — safe to restore"
+                );
+                verified.push(output_id);
+            }
+            Ok(false) => {
+                tracing::info!(
+                    txid = %txid,
+                    source = %source_txid,
+                    vout = vout,
+                    "Input consumed on-chain — NOT restoring (dead UTXO)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    txid = %txid,
+                    source = %source_txid,
+                    vout = vout,
+                    error = %e,
+                    "is_utxo check failed — NOT restoring (fail-safe)"
+                );
+            }
+        }
+
+        // Rate limit: ~3 req/sec to avoid WoC throttling
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    }
+
+    tracing::info!(
+        txid = %txid,
+        verified = verified.len(),
+        total = input_rows.len(),
+        "UTXO verification complete for double-spend rollback"
+    );
+
+    verified
+}
+
 /// Update transaction status after a broadcast attempt.
 ///
 /// This function is called by the wallet layer after attempting to broadcast a transaction.
@@ -993,10 +1116,10 @@ async fn reconcile_tx_status(storage: &StorageSqlx, txid: &str) -> bool {
 /// - **Success**: tx→'unproven', req→'unmined'
 /// - **ServiceError** (transient): tx stays 'sending', req→'sending', inputs stay locked.
 ///   The `SendWaitingTask` background monitor will pick these up and retry.
-/// - **DoubleSpend** (permanent): tx→'failed', req→'doubleSpend', inputs restored.
-///   BUT if the tx is found alive in mempool/chain, treat as success instead.
-/// - **InvalidTx** (permanent): tx→'failed', req→'invalid', inputs restored.
-///   BUT if the tx is found alive in mempool/chain, treat as success instead.
+/// - **DoubleSpend** (permanent): tx→'failed', req→'doubleSpend'. Inputs restored ONLY
+///   after is_utxo() verification confirms they're still unspent on-chain.
+/// - **InvalidTx** (permanent): tx→'failed', req→'invalid', inputs restored (safe — tx
+///   was malformed, inputs weren't spent by a competitor).
 pub async fn update_transaction_status_after_broadcast_internal(
     storage: &StorageSqlx,
     txid: &str,
@@ -1015,6 +1138,17 @@ pub async fn update_transaction_status_after_broadcast_internal(
         }
         _ => outcome,
     };
+
+    // For DoubleSpend, verify which inputs are still unspent on-chain BEFORE
+    // starting the SQL transaction. This avoids holding a DB transaction open
+    // during network calls, and follows the is_utxo() pattern from un_fail().
+    // Only inputs verified as still-unspent will be restored to spendable.
+    let verified_input_ids: Vec<i64> =
+        if matches!(effective_outcome, BroadcastOutcome::DoubleSpend { .. }) {
+            utxo_verified_input_ids(storage, txid).await
+        } else {
+            Vec::new()
+        };
 
     let mut tx = storage
         .pool()
@@ -1062,14 +1196,10 @@ pub async fn update_transaction_status_after_broadcast_internal(
             );
         }
 
-        BroadcastOutcome::DoubleSpend { .. } | BroadcastOutcome::InvalidTx { .. } => {
-            // Permanent failure — mark as failed and restore inputs
-            let req_status = match outcome {
-                BroadcastOutcome::DoubleSpend { .. } => "doubleSpend",
-                _ => "invalid",
-            };
-
-            // Get the transaction_id for output updates
+        BroadcastOutcome::InvalidTx { .. } => {
+            // Permanent failure (malformed tx) — mark as failed and restore inputs.
+            // Safe to blindly restore: the tx was malformed so inputs weren't spent
+            // by a competing transaction.
             let row = sqlx::query("SELECT transaction_id FROM transactions WHERE txid = ?")
                 .bind(txid)
                 .fetch_optional(&mut *tx)
@@ -1109,7 +1239,66 @@ pub async fn update_transaction_status_after_broadcast_internal(
 
             // Update proven_tx_req status
             sqlx::query("UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?")
-                .bind(req_status)
+                .bind("invalid")
+                .bind(now)
+                .bind(txid)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        BroadcastOutcome::DoubleSpend { .. } => {
+            // Double-spend — a competing transaction spent one or more of our inputs.
+            // We must NOT blindly re-mark inputs as spendable because they may be
+            // permanently consumed on-chain by the competing tx. Instead, verify each
+            // input against the chain via is_utxo() before restoring.
+            //
+            // The UTXO verification was performed before the SQL transaction started
+            // (see `verified_input_ids` below). Only verified-spendable inputs are
+            // restored here.
+            let row = sqlx::query("SELECT transaction_id FROM transactions WHERE txid = ?")
+                .bind(txid)
+                .fetch_optional(&mut *tx)
+                .await?;
+
+            if let Some(row) = row {
+                let transaction_id: i64 = row.get("transaction_id");
+
+                // Restore ONLY inputs verified as still-unspent on-chain.
+                // `verified_input_ids` was populated before the SQL transaction.
+                for output_id in &verified_input_ids {
+                    sqlx::query(
+                        "UPDATE outputs SET spendable = 1, spent_by = NULL, spending_description = NULL, updated_at = ? WHERE output_id = ? AND spent_by = ?",
+                    )
+                    .bind(now)
+                    .bind(output_id)
+                    .bind(transaction_id)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+
+                // Mark this transaction's own outputs (change, etc.) as unspendable
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+                )
+                .bind(now)
+                .bind(transaction_id)
+                .execute(&mut *tx)
+                .await?;
+
+                // Update transaction status to failed
+                sqlx::query(
+                    "UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?",
+                )
+                .bind(TransactionStatus::Failed.as_str())
+                .bind(now)
+                .bind(transaction_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            // Update proven_tx_req status
+            sqlx::query("UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?")
+                .bind("doubleSpend")
                 .bind(now)
                 .bind(txid)
                 .execute(&mut *tx)
@@ -2512,10 +2701,35 @@ mod tests {
         assert_eq!(tx_row.get::<String, _>("status"), "sending");
     }
 
-    /// Test that DoubleSpend restores inputs and sets req to 'doubleSpend'.
+    /// Test that DoubleSpend with UTXO-verified inputs restores only verified inputs
+    /// and sets req to 'doubleSpend'.
+    ///
+    /// Mock services are configured so:
+    /// - get_status_for_txids returns empty (reconcile fails → proceeds to rollback)
+    /// - is_utxo returns true (all inputs verified as still unspent)
     #[tokio::test]
     async fn test_double_spend_restores_inputs() {
+        use crate::services::mock::{MockResponse, MockWalletServices};
+        use crate::services::traits::{GetStatusForTxidsResult, TxStatusDetail};
+        use crate::storage::traits::WalletStorageProvider;
+
         let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        // Configure mock services: is_utxo returns true (default),
+        // get_status_for_txids returns no results (reconcile won't override)
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: "no_match".to_string(),
+                    status: "unknown".to_string(),
+                    depth: None,
+                }],
+            }))
+            .build();
+        storage.set_services(std::sync::Arc::new(mock));
 
         // --- Act: double spend (permanent) ---
         let outcome = BroadcastOutcome::DoubleSpend {
@@ -2526,7 +2740,7 @@ mod tests {
             .await
             .unwrap();
 
-        // --- Verify: inputs restored ---
+        // --- Verify: inputs restored (is_utxo returned true) ---
         let restored = sqlx::query(
             "SELECT spendable, spent_by FROM outputs WHERE txid = '0000000000000000000000000000000000000000000000000000000000000001'",
         )
@@ -2535,6 +2749,59 @@ mod tests {
         .unwrap();
         assert!(restored.get::<bool, _>("spendable"));
         assert!(restored.get::<Option<i64>, _>("spent_by").is_none());
+
+        // --- Verify: own outputs marked unspendable ---
+        let own =
+            sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
+                .bind(transaction_id)
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert!(!own.get::<bool, _>("spendable"));
+
+        // --- Verify: transaction is 'failed' ---
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(tx_row.get::<String, _>("status"), "failed");
+
+        // --- Verify: proven_tx_req is 'doubleSpend' ---
+        let req = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(req.get::<String, _>("status"), "doubleSpend");
+    }
+
+    /// Test that DoubleSpend WITHOUT services configured keeps inputs locked (fail-safe).
+    #[tokio::test]
+    async fn test_double_spend_no_services_keeps_inputs_locked() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+        // No mock services configured — utxo_verified_input_ids returns empty
+
+        let outcome = BroadcastOutcome::DoubleSpend {
+            competing_txs: vec!["competing_abc".to_string()],
+            details: vec!["taal: DOUBLE_SPEND_ATTEMPTED".to_string()],
+        };
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // --- Verify: inputs NOT restored (no services → fail-safe) ---
+        let locked = sqlx::query(
+            "SELECT spendable, spent_by FROM outputs WHERE txid = '0000000000000000000000000000000000000000000000000000000000000001'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert!(
+            !locked.get::<bool, _>("spendable"),
+            "inputs must stay locked when services unavailable (fail-safe)"
+        );
 
         // --- Verify: own outputs marked unspendable ---
         let own =
@@ -2915,6 +3182,205 @@ mod tests {
             "sending",
             "ServiceError should keep tx in 'sending', not trigger reconciliation"
         );
+    }
+
+    // =========================================================================
+    // Partial UTXO Verification Tests
+    // =========================================================================
+
+    /// Test that doubleSpend with partial is_utxo results restores only verified outputs.
+    ///
+    /// Sets up a transaction with 2 inputs. Mock is_utxo returns `true` for
+    /// the first input and `false` for the second. Only the first should be
+    /// restored to spendable.
+    #[tokio::test]
+    async fn test_double_spend_partial_utxo_verification() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        let user_id = user.user_id;
+        let now = Utc::now();
+        let basket = storage
+            .find_or_create_default_basket(user_id)
+            .await
+            .unwrap();
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+
+        // --- Create source transaction 1 (will be input 1) ---
+        let source_txid1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let source_raw_tx1 = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000\
+             ffffffff0704ffff001d0104ffffffff\
+             0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66\
+             fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf23\
+             42c858eeac00000000",
+        )
+        .unwrap();
+        let r1 = sqlx::query(
+            "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'source_ref1', 0, 50000, 1, 0, 'Source tx 1', ?, ?, ?, ?)",
+        )
+        .bind(user_id).bind(source_txid1).bind(&source_raw_tx1).bind(now).bind(now)
+        .execute(storage.pool()).await.unwrap();
+        let source_tx_id1 = r1.last_insert_rowid();
+
+        let r_out1 = sqlx::query(
+            "INSERT INTO outputs (user_id, transaction_id, basket_id, vout, satoshis, locking_script, txid, type, spendable, change, derivation_prefix, derivation_suffix, provided_by, purpose, output_description, created_at, updated_at) VALUES (?, ?, ?, 0, 50000, ?, ?, 'P2PKH', 0, 1, 'prefix1', 'suffix1', 'storage', 'change', 'source output 1', ?, ?)",
+        )
+        .bind(user_id).bind(source_tx_id1).bind(basket.basket_id).bind(&locking_script)
+        .bind(source_txid1).bind(now).bind(now)
+        .execute(storage.pool()).await.unwrap();
+        let output_id1 = r_out1.last_insert_rowid();
+
+        // --- Create source transaction 2 (will be input 2) ---
+        let source_txid2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let r2 = sqlx::query(
+            "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'source_ref2', 0, 30000, 1, 0, 'Source tx 2', ?, ?, ?, ?)",
+        )
+        .bind(user_id).bind(source_txid2).bind(&source_raw_tx1).bind(now).bind(now)
+        .execute(storage.pool()).await.unwrap();
+        let source_tx_id2 = r2.last_insert_rowid();
+
+        let r_out2 = sqlx::query(
+            "INSERT INTO outputs (user_id, transaction_id, basket_id, vout, satoshis, locking_script, txid, type, spendable, change, derivation_prefix, derivation_suffix, provided_by, purpose, output_description, created_at, updated_at) VALUES (?, ?, ?, 0, 30000, ?, ?, 'P2PKH', 0, 1, 'prefix2', 'suffix2', 'storage', 'change', 'source output 2', ?, ?)",
+        )
+        .bind(user_id).bind(source_tx_id2).bind(basket.basket_id).bind(&locking_script)
+        .bind(source_txid2).bind(now).bind(now)
+        .execute(storage.pool()).await.unwrap();
+        let output_id2 = r_out2.last_insert_rowid();
+
+        // --- Create the spending transaction ---
+        let spending_txid = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let spending_raw_tx = create_raw_transaction(&[&locking_script]);
+        let r_spend = sqlx::query(
+            "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'sending', 'spend_ref', 1, 80000, 1, 0, 'Spending tx', ?, ?, ?, ?)",
+        )
+        .bind(user_id).bind(spending_txid).bind(&spending_raw_tx).bind(now).bind(now)
+        .execute(storage.pool()).await.unwrap();
+        let spending_tx_id = r_spend.last_insert_rowid();
+
+        // Mark both source outputs as spent by the spending transaction
+        sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
+            .bind(spending_tx_id)
+            .bind(output_id1)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
+            .bind(spending_tx_id)
+            .bind(output_id2)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+
+        // Create a change output for the spending transaction
+        sqlx::query(
+            "INSERT INTO outputs (user_id, transaction_id, basket_id, vout, satoshis, locking_script, txid, type, spendable, change, derivation_prefix, derivation_suffix, provided_by, purpose, output_description, created_at, updated_at) VALUES (?, ?, ?, 0, 79000, ?, ?, 'P2PKH', 1, 1, 'prefix_c', 'suffix_c', 'storage', 'change', 'change output', ?, ?)",
+        )
+        .bind(user_id).bind(spending_tx_id).bind(basket.basket_id).bind(&locking_script)
+        .bind(spending_txid).bind(now).bind(now)
+        .execute(storage.pool()).await.unwrap();
+
+        // Create proven_tx_req for the spending transaction
+        sqlx::query(
+            "INSERT INTO proven_tx_reqs (txid, raw_tx, status, attempts, history, notify, created_at, updated_at) VALUES (?, ?, 'unprocessed', 0, '{}', '{}', ?, ?)",
+        )
+        .bind(spending_txid).bind(&spending_raw_tx).bind(now).bind(now)
+        .execute(storage.pool()).await.unwrap();
+
+        // --- Configure mock services ---
+        // is_utxo Sequence: first call returns true, second returns false.
+        // This simulates: input 1 is still a UTXO, input 2 was consumed by competitor.
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: "no_match".to_string(),
+                    status: "unknown".to_string(),
+                    depth: None,
+                }],
+            }))
+            .is_utxo_response(MockResponse::Sequence(vec![
+                MockResponse::Success(true),
+                MockResponse::Success(false),
+            ]))
+            .build();
+        storage.set_services(Arc::new(mock));
+
+        // --- Act: trigger doubleSpend rollback ---
+        let outcome = BroadcastOutcome::DoubleSpend {
+            competing_txs: vec!["competing_xyz".to_string()],
+            details: vec!["double spend detected".to_string()],
+        };
+        update_transaction_status_after_broadcast_internal(&storage, spending_txid, &outcome)
+            .await
+            .unwrap();
+
+        // --- Verify: first input (is_utxo=true) should be restored to spendable ---
+        let row1 = sqlx::query("SELECT spendable, spent_by FROM outputs WHERE output_id = ?")
+            .bind(output_id1)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert!(
+            row1.get::<bool, _>("spendable"),
+            "Input 1 (is_utxo=true) should be restored to spendable"
+        );
+        assert!(
+            row1.get::<Option<i64>, _>("spent_by").is_none(),
+            "Input 1 spent_by should be cleared"
+        );
+
+        // --- Verify: second input (is_utxo=false) should stay locked ---
+        let row2 = sqlx::query("SELECT spendable, spent_by FROM outputs WHERE output_id = ?")
+            .bind(output_id2)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert!(
+            !row2.get::<bool, _>("spendable"),
+            "Input 2 (is_utxo=false) should stay locked (not restored)"
+        );
+        assert_eq!(
+            row2.get::<Option<i64>, _>("spent_by"),
+            Some(spending_tx_id),
+            "Input 2 spent_by should remain set"
+        );
+
+        // --- Verify: own outputs marked unspendable ---
+        let own =
+            sqlx::query("SELECT spendable FROM outputs WHERE transaction_id = ? AND txid = ?")
+                .bind(spending_tx_id)
+                .bind(spending_txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert!(
+            !own.get::<bool, _>("spendable"),
+            "Spending tx's own output should be marked unspendable"
+        );
+
+        // --- Verify: transaction is 'failed' ---
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(spending_tx_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(tx_row.get::<String, _>("status"), "failed");
+
+        // --- Verify: proven_tx_req is 'doubleSpend' ---
+        let req = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(spending_txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(req.get::<String, _>("status"), "doubleSpend");
     }
 
     /// Success outcome should NOT trigger reconciliation — it's already success.

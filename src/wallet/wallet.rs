@@ -1427,11 +1427,23 @@ where
             if !no_send && !accept_delayed_broadcast {
                 let broadcast_outcome = if let Some(ref beef_bytes) = full_beef_bytes {
                     let txid_strings = vec![txid.clone()];
-                    // DEBUG: Validate BEEF structure and dump to file
+                    // Validate BEEF structure and dump to file for diagnostics
                     match bsv_rs::transaction::Beef::from_binary(beef_bytes) {
                         Ok(parsed) => {
                             let dump_path = format!("/tmp/beef-{}.hex", &txid[..8]);
                             let _ = std::fs::write(&dump_path, hex::encode(beef_bytes));
+
+                            // Structural validation: check leaf count and input coverage
+                            if let Err(validation_err) =
+                                crate::storage::sqlx::validate_beef_for_broadcast(&parsed, &txid)
+                            {
+                                tracing::warn!(
+                                    txid = %txid,
+                                    error = %validation_err,
+                                    "BEEF structural validation warning (broadcast will proceed)"
+                                );
+                            }
+
                             tracing::info!(
                                 txid = %txid,
                                 beef_version = parsed.version,
@@ -1808,6 +1820,21 @@ where
                 match bsv_rs::transaction::Beef::from_binary(input_beef_bytes) {
                     Ok(mut broadcast_beef) => {
                         broadcast_beef.merge_raw_tx(signed_tx.clone(), None);
+
+                        // Structural validation (diagnostic only — does not block broadcast)
+                        if let Err(validation_err) =
+                            crate::storage::sqlx::validate_beef_for_broadcast(
+                                &broadcast_beef,
+                                &txid,
+                            )
+                        {
+                            tracing::warn!(
+                                txid = %txid,
+                                error = %validation_err,
+                                "BEEF structural validation warning (sign_action, broadcast will proceed)"
+                            );
+                        }
+
                         let beef_bytes = broadcast_beef.to_binary();
                         let txid_strings = vec![txid.clone()];
                         match self.services.post_beef(&beef_bytes, &txid_strings).await {
