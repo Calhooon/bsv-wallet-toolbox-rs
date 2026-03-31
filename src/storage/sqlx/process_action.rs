@@ -922,6 +922,55 @@ fn generate_batch_id() -> String {
 // Post-Broadcast Status Update
 // =============================================================================
 
+/// Before rolling back UTXOs on permanent broadcast failure, check whether
+/// the tx actually exists in a miner's mempool or has been mined.
+/// Returns true if found alive, false otherwise.
+/// On any error, returns false (preserving existing rollback behavior).
+async fn reconcile_tx_status(storage: &StorageSqlx, txid: &str) -> bool {
+    use crate::storage::traits::WalletStorageReader;
+
+    let services = match storage.get_services() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(
+                txid = %txid,
+                error = %e,
+                "Reconciliation skipped: services unavailable"
+            );
+            return false;
+        }
+    };
+
+    let txids = vec![txid.to_string()];
+    match services.get_status_for_txids(&txids, false).await {
+        Ok(result) => {
+            for detail in &result.results {
+                if detail.txid == txid && (detail.status == "known" || detail.status == "mined") {
+                    tracing::info!(
+                        txid = %txid,
+                        status = %detail.status,
+                        "Reconciliation: tx found alive despite broadcast failure — treating as success"
+                    );
+                    return true;
+                }
+            }
+            tracing::debug!(
+                txid = %txid,
+                "Reconciliation: tx not found in mempool or chain — proceeding with rollback"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(
+                txid = %txid,
+                error = %e,
+                "Reconciliation: status check failed — falling through to rollback"
+            );
+            false
+        }
+    }
+}
+
 /// Update transaction status after a broadcast attempt.
 ///
 /// This function is called by the wallet layer after attempting to broadcast a transaction.
@@ -932,12 +981,28 @@ fn generate_batch_id() -> String {
 /// - **ServiceError** (transient): tx stays 'sending', req→'sending', inputs stay locked.
 ///   The `SendWaitingTask` background monitor will pick these up and retry.
 /// - **DoubleSpend** (permanent): tx→'failed', req→'doubleSpend', inputs restored.
+///   BUT if the tx is found alive in mempool/chain, treat as success instead.
 /// - **InvalidTx** (permanent): tx→'failed', req→'invalid', inputs restored.
+///   BUT if the tx is found alive in mempool/chain, treat as success instead.
 pub async fn update_transaction_status_after_broadcast_internal(
     storage: &StorageSqlx,
     txid: &str,
     outcome: &BroadcastOutcome,
 ) -> Result<()> {
+    // Before starting a DB transaction, reconcile permanent failures against
+    // the actual chain/mempool state. This avoids holding a DB transaction
+    // open during a network call.
+    let effective_outcome = match outcome {
+        BroadcastOutcome::DoubleSpend { .. } | BroadcastOutcome::InvalidTx { .. } => {
+            if reconcile_tx_status(storage, txid).await {
+                &BroadcastOutcome::Success
+            } else {
+                outcome
+            }
+        }
+        _ => outcome,
+    };
+
     let mut tx = storage
         .pool()
         .begin()
@@ -946,7 +1011,7 @@ pub async fn update_transaction_status_after_broadcast_internal(
 
     let now = Utc::now();
 
-    match outcome {
+    match effective_outcome {
         BroadcastOutcome::Success => {
             // Broadcast succeeded — update to unproven/unmined
             sqlx::query("UPDATE transactions SET status = ?, updated_at = ? WHERE txid = ?")
@@ -2498,6 +2563,362 @@ mod tests {
         assert!(
             own.get::<bool, _>("spendable"),
             "own outputs must stay spendable on service error"
+        );
+    }
+
+    // =========================================================================
+    // Broadcast Reconciliation Tests
+    // =========================================================================
+
+    use crate::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
+    use crate::services::traits::{GetStatusForTxidsResult, TxStatusDetail};
+    use crate::storage::traits::WalletStorageProvider;
+    use std::sync::Arc;
+
+    /// Helper: set up a processed transaction with mock services configured.
+    async fn setup_with_mock_services(mock: MockWalletServices) -> (StorageSqlx, String, i64) {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+        storage.set_services(Arc::new(mock));
+        (storage, txid, transaction_id)
+    }
+
+    /// DoubleSpend but tx is found in mempool ("known") — should treat as success.
+    #[tokio::test]
+    async fn test_reconciliation_double_spend_found_in_mempool() {
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: String::new(), // will be matched by txid field below
+                    status: "known".to_string(),
+                    depth: None,
+                }],
+            }))
+            .build();
+
+        let (storage, txid, transaction_id) = setup_with_mock_services(mock).await;
+
+        // Patch the mock result to contain the actual txid
+        // (We need to re-set services because we now know the txid)
+        let mock2 = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: txid.clone(),
+                    status: "known".to_string(),
+                    depth: None,
+                }],
+            }))
+            .build();
+        storage.set_services(Arc::new(mock2));
+
+        let outcome = BroadcastOutcome::DoubleSpend {
+            competing_txs: vec!["competing_abc".to_string()],
+            details: vec!["taal: DOUBLE_SPEND_ATTEMPTED".to_string()],
+        };
+
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // Should be treated as success: tx→'unproven', req→'unmined'
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            tx_row.get::<String, _>("status"),
+            "unproven",
+            "tx should be 'unproven' when reconciliation finds it in mempool"
+        );
+
+        let req_row = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            req_row.get::<String, _>("status"),
+            "unmined",
+            "req should be 'unmined' when reconciliation finds tx in mempool"
+        );
+
+        // Inputs should NOT be restored (still locked by the successful tx)
+        let input = sqlx::query("SELECT spendable FROM outputs WHERE spent_by = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert!(
+            !input.get::<bool, _>("spendable"),
+            "inputs must stay locked when reconciliation overrides to success"
+        );
+    }
+
+    /// DoubleSpend but tx is found mined — should treat as success.
+    #[tokio::test]
+    async fn test_reconciliation_double_spend_found_mined() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: txid.clone(),
+                    status: "mined".to_string(),
+                    depth: Some(3),
+                }],
+            }))
+            .build();
+        storage.set_services(Arc::new(mock));
+
+        let outcome = BroadcastOutcome::DoubleSpend {
+            competing_txs: vec!["competing_abc".to_string()],
+            details: vec!["taal: DOUBLE_SPEND_ATTEMPTED".to_string()],
+        };
+
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // Should be treated as success
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            tx_row.get::<String, _>("status"),
+            "unproven",
+            "tx should be 'unproven' when reconciliation finds it mined"
+        );
+
+        let req_row = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            req_row.get::<String, _>("status"),
+            "unmined",
+            "req should be 'unmined' when reconciliation finds tx mined"
+        );
+    }
+
+    /// DoubleSpend and tx is truly not found — normal rollback should happen.
+    #[tokio::test]
+    async fn test_reconciliation_tx_truly_not_found() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: txid.clone(),
+                    status: "unknown".to_string(),
+                    depth: None,
+                }],
+            }))
+            .build();
+        storage.set_services(Arc::new(mock));
+
+        let outcome = BroadcastOutcome::DoubleSpend {
+            competing_txs: vec!["competing_abc".to_string()],
+            details: vec!["taal: DOUBLE_SPEND_ATTEMPTED".to_string()],
+        };
+
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // Normal rollback: tx→'failed', inputs restored
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            tx_row.get::<String, _>("status"),
+            "failed",
+            "tx should be 'failed' when reconciliation confirms tx not found"
+        );
+
+        let req_row = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            req_row.get::<String, _>("status"),
+            "doubleSpend",
+            "req should be 'doubleSpend' when reconciliation confirms tx not found"
+        );
+
+        // Inputs should be restored
+        let restored = sqlx::query(
+            "SELECT spendable, spent_by FROM outputs WHERE txid = '0000000000000000000000000000000000000000000000000000000000000001'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert!(
+            restored.get::<bool, _>("spendable"),
+            "inputs must be restored when tx truly not found"
+        );
+        assert!(
+            restored.get::<Option<i64>, _>("spent_by").is_none(),
+            "spent_by must be cleared when tx truly not found"
+        );
+    }
+
+    /// Status check returns error — should fall through to normal rollback.
+    #[tokio::test]
+    async fn test_reconciliation_status_check_fails_falls_through() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Error(
+                MockErrorKind::NetworkError,
+                "connection refused".to_string(),
+            ))
+            .build();
+        storage.set_services(Arc::new(mock));
+
+        let outcome = BroadcastOutcome::InvalidTx {
+            details: vec!["ARC rejected".to_string()],
+        };
+
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // Should fall through to normal rollback
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            tx_row.get::<String, _>("status"),
+            "failed",
+            "tx should be 'failed' when status check errors"
+        );
+
+        let req_row = sqlx::query("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            req_row.get::<String, _>("status"),
+            "invalid",
+            "req should be 'invalid' when status check errors"
+        );
+    }
+
+    /// No services set — should fall through to normal rollback.
+    #[tokio::test]
+    async fn test_reconciliation_no_services_falls_through() {
+        // setup_processed_transaction does NOT set services
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        let outcome = BroadcastOutcome::DoubleSpend {
+            competing_txs: vec!["competing_abc".to_string()],
+            details: vec!["taal: DOUBLE_SPEND_ATTEMPTED".to_string()],
+        };
+
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // Should fall through to normal rollback
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            tx_row.get::<String, _>("status"),
+            "failed",
+            "tx should be 'failed' when no services available"
+        );
+    }
+
+    /// ServiceError outcome should NOT trigger reconciliation — it's transient.
+    #[tokio::test]
+    async fn test_reconciliation_does_not_affect_service_error() {
+        let (storage, txid, _transaction_id) = setup_processed_transaction().await;
+
+        // Set up mock that would return "known" if called — but it should NOT be called
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: txid.clone(),
+                    status: "known".to_string(),
+                    depth: None,
+                }],
+            }))
+            .build();
+        storage.set_services(Arc::new(mock));
+
+        let outcome = BroadcastOutcome::ServiceError {
+            details: vec!["timeout".to_string()],
+        };
+
+        update_transaction_status_after_broadcast_internal(&storage, &txid, &outcome)
+            .await
+            .unwrap();
+
+        // ServiceError path: tx stays 'sending', req→'sending'
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            tx_row.get::<String, _>("status"),
+            "sending",
+            "ServiceError should keep tx in 'sending', not trigger reconciliation"
+        );
+    }
+
+    /// Success outcome should NOT trigger reconciliation — it's already success.
+    #[tokio::test]
+    async fn test_reconciliation_does_not_affect_success() {
+        let (storage, txid, transaction_id) = setup_processed_transaction().await;
+
+        // No mock services needed — reconciliation should not be called for Success
+
+        update_transaction_status_after_broadcast_internal(
+            &storage,
+            &txid,
+            &BroadcastOutcome::Success,
+        )
+        .await
+        .unwrap();
+
+        // Success path: tx→'unproven'
+        let tx_row = sqlx::query("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(transaction_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            tx_row.get::<String, _>("status"),
+            "unproven",
+            "Success should go straight to 'unproven', not trigger reconciliation"
         );
     }
 }
