@@ -230,6 +230,16 @@ impl Arc {
                     Error::ServiceError(format!("Failed to parse ARC response: {}", e))
                 })?;
 
+                tracing::debug!(
+                    name = %self.name,
+                    tx_status = %data.tx_status,
+                    txid = %data.txid,
+                    extra_info = ?data.extra_info,
+                    competing_txs = ?data.competing_txs,
+                    hex_len = raw_tx_hex.len(),
+                    "ARC response"
+                );
+
                 let is_double_spend = data.tx_status == "DOUBLE_SPEND_ATTEMPTED"
                     || data.tx_status == "SEEN_IN_ORPHAN_MEMPOOL";
 
@@ -358,17 +368,23 @@ impl Arc {
                             if hydrated {
                                 match new_tx.to_hex_ef() {
                                     Ok(ef_hex) => {
+                                        tracing::debug!(
+                                            name = %self.name,
+                                            ef_len = ef_hex.len(),
+                                            num_inputs = new_tx.inputs.len(),
+                                            "Posting as EF (hydrated)"
+                                        );
                                         result.notes.push(make_note(&self.name, "postBeefAsEF"));
                                         self.post_raw_tx(&ef_hex, Some(txids)).await?
                                     }
-                                    Err(_) => {
-                                        // EF serialization failed — fall back to BEEF
+                                    Err(e) => {
+                                        tracing::warn!(name = %self.name, error = %e, "EF serialization failed — falling back to BEEF");
                                         let beef_hex = hex::encode(beef);
                                         self.post_raw_tx(&beef_hex, Some(txids)).await?
                                     }
                                 }
                             } else {
-                                // Couldn't hydrate all inputs — fall back to BEEF
+                                tracing::warn!(name = %self.name, "Hydration failed — falling back to BEEF");
                                 let beef_hex = hex::encode(beef);
                                 self.post_raw_tx(&beef_hex, Some(txids)).await?
                             }
