@@ -31,7 +31,7 @@ use bsv_rs::wallet::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{Error, Result};
 use crate::services::{Chain, WalletServices};
@@ -327,6 +327,16 @@ where
     /// Optional permissions manager for BRC-98/99 permission enforcement.
     /// When set, wallet operations will check permissions before proceeding.
     permissions_manager: Option<Arc<crate::managers::WalletPermissionsManager>>,
+
+    /// FIFO serialization lock for spending operations.
+    ///
+    /// Ensures UTXO selection → sign → broadcast → state update is atomic
+    /// across concurrent callers. Without this, rapid sequential `create_action`
+    /// calls can select change outputs whose parent transaction hasn't propagated
+    /// to the mempool yet, causing `SEEN_IN_ORPHAN_MEMPOOL` broadcast failures.
+    ///
+    /// `tokio::sync::Mutex` is fair (FIFO) — waiters acquire in order.
+    spend_lock: Arc<Mutex<()>>,
 }
 
 impl<S, V> Wallet<S, V>
@@ -425,6 +435,7 @@ where
             user_id: user.user_id,
             privileged_key_manager: None,
             permissions_manager: None,
+            spend_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -1191,6 +1202,10 @@ where
     ) -> bsv_rs::Result<CreateActionResult> {
         validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
 
+        // Serialize spending operations to prevent UTXO contention and
+        // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).
+        let _spend_guard = self.spend_lock.lock().await;
+
         // BRC-98/99: Check spending permission based on total output satoshis
         if self.permissions_manager.is_some() {
             let total_satoshis: u64 = args
@@ -1647,6 +1662,9 @@ where
     ) -> bsv_rs::Result<SignActionResult> {
         validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
 
+        // Serialize spending operations (signs and broadcasts pending transactions).
+        let _spend_guard = self.spend_lock.lock().await;
+
         // Get the reference from args (it's already a String)
         let reference = args.reference;
 
@@ -1908,6 +1926,9 @@ where
     ) -> bsv_rs::Result<AbortActionResult> {
         validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
 
+        // Serialize spending operations (restores locked UTXOs).
+        let _spend_guard = self.spend_lock.lock().await;
+
         let auth = self.auth();
 
         let result = self
@@ -1943,6 +1964,9 @@ where
         originator: &str,
     ) -> bsv_rs::Result<InternalizeActionResult> {
         validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+
+        // Serialize spending operations (creates new spendable outputs).
+        let _spend_guard = self.spend_lock.lock().await;
 
         // Validate wallet payment outputs have correct BRC-29 derivation parameters
         for output in &args.outputs {
@@ -2143,6 +2167,9 @@ where
         originator: &str,
     ) -> bsv_rs::Result<RelinquishOutputResult> {
         validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+
+        // Serialize spending operations (modifies UTXO state).
+        let _spend_guard = self.spend_lock.lock().await;
 
         // BRC-98/99: Check basket access permission for removal
         self.check_basket_permission(
@@ -3707,5 +3734,101 @@ mod tests {
         };
 
         assert_eq!(field.master_key, "");
+    }
+
+    // =========================================================================
+    // Spend lock tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_spend_lock_is_fifo() {
+        // Verify that the spend lock serializes access in FIFO order.
+        // tokio::sync::Mutex is fair — waiters acquire in the order they called lock().
+        let lock = Arc::new(Mutex::new(()));
+        let order = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+
+        let mut handles = Vec::new();
+        // Acquire the lock first so all spawned tasks queue up
+        let guard = lock.lock().await;
+
+        for i in 0..5u32 {
+            let lock = Arc::clone(&lock);
+            let order = Arc::clone(&order);
+            handles.push(tokio::spawn(async move {
+                let _g = lock.lock().await;
+                order.lock().unwrap().push(i);
+            }));
+            // Small yield to ensure tasks queue in order
+            tokio::task::yield_now().await;
+        }
+
+        // Release the initial lock — tasks should proceed in FIFO order
+        drop(guard);
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let result = order.lock().unwrap().clone();
+        assert_eq!(result, vec![0, 1, 2, 3, 4], "spend lock must be FIFO");
+    }
+
+    #[tokio::test]
+    async fn test_spend_lock_serializes_not_deadlocks() {
+        // Verify the lock doesn't deadlock when acquired sequentially on same task.
+        let lock = Arc::new(Mutex::new(()));
+        for _ in 0..10 {
+            let _g = lock.lock().await;
+            // Lock acquired and released each iteration — no deadlock.
+        }
+    }
+
+    #[tokio::test]
+    async fn test_spend_lock_released_on_drop() {
+        // Verify the lock is released when the guard is dropped (e.g., on error return).
+        let lock = Arc::new(Mutex::new(()));
+
+        {
+            let _g = lock.lock().await;
+            // Simulate early return — guard dropped here
+        }
+
+        // Lock should be available immediately
+        let result = lock.try_lock();
+        assert!(result.is_ok(), "lock must be released after guard drop");
+    }
+
+    #[tokio::test]
+    async fn test_spend_lock_concurrent_exclusion() {
+        // Verify that two concurrent holders never overlap.
+        let lock = Arc::new(Mutex::new(()));
+        let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let max_active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let lock = Arc::clone(&lock);
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            handles.push(tokio::spawn(async move {
+                let _g = lock.lock().await;
+                let prev = active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // Update max if this is a new high
+                max_active.fetch_max(prev + 1, std::sync::atomic::Ordering::SeqCst);
+                // Simulate work
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(
+            max_active.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "at most one task should hold the spend lock at a time"
+        );
     }
 }
