@@ -480,13 +480,20 @@ async fn update_transaction_with_signed_data(
     transaction_id: i64,
     txid: &str,
     status: &str,
+    raw_tx: &[u8],
 ) -> Result<()> {
     let now = Utc::now();
+    // Store raw_tx on the transaction record so child transactions can find it
+    // during BEEF construction. Go/TS store raw_tx at create time; we store it
+    // at process time because the Rust flow separates create (unsigned template)
+    // from process (signed tx). input_beef is cleared because the proven_tx_req
+    // record now holds the authoritative copy.
     sqlx::query(
-        "UPDATE transactions SET txid = ?, status = ?, raw_tx = NULL, input_beef = NULL, updated_at = ? WHERE transaction_id = ?",
+        "UPDATE transactions SET txid = ?, status = ?, raw_tx = ?, input_beef = NULL, updated_at = ? WHERE transaction_id = ?",
     )
     .bind(txid)
     .bind(status)
+    .bind(raw_tx)
     .bind(now)
     .bind(transaction_id)
     .execute(&mut *conn)
@@ -756,8 +763,14 @@ pub async fn process_action_internal(
         }
 
         let (tx_status, req_status) = determine_statuses(&args);
-        update_transaction_with_signed_data(&mut tx, found_tx.transaction_id, txid, tx_status)
-            .await?;
+        update_transaction_with_signed_data(
+            &mut tx,
+            found_tx.transaction_id,
+            txid,
+            tx_status,
+            raw_tx,
+        )
+        .await?;
 
         // nosend outputs stay spendable=false until the tx is actually broadcast
         let mark_spendable = !args.is_no_send || args.is_send_with;
@@ -1452,11 +1465,21 @@ mod tests {
             .find_or_create_default_basket(user_id)
             .await
             .unwrap();
+        // Store a coinbase-like raw_tx so BEEF construction can find this transaction
+        let raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000\
+             ffffffff0704ffff001d0104ffffffff\
+             0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66\
+             fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf23\
+             42c858eeac00000000",
+        )
+        .unwrap();
         let tx_result = sqlx::query(
-            "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, created_at, updated_at) VALUES (?, 'completed', 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?)",
+            "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?, ?)",
         )
         .bind(user_id).bind(satoshis)
         .bind("0000000000000000000000000000000000000000000000000000000000000001")
+        .bind(&raw_tx)
         .bind(now).bind(now)
         .execute(storage.pool()).await.unwrap();
 

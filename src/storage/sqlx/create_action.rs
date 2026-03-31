@@ -4,10 +4,11 @@
 //! for the `StorageSqlx` wallet storage backend.
 
 use crate::error::{Error, Result};
+use crate::services::traits::WalletServices;
 use crate::storage::entities::{TableOutput, TableOutputBasket, TableOutputTag, TableTxLabel};
 use crate::storage::traits::{
     FindOutputBasketsArgs, StorageCreateActionResult, StorageCreateTransactionInput,
-    StorageCreateTransactionOutput, StorageProvidedBy,
+    StorageCreateTransactionOutput, StorageProvidedBy, WalletStorageReader,
 };
 use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
 use chrono::Utc;
@@ -663,6 +664,7 @@ pub async fn create_action_internal(
         args.input_beef.as_deref(),
         &known_txids,
         return_txid_only,
+        Some(storage),
     )
     .await?;
 
@@ -1668,6 +1670,7 @@ pub(super) struct BeefTxData {
 /// * `user_input_beef` - Optional user-provided BEEF with proofs for external inputs
 /// * `known_txids` - TXIDs the recipient already has (will be trimmed to txid-only)
 /// * `return_txid_only` - If true, skip BEEF construction entirely
+/// * `storage` - Optional storage backend for network fallback when local lookup fails
 ///
 /// # Returns
 /// * `Ok(Some(beef_bytes))` - BEEF binary data if there are inputs
@@ -1675,6 +1678,8 @@ pub(super) struct BeefTxData {
 ///
 /// # Errors
 /// * `ValidationError` - If BEEF structure is invalid or merkle roots don't match chain
+/// * `TransactionError` - If a direct input (depth 0) cannot be found in any source
+#[allow(clippy::too_many_arguments)]
 async fn build_input_beef(
     conn: &mut SqliteConnection,
     chain_tracker: Option<&dyn ChainTracker>,
@@ -1683,6 +1688,7 @@ async fn build_input_beef(
     user_input_beef: Option<&[u8]>,
     known_txids: &[String],
     return_txid_only: bool,
+    storage: Option<&StorageSqlx>,
 ) -> Result<Option<Vec<u8>>> {
     // Gap #3: If return_txid_only, skip BEEF construction entirely
     if return_txid_only {
@@ -1791,17 +1797,26 @@ async fn build_input_beef(
         }
 
         // Individual transaction lookup
-        if let Some(tx_data) = get_tx_with_proof(&mut *conn, &txid).await? {
+        let tx_data_opt = get_tx_with_proof(&mut *conn, &txid).await?;
+
+        // Fix 3: Network fallback — if not found locally, try fetching from services
+        let tx_data_opt = if tx_data_opt.is_none() {
+            try_network_fallback(&mut *conn, storage, &txid).await?
+        } else {
+            tx_data_opt
+        };
+
+        if let Some(tx_data) = tx_data_opt {
             // If we have a merkle proof, add both tx and proof - no need to recurse
             let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {
                 match MerklePath::from_binary(merkle_path_bytes) {
                     Ok(merkle_path) => Some(beef.merge_bump(merkle_path)),
                     Err(e) => {
                         // Continue without proof - will need to recurse to ancestors
-                        eprintln!(
-                            "Warning: Failed to parse merkle path for txid {}: {}. Will recurse to ancestors.",
-                            txid,
-                            e
+                        tracing::warn!(
+                            txid = %txid,
+                            error = %e,
+                            "Failed to parse merkle path — will recurse to ancestors"
                         );
                         None
                     }
@@ -1828,9 +1843,21 @@ async fn build_input_beef(
                     }
                 }
             }
+        } else {
+            // Fix 2: Direct inputs (depth 0) MUST be found — error if missing.
+            // Deeper ancestors may be proven elsewhere, so just warn.
+            if depth == 0 {
+                return Err(Error::TransactionError(format!(
+                    "Cannot find raw tx for direct input {} — BEEF will be incomplete",
+                    txid
+                )));
+            }
+            tracing::warn!(
+                txid = %txid,
+                depth = depth,
+                "Cannot find raw tx for ancestor — BEEF may be incomplete"
+            );
         }
-        // If transaction not found in storage AND not in user BEEF, that's an error
-        // for user-provided inputs, but OK for ancestors (they might be proven elsewhere)
     }
 
     // Verify BEEF against ChainTracker before trimming known_txids
@@ -2155,6 +2182,97 @@ pub(super) async fn get_tx_with_proof(
     Ok(None)
 }
 
+/// Attempts to fetch a missing transaction from the network via wallet services.
+///
+/// This is the network fallback for BEEF construction. When a transaction is not
+/// found in local storage (proven_txs, transactions, or proven_tx_reqs), we try
+/// to fetch it from WoC/ARC via the WalletServices trait. If found, the raw tx
+/// is stored locally for future use.
+///
+/// This matches the Go toolbox's `TxGetterFcn` callback and the TS toolbox's
+/// `getProvenOrRawTxFromServices()` behavior.
+///
+/// # Arguments
+/// * `conn` - Database connection for storing fetched tx locally
+/// * `storage` - Optional storage backend (provides services access)
+/// * `txid` - The transaction ID to fetch
+///
+/// # Returns
+/// * `Ok(Some(BeefTxData))` - If the tx was fetched from the network
+/// * `Ok(None)` - If services are unavailable or the tx was not found
+async fn try_network_fallback(
+    conn: &mut SqliteConnection,
+    storage: Option<&StorageSqlx>,
+    txid: &str,
+) -> Result<Option<BeefTxData>> {
+    let storage = match storage {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    let services: std::sync::Arc<dyn WalletServices> = match storage.get_services() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::debug!(txid = %txid, "No services available for network fallback");
+            return Ok(None);
+        }
+    };
+
+    tracing::info!(txid = %txid, "Attempting network fallback for missing transaction");
+
+    // Try to get the raw transaction from the network
+    match services.get_raw_tx(txid, false).await {
+        Ok(result) => {
+            if let Some(ref raw_tx) = result.raw_tx {
+                tracing::info!(
+                    txid = %txid,
+                    provider = %result.name,
+                    size = raw_tx.len(),
+                    "Fetched raw tx from network"
+                );
+
+                // Store locally for future use
+                let now = Utc::now();
+                let _ = sqlx::query(
+                    r#"
+                    INSERT OR IGNORE INTO proven_tx_reqs
+                        (txid, status, raw_tx, history, notify, created_at, updated_at)
+                    VALUES (?, 'unmined', ?, '{}', '{}', ?, ?)
+                    "#,
+                )
+                .bind(txid)
+                .bind(raw_tx)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *conn)
+                .await;
+
+                // Also try to get merkle proof from the network
+                let merkle_path = match services.get_merkle_path(txid, false).await {
+                    Ok(mp_result) => mp_result
+                        .merkle_path
+                        .and_then(|hex_str| hex::decode(&hex_str).ok()),
+                    Err(_) => None,
+                };
+
+                return Ok(Some(BeefTxData {
+                    raw_tx: raw_tx.clone(),
+                    merkle_path,
+                }));
+            }
+
+            if let Some(ref error) = result.error {
+                tracing::debug!(txid = %txid, error = %error, "Network fetch returned error");
+            }
+        }
+        Err(e) => {
+            tracing::debug!(txid = %txid, error = %e, "Network fallback failed");
+        }
+    }
+
+    Ok(None)
+}
+
 /// Compacts a stored BEEF by upgrading unproven transactions with current
 /// merkle proofs from the `proven_txs` table, then trimming unnecessary
 /// ancestor transactions.
@@ -2297,7 +2415,7 @@ pub(super) async fn get_stored_beef(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::traits::WalletStorageWriter;
+    use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
     use bsv_rs::wallet::{CreateActionOptions, CreateActionOutput};
 
     #[test]
@@ -3027,6 +3145,20 @@ mod tests {
         assert_eq!(result.lock_time, 500000);
     }
 
+    /// Minimal coinbase-like raw_tx for seeded test transactions.
+    /// Has one coinbase input (all-zero txid, skipped by parse_input_txids)
+    /// and one output, so BEEF construction can include it without recursing.
+    fn seed_raw_tx() -> Vec<u8> {
+        hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000\
+             ffffffff0704ffff001d0104ffffffff\
+             0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66\
+             fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf23\
+             42c858eeac00000000",
+        )
+        .unwrap()
+    }
+
     // Helper function to seed a change output for testing
     async fn seed_change_output(storage: &StorageSqlx, user_id: i64, satoshis: i64) {
         let now = Utc::now();
@@ -3035,16 +3167,18 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a fake completed transaction
+        // Create a fake completed transaction with raw_tx so BEEF construction can find it
+        let raw_tx = seed_raw_tx();
         let tx_result = sqlx::query(
             r#"
-            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, created_at, updated_at)
-            VALUES (?, 'completed', 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?)
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
+            VALUES (?, 'completed', 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?, ?)
             "#,
         )
         .bind(user_id)
         .bind(satoshis)
         .bind("0000000000000000000000000000000000000000000000000000000000000001")
+        .bind(&raw_tx)
         .bind(now)
         .bind(now)
         .execute(storage.pool())
@@ -3119,6 +3253,7 @@ mod tests {
             None,  // user_input_beef
             &[],   // known_txids
             false, // return_txid_only
+            None,  // storage - no network fallback
         )
         .await
         .unwrap();
@@ -3167,6 +3302,7 @@ mod tests {
             None,  // user_input_beef
             &[],   // known_txids
             false, // return_txid_only
+            None,  // storage - no network fallback
         )
         .await
         .unwrap();
@@ -3232,6 +3368,7 @@ mod tests {
             None,
             &[],
             false,
+            None,
         )
         .await
         .unwrap();
@@ -3303,6 +3440,7 @@ mod tests {
             None,
             &[],
             false,
+            None,
         )
         .await
         .unwrap();
@@ -3562,6 +3700,7 @@ mod tests {
             None,
             &[],
             false,
+            None,
         )
         .await
         .unwrap();
@@ -3607,6 +3746,7 @@ mod tests {
             None,
             &[],
             true, // return_txid_only = true
+            None,
         )
         .await
         .unwrap();
@@ -3652,6 +3792,7 @@ mod tests {
             None,
             &[txid.to_string()], // This txid is known to recipient
             false,
+            None,
         )
         .await
         .unwrap();
@@ -3710,6 +3851,7 @@ mod tests {
             Some(&user_beef_bytes), // User provides BEEF for external input
             &[],
             false,
+            None,
         )
         .await
         .unwrap();
@@ -3757,6 +3899,7 @@ mod tests {
             Some(&invalid_beef),
             &[],
             false,
+            None,
         )
         .await;
 
@@ -3833,6 +3976,7 @@ mod tests {
             None,
             &[],
             false,
+            None,
         )
         .await
         .unwrap();
@@ -3892,6 +4036,7 @@ mod tests {
             None,
             &[],
             false,
+            None,
         )
         .await;
 
@@ -3939,6 +4084,7 @@ mod tests {
             None,
             &[],
             false,
+            None,
         )
         .await
         .unwrap();
@@ -3970,17 +4116,19 @@ mod tests {
 
         // Build a unique 64-hex-char txid from the tag
         let txid = format!("{:0>64}", tag);
+        let raw_tx = seed_raw_tx();
 
         let tx_result = sqlx::query(
             r#"
-            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, created_at, updated_at)
-            VALUES (?, ?, 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?)
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
+            VALUES (?, ?, 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?, ?)
             "#,
         )
         .bind(user_id)
         .bind(status)
         .bind(satoshis)
         .bind(&txid)
+        .bind(&raw_tx)
         .bind(now)
         .bind(now)
         .execute(storage.pool())
@@ -4125,5 +4273,539 @@ mod tests {
 
         let input = allocated.unwrap();
         assert_eq!(input.satoshis, 100_000);
+    }
+
+    // =============================================================================
+    // Tests for BEEF ancestry construction fixes
+    // =============================================================================
+
+    #[tokio::test]
+    async fn test_build_beef_includes_unconfirmed_parent() {
+        // Create a chain: confirmed parent (with merkle proof) -> unconfirmed child -> grandchild
+        // Build BEEF for the grandchild and verify it includes both the child (raw) and parent (with proof)
+        use sha2::{Digest, Sha256};
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage.find_or_insert_user("02abcd").await.unwrap();
+
+        // Helper to compute txid from raw bytes
+        let compute_txid = |raw: &[u8]| -> String {
+            let h1 = Sha256::digest(raw);
+            let h2 = Sha256::digest(h1);
+            let mut v = h2.to_vec();
+            v.reverse();
+            hex::encode(v)
+        };
+
+        // 1. Create a confirmed parent transaction with merkle proof
+        let parent_raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000\
+             ffffffff0704ffff001d0104ffffffff\
+             0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66\
+             fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf23\
+             42c858eeac00000000",
+        )
+        .unwrap();
+        let parent_txid = compute_txid(&parent_raw_tx);
+        let parent_merkle_path = hex::decode("a086010001020002").unwrap();
+        seed_proven_tx(&storage, &parent_txid, &parent_raw_tx, &parent_merkle_path).await;
+
+        // 2. Create an unconfirmed child tx that spends from parent
+        let parent_txid_bytes = hex::decode(&parent_txid).unwrap();
+        let mut parent_le = parent_txid_bytes.clone();
+        parent_le.reverse();
+
+        let mut child_raw_tx = vec![];
+        child_raw_tx.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
+        child_raw_tx.push(0x01); // 1 input
+        child_raw_tx.extend_from_slice(&parent_le); // parent txid LE
+        child_raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // vout 0
+        child_raw_tx.push(0x00); // empty script
+        child_raw_tx.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        child_raw_tx.push(0x01); // 1 output
+        child_raw_tx.extend_from_slice(&[0xe8, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        child_raw_tx.push(0x00); // empty script
+        child_raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // locktime
+
+        let child_txid = compute_txid(&child_raw_tx);
+
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis,
+                version, lock_time, description, txid, raw_tx, created_at, updated_at)
+            VALUES (?, 'unproven', 'ref_child', 0, 1000, 1, 0, 'Unconfirmed child', ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(&child_txid)
+        .bind(&child_raw_tx)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // 3. Build BEEF for the grandchild (which spends from child)
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: child_txid.clone(),
+            vout: 0,
+            satoshis: 1000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = build_input_beef(
+            &mut conn,
+            None,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // BEEF should contain both the child (raw) and parent (with proof)
+        assert!(result.is_some());
+        let beef_bytes = result.unwrap();
+        let beef = Beef::from_binary(&beef_bytes).unwrap();
+
+        // Verify both transactions are in the BEEF
+        assert!(
+            beef.find_txid(&child_txid).is_some(),
+            "BEEF must contain the unconfirmed child tx"
+        );
+        assert!(
+            beef.find_txid(&parent_txid).is_some(),
+            "BEEF must contain the confirmed parent tx"
+        );
+
+        // Verify the BEEF has at least 2 transactions (child + parent)
+        assert!(
+            beef.txs.len() >= 2,
+            "BEEF must contain at least 2 transactions (child + parent), got {}",
+            beef.txs.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_beef_errors_on_missing_direct_input() {
+        // Try to build BEEF for a tx whose direct input (depth 0) has no raw_tx in storage.
+        // Should return an error, not silent success.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let missing_txid = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: missing_txid.to_string(),
+            vout: 0,
+            satoshis: 50_000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = build_input_beef(
+            &mut conn,
+            None,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+            None,
+        )
+        .await;
+
+        // Should be an error — not silent success
+        assert!(result.is_err(), "Must error when direct input is missing");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Cannot find raw tx for direct input"),
+            "Error message must mention the missing direct input: {}",
+            err
+        );
+        assert!(
+            err.to_string().contains(missing_txid),
+            "Error message must include the txid: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_beef_warns_on_missing_deep_ancestor() {
+        // Build BEEF where a depth-2 ancestor is missing.
+        // Should succeed (with warning logged) — the BEEF may be incomplete but
+        // we don't hard-error on missing deep ancestors.
+        use sha2::{Digest, Sha256};
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage.find_or_insert_user("02abcd").await.unwrap();
+
+        let compute_txid = |raw: &[u8]| -> String {
+            let h1 = Sha256::digest(raw);
+            let h2 = Sha256::digest(h1);
+            let mut v = h2.to_vec();
+            v.reverse();
+            hex::encode(v)
+        };
+
+        // Create a chain: missing_ancestor -> parent_tx -> child_tx (which we spend)
+        // The missing_ancestor is NOT stored, so depth-2 lookup will fail.
+
+        // Use a fixed 32-byte LE txid for the missing ancestor (not in any table)
+        let missing_ancestor_txid =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let ancestor_bytes = hex::decode(missing_ancestor_txid).unwrap();
+        let mut ancestor_le = ancestor_bytes.clone();
+        ancestor_le.reverse();
+
+        // Parent tx that references the missing ancestor
+        let mut parent_raw_tx = vec![];
+        parent_raw_tx.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
+        parent_raw_tx.push(0x01); // 1 input
+        parent_raw_tx.extend_from_slice(&ancestor_le); // references missing ancestor
+        parent_raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // vout
+        parent_raw_tx.push(0x00); // empty script
+        parent_raw_tx.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        parent_raw_tx.push(0x01); // 1 output
+        parent_raw_tx.extend_from_slice(&[0xe8, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        parent_raw_tx.push(0x00); // empty script
+        parent_raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // locktime
+
+        let parent_txid = compute_txid(&parent_raw_tx);
+
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis,
+                version, lock_time, description, txid, raw_tx, created_at, updated_at)
+            VALUES (?, 'unproven', 'ref_parent', 0, 1000, 1, 0, 'Parent tx', ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(&parent_txid)
+        .bind(&parent_raw_tx)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // Child tx that references parent
+        let parent_bytes = hex::decode(&parent_txid).unwrap();
+        let mut parent_le = parent_bytes.clone();
+        parent_le.reverse();
+
+        let mut child_raw_tx = vec![];
+        child_raw_tx.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
+        child_raw_tx.push(0x01); // 1 input
+        child_raw_tx.extend_from_slice(&parent_le); // references parent
+        child_raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // vout
+        child_raw_tx.push(0x00); // empty script
+        child_raw_tx.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        child_raw_tx.push(0x01); // 1 output
+        child_raw_tx.extend_from_slice(&[0xe8, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        child_raw_tx.push(0x00); // empty script
+        child_raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // locktime
+
+        let child_txid = compute_txid(&child_raw_tx);
+
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis,
+                version, lock_time, description, txid, raw_tx, created_at, updated_at)
+            VALUES (?, 'unproven', 'ref_child', 0, 1000, 1, 0, 'Child tx', ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(&child_txid)
+        .bind(&child_raw_tx)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        // Build BEEF for child_tx — depth 0 = child_tx (found), depth 1 = parent_tx (found),
+        // depth 2 = missing_ancestor (NOT found — should warn, not error)
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: child_txid.clone(),
+            vout: 0,
+            satoshis: 1000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = build_input_beef(
+            &mut conn,
+            None,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+            None,
+        )
+        .await;
+
+        // Should succeed (missing deep ancestor is a warning, not an error)
+        assert!(
+            result.is_ok(),
+            "Missing deep ancestor should be a warning, not an error: {:?}",
+            result
+        );
+        let beef_bytes = result.unwrap();
+        assert!(beef_bytes.is_some(), "BEEF should still be produced");
+
+        // Verify the BEEF contains what it could find (at least 2 txs: child + parent)
+        let beef = Beef::from_binary(&beef_bytes.unwrap()).unwrap();
+        assert!(
+            beef.txs.len() >= 2,
+            "BEEF must contain at least the child and parent txs, got {}",
+            beef.txs.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_raw_tx_stored_at_create_time() {
+        // Verify that after create_action + process_action, the raw_tx is stored
+        // on the transactions table (not NULL).
+        use crate::storage::traits::{AuthId, StorageProcessActionArgs, WalletStorageWriter};
+        use sha2::{Digest, Sha256};
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        seed_change_output(&storage, user.user_id, 100_000).await;
+
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "Test raw_tx storage".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: locking_script.clone(),
+                satoshis: 1000,
+                output_description: "Test output".to_string(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let create_result = create_action_internal(&storage, None, user.user_id, args)
+            .await
+            .unwrap();
+
+        // Build a raw tx with proper script length varint encoding.
+        // Must match the number and locking scripts of outputs from create_action.
+        let total_outputs = create_result.outputs.len();
+        let mut raw_tx = vec![];
+        raw_tx.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
+        raw_tx.push(0x01); // 1 input (dummy coinbase)
+        raw_tx.extend_from_slice(&[0u8; 32]); // txid
+        raw_tx.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // vout
+        raw_tx.push(0x00); // empty unlocking script
+        raw_tx.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // sequence
+        raw_tx.push(total_outputs as u8); // output count
+        for output in &create_result.outputs {
+            // satoshis (8 bytes LE)
+            raw_tx.extend_from_slice(&output.satoshis.to_le_bytes());
+            // locking script with varint length prefix
+            let script_bytes = hex::decode(&output.locking_script).unwrap_or_default();
+            raw_tx.push(script_bytes.len() as u8);
+            raw_tx.extend_from_slice(&script_bytes);
+        }
+        raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // locktime
+
+        // Compute txid from the raw_tx
+        let hash1 = Sha256::digest(&raw_tx);
+        let hash2 = Sha256::digest(hash1);
+        let mut txid_bytes = hash2.to_vec();
+        txid_bytes.reverse();
+        let txid = hex::encode(&txid_bytes);
+
+        // Inject input_beef so process_action doesn't reject us
+        let dummy_beef = vec![0x00, 0x01, 0x00];
+        sqlx::query("UPDATE transactions SET input_beef = ? WHERE reference = ?")
+            .bind(&dummy_beef)
+            .bind(&create_result.reference)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+
+        let process_args = StorageProcessActionArgs {
+            is_new_tx: true,
+            is_send_with: false,
+            is_no_send: true,
+            is_delayed: false,
+            reference: Some(create_result.reference.clone()),
+            txid: Some(txid.clone()),
+            raw_tx: Some(raw_tx.clone()),
+            send_with: vec![],
+        };
+
+        let auth_id = AuthId::with_user_id("02user_identity_key", user.user_id);
+        let _process_result = storage
+            .process_action(&auth_id, process_args)
+            .await
+            .unwrap();
+
+        // Now verify that raw_tx is stored on the transactions table
+        let row = sqlx::query("SELECT raw_tx FROM transactions WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+
+        let stored_raw_tx: Option<Vec<u8>> = row.get("raw_tx");
+        assert!(
+            stored_raw_tx.is_some(),
+            "raw_tx must NOT be NULL on the transactions table after process_action"
+        );
+        assert_eq!(
+            stored_raw_tx.unwrap(),
+            raw_tx,
+            "stored raw_tx must match the signed transaction"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_beef_with_network_fallback() {
+        // Set up mock services that return a raw tx for a missing txid.
+        // Build BEEF where a parent is missing from local storage.
+        // Verify the mock service was called and the BEEF is complete.
+        use crate::services::mock::{MockResponse, MockWalletServices};
+        use crate::services::traits::GetRawTxResult;
+        use sha2::{Digest, Sha256};
+        use std::sync::Arc;
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let compute_txid = |raw: &[u8]| -> String {
+            let h1 = Sha256::digest(raw);
+            let h2 = Sha256::digest(h1);
+            let mut v = h2.to_vec();
+            v.reverse();
+            hex::encode(v)
+        };
+
+        // The raw tx that the mock will return (a coinbase tx)
+        let missing_raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000\
+             ffffffff0704ffff001d0104ffffffff\
+             0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66\
+             fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf23\
+             42c858eeac00000000",
+        )
+        .unwrap();
+
+        // Compute the real txid from the raw bytes
+        let missing_txid = compute_txid(&missing_raw_tx);
+
+        // Configure mock services to return the raw tx
+        let mock_services = MockWalletServices::builder()
+            .get_raw_tx_response(MockResponse::Success(GetRawTxResult {
+                name: "mock-woc".to_string(),
+                txid: missing_txid.clone(),
+                raw_tx: Some(missing_raw_tx.clone()),
+                error: None,
+            }))
+            .build();
+        storage.set_services(Arc::new(mock_services));
+
+        // Build BEEF for a tx that references the missing txid
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: missing_txid.clone(),
+            vout: 0,
+            satoshis: 50_000_000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let change_inputs: Vec<AllocatedChangeInput> = vec![];
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = build_input_beef(
+            &mut conn,
+            None,
+            &extended_inputs,
+            &change_inputs,
+            None,
+            &[],
+            false,
+            Some(&storage),
+        )
+        .await
+        .unwrap();
+
+        // BEEF should be produced (network fallback fetched the tx)
+        assert!(
+            result.is_some(),
+            "BEEF should be produced via network fallback"
+        );
+        let beef_bytes = result.unwrap();
+        let beef = Beef::from_binary(&beef_bytes).unwrap();
+
+        // The fetched tx should be in the BEEF
+        assert!(
+            beef.find_txid(&missing_txid).is_some(),
+            "Network-fetched tx must be in the BEEF"
+        );
+
+        // Verify the tx was also stored locally for future use
+        // Note: proven_tx_reqs is written via the conn (within the same connection),
+        // and we need to use the same connection to read it back.
+        let stored = sqlx::query("SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&missing_txid)
+            .fetch_optional(&mut *conn)
+            .await
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "Network-fetched tx should be stored locally in proven_tx_reqs"
+        );
     }
 }
