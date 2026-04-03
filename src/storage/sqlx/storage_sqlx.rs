@@ -3166,9 +3166,10 @@ impl MonitorStorage for StorageSqlx {
                                 .execute(self.pool())
                                 .await?;
 
-                            // Transition transaction from sending to failed
+                            // Transition transaction to failed (covers both outgoing 'sending'
+                            // and internalized 'unproven' txs whose broadcast was retried)
                             let tx_row: Option<(i64,)> = sqlx::query_as(
-                                "SELECT transaction_id FROM transactions WHERE txid = ? AND status = 'sending'",
+                                "SELECT transaction_id FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven')",
                             )
                             .bind(&req.txid)
                             .fetch_optional(self.pool())

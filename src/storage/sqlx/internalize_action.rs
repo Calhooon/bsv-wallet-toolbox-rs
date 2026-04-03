@@ -796,10 +796,15 @@ async fn get_known_txids(storage: &StorageSqlx, user_id: i64) -> Result<HashSet<
     Ok(rows.into_iter().collect())
 }
 
-/// Creates a proven transaction request for proof lookup.
+/// Creates a proven transaction request for an internalized transaction.
+///
+/// Status is set to `'unsent'` so that `send_waiting_transactions` will
+/// pick it up and broadcast it. This matches the Go wallet-toolbox approach
+/// where internalization is a pure state import and broadcast is handled
+/// asynchronously by the monitor daemon.
 ///
 /// Stores both the raw transaction and the complete incoming BEEF.
-/// The input_beef is crucial for spending - it contains ancestor transactions
+/// The input_beef is crucial for spending — it contains ancestor transactions
 /// that are needed to construct valid BEEFs for outputs of this transaction.
 async fn create_proven_tx_req(
     conn: &mut SqliteConnection,
@@ -824,7 +829,7 @@ async fn create_proven_tx_req(
         INSERT INTO proven_tx_reqs (
             txid, status, attempts, history, notify, notified, raw_tx, input_beef, created_at, updated_at
         )
-        VALUES (?, 'unmined', 0, '{}', '{}', 0, ?, ?, ?, ?)
+        VALUES (?, 'unsent', 0, '{}', '{}', 0, ?, ?, ?, ?)
         "#,
     )
     .bind(txid)

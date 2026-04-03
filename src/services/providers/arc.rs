@@ -331,68 +331,165 @@ impl Arc {
             notes: Vec::new(),
         };
 
-        // Match Go wallet-toolbox pattern: extract new tx from BEEF, hydrate its
-        // inputs with source_transaction from proven parents, serialize as Extended
-        // Format (EF), and post that. EF embeds parent UTXO data inline so the node
-        // can validate without looking up ancestors. This avoids ARC's BEEF parsing
-        // bugs (V2 panic, bytesUsed mismatch) and SEEN_IN_ORPHAN_MEMPOOL.
+        // Strategy: use EF (Extended Format) when all BEEF ancestors are proven
+        // (have merkle proofs), which avoids ARC BEEF parsing bugs. But when the
+        // BEEF contains unproven ancestors (e.g., internalized txs not yet on-chain,
+        // or deep unconfirmed chains), send the full BEEF so ARC can process the
+        // entire ancestor chain. EF only embeds direct parent data — it cannot
+        // convey multi-level unproven ancestry.
         let post_result = {
             use bsv_rs::transaction::Beef;
             match Beef::from_binary(beef) {
                 Ok(beef_parsed) => {
-                    // Find the new (unproven) transaction — no bump_index
-                    let new_btx = beef_parsed
+                    // Extract the new (unproven) transaction data upfront so we
+                    // don't hold borrows across await points.
+                    let new_tx_cloned = beef_parsed
                         .txs
                         .iter()
                         .rev()
-                        .find(|btx| btx.bump_index().is_none() && !btx.is_txid_only());
+                        .find(|btx| btx.bump_index().is_none() && !btx.is_txid_only())
+                        .and_then(|btx| btx.tx().cloned());
+                    let new_txid = new_tx_cloned.as_ref().map(|tx| tx.id());
 
-                    match new_btx.and_then(|btx| btx.tx().cloned()) {
-                        Some(mut new_tx) => {
-                            // Hydrate: attach source_transaction for each input
-                            let mut hydrated = true;
-                            for input in &mut new_tx.inputs {
-                                if let Ok(parent_txid) = input.get_source_txid() {
-                                    if let Some(parent_btx) = beef_parsed.find_txid(&parent_txid) {
-                                        if let Some(parent_tx) = parent_btx.tx() {
-                                            input.source_transaction =
-                                                Some(Box::new(parent_tx.clone()));
-                                            continue;
+                    let unproven_ancestor_count = beef_parsed
+                        .txs
+                        .iter()
+                        .filter(|btx| {
+                            btx.bump_index().is_none()
+                                && !btx.is_txid_only()
+                                && Some(btx.txid()) != new_txid
+                        })
+                        .count();
+
+                    // Send full BEEF when there are unproven ancestors, up to
+                    // a reasonable limit. ARC chokes on very large BEEFs (500+ txs)
+                    // but handles moderate ones fine. Full BEEF is essential for:
+                    // - Phantom UTXOs (internalized tx never broadcast)
+                    // - Short unconfirmed chains (10-50 txs from rapid payments)
+                    // For extreme chains (>100 unproven), skip to EF and hope
+                    // the direct parents are already in the mempool.
+                    let use_full_beef = unproven_ancestor_count > 0
+                        && unproven_ancestor_count <= 100;
+
+                    if use_full_beef {
+                        tracing::debug!(
+                            name = %self.name,
+                            unproven_ancestors = unproven_ancestor_count,
+                            total_txs = beef_parsed.txs.len(),
+                            "BEEF has unproven ancestors — trying full BEEF first"
+                        );
+                        result.notes.push(make_note(&self.name, "postBeefFull"));
+                        let beef_hex = hex::encode(beef);
+                        let beef_result =
+                            self.post_raw_tx(&beef_hex, Some(txids)).await?;
+
+                        if beef_result.status == "success"
+                            || beef_result.double_spend
+                            || beef_result
+                                .data
+                                .as_ref()
+                                .map(|d| d.contains("already"))
+                                .unwrap_or(false)
+                        {
+                            beef_result
+                        } else {
+                            // Full BEEF rejected — fall back to EF (works when
+                            // the direct parent is already in the mempool).
+                            tracing::info!(
+                                name = %self.name,
+                                beef_error = ?beef_result.data,
+                                "Full BEEF failed — falling back to EF"
+                            );
+                            result.notes.push(make_note(&self.name, "postBeefFallbackEF"));
+                            match new_tx_cloned.clone() {
+                                Some(mut fallback_tx) => {
+                                    let mut hydrated = true;
+                                    for input in &mut fallback_tx.inputs {
+                                        if let Ok(parent_txid) =
+                                            input.get_source_txid()
+                                        {
+                                            if let Some(parent_btx) =
+                                                beef_parsed.find_txid(&parent_txid)
+                                            {
+                                                if let Some(parent_tx) = parent_btx.tx()
+                                                {
+                                                    input.source_transaction = Some(
+                                                        Box::new(parent_tx.clone()),
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        hydrated = false;
+                                        break;
+                                    }
+                                    if hydrated {
+                                        match fallback_tx.to_hex_ef() {
+                                            Ok(ef_hex) => {
+                                                self.post_raw_tx(&ef_hex, Some(txids))
+                                                    .await?
+                                            }
+                                            Err(_) => beef_result,
+                                        }
+                                    } else {
+                                        beef_result
+                                    }
+                                }
+                                None => beef_result,
+                            }
+                        }
+                    } else {
+                        // All ancestors are proven — safe to use EF.
+                        // EF embeds parent UTXO data inline for script validation.
+                        match new_tx_cloned {
+                            Some(mut new_tx) => {
+                                let mut hydrated = true;
+                                for input in &mut new_tx.inputs {
+                                    if let Ok(parent_txid) = input.get_source_txid() {
+                                        if let Some(parent_btx) =
+                                            beef_parsed.find_txid(&parent_txid)
+                                        {
+                                            if let Some(parent_tx) = parent_btx.tx() {
+                                                input.source_transaction =
+                                                    Some(Box::new(parent_tx.clone()));
+                                                continue;
+                                            }
                                         }
                                     }
+                                    hydrated = false;
+                                    break;
                                 }
-                                hydrated = false;
-                                break;
-                            }
 
-                            if hydrated {
-                                match new_tx.to_hex_ef() {
-                                    Ok(ef_hex) => {
-                                        tracing::debug!(
-                                            name = %self.name,
-                                            ef_len = ef_hex.len(),
-                                            num_inputs = new_tx.inputs.len(),
-                                            "Posting as EF (hydrated)"
-                                        );
-                                        result.notes.push(make_note(&self.name, "postBeefAsEF"));
-                                        self.post_raw_tx(&ef_hex, Some(txids)).await?
+                                if hydrated {
+                                    match new_tx.to_hex_ef() {
+                                        Ok(ef_hex) => {
+                                            tracing::debug!(
+                                                name = %self.name,
+                                                ef_len = ef_hex.len(),
+                                                num_inputs = new_tx.inputs.len(),
+                                                "Posting as EF (all ancestors proven)"
+                                            );
+                                            result
+                                                .notes
+                                                .push(make_note(&self.name, "postBeefAsEF"));
+                                            self.post_raw_tx(&ef_hex, Some(txids)).await?
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(name = %self.name, error = %e, "EF serialization failed — falling back to BEEF");
+                                            let beef_hex = hex::encode(beef);
+                                            self.post_raw_tx(&beef_hex, Some(txids)).await?
+                                        }
                                     }
-                                    Err(e) => {
-                                        tracing::warn!(name = %self.name, error = %e, "EF serialization failed — falling back to BEEF");
-                                        let beef_hex = hex::encode(beef);
-                                        self.post_raw_tx(&beef_hex, Some(txids)).await?
-                                    }
+                                } else {
+                                    tracing::warn!(name = %self.name, "Hydration failed — falling back to BEEF");
+                                    let beef_hex = hex::encode(beef);
+                                    self.post_raw_tx(&beef_hex, Some(txids)).await?
                                 }
-                            } else {
-                                tracing::warn!(name = %self.name, "Hydration failed — falling back to BEEF");
+                            }
+                            None => {
                                 let beef_hex = hex::encode(beef);
                                 self.post_raw_tx(&beef_hex, Some(txids)).await?
                             }
-                        }
-                        None => {
-                            // No new tx found — fall back to BEEF
-                            let beef_hex = hex::encode(beef);
-                            self.post_raw_tx(&beef_hex, Some(txids)).await?
                         }
                     }
                 }

@@ -2077,79 +2077,24 @@ where
 
         let auth = self.auth();
 
-        // Save a copy of the BEEF bytes before args is moved into storage.
-        // We need these to broadcast the transaction after it's committed to DB.
-        let beef_bytes = args.tx.clone();
-
         let result = self
             .storage
             .internalize_action(&auth, args)
             .await
             .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
 
-        // After the transaction is committed to DB, attempt immediate broadcast
-        // for new unproven transactions (not merges, not already proven).
-        // This mirrors the TypeScript `shareReqsWithWorld()` call which broadcasts
-        // via `services.postBeef()` after internalizing.
-        // Broadcast failure is non-fatal: the transaction is already persisted,
-        // and the background proof monitor task will eventually retry.
+        // Internalization is a pure state import — no broadcast here.
+        // The proven_tx_req is created with 'unsent' status, so the monitor
+        // daemon's send_waiting_transactions task will handle broadcasting
+        // asynchronously. This matches the Go wallet-toolbox architecture
+        // and avoids phantom UTXOs that occurred when the previous "courtesy
+        // broadcast" failed silently (outputs were left spendable for txs
+        // that never reached the network).
         if !result.is_merge && result.send_with_results.is_none() {
-            let txid = result.txid.clone();
-            let txid_strings = vec![txid.clone()];
             tracing::debug!(
-                txid = %txid,
-                beef_len = beef_bytes.len(),
-                "Broadcasting internalized transaction via post_beef"
+                txid = %result.txid,
+                "Internalized tx saved — send_waiting will broadcast"
             );
-            let broadcast_failed = match self.services.post_beef(&beef_bytes, &txid_strings).await {
-                Ok(results) => {
-                    let any_success = results.iter().any(|r| r.status == "success");
-                    if any_success {
-                        tracing::info!(
-                            txid = %txid,
-                            "Internalized transaction broadcast successfully"
-                        );
-                        false
-                    } else {
-                        let errors: Vec<_> = results
-                            .iter()
-                            .filter(|r| r.status != "success")
-                            .map(|r| format!("{}: {}", r.name, r.status))
-                            .collect();
-                        tracing::warn!(
-                            txid = %txid,
-                            errors = ?errors,
-                            "Internalized transaction broadcast returned no successes"
-                        );
-                        true
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        txid = %txid,
-                        error = %e,
-                        "Internalized transaction broadcast failed"
-                    );
-                    true
-                }
-            };
-
-            // Broadcast failure is non-fatal for internalized transactions.
-            // The sender (e.g., x402 server) already broadcast the tx — our
-            // broadcast is just a courtesy to speed up confirmation. The outputs
-            // are valid and should remain spendable. The background proof monitor
-            // will eventually confirm the tx or detect a genuine double-spend.
-            //
-            // Previously this called mark_internalized_tx_failed() which set
-            // spendable=0 and status='failed', permanently killing valid refund
-            // outputs. This caused UTXO starvation on wallets with high x402
-            // payment volume (e.g., agent wallets).
-            if broadcast_failed {
-                tracing::info!(
-                    txid = %txid,
-                    "Internalized tx broadcast failed — outputs kept spendable (sender already broadcast)"
-                );
-            }
         }
 
         Ok(InternalizeActionResult {
