@@ -308,7 +308,7 @@ async fn test_post_beef_orphan_mempool_treated_as_error() {
         .await
         .unwrap();
 
-    // SEEN_IN_ORPHAN_MEMPOOL is now treated as error (matching TS/Go behavior)
+    // SEEN_IN_ORPHAN_MEMPOOL is now treated as orphan (NOT double-spend, matching Go behavior)
     assert_eq!(
         result.status, "error",
         "SEEN_IN_ORPHAN_MEMPOOL should be treated as error"
@@ -316,8 +316,12 @@ async fn test_post_beef_orphan_mempool_treated_as_error() {
     assert!(!result.txid_results.is_empty());
     assert_eq!(result.txid_results[0].status, "error");
     assert!(
-        result.txid_results[0].double_spend,
-        "SEEN_IN_ORPHAN_MEMPOOL should be flagged as double_spend"
+        !result.txid_results[0].double_spend,
+        "SEEN_IN_ORPHAN_MEMPOOL should NOT be flagged as double_spend"
+    );
+    assert!(
+        result.txid_results[0].orphan_mempool,
+        "SEEN_IN_ORPHAN_MEMPOOL should be flagged as orphan_mempool"
     );
 
     // Verify the data contains the status string

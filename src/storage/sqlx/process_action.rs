@@ -52,6 +52,11 @@ pub enum BroadcastOutcome {
     },
     /// A provider definitively rejected the transaction (permanent).
     InvalidTx { details: Vec<String> },
+    /// A provider reported orphan mempool (parent tx not yet propagated).
+    /// This is a propagation issue, NOT a double-spend. The miner has the
+    /// child tx but not the parent. The tx should stay in 'sending' for
+    /// retry — the parent will typically propagate within a few seconds.
+    OrphanMempool { details: Vec<String> },
 }
 
 impl BroadcastOutcome {
@@ -62,7 +67,10 @@ impl BroadcastOutcome {
 
     /// Returns true if the failure is transient and should be retried.
     pub fn is_transient(&self) -> bool {
-        matches!(self, BroadcastOutcome::ServiceError { .. })
+        matches!(
+            self,
+            BroadcastOutcome::ServiceError { .. } | BroadcastOutcome::OrphanMempool { .. }
+        )
     }
 
     /// Build a human-readable error message with per-provider details.
@@ -88,6 +96,11 @@ impl BroadcastOutcome {
                 txid,
                 details.join("; ")
             )),
+            BroadcastOutcome::OrphanMempool { details } => Some(format!(
+                "Transaction broadcast for txid {} returned orphan mempool (parent not propagated, will retry): {}",
+                txid,
+                details.join("; ")
+            )),
         }
     }
 }
@@ -96,9 +109,10 @@ impl BroadcastOutcome {
 ///
 /// Priority order (matching TS/Go reference implementations):
 /// 1. Any success → Success
-/// 2. Any double-spend → DoubleSpend (permanent)
+/// 2. Any double-spend (but NOT orphan mempool) → DoubleSpend (permanent)
 /// 3. Any definitive rejection (ARC 46x codes) → InvalidTx (permanent)
-/// 4. Otherwise → ServiceError (transient, will retry)
+/// 4. Any orphan mempool → OrphanMempool (transient, parent not propagated)
+/// 5. Otherwise → ServiceError (transient, will retry)
 pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcome {
     // Collect all per-txid results across providers
     let all_txid_results: Vec<&PostTxResultForTxid> =
@@ -126,8 +140,10 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
         })
         .collect();
 
-    // 2. Any double-spend?
-    let is_double_spend = all_txid_results.iter().any(|tr| tr.double_spend);
+    // 2. Any double-spend? (true double-spend, NOT orphan mempool)
+    let is_double_spend = all_txid_results
+        .iter()
+        .any(|tr| tr.double_spend && !tr.orphan_mempool);
     if is_double_spend {
         let competing_txs: Vec<String> = all_txid_results
             .iter()
@@ -144,12 +160,18 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
     // 3. Any definitive rejection? (ARC 46x status codes = tx-level rejection)
     let is_invalid = all_txid_results
         .iter()
-        .any(|tr| !tr.service_error && (tr.status.contains("46") || tr.status.contains("invalid")));
+        .any(|tr| !tr.service_error && !tr.orphan_mempool && (tr.status.contains("46") || tr.status.contains("invalid")));
     if is_invalid {
         return BroadcastOutcome::InvalidTx { details };
     }
 
-    // 4. Everything else is a transient service error
+    // 4. Any orphan mempool? (parent not yet propagated — transient)
+    let is_orphan = all_txid_results.iter().any(|tr| tr.orphan_mempool);
+    if is_orphan {
+        return BroadcastOutcome::OrphanMempool { details };
+    }
+
+    // 5. Everything else is a transient service error
     BroadcastOutcome::ServiceError { details }
 }
 
@@ -1136,6 +1158,15 @@ pub async fn update_transaction_status_after_broadcast_internal(
                 outcome
             }
         }
+        BroadcastOutcome::OrphanMempool { .. } => {
+            // Orphan mempool: check if the tx actually made it on-chain despite
+            // the orphan report. If found → treat as success.
+            if reconcile_tx_status(storage, txid).await {
+                &BroadcastOutcome::Success
+            } else {
+                outcome
+            }
+        }
         _ => outcome,
     };
 
@@ -1193,6 +1224,27 @@ pub async fn update_transaction_status_after_broadcast_internal(
             tracing::info!(
                 txid = %txid,
                 "Broadcast returned service error — transaction stays 'sending' for retry"
+            );
+        }
+
+        BroadcastOutcome::OrphanMempool { details } => {
+            // Orphan mempool — parent tx not yet propagated to miner.
+            // This is NOT a double-spend. Keep tx in 'sending' for retry.
+            // Do NOT call is_utxo() on inputs. Do NOT lock inputs.
+            // The parent will typically propagate within a few seconds.
+            sqlx::query(
+                "UPDATE proven_tx_reqs SET status = ?, attempts = attempts + 1, updated_at = ? WHERE txid = ?",
+            )
+            .bind(proven_tx_req_status::SENDING)
+            .bind(now)
+            .bind(txid)
+            .execute(&mut *tx)
+            .await?;
+
+            tracing::warn!(
+                txid = %txid,
+                details = ?details,
+                "Broadcast returned orphan mempool (parent not propagated) — transaction stays 'sending' for retry"
             );
         }
 
@@ -2524,6 +2576,7 @@ mod tests {
                 txid: "abc123".to_string(),
                 status: "success".to_string(),
                 double_spend: false,
+                orphan_mempool: false,
                 competing_txs: None,
                 data: None,
                 service_error: false,
@@ -2549,6 +2602,7 @@ mod tests {
                 txid: "abc123".to_string(),
                 status: status.to_string(),
                 double_spend,
+                orphan_mempool: false,
                 competing_txs: if double_spend {
                     Some(vec!["competing_txid_1".to_string()])
                 } else {
@@ -2626,6 +2680,75 @@ mod tests {
         let outcome = classify_broadcast_results(&results);
         // No results = no success, no double spend, no invalid → service error
         assert!(matches!(outcome, BroadcastOutcome::ServiceError { .. }));
+    }
+
+    fn make_orphan_result(name: &str) -> PostBeefResult {
+        PostBeefResult {
+            name: name.to_string(),
+            status: "error".to_string(),
+            txid_results: vec![PostTxResultForTxid {
+                txid: "abc123".to_string(),
+                status: "error".to_string(),
+                double_spend: false,
+                orphan_mempool: true,
+                competing_txs: None,
+                data: Some(format!("orphan mempool from {}", name)),
+                service_error: false,
+                block_hash: None,
+                block_height: None,
+                notes: vec![],
+            }],
+            error: None,
+            notes: vec![],
+        }
+    }
+
+    #[test]
+    fn test_classify_orphan_mempool() {
+        let results = vec![make_orphan_result("taal")];
+        let outcome = classify_broadcast_results(&results);
+        assert!(
+            matches!(outcome, BroadcastOutcome::OrphanMempool { .. }),
+            "Expected OrphanMempool but got {:?}",
+            outcome
+        );
+        assert!(
+            outcome.is_transient(),
+            "OrphanMempool should be classified as transient"
+        );
+    }
+
+    #[test]
+    fn test_classify_orphan_mempool_vs_double_spend_priority() {
+        // When both orphan_mempool and double_spend are reported by different
+        // providers, double_spend must take priority because it is a permanent
+        // failure. Orphan mempool is transient.
+        let results = vec![
+            make_orphan_result("gorilla"),
+            make_error_result("taal", true, false, "error"),
+        ];
+        let outcome = classify_broadcast_results(&results);
+        assert!(
+            matches!(outcome, BroadcastOutcome::DoubleSpend { .. }),
+            "DoubleSpend should take priority over OrphanMempool, got {:?}",
+            outcome
+        );
+    }
+
+    #[test]
+    fn test_classify_orphan_mempool_vs_success_priority() {
+        // When one provider reports success and another reports orphan mempool,
+        // success must take priority (the tx was accepted somewhere).
+        let results = vec![
+            make_orphan_result("gorilla"),
+            make_success_result("taal"),
+        ];
+        let outcome = classify_broadcast_results(&results);
+        assert!(
+            outcome.is_success(),
+            "Success should take priority over OrphanMempool, got {:?}",
+            outcome
+        );
     }
 
     #[test]
@@ -3408,6 +3531,178 @@ mod tests {
             tx_row.get::<String, _>("status"),
             "unproven",
             "Success should go straight to 'unproven', not trigger reconciliation"
+        );
+    }
+
+    // =========================================================================
+    // OrphanMempool classification and handling tests
+    // =========================================================================
+
+    /// ARC returns orphan_mempool=true, double_spend=false → OrphanMempool outcome.
+    #[test]
+    fn test_classify_orphan_mempool_from_arc() {
+        let results = vec![PostBeefResult {
+            name: "arc".to_string(),
+            status: "error".to_string(),
+            txid_results: vec![PostTxResultForTxid {
+                txid: "abc123".to_string(),
+                status: "error".to_string(),
+                double_spend: false,
+                orphan_mempool: true,
+                competing_txs: None,
+                data: Some("orphan mempool: parent not found".to_string()),
+                service_error: false,
+                block_hash: None,
+                block_height: None,
+                notes: vec![],
+            }],
+            error: None,
+            notes: vec![],
+        }];
+        let outcome = classify_broadcast_results(&results);
+        assert!(matches!(outcome, BroadcastOutcome::OrphanMempool { .. }));
+    }
+
+    /// double_spend=true and orphan_mempool=false → DoubleSpend outcome.
+    #[test]
+    fn test_classify_real_double_spend_not_orphan() {
+        let results = vec![PostBeefResult {
+            name: "arc".to_string(),
+            status: "error".to_string(),
+            txid_results: vec![PostTxResultForTxid {
+                txid: "abc123".to_string(),
+                status: "error".to_string(),
+                double_spend: true,
+                orphan_mempool: false,
+                competing_txs: Some(vec!["competing_txid_1".to_string()]),
+                data: Some("double spend".to_string()),
+                service_error: false,
+                block_hash: None,
+                block_height: None,
+                notes: vec![],
+            }],
+            error: None,
+            notes: vec![],
+        }];
+        let outcome = classify_broadcast_results(&results);
+        assert!(matches!(outcome, BroadcastOutcome::DoubleSpend { .. }));
+    }
+
+    /// Multiple results: one orphan_mempool, one double_spend → DoubleSpend wins.
+    #[test]
+    fn test_classify_double_spend_overrides_orphan() {
+        let results = vec![
+            PostBeefResult {
+                name: "arc1".to_string(),
+                status: "error".to_string(),
+                txid_results: vec![PostTxResultForTxid {
+                    txid: "abc123".to_string(),
+                    status: "error".to_string(),
+                    double_spend: false,
+                    orphan_mempool: true,
+                    competing_txs: None,
+                    data: Some("orphan mempool".to_string()),
+                    service_error: false,
+                    block_hash: None,
+                    block_height: None,
+                    notes: vec![],
+                }],
+                error: None,
+                notes: vec![],
+            },
+            PostBeefResult {
+                name: "arc2".to_string(),
+                status: "error".to_string(),
+                txid_results: vec![PostTxResultForTxid {
+                    txid: "abc123".to_string(),
+                    status: "error".to_string(),
+                    double_spend: true,
+                    orphan_mempool: false,
+                    competing_txs: Some(vec!["competing_txid_1".to_string()]),
+                    data: Some("double spend".to_string()),
+                    service_error: false,
+                    block_hash: None,
+                    block_height: None,
+                    notes: vec![],
+                }],
+                error: None,
+                notes: vec![],
+            },
+        ];
+        let outcome = classify_broadcast_results(&results);
+        assert!(
+            matches!(outcome, BroadcastOutcome::DoubleSpend { .. }),
+            "DoubleSpend should take priority over OrphanMempool"
+        );
+    }
+
+    /// Multiple results: one orphan_mempool, one success → Success wins.
+    #[test]
+    fn test_classify_success_overrides_orphan() {
+        let results = vec![
+            PostBeefResult {
+                name: "arc1".to_string(),
+                status: "error".to_string(),
+                txid_results: vec![PostTxResultForTxid {
+                    txid: "abc123".to_string(),
+                    status: "error".to_string(),
+                    double_spend: false,
+                    orphan_mempool: true,
+                    competing_txs: None,
+                    data: Some("orphan mempool".to_string()),
+                    service_error: false,
+                    block_hash: None,
+                    block_height: None,
+                    notes: vec![],
+                }],
+                error: None,
+                notes: vec![],
+            },
+            make_success_result("arc2"),
+        ];
+        let outcome = classify_broadcast_results(&results);
+        assert!(
+            outcome.is_success(),
+            "Success should take priority over OrphanMempool"
+        );
+    }
+
+    /// OrphanMempool is classified as transient (should be retried).
+    #[test]
+    fn test_orphan_mempool_is_transient() {
+        let outcome = BroadcastOutcome::OrphanMempool {
+            details: vec![],
+        };
+        assert!(
+            outcome.is_transient(),
+            "OrphanMempool should be transient (eligible for retry)"
+        );
+    }
+
+    /// OrphanMempool error_message returns a non-empty string with relevant info.
+    #[test]
+    fn test_orphan_mempool_error_message() {
+        let outcome = BroadcastOutcome::OrphanMempool {
+            details: vec!["test".to_string()],
+        };
+        let msg = outcome.error_message("abc123");
+        assert!(msg.is_some(), "OrphanMempool should produce an error message");
+        let msg = msg.unwrap();
+        assert!(!msg.is_empty(), "Error message should not be empty");
+        assert!(
+            msg.contains("orphan"),
+            "Error message should mention orphan: got '{}'",
+            msg
+        );
+        assert!(
+            msg.contains("abc123"),
+            "Error message should contain the txid: got '{}'",
+            msg
+        );
+        assert!(
+            msg.contains("test"),
+            "Error message should contain the detail text: got '{}'",
+            msg
         );
     }
 }

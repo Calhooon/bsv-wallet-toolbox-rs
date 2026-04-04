@@ -296,6 +296,7 @@ impl WhatsOnChain {
                         txid: txid.clone(),
                         status: "success".to_string(),
                         double_spend: false,
+                        orphan_mempool: false,
                         competing_txs: None,
                         data: None,
                         service_error: false,
@@ -306,10 +307,34 @@ impl WhatsOnChain {
                 }
                 Ok(resp) => {
                     let body = resp.text().await.unwrap_or_default();
-                    let (double_spend, data) = if body.contains("mempool-conflict") {
-                        (true, Some("txn-mempool-conflict".to_string()))
+                    if body.contains("mempool-conflict") {
+                        return Ok(PostTxResultForTxid {
+                            txid: txid.clone(),
+                            status: "error".to_string(),
+                            double_spend: true,
+                            orphan_mempool: false,
+                            competing_txs: None,
+                            data: Some("txn-mempool-conflict".to_string()),
+                            service_error: false,
+                            block_hash: None,
+                            block_height: None,
+                            notes: vec![make_note("postRawTxDoubleSpend")],
+                        });
                     } else if body.contains("Missing inputs") {
-                        (true, Some("Missing inputs".to_string()))
+                        // Missing inputs = orphan mempool (parent not propagated),
+                        // NOT a double-spend.
+                        return Ok(PostTxResultForTxid {
+                            txid: txid.clone(),
+                            status: "error".to_string(),
+                            double_spend: false,
+                            orphan_mempool: true,
+                            competing_txs: None,
+                            data: Some("Missing inputs".to_string()),
+                            service_error: false,
+                            block_hash: None,
+                            block_height: None,
+                            notes: vec![make_note("postRawTxOrphanMempool")],
+                        });
                     } else if body.contains("already-in-mempool")
                         || body.contains("already in the mempool")
                     {
@@ -317,6 +342,7 @@ impl WhatsOnChain {
                             txid: txid.clone(),
                             status: "success".to_string(),
                             double_spend: false,
+                            orphan_mempool: false,
                             competing_txs: None,
                             data: Some("already-in-mempool".to_string()),
                             service_error: false,
@@ -324,17 +350,16 @@ impl WhatsOnChain {
                             block_height: None,
                             notes: vec![make_note("postRawTxSuccessAlreadyInMempool")],
                         });
-                    } else {
-                        (false, Some(body))
-                    };
+                    }
 
                     return Ok(PostTxResultForTxid {
                         txid: txid.clone(),
                         status: "error".to_string(),
-                        double_spend,
+                        double_spend: false,
+                        orphan_mempool: false,
                         competing_txs: None,
-                        data,
-                        service_error: !double_spend,
+                        data: Some(body),
+                        service_error: true,
                         block_hash: None,
                         block_height: None,
                         notes: vec![make_note("postRawTxError")],
@@ -345,6 +370,7 @@ impl WhatsOnChain {
                         txid: txid.clone(),
                         status: "error".to_string(),
                         double_spend: false,
+                        orphan_mempool: false,
                         competing_txs: None,
                         data: Some(e.to_string()),
                         service_error: true,
@@ -406,6 +432,7 @@ impl WhatsOnChain {
                                 status: if is_double_spend { "success" } else { "error" }
                                     .to_string(),
                                 double_spend: is_double_spend,
+                                orphan_mempool: false,
                                 competing_txs: None,
                                 data: Some(err_msg),
                                 service_error: !is_double_spend,
@@ -420,6 +447,7 @@ impl WhatsOnChain {
                     txid: txid.clone(),
                     status: "error".to_string(),
                     double_spend: false,
+                    orphan_mempool: false,
                     competing_txs: None,
                     data: Some(format!("Transaction {} not found in BEEF", txid)),
                     service_error: true,

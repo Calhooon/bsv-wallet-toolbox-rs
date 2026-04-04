@@ -559,9 +559,13 @@ impl Services {
 #[async_trait]
 impl WalletServices for Services {
     async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker> {
-        Err(Error::ServiceError(
-            "ChainTracker not configured in Services".to_string(),
-        ))
+        if let Some(ref ct) = self.chaintracks {
+            Ok(&**ct)
+        } else {
+            Err(Error::ServiceError(
+                "ChainTracker not configured in Services (no chaintracks_url)".to_string(),
+            ))
+        }
     }
 
     async fn get_height(&self) -> Result<u32> {
@@ -608,7 +612,18 @@ impl WalletServices for Services {
     }
 
     async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader> {
-        // Try WhatsOnChain first
+        // Try Chaintracks first (preferred — no rate limits)
+        if let Some(ref ct) = self.chaintracks {
+            match ct.find_header_for_block_hash(hash).await {
+                Ok(header) => return Ok(header),
+                Err(e) => tracing::warn!(
+                    "Chaintracks hash_to_header failed for {}, falling back to WoC/Bitails: {}",
+                    hash, e
+                ),
+            }
+        }
+
+        // Try WhatsOnChain
         if let Some(header) = self.whatsonchain.get_block_header_by_hash(hash).await? {
             return Ok(header);
         }
@@ -1249,10 +1264,16 @@ impl WalletServices for Services {
                         Some(header.height)
                     } else {
                         // Look up block header using the TSC proof's target (block hash)
-                        self.hash_to_header(&proof.target)
-                            .await
-                            .ok()
-                            .map(|h| h.height)
+                        match self.hash_to_header(&proof.target).await {
+                            Ok(h) => Some(h.height),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "hash_to_header failed for target {} during BEEF construction: {}",
+                                    proof.target, e
+                                );
+                                None
+                            }
+                        }
                     };
                     if let Some(height) = block_height {
                         parse_tsc_proof_to_merkle_path(merkle_path_str, height)
@@ -1384,5 +1405,37 @@ mod tests {
             .get_rate(FiatCurrency::USD, Some(FiatCurrency::EUR))
             .unwrap();
         assert!((eur_per_usd * usd_per_eur - 1.0).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn test_get_chain_tracker_returns_client_when_configured() {
+        // Build Services with a chaintracks_url configured. The URL doesn't need
+        // to be reachable — we only test that get_chain_tracker() returns Ok
+        // (i.e. it finds a ChainTracker) rather than the "not configured" error.
+        let options = ServicesOptions::mainnet()
+            .with_chaintracks_url("https://fake-chaintracks.example.com");
+        let services = Services::with_options(Chain::Main, options).unwrap();
+
+        let result = services.get_chain_tracker().await;
+        assert!(
+            result.is_ok(),
+            "get_chain_tracker should return Ok when chaintracks_url is configured, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_chain_tracker_errors_when_not_configured() {
+        // Default mainnet Services has no chaintracks_url, so get_chain_tracker
+        // should return an error indicating it is not configured.
+        let services = Services::mainnet().unwrap();
+
+        let result = services.get_chain_tracker().await;
+        assert!(
+            result.is_err(),
+            "get_chain_tracker should return Err when no chaintracks is configured"
+        );
+        // Note: can't use unwrap_err() because dyn ChainTracker doesn't impl Debug.
+        // The is_err() assertion above is sufficient to verify the error case.
     }
 }

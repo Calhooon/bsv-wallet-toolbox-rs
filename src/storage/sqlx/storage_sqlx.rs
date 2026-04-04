@@ -3022,20 +3022,126 @@ impl MonitorStorage for StorageSqlx {
                             status: "unproven".to_string(),
                         });
                     } else {
+                        // Check for orphan mempool (parent not propagated — NOT double-spend)
+                        let is_orphan_mempool = results_vec
+                            .iter()
+                            .any(|r| r.txid_results.iter().any(|tr| tr.orphan_mempool));
+
                         // Check for double spend in any provider's results
+                        // (exclude orphan mempool — it's not a double-spend)
                         let is_double_spend = results_vec
                             .iter()
-                            .any(|r| r.txid_results.iter().any(|tr| tr.double_spend));
+                            .any(|r| r.txid_results.iter().any(|tr| tr.double_spend && !tr.orphan_mempool));
 
                         // Check for definitive rejection (invalid tx, not just service error)
                         let is_invalid = results_vec.iter().any(|r| {
                             r.txid_results.iter().any(|tr| {
                                 // ARC 46x codes = definitive tx rejection
-                                tr.status.contains("46") || tr.status.contains("invalid")
+                                !tr.orphan_mempool && (tr.status.contains("46") || tr.status.contains("invalid"))
                             })
                         });
 
                         let attempts = req.attempts + 1;
+
+                        if is_orphan_mempool && !is_double_spend {
+                            // Orphan mempool: parent tx not yet propagated.
+                            // Check if the tx is actually known on-chain.
+                            let reconciled =
+                                super::process_action::reconcile_tx_status_via_services(
+                                    &*services, &req.txid,
+                                )
+                                .await;
+
+                            if reconciled {
+                                // Tx is actually alive on chain — treat as success
+                                sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
+                                    .bind(now)
+                                    .bind(req.proven_tx_req_id)
+                                    .execute(self.pool())
+                                    .await?;
+                                sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
+                                    .bind(now)
+                                    .bind(&req.txid)
+                                    .execute(self.pool())
+                                    .await?;
+                                tracing::info!(
+                                    "send_waiting: tx {} reported as orphan mempool but found alive on chain — treating as success",
+                                    req.txid
+                                );
+                                send_with_results.push(SendWithResult {
+                                    txid: req.txid.clone(),
+                                    status: "unproven".to_string(),
+                                });
+                                continue;
+                            }
+
+                            if attempts > 6 {
+                                // Max retries exceeded — mark as invalid
+                                sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+                                    .bind(attempts as i64)
+                                    .bind(now)
+                                    .bind(req.proven_tx_req_id)
+                                    .execute(self.pool())
+                                    .await?;
+
+                                let tx_row: Option<(i64,)> = sqlx::query_as(
+                                    "SELECT transaction_id FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven')",
+                                )
+                                .bind(&req.txid)
+                                .fetch_optional(self.pool())
+                                .await?;
+
+                                if let Some((transaction_id,)) = tx_row {
+                                    sqlx::query(
+                                        "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+                                    )
+                                    .bind(now)
+                                    .bind(transaction_id)
+                                    .execute(self.pool())
+                                    .await?;
+
+                                    sqlx::query(
+                                        "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
+                                    )
+                                    .bind(now)
+                                    .bind(transaction_id)
+                                    .execute(self.pool())
+                                    .await?;
+
+                                    sqlx::query(
+                                        "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+                                    )
+                                    .bind(now)
+                                    .bind(transaction_id)
+                                    .execute(self.pool())
+                                    .await?;
+
+                                    tracing::info!(
+                                        "send_waiting: tx {} orphan mempool — failed after {} attempts, inputs restored",
+                                        req.txid, attempts
+                                    );
+                                }
+                            } else {
+                                // Keep in sending status for retry — do NOT lock inputs
+                                sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+                                    .bind(attempts as i64)
+                                    .bind(now)
+                                    .bind(req.proven_tx_req_id)
+                                    .execute(self.pool())
+                                    .await?;
+
+                                tracing::warn!(
+                                    "send_waiting: tx {} orphan mempool (attempt {}/6) — will retry",
+                                    req.txid, attempts
+                                );
+                            }
+
+                            send_with_results.push(SendWithResult {
+                                txid: req.txid.clone(),
+                                status: "failed".to_string(),
+                            });
+                            continue;
+                        }
 
                         if is_double_spend {
                             // Double-spend: reconcile against chain first (like the

@@ -1495,6 +1495,13 @@ where
                                         "Broadcast rejected — transaction invalid"
                                     );
                                 }
+                                BroadcastOutcome::OrphanMempool { details } => {
+                                    tracing::warn!(
+                                        txid = %txid,
+                                        errors = ?details,
+                                        "Broadcast returned orphan mempool (parent not propagated) — will retry via SendWaitingTask"
+                                    );
+                                }
                             }
                             outcome
                         }
@@ -1523,7 +1530,7 @@ where
                 }
 
                 // On permanent failure, return an error with details
-                // On service error (transient), the tx stays in 'sending' for retry — not an error
+                // On service error or orphan mempool (transient), the tx stays in 'sending' for retry — not an error
                 match &broadcast_outcome {
                     BroadcastOutcome::DoubleSpend { .. } | BroadcastOutcome::InvalidTx { .. } => {
                         return Err(bsv_rs::Error::WalletError(
@@ -1535,7 +1542,7 @@ where
                                 )),
                         ));
                     }
-                    _ => {} // Success or ServiceError — continue
+                    _ => {} // Success, ServiceError, or OrphanMempool — continue
                 }
             }
 
@@ -1857,6 +1864,9 @@ where
                                     BroadcastOutcome::InvalidTx { details } => {
                                         tracing::error!(txid = %txid, errors = ?details, "Transaction rejected (sign_action)");
                                     }
+                                    BroadcastOutcome::OrphanMempool { details } => {
+                                        tracing::warn!(txid = %txid, errors = ?details, "Orphan mempool (parent not propagated) — will retry (sign_action)");
+                                    }
                                 }
                                 outcome
                             }
@@ -1903,7 +1913,7 @@ where
                             )),
                     ));
                 }
-                _ => {} // Success or ServiceError — continue
+                _ => {} // Success, ServiceError, or OrphanMempool — continue
             }
         }
 

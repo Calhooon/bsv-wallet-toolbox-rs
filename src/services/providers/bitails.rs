@@ -256,6 +256,7 @@ impl Bitails {
                 txid: txid.clone(),
                 status: "error".to_string(),
                 double_spend: false,
+                orphan_mempool: false,
                 competing_txs: None,
                 data: Some(format!("Expected 1 result, got {}", results.len())),
                 service_error: true,
@@ -274,6 +275,7 @@ impl Bitails {
                     txid: txid.clone(),
                     status: "error".to_string(),
                     double_spend: false,
+                    orphan_mempool: false,
                     competing_txs: None,
                     data: Some(format!("txid mismatch: {} != {}", returned_txid, txid)),
                     service_error: true,
@@ -295,6 +297,7 @@ impl Bitails {
                         txid,
                         status: "success".to_string(),
                         double_spend: false,
+                        orphan_mempool: false,
                         competing_txs: None,
                         data: Some("already-in-mempool".to_string()),
                         service_error: false,
@@ -304,14 +307,17 @@ impl Bitails {
                     });
                 }
                 error_codes::DOUBLE_SPEND_OR_MISSING_INPUTS => {
-                    // -25 can be either double spend or missing inputs
-                    // Check message for more context
+                    // -25 can be either double spend or missing inputs.
+                    // Double-spend has "double" or "mempool conflict" in message.
+                    // Missing inputs (orphan mempool) is a propagation issue, NOT double-spend.
                     let is_double_spend = message.to_lowercase().contains("double")
                         || message.to_lowercase().contains("mempool conflict");
+                    let is_orphan = !is_double_spend;
                     return Ok(PostTxResultForTxid {
                         txid,
                         status: "error".to_string(),
                         double_spend: is_double_spend,
+                        orphan_mempool: is_orphan,
                         competing_txs: None,
                         data: Some(format!("code={}, msg={}", code, message)),
                         service_error: false,
@@ -329,6 +335,7 @@ impl Bitails {
                         txid,
                         status: "error".to_string(),
                         double_spend: false,
+                        orphan_mempool: false,
                         competing_txs: None,
                         data: Some(format!("code={}, msg={}", code, message)),
                         service_error: true,
@@ -344,6 +351,7 @@ impl Bitails {
             txid,
             status: "success".to_string(),
             double_spend: false,
+            orphan_mempool: false,
             competing_txs: None,
             data: None,
             service_error: false,
@@ -395,6 +403,7 @@ impl Bitails {
                                 txid: txid.clone(),
                                 status: "error".to_string(),
                                 double_spend: false,
+                                orphan_mempool: false,
                                 competing_txs: None,
                                 data: Some(err_msg),
                                 service_error: true,
@@ -409,6 +418,7 @@ impl Bitails {
                     txid: txid.clone(),
                     status: "error".to_string(),
                     double_spend: false,
+                    orphan_mempool: false,
                     competing_txs: None,
                     data: Some(format!("Transaction {} not found in BEEF", txid)),
                     service_error: true,

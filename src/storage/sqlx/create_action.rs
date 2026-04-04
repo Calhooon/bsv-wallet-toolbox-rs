@@ -1585,6 +1585,7 @@ async fn allocate_change_input(
           AND t.status IN ('completed', 'unproven')
           {}
         ORDER BY
+            CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
             CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
             ABS(o.satoshis - ?) ASC
         LIMIT 1
@@ -4970,5 +4971,271 @@ mod tests {
             result.is_err(),
             "Missing direct input txid without network fallback should error"
         );
+    }
+
+    // =========================================================================
+    // UTXO selection preference tests — confirmed (completed) vs unconfirmed
+    // =========================================================================
+
+    /// Helper: insert a transaction with a given status and unique reference/txid
+    /// derived from `tag`, then insert a change output with the given satoshis
+    /// in the default basket. Returns (transaction_id, output_id).
+    async fn seed_tagged_change_output(
+        storage: &StorageSqlx,
+        user_id: i64,
+        satoshis: i64,
+        status: &str,
+        tag: &str,
+    ) -> (i64, i64) {
+        let now = Utc::now();
+        let basket = storage
+            .find_or_create_default_basket(user_id)
+            .await
+            .unwrap();
+
+        let txid = format!("{:0>64}", tag);
+        let reference = format!("seed_ref_{}", tag);
+        let raw_tx = seed_raw_tx();
+
+        let tx_result = sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
+            VALUES (?, ?, ?, 0, ?, 1, 0, 'Seed transaction', ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(status)
+        .bind(&reference)
+        .bind(satoshis)
+        .bind(&txid)
+        .bind(&raw_tx)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        let transaction_id = tx_result.last_insert_rowid();
+
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+
+        let out_result = sqlx::query(
+            r#"
+            INSERT INTO outputs (
+                user_id, transaction_id, basket_id, vout, satoshis, locking_script,
+                txid, type, spendable, change, derivation_prefix, derivation_suffix,
+                provided_by, purpose, output_description, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 0, ?, ?, ?, 'P2PKH', 1, 1, 'prefix123', 'suffix456', 'storage', 'change', 'seeded change', ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(transaction_id)
+        .bind(basket.basket_id)
+        .bind(satoshis)
+        .bind(&locking_script)
+        .bind(&txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        let output_id = out_result.last_insert_rowid();
+        (transaction_id, output_id)
+    }
+
+    /// Helper: create a dummy spending transaction to use as the `transaction_id`
+    /// parameter for `allocate_change_input` (so `spent_by` FK is valid).
+    async fn create_spending_tx(storage: &StorageSqlx, user_id: i64, tag: &str) -> i64 {
+        let now = Utc::now();
+        let txid = format!("{:0>64}", format!("spend_{}", tag));
+        let reference = format!("spending_ref_{}", tag);
+        let result = sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, created_at, updated_at)
+            VALUES (?, 'unsigned', ?, 1, 0, 1, 0, 'Spending tx', ?, ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(&reference)
+        .bind(&txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        result.last_insert_rowid()
+    }
+
+    #[tokio::test]
+    async fn test_confirmed_utxo_preferred_over_unconfirmed() {
+        // When both a confirmed ('completed') and unconfirmed ('unproven') output
+        // of equal value exist, allocate_change_input should pick the confirmed one.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user.user_id)
+            .await
+            .unwrap();
+
+        // Insert confirmed (completed) output of 5000 sats
+        let (_confirmed_tx_id, confirmed_out_id) =
+            seed_tagged_change_output(&storage, user.user_id, 5000, "completed", "conf01").await;
+
+        // Insert unconfirmed (unproven) output of 5000 sats
+        let (_unconfirmed_tx_id, _unconfirmed_out_id) =
+            seed_tagged_change_output(&storage, user.user_id, 5000, "unproven", "unpr01").await;
+
+        // Create a dummy spending transaction for the allocation
+        let spending_tx_id = create_spending_tx(&storage, user.user_id, "test1").await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+
+        let allocated = allocate_change_input(
+            &mut conn,
+            user.user_id,
+            basket.basket_id,
+            spending_tx_id,
+            5000,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(allocated.is_some(), "Should allocate an output");
+        let allocated = allocated.unwrap();
+
+        // The confirmed output should be selected
+        assert_eq!(
+            allocated.output_id, confirmed_out_id,
+            "Confirmed (completed) output should be preferred over unconfirmed (unproven)"
+        );
+        assert_eq!(allocated.satoshis, 5000);
+
+        // Verify the output was marked as allocated (spent_by set, spendable cleared)
+        let row: (Option<i64>, i64) = sqlx::query_as(
+            "SELECT spent_by, spendable FROM outputs WHERE output_id = ?",
+        )
+        .bind(confirmed_out_id)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.0,
+            Some(spending_tx_id),
+            "spent_by should be set to spending tx"
+        );
+        assert_eq!(row.1, 0, "spendable should be 0 (false) after allocation");
+    }
+
+    #[tokio::test]
+    async fn test_unconfirmed_utxo_used_when_no_confirmed_available() {
+        // When only an unconfirmed ('unproven') output exists,
+        // allocate_change_input should still pick it.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user.user_id)
+            .await
+            .unwrap();
+
+        // Insert only an unconfirmed (unproven) output of 5000 sats
+        let (_unconfirmed_tx_id, unconfirmed_out_id) =
+            seed_tagged_change_output(&storage, user.user_id, 5000, "unproven", "unpr02").await;
+
+        let spending_tx_id = create_spending_tx(&storage, user.user_id, "test2").await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+
+        let allocated = allocate_change_input(
+            &mut conn,
+            user.user_id,
+            basket.basket_id,
+            spending_tx_id,
+            5000,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            allocated.is_some(),
+            "Should allocate an unconfirmed output when no confirmed ones exist"
+        );
+        let allocated = allocated.unwrap();
+
+        assert_eq!(
+            allocated.output_id, unconfirmed_out_id,
+            "The unconfirmed output should be selected"
+        );
+        assert_eq!(allocated.satoshis, 5000);
+    }
+
+    #[tokio::test]
+    async fn test_confirmed_preferred_even_if_worse_amount_fit() {
+        // A confirmed output of 10000 sats should be preferred over an
+        // unconfirmed output of 5000 sats even when requesting ~4500 sats
+        // (the unconfirmed one is a closer fit by amount).
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user.user_id)
+            .await
+            .unwrap();
+
+        // Insert confirmed (completed) output of 10000 sats — farther from target
+        let (_confirmed_tx_id, confirmed_out_id) =
+            seed_tagged_change_output(&storage, user.user_id, 10_000, "completed", "conf03").await;
+
+        // Insert unconfirmed (unproven) output of 5000 sats — closer to target
+        let (_unconfirmed_tx_id, _unconfirmed_out_id) =
+            seed_tagged_change_output(&storage, user.user_id, 5_000, "unproven", "unpr03").await;
+
+        let spending_tx_id = create_spending_tx(&storage, user.user_id, "test3").await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+
+        let allocated = allocate_change_input(
+            &mut conn,
+            user.user_id,
+            basket.basket_id,
+            spending_tx_id,
+            4500,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(allocated.is_some(), "Should allocate an output");
+        let allocated = allocated.unwrap();
+
+        // The confirmed output (10000) should be selected, even though the
+        // unconfirmed one (5000) is closer to the target (4500).
+        // The ORDER BY sorts by status first: completed=0 < unproven=1.
+        assert_eq!(
+            allocated.output_id, confirmed_out_id,
+            "Confirmed output should be preferred even when unconfirmed is a closer amount fit"
+        );
+        assert_eq!(allocated.satoshis, 10_000);
     }
 }

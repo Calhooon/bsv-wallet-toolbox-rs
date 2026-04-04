@@ -510,6 +510,11 @@ pub struct PostTxResultForTxid {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
 
+    /// Whether this is an orphan mempool condition (parent not yet propagated).
+    /// This is NOT a double-spend — the miner has the child but not the parent.
+    #[serde(default)]
+    pub orphan_mempool: bool,
+
     /// Whether this was a service error (not transaction error).
     #[serde(default)]
     pub service_error: bool,

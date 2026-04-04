@@ -240,14 +240,15 @@ impl Arc {
                     "ARC response"
                 );
 
-                let is_double_spend = data.tx_status == "DOUBLE_SPEND_ATTEMPTED"
-                    || data.tx_status == "SEEN_IN_ORPHAN_MEMPOOL";
+                let is_double_spend = data.tx_status == "DOUBLE_SPEND_ATTEMPTED";
+                let is_orphan_mempool = data.tx_status == "SEEN_IN_ORPHAN_MEMPOOL";
 
                 if is_double_spend {
                     Ok(PostTxResultForTxid {
                         txid: data.txid,
                         status: "error".to_string(),
                         double_spend: true,
+                        orphan_mempool: false,
                         competing_txs: data.competing_txs,
                         data: Some(format!(
                             "{} {}",
@@ -259,11 +260,29 @@ impl Arc {
                         block_height: None,
                         notes: vec![make_note(&self.name, "postRawTxDoubleSpend")],
                     })
+                } else if is_orphan_mempool {
+                    Ok(PostTxResultForTxid {
+                        txid: data.txid,
+                        status: "error".to_string(),
+                        double_spend: false,
+                        orphan_mempool: true,
+                        competing_txs: None,
+                        data: Some(format!(
+                            "{} {}",
+                            data.tx_status,
+                            data.extra_info.unwrap_or_default()
+                        )),
+                        service_error: false,
+                        block_hash: None,
+                        block_height: None,
+                        notes: vec![make_note(&self.name, "postRawTxOrphanMempool")],
+                    })
                 } else {
                     Ok(PostTxResultForTxid {
                         txid: data.txid,
                         status: "success".to_string(),
                         double_spend: false,
+                        orphan_mempool: false,
                         competing_txs: None,
                         data: Some(format!(
                             "{} {}",
@@ -296,6 +315,7 @@ impl Arc {
                     txid,
                     status: "error".to_string(),
                     double_spend: false,
+                    orphan_mempool: false,
                     competing_txs: None,
                     data: Some(error_msg),
                     service_error: true,
@@ -308,6 +328,7 @@ impl Arc {
                 txid,
                 status: "error".to_string(),
                 double_spend: false,
+                orphan_mempool: false,
                 competing_txs: None,
                 data: Some(format!("Request failed: {}", e)),
                 service_error: true,
@@ -526,6 +547,7 @@ impl Arc {
                         txid: txid.clone(),
                         status: status.to_string(),
                         double_spend: data.tx_status == "DOUBLE_SPEND_ATTEMPTED",
+                        orphan_mempool: data.tx_status == "SEEN_IN_ORPHAN_MEMPOOL",
                         competing_txs: data.competing_txs,
                         data: Some(data.tx_status),
                         service_error: false,
@@ -540,6 +562,7 @@ impl Arc {
                         txid: txid.clone(),
                         status: "error".to_string(),
                         double_spend: false,
+                        orphan_mempool: false,
                         competing_txs: None,
                         data: Some("Transaction not found".to_string()),
                         service_error: true,
@@ -554,6 +577,7 @@ impl Arc {
                         txid: txid.clone(),
                         status: "error".to_string(),
                         double_spend: false,
+                        orphan_mempool: false,
                         competing_txs: None,
                         data: Some(format!("Query failed: {}", e)),
                         service_error: true,
