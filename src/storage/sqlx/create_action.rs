@@ -2409,10 +2409,11 @@ pub(super) async fn compact_stored_beef(
         }
     }
 
-    // If we upgraded any transactions, trim unnecessary ancestors
-    if upgraded > 0 {
-        beef.trim_known_proven();
-    }
+    // NOTE: Do NOT call beef.trim_known_proven() here.
+    // It removes raw_tx entries for proven ancestors, but bumps still
+    // reference those txids — creating orphaned bump refs that fail
+    // verify_valid(). No reference implementation (Go/TS SDK or toolbox)
+    // has this function.
 
     Ok(())
 }

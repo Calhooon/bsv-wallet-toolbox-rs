@@ -3847,8 +3847,8 @@ impl MonitorStorage for StorageSqlx {
                 continue;
             }
 
-            // Trim unnecessary ancestors
-            beef.trim_known_proven();
+            // NOTE: Do NOT call beef.trim_known_proven() — it creates
+            // orphaned bump refs. No reference implementation has this.
 
             let new_bytes = beef.to_binary();
             let new_size = new_bytes.len();
