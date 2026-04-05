@@ -158,9 +158,11 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
     }
 
     // 3. Any definitive rejection? (ARC 46x status codes = tx-level rejection)
-    let is_invalid = all_txid_results
-        .iter()
-        .any(|tr| !tr.service_error && !tr.orphan_mempool && (tr.status.contains("46") || tr.status.contains("invalid")));
+    let is_invalid = all_txid_results.iter().any(|tr| {
+        !tr.service_error
+            && !tr.orphan_mempool
+            && (tr.status.contains("46") || tr.status.contains("invalid"))
+    });
     if is_invalid {
         return BroadcastOutcome::InvalidTx { details };
     }
@@ -2739,10 +2741,7 @@ mod tests {
     fn test_classify_orphan_mempool_vs_success_priority() {
         // When one provider reports success and another reports orphan mempool,
         // success must take priority (the tx was accepted somewhere).
-        let results = vec![
-            make_orphan_result("gorilla"),
-            make_success_result("taal"),
-        ];
+        let results = vec![make_orphan_result("gorilla"), make_success_result("taal")];
         let outcome = classify_broadcast_results(&results);
         assert!(
             outcome.is_success(),
@@ -3670,9 +3669,7 @@ mod tests {
     /// OrphanMempool is classified as transient (should be retried).
     #[test]
     fn test_orphan_mempool_is_transient() {
-        let outcome = BroadcastOutcome::OrphanMempool {
-            details: vec![],
-        };
+        let outcome = BroadcastOutcome::OrphanMempool { details: vec![] };
         assert!(
             outcome.is_transient(),
             "OrphanMempool should be transient (eligible for retry)"
@@ -3686,7 +3683,10 @@ mod tests {
             details: vec!["test".to_string()],
         };
         let msg = outcome.error_message("abc123");
-        assert!(msg.is_some(), "OrphanMempool should produce an error message");
+        assert!(
+            msg.is_some(),
+            "OrphanMempool should produce an error message"
+        );
         let msg = msg.unwrap();
         assert!(!msg.is_empty(), "Error message should not be empty");
         assert!(

@@ -618,7 +618,8 @@ impl WalletServices for Services {
                 Ok(header) => return Ok(header),
                 Err(e) => tracing::warn!(
                     "Chaintracks hash_to_header failed for {}, falling back to WoC/Bitails: {}",
-                    hash, e
+                    hash,
+                    e
                 ),
             }
         }
@@ -768,11 +769,23 @@ impl WalletServices for Services {
                                     }
                                 } else {
                                     tracing::warn!(
-                                        "Cannot convert TSC proof to BUMP without block height for txid {}",
+                                        "Cannot convert TSC proof to BUMP without block height for txid {}, dropping merkle path",
                                         txid
                                     );
+                                    result.merkle_path = None;
                                 }
                             }
+                        }
+
+                        // Layer 2: Never return a merkle_path without a resolved header.
+                        // Without a header, the caller stores garbage zeros for height/hash/merkle_root.
+                        // Returning None lets the caller treat this as "no proof found" and retry next cycle.
+                        if result.merkle_path.is_some() && result.header.is_none() {
+                            tracing::warn!(
+                                txid = %txid,
+                                "Dropping merkle path: header could not be resolved. Will retry on next sync."
+                            );
+                            result.merkle_path = None;
                         }
 
                         return Ok(result);
@@ -1412,8 +1425,8 @@ mod tests {
         // Build Services with a chaintracks_url configured. The URL doesn't need
         // to be reachable — we only test that get_chain_tracker() returns Ok
         // (i.e. it finds a ChainTracker) rather than the "not configured" error.
-        let options = ServicesOptions::mainnet()
-            .with_chaintracks_url("https://fake-chaintracks.example.com");
+        let options =
+            ServicesOptions::mainnet().with_chaintracks_url("https://fake-chaintracks.example.com");
         let services = Services::with_options(Chain::Main, options).unwrap();
 
         let result = services.get_chain_tracker().await;

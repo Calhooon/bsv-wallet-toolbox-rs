@@ -2378,8 +2378,6 @@ pub(super) async fn compact_stored_beef(
         return Ok(());
     }
 
-    let mut upgraded = 0u32;
-
     // Batch query proven_txs for all unproven txids
     // SQLite bind param limit is 999, batch in chunks of 400
     for chunk in unproven_txids.chunks(400) {
@@ -2404,7 +2402,6 @@ pub(super) async fn compact_stored_beef(
                 let bump_index = beef.merge_bump(merkle_path);
                 if let Some(tx) = beef.find_txid_mut(&txid) {
                     tx.set_bump_index(Some(bump_index));
-                    upgraded += 1;
                 }
             }
         }
@@ -5121,13 +5118,12 @@ mod tests {
         assert_eq!(allocated.satoshis, 5000);
 
         // Verify the output was marked as allocated (spent_by set, spendable cleared)
-        let row: (Option<i64>, i64) = sqlx::query_as(
-            "SELECT spent_by, spendable FROM outputs WHERE output_id = ?",
-        )
-        .bind(confirmed_out_id)
-        .fetch_one(&mut *conn)
-        .await
-        .unwrap();
+        let row: (Option<i64>, i64) =
+            sqlx::query_as("SELECT spent_by, spendable FROM outputs WHERE output_id = ?")
+                .bind(confirmed_out_id)
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
         assert_eq!(
             row.0,
             Some(spending_tx_id),

@@ -2605,6 +2605,7 @@ impl MonitorStorage for StorageSqlx {
         }
 
         let services = self.get_services()?;
+        let chain_tracker = self.get_chain_tracker().await;
 
         tracing::debug!(
             "synchronize_transaction_statuses: checking {} transactions",
@@ -2642,6 +2643,101 @@ impl MonitorStorage for StorageSqlx {
                             .as_ref()
                             .map(|h| h.merkle_root.clone())
                             .unwrap_or_default();
+
+                        // Layer 1: Validate merkle proof before storing.
+                        // Parse the BUMP, compute the merkle root, and verify
+                        // against ChainTracker. Bad proofs (e.g. from WoC rate
+                        // limiting) are rejected instead of stored permanently.
+                        match MerklePath::from_binary(&merkle_path_bytes) {
+                            Ok(bump) => {
+                                match bump.compute_root(Some(txid)) {
+                                    Ok(computed_root) => {
+                                        if let Some(ref tracker) = chain_tracker {
+                                            match tracker
+                                                .is_valid_root_for_height(
+                                                    &computed_root,
+                                                    block_height,
+                                                )
+                                                .await
+                                            {
+                                                Ok(true) => {
+                                                    // Root is valid, proceed to INSERT
+                                                }
+                                                Ok(false) => {
+                                                    tracing::warn!(
+                                                        "synchronize_transaction_statuses: invalid merkle root for txid {} at height {} (computed {}, expected {}). Skipping.",
+                                                        txid, block_height, computed_root, merkle_root
+                                                    );
+                                                    let attempts = req.attempts + 1;
+                                                    sqlx::query(
+                                                        "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
+                                                    )
+                                                    .bind(attempts)
+                                                    .bind(now)
+                                                    .bind(req.proven_tx_req_id)
+                                                    .execute(self.pool())
+                                                    .await?;
+                                                    continue;
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        "synchronize_transaction_statuses: ChainTracker error for txid {} at height {}: {}. Skipping.",
+                                                        txid, block_height, e
+                                                    );
+                                                    let attempts = req.attempts + 1;
+                                                    sqlx::query(
+                                                        "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
+                                                    )
+                                                    .bind(attempts)
+                                                    .bind(now)
+                                                    .bind(req.proven_tx_req_id)
+                                                    .execute(self.pool())
+                                                    .await?;
+                                                    continue;
+                                                }
+                                            }
+                                        } else {
+                                            tracing::debug!(
+                                                "synchronize_transaction_statuses: no ChainTracker available, skipping merkle root verification for txid {}",
+                                                txid
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "synchronize_transaction_statuses: failed to compute merkle root for txid {}: {}. Skipping.",
+                                            txid, e
+                                        );
+                                        let attempts = req.attempts + 1;
+                                        sqlx::query(
+                                            "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
+                                        )
+                                        .bind(attempts)
+                                        .bind(now)
+                                        .bind(req.proven_tx_req_id)
+                                        .execute(self.pool())
+                                        .await?;
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "synchronize_transaction_statuses: failed to parse merkle path for txid {}: {}. Skipping.",
+                                    txid, e
+                                );
+                                let attempts = req.attempts + 1;
+                                sqlx::query(
+                                    "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
+                                )
+                                .bind(attempts)
+                                .bind(now)
+                                .bind(req.proven_tx_req_id)
+                                .execute(self.pool())
+                                .await?;
+                                continue;
+                            }
+                        }
 
                         sqlx::query(
                             r#"
@@ -3029,15 +3125,18 @@ impl MonitorStorage for StorageSqlx {
 
                         // Check for double spend in any provider's results
                         // (exclude orphan mempool — it's not a double-spend)
-                        let is_double_spend = results_vec
-                            .iter()
-                            .any(|r| r.txid_results.iter().any(|tr| tr.double_spend && !tr.orphan_mempool));
+                        let is_double_spend = results_vec.iter().any(|r| {
+                            r.txid_results
+                                .iter()
+                                .any(|tr| tr.double_spend && !tr.orphan_mempool)
+                        });
 
                         // Check for definitive rejection (invalid tx, not just service error)
                         let is_invalid = results_vec.iter().any(|r| {
                             r.txid_results.iter().any(|tr| {
                                 // ARC 46x codes = definitive tx rejection
-                                !tr.orphan_mempool && (tr.status.contains("46") || tr.status.contains("invalid"))
+                                !tr.orphan_mempool
+                                    && (tr.status.contains("46") || tr.status.contains("invalid"))
                             })
                         });
 

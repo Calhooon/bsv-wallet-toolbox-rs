@@ -389,8 +389,8 @@ impl Arc {
                     // - Short unconfirmed chains (10-50 txs from rapid payments)
                     // For extreme chains (>100 unproven), skip to EF and hope
                     // the direct parents are already in the mempool.
-                    let use_full_beef = unproven_ancestor_count > 0
-                        && unproven_ancestor_count <= 100;
+                    let use_full_beef =
+                        unproven_ancestor_count > 0 && unproven_ancestor_count <= 100;
 
                     if use_full_beef {
                         tracing::debug!(
@@ -401,8 +401,7 @@ impl Arc {
                         );
                         result.notes.push(make_note(&self.name, "postBeefFull"));
                         let beef_hex = hex::encode(beef);
-                        let beef_result =
-                            self.post_raw_tx(&beef_hex, Some(txids)).await?;
+                        let beef_result = self.post_raw_tx(&beef_hex, Some(txids)).await?;
 
                         if beef_result.status == "success"
                             || beef_result.double_spend
@@ -421,22 +420,20 @@ impl Arc {
                                 beef_error = ?beef_result.data,
                                 "Full BEEF failed — falling back to EF"
                             );
-                            result.notes.push(make_note(&self.name, "postBeefFallbackEF"));
+                            result
+                                .notes
+                                .push(make_note(&self.name, "postBeefFallbackEF"));
                             match new_tx_cloned.clone() {
                                 Some(mut fallback_tx) => {
                                     let mut hydrated = true;
                                     for input in &mut fallback_tx.inputs {
-                                        if let Ok(parent_txid) =
-                                            input.get_source_txid()
-                                        {
+                                        if let Ok(parent_txid) = input.get_source_txid() {
                                             if let Some(parent_btx) =
                                                 beef_parsed.find_txid(&parent_txid)
                                             {
-                                                if let Some(parent_tx) = parent_btx.tx()
-                                                {
-                                                    input.source_transaction = Some(
-                                                        Box::new(parent_tx.clone()),
-                                                    );
+                                                if let Some(parent_tx) = parent_btx.tx() {
+                                                    input.source_transaction =
+                                                        Some(Box::new(parent_tx.clone()));
                                                     continue;
                                                 }
                                             }
@@ -447,8 +444,7 @@ impl Arc {
                                     if hydrated {
                                         match fallback_tx.to_hex_ef() {
                                             Ok(ef_hex) => {
-                                                self.post_raw_tx(&ef_hex, Some(txids))
-                                                    .await?
+                                                self.post_raw_tx(&ef_hex, Some(txids)).await?
                                             }
                                             Err(_) => beef_result,
                                         }

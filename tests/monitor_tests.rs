@@ -240,23 +240,35 @@ mod monitor_integration {
     /// return a merkle path, run CheckForProofsTask, and verify items_processed > 0.
     #[tokio::test]
     async fn check_for_proofs_integration() {
+        use bsv_rs::transaction::MerklePath;
         use bsv_wallet_toolbox_rs::services::mock::MockResponse;
         use bsv_wallet_toolbox_rs::GetMerklePathResult;
 
-        // Configure mock to return a merkle path.
+        let txid = "a".repeat(64);
+        let height = 850000u32;
+
+        // Build a valid BUMP (coinbase-style single-tx merkle path) and hex-encode it.
+        let bump = MerklePath::from_coinbase_txid(&txid, height);
+        let bump_hex = hex::encode(bump.to_binary());
+        // For a single-tx block the merkle root equals the txid.
+        let merkle_root = bump
+            .compute_root(Some(&txid))
+            .expect("compute_root for coinbase bump");
+
+        // Configure mock to return the valid merkle path.
         let mock = MockWalletServices::builder()
             .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
                 name: Some("MockProvider".to_string()),
-                merkle_path: Some("deadbeef01020304".to_string()),
+                merkle_path: Some(bump_hex),
                 header: Some(bsv_wallet_toolbox_rs::BlockHeader {
                     version: 1,
                     previous_hash: "0".repeat(64),
-                    merkle_root: "a".repeat(64),
+                    merkle_root,
                     time: 1700000000,
                     bits: 486604799,
                     nonce: 12345,
                     hash: "b".repeat(64),
-                    height: 850000,
+                    height,
                 }),
                 error: None,
                 notes: vec![],
@@ -266,7 +278,6 @@ mod monitor_integration {
         let (storage, services) = setup_storage_and_services(mock).await;
 
         // Insert a proven_tx_req with status 'unmined'.
-        let txid = "a".repeat(64);
         let now = chrono::Utc::now();
         // raw_tx is NOT NULL in the schema, so we must provide it.
         sqlx::query(

@@ -15,8 +15,7 @@ use bsv_wallet_toolbox_rs::services::{ChaintracksConfig, ChaintracksServiceClien
 const CHAINTRACKS_URL: &str = "https://api.calhouninfra.com";
 
 /// BSV genesis block hash (block 0).
-const GENESIS_BLOCK_HASH: &str =
-    "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+const GENESIS_BLOCK_HASH: &str = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
 
 /// BSV genesis block merkle root (same as the coinbase txid for block 0).
 const GENESIS_MERKLE_ROOT: &str =
@@ -57,7 +56,10 @@ async fn test_chaintracks_find_header_by_hash() {
     // The returned header should match the tip we just fetched.
     assert_eq!(header.height, tip.height, "height must match chain tip");
     assert_eq!(header.hash, tip.hash, "hash must match the queried hash");
-    assert!(!header.merkle_root.is_empty(), "merkle root should be populated");
+    assert!(
+        !header.merkle_root.is_empty(),
+        "merkle root should be populated"
+    );
 
     // Sanity-check that the other header fields are populated.
     assert!(header.version > 0, "version must be positive");
@@ -157,7 +159,9 @@ async fn test_chaintracks_server_down_graceful() {
     let client = make_client("http://localhost:19999");
 
     let result = client
-        .find_header_for_block_hash("0000000000000000000000000000000000000000000000000000000000000000")
+        .find_header_for_block_hash(
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
         .await;
 
     // Must be an Err, not a panic.
@@ -166,7 +170,9 @@ async fn test_chaintracks_server_down_graceful() {
     // The error should be a network/connection error.
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
-        err_msg.contains("Network error") || err_msg.contains("network") || err_msg.contains("connect"),
+        err_msg.contains("Network error")
+            || err_msg.contains("network")
+            || err_msg.contains("connect"),
         "error message should indicate a network/connection problem, got: {}",
         err_msg
     );
@@ -190,7 +196,10 @@ async fn test_chaintracks_implements_chain_tracker() {
         .is_valid_root_for_height(GENESIS_MERKLE_ROOT, 0)
         .await
         .expect("ChainTracker::is_valid_root_for_height should succeed");
-    assert!(valid, "genesis merkle root must be valid at height 0 via trait");
+    assert!(
+        valid,
+        "genesis merkle root must be valid at height 0 via trait"
+    );
 
     // current_height through the trait
     let height = tracker
@@ -205,10 +214,16 @@ async fn test_chaintracks_implements_chain_tracker() {
 
     // Negative case: invalid root through the trait
     let invalid = tracker
-        .is_valid_root_for_height("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", 0)
+        .is_valid_root_for_height(
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            0,
+        )
         .await
         .expect("ChainTracker::is_valid_root_for_height should succeed for invalid root");
-    assert!(!invalid, "fake merkle root must NOT be valid at height 0 via trait");
+    assert!(
+        !invalid,
+        "fake merkle root must NOT be valid at height 0 via trait"
+    );
 }
 
 // =============================================================================
