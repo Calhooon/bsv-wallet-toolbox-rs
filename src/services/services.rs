@@ -779,13 +779,23 @@ impl WalletServices for Services {
 
                         // Layer 2: Never return a merkle_path without a resolved header.
                         // Without a header, the caller stores garbage zeros for height/hash/merkle_root.
-                        // Returning None lets the caller treat this as "no proof found" and retry next cycle.
+                        // Continue to next provider so Bitails/ARC get a chance with a different block hash.
                         if result.merkle_path.is_some() && result.header.is_none() {
                             tracing::warn!(
                                 txid = %txid,
-                                "Dropping merkle path: header could not be resolved. Will retry on next sync."
+                                provider = %provider_name,
+                                "Dropping merkle path: header could not be resolved. Trying next provider."
                             );
                             result.merkle_path = None;
+                            let mut fail_call = ServiceCall::new();
+                            fail_call.mark_failure(Some("header resolution failed".to_string()));
+                            lock_write(&self.get_merkle_path_services)?
+                                .add_call_failure(&provider_name, fail_call);
+                            last_error = Some(format!(
+                                "Provider {} returned proof with unresolvable header for txid {}",
+                                provider_name, txid
+                            ));
+                            continue;
                         }
 
                         // Layer 3 (Service-layer validation): Validate the computed
