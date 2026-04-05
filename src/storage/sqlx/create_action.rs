@@ -1651,6 +1651,65 @@ pub(super) struct BeefTxData {
     pub(super) merkle_path: Option<Vec<u8>>,
 }
 
+/// Validate a stored BEEF's merkle proofs against ChainTracker.
+///
+/// Returns `true` if the stored BEEF is valid (safe to merge), `false` if any
+/// merkle root is invalid or the BEEF structure is corrupt. Invalid BEEFs are
+/// discarded so the caller can fall through to individual tx+proof lookup and
+/// network fallback paths.
+///
+/// Matches Go's `VerifyBeef()` call in `create_process_inputs.go:144-150`.
+async fn validate_stored_beef(
+    stored_beef: &mut Beef,
+    tracker: &dyn ChainTracker,
+    txid: &str,
+) -> bool {
+    if stored_beef.bumps.is_empty() {
+        // No bumps to verify — stored BEEF is just unproven txs, safe to merge
+        return true;
+    }
+
+    let validation = stored_beef.verify_valid(true);
+    if !validation.valid {
+        tracing::warn!(
+            txid = %txid,
+            "Discarding stored input_beef: BEEF structure is invalid. \
+             Will fall through to individual tx lookup / network fallback."
+        );
+        return false;
+    }
+
+    for (height, root) in &validation.roots {
+        match tracker.is_valid_root_for_height(root, *height).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    txid = %txid,
+                    height = %height,
+                    root = %root,
+                    "Discarding stored input_beef: invalid merkle root at height {}. \
+                     Will fall through to individual tx lookup / network fallback.",
+                    height,
+                );
+                return false;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    txid = %txid,
+                    height = %height,
+                    error = %e,
+                    "Discarding stored input_beef: ChainTracker error at height {}. \
+                     Will fall through to fallback.",
+                    height,
+                );
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 /// Core BFS ancestor walk for BEEF construction.
 ///
 /// Given a queue of `(txid, depth)` pairs, walks the ancestor chain using:
@@ -1669,6 +1728,7 @@ async fn beef_bfs_walk(
     pending_txids: &mut Vec<(String, usize)>,
     processed_txids: &mut HashSet<String>,
     storage: Option<&StorageSqlx>,
+    chain_tracker: Option<&dyn ChainTracker>,
 ) -> Result<()> {
     while let Some((txid, depth)) = pending_txids.first().cloned() {
         pending_txids.remove(0);
@@ -1703,17 +1763,32 @@ async fn beef_bfs_walk(
         if let Some(mut stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
             compact_stored_beef(&mut *conn, &mut stored_beef).await?;
 
-            beef.merge_beef(&stored_beef);
+            // Validate stored BEEF merkle proofs against ChainTracker before merging.
+            // Some stored input_beef blobs have corrupt merkle proofs from before
+            // BEEF validation was enabled (e.g., proofs from orphaned blocks).
+            // If any root is invalid, discard the stored BEEF and fall through to
+            // individual tx+proof lookup / network fallback.
+            // Matches Go's VerifyBeef-before-merge pattern in create_process_inputs.go.
+            let stored_beef_valid = if let Some(tracker) = chain_tracker {
+                validate_stored_beef(&mut stored_beef, tracker, &txid).await
+            } else {
+                true
+            };
 
-            for beef_tx in &stored_beef.txs {
-                processed_txids.insert(beef_tx.txid());
-            }
+            if stored_beef_valid {
+                beef.merge_beef(&stored_beef);
 
-            // Check if the stored BEEF happened to include this txid too
-            if beef.find_txid(&txid).is_some() {
-                continue;
+                for beef_tx in &stored_beef.txs {
+                    processed_txids.insert(beef_tx.txid());
+                }
+
+                // Check if the stored BEEF happened to include this txid too
+                if beef.find_txid(&txid).is_some() {
+                    continue;
+                }
             }
-            // Otherwise fall through to add the transaction itself
+            // If stored_beef_valid is false, or stored BEEF didn't include this txid,
+            // fall through to individual tx+proof lookup below.
         }
 
         // Individual transaction lookup
@@ -1822,6 +1897,7 @@ pub(super) async fn rebuild_beef_for_broadcast(
         &mut pending_txids,
         &mut processed_txids,
         storage,
+        None, // No chain_tracker for broadcast rebuilds — validated at creation time
     )
     .await?;
 
@@ -1930,6 +2006,7 @@ async fn build_input_beef(
         &mut pending_txids,
         &mut processed_txids,
         storage,
+        chain_tracker,
     )
     .await?;
 
@@ -4164,6 +4241,326 @@ mod tests {
         assert!(result.is_some());
         let beef_bytes = result.unwrap();
         assert!(beef_bytes.len() > 4);
+    }
+
+    // =============================================================================
+    // Tests for validate_stored_beef (Layer 4: pre-merge BEEF validation)
+    // =============================================================================
+
+    /// Helper: build a valid single-tx BEEF with a real merkle path.
+    /// Returns (beef_bytes, txid, height, merkle_root).
+    fn build_test_beef_with_bump(height: u32, _fake_root: &str) -> (Vec<u8>, String) {
+        use bsv_rs::transaction::MerklePath;
+
+        // Coinbase tx (block 1) — a real transaction for structural validity
+        let raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+        let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        // Build a minimal merkle path: single leaf (the txid itself) at index 0
+        // The computed root will be the txid itself (single-tx block).
+        // We create a MerklePath with the given height so verify_valid extracts
+        // the (height, computed_root) pair for validation.
+        let mut beef = Beef::new();
+        let mp = MerklePath {
+            block_height: height,
+            path: vec![vec![bsv_rs::transaction::MerklePathLeaf {
+                offset: 0,
+                hash: Some(txid.to_string()),
+                txid: true,
+                duplicate: false,
+            }]],
+        };
+        let bump_idx = beef.merge_bump(mp);
+        beef.merge_raw_tx(raw_tx, Some(bump_idx));
+
+        (beef.to_binary(), txid.to_string())
+    }
+
+    /// Helper: seed a transaction with input_beef in the DB (simulates stored ancestor BEEF).
+    async fn seed_tx_with_input_beef(
+        storage: &StorageSqlx,
+        txid: &str,
+        input_beef: &[u8],
+        raw_tx: &[u8],
+    ) {
+        let now = Utc::now();
+        let (user, _) = storage.find_or_insert_user("02abcd").await.unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis,
+                                      version, lock_time, description, txid, raw_tx, input_beef,
+                                      created_at, updated_at)
+            VALUES (?, 'completed', ?, 0, 5000000000, 1, 0, 'Test tx', ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(format!("ref_{}", &txid[..8]))
+        .bind(txid)
+        .bind(raw_tx)
+        .bind(input_beef)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_validate_stored_beef_valid_roots() {
+        use bsv_rs::transaction::MockChainTracker;
+
+        // Build a BEEF with a bump at height 500
+        let (beef_bytes, _txid) = build_test_beef_with_bump(500, "");
+
+        let mut beef = Beef::from_binary(&beef_bytes).unwrap();
+        // Get the actual computed root so we can register it with the tracker
+        let validation = beef.verify_valid(true);
+        assert!(validation.valid);
+        let (height, root) = validation.roots.iter().next().unwrap();
+
+        let mut tracker = MockChainTracker::new(1000);
+        tracker.add_root(*height, root.clone());
+
+        let result = validate_stored_beef(&mut beef, &tracker, "test_txid").await;
+        assert!(
+            result,
+            "Valid BEEF with matching root should pass validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_stored_beef_invalid_root_rejected() {
+        use bsv_rs::transaction::MockChainTracker;
+
+        // Build a BEEF with a bump at height 942926
+        let (beef_bytes, _txid) = build_test_beef_with_bump(942926, "");
+
+        let mut beef = Beef::from_binary(&beef_bytes).unwrap();
+
+        // Tracker has a DIFFERENT root for height 942926 (simulates orphaned block)
+        let mut tracker = MockChainTracker::new(1000);
+        tracker.add_root(
+            942926,
+            "e6bcdfaf6cdc58d1b98dd9ccd67608b0cea09c08873b6ad4d88aa51f597fc69a".to_string(),
+        );
+
+        let result = validate_stored_beef(&mut beef, &tracker, "test_txid").await;
+        assert!(!result, "BEEF with invalid merkle root should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_validate_stored_beef_unknown_height_rejected() {
+        use bsv_rs::transaction::MockChainTracker;
+
+        // Build a BEEF with a bump at height 999
+        let (beef_bytes, _txid) = build_test_beef_with_bump(999, "");
+
+        let mut beef = Beef::from_binary(&beef_bytes).unwrap();
+
+        // Tracker has NO root for height 999 → is_valid_root_for_height returns false
+        let tracker = MockChainTracker::new(1000);
+
+        let result = validate_stored_beef(&mut beef, &tracker, "test_txid").await;
+        assert!(!result, "BEEF with unknown height should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_validate_stored_beef_no_bumps_passes() {
+        use bsv_rs::transaction::MockChainTracker;
+
+        // Empty BEEF with no bumps — should always pass
+        let mut beef = Beef::new();
+        let tracker = MockChainTracker::new(1000);
+
+        let result = validate_stored_beef(&mut beef, &tracker, "test_txid").await;
+        assert!(result, "BEEF with no bumps should pass validation");
+    }
+
+    #[tokio::test]
+    async fn test_validate_stored_beef_tracker_error_rejects() {
+        use bsv_rs::transaction::ChainTrackerError;
+
+        // Build a BEEF with a bump
+        let (beef_bytes, _txid) = build_test_beef_with_bump(500, "");
+        let mut beef = Beef::from_binary(&beef_bytes).unwrap();
+
+        // Tracker that always errors
+        struct ErrorTracker;
+
+        #[async_trait::async_trait]
+        impl ChainTracker for ErrorTracker {
+            async fn is_valid_root_for_height(
+                &self,
+                _root: &str,
+                _height: u32,
+            ) -> std::result::Result<bool, ChainTrackerError> {
+                Err(ChainTrackerError::NetworkError("timeout".to_string()))
+            }
+            async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
+                Ok(1000)
+            }
+        }
+
+        let result = validate_stored_beef(&mut beef, &ErrorTracker, "test_txid").await;
+        assert!(
+            !result,
+            "ChainTracker error should cause stored BEEF to be rejected (fail-safe)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_beef_bfs_walk_discards_corrupt_stored_beef_and_falls_through() {
+        use bsv_rs::transaction::MockChainTracker;
+
+        // This is the integration test: a transaction has corrupt stored input_beef,
+        // but the individual proven_tx has a valid proof. beef_bfs_walk should discard
+        // the stored BEEF and fall through to the individual tx+proof lookup.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        // The parent transaction (ancestor) — this is what the stored BEEF references
+        let parent_raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+        let parent_txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        // Build corrupt stored BEEF (bad root at height 942926)
+        let (corrupt_beef_bytes, _) = build_test_beef_with_bump(942926, "");
+
+        // The child transaction that spends the parent
+        // (simple tx spending output 0 of parent)
+        let child_txid = format!("{:0>64}", "child01");
+
+        // Seed the corrupt stored BEEF on the child transaction
+        seed_tx_with_input_beef(&storage, &child_txid, &corrupt_beef_bytes, &parent_raw_tx).await;
+
+        // Also seed the parent in proven_txs with a VALID proof
+        // (this is the fallback path — individual tx lookup should find it)
+        let valid_merkle_path = hex::decode("a086010001020002").unwrap();
+        seed_proven_tx(&storage, parent_txid, &parent_raw_tx, &valid_merkle_path).await;
+
+        // MockChainTracker that rejects height 942926 (orphaned) but doesn't know
+        // about any heights (so any stored BEEF with bumps will be rejected)
+        let tracker = MockChainTracker::new(950000);
+        // Don't add the corrupt root → is_valid_root_for_height returns false
+
+        let mut beef = Beef::new();
+        let mut pending_txids = vec![(child_txid.clone(), 0)];
+        let mut processed_txids = HashSet::new();
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending_txids,
+            &mut processed_txids,
+            None, // no network fallback needed — proven_txs has the data
+            Some(&tracker as &dyn ChainTracker),
+        )
+        .await;
+
+        // Should succeed — corrupt stored BEEF was discarded, individual lookup worked
+        assert!(
+            result.is_ok(),
+            "beef_bfs_walk should succeed by falling through to individual tx lookup: {:?}",
+            result.err()
+        );
+
+        // The child txid should have been processed
+        assert!(processed_txids.contains(&child_txid));
+    }
+
+    #[tokio::test]
+    async fn test_beef_bfs_walk_merges_valid_stored_beef() {
+        use bsv_rs::transaction::AlwaysValidChainTracker;
+
+        // Valid stored BEEF should be merged normally
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let parent_raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+        let parent_txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        // Build valid stored BEEF
+        let (valid_beef_bytes, _) = build_test_beef_with_bump(100, "");
+
+        let child_txid = format!("{:0>64}", "child02");
+
+        seed_tx_with_input_beef(&storage, &child_txid, &valid_beef_bytes, &parent_raw_tx).await;
+
+        // AlwaysValidChainTracker accepts any root
+        let tracker = AlwaysValidChainTracker::new(950000);
+
+        let mut beef = Beef::new();
+        let mut pending_txids = vec![(child_txid.clone(), 0)];
+        let mut processed_txids = HashSet::new();
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending_txids,
+            &mut processed_txids,
+            None,
+            Some(&tracker as &dyn ChainTracker),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        // The parent txid from the stored BEEF should have been processed (merged)
+        assert!(
+            processed_txids.contains(parent_txid),
+            "Parent txid should be processed after merging valid stored BEEF"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_beef_bfs_walk_no_tracker_skips_validation() {
+        // Without a tracker, stored BEEF is merged unconditionally (backward compat)
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let parent_raw_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+        ).unwrap();
+        let parent_txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+
+        // Corrupt BEEF — but no tracker, so it should still be merged
+        let (corrupt_beef_bytes, _) = build_test_beef_with_bump(942926, "");
+
+        let child_txid = format!("{:0>64}", "child03");
+
+        seed_tx_with_input_beef(&storage, &child_txid, &corrupt_beef_bytes, &parent_raw_tx).await;
+
+        let mut beef = Beef::new();
+        let mut pending_txids = vec![(child_txid.clone(), 0)];
+        let mut processed_txids = HashSet::new();
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let result = beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending_txids,
+            &mut processed_txids,
+            None,
+            None, // No tracker — skip validation
+        )
+        .await;
+
+        assert!(result.is_ok());
+        // Parent txid from stored BEEF should be processed (merged unconditionally)
+        assert!(
+            processed_txids.contains(parent_txid),
+            "Without tracker, corrupt stored BEEF should still be merged"
+        );
     }
 
     // =============================================================================
