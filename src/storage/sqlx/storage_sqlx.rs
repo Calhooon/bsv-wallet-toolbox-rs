@@ -2665,7 +2665,7 @@ impl MonitorStorage for StorageSqlx {
                                                 }
                                                 Ok(false) => {
                                                     tracing::warn!(
-                                                        "synchronize_transaction_statuses: invalid merkle root for txid {} at height {} (computed {}, expected {}). Skipping.",
+                                                        "synchronize_transaction_statuses: invalid merkle root for txid {} at height {} (computed {}, provider header {}). ChainTracker rejected root. Skipping.",
                                                         txid, block_height, computed_root, merkle_root
                                                     );
                                                     let attempts = req.attempts + 1;

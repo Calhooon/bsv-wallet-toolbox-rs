@@ -788,6 +788,105 @@ impl WalletServices for Services {
                             result.merkle_path = None;
                         }
 
+                        // Layer 3 (Service-layer validation): Validate the computed
+                        // merkle root against ChainTracker BEFORE returning.
+                        // This mirrors Go's whatsonchain/service.go where bad proofs
+                        // trigger automatic provider failover via the service loop.
+                        if let Some(ref mp_hex) = result.merkle_path {
+                            if let Some(ref ct) = self.chaintracks {
+                                if let Some(ref header) = result.header {
+                                    let validation_failed = match hex::decode(mp_hex) {
+                                        Ok(mp_bytes) => {
+                                            match bsv_rs::transaction::MerklePath::from_binary(
+                                                &mp_bytes,
+                                            ) {
+                                                Ok(bump) => match bump.compute_root(Some(txid)) {
+                                                    Ok(computed_root) => {
+                                                        match ct
+                                                            .is_valid_root_for_height(
+                                                                &computed_root,
+                                                                header.height,
+                                                            )
+                                                            .await
+                                                        {
+                                                            Ok(true) => false,
+                                                            Ok(false) => {
+                                                                tracing::warn!(
+                                                                    txid = %txid,
+                                                                    provider = %provider_name,
+                                                                    height = header.height,
+                                                                    computed_root = %computed_root,
+                                                                    "Service-layer merkle root validation failed: \
+                                                                     computed root does not match ChainTracker. \
+                                                                     Trying next provider."
+                                                                );
+                                                                true
+                                                            }
+                                                            Err(e) => {
+                                                                tracing::warn!(
+                                                                    txid = %txid,
+                                                                    provider = %provider_name,
+                                                                    error = %e,
+                                                                    "ChainTracker error during service-layer \
+                                                                     merkle root validation. Trying next provider."
+                                                                );
+                                                                true
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(
+                                                            txid = %txid,
+                                                            provider = %provider_name,
+                                                            error = %e,
+                                                            "Failed to compute merkle root from BUMP. \
+                                                             Trying next provider."
+                                                        );
+                                                        true
+                                                    }
+                                                },
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        txid = %txid,
+                                                        provider = %provider_name,
+                                                        error = %e,
+                                                        "Failed to parse BUMP binary for validation. \
+                                                         Trying next provider."
+                                                    );
+                                                    true
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                txid = %txid,
+                                                provider = %provider_name,
+                                                error = %e,
+                                                "Failed to decode merkle path hex for validation. \
+                                                 Trying next provider."
+                                            );
+                                            true
+                                        }
+                                    };
+
+                                    if validation_failed {
+                                        let mut fail_call = ServiceCall::new();
+                                        fail_call.mark_failure(Some(format!(
+                                            "invalid merkle root for txid {} at height {}",
+                                            txid, header.height
+                                        )));
+                                        lock_write(&self.get_merkle_path_services)?
+                                            .add_call_failure(&provider_name, fail_call);
+                                        last_error = Some(format!(
+                                            "Provider {} returned invalid merkle proof for txid {}",
+                                            provider_name, txid
+                                        ));
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
                         return Ok(result);
                     } else {
                         call.mark_failure(Some("no proof".to_string()));
@@ -1450,5 +1549,372 @@ mod tests {
         );
         // Note: can't use unwrap_err() because dyn ChainTracker doesn't impl Debug.
         // The is_err() assertion above is sufficient to verify the error case.
+    }
+
+    // =========================================================================
+    // Service-layer merkle proof validation tests (Layer 3)
+    // =========================================================================
+
+    /// Mock MerklePathService that returns a configurable response.
+    struct MockMerklePathProvider {
+        response: GetMerklePathResult,
+    }
+
+    #[async_trait]
+    impl MerklePathService for MockMerklePathProvider {
+        async fn get_merkle_path(&self, _txid: &str) -> Result<GetMerklePathResult> {
+            Ok(self.response.clone())
+        }
+    }
+
+    /// Build a ChaintracksServiceClient pointing at a mockito server.
+    fn build_mock_chaintracks(server_url: &str) -> StdArc<ChaintracksServiceClient> {
+        StdArc::new(ChaintracksServiceClient::from_url(server_url))
+    }
+
+    /// Build a Services instance with custom merkle path providers and
+    /// optional Chaintracks (via mockito server URL).
+    fn build_test_services(
+        providers: Vec<(&str, GetMerklePathResult)>,
+        chaintracks_url: Option<&str>,
+    ) -> Services {
+        let mut services = Services::mainnet().unwrap();
+
+        // Replace merkle path service collection with mocks
+        let mut collection = ServiceCollection::new("getMerklePath");
+        for (name, response) in providers {
+            let mock_provider: MerklePathProvider =
+                StdArc::new(MockMerklePathProvider { response });
+            collection.add(name, mock_provider);
+        }
+        services.get_merkle_path_services = RwLock::new(collection);
+
+        // Set up Chaintracks if URL provided
+        if let Some(url) = chaintracks_url {
+            services.chaintracks = Some(build_mock_chaintracks(url));
+        } else {
+            services.chaintracks = None;
+        }
+
+        services
+    }
+
+    /// Helper: build a valid BUMP hex and its merkle root for a coinbase-style tx.
+    fn build_valid_bump(txid: &str, height: u32) -> (String, String) {
+        use bsv_rs::transaction::MerklePath;
+        let bump = MerklePath::from_coinbase_txid(txid, height);
+        let bump_hex = bump.to_hex();
+        let merkle_root = bump
+            .compute_root(Some(txid))
+            .expect("compute_root for coinbase bump");
+        (bump_hex, merkle_root)
+    }
+
+    /// Helper: mock Chaintracks /findHeaderHexForHeight endpoint.
+    async fn mock_chaintracks_header(
+        server: &mut mockito::ServerGuard,
+        height: u32,
+        merkle_root: &str,
+    ) -> mockito::Mock {
+        let body = serde_json::json!({
+            "status": "success",
+            "value": {
+                "version": 1,
+                "previousHash": "0".repeat(64),
+                "merkleRoot": merkle_root,
+                "time": 1700000000u32,
+                "bits": 486604799u32,
+                "nonce": 12345u32,
+                "height": height,
+                "hash": "b".repeat(64),
+            }
+        });
+
+        server
+            .mock(
+                "GET",
+                format!("/findHeaderHexForHeight?height={}", height).as_str(),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body.to_string())
+            .create_async()
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_get_merkle_path_validates_root_against_chaintracks() {
+        // Provider returns a bad proof (valid BUMP format but wrong txid,
+        // so the computed root won't match the real block's merkle root).
+        let txid = "a".repeat(64);
+        let height = 850_000u32;
+
+        // Build a valid BUMP for a DIFFERENT txid — this makes the computed
+        // root wrong for our target txid.
+        let bad_txid = "c".repeat(64);
+        let (bad_bump_hex, _bad_root) = build_valid_bump(&bad_txid, height);
+
+        // The "real" merkle root that ChainTracker knows about.
+        let (_, real_root) = build_valid_bump(&txid, height);
+
+        let bad_response = GetMerklePathResult {
+            name: Some("BadProvider".to_string()),
+            merkle_path: Some(bad_bump_hex),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "0".repeat(64),
+                merkle_root: "f".repeat(64), // wrong root in header too
+                time: 1700000000,
+                bits: 486604799,
+                nonce: 12345,
+                hash: "b".repeat(64),
+                height,
+            }),
+            error: None,
+            notes: vec![],
+        };
+
+        let mut mock_server = mockito::Server::new_async().await;
+        let _m = mock_chaintracks_header(&mut mock_server, height, &real_root).await;
+
+        let services = build_test_services(
+            vec![("BadProvider", bad_response)],
+            Some(&mock_server.url()),
+        );
+
+        let result = services.get_merkle_path(&txid, false).await.unwrap();
+
+        // The bad proof should be rejected; no merkle_path returned.
+        assert!(
+            result.merkle_path.is_none(),
+            "Expected merkle_path to be None when ChainTracker rejects the root, got: {:?}",
+            result.merkle_path
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_merkle_path_fallback_on_invalid_root() {
+        // First provider returns bad proof, second returns good proof.
+        // Service-layer validation should reject the first and return the second.
+        let txid = "a".repeat(64);
+        let height = 850_000u32;
+
+        // Bad provider: BUMP built for wrong txid
+        let bad_txid = "c".repeat(64);
+        let (bad_bump_hex, _) = build_valid_bump(&bad_txid, height);
+
+        // Good provider: BUMP built for correct txid
+        let (good_bump_hex, real_root) = build_valid_bump(&txid, height);
+
+        let bad_response = GetMerklePathResult {
+            name: Some("BadProvider".to_string()),
+            merkle_path: Some(bad_bump_hex),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "0".repeat(64),
+                merkle_root: "f".repeat(64),
+                time: 1700000000,
+                bits: 486604799,
+                nonce: 12345,
+                hash: "b".repeat(64),
+                height,
+            }),
+            error: None,
+            notes: vec![],
+        };
+
+        let good_response = GetMerklePathResult {
+            name: Some("GoodProvider".to_string()),
+            merkle_path: Some(good_bump_hex.clone()),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "0".repeat(64),
+                merkle_root: real_root.clone(),
+                time: 1700000000,
+                bits: 486604799,
+                nonce: 12345,
+                hash: "b".repeat(64),
+                height,
+            }),
+            error: None,
+            notes: vec![],
+        };
+
+        let mut mock_server = mockito::Server::new_async().await;
+        let _m = mock_chaintracks_header(&mut mock_server, height, &real_root).await;
+
+        let services = build_test_services(
+            vec![
+                ("BadProvider", bad_response),
+                ("GoodProvider", good_response),
+            ],
+            Some(&mock_server.url()),
+        );
+
+        let result = services.get_merkle_path(&txid, false).await.unwrap();
+
+        // Should have fallen back to the good provider.
+        assert_eq!(
+            result.merkle_path,
+            Some(good_bump_hex),
+            "Expected the good provider's BUMP hex after failover"
+        );
+        assert_eq!(
+            result.name,
+            Some("GoodProvider".to_string()),
+            "Expected result from GoodProvider after BadProvider was rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_merkle_path_no_chaintracks_skips_validation() {
+        // Without ChainTracker, any proof should pass through unvalidated
+        // (backwards compatibility).
+        let txid = "a".repeat(64);
+        let height = 850_000u32;
+
+        // Build a BUMP for a different txid — normally invalid, but without
+        // ChainTracker it should still be returned.
+        let other_txid = "c".repeat(64);
+        let (bump_hex, _) = build_valid_bump(&other_txid, height);
+
+        let response = GetMerklePathResult {
+            name: Some("Provider".to_string()),
+            merkle_path: Some(bump_hex.clone()),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "0".repeat(64),
+                merkle_root: "f".repeat(64),
+                time: 1700000000,
+                bits: 486604799,
+                nonce: 12345,
+                hash: "b".repeat(64),
+                height,
+            }),
+            error: None,
+            notes: vec![],
+        };
+
+        // No chaintracks_url — validation should be skipped.
+        let services = build_test_services(vec![("Provider", response)], None);
+
+        let result = services.get_merkle_path(&txid, false).await.unwrap();
+
+        assert_eq!(
+            result.merkle_path,
+            Some(bump_hex),
+            "Without ChainTracker, proof should pass through without validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_merkle_path_valid_root_passes() {
+        // Provider returns a valid proof that matches ChainTracker's root.
+        let txid = "a".repeat(64);
+        let height = 850_000u32;
+
+        let (bump_hex, merkle_root) = build_valid_bump(&txid, height);
+
+        let response = GetMerklePathResult {
+            name: Some("GoodProvider".to_string()),
+            merkle_path: Some(bump_hex.clone()),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "0".repeat(64),
+                merkle_root: merkle_root.clone(),
+                time: 1700000000,
+                bits: 486604799,
+                nonce: 12345,
+                hash: "b".repeat(64),
+                height,
+            }),
+            error: None,
+            notes: vec![],
+        };
+
+        let mut mock_server = mockito::Server::new_async().await;
+        let _m = mock_chaintracks_header(&mut mock_server, height, &merkle_root).await;
+
+        let services =
+            build_test_services(vec![("GoodProvider", response)], Some(&mock_server.url()));
+
+        let result = services.get_merkle_path(&txid, false).await.unwrap();
+
+        assert_eq!(
+            result.merkle_path,
+            Some(bump_hex),
+            "Valid proof should pass ChainTracker validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_merkle_path_all_providers_bad() {
+        // All providers return bad proofs — result should have no merkle_path.
+        let txid = "a".repeat(64);
+        let height = 850_000u32;
+
+        let bad_txid_1 = "c".repeat(64);
+        let (bad_bump_1, _) = build_valid_bump(&bad_txid_1, height);
+
+        let bad_txid_2 = "d".repeat(64);
+        let (bad_bump_2, _) = build_valid_bump(&bad_txid_2, height);
+
+        let (_, real_root) = build_valid_bump(&txid, height);
+
+        let bad_response_1 = GetMerklePathResult {
+            name: Some("BadProvider1".to_string()),
+            merkle_path: Some(bad_bump_1),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "0".repeat(64),
+                merkle_root: "f".repeat(64),
+                time: 1700000000,
+                bits: 486604799,
+                nonce: 12345,
+                hash: "b".repeat(64),
+                height,
+            }),
+            error: None,
+            notes: vec![],
+        };
+
+        let bad_response_2 = GetMerklePathResult {
+            name: Some("BadProvider2".to_string()),
+            merkle_path: Some(bad_bump_2),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "0".repeat(64),
+                merkle_root: "e".repeat(64),
+                time: 1700000000,
+                bits: 486604799,
+                nonce: 12345,
+                hash: "b".repeat(64),
+                height,
+            }),
+            error: None,
+            notes: vec![],
+        };
+
+        let mut mock_server = mockito::Server::new_async().await;
+        let _m = mock_chaintracks_header(&mut mock_server, height, &real_root).await;
+
+        let services = build_test_services(
+            vec![
+                ("BadProvider1", bad_response_1),
+                ("BadProvider2", bad_response_2),
+            ],
+            Some(&mock_server.url()),
+        );
+
+        let result = services.get_merkle_path(&txid, false).await.unwrap();
+
+        assert!(
+            result.merkle_path.is_none(),
+            "All providers returned bad proofs — merkle_path should be None"
+        );
+        assert!(
+            result.error.is_some(),
+            "Should have an error message when all providers fail"
+        );
     }
 }
