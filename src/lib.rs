@@ -98,11 +98,12 @@ pub use chaintracks::{
 // Re-export Services types
 pub use services::{
     AdaptiveTimeoutConfig, Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeader,
-    BlockHeaderService, BsvExchangeRate, Chain, FiatCurrency, FiatExchangeRates,
-    GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
-    GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult,
-    PostTxResultForTxid, ScriptHistoryItem, ServiceCallHistory, ServiceCollection, Services,
-    ServicesOptions, TxStatusDetail, UtxoDetail, WalletServices, WhatsOnChain, WhatsOnChainConfig,
+    BlockHeaderService, BsvExchangeRate, Chain, FallbackChainTracker, FiatCurrency,
+    FiatExchangeRates, GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult,
+    GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput,
+    PostBeefResult, PostTxResultForTxid, ScriptHistoryItem, ServiceCallHistory, ServiceCollection,
+    Services, ServicesOptions, TxStatusDetail, UtxoDetail, WalletServices, WhatsOnChain,
+    WhatsOnChainConfig,
 };
 
 // Re-export Wallet types

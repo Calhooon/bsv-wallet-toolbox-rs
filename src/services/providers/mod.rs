@@ -10,10 +10,12 @@ pub mod arc;
 pub mod bhs;
 pub mod bitails;
 pub mod chaintracks_client;
+pub mod fallback_chain_tracker;
 pub mod whatsonchain;
 
 pub use arc::{Arc, ArcConfig};
 pub use bhs::{BhsConfig, BlockHeaderService};
 pub use bitails::{Bitails, BitailsConfig};
 pub use chaintracks_client::{ChaintracksConfig, ChaintracksServiceClient};
+pub use fallback_chain_tracker::FallbackChainTracker;
 pub use whatsonchain::{WhatsOnChain, WhatsOnChainConfig};

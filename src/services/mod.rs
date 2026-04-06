@@ -52,7 +52,7 @@ pub use collection::{
 };
 pub use providers::{
     Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
-    ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
+    ChaintracksServiceClient, FallbackChainTracker, WhatsOnChain, WhatsOnChainConfig,
 };
 pub use services::Services;
 

@@ -12,7 +12,7 @@ use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
         Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
-        ChaintracksServiceClient, WhatsOnChain, WhatsOnChainConfig,
+        ChaintracksServiceClient, FallbackChainTracker, WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
@@ -115,8 +115,8 @@ pub struct Services {
     /// Cached fiat exchange rates.
     fiat_exchange_rates: RwLock<FiatExchangeRates>,
 
-    /// Chaintracks service client (optional).
-    pub chaintracks: Option<StdArc<ChaintracksServiceClient>>,
+    /// Chaintracks service client with WoC fallback (optional).
+    pub chaintracks: Option<StdArc<FallbackChainTracker>>,
 
     /// Post BEEF mode.
     pub post_beef_mode: PostBeefMode,
@@ -324,13 +324,14 @@ impl Services {
             None
         };
 
-        // Create Chaintracks client if URL is configured
+        // Create Chaintracks client with WoC fallback if URL is configured
         let chaintracks = if let Some(ref ct_url) = options.chaintracks_url {
             let ct_config = ChaintracksConfig {
                 url: ct_url.clone(),
                 api_key: None,
             };
-            Some(StdArc::new(ChaintracksServiceClient::new(ct_config)))
+            let primary = ChaintracksServiceClient::new(ct_config);
+            Some(StdArc::new(FallbackChainTracker::new(primary, None)))
         } else {
             None
         };
@@ -594,7 +595,7 @@ impl WalletServices for Services {
     async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>> {
         // Try Chaintracks first
         if let Some(ref ct) = self.chaintracks {
-            match ct.find_header_for_height(height).await {
+            match ct.primary().find_header_for_height(height).await {
                 Ok(header) => return Ok(header.to_binary()),
                 Err(e) => tracing::debug!("Chaintracks header failed, trying BHS: {}", e),
             }
@@ -614,7 +615,7 @@ impl WalletServices for Services {
     async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader> {
         // Try Chaintracks first (preferred — no rate limits)
         if let Some(ref ct) = self.chaintracks {
-            match ct.find_header_for_block_hash(hash).await {
+            match ct.primary().find_header_for_block_hash(hash).await {
                 Ok(header) => return Ok(header),
                 Err(e) => tracing::warn!(
                     "Chaintracks hash_to_header failed for {}, falling back to WoC/Bitails: {}",
@@ -1577,9 +1578,10 @@ mod tests {
         }
     }
 
-    /// Build a ChaintracksServiceClient pointing at a mockito server.
-    fn build_mock_chaintracks(server_url: &str) -> StdArc<ChaintracksServiceClient> {
-        StdArc::new(ChaintracksServiceClient::from_url(server_url))
+    /// Build a FallbackChainTracker pointing at a mockito server.
+    fn build_mock_chaintracks(server_url: &str) -> StdArc<FallbackChainTracker> {
+        let primary = ChaintracksServiceClient::from_url(server_url);
+        StdArc::new(FallbackChainTracker::new(primary, None))
     }
 
     /// Build a Services instance with custom merkle path providers and
