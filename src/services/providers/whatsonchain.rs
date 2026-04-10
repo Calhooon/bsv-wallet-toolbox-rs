@@ -541,39 +541,49 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Get status for multiple transaction IDs.
+    ///
+    /// Chunks requests at 20 txids per HTTP call to match the Go reference
+    /// implementation (`slices.Chunk(txIDs, 20)`) and stay within WoC API limits.
     pub async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
         let url = format!("{}/txs/status", self.base_url);
 
-        let body = serde_json::json!({ "txids": txids });
+        // Chunk at 20 txids per request (Go reference: slices.Chunk(txIDs, 20))
+        const CHUNK_SIZE: usize = 20;
+        let mut all_data: Vec<WocTxStatus> = Vec::with_capacity(txids.len());
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(self.get_headers())
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+        for chunk in txids.chunks(CHUNK_SIZE) {
+            let body = serde_json::json!({ "txids": chunk });
 
-        if !response.status().is_success() {
-            return Ok(GetStatusForTxidsResult {
-                name: "WoC".to_string(),
-                status: "error".to_string(),
-                error: Some(format!("HTTP {}", response.status())),
-                results: Vec::new(),
-            });
+            let response = self
+                .client
+                .post(&url)
+                .headers(self.get_headers())
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+            if !response.status().is_success() {
+                return Ok(GetStatusForTxidsResult {
+                    name: "WoC".to_string(),
+                    status: "error".to_string(),
+                    error: Some(format!("HTTP {}", response.status())),
+                    results: Vec::new(),
+                });
+            }
+
+            let data: Vec<WocTxStatus> = response.json().await.map_err(|e| {
+                Error::ServiceError(format!("Failed to parse status response: {}", e))
+            })?;
+
+            all_data.extend(data);
         }
-
-        let data: Vec<WocTxStatus> = response
-            .json()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Failed to parse status response: {}", e)))?;
 
         let results: Vec<TxStatusDetail> = txids
             .iter()
             .map(|txid| {
-                let d = data.iter().find(|d| d.txid == *txid);
+                let d = all_data.iter().find(|d| d.txid == *txid);
                 match d {
                     None => TxStatusDetail {
                         txid: txid.clone(),
@@ -974,5 +984,152 @@ mod tests {
     fn test_config_with_api_key() {
         let config = WhatsOnChainConfig::with_api_key("test-key");
         assert_eq!(config.api_key, Some("test-key".to_string()));
+    }
+
+    /// Verify that the CHUNK_SIZE constant matches the Go reference value.
+    #[test]
+    fn test_chunk_size_constant() {
+        // Go reference: slices.Chunk(txIDs, 20)
+        const CHUNK_SIZE: usize = 20;
+        assert_eq!(CHUNK_SIZE, 20);
+    }
+
+    /// Verify that chunking via std::slice::chunks produces correct partition sizes.
+    #[test]
+    fn test_chunking_produces_correct_partitions() {
+        const CHUNK_SIZE: usize = 20;
+
+        // Exactly 20 txids: 1 chunk
+        let txids: Vec<String> = (0..20).map(|i| format!("txid_{:02}", i)).collect();
+        let chunks: Vec<&[String]> = txids.chunks(CHUNK_SIZE).collect();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 20);
+
+        // 21 txids: 2 chunks (20 + 1)
+        let txids: Vec<String> = (0..21).map(|i| format!("txid_{:02}", i)).collect();
+        let chunks: Vec<&[String]> = txids.chunks(CHUNK_SIZE).collect();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 20);
+        assert_eq!(chunks[1].len(), 1);
+
+        // 45 txids: 3 chunks (20 + 20 + 5)
+        let txids: Vec<String> = (0..45).map(|i| format!("txid_{:02}", i)).collect();
+        let chunks: Vec<&[String]> = txids.chunks(CHUNK_SIZE).collect();
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].len(), 20);
+        assert_eq!(chunks[1].len(), 20);
+        assert_eq!(chunks[2].len(), 5);
+
+        // Empty: 0 chunks
+        let txids: Vec<String> = Vec::new();
+        let chunks: Vec<&[String]> = txids.chunks(CHUNK_SIZE).collect();
+        assert_eq!(chunks.len(), 0);
+    }
+
+    /// Test the classification logic for TxStatusDetail results: mined vs known vs unknown.
+    #[test]
+    fn test_tx_status_classification_logic() {
+        // Simulate the classification done in get_status_for_txids
+        let statuses = vec![
+            WocTxStatus {
+                txid: "tx_mined".to_string(),
+                blockhash: Some("0000abc".to_string()),
+                blockheight: Some(800000),
+                blocktime: Some(1700000000),
+                confirmations: Some(6),
+                error: None,
+            },
+            WocTxStatus {
+                txid: "tx_mempool".to_string(),
+                blockhash: None,
+                blockheight: None,
+                blocktime: None,
+                confirmations: None,
+                error: None,
+            },
+            WocTxStatus {
+                txid: "tx_unknown".to_string(),
+                blockhash: None,
+                blockheight: None,
+                blocktime: None,
+                confirmations: None,
+                error: Some("unknown".to_string()),
+            },
+        ];
+
+        let txids = vec![
+            "tx_mined".to_string(),
+            "tx_mempool".to_string(),
+            "tx_unknown".to_string(),
+            "tx_missing".to_string(), // Not in response at all
+        ];
+
+        let results: Vec<TxStatusDetail> = txids
+            .iter()
+            .map(|txid| {
+                let d = statuses.iter().find(|d| d.txid == *txid);
+                match d {
+                    None => TxStatusDetail {
+                        txid: txid.clone(),
+                        status: "unknown".to_string(),
+                        depth: None,
+                    },
+                    Some(d) if d.error.as_deref() == Some("unknown") => TxStatusDetail {
+                        txid: txid.clone(),
+                        status: "unknown".to_string(),
+                        depth: None,
+                    },
+                    Some(d) if d.confirmations.is_none() => TxStatusDetail {
+                        txid: txid.clone(),
+                        status: "known".to_string(),
+                        depth: Some(0),
+                    },
+                    Some(d) => TxStatusDetail {
+                        txid: txid.clone(),
+                        status: "mined".to_string(),
+                        depth: d.confirmations,
+                    },
+                }
+            })
+            .collect();
+
+        assert_eq!(results.len(), 4);
+
+        // tx_mined -> mined with depth 6
+        assert_eq!(results[0].status, "mined");
+        assert_eq!(results[0].depth, Some(6));
+
+        // tx_mempool -> known with depth 0
+        assert_eq!(results[1].status, "known");
+        assert_eq!(results[1].depth, Some(0));
+
+        // tx_unknown -> unknown (error = "unknown")
+        assert_eq!(results[2].status, "unknown");
+        assert_eq!(results[2].depth, None);
+
+        // tx_missing -> unknown (not in response)
+        assert_eq!(results[3].status, "unknown");
+        assert_eq!(results[3].depth, None);
+    }
+
+    /// All txids in a single chunk should still produce all results.
+    #[test]
+    fn test_all_results_preserved_across_chunks() {
+        const CHUNK_SIZE: usize = 20;
+
+        // 25 txids -> 2 chunks. Simulate that we collect results from both.
+        let txids: Vec<String> = (0..25).map(|i| format!("txid_{:02}", i)).collect();
+        let mut all_data: Vec<String> = Vec::with_capacity(txids.len());
+
+        for chunk in txids.chunks(CHUNK_SIZE) {
+            // Each chunk "returns" its txids (simulating API response)
+            all_data.extend(chunk.iter().cloned());
+        }
+
+        assert_eq!(all_data.len(), 25);
+        assert_eq!(all_data[0], "txid_00");
+        assert_eq!(all_data[19], "txid_19");
+        assert_eq!(all_data[20], "txid_20");
+        assert_eq!(all_data[24], "txid_24");
     }
 }

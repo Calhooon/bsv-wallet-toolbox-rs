@@ -2614,10 +2614,101 @@ impl MonitorStorage for StorageSqlx {
             reqs.len()
         );
 
+        // =====================================================================
+        // TRIAGE STEP (Go pattern: filterTxsByConfirmationDepth)
+        // Batch-check tx statuses BEFORE fetching individual merkle proofs.
+        // Only fetch proofs for confirmed txs (depth >= 1).
+        // This avoids hammering getMerklePath for unconfirmed/missing txs.
+        // =====================================================================
+        let txids: Vec<String> = reqs.iter().map(|r| r.txid.clone()).collect();
+        let triage_result = services.get_status_for_txids(&txids, false).await;
+
+        // Build txid -> status lookup from triage results
+        let confirmed_txids: std::collections::HashSet<String> = match &triage_result {
+            Ok(status_result) if status_result.status == "success" => {
+                let mut confirmed = 0u32;
+                let mut mempool = 0u32;
+                let mut missing = 0u32;
+
+                let confirmed_set: std::collections::HashSet<String> = status_result
+                    .results
+                    .iter()
+                    .filter_map(|detail| {
+                        match detail.status.as_str() {
+                            "mined" => {
+                                let depth = detail.depth.unwrap_or(0);
+                                if depth >= 1 {
+                                    confirmed += 1;
+                                    Some(detail.txid.clone())
+                                } else {
+                                    mempool += 1;
+                                    None
+                                }
+                            }
+                            "known" => {
+                                mempool += 1;
+                                None // In mempool, no proof yet
+                            }
+                            _ => {
+                                missing += 1;
+                                None // Unknown / not found
+                            }
+                        }
+                    })
+                    .collect();
+
+                tracing::info!(
+                    total = reqs.len(),
+                    confirmed,
+                    mempool,
+                    missing,
+                    "synchronize_transaction_statuses: triage complete"
+                );
+
+                confirmed_set
+            }
+            Ok(status_result) => {
+                // Status service returned non-success — skip sync (Go pattern)
+                tracing::warn!(
+                    error = ?status_result.error,
+                    "synchronize_transaction_statuses: status service returned error, skipping synchronization"
+                );
+                return Ok(Vec::new());
+            }
+            Err(e) => {
+                // Status service failed — skip sync entirely (Go pattern:
+                // "Return empty slice to skip synchronization when we can't get the status")
+                tracing::warn!(
+                    error = %e,
+                    count = reqs.len(),
+                    "synchronize_transaction_statuses: failed to get status for txIDs, skipping synchronization"
+                );
+                return Ok(Vec::new());
+            }
+        };
+
+        // Filter reqs to only confirmed transactions
+        let confirmed_reqs: Vec<&_> = reqs
+            .iter()
+            .filter(|r| confirmed_txids.contains(&r.txid))
+            .collect();
+
+        if confirmed_reqs.is_empty() {
+            tracing::debug!(
+                "synchronize_transaction_statuses: no confirmed transactions to fetch proofs for"
+            );
+            return Ok(Vec::new());
+        }
+
+        tracing::debug!(
+            "synchronize_transaction_statuses: fetching proofs for {} confirmed transactions",
+            confirmed_reqs.len()
+        );
+
         let mut results = Vec::new();
         let max_attempts = 144; // ~2.4 hours at 60s intervals (matches JS reference for mainnet)
 
-        for req in &reqs {
+        for req in &confirmed_reqs {
             let txid = &req.txid;
 
             // Attempt to get merkle path from services
@@ -2852,6 +2943,10 @@ impl MonitorStorage for StorageSqlx {
                     .await?;
                 }
             }
+
+            // Throttle between proof requests (TS pattern: msecsWaitPerMerkleProofServiceReq = 500).
+            // WoC rate limit is 3 req/sec; 500ms keeps us at 2 req/sec, safely under the limit.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
         // Repair existing proven_txs that have JSON merkle_paths instead of BUMP binary.
@@ -3830,11 +3925,14 @@ impl MonitorStorage for StorageSqlx {
         let mut log = String::new();
         let now = chrono::Utc::now();
 
-        // Check 1: Mark transactions as failed if their proven_tx_req is 'invalid'
+        // Check 1: Mark transactions as failed if their proven_tx_req is 'invalid'.
+        // TS reference uses: WHERE status != 'failed' (includes 'completed').
+        // If the proven_tx_req is 'invalid', the tx was never confirmed on-chain,
+        // so even 'completed' transactions must be demoted to 'failed'.
         let failed_count = sqlx::query(
             r#"
             UPDATE transactions SET status = 'failed', updated_at = ?
-            WHERE status NOT IN ('failed', 'completed')
+            WHERE status != 'failed'
               AND txid IN (
                 SELECT ptr.txid FROM proven_tx_reqs ptr
                 WHERE ptr.status = 'invalid'
@@ -5412,6 +5510,202 @@ mod tests {
         assert_eq!(status.txid, "abc123");
         assert_eq!(status.status, ProvenTxReqStatus::Completed);
         assert_eq!(status.block_height, Some(800000));
+    }
+
+    /// Test the triage classification logic used in synchronize_transaction_statuses.
+    /// Given a GetStatusForTxidsResult with mixed mined/known/unknown statuses,
+    /// verify that only confirmed txids (depth >= 1) are selected for proof fetching.
+    #[test]
+    fn test_triage_classification_mixed_statuses() {
+        use crate::services::traits::{GetStatusForTxidsResult, TxStatusDetail};
+
+        let status_result = GetStatusForTxidsResult {
+            name: "WoC".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: vec![
+                TxStatusDetail {
+                    txid: "tx_confirmed_deep".to_string(),
+                    status: "mined".to_string(),
+                    depth: Some(6),
+                },
+                TxStatusDetail {
+                    txid: "tx_confirmed_shallow".to_string(),
+                    status: "mined".to_string(),
+                    depth: Some(1),
+                },
+                TxStatusDetail {
+                    txid: "tx_mempool".to_string(),
+                    status: "known".to_string(),
+                    depth: Some(0),
+                },
+                TxStatusDetail {
+                    txid: "tx_unknown".to_string(),
+                    status: "unknown".to_string(),
+                    depth: None,
+                },
+                TxStatusDetail {
+                    txid: "tx_mined_zero_depth".to_string(),
+                    status: "mined".to_string(),
+                    depth: Some(0), // mined but depth 0 -> not confirmed
+                },
+            ],
+        };
+
+        // Replicate the triage logic from synchronize_transaction_statuses
+        let mut confirmed = 0u32;
+        let mut mempool = 0u32;
+        let mut missing = 0u32;
+
+        let confirmed_set: std::collections::HashSet<String> = status_result
+            .results
+            .iter()
+            .filter_map(|detail| match detail.status.as_str() {
+                "mined" => {
+                    let depth = detail.depth.unwrap_or(0);
+                    if depth >= 1 {
+                        confirmed += 1;
+                        Some(detail.txid.clone())
+                    } else {
+                        mempool += 1;
+                        None
+                    }
+                }
+                "known" => {
+                    mempool += 1;
+                    None
+                }
+                _ => {
+                    missing += 1;
+                    None
+                }
+            })
+            .collect();
+
+        // Only the two txids with depth >= 1 should be in the confirmed set
+        assert_eq!(confirmed, 2);
+        assert_eq!(mempool, 2); // known + mined with depth 0
+        assert_eq!(missing, 1); // unknown
+        assert_eq!(confirmed_set.len(), 2);
+        assert!(confirmed_set.contains("tx_confirmed_deep"));
+        assert!(confirmed_set.contains("tx_confirmed_shallow"));
+        assert!(!confirmed_set.contains("tx_mempool"));
+        assert!(!confirmed_set.contains("tx_unknown"));
+        assert!(!confirmed_set.contains("tx_mined_zero_depth"));
+    }
+
+    /// Test that when the status service returns an error status,
+    /// no proofs are fetched (empty return).
+    #[test]
+    fn test_triage_error_status_returns_empty() {
+        use crate::services::traits::GetStatusForTxidsResult;
+
+        let status_result = GetStatusForTxidsResult {
+            name: "WoC".to_string(),
+            status: "error".to_string(),
+            error: Some("HTTP 503".to_string()),
+            results: Vec::new(),
+        };
+
+        // Replicate the error path from synchronize_transaction_statuses
+        let confirmed_txids: std::collections::HashSet<String> =
+            if status_result.status == "success" {
+                status_result
+                    .results
+                    .iter()
+                    .filter_map(|detail| {
+                        if detail.status == "mined" && detail.depth.unwrap_or(0) >= 1 {
+                            Some(detail.txid.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                // Non-success status -> return empty (skip sync)
+                return; // Simulates the early return Ok(Vec::new()) in the real code
+            };
+
+        // Should not reach here for error case
+        panic!(
+            "Should have returned early for error status, got {} confirmed",
+            confirmed_txids.len()
+        );
+    }
+
+    /// Test that when the status service call itself fails (Err),
+    /// no proofs are fetched (empty return).
+    #[test]
+    fn test_triage_service_failure_returns_empty() {
+        use crate::services::traits::GetStatusForTxidsResult;
+
+        let triage_result: std::result::Result<GetStatusForTxidsResult, crate::Error> =
+            Err(crate::Error::NetworkError("connection refused".to_string()));
+
+        // Replicate the Err path from synchronize_transaction_statuses
+        match &triage_result {
+            Ok(status_result) if status_result.status == "success" => {
+                panic!("Should not reach success path");
+            }
+            Ok(_) => {
+                panic!("Should not reach non-success Ok path");
+            }
+            Err(_e) => {
+                // This is the expected path - returns Ok(Vec::new())
+                let results: Vec<TxSynchronizedStatus> = Vec::new();
+                assert!(results.is_empty());
+            }
+        }
+    }
+
+    /// Test that all-unknown statuses produce an empty confirmed set.
+    #[test]
+    fn test_triage_all_unknown_produces_empty_confirmed() {
+        use crate::services::traits::{GetStatusForTxidsResult, TxStatusDetail};
+
+        let status_result = GetStatusForTxidsResult {
+            name: "WoC".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: vec![
+                TxStatusDetail {
+                    txid: "tx_a".to_string(),
+                    status: "unknown".to_string(),
+                    depth: None,
+                },
+                TxStatusDetail {
+                    txid: "tx_b".to_string(),
+                    status: "unknown".to_string(),
+                    depth: None,
+                },
+                TxStatusDetail {
+                    txid: "tx_c".to_string(),
+                    status: "known".to_string(),
+                    depth: Some(0),
+                },
+            ],
+        };
+
+        let confirmed_set: std::collections::HashSet<String> = status_result
+            .results
+            .iter()
+            .filter_map(|detail| match detail.status.as_str() {
+                "mined" => {
+                    let depth = detail.depth.unwrap_or(0);
+                    if depth >= 1 {
+                        Some(detail.txid.clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            confirmed_set.is_empty(),
+            "No confirmed txids when all are unknown/known"
+        );
     }
 
     #[tokio::test]

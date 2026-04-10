@@ -177,16 +177,20 @@ where
             handles.insert(TaskType::Clock, handle);
         }
 
-        // Start new_header task
-        if self.options.tasks.new_header.enabled {
-            let task = NewHeaderTask::new(self.services.clone());
+        // Start new_header task and extract its trigger flag for check_for_proofs wiring.
+        // TS pattern: NewHeaderTask sets checkNow flag → CheckForProofsTask reads it.
+        let new_header_task = if self.options.tasks.new_header.enabled {
+            let task = Arc::new(NewHeaderTask::new(self.services.clone()));
             let handle = self.spawn_task(
                 TaskType::NewHeader,
-                Arc::new(task),
+                task.clone(),
                 &self.options.tasks.new_header,
             );
             handles.insert(TaskType::NewHeader, handle);
-        }
+            Some(task)
+        } else {
+            None
+        };
 
         // Start reorg task
         if self.options.tasks.reorg.enabled {
@@ -196,9 +200,19 @@ where
             handles.insert(TaskType::Reorg, handle);
         }
 
-        // Start check_for_proofs task
+        // Start check_for_proofs task, wired to new_header's trigger flag.
+        // TS pattern: Monitor.processNewBlockHeader sets TaskCheckForProofs.checkNow = true.
         if self.options.tasks.check_for_proofs.enabled {
-            let task = CheckForProofsTask::new(self.storage.clone(), self.services.clone());
+            let task = if let Some(ref nht) = new_header_task {
+                // Share the new_header_received flag directly from NewHeaderTask
+                CheckForProofsTask::with_trigger(
+                    self.storage.clone(),
+                    self.services.clone(),
+                    nht.new_header_received_flag(),
+                )
+            } else {
+                CheckForProofsTask::new(self.storage.clone(), self.services.clone())
+            };
             let handle = self.spawn_task(
                 TaskType::CheckForProofs,
                 Arc::new(task),
@@ -363,6 +377,8 @@ where
 
         if self.options.tasks.check_for_proofs.enabled {
             let task = CheckForProofsTask::new(self.storage.clone(), self.services.clone());
+            // In run_once, always trigger so proofs are checked
+            task.trigger();
             let result = task.run().await?;
             results.insert(TaskType::CheckForProofs, result);
         }

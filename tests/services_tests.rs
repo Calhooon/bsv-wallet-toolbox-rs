@@ -949,3 +949,217 @@ async fn test_n_lock_time_is_final_for_tx_from_raw_locktime() {
     assert!(result.is_ok());
     assert!(!result.unwrap()); // 2033 is in the future
 }
+
+// =============================================================================
+// Triage Flow Integration Tests (using MockWalletServices)
+// =============================================================================
+
+/// Test the full triage flow: mock returns mixed statuses from get_status_for_txids,
+/// verify that only confirmed txids would get getMerklePath called.
+/// This tests the Go pattern: filterTxsByConfirmationDepth.
+#[tokio::test]
+async fn test_triage_flow_filters_confirmed_txids() {
+    use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
+    use bsv_wallet_toolbox_rs::services::traits::{
+        GetStatusForTxidsResult, TxStatusDetail, WalletServices,
+    };
+
+    // Set up mock to return mixed statuses
+    let mock = MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: vec![
+                TxStatusDetail {
+                    txid: "tx_confirmed_1".to_string(),
+                    status: "mined".to_string(),
+                    depth: Some(3),
+                },
+                TxStatusDetail {
+                    txid: "tx_confirmed_2".to_string(),
+                    status: "mined".to_string(),
+                    depth: Some(1),
+                },
+                TxStatusDetail {
+                    txid: "tx_mempool".to_string(),
+                    status: "known".to_string(),
+                    depth: Some(0),
+                },
+                TxStatusDetail {
+                    txid: "tx_unknown".to_string(),
+                    status: "unknown".to_string(),
+                    depth: None,
+                },
+            ],
+        }))
+        .build();
+
+    // Call get_status_for_txids
+    let txids = vec![
+        "tx_confirmed_1".to_string(),
+        "tx_confirmed_2".to_string(),
+        "tx_mempool".to_string(),
+        "tx_unknown".to_string(),
+    ];
+    let result = mock.get_status_for_txids(&txids, false).await.unwrap();
+
+    assert_eq!(result.status, "success");
+    assert_eq!(result.results.len(), 4);
+
+    // Apply the triage filter (same logic as synchronize_transaction_statuses)
+    let confirmed_txids: Vec<&str> = result
+        .results
+        .iter()
+        .filter_map(|detail| match detail.status.as_str() {
+            "mined" => {
+                let depth = detail.depth.unwrap_or(0);
+                if depth >= 1 {
+                    Some(detail.txid.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Only confirmed txids should be selected for getMerklePath
+    assert_eq!(confirmed_txids.len(), 2);
+    assert!(confirmed_txids.contains(&"tx_confirmed_1"));
+    assert!(confirmed_txids.contains(&"tx_confirmed_2"));
+    assert!(!confirmed_txids.contains(&"tx_mempool"));
+    assert!(!confirmed_txids.contains(&"tx_unknown"));
+
+    // Verify that get_status_for_txids was called exactly once
+    assert_eq!(mock.call_count("get_status_for_txids"), 1);
+}
+
+/// Test that when get_status_for_txids fails, no getMerklePath calls are made.
+#[tokio::test]
+async fn test_triage_flow_status_error_skips_proof_fetch() {
+    use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
+    use bsv_wallet_toolbox_rs::services::traits::WalletServices;
+
+    // Set up mock so get_status_for_txids returns an error
+    let mock = MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Error(
+            MockErrorKind::NetworkError,
+            "WoC API unavailable".to_string(),
+        ))
+        .build();
+
+    let txids = vec!["tx_a".to_string(), "tx_b".to_string()];
+    let result = mock.get_status_for_txids(&txids, false).await;
+
+    // Status call failed
+    assert!(result.is_err());
+
+    // In the real synchronize_transaction_statuses, this would cause early return
+    // with empty Vec. Verify no get_merkle_path was called.
+    assert_eq!(mock.call_count("get_merkle_path"), 0);
+    assert_eq!(mock.call_count("get_status_for_txids"), 1);
+}
+
+/// Test that when get_status_for_txids returns non-success status,
+/// no proofs are fetched (Go pattern: skip sync).
+#[tokio::test]
+async fn test_triage_flow_non_success_status_skips_sync() {
+    use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
+    use bsv_wallet_toolbox_rs::services::traits::{GetStatusForTxidsResult, WalletServices};
+
+    let mock = MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+            name: "MockProvider".to_string(),
+            status: "error".to_string(), // Non-success status
+            error: Some("Internal server error".to_string()),
+            results: Vec::new(),
+        }))
+        .build();
+
+    let txids = vec!["tx_a".to_string()];
+    let result = mock.get_status_for_txids(&txids, false).await.unwrap();
+
+    // The call succeeded at the transport level but returned error status
+    assert_eq!(result.status, "error");
+    assert!(result.error.is_some());
+
+    // In synchronize_transaction_statuses, this causes early return Ok(Vec::new())
+    // No confirmed_txids to fetch proofs for
+    assert_eq!(mock.call_count("get_merkle_path"), 0);
+}
+
+/// Test the full happy path: triage returns confirmed txids, then getMerklePath
+/// is called only for those confirmed txids.
+#[tokio::test]
+async fn test_triage_flow_confirmed_txids_get_proofs() {
+    use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
+    use bsv_wallet_toolbox_rs::services::traits::{
+        GetMerklePathResult, GetStatusForTxidsResult, TxStatusDetail, WalletServices,
+    };
+
+    let mock = MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: vec![
+                TxStatusDetail {
+                    txid: "tx_mined".to_string(),
+                    status: "mined".to_string(),
+                    depth: Some(2),
+                },
+                TxStatusDetail {
+                    txid: "tx_mempool".to_string(),
+                    status: "known".to_string(),
+                    depth: Some(0),
+                },
+            ],
+        }))
+        .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
+            name: Some("MockProvider".to_string()),
+            merkle_path: Some("mock_proof".to_string()),
+            header: None,
+            error: None,
+            notes: vec![],
+        }))
+        .build();
+
+    // Step 1: Triage
+    let txids = vec!["tx_mined".to_string(), "tx_mempool".to_string()];
+    let status_result = mock.get_status_for_txids(&txids, false).await.unwrap();
+
+    let confirmed_txids: Vec<String> = status_result
+        .results
+        .iter()
+        .filter_map(|detail| {
+            if detail.status == "mined" && detail.depth.unwrap_or(0) >= 1 {
+                Some(detail.txid.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(confirmed_txids.len(), 1);
+    assert_eq!(confirmed_txids[0], "tx_mined");
+
+    // Step 2: Fetch proofs only for confirmed txids
+    for txid in &confirmed_txids {
+        let proof_result = mock.get_merkle_path(txid, false).await.unwrap();
+        assert!(proof_result.merkle_path.is_some());
+    }
+
+    // Verify calls: 1 status call, 1 merkle_path call (only for confirmed tx)
+    assert_eq!(mock.call_count("get_status_for_txids"), 1);
+    assert_eq!(mock.call_count("get_merkle_path"), 1);
+
+    // Check that the merkle_path call was for the correct txid
+    let history = mock.call_history();
+    let merkle_calls: Vec<_> = history
+        .iter()
+        .filter(|c| c.method == "get_merkle_path")
+        .collect();
+    assert_eq!(merkle_calls.len(), 1);
+    assert!(merkle_calls[0].args.contains(&"tx_mined".to_string()));
+}

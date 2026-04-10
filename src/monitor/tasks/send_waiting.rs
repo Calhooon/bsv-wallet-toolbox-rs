@@ -1,9 +1,14 @@
 //! SendWaiting task - broadcasts transactions that are waiting to be sent.
+//!
+//! Includes a local TryLock (Go pattern: `sendWaitingLock.TryLock()`) to prevent
+//! concurrent runs within the same instance. This is in ADDITION to the distributed
+//! task lock in daemon.rs which prevents cross-instance stacking.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use crate::services::WalletServices;
 use crate::storage::MonitorStorage;
@@ -24,6 +29,8 @@ const DEFAULT_MIN_AGE_SECS: u64 = 30;
 /// 5. On success: updates status to 'unmined'
 /// 6. On double-spend: marks transaction as 'failed'
 /// 7. On error: logs and retries next cycle
+///
+/// Uses a local TryLock (Go pattern) to skip if a previous run is still in progress.
 pub struct SendWaitingTask<S, V>
 where
     S: MonitorStorage + 'static,
@@ -34,6 +41,9 @@ where
     services: Arc<V>,
     min_age: Duration,
     first_run: std::sync::atomic::AtomicBool,
+    /// Local mutex to prevent concurrent runs within the same instance.
+    /// Go pattern: `sendWaitingLock sync.Mutex` with `TryLock()`.
+    send_lock: Mutex<()>,
 }
 
 impl<S, V> SendWaitingTask<S, V>
@@ -48,6 +58,7 @@ where
             services,
             min_age: Duration::from_secs(DEFAULT_MIN_AGE_SECS),
             first_run: std::sync::atomic::AtomicBool::new(true),
+            send_lock: Mutex::new(()),
         }
     }
 }
@@ -69,6 +80,16 @@ where
     async fn run(&self) -> Result<TaskResult> {
         let mut errors = Vec::new();
 
+        // TryLock pattern (Go: sendWaitingLock.TryLock())
+        // If a previous run is still in progress, skip this run.
+        let guard = match self.send_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::warn!("send_waiting: already running, skipping this run");
+                return Ok(TaskResult::new());
+            }
+        };
+
         // On first run, don't apply age filter (use zero duration)
         let is_first_run = self
             .first_run
@@ -81,7 +102,7 @@ where
         };
 
         // Delegate to MonitorStorage which handles the full send logic
-        match self.storage.send_waiting_transactions(min_age).await {
+        let result = match self.storage.send_waiting_transactions(min_age).await {
             Ok(Some(results)) => {
                 let items_processed = results
                     .send_with_results
@@ -112,7 +133,12 @@ where
                     errors,
                 })
             }
-        }
+        };
+
+        // Explicitly drop guard to release lock
+        drop(guard);
+
+        result
     }
 }
 
@@ -134,5 +160,71 @@ mod tests {
     #[test]
     fn test_default_min_age() {
         assert_eq!(DEFAULT_MIN_AGE_SECS, 30);
+    }
+
+    /// Test that try_lock on an already-held Mutex returns Err, which the task
+    /// interprets as "skip this run".
+    #[tokio::test]
+    async fn test_try_lock_prevents_concurrent_run() {
+        let lock = Mutex::new(());
+
+        // Acquire the lock externally (simulating a long-running previous task)
+        let guard = lock.lock().await;
+
+        // try_lock should fail because the lock is already held
+        let result = lock.try_lock();
+        assert!(result.is_err(), "try_lock should fail when lock is held");
+
+        // Drop the guard to release
+        drop(guard);
+
+        // Now try_lock should succeed
+        let result = lock.try_lock();
+        assert!(result.is_ok(), "try_lock should succeed when lock is free");
+    }
+
+    /// Test the TryLock pattern returns 0 items when skipped, matching the Go
+    /// pattern where sendWaitingLock.TryLock() returns false.
+    #[tokio::test]
+    async fn test_try_lock_skip_returns_empty_task_result() {
+        let lock = Mutex::new(());
+
+        // Simulate lock already held
+        let _guard = lock.lock().await;
+
+        // Simulate the run() logic
+        let result = match lock.try_lock() {
+            Ok(_guard) => {
+                // Would proceed with actual work
+                TaskResult::with_count(5)
+            }
+            Err(_) => {
+                // Lock held -> skip with empty result
+                TaskResult::new()
+            }
+        };
+
+        assert_eq!(result.items_processed, 0);
+        assert!(result.errors.is_empty());
+    }
+
+    /// Verify that the lock is released after the guard is dropped, allowing
+    /// subsequent runs.
+    #[tokio::test]
+    async fn test_lock_released_after_guard_drop() {
+        let lock = Mutex::new(());
+
+        // First acquisition
+        {
+            let guard = lock.try_lock();
+            assert!(guard.is_ok());
+            // guard dropped here
+        }
+
+        // Second acquisition should succeed
+        {
+            let guard = lock.try_lock();
+            assert!(guard.is_ok());
+        }
     }
 }

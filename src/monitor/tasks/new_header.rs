@@ -30,7 +30,8 @@ where
     /// Number of consecutive cycles without new headers.
     stable_cycles: AtomicU32,
     /// Flag indicating a new header was received (for proof checking).
-    pub new_header_received: AtomicBool,
+    /// Arc-wrapped so it can be shared with CheckForProofsTask (TS pattern: checkNow).
+    pub new_header_received: Arc<AtomicBool>,
 }
 
 impl<V> NewHeaderTask<V>
@@ -44,7 +45,7 @@ where
             last_height: AtomicU32::new(0),
             last_hash: std::sync::RwLock::new(None),
             stable_cycles: AtomicU32::new(0),
-            new_header_received: AtomicBool::new(false),
+            new_header_received: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -61,6 +62,12 @@ where
     /// Get the last known height.
     pub fn last_known_height(&self) -> u32 {
         self.last_height.load(Ordering::SeqCst)
+    }
+
+    /// Get a clone of the new_header_received flag for sharing with CheckForProofsTask.
+    /// TS pattern: Monitor.processNewBlockHeader sets TaskCheckForProofs.checkNow = true.
+    pub fn new_header_received_flag(&self) -> Arc<AtomicBool> {
+        self.new_header_received.clone()
     }
 }
 
@@ -176,6 +183,84 @@ mod tests {
         let task = NewHeaderTask::new(Arc::new(services));
         assert_eq!(task.name(), "new_header");
         assert_eq!(task.last_known_height(), 0);
+        assert!(!task.has_new_header());
+    }
+
+    /// Test that new_header_received_flag() returns a shareable Arc that points to
+    /// the same underlying AtomicBool.
+    #[tokio::test]
+    async fn test_new_header_received_flag_is_shareable() {
+        use crate::services::Services;
+
+        let services = Services::mainnet().unwrap();
+        let task = NewHeaderTask::new(Arc::new(services));
+
+        // Get two clones of the flag
+        let flag1 = task.new_header_received_flag();
+        let flag2 = task.new_header_received_flag();
+
+        // Both should start as false
+        assert!(!flag1.load(Ordering::SeqCst));
+        assert!(!flag2.load(Ordering::SeqCst));
+
+        // Setting on one clone should be visible on the other
+        flag1.store(true, Ordering::SeqCst);
+        assert!(flag2.load(Ordering::SeqCst));
+        assert!(task.has_new_header());
+
+        // Clear via the task method
+        task.clear_new_header_flag();
+        assert!(!flag1.load(Ordering::SeqCst));
+        assert!(!flag2.load(Ordering::SeqCst));
+    }
+
+    /// Test that the flag returned by new_header_received_flag() is the same Arc
+    /// as the task's internal new_header_received field.
+    #[tokio::test]
+    async fn test_flag_identity_with_task_field() {
+        use crate::services::Services;
+
+        let services = Services::mainnet().unwrap();
+        let task = NewHeaderTask::new(Arc::new(services));
+
+        let flag = task.new_header_received_flag();
+
+        // Directly set via the task's public field
+        task.new_header_received.store(true, Ordering::SeqCst);
+
+        // Should be visible through the flag
+        assert!(flag.load(Ordering::SeqCst));
+
+        // And vice versa
+        flag.store(false, Ordering::SeqCst);
+        assert!(!task.new_header_received.load(Ordering::SeqCst));
+    }
+
+    /// Test the wiring pattern: NewHeaderTask flag -> CheckForProofsTask trigger.
+    /// This verifies the TS pattern: Monitor.processNewBlockHeader sets
+    /// TaskCheckForProofs.checkNow = true.
+    #[tokio::test]
+    async fn test_new_header_to_check_for_proofs_wiring() {
+        use crate::services::Services;
+
+        let services = Services::mainnet().unwrap();
+        let task = NewHeaderTask::new(Arc::new(services));
+
+        // Extract the flag that would be passed to CheckForProofsTask::with_trigger()
+        let check_now_flag = task.new_header_received_flag();
+
+        // Initially false
+        assert!(!check_now_flag.load(Ordering::SeqCst));
+
+        // Simulate new block detection (what run() does on height increase)
+        task.new_header_received.store(true, Ordering::SeqCst);
+
+        // CheckForProofsTask would see this as triggered
+        assert!(check_now_flag.load(Ordering::SeqCst));
+
+        // CheckForProofsTask::run() does swap(false), which resets the flag
+        let was_triggered = check_now_flag.swap(false, Ordering::SeqCst);
+        assert!(was_triggered);
         assert!(!task.has_new_header());
     }
 }
