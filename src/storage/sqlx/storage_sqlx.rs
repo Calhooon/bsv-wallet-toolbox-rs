@@ -2311,9 +2311,9 @@ impl WalletStorageWriter for StorageSqlx {
         }
 
         // 2. Find transactions where status doesn't match proven_tx_req status
-        let mismatches: Vec<(i64, String, String, String)> = sqlx::query_as(
+        let mismatches: Vec<(i64, String, String, String, Option<i64>)> = sqlx::query_as(
             r#"
-            SELECT t.transaction_id, t.txid, t.status AS tx_status, p.status AS req_status
+            SELECT t.transaction_id, t.txid, t.status AS tx_status, p.status AS req_status, p.proven_tx_id
             FROM transactions t
             JOIN proven_tx_reqs p ON t.txid = p.txid
             WHERE t.user_id = ?
@@ -2329,10 +2329,11 @@ impl WalletStorageWriter for StorageSqlx {
         .await?;
 
         // 3. Fix mismatches
-        for (tx_id, txid, tx_status, req_status) in &mismatches {
+        for (tx_id, txid, tx_status, req_status, proven_tx_id) in &mismatches {
             if tx_status == "unproven" && req_status == "completed" {
                 // Transaction should be completed since proof exists
-                sqlx::query("UPDATE transactions SET status = 'completed', updated_at = ? WHERE transaction_id = ?")
+                sqlx::query("UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE transaction_id = ?")
+                    .bind(proven_tx_id)
                     .bind(chrono::Utc::now())
                     .bind(tx_id)
                     .execute(self.pool())
@@ -2351,9 +2352,10 @@ impl WalletStorageWriter for StorageSqlx {
                     "unproven"
                 };
                 sqlx::query(
-                    "UPDATE transactions SET status = ?, updated_at = ? WHERE transaction_id = ?",
+                    "UPDATE transactions SET status = ?, proven_tx_id = ?, updated_at = ? WHERE transaction_id = ?",
                 )
                 .bind(new_status)
+                .bind(proven_tx_id)
                 .bind(chrono::Utc::now())
                 .bind(tx_id)
                 .execute(self.pool())
@@ -2783,10 +2785,11 @@ impl MonitorStorage for StorageSqlx {
                         .execute(self.pool())
                         .await?;
 
-                        // Update transaction status to completed
+                        // Update transaction status to completed and link proof
                         sqlx::query(
-                            "UPDATE transactions SET status = 'completed', updated_at = ? WHERE txid = ?"
+                            "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?"
                         )
+                        .bind(proven_tx_id.map(|r| r.0))
                         .bind(now)
                         .bind(txid)
                         .execute(self.pool())
@@ -3869,9 +3872,9 @@ impl MonitorStorage for StorageSqlx {
         // send_waiting_transactions, and abort_abandoned.
 
         // Check 3: Mark transactions completed when proof exists
-        let rows: Vec<(String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
             r#"
-            SELECT ptr.txid, t.status
+            SELECT ptr.txid, t.status, ptr.proven_tx_id
             FROM proven_tx_reqs ptr
             JOIN transactions t ON t.txid = ptr.txid
             WHERE ptr.status = 'completed'
@@ -3883,10 +3886,11 @@ impl MonitorStorage for StorageSqlx {
         .await?;
 
         if !rows.is_empty() {
-            for (txid, old_status) in &rows {
+            for (txid, old_status, proven_tx_id) in &rows {
                 sqlx::query(
-                    "UPDATE transactions SET status = 'completed', updated_at = ? WHERE txid = ?",
+                    "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
                 )
+                .bind(proven_tx_id)
                 .bind(now)
                 .bind(txid)
                 .execute(self.pool())

@@ -1586,6 +1586,7 @@ async fn allocate_change_input(
           {}
         ORDER BY
             CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
+            LENGTH(COALESCE(t.input_beef, X'')) ASC,
             CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
             ABS(o.satoshis - ?) ASC
         LIMIT 1
