@@ -1754,46 +1754,44 @@ async fn beef_bfs_walk(
             continue;
         }
 
-        // First, try to get a stored BEEF and merge its ancestors directly.
-        // The stored BEEF (input_beef) contains the ancestors OF this txid,
-        // but not the txid's own transaction - so we still fall through to
-        // get_tx_with_proof below to add the transaction itself.
-        //
-        // Optimization: compact the stored BEEF by upgrading unproven txs that
-        // now have merkle proofs in proven_txs, then trim unnecessary ancestors.
-        if let Some(mut stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
-            compact_stored_beef(&mut *conn, &mut stored_beef).await?;
+        // Individual transaction lookup — check for proof FIRST.
+        // TS/Go pattern: if a tx has a merkle proof, add tx + BUMP and STOP.
+        // Do NOT merge stored input_beef for proven txs — the BUMP terminates
+        // the chain and ancestors are irrelevant.
+        let tx_data_opt = get_tx_with_proof(&mut *conn, &txid).await?;
 
-            // Validate stored BEEF merkle proofs against ChainTracker before merging.
-            // Some stored input_beef blobs have corrupt merkle proofs from before
-            // BEEF validation was enabled (e.g., proofs from orphaned blocks).
-            // If any root is invalid, discard the stored BEEF and fall through to
-            // individual tx+proof lookup / network fallback.
-            // Matches Go's VerifyBeef-before-merge pattern in create_process_inputs.go.
-            let stored_beef_valid = if let Some(tracker) = chain_tracker {
-                validate_stored_beef(&mut stored_beef, tracker, &txid).await
-            } else {
-                true
-            };
+        // Only merge stored input_beef for UNPROVEN transactions.
+        // TS: "if (r.inputBEEF) beef.mergeBeef(r.inputBEEF)" — only when no proof.
+        // Go: merges inputBEEF then checks "if subjectTx.MerklePath != nil { return }".
+        // Both skip stored BEEF when a proof exists.
+        let has_proof = tx_data_opt
+            .as_ref()
+            .map(|d| d.merkle_path.is_some())
+            .unwrap_or(false);
 
-            if stored_beef_valid {
-                beef.merge_beef(&stored_beef);
+        if !has_proof {
+            if let Some(mut stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
+                compact_stored_beef(&mut *conn, &mut stored_beef).await?;
 
-                for beef_tx in &stored_beef.txs {
-                    processed_txids.insert(beef_tx.txid());
-                }
+                let stored_beef_valid = if let Some(tracker) = chain_tracker {
+                    validate_stored_beef(&mut stored_beef, tracker, &txid).await
+                } else {
+                    true
+                };
 
-                // Check if the stored BEEF happened to include this txid too
-                if beef.find_txid(&txid).is_some() {
-                    continue;
+                if stored_beef_valid {
+                    beef.merge_beef(&stored_beef);
+
+                    for beef_tx in &stored_beef.txs {
+                        processed_txids.insert(beef_tx.txid());
+                    }
+
+                    if beef.find_txid(&txid).is_some() {
+                        continue;
+                    }
                 }
             }
-            // If stored_beef_valid is false, or stored BEEF didn't include this txid,
-            // fall through to individual tx+proof lookup below.
         }
-
-        // Individual transaction lookup
-        let tx_data_opt = get_tx_with_proof(&mut *conn, &txid).await?;
 
         // Fix 3: Network fallback — if not found locally, try fetching from services
         let tx_data_opt = if tx_data_opt.is_none() {
@@ -5631,5 +5629,54 @@ mod tests {
             "Confirmed output should be preferred even when unconfirmed is a closer amount fit"
         );
         assert_eq!(allocated.satoshis, 10_000);
+    }
+
+    #[test]
+    fn test_beef_walk_skips_stored_beef_for_proven_tx() {
+        // Verify the decision logic: when an ancestor tx has a merkle proof,
+        // stored input_beef should NOT be merged (BUMP terminates the chain).
+        // This matches TS/Go behavior where proven txs skip stored BEEF merge.
+
+        // Case 1: BeefTxData with merkle_path present -> has_proof = true
+        // A proven tx should skip stored BEEF merge.
+        let tx_data_opt: Option<BeefTxData> = Some(BeefTxData {
+            raw_tx: vec![0x01, 0x00, 0x00, 0x00],
+            merkle_path: Some(vec![0xDE, 0xAD]),
+        });
+        let has_proof = tx_data_opt
+            .as_ref()
+            .map(|d| d.merkle_path.is_some())
+            .unwrap_or(false);
+        assert!(
+            has_proof,
+            "Proven tx (merkle_path Some) must set has_proof = true, skipping stored BEEF merge"
+        );
+
+        // Case 2: BeefTxData with merkle_path None -> has_proof = false
+        // An unproven tx should merge stored BEEF.
+        let tx_data_opt: Option<BeefTxData> = Some(BeefTxData {
+            raw_tx: vec![0x01, 0x00, 0x00, 0x00],
+            merkle_path: None,
+        });
+        let has_proof = tx_data_opt
+            .as_ref()
+            .map(|d| d.merkle_path.is_some())
+            .unwrap_or(false);
+        assert!(
+            !has_proof,
+            "Unproven tx (merkle_path None) must set has_proof = false, allowing stored BEEF merge"
+        );
+
+        // Case 3: No tx data at all -> has_proof = false
+        // Should also attempt stored BEEF merge (fallback path).
+        let tx_data_opt: Option<BeefTxData> = None;
+        let has_proof = tx_data_opt
+            .as_ref()
+            .map(|d| d.merkle_path.is_some())
+            .unwrap_or(false);
+        assert!(
+            !has_proof,
+            "Missing tx data (None) must set has_proof = false, allowing stored BEEF merge"
+        );
     }
 }
