@@ -5,7 +5,9 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
+use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
+use std::str::FromStr;
 use std::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -37,7 +39,13 @@ impl SqliteStorage {
     /// * `database_url` - SQLite database URL (e.g., "sqlite:chaintracks.db" or "sqlite::memory:")
     /// * `chain` - The blockchain network to track
     pub async fn new(database_url: &str, chain: Chain) -> Result<Self> {
-        let pool = SqlitePool::connect(database_url).await?;
+        let options = SqliteConnectOptions::from_str(database_url)
+            .map_err(|e| crate::Error::DatabaseError(e.to_string()))?
+            .pragma("journal_mode", "WAL")
+            .pragma("busy_timeout", "5000")
+            .pragma("synchronous", "NORMAL")
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await?;
 
         Ok(Self {
             pool,
@@ -55,7 +63,13 @@ impl SqliteStorage {
         live_height_threshold: u32,
         reorg_height_threshold: u32,
     ) -> Result<Self> {
-        let pool = SqlitePool::connect(database_url).await?;
+        let options = SqliteConnectOptions::from_str(database_url)
+            .map_err(|e| crate::Error::DatabaseError(e.to_string()))?
+            .pragma("journal_mode", "WAL")
+            .pragma("busy_timeout", "5000")
+            .pragma("synchronous", "NORMAL")
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await?;
 
         Ok(Self {
             pool,
