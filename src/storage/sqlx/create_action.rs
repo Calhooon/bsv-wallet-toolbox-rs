@@ -1585,9 +1585,9 @@ async fn allocate_change_input(
           AND t.status IN ('completed', 'unproven')
           {}
         ORDER BY
+            CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
             CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
             LENGTH(COALESCE(t.input_beef, X'')) ASC,
-            CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
             ABS(o.satoshis - ?) ASC
         LIMIT 1
         "#,
@@ -5629,6 +5629,59 @@ mod tests {
             "Confirmed output should be preferred even when unconfirmed is a closer amount fit"
         );
         assert_eq!(allocated.satoshis, 10_000);
+    }
+
+    /// When proven outputs exist but are too small to cover the target,
+    /// coin selection MUST fall back to unproven outputs instead of failing.
+    /// This was the bug: 300 sat proven output selected over 8.9M unproven → "Insufficient funds".
+    #[tokio::test]
+    async fn test_fallback_to_unproven_when_proven_insufficient() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user.user_id)
+            .await
+            .unwrap();
+
+        // Insert a tiny confirmed output (300 sats) — proven but too small
+        let (_confirmed_tx_id, _confirmed_out_id) =
+            seed_tagged_change_output(&storage, user.user_id, 300, "completed", "tiny01").await;
+
+        // Insert a large unconfirmed output (9_000_000 sats) — unproven but big enough
+        let (_unconfirmed_tx_id, unconfirmed_out_id) =
+            seed_tagged_change_output(&storage, user.user_id, 9_000_000, "unproven", "big01").await;
+
+        let spending_tx_id = create_spending_tx(&storage, user.user_id, "spend1").await;
+        let mut conn = storage.pool().acquire().await.unwrap();
+
+        // Target: 270_000 sats (typical x402 upfront payment)
+        let allocated = allocate_change_input(
+            &mut conn,
+            user.user_id,
+            basket.basket_id,
+            spending_tx_id,
+            270_000,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            allocated.is_some(),
+            "Must allocate even when proven output is too small — should fall back to unproven"
+        );
+        let allocated = allocated.unwrap();
+        assert_eq!(
+            allocated.output_id, unconfirmed_out_id,
+            "Should select the large unproven output, not the tiny proven one"
+        );
+        assert_eq!(allocated.satoshis, 9_000_000);
     }
 
     #[test]

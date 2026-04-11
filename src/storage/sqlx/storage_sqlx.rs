@@ -4060,10 +4060,7 @@ impl MonitorStorage for StorageSqlx {
             let deleted = result.rows_affected() as u32;
             count += deleted;
             if deleted > 0 {
-                log.push_str(&format!(
-                    "Deleted {} completed proven_tx_reqs\n",
-                    deleted
-                ));
+                log.push_str(&format!("Deleted {} completed proven_tx_reqs\n", deleted));
             }
 
             // Also clear raw_tx and input_beef on old completed transactions
@@ -6455,10 +6452,7 @@ mod tests {
         let deleted = 5u32;
         let cleaned = 3u32;
         if deleted > 0 {
-            log.push_str(&format!(
-                "Deleted {} completed proven_tx_reqs\n",
-                deleted
-            ));
+            log.push_str(&format!("Deleted {} completed proven_tx_reqs\n", deleted));
         }
         if cleaned > 0 {
             log.push_str(&format!(
