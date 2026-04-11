@@ -910,10 +910,17 @@ pub async fn process_action_internal(
                 // BUG-003 FIX: For immediate broadcast, don't set status to 'unproven' here.
                 // The wallet layer will call update_transaction_status_after_broadcast()
                 // AFTER the broadcast succeeds or fails. Until then, keep status as 'sending'.
+                //
+                // BUG-004 FIX: Use 'unsent' instead of 'unprocessed' so that
+                // send_waiting_transactions() can retry if the immediate broadcast
+                // fails and update_transaction_status_after_broadcast() never runs.
+                // With 'unprocessed', the proven_tx_req was invisible to the retry
+                // loop, leaving inputs permanently locked on broadcast failure.
+                // Matches Go reference: proven_tx_reqs start as 'unsent'.
                 update_proven_tx_req_status(
                     &mut tx,
                     req_id,
-                    proven_tx_req_status::UNPROCESSED,
+                    proven_tx_req_status::UNSENT,
                     batch.as_deref(),
                 )
                 .await?;
@@ -2376,8 +2383,9 @@ mod tests {
                 .await
                 .unwrap();
             let status: String = row.get("status");
-            // After broadcast phase, immediate should be 'unprocessed' (awaiting broadcast)
-            assert_eq!(status, "unprocessed");
+            // BUG-004 FIX: immediate mode now uses 'unsent' instead of 'unprocessed'
+            // so send_waiting_transactions() can retry on broadcast failure.
+            assert_eq!(status, "unsent");
         }
     }
 
@@ -2389,7 +2397,7 @@ mod tests {
     /// Returns (storage, txid, transaction_id) where:
     /// - The seed (input) output has spendable=0, spent_by=transaction_id
     /// - The transaction's own output has spendable=1 (immediate mode)
-    /// - proven_tx_req exists with status 'unprocessed'
+    /// - proven_tx_req exists with status 'unsent' (BUG-004: was 'unprocessed')
     async fn setup_processed_transaction() -> (StorageSqlx, String, i64) {
         let (storage, user_id, reference) = setup_storage_with_action().await;
         let locking_script =
