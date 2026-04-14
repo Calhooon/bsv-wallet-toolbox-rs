@@ -278,22 +278,64 @@ impl Arc {
                         notes: vec![make_note(&self.name, "postRawTxOrphanMempool")],
                     })
                 } else {
-                    Ok(PostTxResultForTxid {
-                        txid: data.txid,
-                        status: "success".to_string(),
-                        double_spend: false,
-                        orphan_mempool: false,
-                        competing_txs: None,
-                        data: Some(format!(
-                            "{} {}",
-                            data.tx_status,
-                            data.extra_info.unwrap_or_default()
-                        )),
-                        service_error: false,
-                        block_hash: None,
-                        block_height: None,
-                        notes: vec![make_note(&self.name, "postRawTxSuccess")],
-                    })
+                    // BUG-005: treat ANNOUNCED_TO_NETWORK / RECEIVED / QUEUED
+                    // as "soft pass" — ARC has accepted the tx into its own
+                    // input queue but has NOT yet confirmed propagation to
+                    // the wider BSV network. When a provider's ARC is in a
+                    // degraded state (seen on GorillaPool 2026-04-14), it
+                    // can accept POSTs and return ANNOUNCED_TO_NETWORK
+                    // indefinitely without ever federating to miners. Under
+                    // `UntilSuccess` mode the post_beef loop would break on
+                    // a generic "success" here and never try the remaining
+                    // providers, silently trapping txs in one ARC's mempool.
+                    //
+                    // Fix: only classify SEEN_ON_NETWORK / STORED / MINED as
+                    // true success. Everything else (ANNOUNCED, RECEIVED,
+                    // REQUESTED_BY_NETWORK, SENT_TO_NETWORK, etc.) is
+                    // returned as a transient service_error so the provider
+                    // loop keeps trying and we end up broadcast across ALL
+                    // reachable ARC providers instead of just the first to
+                    // accept.
+                    let is_confirmed = matches!(
+                        data.tx_status.as_str(),
+                        "SEEN_ON_NETWORK" | "STORED" | "MINED"
+                    );
+                    if is_confirmed {
+                        Ok(PostTxResultForTxid {
+                            txid: data.txid,
+                            status: "success".to_string(),
+                            double_spend: false,
+                            orphan_mempool: false,
+                            competing_txs: None,
+                            data: Some(format!(
+                                "{} {}",
+                                data.tx_status,
+                                data.extra_info.unwrap_or_default()
+                            )),
+                            service_error: false,
+                            block_hash: None,
+                            block_height: None,
+                            notes: vec![make_note(&self.name, "postRawTxSuccess")],
+                        })
+                    } else {
+                        Ok(PostTxResultForTxid {
+                            txid: data.txid,
+                            status: "error".to_string(),
+                            double_spend: false,
+                            orphan_mempool: false,
+                            competing_txs: None,
+                            data: Some(format!(
+                                "ARC soft-pass ({}) — not confirmed on network, \
+                                 keep trying other providers ({})",
+                                data.tx_status,
+                                data.extra_info.unwrap_or_default()
+                            )),
+                            service_error: true,
+                            block_hash: None,
+                            block_height: None,
+                            notes: vec![make_note(&self.name, "postRawTxSoftPass")],
+                        })
+                    }
                 }
             }
             Ok(resp) => {

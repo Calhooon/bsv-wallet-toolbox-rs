@@ -392,14 +392,22 @@ async fn test_post_beef_double_spend_still_error() {
 }
 
 // =============================================================================
-// Test 6: Various ARC success statuses are all treated as success
+// Test 6: Only network-propagated ARC statuses are treated as success
 // =============================================================================
 
 #[tokio::test]
 async fn test_post_beef_various_success_statuses() {
-    // ARC can return several "success" statuses. Verify they all map to success.
-    // Note: SEEN_IN_ORPHAN_MEMPOOL is now treated as error (matching TS/Go).
-    let success_statuses = ["SEEN_ON_NETWORK", "STORED", "MINED", "ANNOUNCED_TO_NETWORK"];
+    // BUG-005: ARC providers can return "accepted-into-queue" statuses like
+    // ANNOUNCED_TO_NETWORK or RECEIVED which do NOT prove network propagation.
+    // Under PostBeefMode::UntilSuccess, classifying those as success caused
+    // the provider loop to break on the first ARC to accept the POST, even
+    // if that ARC silently failed to federate (observed with GorillaPool
+    // 2026-04-14). Fix: only SEEN_ON_NETWORK / STORED / MINED are real
+    // success. ANNOUNCED_TO_NETWORK now returns status="error" +
+    // service_error=true so the loop tries the next provider.
+    //
+    // Note: SEEN_IN_ORPHAN_MEMPOOL is also treated as error (matching TS/Go).
+    let success_statuses = ["SEEN_ON_NETWORK", "STORED", "MINED"];
 
     for status in success_statuses {
         let (beef_bytes, child_txid, _parent_txid) = build_parent_child_beef();
@@ -433,6 +441,68 @@ async fn test_post_beef_various_success_statuses() {
         assert!(
             !result.txid_results[0].double_spend,
             "Status '{}' should not be double spend",
+            status
+        );
+
+        mock.assert_async().await;
+    }
+}
+
+// =============================================================================
+// Test 6b: Soft-pass statuses are returned as service_error (BUG-005)
+// =============================================================================
+
+#[tokio::test]
+async fn test_post_beef_soft_pass_statuses_are_service_error() {
+    // BUG-005: these are "ARC accepted the POST but the tx isn't yet on the
+    // network" statuses. They must return service_error=true so the
+    // PostBeefMode::UntilSuccess loop keeps trying the remaining providers
+    // instead of terminating on a false success.
+    let soft_pass_statuses = [
+        "ANNOUNCED_TO_NETWORK",
+        "RECEIVED",
+        "REQUESTED_BY_NETWORK",
+        "SENT_TO_NETWORK",
+        "QUEUED",
+    ];
+
+    for status in soft_pass_statuses {
+        let (beef_bytes, child_txid, _parent_txid) = build_parent_child_beef();
+
+        let mut server = mockito::Server::new_async().await;
+
+        let mock = server
+            .mock("POST", "/v1/tx")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"txid": "{}", "txStatus": "{}", "extraInfo": ""}}"#,
+                child_txid, status
+            ))
+            .create_async()
+            .await;
+
+        let arc =
+            ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+
+        let result = arc
+            .post_beef(&beef_bytes, std::slice::from_ref(&child_txid))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.status, "error",
+            "Soft-pass status '{}' should be classified as error (not success)",
+            status
+        );
+        assert!(
+            result.txid_results[0].service_error,
+            "Soft-pass status '{}' should set service_error=true so UntilSuccess keeps trying",
+            status
+        );
+        assert!(
+            !result.txid_results[0].double_spend,
+            "Soft-pass status '{}' should not be double_spend",
             status
         );
 
