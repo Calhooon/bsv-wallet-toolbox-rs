@@ -354,12 +354,21 @@ impl Services {
         );
         raw_tx_services.add("Bitails", StdArc::clone(&bitails) as RawTxProvider);
 
-        // postBeef: GorillaPool (if available), TAAL, Bitails, WoC
+        // postBeef: TAAL → GorillaPool → Bitails → WoC
+        //
+        // TAAL is placed first intentionally. In production we observed
+        // GorillaPool ARC accepting POSTs with `txStatus: ANNOUNCED_TO_NETWORK`
+        // and returning HTTP 200 while the tx never actually propagated to
+        // other ARC nodes / miners. Because PostBeefMode::UntilSuccess stops
+        // on the first provider that returns success, putting GorillaPool
+        // first caused ~185 stuck txs in one wallet over a few hours. TAAL
+        // ARC accepts and actually federates, so we try it first and fall
+        // back to GorillaPool (still useful when TAAL is degraded).
         let mut post_beef_services = ServiceCollection::new("postBeef");
+        post_beef_services.add("TaalArcBeef", StdArc::clone(&arc_taal) as PostBeefProvider);
         if let Some(ref gp) = arc_gorillapool {
             post_beef_services.add("GorillaPoolArcBeef", StdArc::clone(gp) as PostBeefProvider);
         }
-        post_beef_services.add("TaalArcBeef", StdArc::clone(&arc_taal) as PostBeefProvider);
         post_beef_services.add("Bitails", StdArc::clone(&bitails) as PostBeefProvider);
         post_beef_services.add(
             "WhatsOnChain",
