@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -685,6 +686,46 @@ pub trait WalletStorageSync: WalletStorageWriter {
         args: RequestSyncChunkArgs,
         chunk: SyncChunk,
     ) -> Result<ProcessSyncChunkResult>;
+
+    /// Like [`process_sync_chunk`](Self::process_sync_chunk) but threads a
+    /// persistent per-entity foreign→local id map across chunks, so child→parent
+    /// references (output→transaction, output→basket, tx-label-maps, …) resolve
+    /// even when parent and child land in different sync chunks.
+    ///
+    /// The default impl ignores the map and falls back to the per-chunk
+    /// `process_sync_chunk` — correct for single-chunk syncs and for stores that
+    /// don't apply locally (e.g. a client that forwards the chunk to a server
+    /// that does its own mapping). Stores that apply chunks locally (e.g.
+    /// `StorageSqlx`) override this to use the threaded map.
+    async fn process_sync_chunk_mapped(
+        &self,
+        args: RequestSyncChunkArgs,
+        chunk: SyncChunk,
+        _sync_map: &mut SyncMap,
+    ) -> Result<ProcessSyncChunkResult> {
+        self.process_sync_chunk(args, chunk).await
+    }
+}
+
+/// Persistent foreign→local id translation maps threaded across sync chunks.
+/// Each map keys a source store's row id to the destination's local row id for
+/// one entity type. Threading them across chunks (rather than rebuilding per
+/// chunk) is what lets a child row resolve a parent that arrived in an earlier
+/// chunk.
+#[derive(Debug, Default, Clone)]
+pub struct SyncMap {
+    /// outputBasket: foreign basket_id → local basket_id.
+    pub basket: HashMap<i64, i64>,
+    /// txLabel: foreign label_id → local label_id.
+    pub label: HashMap<i64, i64>,
+    /// outputTag: foreign tag_id → local tag_id.
+    pub tag: HashMap<i64, i64>,
+    /// transaction: foreign transaction_id → local transaction_id.
+    pub transaction: HashMap<i64, i64>,
+    /// output: foreign output_id → local output_id.
+    pub output: HashMap<i64, i64>,
+    /// certificate: foreign certificate_id → local certificate_id.
+    pub certificate: HashMap<i64, i64>,
 }
 
 // =============================================================================

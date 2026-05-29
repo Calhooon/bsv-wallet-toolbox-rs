@@ -394,6 +394,7 @@ pub async fn process_sync_chunk_internal(
     storage: &StorageSqlx,
     args: RequestSyncChunkArgs,
     chunk: SyncChunk,
+    sync_map: &mut crate::storage::SyncMap,
 ) -> Result<ProcessSyncChunkResult> {
     let mut result = ProcessSyncChunkResult {
         done: false,
@@ -425,13 +426,15 @@ pub async fn process_sync_chunk_internal(
         .find_or_insert_sync_state(&auth, &args.from_storage_identity_key, "sync")
         .await?;
 
-    // Track ID mappings from source to destination
-    let mut basket_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut label_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut tag_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut transaction_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut output_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut certificate_id_map: HashMap<i64, i64> = HashMap::new();
+    // Track ID mappings from source to destination. Threaded across chunks via
+    // `sync_map` (disjoint field borrows) so a child row resolves a parent that
+    // arrived in an earlier chunk.
+    let basket_id_map = &mut sync_map.basket;
+    let label_id_map = &mut sync_map.label;
+    let tag_id_map = &mut sync_map.tag;
+    let transaction_id_map = &mut sync_map.transaction;
+    let output_id_map = &mut sync_map.output;
+    let certificate_id_map = &mut sync_map.certificate;
 
     // Check if chunk is empty (sync complete)
     let chunk_is_empty = chunk.output_baskets.as_ref().is_none_or(|v| v.is_empty())
@@ -2393,7 +2396,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk)
+        let result = process_sync_chunk_internal(&storage, args, chunk, &mut Default::default())
             .await
             .unwrap();
 
@@ -2440,7 +2443,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk)
+        let result = process_sync_chunk_internal(&storage, args, chunk, &mut Default::default())
             .await
             .unwrap();
 
@@ -2491,7 +2494,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result1 = process_sync_chunk_internal(&storage, args.clone(), chunk1)
+        let result1 = process_sync_chunk_internal(&storage, args.clone(), chunk1, &mut Default::default())
             .await
             .unwrap();
         assert_eq!(result1.inserts, 1); // basket only (user already exists)
@@ -2513,7 +2516,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result2 = process_sync_chunk_internal(&storage, args, chunk2)
+        let result2 = process_sync_chunk_internal(&storage, args, chunk2, &mut Default::default())
             .await
             .unwrap();
         assert_eq!(result2.inserts, 0);
@@ -2594,7 +2597,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk)
+        let result = process_sync_chunk_internal(&storage, args, chunk, &mut Default::default())
             .await
             .unwrap();
 
@@ -2681,7 +2684,7 @@ mod tests {
             offsets: vec![],
         };
 
-        let result = process_sync_chunk_internal(&dest, process_args, chunk)
+        let result = process_sync_chunk_internal(&dest, process_args, chunk, &mut Default::default())
             .await
             .unwrap();
 

@@ -44,7 +44,7 @@ use crate::storage::{
     FindTransactionsArgs, MonitorStorage, ProcessSyncChunkResult, PurgeParams, PurgeResults,
     RequestSyncChunkArgs, ReviewStatusResult, StorageCreateActionResult,
     StorageInternalizeActionResult, StorageProcessActionArgs, StorageProcessActionResults,
-    SyncChunk, TrxToken, TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider,
+    SyncChunk, SyncMap, SyncOffset, TrxToken, TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider,
     WalletStorageReader, WalletStorageSync, WalletStorageWriter,
 };
 
@@ -156,6 +156,92 @@ pub struct WalletStorageManager {
     /// Lock queue for storage provider operations.
     #[allow(dead_code)]
     provider_locks: LockQueue,
+}
+
+const ENTITY_NAMES: [&str; 12] = [
+    "outputBasket",
+    "provenTx",
+    "provenTxReq",
+    "txLabel",
+    "outputTag",
+    "transaction",
+    "output",
+    "txLabelMap",
+    "outputTagMap",
+    "certificate",
+    "certificateField",
+    "commission",
+];
+
+fn entity_row_count(chunk: &SyncChunk, entity: &str) -> u32 {
+    let len = |n: usize| n as u32;
+    match entity {
+        "outputBasket" => chunk.output_baskets.as_ref().map(|v| len(v.len())),
+        "provenTx" => chunk.proven_txs.as_ref().map(|v| len(v.len())),
+        "provenTxReq" => chunk.proven_tx_reqs.as_ref().map(|v| len(v.len())),
+        "txLabel" => chunk.tx_labels.as_ref().map(|v| len(v.len())),
+        "outputTag" => chunk.output_tags.as_ref().map(|v| len(v.len())),
+        "transaction" => chunk.transactions.as_ref().map(|v| len(v.len())),
+        "output" => chunk.outputs.as_ref().map(|v| len(v.len())),
+        "txLabelMap" => chunk.tx_label_maps.as_ref().map(|v| len(v.len())),
+        "outputTagMap" => chunk.output_tag_maps.as_ref().map(|v| len(v.len())),
+        "certificate" => chunk.certificates.as_ref().map(|v| len(v.len())),
+        "certificateField" => chunk.certificate_fields.as_ref().map(|v| len(v.len())),
+        "commission" => chunk.commissions.as_ref().map(|v| len(v.len())),
+        _ => None,
+    }
+    .unwrap_or(0)
+}
+
+async fn drain_sync_chunks(
+    reader: Arc<dyn MonitorStorage>,
+    writer: Arc<dyn MonitorStorage>,
+    identity_key: &str,
+) -> Result<(u32, u32)> {
+    let reader_settings = reader.make_available().await?;
+    let writer_settings = writer.make_available().await?;
+
+    let mut offsets: Vec<SyncOffset> = ENTITY_NAMES
+        .iter()
+        .map(|name| SyncOffset {
+            name: (*name).to_string(),
+            offset: 0,
+        })
+        .collect();
+
+    let mut inserts = 0u32;
+    let mut updates = 0u32;
+    let mut sync_map = SyncMap::default();
+
+    loop {
+        let args = RequestSyncChunkArgs {
+            from_storage_identity_key: reader_settings.storage_identity_key.clone(),
+            to_storage_identity_key: writer_settings.storage_identity_key.clone(),
+            identity_key: identity_key.to_string(),
+            since: None,
+            max_rough_size: 100_000,
+            max_items: 1000,
+            offsets: offsets.clone(),
+        };
+
+        let chunk = reader.get_sync_chunk(args.clone()).await?;
+
+        for off in offsets.iter_mut() {
+            off.offset += entity_row_count(&chunk, &off.name);
+        }
+
+        let result = writer
+            .process_sync_chunk_mapped(args, chunk, &mut sync_map)
+            .await?;
+        inserts += result.inserts;
+        updates += result.updates;
+
+        if result.done {
+            break;
+        }
+    }
+
+    Ok((inserts, updates))
 }
 
 impl WalletStorageManager {
@@ -638,6 +724,7 @@ impl WalletStorageManager {
             .collect()
     }
 
+
     /// Synchronizes from a reader storage to the active storage.
     pub async fn sync_from_reader(
         &self,
@@ -650,8 +737,6 @@ impl WalletStorageManager {
         }
 
         let reader_settings = reader.make_available().await?;
-        let mut inserts = 0u32;
-        let mut updates = 0u32;
         let mut log = String::new();
 
         self.run_as_sync(|active| async move {
@@ -661,33 +746,7 @@ impl WalletStorageManager {
                 reader_settings.storage_name, writer_settings.storage_name
             ));
 
-            let mut chunk_num = 0;
-            loop {
-                let args = RequestSyncChunkArgs {
-                    from_storage_identity_key: reader_settings.storage_identity_key.clone(),
-                    to_storage_identity_key: writer_settings.storage_identity_key.clone(),
-                    identity_key: identity_key.to_string(),
-                    since: None,
-                    max_rough_size: 100_000,
-                    max_items: 1000,
-                    offsets: vec![],
-                };
-
-                let chunk = reader.get_sync_chunk(args.clone()).await?;
-                let result = active.process_sync_chunk(args, chunk).await?;
-
-                inserts += result.inserts;
-                updates += result.updates;
-                log.push_str(&format!(
-                    "chunk {} inserted {} updated {}\n",
-                    chunk_num, result.inserts, result.updates
-                ));
-
-                if result.done {
-                    break;
-                }
-                chunk_num += 1;
-            }
+            let (inserts, updates) = drain_sync_chunks(reader.clone(), active, identity_key).await?;
 
             log.push_str(&format!(
                 "syncFromReader complete: {} inserts, {} updates\n",
@@ -735,8 +794,6 @@ impl WalletStorageManager {
         writer: Arc<dyn MonitorStorage>,
     ) -> Result<SyncResult> {
         let writer_settings = writer.make_available().await?;
-        let mut inserts = 0u32;
-        let mut updates = 0u32;
         let mut log = String::new();
 
         self.run_as_sync(|active| async move {
@@ -746,33 +803,7 @@ impl WalletStorageManager {
                 reader_settings.storage_name, writer_settings.storage_name
             ));
 
-            let mut chunk_num = 0;
-            loop {
-                let args = RequestSyncChunkArgs {
-                    from_storage_identity_key: reader_settings.storage_identity_key.clone(),
-                    to_storage_identity_key: writer_settings.storage_identity_key.clone(),
-                    identity_key: identity_key.to_string(),
-                    since: None,
-                    max_rough_size: 100_000,
-                    max_items: 1000,
-                    offsets: vec![],
-                };
-
-                let chunk = active.get_sync_chunk(args.clone()).await?;
-                let result = writer.process_sync_chunk(args, chunk).await?;
-
-                inserts += result.inserts;
-                updates += result.updates;
-                log.push_str(&format!(
-                    "chunk {} inserted {} updated {}\n",
-                    chunk_num, result.inserts, result.updates
-                ));
-
-                if result.done {
-                    break;
-                }
-                chunk_num += 1;
-            }
+            let (inserts, updates) = drain_sync_chunks(active, writer.clone(), identity_key).await?;
 
             log.push_str(&format!(
                 "syncToWriter complete: {} inserts, {} updates\n",
