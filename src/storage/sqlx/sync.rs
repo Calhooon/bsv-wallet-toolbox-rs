@@ -783,7 +783,7 @@ async fn fetch_proven_tx_reqs_for_sync(
     let mut sql = String::from(
         r#"
         SELECT proven_tx_req_id, proven_tx_id, txid, status, attempts, history, notified,
-               raw_tx, input_beef, created_at, updated_at
+               notify, batch, raw_tx, input_beef, created_at, updated_at
         FROM proven_tx_reqs
         WHERE 1=1
         "#,
@@ -1515,11 +1515,17 @@ async fn upsert_proven_tx_req(
             is_new: false,
         })
     } else {
-        // Insert new
+        // Insert new. raw_tx is BLOB NOT NULL (no default) — it MUST be in the
+        // INSERT or applying a pulled chunk carrying a proven_tx_req fails the
+        // NOT NULL constraint (sqlite rc=19), aborting the sync. Also carry
+        // input_beef/notify/batch for re-broadcast fidelity (notify drives the
+        // monitor's notification state; batch groups multi-tx broadcasts in
+        // send_waiting). Coalesce a missing raw_tx to an empty blob (real reqs
+        // always carry it).
         let result = sqlx::query(
             r#"
-            INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, proven_tx_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, input_beef, proven_tx_id, batch, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&req.txid)
@@ -1527,7 +1533,11 @@ async fn upsert_proven_tx_req(
         .bind(req.attempts)
         .bind(&req.history)
         .bind(req.notified as i32)
+        .bind(&req.notify)
+        .bind(req.raw_tx.clone().unwrap_or_default())
+        .bind(&req.input_beef)
         .bind(req.proven_tx_id)
+        .bind(&req.batch)
         .bind(req.created_at)
         .bind(req.updated_at)
         .execute(storage.pool())

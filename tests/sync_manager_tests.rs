@@ -67,6 +67,31 @@ async fn default_basket_id(store: &StorageSqlx, user_id: i64) -> i64 {
     .unwrap()
 }
 
+async fn insert_proven_tx_req(
+    store: &StorageSqlx,
+    txid: &str,
+    raw_tx: &[u8],
+    notify: &str,
+    batch: Option<&str>,
+) -> i64 {
+    let now = Utc::now();
+    ::sqlx::query(
+        r#"INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify,
+                                       raw_tx, input_beef, batch, created_at, updated_at)
+           VALUES (?, 'pending', 0, '[]', 0, ?, ?, NULL, ?, ?, ?)"#,
+    )
+    .bind(txid)
+    .bind(notify)
+    .bind(raw_tx)
+    .bind(batch)
+    .bind(now)
+    .bind(now)
+    .execute(store.pool())
+    .await
+    .unwrap()
+    .last_insert_rowid()
+}
+
 #[tokio::test]
 async fn sync_to_writer_links_outputs_across_chunk_boundaries() {
     let identity = "a".repeat(66);
@@ -212,5 +237,82 @@ async fn sync_to_writer_links_baskets_across_chunk_boundaries() {
         orphaned, 0,
         "every output must link to an existing basket across chunks; \
          {orphaned} were orphaned (basket_id link dropped)"
+    );
+}
+
+/// Pre-fix:
+///   1) upsert_proven_tx_req's INSERT omitted raw_tx, which is BLOB NOT NULL —
+///      applying any pulled chunk carrying a proven_tx_req failed
+///      "NOT NULL constraint failed: proven_tx_reqs.raw_tx" (sqlite rc=19),
+///      aborting the whole sync. The headless sync test never hit it because
+///      the seeded reader had no proven_tx_req rows.
+///   2) fetch_proven_tx_reqs_for_sync's SELECT omitted notify/batch — even after
+///      the INSERT was fixed, those columns landed as defaults (notify="" /
+///      batch=None) on the writer. notify drives the monitor's notification
+///      state; batch groups multi-tx broadcasts in send_waiting. A pending
+///      multi-tx broadcast restored through L2 would therefore lose its
+///      grouping metadata.
+///
+/// This test seeds a proven_tx_req with a real raw_tx, a non-empty notify, and
+/// a non-NULL batch, syncs reader→writer, and asserts all three round-trip.
+/// Against either bug the assert fails (rc=19 panics the sync, or notify/batch
+/// come back wrong).
+#[tokio::test]
+async fn sync_to_writer_transfers_proven_tx_req_with_raw_tx_notify_and_batch() {
+    let identity = "c".repeat(66);
+
+    let reader_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
+    reader_store
+        .migrate("reader-proven-req", &"5".repeat(64))
+        .await
+        .unwrap();
+    reader_store.make_available().await.unwrap();
+
+    let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
+
+    let (_ruser, _) = reader_store
+        .find_or_insert_user(&identity)
+        .await
+        .unwrap();
+
+    let txid = "abcd".repeat(16);
+    let raw_tx: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00, 0x01];
+    let notify = "{\"subscribers\":[\"app://wallet\"]}";
+    let batch = "batch-multi-tx-1";
+
+    insert_proven_tx_req(&reader_store, &txid, &raw_tx, notify, Some(batch)).await;
+
+    let writer_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
+    writer_store
+        .migrate("writer-proven-req", &"6".repeat(64))
+        .await
+        .unwrap();
+    writer_store.make_available().await.unwrap();
+
+    let (_wuser, _) = writer_store
+        .find_or_insert_user(&identity)
+        .await
+        .unwrap();
+
+    // Pre-fix this panics with rc=19 on the proven_tx_req INSERT.
+    reader_mgr
+        .sync_to_writer(&identity, writer_store.clone())
+        .await
+        .unwrap();
+
+    let (got_raw_tx, got_notify, got_batch): (Vec<u8>, String, Option<String>) = ::sqlx::query_as(
+        r#"SELECT raw_tx, notify, batch FROM proven_tx_reqs WHERE txid = ?"#,
+    )
+    .bind(&txid)
+    .fetch_one(writer_store.pool())
+    .await
+    .unwrap();
+
+    assert_eq!(got_raw_tx, raw_tx, "raw_tx should round-trip reader→writer");
+    assert_eq!(got_notify, notify, "notify should round-trip reader→writer");
+    assert_eq!(
+        got_batch.as_deref(),
+        Some(batch),
+        "batch should round-trip reader→writer"
     );
 }
