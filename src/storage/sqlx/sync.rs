@@ -1490,12 +1490,21 @@ async fn upsert_proven_tx_req(
         let local_id: i64 = row.get("proven_tx_req_id");
         let local_updated: DateTime<Utc> = row.get("updated_at");
 
-        // Update if chunk is newer
+        // Update if chunk is newer. Mirror the INSERT column set: canonical
+        // process_action can mutate notify / raw_tx / input_beef / batch
+        // post-creation (attempts append, post-broadcast metadata, multi-tx
+        // batch regroup), so the UPDATE must refresh those alongside
+        // status/attempts/history/notified/proven_tx_id or a newer-wins
+        // replacement on an existing local row silently keeps the older
+        // mutable state. raw_tx is BLOB NOT NULL — coalesce to empty if
+        // the chunk's req carries None (real reqs always carry it).
         if req.updated_at > local_updated {
             sqlx::query(
                 r#"
                 UPDATE proven_tx_reqs
-                SET status = ?, attempts = ?, history = ?, notified = ?, proven_tx_id = ?, updated_at = ?
+                SET status = ?, attempts = ?, history = ?, notified = ?,
+                    notify = ?, raw_tx = ?, input_beef = ?, proven_tx_id = ?,
+                    batch = ?, updated_at = ?
                 WHERE proven_tx_req_id = ?
                 "#,
             )
@@ -1503,7 +1512,11 @@ async fn upsert_proven_tx_req(
             .bind(req.attempts)
             .bind(&req.history)
             .bind(req.notified as i32)
+            .bind(&req.notify)
+            .bind(req.raw_tx.clone().unwrap_or_default())
+            .bind(&req.input_beef)
             .bind(req.proven_tx_id)
+            .bind(&req.batch)
             .bind(req.updated_at)
             .bind(local_id)
             .execute(storage.pool())

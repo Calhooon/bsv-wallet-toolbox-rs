@@ -316,3 +316,174 @@ async fn sync_to_writer_transfers_proven_tx_req_with_raw_tx_notify_and_batch() {
         "batch should round-trip reader→writer"
     );
 }
+
+async fn insert_proven_tx_req_with_timestamps(
+    store: &StorageSqlx,
+    txid: &str,
+    status: &str,
+    attempts: i32,
+    history: &str,
+    notify: &str,
+    notified: bool,
+    raw_tx: &[u8],
+    input_beef: Option<&[u8]>,
+    batch: Option<&str>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+) {
+    ::sqlx::query(
+        r#"INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify,
+                                       raw_tx, input_beef, batch, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(txid)
+    .bind(status)
+    .bind(attempts)
+    .bind(history)
+    .bind(notified as i32)
+    .bind(notify)
+    .bind(raw_tx)
+    .bind(input_beef)
+    .bind(batch)
+    .bind(created_at)
+    .bind(updated_at)
+    .execute(store.pool())
+    .await
+    .unwrap();
+}
+
+/// Regression (2026-05-29, Codex review c815706c): the proven_tx_req
+/// UPDATE branch must refresh every mutable field on a newer-wins remote
+/// replacement, not just `status/attempts/history/notified/proven_tx_id`.
+/// Canonical `process_action` mutates `notify` / `raw_tx` / `input_beef` /
+/// `batch` post-creation (history append, post-broadcast metadata, multi-
+/// tx batch regrouping), so an existing local row that the chunk
+/// supersedes must absorb every newer mutable value. Pre-fix the UPDATE
+/// column list omitted `notify` / `raw_tx` / `input_beef` / `batch` and
+/// silently kept the older values.
+///
+/// Setup: seed BOTH reader + writer with the same txid, but writer has the
+/// OLDER row (smaller updated_at) carrying old mutable values. After
+/// sync_to_writer, writer's row must take reader's newer mutable fields.
+#[tokio::test]
+async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields() {
+    let identity = "d".repeat(66);
+
+    let reader_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
+    reader_store
+        .migrate("reader-ptr-upd", &"7".repeat(64))
+        .await
+        .unwrap();
+    reader_store.make_available().await.unwrap();
+
+    let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
+
+    let (_ruser, _) = reader_store
+        .find_or_insert_user(&identity)
+        .await
+        .unwrap();
+
+    let writer_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
+    writer_store
+        .migrate("writer-ptr-upd", &"8".repeat(64))
+        .await
+        .unwrap();
+    writer_store.make_available().await.unwrap();
+
+    let (_wuser, _) = writer_store
+        .find_or_insert_user(&identity)
+        .await
+        .unwrap();
+
+    let txid = "abcd".repeat(16);
+    let writer_old_ts = Utc::now();
+    let reader_new_ts = writer_old_ts + chrono::Duration::seconds(1);
+
+    // Writer seeded with the OLDER row carrying old mutable values.
+    insert_proven_tx_req_with_timestamps(
+        &writer_store,
+        &txid,
+        "unmined",
+        0,
+        r#"{"old":true}"#,
+        "", // empty notify
+        false,
+        &[0x01], // placeholder raw_tx
+        None,    // no input_beef
+        None,    // no batch
+        writer_old_ts,
+        writer_old_ts,
+    )
+    .await;
+
+    // Reader seeded with the NEWER row — advances every mutable field.
+    // 'completed' status maps cleanly to ProvenTxReqStatus::Completed and
+    // re-serializes to "completed" via the canonical Debug-lowercase path
+    // (both "unmined" and unrecognized strings normalize to Pending).
+    let new_raw_tx: Vec<u8> = vec![0xFE, 0xED, 0xFA, 0xCE];
+    let new_input_beef: Vec<u8> = vec![0xBE, 0xEF];
+    let new_notify = r#"{"subscribers":["app://wallet"]}"#;
+    let new_history = r#"[{"attempt":1,"err":"timeout"}]"#;
+    let new_batch = "batch-after-regroup";
+    insert_proven_tx_req_with_timestamps(
+        &reader_store,
+        &txid,
+        "completed",
+        1,
+        new_history,
+        new_notify,
+        true,
+        &new_raw_tx,
+        Some(&new_input_beef),
+        Some(new_batch),
+        writer_old_ts, // created_at preserved
+        reader_new_ts,
+    )
+    .await;
+
+    reader_mgr
+        .sync_to_writer(&identity, writer_store.clone())
+        .await
+        .unwrap();
+
+    let (status, attempts, history, notified, notify, raw_tx, input_beef, batch): (
+        String,
+        i64,
+        String,
+        i64,
+        String,
+        Vec<u8>,
+        Option<Vec<u8>>,
+        Option<String>,
+    ) = ::sqlx::query_as(
+        r#"SELECT status, attempts, history, notified, notify, raw_tx, input_beef, batch
+           FROM proven_tx_reqs WHERE txid = ?"#,
+    )
+    .bind(&txid)
+    .fetch_one(writer_store.pool())
+    .await
+    .unwrap();
+
+    assert_eq!(status, "completed", "status must take reader's newer value");
+    assert_eq!(attempts, 1, "attempts must take reader's newer value");
+    assert_eq!(history, new_history, "history must take reader's newer value");
+    assert_eq!(notified, 1, "notified must take reader's newer value");
+    assert_eq!(
+        notify, new_notify,
+        "notify must take reader's newer value (was dropped pre-fix on UPDATE)"
+    );
+    assert_eq!(
+        raw_tx, new_raw_tx,
+        "raw_tx must take reader's newer value (was dropped pre-fix on UPDATE)"
+    );
+    assert_eq!(
+        input_beef.as_deref(),
+        Some(new_input_beef.as_slice()),
+        "input_beef must take reader's newer value (was dropped pre-fix on UPDATE)"
+    );
+    assert_eq!(
+        batch.as_deref(),
+        Some(new_batch),
+        "batch must take reader's newer value (was dropped pre-fix on UPDATE)"
+    );
+}
