@@ -44,8 +44,8 @@ use crate::storage::{
     FindTransactionsArgs, MonitorStorage, ProcessSyncChunkResult, PurgeParams, PurgeResults,
     RequestSyncChunkArgs, ReviewStatusResult, StorageCreateActionResult,
     StorageInternalizeActionResult, StorageProcessActionArgs, StorageProcessActionResults,
-    SyncChunk, SyncMap, SyncOffset, TrxToken, TxSynchronizedStatus, WalletStorageInfo, WalletStorageProvider,
-    WalletStorageReader, WalletStorageSync, WalletStorageWriter,
+    SyncChunk, SyncMap, SyncOffset, TrxToken, TxSynchronizedStatus, WalletStorageInfo,
+    WalletStorageProvider, WalletStorageReader, WalletStorageSync, WalletStorageWriter,
 };
 
 /// A wrapper around a storage provider with cached state.
@@ -724,7 +724,6 @@ impl WalletStorageManager {
             .collect()
     }
 
-
     /// Synchronizes from a reader storage to the active storage.
     pub async fn sync_from_reader(
         &self,
@@ -746,7 +745,8 @@ impl WalletStorageManager {
                 reader_settings.storage_name, writer_settings.storage_name
             ));
 
-            let (inserts, updates) = drain_sync_chunks(reader.clone(), active, identity_key).await?;
+            let (inserts, updates) =
+                drain_sync_chunks(reader.clone(), active, identity_key).await?;
 
             log.push_str(&format!(
                 "syncFromReader complete: {} inserts, {} updates\n",
@@ -803,7 +803,8 @@ impl WalletStorageManager {
                 reader_settings.storage_name, writer_settings.storage_name
             ));
 
-            let (inserts, updates) = drain_sync_chunks(active, writer.clone(), identity_key).await?;
+            let (inserts, updates) =
+                drain_sync_chunks(active, writer.clone(), identity_key).await?;
 
             log.push_str(&format!(
                 "syncToWriter complete: {} inserts, {} updates\n",

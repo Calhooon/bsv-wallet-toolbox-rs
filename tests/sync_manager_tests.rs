@@ -105,10 +105,7 @@ async fn sync_to_writer_links_outputs_across_chunk_boundaries() {
 
     let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
 
-    let (ruser, _) = reader_store
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
+    let (ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
 
     // Seed >1000 entities (700 tx + 700 outputs) to force multi-chunk sync.
     const N: usize = 700;
@@ -126,14 +123,10 @@ async fn sync_to_writer_links_outputs_across_chunk_boundaries() {
         .unwrap();
     writer_store.make_available().await.unwrap();
 
-    let (wuser, _) = writer_store
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
+    let (wuser, _) = writer_store.find_or_insert_user(&identity).await.unwrap();
 
     for i in 0..7 {
-        insert_transaction(&writer_store, wuser.user_id, &format!("offset{:060x}", i))
-            .await;
+        insert_transaction(&writer_store, wuser.user_id, &format!("offset{:060x}", i)).await;
     }
 
     // Sync from reader manager to writer storage.
@@ -182,10 +175,7 @@ async fn sync_to_writer_links_baskets_across_chunk_boundaries() {
 
     let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
 
-    let (ruser, _) = reader_store
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
+    let (ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
     let rbasket = default_basket_id(&reader_store, ruser.user_id).await;
 
     const N: usize = 700;
@@ -202,10 +192,7 @@ async fn sync_to_writer_links_baskets_across_chunk_boundaries() {
         .unwrap();
     writer_store.make_available().await.unwrap();
 
-    let (wuser, _) = writer_store
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
+    let (wuser, _) = writer_store.find_or_insert_user(&identity).await.unwrap();
 
     reader_mgr
         .sync_to_writer(&identity, writer_store.clone())
@@ -270,10 +257,7 @@ async fn sync_to_writer_transfers_proven_tx_req_with_raw_tx_notify_and_batch() {
 
     let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
 
-    let (_ruser, _) = reader_store
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
+    let (_ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
 
     let txid = "abcd".repeat(16);
     let raw_tx: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00, 0x01];
@@ -289,10 +273,7 @@ async fn sync_to_writer_transfers_proven_tx_req_with_raw_tx_notify_and_batch() {
         .unwrap();
     writer_store.make_available().await.unwrap();
 
-    let (_wuser, _) = writer_store
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
+    let (_wuser, _) = writer_store.find_or_insert_user(&identity).await.unwrap();
 
     // Pre-fix this panics with rc=19 on the proven_tx_req INSERT.
     reader_mgr
@@ -300,13 +281,12 @@ async fn sync_to_writer_transfers_proven_tx_req_with_raw_tx_notify_and_batch() {
         .await
         .unwrap();
 
-    let (got_raw_tx, got_notify, got_batch): (Vec<u8>, String, Option<String>) = ::sqlx::query_as(
-        r#"SELECT raw_tx, notify, batch FROM proven_tx_reqs WHERE txid = ?"#,
-    )
-    .bind(&txid)
-    .fetch_one(writer_store.pool())
-    .await
-    .unwrap();
+    let (got_raw_tx, got_notify, got_batch): (Vec<u8>, String, Option<String>) =
+        ::sqlx::query_as(r#"SELECT raw_tx, notify, batch FROM proven_tx_reqs WHERE txid = ?"#)
+            .bind(&txid)
+            .fetch_one(writer_store.pool())
+            .await
+            .unwrap();
 
     assert_eq!(got_raw_tx, raw_tx, "raw_tx should round-trip reader→writer");
     assert_eq!(got_notify, notify, "notify should round-trip reader→writer");
@@ -317,6 +297,15 @@ async fn sync_to_writer_transfers_proven_tx_req_with_raw_tx_notify_and_batch() {
     );
 }
 
+// 12 args is intentional — this is a test seeder that needs to write the
+// full proven_tx_reqs row including both timestamps so the sync paginator
+// has well-defined `updated_at` for the assertions in
+// `proven_tx_req_round_trip_status_non_completed` (and the multi-chunk
+// FK-linking regression). Factoring into a builder struct would obscure
+// the 1:1 mapping from arg name to column, which is the point at the
+// SQL boundary. Matches the convention used elsewhere in the crate
+// (see `create_action.rs` / `wallet.rs`).
+#[allow(clippy::too_many_arguments)]
 async fn insert_proven_tx_req_with_timestamps(
     store: &StorageSqlx,
     txid: &str,
@@ -365,6 +354,16 @@ async fn insert_proven_tx_req_with_timestamps(
 /// Setup: seed BOTH reader + writer with the same txid, but writer has the
 /// OLDER row (smaller updated_at) carrying old mutable values. After
 /// sync_to_writer, writer's row must take reader's newer mutable fields.
+//
+// The complex tuple type at line ~432 reflects the canonical sqlx
+// query_as pattern for verifying multiple columns from a single SELECT
+// — it's a destructure of all 8 mutable fields under test, in the same
+// order as the SELECT projection. Extracting a type alias would
+// introduce a single-use name; `FromRow` on a struct would buy nothing
+// over the tuple (no other test path reads this projection). Allow the
+// lint locally so `cargo clippy -- -D warnings` stays green for Calhoon's
+// CI.
+#[allow(clippy::type_complexity)]
 #[tokio::test]
 async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields() {
     let identity = "d".repeat(66);
@@ -378,10 +377,7 @@ async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields()
 
     let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
 
-    let (_ruser, _) = reader_store
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
+    let (_ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
 
     let writer_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
     writer_store
@@ -390,10 +386,7 @@ async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields()
         .unwrap();
     writer_store.make_available().await.unwrap();
 
-    let (_wuser, _) = writer_store
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
+    let (_wuser, _) = writer_store.find_or_insert_user(&identity).await.unwrap();
 
     let txid = "abcd".repeat(16);
     let writer_old_ts = Utc::now();
@@ -466,7 +459,10 @@ async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields()
 
     assert_eq!(status, "completed", "status must take reader's newer value");
     assert_eq!(attempts, 1, "attempts must take reader's newer value");
-    assert_eq!(history, new_history, "history must take reader's newer value");
+    assert_eq!(
+        history, new_history,
+        "history must take reader's newer value"
+    );
     assert_eq!(notified, 1, "notified must take reader's newer value");
     assert_eq!(
         notify, new_notify,
@@ -485,5 +481,111 @@ async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields()
         batch.as_deref(),
         Some(new_batch),
         "batch must take reader's newer value (was dropped pre-fix on UPDATE)"
+    );
+}
+
+/// 2026-05-30 (Calhoon PR #2 review item 3): proven_tx_req status round-trip
+/// for a NON-`completed` status — pins the L2-sync status-truncation bug.
+///
+/// Pre-fix the reader (`fetch_proven_tx_reqs_for_sync`) mapped only 6 of the
+/// 17 canonical `ProvenTxReqStatus` variants — `sending`, `unmined`,
+/// `unsent`, `callback`, `unconfirmed`, `unfail`, `nosend`, `invalid`,
+/// `doubleSpend`, `nonfinal`, `unprocessed`, `unknown` ALL silently collapsed
+/// to `Pending`. The downstream effect: an L2-restored `sending` row would
+/// land on the writer as `pending`, completely undercutting `TaskSendWaiting`
+/// (which only picks up `unsent`/`sending`) and `TaskCheckForProofs` (which
+/// only handles `unmined`/`callback`/`unconfirmed`/`unfail`).
+///
+/// This regression seeds writer + reader with a `sending`-status row,
+/// drives `sync_to_writer`, and asserts the writer's row keeps the
+/// `sending` status — NOT `pending`. The existing
+/// `sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields`
+/// test uses `completed`, which round-tripped pre-fix, so it didn't catch
+/// the truncation.
+#[tokio::test]
+async fn sync_to_writer_round_trips_non_completed_proven_tx_req_status() {
+    let identity = "e".repeat(66);
+
+    let reader_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
+    reader_store
+        .migrate("reader-status", &"9".repeat(64))
+        .await
+        .unwrap();
+    reader_store.make_available().await.unwrap();
+
+    let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
+
+    let (_ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
+
+    let writer_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
+    writer_store
+        .migrate("writer-status", &"a".repeat(64))
+        .await
+        .unwrap();
+    writer_store.make_available().await.unwrap();
+
+    let (_wuser, _) = writer_store.find_or_insert_user(&identity).await.unwrap();
+
+    let txid = "bbcd".repeat(16);
+    let writer_old_ts = Utc::now();
+    let reader_new_ts = writer_old_ts + chrono::Duration::seconds(1);
+
+    // Writer seeded with the OLDER row in an arbitrary terminal state
+    // (`completed`) so the reader's NEWER `sending` row must replace it.
+    insert_proven_tx_req_with_timestamps(
+        &writer_store,
+        &txid,
+        "completed",
+        0,
+        r#"{"writer":"old"}"#,
+        "",
+        false,
+        &[0x01],
+        None,
+        None,
+        writer_old_ts,
+        writer_old_ts,
+    )
+    .await;
+
+    // Reader seeded with the NEWER row carrying `sending` status —
+    // exactly the variant that pre-fix collapsed to `pending` on read.
+    let new_raw_tx: Vec<u8> = vec![0xCA, 0xFE, 0xBA, 0xBE];
+    insert_proven_tx_req_with_timestamps(
+        &reader_store,
+        &txid,
+        "sending",
+        1,
+        r#"[{"attempt":1,"err":"transient"}]"#,
+        r#"{"subscribers":["app://wallet"]}"#,
+        false,
+        &new_raw_tx,
+        None,
+        None,
+        writer_old_ts,
+        reader_new_ts,
+    )
+    .await;
+
+    reader_mgr
+        .sync_to_writer(&identity, writer_store.clone())
+        .await
+        .unwrap();
+
+    let (status,): (String,) =
+        ::sqlx::query_as(r#"SELECT status FROM proven_tx_reqs WHERE txid = ?"#)
+            .bind(&txid)
+            .fetch_one(writer_store.pool())
+            .await
+            .unwrap();
+
+    // The fix at fetch_proven_tx_reqs_for_sync must map "sending" →
+    // ProvenTxReqStatus::Sending, and the upsert path must round-trip
+    // that back to the "sending" string on write. Pre-fix this would
+    // assert "pending" instead, which is the bug.
+    assert_eq!(
+        status, "sending",
+        "non-completed status must round-trip through L2 sync without \
+         being collapsed to 'pending' (PR #2 review item 3)"
     );
 }

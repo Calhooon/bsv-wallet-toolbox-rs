@@ -807,13 +807,55 @@ async fn fetch_proven_tx_reqs_for_sync(
         .iter()
         .map(|row| {
             let status_str: String = row.get("status");
+            // Map all 17 canonical ProvenTxReqStatus variants. The
+            // pre-PR mapping collapsed the 12 broadcast-lifecycle
+            // variants (sending / unmined / unsent / callback /
+            // unconfirmed / unfail / nosend / invalid / doubleSpend /
+            // nonfinal / unprocessed / unknown) into `Pending`, which
+            // silently broke `TaskSendWaiting` + `TaskCheckForProofs`
+            // when an L2-restored row landed in the wrong bucket
+            // (Calhoon PR #2 review item 3, 2026-05-30).
+            //
+            // Mirrors the write side at
+            // `storage_sqlx.rs::update_proven_tx_req_status` exactly,
+            // including the mixed-case forms ("inProgress",
+            // "notFound", "doubleSpend") emitted by serde-camelCase
+            // + the explicit serde renames to "nosend" / "nonfinal".
+            // Snake-case + ALL-lowercase aliases preserved for forward
+            // compat with any older writer that may have produced
+            // them.
             let status = match status_str.as_str() {
                 "pending" => ProvenTxReqStatus::Pending,
-                "inprogress" | "in_progress" => ProvenTxReqStatus::InProgress,
+                "inProgress" | "inprogress" | "in_progress" => ProvenTxReqStatus::InProgress,
                 "completed" => ProvenTxReqStatus::Completed,
                 "failed" => ProvenTxReqStatus::Failed,
-                "notfound" | "not_found" => ProvenTxReqStatus::NotFound,
-                _ => ProvenTxReqStatus::Pending,
+                "notFound" | "notfound" | "not_found" => ProvenTxReqStatus::NotFound,
+                "unsent" => ProvenTxReqStatus::Unsent,
+                "sending" => ProvenTxReqStatus::Sending,
+                "unmined" => ProvenTxReqStatus::Unmined,
+                "unknown" => ProvenTxReqStatus::Unknown,
+                "callback" => ProvenTxReqStatus::Callback,
+                "unconfirmed" => ProvenTxReqStatus::Unconfirmed,
+                "unfail" => ProvenTxReqStatus::Unfail,
+                "nosend" | "noSend" => ProvenTxReqStatus::NoSend,
+                "invalid" => ProvenTxReqStatus::Invalid,
+                "doubleSpend" | "doublespend" | "double_spend" => ProvenTxReqStatus::DoubleSpend,
+                "nonfinal" | "nonFinal" | "non_final" => ProvenTxReqStatus::NonFinal,
+                "unprocessed" => ProvenTxReqStatus::Unprocessed,
+                other => {
+                    // Unrecognised status — surface a warning instead
+                    // of silently collapsing to `Pending` (which
+                    // misroutes downstream Monitor tasks). The closest
+                    // canonical "no signal" state is `Unknown`; the
+                    // log line is the breadcrumb that lets us track
+                    // a writer drift if one ever lands.
+                    tracing::warn!(
+                        status = other,
+                        "fetch_proven_tx_reqs_for_sync: unrecognised \
+                         ProvenTxReqStatus, mapping to Unknown"
+                    );
+                    ProvenTxReqStatus::Unknown
+                }
             };
             let notified_val: i32 = row.get("notified");
 
@@ -2517,9 +2559,10 @@ mod tests {
             ..Default::default()
         };
 
-        let result1 = process_sync_chunk_internal(&storage, args.clone(), chunk1, &mut Default::default())
-            .await
-            .unwrap();
+        let result1 =
+            process_sync_chunk_internal(&storage, args.clone(), chunk1, &mut Default::default())
+                .await
+                .unwrap();
         assert_eq!(result1.inserts, 1); // basket only (user already exists)
 
         // Second sync - update basket with newer timestamp
@@ -2707,9 +2750,10 @@ mod tests {
             offsets: vec![],
         };
 
-        let result = process_sync_chunk_internal(&dest, process_args, chunk, &mut Default::default())
-            .await
-            .unwrap();
+        let result =
+            process_sync_chunk_internal(&dest, process_args, chunk, &mut Default::default())
+                .await
+                .unwrap();
 
         // Should have synced user + baskets (inserts + updates)
         let total_changes = result.inserts + result.updates;
