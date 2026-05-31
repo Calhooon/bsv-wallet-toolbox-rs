@@ -227,11 +227,11 @@ pub async fn internalize_action_internal(
                     net_satoshis += od.satoshis as i64;
                 }
             }
-            BASKET_INSERTION_PROTOCOL => {
-                if od.existing_basket_id == Some(change_basket_id) && od.existing_is_change {
-                    // Converting change to custom basket - reduces balance
-                    net_satoshis -= od.satoshis as i64;
-                }
+            BASKET_INSERTION_PROTOCOL
+                if od.existing_basket_id == Some(change_basket_id) && od.existing_is_change =>
+            {
+                // Converting change to custom basket - reduces balance
+                net_satoshis -= od.satoshis as i64;
             }
             _ => {}
         }

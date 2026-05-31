@@ -332,7 +332,7 @@ impl ChaintracksStorageQuery for MemoryStorage {
         let headers = lock_read(&self.headers)?;
         let mut result: Vec<_> = headers.values().cloned().collect();
         // Sort by height descending (newest first)
-        result.sort_by(|a, b| b.height.cmp(&a.height));
+        result.sort_by_key(|h| std::cmp::Reverse(h.height));
         Ok(result)
     }
 

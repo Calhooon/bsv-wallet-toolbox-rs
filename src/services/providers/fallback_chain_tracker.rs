@@ -320,7 +320,7 @@ mod tests {
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
         let result = tracker.is_valid_root_for_height(root, 800000).await;
 
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
     }
 
     // =========================================================================
@@ -339,7 +339,7 @@ mod tests {
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
         let result = tracker.is_valid_root_for_height("wrong_root", 800000).await;
 
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     // =========================================================================
@@ -358,7 +358,7 @@ mod tests {
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
         let result = tracker.is_valid_root_for_height(root, 943495).await;
 
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
     }
 
     // =========================================================================
@@ -376,7 +376,7 @@ mod tests {
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
         let result = tracker.is_valid_root_for_height("wrong_root", 943495).await;
 
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     // =========================================================================
@@ -395,7 +395,7 @@ mod tests {
         let result = tracker.is_valid_root_for_height("any_root", 943495).await;
 
         // Must be Ok(false), NOT Err — match TS lenient behavior
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     // =========================================================================
@@ -425,11 +425,11 @@ mod tests {
 
         // First call: hits ChainTracks, caches result
         let r1 = tracker.is_valid_root_for_height(root, 800000).await;
-        assert_eq!(r1.unwrap(), true);
+        assert!(r1.unwrap());
 
         // Second call: served from cache, no HTTP call
         let r2 = tracker.is_valid_root_for_height(root, 800000).await;
-        assert_eq!(r2.unwrap(), true);
+        assert!(r2.unwrap());
     }
 
     // =========================================================================
@@ -462,11 +462,11 @@ mod tests {
 
         // First call: CT fails, WoC succeeds, result cached
         let r1 = tracker.is_valid_root_for_height(root, 943495).await;
-        assert_eq!(r1.unwrap(), true);
+        assert!(r1.unwrap());
 
         // Second call: served from cache
         let r2 = tracker.is_valid_root_for_height(root, 943495).await;
-        assert_eq!(r2.unwrap(), true);
+        assert!(r2.unwrap());
     }
 
     // =========================================================================
@@ -486,7 +486,7 @@ mod tests {
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
         let result = tracker.is_valid_root_for_height(root, 943495).await;
 
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
     }
 
     // =========================================================================
@@ -505,7 +505,7 @@ mod tests {
         let result = tracker.is_valid_root_for_height("any_root", 943495).await;
 
         // Should be Ok(false), not Err
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     // =========================================================================
@@ -524,11 +524,11 @@ mod tests {
 
         // Cache the real root
         let r1 = tracker.is_valid_root_for_height(real_root, 800000).await;
-        assert_eq!(r1.unwrap(), true);
+        assert!(r1.unwrap());
 
         // Query with wrong root — cache returns false without hitting providers
         let r2 = tracker.is_valid_root_for_height("wrong_root", 800000).await;
-        assert_eq!(r2.unwrap(), false);
+        assert!(!r2.unwrap());
     }
 
     // =========================================================================
@@ -587,12 +587,12 @@ mod tests {
 
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
         let r1 = tracker.is_valid_root_for_height(root, 800000).await;
-        assert_eq!(r1.unwrap(), true);
+        assert!(r1.unwrap());
 
         // Second call with different case — cache hit, case-insensitive match
         let r2 = tracker
             .is_valid_root_for_height("abcdef123456", 800000)
             .await;
-        assert_eq!(r2.unwrap(), true);
+        assert!(r2.unwrap());
     }
 }
