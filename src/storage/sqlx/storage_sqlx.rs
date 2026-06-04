@@ -2537,7 +2537,22 @@ impl WalletStorageSync for StorageSqlx {
         args: RequestSyncChunkArgs,
         chunk: SyncChunk,
     ) -> Result<ProcessSyncChunkResult> {
-        super::sync::process_sync_chunk_internal(self, args, chunk).await
+        super::sync::process_sync_chunk_internal(
+            self,
+            args,
+            chunk,
+            &mut crate::storage::SyncMap::default(),
+        )
+        .await
+    }
+
+    async fn process_sync_chunk_mapped(
+        &self,
+        args: RequestSyncChunkArgs,
+        chunk: SyncChunk,
+        sync_map: &mut crate::storage::SyncMap,
+    ) -> Result<ProcessSyncChunkResult> {
+        super::sync::process_sync_chunk_internal(self, args, chunk, sync_map).await
     }
 }
 

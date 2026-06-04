@@ -394,6 +394,7 @@ pub async fn process_sync_chunk_internal(
     storage: &StorageSqlx,
     args: RequestSyncChunkArgs,
     chunk: SyncChunk,
+    sync_map: &mut crate::storage::SyncMap,
 ) -> Result<ProcessSyncChunkResult> {
     let mut result = ProcessSyncChunkResult {
         done: false,
@@ -425,13 +426,15 @@ pub async fn process_sync_chunk_internal(
         .find_or_insert_sync_state(&auth, &args.from_storage_identity_key, "sync")
         .await?;
 
-    // Track ID mappings from source to destination
-    let mut basket_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut label_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut tag_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut transaction_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut output_id_map: HashMap<i64, i64> = HashMap::new();
-    let mut certificate_id_map: HashMap<i64, i64> = HashMap::new();
+    // Track ID mappings from source to destination. Threaded across chunks via
+    // `sync_map` (disjoint field borrows) so a child row resolves a parent that
+    // arrived in an earlier chunk.
+    let basket_id_map = &mut sync_map.basket;
+    let label_id_map = &mut sync_map.label;
+    let tag_id_map = &mut sync_map.tag;
+    let transaction_id_map = &mut sync_map.transaction;
+    let output_id_map = &mut sync_map.output;
+    let certificate_id_map = &mut sync_map.certificate;
 
     // Check if chunk is empty (sync complete)
     let chunk_is_empty = chunk.output_baskets.as_ref().is_none_or(|v| v.is_empty())
@@ -780,7 +783,7 @@ async fn fetch_proven_tx_reqs_for_sync(
     let mut sql = String::from(
         r#"
         SELECT proven_tx_req_id, proven_tx_id, txid, status, attempts, history, notified,
-               raw_tx, input_beef, created_at, updated_at
+               notify, batch, raw_tx, input_beef, created_at, updated_at
         FROM proven_tx_reqs
         WHERE 1=1
         "#,
@@ -804,13 +807,55 @@ async fn fetch_proven_tx_reqs_for_sync(
         .iter()
         .map(|row| {
             let status_str: String = row.get("status");
+            // Map all 17 canonical ProvenTxReqStatus variants. The
+            // pre-PR mapping collapsed the 12 broadcast-lifecycle
+            // variants (sending / unmined / unsent / callback /
+            // unconfirmed / unfail / nosend / invalid / doubleSpend /
+            // nonfinal / unprocessed / unknown) into `Pending`, which
+            // silently broke `TaskSendWaiting` + `TaskCheckForProofs`
+            // when an L2-restored row landed in the wrong bucket
+            // (Calhoon PR #2 review item 3, 2026-05-30).
+            //
+            // Mirrors the write side at
+            // `storage_sqlx.rs::update_proven_tx_req_status` exactly,
+            // including the mixed-case forms ("inProgress",
+            // "notFound", "doubleSpend") emitted by serde-camelCase
+            // + the explicit serde renames to "nosend" / "nonfinal".
+            // Snake-case + ALL-lowercase aliases preserved for forward
+            // compat with any older writer that may have produced
+            // them.
             let status = match status_str.as_str() {
                 "pending" => ProvenTxReqStatus::Pending,
-                "inprogress" | "in_progress" => ProvenTxReqStatus::InProgress,
+                "inProgress" | "inprogress" | "in_progress" => ProvenTxReqStatus::InProgress,
                 "completed" => ProvenTxReqStatus::Completed,
                 "failed" => ProvenTxReqStatus::Failed,
-                "notfound" | "not_found" => ProvenTxReqStatus::NotFound,
-                _ => ProvenTxReqStatus::Pending,
+                "notFound" | "notfound" | "not_found" => ProvenTxReqStatus::NotFound,
+                "unsent" => ProvenTxReqStatus::Unsent,
+                "sending" => ProvenTxReqStatus::Sending,
+                "unmined" => ProvenTxReqStatus::Unmined,
+                "unknown" => ProvenTxReqStatus::Unknown,
+                "callback" => ProvenTxReqStatus::Callback,
+                "unconfirmed" => ProvenTxReqStatus::Unconfirmed,
+                "unfail" => ProvenTxReqStatus::Unfail,
+                "nosend" | "noSend" => ProvenTxReqStatus::NoSend,
+                "invalid" => ProvenTxReqStatus::Invalid,
+                "doubleSpend" | "doublespend" | "double_spend" => ProvenTxReqStatus::DoubleSpend,
+                "nonfinal" | "nonFinal" | "non_final" => ProvenTxReqStatus::NonFinal,
+                "unprocessed" => ProvenTxReqStatus::Unprocessed,
+                other => {
+                    // Unrecognised status — surface a warning instead
+                    // of silently collapsing to `Pending` (which
+                    // misroutes downstream Monitor tasks). The closest
+                    // canonical "no signal" state is `Unknown`; the
+                    // log line is the breadcrumb that lets us track
+                    // a writer drift if one ever lands.
+                    tracing::warn!(
+                        status = other,
+                        "fetch_proven_tx_reqs_for_sync: unrecognised \
+                         ProvenTxReqStatus, mapping to Unknown"
+                    );
+                    ProvenTxReqStatus::Unknown
+                }
             };
             let notified_val: i32 = row.get("notified");
 
@@ -1487,12 +1532,21 @@ async fn upsert_proven_tx_req(
         let local_id: i64 = row.get("proven_tx_req_id");
         let local_updated: DateTime<Utc> = row.get("updated_at");
 
-        // Update if chunk is newer
+        // Update if chunk is newer. Mirror the INSERT column set: canonical
+        // process_action can mutate notify / raw_tx / input_beef / batch
+        // post-creation (attempts append, post-broadcast metadata, multi-tx
+        // batch regroup), so the UPDATE must refresh those alongside
+        // status/attempts/history/notified/proven_tx_id or a newer-wins
+        // replacement on an existing local row silently keeps the older
+        // mutable state. raw_tx is BLOB NOT NULL — coalesce to empty if
+        // the chunk's req carries None (real reqs always carry it).
         if req.updated_at > local_updated {
             sqlx::query(
                 r#"
                 UPDATE proven_tx_reqs
-                SET status = ?, attempts = ?, history = ?, notified = ?, proven_tx_id = ?, updated_at = ?
+                SET status = ?, attempts = ?, history = ?, notified = ?,
+                    notify = ?, raw_tx = ?, input_beef = ?, proven_tx_id = ?,
+                    batch = ?, updated_at = ?
                 WHERE proven_tx_req_id = ?
                 "#,
             )
@@ -1500,7 +1554,11 @@ async fn upsert_proven_tx_req(
             .bind(req.attempts)
             .bind(&req.history)
             .bind(req.notified as i32)
+            .bind(&req.notify)
+            .bind(req.raw_tx.clone().unwrap_or_default())
+            .bind(&req.input_beef)
             .bind(req.proven_tx_id)
+            .bind(&req.batch)
             .bind(req.updated_at)
             .bind(local_id)
             .execute(storage.pool())
@@ -1512,11 +1570,17 @@ async fn upsert_proven_tx_req(
             is_new: false,
         })
     } else {
-        // Insert new
+        // Insert new. raw_tx is BLOB NOT NULL (no default) — it MUST be in the
+        // INSERT or applying a pulled chunk carrying a proven_tx_req fails the
+        // NOT NULL constraint (sqlite rc=19), aborting the sync. Also carry
+        // input_beef/notify/batch for re-broadcast fidelity (notify drives the
+        // monitor's notification state; batch groups multi-tx broadcasts in
+        // send_waiting). Coalesce a missing raw_tx to an empty blob (real reqs
+        // always carry it).
         let result = sqlx::query(
             r#"
-            INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, proven_tx_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, input_beef, proven_tx_id, batch, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&req.txid)
@@ -1524,7 +1588,11 @@ async fn upsert_proven_tx_req(
         .bind(req.attempts)
         .bind(&req.history)
         .bind(req.notified as i32)
+        .bind(&req.notify)
+        .bind(req.raw_tx.clone().unwrap_or_default())
+        .bind(&req.input_beef)
         .bind(req.proven_tx_id)
+        .bind(&req.batch)
         .bind(req.created_at)
         .bind(req.updated_at)
         .execute(storage.pool())
@@ -2393,7 +2461,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk)
+        let result = process_sync_chunk_internal(&storage, args, chunk, &mut Default::default())
             .await
             .unwrap();
 
@@ -2440,7 +2508,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk)
+        let result = process_sync_chunk_internal(&storage, args, chunk, &mut Default::default())
             .await
             .unwrap();
 
@@ -2491,9 +2559,10 @@ mod tests {
             ..Default::default()
         };
 
-        let result1 = process_sync_chunk_internal(&storage, args.clone(), chunk1)
-            .await
-            .unwrap();
+        let result1 =
+            process_sync_chunk_internal(&storage, args.clone(), chunk1, &mut Default::default())
+                .await
+                .unwrap();
         assert_eq!(result1.inserts, 1); // basket only (user already exists)
 
         // Second sync - update basket with newer timestamp
@@ -2513,7 +2582,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result2 = process_sync_chunk_internal(&storage, args, chunk2)
+        let result2 = process_sync_chunk_internal(&storage, args, chunk2, &mut Default::default())
             .await
             .unwrap();
         assert_eq!(result2.inserts, 0);
@@ -2594,7 +2663,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = process_sync_chunk_internal(&storage, args, chunk)
+        let result = process_sync_chunk_internal(&storage, args, chunk, &mut Default::default())
             .await
             .unwrap();
 
@@ -2681,9 +2750,10 @@ mod tests {
             offsets: vec![],
         };
 
-        let result = process_sync_chunk_internal(&dest, process_args, chunk)
-            .await
-            .unwrap();
+        let result =
+            process_sync_chunk_internal(&dest, process_args, chunk, &mut Default::default())
+                .await
+                .unwrap();
 
         // Should have synced user + baskets (inserts + updates)
         let total_changes = result.inserts + result.updates;

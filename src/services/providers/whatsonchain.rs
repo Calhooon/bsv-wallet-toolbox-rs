@@ -1030,7 +1030,7 @@ mod tests {
     #[test]
     fn test_tx_status_classification_logic() {
         // Simulate the classification done in get_status_for_txids
-        let statuses = vec![
+        let statuses = [
             WocTxStatus {
                 txid: "tx_mined".to_string(),
                 blockhash: Some("0000abc".to_string()),
@@ -1057,7 +1057,7 @@ mod tests {
             },
         ];
 
-        let txids = vec![
+        let txids = [
             "tx_mined".to_string(),
             "tx_mempool".to_string(),
             "tx_unknown".to_string(),
