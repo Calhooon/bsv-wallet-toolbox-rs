@@ -1650,6 +1650,46 @@ where
             cache.insert(reference.clone(), pending_tx);
         }
 
+        // The canonical TS `WalletPermissionsManager.createAction`
+        // parses `signableTransaction.tx` via
+        // `Transaction.fromAtomicBEEF(createResult.signableTransaction.tx)`
+        // before authorizing the spend. That parser throws
+        // "Serialized BEEF must start with 4022206465 or 4022206466
+        // but starts with 1" on raw transaction bytes (raw tx version
+        // is little-endian `0x01000000` = 1). The field therefore must
+        // be AtomicBEEF, not raw tx.
+        //
+        // Build AtomicBEEF from `input_beef` (the parent chain already
+        // assembled by `validate_with_canonical_storage`) plus the
+        // unsigned transaction merged in as the atomic subject.
+        // `WPM.computeNetSpend` uses the parsed structural fields
+        // (outputs, inputs) for spending authorization, not the
+        // final-signed txid, so the tentative txid computed from the
+        // unsigned bytes is the correct atomic subject at this point.
+        //
+        // Same builder pattern as the sign-and-process branch above
+        // (which already returns AtomicBEEF in `tx`), applied
+        // symmetrically to the deferred-signing return.
+        let mut beef = match storage_result.input_beef.as_deref() {
+            Some(input_beef) if !input_beef.is_empty() => {
+                bsv_rs::transaction::Beef::from_binary(input_beef).map_err(|e| {
+                    bsv_rs::Error::WalletError(format!(
+                        "create_action: failed to parse input_beef: {}",
+                        e
+                    ))
+                })?
+            }
+            _ => bsv_rs::transaction::Beef::new(),
+        };
+        beef.merge_raw_tx(unsigned_tx.clone(), None);
+        let unsigned_txid = compute_txid(&unsigned_tx);
+        let atomic_beef = beef.to_binary_atomic(&unsigned_txid).map_err(|e| {
+            bsv_rs::Error::WalletError(format!(
+                "create_action: failed to encode AtomicBEEF for signableTransaction.tx: {}",
+                e
+            ))
+        })?;
+
         Ok(CreateActionResult {
             txid: None,
             tx: None,
@@ -1664,7 +1704,7 @@ where
             }),
             send_with_results: None,
             signable_transaction: Some(SignableTransaction {
-                tx: unsigned_tx,
+                tx: atomic_beef,
                 reference: reference_bytes,
             }),
             input_type: None,
@@ -3811,6 +3851,73 @@ mod tests {
             max_active.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "at most one task should hold the spend lock at a time"
+        );
+    }
+
+    #[test]
+    fn signable_transaction_tx_is_atomic_beef() {
+        // Pin the canonical TS `WalletPermissionsManager.createAction`
+        // contract: it parses `signableTransaction.tx` via
+        // `Transaction.fromAtomicBEEF`. The parser throws
+        // "Serialized BEEF must start with 4022206465 or 4022206466
+        // but starts with 1" on raw transaction bytes (raw tx version
+        // is little-endian `0x01000000` = 1). The Rust toolbox must
+        // therefore wrap the unsigned tx in AtomicBEEF before returning.
+        //
+        // This test exercises the builder block introduced at the
+        // deferred-signing return path in `create_action`. The block
+        // is small and self-contained, so the test reproduces it
+        // standalone with synthetic bytes rather than driving a full
+        // wallet flow.
+
+        // Bitcoin block-0 coinbase serialization — a real, parseable
+        // transaction that doubles as a stable fixture.
+        let unsigned_tx = hex::decode(
+            "01000000010000000000000000000000000000000000000000000000000000000000000000\
+             ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a\
+             2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781\
+             e62294721166bf621e73a82cbf2342c858eeac00000000",
+        )
+        .unwrap();
+
+        let input_beef: Option<&[u8]> = None;
+        let mut beef = match input_beef {
+            Some(ib) if !ib.is_empty() => bsv_rs::transaction::Beef::from_binary(ib).unwrap(),
+            _ => bsv_rs::transaction::Beef::new(),
+        };
+        beef.merge_raw_tx(unsigned_tx.clone(), None);
+        let unsigned_txid = compute_txid(&unsigned_tx);
+        let atomic_beef = beef.to_binary_atomic(&unsigned_txid).expect(
+            "builder must produce AtomicBEEF from input_beef + unsigned_tx + tentative txid",
+        );
+
+        // The canonical TS parser does `Beef::from_binary(...)`
+        // internally and expects `atomic_txid` to be populated. If it
+        // isn't, `Transaction.fromAtomicBEEF` rejects the input.
+        let parsed = bsv_rs::transaction::Beef::from_binary(&atomic_beef)
+            .expect("signableTransaction.tx must parse as valid BEEF/AtomicBEEF");
+        assert!(
+            parsed.atomic_txid.is_some(),
+            "signableTransaction.tx must carry the AtomicBEEF atomic_txid prefix"
+        );
+        assert_eq!(
+            parsed.atomic_txid.as_deref(),
+            Some(unsigned_txid.as_str()),
+            "atomic_txid must equal the tentative unsigned-tx txid the builder anchored at"
+        );
+
+        // AtomicBEEF magic prefix is `0x01010101` (four 0x01 bytes).
+        // Pre-fix the field carried raw tx bytes, which begin with
+        // `0x01000000` (raw tx version, LE = 1). Both start with the
+        // same first byte; the discriminator is bytes 1..4. Asserting
+        // the prefix at the byte level keeps the regression visible
+        // even if a higher-level BEEF parser stops surfacing
+        // `atomic_txid`.
+        assert_eq!(
+            &atomic_beef[0..4],
+            &[0x01, 0x01, 0x01, 0x01],
+            "AtomicBEEF must start with the magic prefix 0x01010101; \
+             a raw-tx return regression would start with 0x01000000"
         );
     }
 }
