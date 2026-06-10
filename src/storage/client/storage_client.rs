@@ -264,6 +264,10 @@ pub struct StorageClient<W: WalletInterface> {
 
     /// Cached server identity key (from settings).
     server_identity_key: Arc<RwLock<Option<PublicKey>>>,
+
+    /// Per-request timeout (default 30s). Raise for cold-start-prone servers
+    /// (e.g. Cloudflare Workers can exceed 20s on the first hit).
+    timeout: std::time::Duration,
 }
 
 impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
@@ -308,7 +312,20 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             use_auth: true,
             verify_responses: false, // Most servers don't sign responses yet
             server_identity_key: Arc::new(RwLock::new(None)),
+            timeout: std::time::Duration::from_secs(30),
         }
+    }
+
+    /// Set the per-request timeout (default 30s). Applies to both the Peer
+    /// send and the response wait of every RPC.
+    pub fn set_timeout(&mut self, timeout: std::time::Duration) {
+        self.timeout = timeout;
+    }
+
+    /// Builder-style timeout override.
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Creates a new StorageClient without authentication (for testing).
@@ -492,7 +509,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
         let send_result = self
             .peer
-            .to_peer(&payload, server_key_hex.as_deref(), Some(30000))
+            .to_peer(&payload, server_key_hex.as_deref(), Some(self.timeout.as_millis() as u64))
             .await;
 
         if let Err(e) = send_result {
@@ -507,7 +524,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         }
 
         // Wait for the response with a timeout
-        let response_result = tokio::time::timeout(std::time::Duration::from_secs(30), rx).await;
+        let response_result = tokio::time::timeout(self.timeout, rx).await;
 
         // Clean up listener
         self.peer
@@ -1035,7 +1052,7 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
     async fn update_transaction_status_after_broadcast(
         &self,
         txid: &str,
-        outcome: &crate::storage::sqlx::BroadcastOutcome,
+        outcome: &crate::storage::broadcast::BroadcastOutcome,
     ) -> Result<()> {
         // For remote client, map outcome to the legacy bool protocol.
         // Remote servers may not support the classified outcome yet.

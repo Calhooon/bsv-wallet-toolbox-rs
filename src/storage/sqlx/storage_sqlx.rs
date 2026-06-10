@@ -20,6 +20,7 @@ use crate::storage::entities::*;
 use crate::storage::traits::*;
 
 use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
+use crate::storage::broadcast::validate_beef_for_broadcast;
 use bsv_rs::wallet::{
     AbortActionArgs, AbortActionResult, InternalizeActionArgs, ListActionsArgs, ListActionsResult,
     ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,
@@ -4798,102 +4799,6 @@ impl StorageSqlx {
 
         Ok(result.rows_affected())
     }
-}
-
-// =============================================================================
-// BEEF Validation
-// =============================================================================
-
-/// Validate BEEF structure before broadcast (diagnostic — does not block broadcast).
-///
-/// Checks:
-/// 1. BEEF contains exactly 1 unproven (leaf) transaction — the one being broadcast
-/// 2. All inputs of the leaf tx have source transactions in the BEEF
-/// 3. Source transactions either have merkle proofs (bump_index) or are themselves
-///    in the BEEF with proofs
-///
-/// Returns `Ok(())` if valid, `Err(message)` with details of what's missing.
-pub fn validate_beef_for_broadcast(beef: &Beef, txid: &str) -> std::result::Result<(), String> {
-    use bsv_rs::transaction::Transaction;
-
-    // Find unproven (leaf) transactions — those without a bump_index and not txid-only
-    let unproven: Vec<&bsv_rs::transaction::BeefTx> = beef
-        .txs
-        .iter()
-        .filter(|tx| tx.bump_index().is_none() && !tx.is_txid_only())
-        .collect();
-
-    if unproven.is_empty() {
-        return Err(format!(
-            "BEEF for {} has no unproven leaf transaction",
-            txid
-        ));
-    }
-    if unproven.len() > 1 {
-        let ids: Vec<String> = unproven.iter().map(|t| t.txid()).collect();
-        return Err(format!(
-            "BEEF for {} has {} unproven transactions (expected 1): {:?}",
-            txid,
-            unproven.len(),
-            ids
-        ));
-    }
-
-    let leaf = unproven[0];
-    let leaf_txid = leaf.txid();
-
-    // Parse the leaf transaction to check its inputs
-    let raw_bytes = match leaf.raw_tx() {
-        Some(bytes) => bytes,
-        None => {
-            return Err(format!(
-                "BEEF for {}: leaf tx {} has no raw bytes",
-                txid, leaf_txid
-            ));
-        }
-    };
-    let parsed = match Transaction::from_binary(raw_bytes) {
-        Ok(tx) => tx,
-        Err(e) => {
-            return Err(format!(
-                "BEEF for {}: failed to parse leaf tx {}: {}",
-                txid, leaf_txid, e
-            ));
-        }
-    };
-
-    // Check each input has its source in the BEEF
-    let mut missing_sources = Vec::new();
-    for (i, input) in parsed.inputs.iter().enumerate() {
-        let source_txid = input
-            .source_txid
-            .as_deref()
-            .or_else(|| input.source_transaction.as_ref().map(|_| "embedded"))
-            .unwrap_or("unknown");
-
-        if source_txid == "unknown" {
-            missing_sources.push(format!("input[{}]: no source txid", i));
-            continue;
-        }
-        if source_txid == "embedded" {
-            continue; // source transaction is inline
-        }
-
-        // Check if the source txid exists in the BEEF
-        if beef.find_txid(source_txid).is_none() {
-            missing_sources.push(format!("input[{}]: source {} not in BEEF", i, source_txid));
-        }
-    }
-
-    if !missing_sources.is_empty() {
-        return Err(format!(
-            "BEEF for {} missing source transactions: {}",
-            txid,
-            missing_sources.join("; ")
-        ));
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

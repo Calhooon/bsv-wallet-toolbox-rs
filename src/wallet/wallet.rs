@@ -36,7 +36,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::error::{Error, Result};
 use crate::services::{Chain, WalletServices};
 use crate::storage::entities::{TableCertificate, TableCertificateField, TransactionStatus};
-use crate::storage::sqlx::{classify_broadcast_results, BroadcastOutcome};
+use crate::storage::broadcast::{classify_broadcast_results, BroadcastOutcome};
 use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
 use crate::wallet::lookup::OverlayLookupResolver;
 
@@ -1435,7 +1435,7 @@ where
 
                             // Structural validation: check leaf count and input coverage
                             if let Err(validation_err) =
-                                crate::storage::sqlx::validate_beef_for_broadcast(&parsed, &txid)
+                                crate::storage::broadcast::validate_beef_for_broadcast(&parsed, &txid)
                             {
                                 tracing::warn!(
                                     txid = %txid,
@@ -1830,7 +1830,7 @@ where
 
                         // Structural validation (diagnostic only — does not block broadcast)
                         if let Err(validation_err) =
-                            crate::storage::sqlx::validate_beef_for_broadcast(
+                            crate::storage::broadcast::validate_beef_for_broadcast(
                                 &broadcast_beef,
                                 &txid,
                             )
