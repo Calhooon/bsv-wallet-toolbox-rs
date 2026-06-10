@@ -40,6 +40,6 @@ mod storage_sqlx;
 mod sync;
 
 pub use beef_verification::{verify_beef_merkle_proofs, verify_txid_merkle_proof};
-pub use process_action::{classify_broadcast_results, BroadcastOutcome};
-pub use storage_sqlx::{validate_beef_for_broadcast, StorageSqlx, DEFAULT_MAX_OUTPUT_SCRIPT};
+pub use crate::storage::broadcast::{classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome};
+pub use storage_sqlx::{StorageSqlx, DEFAULT_MAX_OUTPUT_SCRIPT};
 pub use sync::entity_names;

@@ -25,6 +25,9 @@
 pub mod entities;
 mod traits;
 
+// Broadcast classification + BEEF validation (feature-independent)
+pub mod broadcast;
+
 // SQLx storage (SQLite/MySQL)
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
 pub mod sqlx;
@@ -39,10 +42,10 @@ pub mod client;
 pub use traits::*;
 
 // Re-export storage implementations
+pub use broadcast::{classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome};
+
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
-pub use sqlx::{
-    classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome, StorageSqlx,
-};
+pub use sqlx::StorageSqlx;
 
 #[cfg(feature = "remote")]
 pub use client::StorageClient;

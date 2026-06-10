@@ -18,7 +18,6 @@
 //! preventing partial updates that would leave the database in an inconsistent state.
 
 use crate::error::{Error, Result};
-use crate::services::traits::{PostBeefResult, PostTxResultForTxid};
 use crate::storage::entities::TransactionStatus;
 use crate::storage::traits::{
     SendWithResult, StorageProcessActionArgs, StorageProcessActionResults, WalletStorageReader,
@@ -28,154 +27,9 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection};
 
 use super::StorageSqlx;
-
-// =============================================================================
-// Broadcast Outcome Classification
-// =============================================================================
-
-/// Classified result of a broadcast attempt.
-///
-/// Matches the classification pattern used by the TS and Go reference
-/// wallet-toolbox implementations. Transient failures (ServiceError) keep
-/// inputs locked for background retry; permanent failures (DoubleSpend,
-/// InvalidTx) restore inputs immediately.
-#[derive(Debug, Clone)]
-pub enum BroadcastOutcome {
-    /// At least one provider accepted the transaction.
-    Success,
-    /// All providers returned service/network errors (transient — will retry).
-    ServiceError { details: Vec<String> },
-    /// A provider reported a double-spend (permanent).
-    DoubleSpend {
-        competing_txs: Vec<String>,
-        details: Vec<String>,
-    },
-    /// A provider definitively rejected the transaction (permanent).
-    InvalidTx { details: Vec<String> },
-    /// A provider reported orphan mempool (parent tx not yet propagated).
-    /// This is a propagation issue, NOT a double-spend. The miner has the
-    /// child tx but not the parent. The tx should stay in 'sending' for
-    /// retry — the parent will typically propagate within a few seconds.
-    OrphanMempool { details: Vec<String> },
-}
-
-impl BroadcastOutcome {
-    /// Returns true if the broadcast was accepted by at least one provider.
-    pub fn is_success(&self) -> bool {
-        matches!(self, BroadcastOutcome::Success)
-    }
-
-    /// Returns true if the failure is transient and should be retried.
-    pub fn is_transient(&self) -> bool {
-        matches!(
-            self,
-            BroadcastOutcome::ServiceError { .. } | BroadcastOutcome::OrphanMempool { .. }
-        )
-    }
-
-    /// Build a human-readable error message with per-provider details.
-    pub fn error_message(&self, txid: &str) -> Option<String> {
-        match self {
-            BroadcastOutcome::Success => None,
-            BroadcastOutcome::ServiceError { details } => Some(format!(
-                "Transaction broadcast for txid {} returned service errors (will retry): {}",
-                txid,
-                details.join("; ")
-            )),
-            BroadcastOutcome::DoubleSpend {
-                competing_txs,
-                details,
-            } => Some(format!(
-                "Transaction broadcast failed for txid {}: double spend detected. Competing txs: [{}]. Details: {}",
-                txid,
-                competing_txs.join(", "),
-                details.join("; ")
-            )),
-            BroadcastOutcome::InvalidTx { details } => Some(format!(
-                "Transaction broadcast failed for txid {}: transaction rejected. Details: {}",
-                txid,
-                details.join("; ")
-            )),
-            BroadcastOutcome::OrphanMempool { details } => Some(format!(
-                "Transaction broadcast for txid {} returned orphan mempool (parent not propagated, will retry): {}",
-                txid,
-                details.join("; ")
-            )),
-        }
-    }
-}
-
-/// Classify broadcast results from multiple providers into a single outcome.
-///
-/// Priority order (matching TS/Go reference implementations):
-/// 1. Any success → Success
-/// 2. Any double-spend (but NOT orphan mempool) → DoubleSpend (permanent)
-/// 3. Any definitive rejection (ARC 46x codes) → InvalidTx (permanent)
-/// 4. Any orphan mempool → OrphanMempool (transient, parent not propagated)
-/// 5. Otherwise → ServiceError (transient, will retry)
-pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcome {
-    // Collect all per-txid results across providers
-    let all_txid_results: Vec<&PostTxResultForTxid> =
-        results.iter().flat_map(|r| r.txid_results.iter()).collect();
-
-    // 1. Any success?
-    let any_success = results.iter().any(|r| r.is_success());
-    if any_success {
-        return BroadcastOutcome::Success;
-    }
-
-    // Collect error details from all providers
-    let details: Vec<String> = results
-        .iter()
-        .filter(|r| !r.is_success())
-        .map(|r| {
-            let txid_errors: String = r
-                .txid_results
-                .iter()
-                .filter(|tx| tx.status != "success")
-                .map(|tx| tx.data.as_deref().unwrap_or("unknown"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            format!("{}: {} [{}]", r.name, r.status, txid_errors)
-        })
-        .collect();
-
-    // 2. Any double-spend? (true double-spend, NOT orphan mempool)
-    let is_double_spend = all_txid_results
-        .iter()
-        .any(|tr| tr.double_spend && !tr.orphan_mempool);
-    if is_double_spend {
-        let competing_txs: Vec<String> = all_txid_results
-            .iter()
-            .filter_map(|tr| tr.competing_txs.as_ref())
-            .flatten()
-            .cloned()
-            .collect();
-        return BroadcastOutcome::DoubleSpend {
-            competing_txs,
-            details,
-        };
-    }
-
-    // 3. Any definitive rejection? (ARC 46x status codes = tx-level rejection)
-    let is_invalid = all_txid_results.iter().any(|tr| {
-        !tr.service_error
-            && !tr.orphan_mempool
-            && (tr.status.contains("46") || tr.status.contains("invalid"))
-    });
-    if is_invalid {
-        return BroadcastOutcome::InvalidTx { details };
-    }
-
-    // 4. Any orphan mempool? (parent not yet propagated — transient)
-    let is_orphan = all_txid_results.iter().any(|tr| tr.orphan_mempool);
-    if is_orphan {
-        return BroadcastOutcome::OrphanMempool { details };
-    }
-
-    // 5. Everything else is a transient service error
-    BroadcastOutcome::ServiceError { details }
-}
+use crate::storage::broadcast::BroadcastOutcome;
+#[cfg(test)]
+use crate::storage::broadcast::classify_broadcast_results;
 
 // =============================================================================
 // Constants
