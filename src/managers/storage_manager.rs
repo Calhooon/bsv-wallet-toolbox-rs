@@ -1106,7 +1106,7 @@ impl WalletStorageWriter for WalletStorageManager {
     async fn update_transaction_status_after_broadcast(
         &self,
         txid: &str,
-        outcome: &crate::storage::sqlx::BroadcastOutcome,
+        outcome: &crate::storage::broadcast::BroadcastOutcome,
     ) -> Result<()> {
         let txid_owned = txid.to_string();
         let outcome_owned = outcome.clone();

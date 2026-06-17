@@ -605,7 +605,7 @@ pub trait WalletStorageWriter: WalletStorageReader {
     async fn update_transaction_status_after_broadcast(
         &self,
         txid: &str,
-        outcome: &crate::storage::sqlx::BroadcastOutcome,
+        outcome: &crate::storage::broadcast::BroadcastOutcome,
     ) -> Result<()>;
 
     /// Review storage status and clean up aged items.
