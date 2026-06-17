@@ -557,15 +557,43 @@ pub async fn process_sync_chunk_internal(
         }
     }
 
-    // Process outputs (need transaction ID translation)
+    // Process outputs (need transaction ID translation).
+    //
+    // Resolve the parent transaction's LOCAL FK in three steps before
+    // calling `upsert_output`:
+    //
+    //   1. Try this session's threaded `transaction_id_map` (populated
+    //      by `upsert_transaction` for transactions delivered earlier
+    //      in this run).
+    //   2. Fall back to a local-DB lookup by `(user_id, txid)`.
+    //      `output.txid` is the parent transaction's on-chain txid;
+    //      previously-synced parent transactions may live in local DB
+    //      without appearing in this session's map (the chunk's
+    //      `transactions` section only carries since-deltas).
+    //   3. If still unresolvable, the output is orphan — skip,
+    //      consistent with the skip-on-missing-parent pattern used by
+    //      `tx_label_maps`, `output_tag_maps`, `commissions`, and
+    //      `certificate_fields` below.
+    //
+    // The prior `local_tx_id.unwrap_or(output.transaction_id)` fallback
+    // inside `upsert_output` silently substituted the REMOTE numerical
+    // FK in place of a missing local one, which then collided on
+    // `UNIQUE(transaction_id, vout, user_id)` and surfaced as
+    // `rc=19 UNIQUE constraint failed: outputs.transaction_id,
+    // outputs.vout, outputs.user_id` on apply. Making `tx_id` mandatory
+    // at the call site makes that substitution structurally impossible.
     if let Some(outputs) = &chunk.outputs {
         for output in outputs {
-            let local_tx_id = transaction_id_map.get(&output.transaction_id).copied();
+            let local_tx_id = match transaction_id_map.get(&output.transaction_id).copied() {
+                Some(tid) => Some(tid),
+                None => find_transaction_id_for_sync(storage, user_id, &output.txid).await?,
+            };
+            let Some(tx_id) = local_tx_id else { continue };
             let local_basket_id = output
                 .basket_id
                 .and_then(|bid| basket_id_map.get(&bid).copied());
             let upsert_result =
-                upsert_output(storage, user_id, output, local_tx_id, local_basket_id).await?;
+                upsert_output(storage, user_id, output, tx_id, local_basket_id).await?;
             output_id_map.insert(output.output_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -1810,27 +1838,79 @@ async fn upsert_transaction(
     }
 }
 
+/// Resolve a parent transaction's local FK by its on-chain txid.
+///
+/// Used by the outputs apply-loop when the session's
+/// `transaction_id_map` does not record the remote→local mapping —
+/// typically because the parent transaction landed in local storage
+/// during a prior sync session or via a local `createAction`, and the
+/// current chunk's `transactions` section did not re-deliver it.
+///
+/// Returns `None` only when the parent is genuinely absent locally;
+/// the orchestrator then treats the output as orphan and skips it,
+/// consistent with the skip-on-missing-parent pattern already used by
+/// `tx_label_maps`, `output_tag_maps`, `commissions`, and
+/// `certificate_fields`.
+async fn find_transaction_id_for_sync(
+    storage: &StorageSqlx,
+    user_id: i64,
+    txid: &str,
+) -> Result<Option<i64>> {
+    let row = sqlx::query(
+        r#"
+        SELECT transaction_id FROM transactions
+        WHERE user_id = ? AND txid = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(user_id)
+    .bind(txid)
+    .fetch_optional(storage.pool())
+    .await?;
+    Ok(row.map(|r| r.get::<i64, _>("transaction_id")))
+}
+
 async fn upsert_output(
     storage: &StorageSqlx,
     user_id: i64,
     output: &TableOutput,
-    local_tx_id: Option<i64>,
+    tx_id: i64,
     local_basket_id: Option<i64>,
 ) -> Result<UpsertResult> {
-    // Check if exists by txid and vout
+    // The SELECT key must match the schema's UNIQUE constraint exactly.
+    // `outputs` is declared `UNIQUE(transaction_id, vout, user_id)`.
+    // The prior SELECT used `(user_id, txid, vout)` — the denormalized
+    // natural key — which can diverge from the UNIQUE key under either
+    // of the following:
+    //
+    //   * Local storage already contains a row whose `txid` column is
+    //     stale relative to its `transaction_id` FK (possible from a
+    //     past sync attempt under the buggy `unwrap_or(remote_fk)`
+    //     fallback). SELECT-by-txid matches the stale row; the
+    //     subsequent UPDATE rewrites its `transaction_id` to the
+    //     resolved value, colliding with a DIFFERENT existing row
+    //     whose `(transaction_id, vout, user_id)` already matches.
+    //
+    //   * A freshly synced chunk re-resolves a parent transaction to
+    //     a new local `transaction_id` (cross-chunk re-resolution);
+    //     SELECT-by-txid misses and INSERT fires, colliding with the
+    //     same logical UTXO already present at the UNIQUE key.
+    //
+    // Keying the SELECT on `(user_id, transaction_id, vout)` removes
+    // the divergence. This also matches the canonical TS storage layer
+    // (`EntityOutput.mergeFind` keys on
+    // `partial: { userId, transactionId, vout }`).
     let existing = sqlx::query(
         r#"
         SELECT output_id, updated_at FROM outputs
-        WHERE user_id = ? AND txid = ? AND vout = ?
+        WHERE user_id = ? AND transaction_id = ? AND vout = ?
         "#,
     )
     .bind(user_id)
-    .bind(&output.txid)
+    .bind(tx_id)
     .bind(output.vout)
     .fetch_optional(storage.pool())
     .await?;
-
-    let tx_id = local_tx_id.unwrap_or(output.transaction_id);
 
     if let Some(row) = existing {
         let local_id: i64 = row.get("output_id");
@@ -2687,6 +2767,211 @@ mod tests {
         assert_eq!(outputs.len(), 1);
         // transaction_id should be 1 (local ID), not 999 (source ID)
         assert_eq!(outputs[0].transaction_id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_process_sync_chunk_output_resolves_parent_via_natural_key() {
+        // Cross-session re-resolution: a parent transaction landed
+        // locally during an earlier sync run, the current chunk's
+        // `transactions` section does not re-deliver it, but the
+        // chunk's `outputs` section references the same logical UTXO
+        // with a remote (sender-local) FK that has no entry in the
+        // current session's `transaction_id_map`.
+        //
+        // Pre-fix: `local_tx_id` resolved to `None`, the orchestrator
+        // passed it through to `upsert_output`, and `upsert_output`
+        // fell back to `output.transaction_id` — the sender's local
+        // FK — and either wrote it into the row's `transaction_id`
+        // column (silently corrupting the schema) or collided on
+        // `UNIQUE(transaction_id, vout, user_id)` if a row already
+        // existed at that FK.
+        //
+        // Post-fix: the orchestrator falls through to
+        // `find_transaction_id_for_sync`, resolves the parent by
+        // `(user_id, txid)`, and either passes the correct local FK
+        // to `upsert_output` (which then SELECTs on the matching
+        // UNIQUE key) or skips the output as orphan if the parent is
+        // genuinely absent.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", &"a".repeat(66))
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "b".repeat(66);
+        let now = Utc::now();
+        let later = now + chrono::Duration::seconds(10);
+        let txid_hex = "a".repeat(64);
+
+        let args = RequestSyncChunkArgs {
+            from_storage_identity_key: "a".repeat(66),
+            to_storage_identity_key: "c".repeat(66),
+            identity_key: identity_key.clone(),
+            since: None,
+            max_rough_size: 100_000,
+            max_items: 1000,
+            offsets: vec![],
+        };
+
+        // First chunk: deliver the parent transaction together with its
+        // output. After this, the local schema holds `transactions`
+        // row with `transaction_id = 1` and `outputs` row with
+        // `(user_id = 1, transaction_id = 1, vout = 0)`.
+        let chunk1 = SyncChunk {
+            from_storage_identity_key: "a".repeat(66),
+            to_storage_identity_key: "c".repeat(66),
+            user_identity_key: identity_key.clone(),
+            transactions: Some(vec![TableTransaction {
+                transaction_id: 999, // sender-local
+                user_id: 1,
+                txid: Some(txid_hex.clone()),
+                status: TransactionStatus::Completed,
+                reference: "test_ref".to_string(),
+                description: "first chunk parent".to_string(),
+                satoshis: 10_000,
+                version: 1,
+                lock_time: 0,
+                raw_tx: Some(vec![1, 2, 3]),
+                input_beef: None,
+                is_outgoing: true,
+                proof_txid: None,
+                created_at: now,
+                updated_at: now,
+            }]),
+            outputs: Some(vec![TableOutput {
+                output_id: 888,
+                user_id: 1,
+                transaction_id: 999, // references sender-local parent
+                basket_id: None,
+                txid: txid_hex.clone(),
+                vout: 0,
+                satoshis: 5_000,
+                locking_script: Some(vec![0x76, 0xa9]),
+                script_length: 25,
+                script_offset: 0,
+                output_type: "P2PKH".to_string(),
+                provided_by: "you".to_string(),
+                purpose: None,
+                output_description: None,
+                spent_by: None,
+                sequence_number: None,
+                spending_description: None,
+                spendable: true,
+                change: false,
+                derivation_prefix: None,
+                derivation_suffix: None,
+                sender_identity_key: None,
+                custom_instructions: None,
+                created_at: now,
+                updated_at: now,
+            }]),
+            ..Default::default()
+        };
+        let result1 =
+            process_sync_chunk_internal(&storage, args.clone(), chunk1, &mut Default::default())
+                .await
+                .unwrap();
+        assert!(
+            result1.inserts >= 2,
+            "first chunk must insert at least the parent transaction and the output"
+        );
+
+        // Capture the local transaction_id assigned to the parent so
+        // the post-state assertion can compare against it.
+        let auth = AuthId::with_user_id(&identity_key, 1);
+        let outputs_after_chunk1 = storage
+            .find_outputs(
+                &auth,
+                FindOutputsArgs {
+                    txid: Some(txid_hex.clone()),
+                    vout: Some(0),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(outputs_after_chunk1.len(), 1);
+        let local_parent_id = outputs_after_chunk1[0].transaction_id;
+
+        // Second chunk: re-deliver the same logical output, but the
+        // sender now uses a different remote FK (its own autoincrement
+        // counter has moved on) AND the chunk's `transactions` section
+        // does not re-deliver the parent — the parent is already
+        // local from the prior session. This chunk's
+        // `transaction_id_map` therefore has no entry for the output's
+        // `transaction_id`.
+        let chunk2 = SyncChunk {
+            from_storage_identity_key: "a".repeat(66),
+            to_storage_identity_key: "c".repeat(66),
+            user_identity_key: identity_key.clone(),
+            transactions: None, // parent already local; chunk does not re-deliver
+            outputs: Some(vec![TableOutput {
+                output_id: 888,
+                user_id: 1,
+                transaction_id: 12_345, // unrelated to local; not in map
+                basket_id: None,
+                txid: txid_hex.clone(),
+                vout: 0,
+                satoshis: 5_000,
+                locking_script: Some(vec![0x76, 0xa9]),
+                script_length: 25,
+                script_offset: 0,
+                output_type: "P2PKH".to_string(),
+                provided_by: "you".to_string(),
+                purpose: None,
+                output_description: None,
+                spent_by: None,
+                sequence_number: None,
+                spending_description: None,
+                spendable: true,
+                change: false,
+                derivation_prefix: None,
+                derivation_suffix: None,
+                sender_identity_key: None,
+                custom_instructions: None,
+                created_at: now,
+                updated_at: later, // newer to trigger UPDATE branch
+            }]),
+            ..Default::default()
+        };
+
+        // Pre-fix, this call would either error with the `rc=19`
+        // UNIQUE constraint message or silently overwrite the row's
+        // `transaction_id` column with the remote `12_345`. Post-fix,
+        // it must succeed without disturbing the local FK.
+        let result2 = process_sync_chunk_internal(&storage, args, chunk2, &mut Default::default())
+            .await
+            .expect("second chunk apply must not error on unmapped parent");
+
+        assert!(
+            result2.inserts == 0,
+            "no new row must be inserted for the same logical output"
+        );
+
+        let outputs_after_chunk2 = storage
+            .find_outputs(
+                &auth,
+                FindOutputsArgs {
+                    txid: Some(txid_hex.clone()),
+                    vout: Some(0),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outputs_after_chunk2.len(),
+            1,
+            "no duplicate row must be created"
+        );
+        assert_eq!(
+            outputs_after_chunk2[0].transaction_id, local_parent_id,
+            "the row's transaction_id must remain the local FK; \
+             pre-fix this column could be overwritten with the chunk's remote FK \
+             (or trigger an `rc=19 UNIQUE constraint failed: outputs...` error \
+             if a row already existed at the resulting key)"
+        );
     }
 
     #[tokio::test]
