@@ -25,3 +25,6 @@ Thumbs.db
 # Test artifacts
 *.log
 coverage/
+
+# /graphify skill scratch output (never publish)
+graphify-out/

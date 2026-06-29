@@ -35,8 +35,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{Error, Result};
 use crate::services::{Chain, WalletServices};
-use crate::storage::entities::{TableCertificate, TableCertificateField, TransactionStatus};
 use crate::storage::broadcast::{classify_broadcast_results, BroadcastOutcome};
+use crate::storage::entities::{TableCertificate, TableCertificateField, TransactionStatus};
 use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
 use crate::wallet::lookup::OverlayLookupResolver;
 
@@ -1268,11 +1268,14 @@ where
         if sign_and_process && !storage_result.inputs.is_empty() {
             // Build the unsigned transaction from storage result
             // Pass the key_deriver so we can compute locking scripts for change outputs
-            let unsigned_tx =
-                build_unsigned_transaction(&storage_result, Some(self.proto_wallet.key_deriver()))
-                    .map_err(|e| {
-                        bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e))
-                    })?;
+            let unsigned_tx = build_unsigned_transaction(
+                &storage_result,
+                Some(self.proto_wallet.key_deriver()),
+                args.inputs.as_deref(),
+            )
+            .map_err(|e| {
+                bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e))
+            })?;
 
             // Debug: Log storage result outputs
             for (i, output) in storage_result.outputs.iter().enumerate() {
@@ -1288,22 +1291,41 @@ where
                 );
             }
 
-            // Convert storage inputs to signer inputs
+            // Convert storage inputs to signer inputs.
+            //
+            // Honor a caller-provided unlocking script (e.g. a covenant spend):
+            // storage only records the script LENGTH, so re-attach the actual
+            // bytes here, matched by outpoint. The signer then SKIPS deriving +
+            // signing this input — which it could not do anyway, since a covenant
+            // output has no BRC-29 derivation_prefix. Without this, a wallet-owned
+            // covenant UTXO was treated as a normal P2PKH change input and the
+            // sign step aborted with "requires signing but has no derivation_prefix".
             let signer_inputs: Vec<SignerInput> = storage_result
                 .inputs
                 .iter()
-                .map(|input| SignerInput {
-                    vin: input.vin,
-                    source_txid: input.source_txid.clone(),
-                    source_vout: input.source_vout,
-                    satoshis: input.source_satoshis,
-                    source_locking_script: Some(
-                        hex::decode(&input.source_locking_script).unwrap_or_default(),
-                    ),
-                    unlocking_script: None,
-                    derivation_prefix: input.derivation_prefix.clone(),
-                    derivation_suffix: input.derivation_suffix.clone(),
-                    sender_identity_key: input.sender_identity_key.clone(),
+                .map(|input| {
+                    let outpoint_key = format!("{}.{}", input.source_txid, input.source_vout);
+                    let provided_unlocking_script = args
+                        .inputs
+                        .as_ref()
+                        .and_then(|ins| {
+                            ins.iter()
+                                .find(|ci| ci.outpoint.to_string() == outpoint_key)
+                        })
+                        .and_then(|ci| ci.unlocking_script.clone());
+                    SignerInput {
+                        vin: input.vin,
+                        source_txid: input.source_txid.clone(),
+                        source_vout: input.source_vout,
+                        satoshis: input.source_satoshis,
+                        source_locking_script: Some(
+                            hex::decode(&input.source_locking_script).unwrap_or_default(),
+                        ),
+                        unlocking_script: provided_unlocking_script,
+                        derivation_prefix: input.derivation_prefix.clone(),
+                        derivation_suffix: input.derivation_suffix.clone(),
+                        sender_identity_key: input.sender_identity_key.clone(),
+                    }
                 })
                 .collect();
 
@@ -1435,7 +1457,9 @@ where
 
                             // Structural validation: check leaf count and input coverage
                             if let Err(validation_err) =
-                                crate::storage::broadcast::validate_beef_for_broadcast(&parsed, &txid)
+                                crate::storage::broadcast::validate_beef_for_broadcast(
+                                    &parsed, &txid,
+                                )
                             {
                                 tracing::warn!(
                                     txid = %txid,
@@ -1596,11 +1620,12 @@ where
         // Return the result with signable transaction for external signing
         // Build transaction before consuming storage_result fields
         // Pass the key_deriver so we can compute locking scripts for change outputs
-        let unsigned_tx =
-            build_unsigned_transaction(&storage_result, Some(self.proto_wallet.key_deriver()))
-                .map_err(|e| {
-                    bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e))
-                })?;
+        let unsigned_tx = build_unsigned_transaction(
+            &storage_result,
+            Some(self.proto_wallet.key_deriver()),
+            args.inputs.as_deref(),
+        )
+        .map_err(|e| bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e)))?;
         let reference = storage_result.reference.clone();
         let reference_bytes = reference.clone().into_bytes();
 
@@ -2692,6 +2717,7 @@ fn compute_txid(raw_tx: &[u8]) -> String {
 fn build_unsigned_transaction(
     result: &crate::storage::StorageCreateActionResult,
     key_deriver: Option<&dyn bsv_rs::wallet::KeyDeriverApi>,
+    caller_inputs: Option<&[bsv_rs::wallet::CreateActionInput]>,
 ) -> Result<Vec<u8>> {
     let mut tx = Vec::new();
 
@@ -2719,8 +2745,21 @@ fn build_unsigned_transaction(
         // Script (empty for unsigned)
         tx.push(0);
 
-        // Sequence
-        tx.extend_from_slice(&0xfffffffe_u32.to_le_bytes());
+        // Sequence. A caller-provided (covenant) input MUST be broadcast with the
+        // exact nSequence its frontend signed into the preimage — under
+        // ANYONECANPAY|SINGLE the input's own nSequence is still committed. Use the
+        // caller's sequence_number if set, else 0xffffffff (the @bsv/sdk default the
+        // frontend's preimage uses when it doesn't override, e.g. upvote/reply).
+        // Wallet-selected funding/change inputs keep the non-final 0xfffffffe.
+        let outpoint_key = format!("{}.{}", input.source_txid, input.source_vout);
+        let sequence = caller_inputs
+            .and_then(|ins| {
+                ins.iter()
+                    .find(|ci| ci.outpoint.to_string() == outpoint_key)
+            })
+            .map(|ci| ci.sequence_number.unwrap_or(0xffffffff))
+            .unwrap_or(0xfffffffe);
+        tx.extend_from_slice(&sequence.to_le_bytes());
     }
 
     // Sort outputs by vout
