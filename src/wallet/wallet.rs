@@ -1427,6 +1427,56 @@ where
                     Ok(mut beef) => {
                         beef.merge_raw_tx(signed_tx.clone(), None);
 
+                        // Prune to the subject tx's ANCESTOR CLOSURE. An over-inclusive
+                        // inputBEEF (e.g. one carrying a counterparty's fee-reserve sibling
+                        // that is NOT an ancestor of `txid`) breaks ARC: its handler decodes
+                        // via go-sdk ParseBeef — which rebuilds a V1 BEEF from the subject's
+                        // ancestry ONLY, dropping non-ancestor txs — then advances its read
+                        // cursor by len(re-serialized) instead of len(consumed). The dropped
+                        // sibling's bytes are left over and mis-parsed as a bogus tx
+                        // ("lockingScript(N): got M bytes: unexpected EOF" -> HTTP 400). Sending
+                        // only the subject + ancestors makes ParseBeef length-stable so ARC
+                        // parses cleanly (BRC-62: a BEEF should carry exactly the subject's
+                        // dependency graph). BUMPs are left intact — retained txs' bump_index
+                        // still resolves; surplus BUMPs are harmless.
+                        {
+                            use std::collections::{HashMap, HashSet};
+                            let by_id: HashMap<String, usize> = beef
+                                .txs
+                                .iter()
+                                .enumerate()
+                                .map(|(i, t)| (t.txid(), i))
+                                .collect();
+                            let mut keep: HashSet<String> = HashSet::new();
+                            let mut stack = vec![txid.clone()];
+                            while let Some(id) = stack.pop() {
+                                if !keep.insert(id.clone()) {
+                                    continue;
+                                }
+                                if let Some(&idx) = by_id.get(&id) {
+                                    if let Some(tx) = beef.txs[idx].tx() {
+                                        for inp in &tx.inputs {
+                                            if let Ok(src) = inp.get_source_txid() {
+                                                if by_id.contains_key(&src) {
+                                                    stack.push(src);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if keep.len() < beef.txs.len() {
+                                let before = beef.txs.len();
+                                beef.txs.retain(|t| keep.contains(&t.txid()));
+                                tracing::debug!(
+                                    txid = %txid,
+                                    pruned = before - beef.txs.len(),
+                                    kept = beef.txs.len(),
+                                    "Pruned BEEF to subject ancestor closure for ARC compatibility"
+                                );
+                            }
+                        }
+
                         // Force V1 for ARC compatibility
                         let can_downgrade = beef.txs.iter().all(|tx| !tx.is_txid_only());
                         if can_downgrade && beef.version != bsv_rs::transaction::BEEF_V1 {
