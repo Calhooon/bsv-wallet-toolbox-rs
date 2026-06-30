@@ -114,17 +114,25 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
         })
         .collect();
 
-    // 2. Any double-spend? (true double-spend, NOT orphan mempool)
-    let is_double_spend = all_txid_results
+    // 2. Any GENUINE double-spend? A real double-spend NAMES the competing tx(s).
+    // A DOUBLE_SPEND_ATTEMPTED with NO competing txids is the artifact of an
+    // unpropagated parent — a deep 0-conf ancestry one provider rejects while another
+    // reports orphan-mempool / "missing inputs". That is TRANSIENT (the tx lands once
+    // its ancestry propagates), so it must NOT be classified as a permanent failure
+    // (which fails the tx + restores its inputs, breaking a legitimate chained spend).
+    // Require a named competitor; otherwise fall through to the orphan/service path
+    // (transient — keep 'sending' for SendWaitingTask retry).
+    let competing_txs: Vec<String> = all_txid_results
         .iter()
-        .any(|tr| tr.double_spend && !tr.orphan_mempool);
-    if is_double_spend {
-        let competing_txs: Vec<String> = all_txid_results
+        .filter_map(|tr| tr.competing_txs.as_ref())
+        .flatten()
+        .cloned()
+        .collect();
+    let is_double_spend = !competing_txs.is_empty()
+        && all_txid_results
             .iter()
-            .filter_map(|tr| tr.competing_txs.as_ref())
-            .flatten()
-            .cloned()
-            .collect();
+            .any(|tr| tr.double_spend && !tr.orphan_mempool);
+    if is_double_spend {
         return BroadcastOutcome::DoubleSpend {
             competing_txs,
             details,
