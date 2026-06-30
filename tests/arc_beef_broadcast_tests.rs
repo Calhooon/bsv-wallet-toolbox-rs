@@ -397,17 +397,25 @@ async fn test_post_beef_double_spend_still_error() {
 
 #[tokio::test]
 async fn test_post_beef_various_success_statuses() {
-    // BUG-005: ARC providers can return "accepted-into-queue" statuses like
-    // ANNOUNCED_TO_NETWORK or RECEIVED which do NOT prove network propagation.
-    // Under PostBeefMode::UntilSuccess, classifying those as success caused
-    // the provider loop to break on the first ARC to accept the POST, even
-    // if that ARC silently failed to federate (observed with GorillaPool
-    // 2026-04-14). Fix: only SEEN_ON_NETWORK / STORED / MINED are real
-    // success. ANNOUNCED_TO_NETWORK now returns status="error" +
-    // service_error=true so the loop tries the next provider.
-    //
-    // Note: SEEN_IN_ORPHAN_MEMPOOL is also treated as error (matching TS/Go).
-    let success_statuses = ["SEEN_ON_NETWORK", "STORED", "MINED"];
+    // A 200 from ARC with any non-error txStatus means ARC ACCEPTED the tx (it is in
+    // ARC's mempool / the network has it). Matching the canonical
+    // ts-sdk/src/transaction/broadcasters/ARC.ts + wallet-toolbox/src/services/providers/
+    // ARC.ts, EVERY acceptance status is success; only DOUBLE_SPEND_ATTEMPTED and
+    // *ORPHAN* are errors (covered by their own tests). The earlier BUG-005 narrowing to
+    // only SEEN_ON_NETWORK/STORED/MINED mis-reported an accepted tx as a transient error,
+    // which tripped the full-BEEF→EF fallback for 0-conf ancestry (→ phantom txs) and
+    // left chained createActions seeing "have 0". Cross-provider federation is the
+    // re-broadcast/monitor layer's job, not the success classifier's.
+    let success_statuses = [
+        "SEEN_ON_NETWORK",
+        "STORED",
+        "MINED",
+        "ANNOUNCED_TO_NETWORK",
+        "RECEIVED",
+        "REQUESTED_BY_NETWORK",
+        "SENT_TO_NETWORK",
+        "QUEUED",
+    ];
 
     for status in success_statuses {
         let (beef_bytes, child_txid, _parent_txid) = build_parent_child_beef();
@@ -449,16 +457,18 @@ async fn test_post_beef_various_success_statuses() {
 }
 
 // =============================================================================
-// Test 6b: Soft-pass statuses are returned as service_error (BUG-005)
+// Test 6b: ARC acceptance ("soft-pass") statuses are SUCCESS (regression guard)
 // =============================================================================
 
 #[tokio::test]
-async fn test_post_beef_soft_pass_statuses_are_service_error() {
-    // BUG-005: these are "ARC accepted the POST but the tx isn't yet on the
-    // network" statuses. They must return service_error=true so the
-    // PostBeefMode::UntilSuccess loop keeps trying the remaining providers
-    // instead of terminating on a false success.
-    let soft_pass_statuses = [
+async fn test_post_beef_acceptance_statuses_are_success() {
+    // Regression guard against re-introducing the BUG-005 narrowing. These are the
+    // "ARC accepted the POST" statuses; ARC has the tx (and, for a 0-conf-ancestry BEEF,
+    // its whole chain), so they are SUCCESS — matching the TS SDK / wallet-toolbox. They
+    // must NOT be reported as service_error (that mis-classification tripped the
+    // full-BEEF→EF downgrade → orphaned/phantom 0-conf txs, and left chained createActions
+    // unable to spend the unrecorded output → "Insufficient funds: have 0").
+    let acceptance_statuses = [
         "ANNOUNCED_TO_NETWORK",
         "RECEIVED",
         "REQUESTED_BY_NETWORK",
@@ -466,7 +476,7 @@ async fn test_post_beef_soft_pass_statuses_are_service_error() {
         "QUEUED",
     ];
 
-    for status in soft_pass_statuses {
+    for status in acceptance_statuses {
         let (beef_bytes, child_txid, _parent_txid) = build_parent_child_beef();
 
         let mut server = mockito::Server::new_async().await;
@@ -491,18 +501,18 @@ async fn test_post_beef_soft_pass_statuses_are_service_error() {
             .unwrap();
 
         assert_eq!(
-            result.status, "error",
-            "Soft-pass status '{}' should be classified as error (not success)",
+            result.status, "success",
+            "Acceptance status '{}' should be classified as success",
             status
         );
         assert!(
-            result.txid_results[0].service_error,
-            "Soft-pass status '{}' should set service_error=true so UntilSuccess keeps trying",
+            !result.txid_results[0].service_error,
+            "Acceptance status '{}' must NOT be a service_error (BUG-005 regression)",
             status
         );
         assert!(
             !result.txid_results[0].double_spend,
-            "Soft-pass status '{}' should not be double_spend",
+            "Acceptance status '{}' should not be double_spend",
             status
         );
 

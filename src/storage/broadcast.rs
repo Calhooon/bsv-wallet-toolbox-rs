@@ -153,7 +153,6 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
 
 // =============================================================================
 
-
 /// Validate BEEF structure before broadcast (diagnostic — does not block broadcast).
 ///
 /// Checks:
@@ -166,7 +165,12 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
 pub fn validate_beef_for_broadcast(beef: &Beef, txid: &str) -> std::result::Result<(), String> {
     use bsv_rs::transaction::Transaction;
 
-    // Find unproven (leaf) transactions — those without a bump_index and not txid-only
+    // Find unproven (no merkle proof, not txid-only) transactions. A BEEF for a 0-conf
+    // chain LEGITIMATELY carries many unproven ANCESTORS (the unconfirmed parents whose
+    // raw bytes ARC needs to validate the chain) — those are expected, NOT an error. The
+    // leaf being broadcast is the unproven tx whose txid == `txid`. (The previous check
+    // errored on >1 unproven, miscounting every legitimate ancestor as a stray leaf and
+    // false-warning on every real chain.)
     let unproven: Vec<&bsv_rs::transaction::BeefTx> = beef
         .txs
         .iter()
@@ -179,17 +183,17 @@ pub fn validate_beef_for_broadcast(beef: &Beef, txid: &str) -> std::result::Resu
             txid
         ));
     }
-    if unproven.len() > 1 {
-        let ids: Vec<String> = unproven.iter().map(|t| t.txid()).collect();
-        return Err(format!(
-            "BEEF for {} has {} unproven transactions (expected 1): {:?}",
-            txid,
-            unproven.len(),
-            ids
-        ));
-    }
 
-    let leaf = unproven[0];
+    let leaf = match unproven.iter().find(|tx| tx.txid() == txid) {
+        Some(tx) => *tx,
+        None => {
+            let ids: Vec<String> = unproven.iter().map(|t| t.txid()).collect();
+            return Err(format!(
+                "BEEF for {} does not contain the target as an unproven leaf (unproven: {:?})",
+                txid, ids
+            ));
+        }
+    };
     let leaf_txid = leaf.txid();
 
     // Parse the leaf transaction to check its inputs

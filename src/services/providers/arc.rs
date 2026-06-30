@@ -278,64 +278,40 @@ impl Arc {
                         notes: vec![make_note(&self.name, "postRawTxOrphanMempool")],
                     })
                 } else {
-                    // BUG-005: treat ANNOUNCED_TO_NETWORK / RECEIVED / QUEUED
-                    // as "soft pass" — ARC has accepted the tx into its own
-                    // input queue but has NOT yet confirmed propagation to
-                    // the wider BSV network. When a provider's ARC is in a
-                    // degraded state (seen on GorillaPool 2026-04-14), it
-                    // can accept POSTs and return ANNOUNCED_TO_NETWORK
-                    // indefinitely without ever federating to miners. Under
-                    // `UntilSuccess` mode the post_beef loop would break on
-                    // a generic "success" here and never try the remaining
-                    // providers, silently trapping txs in one ARC's mempool.
+                    // Canonical @bsv/sdk + @bsv/wallet-toolbox semantics: a 200 from ARC
+                    // with a non-error txStatus means ARC ACCEPTED the tx (it is in ARC's
+                    // mempool / the network has it). DOUBLE_SPEND_ATTEMPTED and *ORPHAN*
+                    // are handled above as their own outcomes; EVERY other status (RECEIVED
+                    // / QUEUED / ANNOUNCED_TO_NETWORK / REQUESTED_BY_NETWORK / SENT_TO_NETWORK
+                    // / SEEN_ON_NETWORK / STORED / MINED) is SUCCESS — matching
+                    // ts-sdk/src/transaction/broadcasters/ARC.ts and
+                    // wallet-toolbox/src/services/providers/ARC.ts (which only treat
+                    // DOUBLE_SPEND/ORPHAN as errors).
                     //
-                    // Fix: only classify SEEN_ON_NETWORK / STORED / MINED as
-                    // true success. Everything else (ANNOUNCED, RECEIVED,
-                    // REQUESTED_BY_NETWORK, SENT_TO_NETWORK, etc.) is
-                    // returned as a transient service_error so the provider
-                    // loop keeps trying and we end up broadcast across ALL
-                    // reachable ARC providers instead of just the first to
-                    // accept.
-                    let is_confirmed = matches!(
-                        data.tx_status.as_str(),
-                        "SEEN_ON_NETWORK" | "STORED" | "MINED"
-                    );
-                    if is_confirmed {
-                        Ok(PostTxResultForTxid {
-                            txid: data.txid,
-                            status: "success".to_string(),
-                            double_spend: false,
-                            orphan_mempool: false,
-                            competing_txs: None,
-                            data: Some(format!(
-                                "{} {}",
-                                data.tx_status,
-                                data.extra_info.unwrap_or_default()
-                            )),
-                            service_error: false,
-                            block_hash: None,
-                            block_height: None,
-                            notes: vec![make_note(&self.name, "postRawTxSuccess")],
-                        })
-                    } else {
-                        Ok(PostTxResultForTxid {
-                            txid: data.txid,
-                            status: "error".to_string(),
-                            double_spend: false,
-                            orphan_mempool: false,
-                            competing_txs: None,
-                            data: Some(format!(
-                                "ARC soft-pass ({}) — not confirmed on network, \
-                                 keep trying other providers ({})",
-                                data.tx_status,
-                                data.extra_info.unwrap_or_default()
-                            )),
-                            service_error: true,
-                            block_hash: None,
-                            block_height: None,
-                            notes: vec![make_note(&self.name, "postRawTxSoftPass")],
-                        })
-                    }
+                    // The previous narrowing to only SEEN_ON_NETWORK/STORED/MINED reported
+                    // a legitimately-accepted tx as a transient service_error, which
+                    // (a) tripped the full-BEEF→EF fallback below for 0-conf-ancestry BEEFs
+                    // (EF drops the unproven parent → ARC orphans the child → phantom tx),
+                    // and (b) left the tx unrecorded so a CHAINED createAction saw
+                    // "Insufficient funds: have 0". Cross-provider federation (broadcast to
+                    // every reachable ARC, not just the first to accept) is the
+                    // re-broadcast/monitor layer's responsibility, NOT this success classifier.
+                    Ok(PostTxResultForTxid {
+                        txid: data.txid,
+                        status: "success".to_string(),
+                        double_spend: false,
+                        orphan_mempool: false,
+                        competing_txs: None,
+                        data: Some(format!(
+                            "{} {}",
+                            data.tx_status,
+                            data.extra_info.unwrap_or_default()
+                        )),
+                        service_error: false,
+                        block_hash: None,
+                        block_height: None,
+                        notes: vec![make_note(&self.name, "postRawTxSuccess")],
+                    })
                 }
             }
             Ok(resp) => {
@@ -424,15 +400,13 @@ impl Arc {
                         })
                         .count();
 
-                    // Send full BEEF when there are unproven ancestors, up to
-                    // a reasonable limit. ARC chokes on very large BEEFs (500+ txs)
-                    // but handles moderate ones fine. Full BEEF is essential for:
-                    // - Phantom UTXOs (internalized tx never broadcast)
-                    // - Short unconfirmed chains (10-50 txs from rapid payments)
-                    // For extreme chains (>100 unproven), skip to EF and hope
-                    // the direct parents are already in the mempool.
-                    let use_full_beef =
-                        unproven_ancestor_count > 0 && unproven_ancestor_count <= 100;
+                    // ANY unproven ancestor ⇒ full BEEF (no cap). Full BEEF is the ONLY
+                    // correct path for unconfirmed ancestry — it carries the whole 0-conf
+                    // chain so ARC can validate it. (There is no valid EF fallback for an
+                    // unproven parent: EF inlines only a parent's output, not the parent tx,
+                    // so ARC would orphan the child. A pathologically huge BEEF that ARC
+                    // rejects fails the same way under EF, so the cap only ever hurt.)
+                    let use_full_beef = unproven_ancestor_count > 0;
 
                     if use_full_beef {
                         tracing::debug!(
@@ -442,61 +416,18 @@ impl Arc {
                             "BEEF has unproven ancestors — trying full BEEF first"
                         );
                         result.notes.push(make_note(&self.name, "postBeefFull"));
+                        // Full BEEF carries the entire unconfirmed ancestry, so ARC can
+                        // validate the whole 0-conf chain. NEVER downgrade to EF here: EF
+                        // inlines only a direct parent's *output* and cannot convey an
+                        // unproven *parent transaction*, so for any 0-conf ancestor ARC
+                        // would orphan/reject the child — the phantom-tx bug. A transient
+                        // full-BEEF failure classifies upstream as ServiceError/OrphanMempool
+                        // and is retried as full BEEF by the SendWaiting task; a real
+                        // rejection (double-spend / invalid) classifies permanently. This
+                        // matches @bsv/wallet-toolbox, which always posts full BEEF and never
+                        // EF-downgrades.
                         let beef_hex = hex::encode(beef);
-                        let beef_result = self.post_raw_tx(&beef_hex, Some(txids)).await?;
-
-                        if beef_result.status == "success"
-                            || beef_result.double_spend
-                            || beef_result
-                                .data
-                                .as_ref()
-                                .map(|d| d.contains("already"))
-                                .unwrap_or(false)
-                        {
-                            beef_result
-                        } else {
-                            // Full BEEF rejected — fall back to EF (works when
-                            // the direct parent is already in the mempool).
-                            tracing::info!(
-                                name = %self.name,
-                                beef_error = ?beef_result.data,
-                                "Full BEEF failed — falling back to EF"
-                            );
-                            result
-                                .notes
-                                .push(make_note(&self.name, "postBeefFallbackEF"));
-                            match new_tx_cloned.clone() {
-                                Some(mut fallback_tx) => {
-                                    let mut hydrated = true;
-                                    for input in &mut fallback_tx.inputs {
-                                        if let Ok(parent_txid) = input.get_source_txid() {
-                                            if let Some(parent_btx) =
-                                                beef_parsed.find_txid(&parent_txid)
-                                            {
-                                                if let Some(parent_tx) = parent_btx.tx() {
-                                                    input.source_transaction =
-                                                        Some(Box::new(parent_tx.clone()));
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                        hydrated = false;
-                                        break;
-                                    }
-                                    if hydrated {
-                                        match fallback_tx.to_hex_ef() {
-                                            Ok(ef_hex) => {
-                                                self.post_raw_tx(&ef_hex, Some(txids)).await?
-                                            }
-                                            Err(_) => beef_result,
-                                        }
-                                    } else {
-                                        beef_result
-                                    }
-                                }
-                                None => beef_result,
-                            }
-                        }
+                        self.post_raw_tx(&beef_hex, Some(txids)).await?
                     } else {
                         // All ancestors are proven — safe to use EF.
                         // EF embeds parent UTXO data inline for script validation.
