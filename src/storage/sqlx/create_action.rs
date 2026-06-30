@@ -442,16 +442,51 @@ pub async fn create_action_internal(
 
     let derivation_prefix = random_derivation(16);
 
-    let change_result = generate_change(
-        &mut tx,
-        user_id,
-        change_basket.basket_id,
-        transaction_id,
-        &params,
-        &derivation_prefix,
-        is_delayed,
-    )
-    .await?;
+    // A caller-complete transaction — every provided input already carries a full
+    // unlocking script — is byte-frozen: the caller signed it (SIGHASH_ALL) and/or
+    // it carries an OP_PUSH_TX covenant preimage that commits the exact outputs.
+    // It MUST be broadcast verbatim. `generate_change` otherwise runs
+    // unconditionally and, to replenish the change-UTXO pool (target_net_count) or
+    // recapture surplus, appends a funding input + a change output — changing the
+    // tx shape, which invalidates every provided signature (consensus NULLFAIL,
+    // ARC 461) and breaks any covenant preimage. This is the path BRC-100 clients
+    // use to broadcast a pre-assembled, fully-signed multi-party covenant spend
+    // (e.g. a 2-of-2 funding/commit/settle): createAction must honor the exact
+    // bytes — no extra inputs, no change, no re-signing (the signer already skips
+    // inputs that carry an unlocking script). Mirrors "exact funding ⇒ no change"
+    // in the TS/Go references, made explicit so pool-replenishment can't intrude.
+    let caller_complete = args
+        .inputs
+        .as_ref()
+        .map(|ins| !ins.is_empty() && ins.iter().all(|i| i.unlocking_script.is_some()))
+        .unwrap_or(false);
+
+    let change_result = if caller_complete {
+        let in_sats: u64 = extended_inputs.iter().map(|i| i.satoshis).sum();
+        let out_sats: u64 = extended_outputs.iter().map(|o| o.satoshis).sum();
+        if in_sats < out_sats {
+            return Err(Error::InsufficientFunds {
+                needed: out_sats,
+                available: in_sats,
+            });
+        }
+        // Inputs - outputs is the (caller-fixed) miner fee. No change.
+        GenerateChangeResult {
+            allocated_change_inputs: Vec::new(),
+            change_outputs: Vec::new(),
+        }
+    } else {
+        generate_change(
+            &mut tx,
+            user_id,
+            change_basket.basket_id,
+            transaction_id,
+            &params,
+            &derivation_prefix,
+            is_delayed,
+        )
+        .await?
+    };
 
     // Step 9: Mark extended inputs as spent
     for input in &extended_inputs {
