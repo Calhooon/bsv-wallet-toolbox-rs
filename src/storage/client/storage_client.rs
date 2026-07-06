@@ -509,7 +509,11 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
         let send_result = self
             .peer
-            .to_peer(&payload, server_key_hex.as_deref(), Some(self.timeout.as_millis() as u64))
+            .to_peer(
+                &payload,
+                server_key_hex.as_deref(),
+                Some(self.timeout.as_millis() as u64),
+            )
             .await;
 
         if let Err(e) = send_result {

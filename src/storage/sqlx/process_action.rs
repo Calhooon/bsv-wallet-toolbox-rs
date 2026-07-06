@@ -27,9 +27,9 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection};
 
 use super::StorageSqlx;
-use crate::storage::broadcast::BroadcastOutcome;
 #[cfg(test)]
 use crate::storage::broadcast::classify_broadcast_results;
+use crate::storage::broadcast::BroadcastOutcome;
 
 // =============================================================================
 // Constants
