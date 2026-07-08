@@ -1272,6 +1272,7 @@ where
                 &storage_result,
                 Some(self.proto_wallet.key_deriver()),
                 args.inputs.as_deref(),
+                args.outputs.as_deref(),
             )
             .map_err(|e| {
                 bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e))
@@ -1674,6 +1675,7 @@ where
             &storage_result,
             Some(self.proto_wallet.key_deriver()),
             args.inputs.as_deref(),
+            args.outputs.as_deref(),
         )
         .map_err(|e| bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e)))?;
         let reference = storage_result.reference.clone();
@@ -2768,7 +2770,33 @@ fn build_unsigned_transaction(
     result: &crate::storage::StorageCreateActionResult,
     key_deriver: Option<&dyn bsv_rs::wallet::KeyDeriverApi>,
     caller_inputs: Option<&[bsv_rs::wallet::CreateActionInput]>,
+    caller_outputs: Option<&[bsv_rs::wallet::CreateActionOutput]>,
 ) -> Result<Vec<u8>> {
+    // ── GHSA-36f9-7rg5-cpf8 guard (CVE-2026-56744) ──────────────────────────
+    // A malicious/compromised STORAGE operator can substitute or inject
+    // output scripts in the createAction result; pre-guard code signed the
+    // echoed lockingScripts verbatim, silently paying an attacker-chosen
+    // address. Mirror of ts-stack wallet-toolbox 2.4.0
+    // (buildSignableTransaction.ts verifyRequestedOutputsUnchanged +
+    // verifyUnrequestedOutputsAreChangeOrCommission), STRICTER for our
+    // deployment: wallet-infra never adds a storage commission, so ANY
+    // unrequested output that is not client-derivable change is rejected
+    // outright (no 500k-sat commission allowance).
+    //
+    // Multiset claim over (script, satoshis): every caller-REQUESTED output
+    // must be echoed byte-identically; leftovers must be change we can
+    // re-derive ourselves. Verification happens below inside the output
+    // loop (change scripts are re-derived and compared, never trusted).
+    use std::collections::HashMap;
+    let mut requested_pool: HashMap<(String, u64), usize> = HashMap::new();
+    for co in caller_outputs.unwrap_or(&[]) {
+        *requested_pool
+            .entry((hex::encode(&co.locking_script).to_lowercase(), co.satoshis))
+            .or_insert(0) += 1;
+    }
+    let requested_total: usize = requested_pool.values().sum();
+    let mut requested_claimed: usize = 0;
+
     let mut tx = Vec::new();
 
     // Version
@@ -2824,53 +2852,110 @@ fn build_unsigned_transaction(
         // Satoshis
         tx.extend_from_slice(&output.satoshis.to_le_bytes());
 
-        // Get or compute locking script
-        let script = if output.locking_script.is_empty() {
-            // Need to derive the locking script from derivation info
-            // Change outputs use BRC-29 protocol with Counterparty::Self_
-            if let (Some(key_deriver), Some(suffix)) = (key_deriver, &output.derivation_suffix) {
-                use bsv_rs::wallet::{Protocol, SecurityLevel};
+        // Derive our own change script when derivation info is present —
+        // NEVER trust a storage-supplied script for a derivable output
+        // (GHSA guard: always-re-derive is stricter than pre-fix TS, which
+        // only derived when storage sent an empty script).
+        let derived_change: Option<Vec<u8>> = if let (Some(key_deriver), Some(suffix)) =
+            (key_deriver, &output.derivation_suffix)
+        {
+            use bsv_rs::wallet::{Protocol, SecurityLevel};
 
-                // BRC-29 protocol: security level 2, protocol name "3241645161d8"
-                let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
-                // Key ID has a SPACE between prefix and suffix
-                let key_id = format!("{} {}", result.derivation_prefix, suffix);
+            // BRC-29 protocol: security level 2, protocol name "3241645161d8"
+            let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+            // Key ID has a SPACE between prefix and suffix
+            let key_id = format!("{} {}", result.derivation_prefix, suffix);
 
-                // Derive the public key using BRC-29 protocol
-                let pubkey = key_deriver
-                    .derive_private_key(
-                        &brc29_protocol,
-                        &key_id,
-                        &bsv_rs::wallet::Counterparty::Self_,
-                    )
-                    .map_err(|e| {
-                        Error::TransactionError(format!("Failed to derive change key: {}", e))
-                    })?
-                    .public_key();
+            let pubkey = key_deriver
+                .derive_private_key(
+                    &brc29_protocol,
+                    &key_id,
+                    &bsv_rs::wallet::Counterparty::Self_,
+                )
+                .map_err(|e| {
+                    Error::TransactionError(format!("Failed to derive change key: {}", e))
+                })?
+                .public_key();
 
-                // Create P2PKH locking script using SDK's ScriptTemplate trait
-                use bsv_rs::script::template::ScriptTemplate;
+            use bsv_rs::script::template::ScriptTemplate;
+            Some(
                 bsv_rs::script::templates::P2PKH::new()
                     .lock(&pubkey.hash160())
                     .map_err(|e| {
                         Error::TransactionError(format!("Failed to create P2PKH script: {}", e))
                     })?
-                    .to_binary()
-            } else {
-                // Can't derive - use empty (will likely fail validation)
-                tracing::warn!(
-                    vout = output.vout,
-                    "Output has empty locking script and no derivation info"
-                );
-                Vec::new()
-            }
+                    .to_binary(),
+            )
         } else {
-            hex::decode(&output.locking_script)
-                .map_err(|e| Error::TransactionError(format!("Invalid locking script: {}", e)))?
+            None
+        };
+
+        let supplied: Option<Vec<u8>> = if output.locking_script.is_empty() {
+            None
+        } else {
+            Some(hex::decode(&output.locking_script).map_err(|e| {
+                Error::TransactionError(format!("Invalid locking script: {}", e))
+            })?)
+        };
+
+        // Classify + verify (GHSA guard):
+        //  1. requested echo — byte-identical (script, satoshis) claim;
+        //  2. change — derivation info present: use OUR derived script; a
+        //     storage-supplied script must match it exactly;
+        //  3. anything else — storage-injected: REJECT.
+        let script: Vec<u8> = if let Some(sup) = &supplied {
+            let key = (hex::encode(sup).to_lowercase(), output.satoshis);
+            let claimed = match requested_pool.get_mut(&key) {
+                Some(n) if *n > 0 => {
+                    *n -= 1;
+                    requested_claimed += 1;
+                    true
+                }
+                _ => false,
+            };
+            if claimed {
+                sup.clone() // exact echo of a requested output
+            } else if let Some(derived) = &derived_change {
+                // Unclaimed but derivable: it must be OUR change — the
+                // supplied script has to match the client-derived key.
+                if derived == sup {
+                    sup.clone()
+                } else {
+                    return Err(Error::TransactionError(format!(
+                        "GHSA-36f9-7rg5-cpf8: storage returned a change script at vout {} that does not match the client-derived key",
+                        output.vout
+                    )));
+                }
+            } else {
+                // Not requested, not derivable — injected. No exceptions:
+                // wallet-infra never adds a storage commission, so unlike
+                // upstream 2.4.0 there is no commission allowance here.
+                return Err(Error::TransactionError(format!(
+                    "GHSA-36f9-7rg5-cpf8: storage injected an unrequested, non-derivable output at vout {} ({} sat) — refusing to sign",
+                    output.vout, output.satoshis
+                )));
+            }
+        } else if let Some(derived) = derived_change {
+            derived
+        } else {
+            return Err(Error::TransactionError(format!(
+                "Output at vout {} has neither a locking script nor derivation info — unsignable",
+                output.vout
+            )));
         };
 
         write_varint(&mut tx, script.len() as u64);
         tx.extend_from_slice(&script);
+    }
+
+    // Every requested output must have been echoed (GHSA guard: a dropped
+    // or substituted output is as dangerous as an injected one).
+    if requested_claimed < requested_total {
+        return Err(Error::TransactionError(format!(
+            "GHSA-36f9-7rg5-cpf8: storage omitted or substituted {} of {} requested output(s) — refusing to sign",
+            requested_total - requested_claimed,
+            requested_total
+        )));
     }
 
     // Locktime
@@ -4008,5 +4093,96 @@ mod tests {
             "AtomicBEEF must start with the magic prefix 0x01010101; \
              a raw-tx return regression would start with 0x01000000"
         );
+    }
+
+    // ── GHSA-36f9-7rg5-cpf8 guard (CVE-2026-56744) ──────────────────────────
+    // A malicious storage operator must not be able to substitute, inject,
+    // or drop outputs in the createAction echo (ts-stack wallet-toolbox
+    // 2.4.0 buildSignableTransaction guards; ours is stricter — no
+    // commission allowance because wallet-infra never adds one).
+
+    fn ghsa_result(outputs: Vec<crate::storage::StorageCreateTransactionOutput>) -> crate::storage::StorageCreateActionResult {
+        crate::storage::StorageCreateActionResult {
+            outputs,
+            version: 1,
+            ..Default::default()
+        }
+    }
+
+    fn ghsa_storage_output(vout: u32, sats: u64, script_hex: &str) -> crate::storage::StorageCreateTransactionOutput {
+        crate::storage::StorageCreateTransactionOutput {
+            vout,
+            satoshis: sats,
+            locking_script: script_hex.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn ghsa_requested(sats: u64, script: &[u8]) -> bsv_rs::wallet::CreateActionOutput {
+        bsv_rs::wallet::CreateActionOutput {
+            locking_script: script.to_vec(),
+            satoshis: sats,
+            output_description: "t".to_string(),
+            basket: None,
+            custom_instructions: None,
+            tags: None,
+        }
+    }
+
+    #[test]
+    fn ghsa_exact_echo_accepted() {
+        let requested = vec![ghsa_requested(1000, &[0xaa, 0xbb])];
+        let result = ghsa_result(vec![ghsa_storage_output(0, 1000, "aabb")]);
+        assert!(build_unsigned_transaction(&result, None, None, Some(&requested)).is_ok());
+    }
+
+    #[test]
+    fn ghsa_substituted_script_rejected() {
+        let requested = vec![ghsa_requested(1000, &[0xaa, 0xbb])];
+        // storage swapped the script (attacker address)
+        let result = ghsa_result(vec![ghsa_storage_output(0, 1000, "ccdd")]);
+        let err = build_unsigned_transaction(&result, None, None, Some(&requested)).unwrap_err();
+        assert!(format!("{err:?}").contains("GHSA"), "got: {err:?}");
+    }
+
+    #[test]
+    fn ghsa_substituted_satoshis_rejected() {
+        let requested = vec![ghsa_requested(1000, &[0xaa, 0xbb])];
+        let result = ghsa_result(vec![ghsa_storage_output(0, 999_999, "aabb")]);
+        let err = build_unsigned_transaction(&result, None, None, Some(&requested)).unwrap_err();
+        assert!(format!("{err:?}").contains("GHSA"));
+    }
+
+    #[test]
+    fn ghsa_injected_output_rejected() {
+        let requested = vec![ghsa_requested(1000, &[0xaa, 0xbb])];
+        let result = ghsa_result(vec![
+            ghsa_storage_output(0, 1000, "aabb"),
+            // injected non-derivable output (would-be commission/theft)
+            ghsa_storage_output(1, 500_000, "76a914deadbeef88ac"),
+        ]);
+        let err = build_unsigned_transaction(&result, None, None, Some(&requested)).unwrap_err();
+        assert!(format!("{err:?}").contains("injected"), "got: {err:?}");
+    }
+
+    #[test]
+    fn ghsa_dropped_output_rejected() {
+        let requested = vec![
+            ghsa_requested(1000, &[0xaa, 0xbb]),
+            ghsa_requested(2000, &[0xcc, 0xdd]),
+        ];
+        // storage silently dropped the second requested output
+        let result = ghsa_result(vec![ghsa_storage_output(0, 1000, "aabb")]);
+        let err = build_unsigned_transaction(&result, None, None, Some(&requested)).unwrap_err();
+        assert!(format!("{err:?}").contains("omitted or substituted"), "got: {err:?}");
+    }
+
+    #[test]
+    fn ghsa_no_outputs_requested_injection_rejected() {
+        // Consolidation-style action: nothing requested; storage injects a
+        // non-derivable output. Must be refused (no commission allowance).
+        let result = ghsa_result(vec![ghsa_storage_output(0, 42_000, "76a914deadbeef88ac")]);
+        let err = build_unsigned_transaction(&result, None, None, Some(&[])).unwrap_err();
+        assert!(format!("{err:?}").contains("injected"));
     }
 }

@@ -240,7 +240,7 @@ pub struct StorageCreateTransactionInput {
 }
 
 /// Output details from storage for transaction creation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageCreateTransactionOutput {
     pub vout: u32,
