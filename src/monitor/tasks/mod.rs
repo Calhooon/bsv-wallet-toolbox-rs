@@ -3,6 +3,7 @@
 //! Each task implements the `MonitorTask` trait and performs a specific
 //! background operation on the wallet storage.
 
+mod arcade_events;
 mod check_for_proofs;
 mod check_no_sends;
 mod clock;
@@ -17,6 +18,7 @@ mod send_waiting;
 mod sync_when_idle;
 mod unfail;
 
+pub use arcade_events::ArcadeEventsTask;
 pub use check_for_proofs::CheckForProofsTask;
 pub use check_no_sends::CheckNoSendsTask;
 pub use clock::ClockTask;
@@ -89,6 +91,8 @@ pub trait MonitorTask: Send + Sync {
 /// Task type identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskType {
+    /// Arcade V2 SSE status subscriber.
+    ArcadeEvents,
     /// Check for merkle proofs.
     CheckForProofs,
     /// Send waiting transactions.
@@ -121,6 +125,7 @@ impl TaskType {
     /// Get the task name as a string.
     pub fn as_str(&self) -> &'static str {
         match self {
+            TaskType::ArcadeEvents => "arcade_events",
             TaskType::CheckForProofs => "check_for_proofs",
             TaskType::SendWaiting => "send_waiting",
             TaskType::FailAbandoned => "fail_abandoned",

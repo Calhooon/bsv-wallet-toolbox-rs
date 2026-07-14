@@ -833,6 +833,29 @@ pub struct TxSynchronizedStatus {
     pub merkle_path: Option<Vec<u8>>,
 }
 
+/// Outcome of attempting to ingest a merkle proof for a transaction.
+///
+/// Returned by `StorageSqlx::ingest_merkle_proof`, which is the single
+/// convergence point for every proof-delivery path (polling sync, Arcade
+/// webhook, SSE-MINED-triggered fetch, relay drain).
+#[derive(Debug, Clone)]
+pub enum ProofIngestOutcome {
+    /// Proof validated against the ChainTracker and stored; the
+    /// proven_tx_req and transaction records were completed.
+    Ingested(TxSynchronizedStatus),
+    /// The BUMP parsed but its computed merkle root was rejected by the
+    /// ChainTracker for the claimed block height. Do NOT store.
+    InvalidMerkleRoot {
+        /// The root computed from the supplied BUMP.
+        computed_root: String,
+    },
+    /// The supplied merkle path could not be parsed, or the root could not
+    /// be computed for this txid.
+    InvalidProof(String),
+    /// The ChainTracker errored (transient) — retry later.
+    TrackerError(String),
+}
+
 /// Storage operations used by the monitor daemon.
 ///
 /// This trait provides dedicated methods for background monitoring tasks.
@@ -994,5 +1017,47 @@ pub trait MonitorStorage: WalletStorageProvider {
             "update_proven_tx_req_status called on storage that does not override this method"
         );
         Ok(())
+    }
+
+    /// Mark a broadcast transaction as seen on the network (spendability gate).
+    ///
+    /// Called by push-status paths (Arcade V2 SSE stream / ARC-style webhook)
+    /// when a transaction reaches `SEEN_ON_NETWORK` or beyond. Maps to the
+    /// existing status model exactly as a successful `post_beef` does:
+    /// proven_tx_req → `unmined`, transaction → `unproven` (both spendable,
+    /// awaiting a merkle proof).
+    ///
+    /// Returns `true` if any record was updated (i.e., the txid was known and
+    /// in a pre-broadcast status).
+    ///
+    /// The default implementation is a no-op returning `false`; concrete
+    /// backends (e.g., `StorageSqlx`) override it.
+    async fn mark_transaction_seen_on_network(&self, txid: &str) -> Result<bool> {
+        tracing::warn!(
+            txid = txid,
+            "mark_transaction_seen_on_network called on storage that does not override this method"
+        );
+        Ok(false)
+    }
+
+    /// Mark a broadcast transaction as fatally rejected by the broadcaster.
+    ///
+    /// Called by push-status paths on terminal-fatal statuses (`REJECTED`,
+    /// `DOUBLE_SPEND_ATTEMPTED`). Sets the proven_tx_req to `doubleSpend` /
+    /// `invalid` so it is never re-broadcast; deeper reconciliation (input
+    /// restoration, UTXO verification) stays with the existing review /
+    /// cleanup machinery.
+    ///
+    /// Returns `true` if any record was updated.
+    ///
+    /// The default implementation is a no-op returning `false`; concrete
+    /// backends (e.g., `StorageSqlx`) override it.
+    async fn mark_transaction_rejected(&self, txid: &str, double_spend: bool) -> Result<bool> {
+        tracing::warn!(
+            txid = txid,
+            double_spend = double_spend,
+            "mark_transaction_rejected called on storage that does not override this method"
+        );
+        Ok(false)
     }
 }

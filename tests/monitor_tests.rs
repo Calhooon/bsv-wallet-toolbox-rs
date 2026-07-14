@@ -242,7 +242,8 @@ mod monitor_integration {
     async fn check_for_proofs_integration() {
         use bsv_rs::transaction::MerklePath;
         use bsv_wallet_toolbox_rs::services::mock::MockResponse;
-        use bsv_wallet_toolbox_rs::GetMerklePathResult;
+        use bsv_wallet_toolbox_rs::services::TxStatusDetail;
+        use bsv_wallet_toolbox_rs::{GetMerklePathResult, GetStatusForTxidsResult};
 
         let txid = "a".repeat(64);
         let height = 850000u32;
@@ -255,8 +256,20 @@ mod monitor_integration {
             .compute_root(Some(&txid))
             .expect("compute_root for coinbase bump");
 
-        // Configure mock to return the valid merkle path.
+        // Configure mock to return the valid merkle path. The triage step
+        // (get_status_for_txids) must report the tx as mined with depth >= 1,
+        // otherwise synchronize_transaction_statuses skips the proof fetch.
         let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: txid.clone(),
+                    status: "mined".to_string(),
+                    depth: Some(2),
+                }],
+            }))
             .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
                 name: Some("MockProvider".to_string()),
                 merkle_path: Some(bump_hex),

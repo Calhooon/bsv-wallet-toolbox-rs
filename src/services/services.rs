@@ -11,7 +11,7 @@ use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
-        Arc, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
+        Arc, Arcade, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
         ChaintracksServiceClient, FallbackChainTracker, WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
@@ -83,6 +83,12 @@ pub struct Services {
 
     /// GorillaPool ARC provider (optional).
     pub arc_gorillapool: Option<StdArc<Arc>>,
+
+    /// Arcade V2 provider (populated when `ServicesOptions::arcade_v2` is set).
+    ///
+    /// Exposed so the Monitor's `ArcadeEventsTask` (and other callers) can
+    /// reach the Arcade base URL and callback token for the SSE status stream.
+    pub arcade: Option<StdArc<Arcade>>,
 
     /// Bitails provider.
     pub bitails: StdArc<Bitails>,
@@ -233,6 +239,13 @@ impl PostBeefService for Arc {
 }
 
 #[async_trait]
+impl PostBeefService for Arcade {
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
+        self.post_beef(beef, txids).await
+    }
+}
+
+#[async_trait]
 impl UtxoStatusService for WhatsOnChain {
     async fn get_utxo_status(
         &self,
@@ -291,8 +304,31 @@ impl Services {
         };
         let whatsonchain = StdArc::new(WhatsOnChain::new(chain, woc_config)?);
 
+        // Arcade V2 mode (explicit flag — never inferred from the URL): the
+        // configured arc_url IS the Arcade endpoint. Build the Arcade
+        // broadcaster from it and point the classic TAAL ARC provider at its
+        // chain default so it remains a meaningful BEEF-capable failover.
+        let arcade = if options.arcade_v2 {
+            Some(StdArc::new(Arcade::new(
+                options.arc_url.clone(),
+                options.arcade_config.clone(),
+                Some("ArcadeV2"),
+            )?))
+        } else {
+            None
+        };
+
+        let arc_taal_url = if options.arcade_v2 {
+            match chain {
+                Chain::Main => crate::services::providers::arc::ARC_TAAL_MAINNET.to_string(),
+                Chain::Test => crate::services::providers::arc::ARC_TAAL_TESTNET.to_string(),
+            }
+        } else {
+            options.arc_url.clone()
+        };
+
         let arc_taal = StdArc::new(Arc::new(
-            options.arc_url.clone(),
+            arc_taal_url,
             options.arc_config.clone(),
             Some("arcTaal"),
         )?);
@@ -365,6 +401,15 @@ impl Services {
         // ARC accepts and actually federates, so we try it first and fall
         // back to GorillaPool (still useful when TAAL is degraded).
         let mut post_beef_services = ServiceCollection::new("postBeef");
+        // Arcade V2 (when enabled) goes first: it is the explicitly configured
+        // primary broadcaster. Classic ARC providers stay behind it as
+        // failover so a transient Arcade outage never blocks a broadcast.
+        if let Some(ref arcade_provider) = arcade {
+            post_beef_services.add(
+                "ArcadeV2",
+                StdArc::clone(arcade_provider) as PostBeefProvider,
+            );
+        }
         post_beef_services.add("TaalArcBeef", StdArc::clone(&arc_taal) as PostBeefProvider);
         if let Some(ref gp) = arc_gorillapool {
             post_beef_services.add("GorillaPoolArcBeef", StdArc::clone(gp) as PostBeefProvider);
@@ -409,6 +454,7 @@ impl Services {
             whatsonchain,
             arc_taal,
             arc_gorillapool,
+            arcade,
             bitails,
             bhs,
             chaintracks,

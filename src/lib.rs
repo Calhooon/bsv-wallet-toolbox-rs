@@ -69,8 +69,8 @@ pub use error::{Error, Result};
 
 // Re-export storage types
 pub use storage::{
-    AuthId, MonitorStorage, WalletStorageProvider, WalletStorageReader, WalletStorageSync,
-    WalletStorageWriter,
+    AuthId, MonitorStorage, ProofIngestOutcome, WalletStorageProvider, WalletStorageReader,
+    WalletStorageSync, WalletStorageWriter,
 };
 
 // Broadcast classification is feature-independent
@@ -100,13 +100,14 @@ pub use chaintracks::{
 
 // Re-export Services types
 pub use services::{
-    AdaptiveTimeoutConfig, Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeader,
-    BlockHeaderService, BsvExchangeRate, Chain, FallbackChainTracker, FiatCurrency,
-    FiatExchangeRates, GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult,
-    GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput,
-    PostBeefResult, PostTxResultForTxid, ScriptHistoryItem, ServiceCallHistory, ServiceCollection,
-    Services, ServicesOptions, TxStatusDetail, UtxoDetail, WalletServices, WhatsOnChain,
-    WhatsOnChainConfig,
+    arcade_status_rank, beef_to_ef_batch, is_fatal_status, AdaptiveTimeoutConfig, Arc, ArcConfig,
+    Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent, ArcadeTxInfo, BhsConfig, Bitails,
+    BitailsConfig, BlockHeader, BlockHeaderService, BsvExchangeRate, Chain, FallbackChainTracker,
+    FiatCurrency, FiatExchangeRates, GetMerklePathResult, GetRawTxResult,
+    GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
+    GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, ScriptHistoryItem,
+    ServiceCallHistory, ServiceCollection, Services, ServicesOptions, TxStatusDetail, UtxoDetail,
+    WalletServices, WhatsOnChain, WhatsOnChainConfig, ARCADE_V2_MAINNET,
 };
 
 // Re-export Wallet types
@@ -117,7 +118,8 @@ pub use wallet::{
 
 // Re-export Monitor types
 pub use monitor::{
-    Monitor, MonitorOptions, MonitorTask, TaskConfig, TaskResult, TransactionStatusUpdate,
+    ArcadeMonitorConfig, Monitor, MonitorOptions, MonitorTask, TaskConfig, TaskResult,
+    TransactionStatusUpdate,
 };
 
 // Re-export Managers types

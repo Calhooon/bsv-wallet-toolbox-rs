@@ -51,8 +51,10 @@ pub use collection::{
     ServiceToCall,
 };
 pub use providers::{
-    Arc, ArcConfig, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
-    ChaintracksServiceClient, FallbackChainTracker, WhatsOnChain, WhatsOnChainConfig,
+    arcade_status_rank, beef_to_ef_batch, is_fatal_status, Arc, ArcConfig, Arcade, ArcadeConfig,
+    ArcadeSseClient, ArcadeStatusEvent, ArcadeTxInfo, BhsConfig, Bitails, BitailsConfig,
+    BlockHeaderService, ChaintracksConfig, ChaintracksServiceClient, FallbackChainTracker,
+    SseEvent, SseFrameParser, WhatsOnChain, WhatsOnChainConfig, ARCADE_V2_MAINNET,
 };
 pub use services::Services;
 
@@ -76,6 +78,23 @@ pub struct ServicesOptions {
 
     /// ARC configuration for GorillaPool
     pub arc_gorillapool_config: Option<ArcConfig>,
+
+    /// Treat `arc_url` as an **Arcade V2** endpoint (EF-only, always-async).
+    ///
+    /// This is an EXPLICIT flag — the toolbox never guesses Arcade mode from
+    /// URL substrings. When `true`:
+    /// - An [`Arcade`] broadcaster is registered as the FIRST postBeef
+    ///   provider (name `ArcadeV2`), converting BEEF ancestry to EF batches.
+    /// - The classic TAAL ARC provider falls back to its chain default URL
+    ///   (since `arc_url` now points at Arcade) and remains as failover.
+    /// - [`Services::arcade`] is populated so callers (e.g. the Monitor's
+    ///   `ArcadeEventsTask`) can reach the SSE stream / callback token.
+    ///
+    /// Set via [`ServicesOptions::with_arcade`].
+    pub arcade_v2: bool,
+
+    /// Arcade V2 configuration (callback token/url, validation skips).
+    pub arcade_config: Option<ArcadeConfig>,
 
     /// Block Header Service URL (optional)
     pub bhs_url: Option<String>,
@@ -108,6 +127,8 @@ impl Default for ServicesOptions {
             arc_config: None,
             arc_gorillapool_url: Some("https://arc.gorillapool.io".to_string()),
             arc_gorillapool_config: None,
+            arcade_v2: false,
+            arcade_config: None,
             bhs_url: None,
             bhs_api_key: None,
             chaintracks_url: None,
@@ -150,6 +171,25 @@ impl ServicesOptions {
     pub fn with_arc(mut self, url: impl Into<String>, config: Option<ArcConfig>) -> Self {
         self.arc_url = url.into();
         self.arc_config = config;
+        self
+    }
+
+    /// Use an **Arcade V2** endpoint as the primary broadcaster.
+    ///
+    /// Sets `arc_url` to the Arcade endpoint and flips `arcade_v2 = true`
+    /// (explicit opt-in — never inferred from the URL). See
+    /// [`ServicesOptions::arcade_v2`] for the resulting provider wiring.
+    ///
+    /// ```rust,ignore
+    /// let opts = ServicesOptions::mainnet().with_arcade(
+    ///     bsv_wallet_toolbox_rs::services::ARCADE_V2_MAINNET,
+    ///     Some(ArcadeConfig::with_callback_token("my-32-hex-token")),
+    /// );
+    /// ```
+    pub fn with_arcade(mut self, url: impl Into<String>, config: Option<ArcadeConfig>) -> Self {
+        self.arc_url = url.into();
+        self.arcade_v2 = true;
+        self.arcade_config = config;
         self
     }
 

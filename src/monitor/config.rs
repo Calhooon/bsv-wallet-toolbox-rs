@@ -23,6 +23,21 @@ pub struct TransactionStatusUpdate {
     pub block_hash: Option<String>,
 }
 
+/// Arcade V2 event-stream configuration for the Monitor.
+///
+/// When set (and `tasks.arcade_events.enabled`), the Monitor starts the
+/// `ArcadeEventsTask`, which subscribes outbound to
+/// `GET {url}/events?callbackToken={callback_token}` for push status updates
+/// (spendability gate on SEEN_ON_NETWORK, immediate proof fetch on MINED).
+/// Leave `None` for classic ARC deployments — the task is then never started.
+#[derive(Debug, Clone)]
+pub struct ArcadeMonitorConfig {
+    /// Arcade V2 base URL (e.g. `https://arcade-v2-us-1.bsvblockchain.tech`).
+    pub url: String,
+    /// Per-wallet callback token scoping the SSE stream.
+    pub callback_token: String,
+}
+
 /// Configuration options for the Monitor daemon.
 #[derive(Clone)]
 pub struct MonitorOptions {
@@ -30,6 +45,9 @@ pub struct MonitorOptions {
     pub tasks: TasksConfig,
     /// Minimum age for transactions to be considered abandoned.
     pub fail_abandoned_timeout: Duration,
+    /// Arcade V2 SSE configuration. `None` (default) disables the
+    /// `ArcadeEventsTask` regardless of `tasks.arcade_events.enabled`.
+    pub arcade: Option<ArcadeMonitorConfig>,
     /// Callback invoked when a transaction has been broadcast.
     pub on_tx_broadcasted: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
     /// Callback invoked when a transaction proof has been obtained.
@@ -58,6 +76,7 @@ impl Default for MonitorOptions {
         Self {
             tasks: TasksConfig::default(),
             fail_abandoned_timeout: Duration::from_secs(5 * 60), // 5 minutes (matches TS/Go)
+            arcade: None,
             on_tx_broadcasted: None,
             on_tx_proven: None,
         }
@@ -67,6 +86,9 @@ impl Default for MonitorOptions {
 /// Configuration for all monitor tasks.
 #[derive(Debug, Clone)]
 pub struct TasksConfig {
+    /// Arcade V2 SSE status subscriber configuration. Only takes effect when
+    /// `MonitorOptions::arcade` is also set.
+    pub arcade_events: TaskConfig,
     /// Check for proofs task configuration.
     pub check_for_proofs: TaskConfig,
     /// Send waiting transactions task configuration.
@@ -98,6 +120,11 @@ pub struct TasksConfig {
 impl Default for TasksConfig {
     fn default() -> Self {
         Self {
+            arcade_events: TaskConfig {
+                enabled: true,                     // gated on MonitorOptions::arcade being Some
+                interval: Duration::from_secs(60), // health-report cadence; SSE loop is persistent
+                start_immediately: true,
+            },
             check_for_proofs: TaskConfig {
                 enabled: true,
                 interval: Duration::from_secs(60), // 1 minute

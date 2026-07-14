@@ -14,9 +14,9 @@ use crate::{Error, Result};
 
 use super::config::{MonitorOptions, TaskConfig};
 use super::tasks::{
-    CheckForProofsTask, CheckNoSendsTask, ClockTask, CompactBeefTask, FailAbandonedTask,
-    MonitorCallHistoryTask, MonitorTask, NewHeaderTask, PurgeTask, ReorgTask, ReviewStatusTask,
-    SendWaitingTask, SyncWhenIdleTask, TaskResult, TaskType, UnfailTask,
+    ArcadeEventsTask, CheckForProofsTask, CheckNoSendsTask, ClockTask, CompactBeefTask,
+    FailAbandonedTask, MonitorCallHistoryTask, MonitorTask, NewHeaderTask, PurgeTask, ReorgTask,
+    ReviewStatusTask, SendWaitingTask, SyncWhenIdleTask, TaskResult, TaskType, UnfailTask,
 };
 
 /// Generate random bytes using the `rand` crate's thread-local CSPRNG.
@@ -200,25 +200,48 @@ where
             handles.insert(TaskType::Reorg, handle);
         }
 
-        // Start check_for_proofs task, wired to new_header's trigger flag.
-        // TS pattern: Monitor.processNewBlockHeader sets TaskCheckForProofs.checkNow = true.
+        // Shared CheckForProofs trigger flag. Raised by:
+        // - NewHeaderTask when a new block header is detected (TS pattern:
+        //   Monitor.processNewBlockHeader sets TaskCheckForProofs.checkNow), and
+        // - ArcadeEventsTask on a MINED SSE event (event-driven proof fetch).
+        let proofs_trigger: Arc<AtomicBool> = new_header_task
+            .as_ref()
+            .map(|nht| nht.new_header_received_flag())
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+        // Start check_for_proofs task, wired to the shared trigger flag.
         if self.options.tasks.check_for_proofs.enabled {
-            let task = if let Some(ref nht) = new_header_task {
-                // Share the new_header_received flag directly from NewHeaderTask
-                CheckForProofsTask::with_trigger(
-                    self.storage.clone(),
-                    self.services.clone(),
-                    nht.new_header_received_flag(),
-                )
-            } else {
-                CheckForProofsTask::new(self.storage.clone(), self.services.clone())
-            };
+            let task = CheckForProofsTask::with_trigger(
+                self.storage.clone(),
+                self.services.clone(),
+                proofs_trigger.clone(),
+            );
             let handle = self.spawn_task(
                 TaskType::CheckForProofs,
                 Arc::new(task),
                 &self.options.tasks.check_for_proofs,
             );
             handles.insert(TaskType::CheckForProofs, handle);
+        }
+
+        // Start arcade_events task — ONLY when Arcade V2 is configured.
+        // With classic ARC configured (options.arcade == None) the task is
+        // never registered, so non-Arcade deployments are unaffected.
+        if self.options.tasks.arcade_events.enabled {
+            if let Some(ref arcade_cfg) = self.options.arcade {
+                let task = ArcadeEventsTask::new(
+                    self.storage.clone(),
+                    arcade_cfg.url.clone(),
+                    arcade_cfg.callback_token.clone(),
+                    proofs_trigger.clone(),
+                );
+                let handle = self.spawn_task(
+                    TaskType::ArcadeEvents,
+                    Arc::new(task),
+                    &self.options.tasks.arcade_events,
+                );
+                handles.insert(TaskType::ArcadeEvents, handle);
+            }
         }
 
         // Start send_waiting task
@@ -604,6 +627,7 @@ mod tests {
     #[test]
     fn test_all_task_types_have_names() {
         let task_types = [
+            TaskType::ArcadeEvents,
             TaskType::CheckForProofs,
             TaskType::SendWaiting,
             TaskType::FailAbandoned,
@@ -620,7 +644,7 @@ mod tests {
         for tt in &task_types {
             assert!(!tt.as_str().is_empty());
         }
-        assert_eq!(task_types.len(), 12);
+        assert_eq!(task_types.len(), 13);
     }
 
     #[test]

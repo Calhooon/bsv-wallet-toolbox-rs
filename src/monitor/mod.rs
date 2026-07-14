@@ -20,6 +20,6 @@ mod config;
 mod daemon;
 pub mod tasks;
 
-pub use config::{MonitorOptions, TaskConfig, TransactionStatusUpdate};
+pub use config::{ArcadeMonitorConfig, MonitorOptions, TaskConfig, TransactionStatusUpdate};
 pub use daemon::{Monitor, MonitorHealth, TaskHealth};
-pub use tasks::{MonitorTask, TaskResult};
+pub use tasks::{ArcadeEventsTask, MonitorTask, TaskResult};

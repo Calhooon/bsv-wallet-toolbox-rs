@@ -2596,8 +2596,153 @@ impl WalletStorageProvider for StorageSqlx {
 // MonitorStorage Implementation
 // =============================================================================
 
-use crate::storage::traits::{MonitorStorage, TxSynchronizedStatus};
+use crate::storage::traits::{MonitorStorage, ProofIngestOutcome, TxSynchronizedStatus};
 use std::time::Duration;
+
+impl StorageSqlx {
+    /// Validate and store a merkle proof for a transaction, completing its
+    /// proven_tx_req and transaction records.
+    ///
+    /// This is the single convergence point for EVERY proof-delivery path:
+    /// - the polling `synchronize_transaction_statuses` (CheckForProofs task),
+    /// - an Arcade/ARC `MINED` webhook carrying `merklePath`,
+    /// - an SSE-MINED-triggered focused fetch,
+    /// - a `bsv-wallet-relay` queue drain.
+    ///
+    /// Steps:
+    /// 1. Parse the BUMP binary and compute its merkle root for `txid`.
+    /// 2. Validate the root against the storage's ChainTracker at
+    ///    `block_height` (skipped with a debug log if no tracker is wired).
+    /// 3. `INSERT OR IGNORE INTO proven_txs` (raw_tx sourced from existing
+    ///    transactions / proven_tx_reqs rows).
+    /// 4. Mark the proven_tx_req and transaction `completed`.
+    ///
+    /// Invalid or unverifiable proofs are NEVER stored; the outcome tells the
+    /// caller whether to retry (see [`ProofIngestOutcome`]).
+    ///
+    /// `header_merkle_root` is stored when provided (e.g. from a block header
+    /// lookup); otherwise the computed root — which the ChainTracker just
+    /// validated — is stored.
+    pub async fn ingest_merkle_proof(
+        &self,
+        txid: &str,
+        merkle_path_bytes: &[u8],
+        block_height: u32,
+        block_hash: &str,
+        header_merkle_root: Option<&str>,
+    ) -> Result<ProofIngestOutcome> {
+        let bump = match MerklePath::from_binary(merkle_path_bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                return Ok(ProofIngestOutcome::InvalidProof(format!(
+                    "failed to parse merkle path: {}",
+                    e
+                )))
+            }
+        };
+
+        let computed_root = match bump.compute_root(Some(txid)) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(ProofIngestOutcome::InvalidProof(format!(
+                    "failed to compute merkle root: {}",
+                    e
+                )))
+            }
+        };
+
+        // Layer 1: Validate the merkle proof before storing. Bad proofs
+        // (e.g. from provider rate limiting) are rejected instead of stored
+        // permanently.
+        if let Some(tracker) = self.get_chain_tracker().await {
+            match tracker
+                .is_valid_root_for_height(&computed_root, block_height)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Ok(ProofIngestOutcome::InvalidMerkleRoot { computed_root });
+                }
+                Err(e) => {
+                    return Ok(ProofIngestOutcome::TrackerError(e.to_string()));
+                }
+            }
+        } else {
+            tracing::debug!(
+                "ingest_merkle_proof: no ChainTracker available, skipping merkle root verification for txid {}",
+                txid
+            );
+        }
+
+        let merkle_root = header_merkle_root
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| computed_root.clone());
+        let now = chrono::Utc::now();
+
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+            VALUES (?, ?, 0, ?, ?,  ?,
+                COALESCE(
+                    (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
+                    (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
+                ),
+                ?, ?)
+            "#,
+        )
+        .bind(txid)
+        .bind(block_height as i64)
+        .bind(block_hash)
+        .bind(&merkle_root)
+        .bind(merkle_path_bytes)
+        .bind(txid)
+        .bind(txid)
+        .bind(now)
+        .bind(now)
+        .execute(self.pool())
+        .await?;
+
+        // Get the proven_tx_id
+        let proven_tx_id: Option<(i64,)> =
+            sqlx::query_as("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+                .bind(txid)
+                .fetch_optional(self.pool())
+                .await?;
+
+        // Update proven_tx_req to completed
+        sqlx::query(
+            r#"
+            UPDATE proven_tx_reqs
+            SET status = 'completed', proven_tx_id = ?, updated_at = ?
+            WHERE txid = ?
+            "#,
+        )
+        .bind(proven_tx_id.map(|r| r.0))
+        .bind(now)
+        .bind(txid)
+        .execute(self.pool())
+        .await?;
+
+        // Update transaction status to completed and link proof
+        sqlx::query(
+            "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?"
+        )
+        .bind(proven_tx_id.map(|r| r.0))
+        .bind(now)
+        .bind(txid)
+        .execute(self.pool())
+        .await?;
+
+        Ok(ProofIngestOutcome::Ingested(TxSynchronizedStatus {
+            txid: txid.to_string(),
+            status: ProvenTxReqStatus::Completed,
+            block_height: Some(block_height),
+            block_hash: Some(block_hash.to_string()),
+            merkle_root: Some(merkle_root),
+            merkle_path: Some(merkle_path_bytes.to_vec()),
+        }))
+    }
+}
 
 #[async_trait]
 impl MonitorStorage for StorageSqlx {
@@ -2623,7 +2768,6 @@ impl MonitorStorage for StorageSqlx {
         }
 
         let services = self.get_services()?;
-        let chain_tracker = self.get_chain_tracker().await;
 
         tracing::debug!(
             "synchronize_transaction_statuses: checking {} transactions",
@@ -2747,94 +2891,48 @@ impl MonitorStorage for StorageSqlx {
                         // Decode hex → binary for storage. Fallback to raw bytes if not hex.
                         let merkle_path_bytes = hex::decode(merkle_path)
                             .unwrap_or_else(|_| merkle_path.as_bytes().to_vec());
-                        let merkle_root = proof_result
-                            .header
-                            .as_ref()
-                            .map(|h| h.merkle_root.clone())
-                            .unwrap_or_default();
+                        let header_merkle_root =
+                            proof_result.header.as_ref().map(|h| h.merkle_root.clone());
 
-                        // Layer 1: Validate merkle proof before storing.
-                        // Parse the BUMP, compute the merkle root, and verify
-                        // against ChainTracker. Bad proofs (e.g. from WoC rate
-                        // limiting) are rejected instead of stored permanently.
-                        match MerklePath::from_binary(&merkle_path_bytes) {
-                            Ok(bump) => {
-                                match bump.compute_root(Some(txid)) {
-                                    Ok(computed_root) => {
-                                        if let Some(ref tracker) = chain_tracker {
-                                            match tracker
-                                                .is_valid_root_for_height(
-                                                    &computed_root,
-                                                    block_height,
-                                                )
-                                                .await
-                                            {
-                                                Ok(true) => {
-                                                    // Root is valid, proceed to INSERT
-                                                }
-                                                Ok(false) => {
-                                                    tracing::warn!(
-                                                        "synchronize_transaction_statuses: invalid merkle root for txid {} at height {} (computed {}, provider header {}). ChainTracker rejected root. Skipping.",
-                                                        txid, block_height, computed_root, merkle_root
-                                                    );
-                                                    let attempts = req.attempts + 1;
-                                                    sqlx::query(
-                                                        "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
-                                                    )
-                                                    .bind(attempts)
-                                                    .bind(now)
-                                                    .bind(req.proven_tx_req_id)
-                                                    .execute(self.pool())
-                                                    .await?;
-                                                    continue;
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        "synchronize_transaction_statuses: ChainTracker error for txid {} at height {}: {}. Skipping.",
-                                                        txid, block_height, e
-                                                    );
-                                                    let attempts = req.attempts + 1;
-                                                    sqlx::query(
-                                                        "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
-                                                    )
-                                                    .bind(attempts)
-                                                    .bind(now)
-                                                    .bind(req.proven_tx_req_id)
-                                                    .execute(self.pool())
-                                                    .await?;
-                                                    continue;
-                                                }
-                                            }
-                                        } else {
-                                            tracing::debug!(
-                                                "synchronize_transaction_statuses: no ChainTracker available, skipping merkle root verification for txid {}",
-                                                txid
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "synchronize_transaction_statuses: failed to compute merkle root for txid {}: {}. Skipping.",
-                                            txid, e
-                                        );
-                                        let attempts = req.attempts + 1;
-                                        sqlx::query(
-                                            "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
-                                        )
-                                        .bind(attempts)
-                                        .bind(now)
-                                        .bind(req.proven_tx_req_id)
-                                        .execute(self.pool())
-                                        .await?;
-                                        continue;
-                                    }
-                                }
+                        // Layer 1 validation + storage via the shared ingest
+                        // path — the same function the Arcade webhook and
+                        // SSE-MINED delivery converge on. Bad proofs (e.g. from
+                        // WoC rate limiting) are rejected instead of stored.
+                        match self
+                            .ingest_merkle_proof(
+                                txid,
+                                &merkle_path_bytes,
+                                block_height,
+                                &block_hash,
+                                header_merkle_root.as_deref(),
+                            )
+                            .await?
+                        {
+                            ProofIngestOutcome::Ingested(status) => {
+                                results.push(status);
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "synchronize_transaction_statuses: failed to parse merkle path for txid {}: {}. Skipping.",
-                                    txid, e
-                                );
+                            not_ingested => {
+                                match &not_ingested {
+                                    ProofIngestOutcome::InvalidMerkleRoot { computed_root } => {
+                                        tracing::warn!(
+                                            "synchronize_transaction_statuses: invalid merkle root for txid {} at height {} (computed {}). ChainTracker rejected root. Skipping.",
+                                            txid, block_height, computed_root
+                                        );
+                                    }
+                                    ProofIngestOutcome::TrackerError(e) => {
+                                        tracing::warn!(
+                                            "synchronize_transaction_statuses: ChainTracker error for txid {} at height {}: {}. Skipping.",
+                                            txid, block_height, e
+                                        );
+                                    }
+                                    ProofIngestOutcome::InvalidProof(e) => {
+                                        tracing::warn!(
+                                            "synchronize_transaction_statuses: {} for txid {}. Skipping.",
+                                            e, txid
+                                        );
+                                    }
+                                    ProofIngestOutcome::Ingested(_) => unreachable!(),
+                                }
                                 let attempts = req.attempts + 1;
                                 sqlx::query(
                                     "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
@@ -2847,69 +2945,6 @@ impl MonitorStorage for StorageSqlx {
                                 continue;
                             }
                         }
-
-                        sqlx::query(
-                            r#"
-                            INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
-                            VALUES (?, ?, 0, ?, ?,  ?,
-                                COALESCE(
-                                    (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
-                                    (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
-                                ),
-                                ?, ?)
-                            "#,
-                        )
-                        .bind(txid)
-                        .bind(block_height as i64)
-                        .bind(&block_hash)
-                        .bind(&merkle_root)
-                        .bind(&merkle_path_bytes)
-                        .bind(txid)
-                        .bind(txid)
-                        .bind(now)
-                        .bind(now)
-                        .execute(self.pool())
-                        .await?;
-
-                        // Get the proven_tx_id
-                        let proven_tx_id: Option<(i64,)> =
-                            sqlx::query_as("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
-                                .bind(txid)
-                                .fetch_optional(self.pool())
-                                .await?;
-
-                        // Update proven_tx_req to completed
-                        sqlx::query(
-                            r#"
-                            UPDATE proven_tx_reqs
-                            SET status = 'completed', proven_tx_id = ?, updated_at = ?
-                            WHERE proven_tx_req_id = ?
-                            "#,
-                        )
-                        .bind(proven_tx_id.map(|r| r.0))
-                        .bind(now)
-                        .bind(req.proven_tx_req_id)
-                        .execute(self.pool())
-                        .await?;
-
-                        // Update transaction status to completed and link proof
-                        sqlx::query(
-                            "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?"
-                        )
-                        .bind(proven_tx_id.map(|r| r.0))
-                        .bind(now)
-                        .bind(txid)
-                        .execute(self.pool())
-                        .await?;
-
-                        results.push(TxSynchronizedStatus {
-                            txid: txid.clone(),
-                            status: ProvenTxReqStatus::Completed,
-                            block_height: Some(block_height),
-                            block_hash: Some(block_hash),
-                            merkle_root: Some(merkle_root),
-                            merkle_path: Some(merkle_path_bytes.to_vec()),
-                        });
                     } else {
                         // No proof yet - increment attempts
                         let attempts = req.attempts + 1;
@@ -4308,6 +4343,81 @@ impl MonitorStorage for StorageSqlx {
         );
 
         Ok(())
+    }
+
+    async fn mark_transaction_seen_on_network(&self, txid: &str) -> Result<bool> {
+        let now = chrono::Utc::now();
+
+        // Same transition a successful post_beef broadcast performs in
+        // send_waiting_transactions: req → 'unmined' (awaiting proof),
+        // tx → 'unproven' (spendable). Only lift PRE-broadcast statuses —
+        // never demote 'completed'.
+        let req_result = sqlx::query(
+            "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? \
+             WHERE txid = ? AND status IN ('unsent', 'sending', 'unknown', 'callback', 'unconfirmed')",
+        )
+        .bind(now)
+        .bind(txid)
+        .execute(self.pool())
+        .await?;
+
+        let tx_result = sqlx::query(
+            "UPDATE transactions SET status = 'unproven', updated_at = ? \
+             WHERE txid = ? AND status = 'sending'",
+        )
+        .bind(now)
+        .bind(txid)
+        .execute(self.pool())
+        .await?;
+
+        let updated = req_result.rows_affected() > 0 || tx_result.rows_affected() > 0;
+        if updated {
+            tracing::info!(txid = %txid, "marked seen-on-network: proven_tx_req → unmined, transaction → unproven");
+        }
+        Ok(updated)
+    }
+
+    async fn mark_transaction_rejected(&self, txid: &str, double_spend: bool) -> Result<bool> {
+        let now = chrono::Utc::now();
+        let req_status = if double_spend {
+            "doubleSpend"
+        } else {
+            "invalid"
+        };
+
+        // Terminal-fatal broadcaster verdict: stop re-broadcasting. Deeper
+        // reconciliation (input restoration with UTXO verification, change
+        // invalidation) remains with the existing review/cleanup machinery,
+        // which keys off these req statuses.
+        let req_result = sqlx::query(
+            "UPDATE proven_tx_reqs SET status = ?, updated_at = ? \
+             WHERE txid = ? AND status NOT IN ('completed', 'doubleSpend', 'invalid', 'failed')",
+        )
+        .bind(req_status)
+        .bind(now)
+        .bind(txid)
+        .execute(self.pool())
+        .await?;
+
+        let tx_result = sqlx::query(
+            "UPDATE transactions SET status = 'failed', updated_at = ? \
+             WHERE txid = ? AND status IN ('sending', 'unproven')",
+        )
+        .bind(now)
+        .bind(txid)
+        .execute(self.pool())
+        .await?;
+
+        let updated = req_result.rows_affected() > 0 || tx_result.rows_affected() > 0;
+        if updated {
+            tracing::warn!(
+                txid = %txid,
+                double_spend = double_spend,
+                "marked rejected by broadcaster: proven_tx_req → {}, transaction → failed",
+                req_status
+            );
+        }
+        Ok(updated)
     }
 }
 
