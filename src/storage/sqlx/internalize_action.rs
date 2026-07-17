@@ -10,7 +10,9 @@
 
 use crate::error::{Error, Result};
 use crate::storage::entities::{TableOutput, TableTransaction, TransactionStatus};
-use crate::storage::traits::{BeefVerificationMode, StorageInternalizeActionResult};
+use crate::storage::traits::{
+    BeefVerificationMode, StorageInternalizeActionResult, WalletStorageReader,
+};
 use bsv_rs::transaction::Beef;
 use bsv_rs::wallet::{
     BasketInsertion, InternalizeActionArgs, InternalizeActionResult, WalletPayment,
@@ -242,10 +244,10 @@ pub async fn internalize_action_internal(
     let status = if has_proof { "completed" } else { "unproven" };
 
     let transaction_id = if is_merge {
-        let tx_id = existing_tx
+        let etx = existing_tx
             .as_ref()
-            .expect("is_merge guarantees existing_tx is Some")
-            .transaction_id;
+            .expect("is_merge guarantees existing_tx is Some");
+        let tx_id = etx.transaction_id;
 
         // Update description
         let now = Utc::now();
@@ -257,6 +259,74 @@ pub async fn internalize_action_internal(
         .bind(tx_id)
         .execute(&mut *tx)
         .await?;
+
+        // Lifecycle advance when merging into a 'nosend' transaction.
+        // TS parity: wallet-toolbox storage/methods/internalizeAction.ts:526-554
+        // (mergedInternalize, the `wasNoSend` block).
+        //
+        // An internalizeAction call against an existing tx in 'nosend' status
+        // is the caller asserting the tx has now been externally broadcast
+        // (and mined, if the BEEF carries a BUMP). Without this advance the
+        // tx stays 'nosend' forever: coin selection requires
+        // t.status IN ('completed','unproven') (create_action.rs
+        // allocate_change_input), so the merged outputs would be permanently
+        // unselectable — 'nosend' has no other retirement path.
+        //
+        // With BUMP: promote tx -> 'completed' and retire req 'nosend' ->
+        // 'completed' (TS also records a proven_txs row here; this crate's
+        // internalize path leaves proof ingestion to CheckForProofs, matching
+        // its non-merge path which also sets 'completed' without a proven_txs
+        // row).
+        // Without BUMP: promote tx -> 'unproven' and advance the req to
+        // 'unmined' (creating it if absent) so CheckForProofs owns it.
+        //
+        // Other statuses are intentionally left alone ('sending' is owned by
+        // SendWaiting; 'unproven'/'completed' by CheckForProofs) — this
+        // mirrors the TS `wasNoSend` gate exactly.
+        if etx.status == TransactionStatus::NoSend {
+            if has_proof {
+                sqlx::query(
+                    "UPDATE transactions SET status = 'completed', updated_at = ? WHERE transaction_id = ?",
+                )
+                .bind(now)
+                .bind(tx_id)
+                .execute(&mut *tx)
+                .await?;
+
+                sqlx::query(
+                    "UPDATE proven_tx_reqs SET status = 'completed', updated_at = ? WHERE txid = ? AND status = 'nosend'",
+                )
+                .bind(now)
+                .bind(&txid)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    "UPDATE transactions SET status = 'unproven', updated_at = ? WHERE transaction_id = ?",
+                )
+                .bind(now)
+                .bind(tx_id)
+                .execute(&mut *tx)
+                .await?;
+
+                let advanced = sqlx::query(
+                    "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status = 'nosend'",
+                )
+                .bind(now)
+                .bind(&txid)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+
+                if advanced == 0 {
+                    // No 'nosend' req to advance. If a req exists in another
+                    // status its current owner keeps it (create is a no-op);
+                    // if none exists, create one as 'unmined' so
+                    // CheckForProofs tracks this now-broadcast txid.
+                    create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, "unmined").await?;
+                }
+            }
+        }
 
         tx_id
     } else {
@@ -459,14 +529,28 @@ pub async fn internalize_action_internal(
     // Store the complete BEEF in proven_tx_reqs so it can be used when building
     // output BEEFs for spending. This is especially important for unconfirmed
     // transactions where we need the ancestor chain.
+    let mut new_req_created = false;
     if !has_proof && !is_merge {
-        create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx).await?;
+        new_req_created = create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, "unsent").await?;
     }
 
     // Commit the SQL transaction. All DB operations above are now atomically persisted.
     tx.commit()
         .await
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
+
+    // Step 11: Synchronous broadcast for a brand-new req.
+    // TS parity: wallet-toolbox storage/methods/internalizeAction.ts:598-623
+    // (newInternalize), which calls shareReqsWithWorld inline when `pr.isNew`
+    // and aborts the internalize on hard rejection. Deferring the broadcast
+    // to the SendWaiting task (previous behavior) meant a minutes-later
+    // RE-broadcast of a tx the payer already put on the network, which could
+    // be scored as orphan/double-spend and zero the outputs' spendability.
+    // Committing the state import first is crash-safe: if we die before the
+    // broadcast, the req is 'unsent' and SendWaiting remains the backstop.
+    if new_req_created {
+        broadcast_new_internalized_req(storage, &txid, &args.tx).await?;
+    }
 
     Ok(StorageInternalizeActionResult {
         base: InternalizeActionResult { accepted: true },
@@ -548,11 +632,16 @@ fn parse_transaction_status(status: &str) -> TransactionStatus {
     }
 }
 
+/// Validates that a pre-existing transaction may be merged into.
+///
+/// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:327-332 —
+/// statuses outside completed/unproven/sending/nosend are rejected.
 fn validate_merge_status(status: &TransactionStatus) -> Result<()> {
     match status {
-        TransactionStatus::Completed | TransactionStatus::Unproven | TransactionStatus::NoSend => {
-            Ok(())
-        }
+        TransactionStatus::Completed
+        | TransactionStatus::Unproven
+        | TransactionStatus::Sending
+        | TransactionStatus::NoSend => Ok(()),
         _ => Err(Error::ValidationError(format!(
             "Target transaction of internalizeAction has invalid status: {:?}",
             status
@@ -798,20 +887,27 @@ async fn get_known_txids(storage: &StorageSqlx, user_id: i64) -> Result<HashSet<
 
 /// Creates a proven transaction request for an internalized transaction.
 ///
-/// Status is set to `'unsent'` so that `send_waiting_transactions` will
-/// pick it up and broadcast it. This matches the Go wallet-toolbox approach
-/// where internalization is a pure state import and broadcast is handled
-/// asynchronously by the monitor daemon.
+/// On the non-merge path the req is created `'unsent'` and then immediately
+/// broadcast by `broadcast_new_internalized_req` (TS parity: newInternalize's
+/// shareReqsWithWorld). If the broadcast is transiently unavailable, the
+/// `'unsent'` status keeps `send_waiting_transactions` as the retry backstop.
+/// The nosend merge path creates it `'unmined'` (already broadcast externally)
+/// so CheckForProofs owns it.
 ///
 /// Stores both the raw transaction and the complete incoming BEEF.
 /// The input_beef is crucial for spending — it contains ancestor transactions
 /// that are needed to construct valid BEEFs for outputs of this transaction.
+///
+/// Returns `true` if a new req was created, `false` if one already existed
+/// (in which case its current status/owner is left untouched — TS parity
+/// with `pr.isNew`).
 async fn create_proven_tx_req(
     conn: &mut SqliteConnection,
     txid: &str,
     raw_tx: &[u8],
     input_beef: &[u8],
-) -> Result<()> {
+    status: &str,
+) -> Result<bool> {
     let now = Utc::now();
 
     // Check if already exists
@@ -821,7 +917,7 @@ async fn create_proven_tx_req(
         .await?;
 
     if existing.is_some() {
-        return Ok(());
+        return Ok(false);
     }
 
     sqlx::query(
@@ -829,16 +925,153 @@ async fn create_proven_tx_req(
         INSERT INTO proven_tx_reqs (
             txid, status, attempts, history, notify, notified, raw_tx, input_beef, created_at, updated_at
         )
-        VALUES (?, 'unsent', 0, '{}', '{}', 0, ?, ?, ?, ?)
+        VALUES (?, ?, 0, '{}', '{}', 0, ?, ?, ?, ?)
         "#,
     )
     .bind(txid)
+    .bind(status)
     .bind(raw_tx)
     .bind(input_beef)
     .bind(now)
     .bind(now)
     .execute(&mut *conn)
     .await?;
+
+    Ok(true)
+}
+
+// =============================================================================
+// Synchronous Broadcast (new-path internalize)
+// =============================================================================
+
+/// Synchronously broadcast a newly internalized (proof-less, non-merge)
+/// transaction.
+///
+/// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:598-623
+/// (newInternalize → shareReqsWithWorld, rollback on failure at :612-622).
+/// Posts the already-validated AtomicBEEF as-is — TS: "Skip looking up txids
+/// and building an aggregate beef, just this one txid and the already
+/// validated atomic beef."
+///
+/// Outcome classes (classification mirrors `send_waiting_transactions` in
+/// storage_sqlx.rs):
+///
+/// - SUCCESS — accepted OR "already known / seen on network". The payer
+///   usually broadcast this tx already, so a duplicate-submission ack is the
+///   normal case (providers report it with status "success"). The req is
+///   advanced 'unsent' → 'unmined'; the transaction stays 'unproven' and
+///   CheckForProofs owns it from here.
+/// - HARD REJECT — double-spend or definitively invalid (46x), confirmed
+///   dead by chain reconciliation: `mark_internalized_tx_failed` (tx →
+///   'failed', outputs unspendable, req → 'invalid') and the internalize
+///   returns an error, so no phantom spendable outputs are left behind.
+/// - TRANSIENT — network/service error, orphan-mempool, or no services
+///   configured: the internalize still succeeds and the req stays 'unsent';
+///   the SendWaiting monitor task remains the retry backstop (degrades to
+///   the previous deferred behavior instead of breaking offline
+///   internalize).
+async fn broadcast_new_internalized_req(
+    storage: &StorageSqlx,
+    txid: &str,
+    atomic_beef: &[u8],
+) -> Result<()> {
+    let services = match storage.get_services() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::debug!(
+                txid = %txid,
+                "internalize: no services configured — send_waiting will broadcast"
+            );
+            return Ok(());
+        }
+    };
+
+    let txids = [txid.to_string()];
+    let results_vec = match services.post_beef(atomic_beef, &txids).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(
+                txid = %txid,
+                error = %e,
+                "internalize: transient broadcast error — req stays 'unsent', send_waiting will retry"
+            );
+            return Ok(());
+        }
+    };
+
+    let success = results_vec.iter().any(|r| r.is_success());
+
+    if !success {
+        // Same classification as send_waiting_transactions.
+        let is_orphan_mempool = results_vec
+            .iter()
+            .any(|r| r.txid_results.iter().any(|tr| tr.orphan_mempool));
+
+        let is_double_spend = results_vec.iter().any(|r| {
+            r.txid_results
+                .iter()
+                .any(|tr| tr.double_spend && !tr.orphan_mempool)
+        });
+
+        let is_invalid = results_vec.iter().any(|r| {
+            r.txid_results.iter().any(|tr| {
+                !tr.orphan_mempool && (tr.status.contains("46") || tr.status.contains("invalid"))
+            })
+        });
+
+        if is_orphan_mempool && !is_double_spend {
+            // Parent not yet propagated — not a rejection of this tx.
+            tracing::warn!(
+                txid = %txid,
+                "internalize: orphan mempool — req stays 'unsent', send_waiting will retry"
+            );
+            return Ok(());
+        }
+
+        if is_double_spend || is_invalid {
+            // Reconcile against the chain before condemning (same as the
+            // send_waiting path): the payer may have already broadcast this
+            // tx, making the rejection stale.
+            let reconciled =
+                super::process_action::reconcile_tx_status_via_services(&*services, txid).await;
+
+            if !reconciled {
+                // Hard reject confirmed — roll back the internalize so no
+                // spendable outputs are left behind (TS :612-622 semantics).
+                mark_internalized_tx_failed(storage, txid).await?;
+                return Err(Error::BroadcastFailed(format!(
+                    "internalized tx {} rejected by network (double_spend={}, invalid={})",
+                    txid, is_double_spend, is_invalid
+                )));
+            }
+            // Reported dead but alive on chain — fall through to success.
+        } else {
+            // Service-level error with no definitive verdict — transient.
+            tracing::warn!(
+                txid = %txid,
+                "internalize: broadcast not accepted (service error) — req stays 'unsent', send_waiting will retry"
+            );
+            return Ok(());
+        }
+    }
+
+    // Success (accepted, already known, or reconciled-alive): advance the
+    // req to 'unmined' so send_waiting never re-broadcasts it and
+    // CheckForProofs takes ownership. Matches the send_waiting success
+    // transition (req -> 'unmined', tx stays 'unproven').
+    let now = Utc::now();
+    sqlx::query(
+        "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status = 'unsent'",
+    )
+    .bind(now)
+    .bind(txid)
+    .execute(storage.pool())
+    .await?;
+
+    tracing::info!(
+        txid = %txid,
+        "internalize: tx broadcast/acknowledged — req advanced to 'unmined'"
+    );
 
     Ok(())
 }
@@ -990,8 +1223,11 @@ mod tests {
 
     #[test]
     fn test_validate_merge_status_allowed() {
+        // TS parity (internalizeAction.ts:327-332): completed / unproven /
+        // sending / nosend are the valid merge targets.
         assert!(validate_merge_status(&TransactionStatus::Completed).is_ok());
         assert!(validate_merge_status(&TransactionStatus::Unproven).is_ok());
+        assert!(validate_merge_status(&TransactionStatus::Sending).is_ok());
         assert!(validate_merge_status(&TransactionStatus::NoSend).is_ok());
     }
 
@@ -1396,5 +1632,365 @@ mod tests {
                 .unwrap();
 
         assert_eq!(output_count, 2);
+    }
+
+    // =========================================================================
+    // Fix 1/Fix 2 parity tests: synchronous broadcast + merge lifecycle
+    // =========================================================================
+
+    use crate::services::mock::MockWalletServicesBuilder;
+    use crate::storage::traits::WalletStorageProvider;
+    use std::sync::Arc;
+
+    fn wallet_payment_args(beef_bytes: Vec<u8>, description: &str) -> InternalizeActionArgs {
+        InternalizeActionArgs {
+            tx: beef_bytes,
+            outputs: vec![InternalizeOutput {
+                output_index: 0,
+                protocol: WALLET_PAYMENT_PROTOCOL.to_string(),
+                payment_remittance: Some(WalletPayment {
+                    derivation_prefix: "test_prefix".to_string(),
+                    derivation_suffix: "test_suffix".to_string(),
+                    sender_identity_key: "sender_key".to_string(),
+                }),
+                insertion_remittance: None,
+            }],
+            description: description.to_string(),
+            labels: None,
+            seek_permission: None,
+        }
+    }
+
+    async fn req_status(storage: &StorageSqlx, txid: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(storage.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn tx_status(storage: &StorageSqlx, user_id: i64, txid: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT status FROM transactions WHERE user_id = ? AND txid = ?")
+            .bind(user_id)
+            .bind(txid)
+            .fetch_optional(storage.pool())
+            .await
+            .unwrap()
+    }
+
+    /// Replicates the coin-selection predicate from create_action.rs
+    /// `allocate_change_input`: default basket, change=1, spendable=1,
+    /// spent_by IS NULL, t.status IN ('completed','unproven').
+    async fn count_selectable_coins(storage: &StorageSqlx, user_id: i64) -> i64 {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM outputs o
+            JOIN transactions t ON o.transaction_id = t.transaction_id
+            JOIN output_baskets b ON o.basket_id = b.basket_id
+            WHERE o.user_id = ?
+              AND b.name = 'default'
+              AND o.change = 1
+              AND o.spendable = 1
+              AND o.spent_by IS NULL
+              AND t.status IN ('completed', 'unproven')
+            "#,
+        )
+        .bind(user_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap()
+    }
+
+    /// Inserts a pre-existing transaction row (fixture for merge tests).
+    async fn insert_existing_tx(
+        storage: &StorageSqlx,
+        user_id: i64,
+        txid: &str,
+        status: &str,
+    ) -> i64 {
+        let now = Utc::now();
+        let result = sqlx::query(
+            r#"
+            INSERT INTO transactions (
+                user_id, txid, status, reference, description, satoshis,
+                version, lock_time, is_outgoing, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'pre-existing tx', 0, 1, 0, 1, ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(txid)
+        .bind(status)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        result.last_insert_rowid()
+    }
+
+    /// Inserts a pre-existing proven_tx_req row (fixture for merge tests).
+    async fn insert_req(storage: &StorageSqlx, txid: &str, status: &str) {
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO proven_tx_reqs (
+                txid, status, attempts, history, notify, notified, raw_tx, created_at, updated_at
+            )
+            VALUES (?, ?, 0, '{}', '{}', 0, X'00', ?, ?)
+            "#,
+        )
+        .bind(txid)
+        .bind(status)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    }
+
+    /// New-path internalize + broadcast success: req advances 'unsent' ->
+    /// 'unmined' (send_waiting will never re-broadcast), tx stays 'unproven',
+    /// and the coin is immediately selectable.
+    #[tokio::test]
+    async fn test_new_internalize_broadcast_success_advances_req() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        let mock = MockWalletServicesBuilder::default()
+            .post_beef_success()
+            .build();
+        WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+        let args = wallet_payment_args(beef_bytes, "broadcast success");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.base.accepted);
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("unmined")
+        );
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// New-path internalize + "already known" broadcast response: the payer
+    /// usually broadcast this tx already — a duplicate-submission ack counts
+    /// as success exactly like an acceptance.
+    #[tokio::test]
+    async fn test_new_internalize_already_known_counts_as_success() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        let mock = MockWalletServicesBuilder::default()
+            .post_beef_already_known(&txid)
+            .build();
+        WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+        let args = wallet_payment_args(beef_bytes, "already known");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.base.accepted);
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("unmined")
+        );
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// New-path internalize + transient broadcast error: the internalize
+    /// still succeeds, the req stays 'unsent' (SendWaiting is the documented
+    /// retry backstop), and the coin is selectable.
+    #[tokio::test]
+    async fn test_new_internalize_transient_error_defers_to_send_waiting() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        let mock = MockWalletServicesBuilder::default()
+            .post_beef_network_error("connection refused")
+            .build();
+        WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+        let args = wallet_payment_args(beef_bytes, "transient error");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.base.accepted);
+        assert_eq!(req_status(&storage, &txid).await.as_deref(), Some("unsent"));
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// New-path internalize + confirmed double-spend rejection (chain
+    /// reconciliation also fails to find the tx alive): the internalize
+    /// errors and leaves no spendable outputs behind (TS rollback parity,
+    /// internalizeAction.ts:612-622).
+    #[tokio::test]
+    async fn test_new_internalize_double_spend_hard_reject_rolls_back() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        // Default get_status_for_txids mock returns no results, so the
+        // reconcile step finds the tx dead and the rejection stands.
+        let mock = MockWalletServicesBuilder::default()
+            .post_beef_double_spend(&txid, "competing_txid")
+            .build();
+        WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+        let args = wallet_payment_args(beef_bytes, "double spend");
+        let result = internalize_action_internal(&storage, user_id, args).await;
+
+        assert!(result.is_err(), "hard reject must fail the internalize");
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("invalid")
+        );
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("failed")
+        );
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
+
+        let spendable_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM outputs WHERE user_id = ? AND txid = ? AND spendable = 1",
+        )
+        .bind(user_id)
+        .bind(&txid)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(spendable_count, 0, "no spendable outputs may remain");
+    }
+
+    /// Merge into a pre-existing 'nosend' tx without proof: tx is promoted
+    /// to 'unproven' and the 'nosend' req is advanced to 'unmined'
+    /// (TS mergedInternalize wasNoSend parity, internalizeAction.ts:526-554).
+    /// The merged coin becomes selectable.
+    #[tokio::test]
+    async fn test_merge_nosend_promotes_tx_and_advances_req() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        insert_existing_tx(&storage, user_id, &txid, "nosend").await;
+        insert_req(&storage, &txid, "nosend").await;
+
+        let args = wallet_payment_args(beef_bytes, "merge into nosend");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.is_merge);
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("unmined")
+        );
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// Merge into a 'nosend' tx that has no proven_tx_req at all: a req is
+    /// created directly as 'unmined' so CheckForProofs tracks the
+    /// externally-broadcast txid.
+    #[tokio::test]
+    async fn test_merge_nosend_without_req_creates_unmined_req() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        insert_existing_tx(&storage, user_id, &txid, "nosend").await;
+
+        let args = wallet_payment_args(beef_bytes, "merge into nosend, no req");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.is_merge);
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("unmined")
+        );
+
+        // The created req must carry the raw tx for later BEEF building.
+        let raw_tx: Vec<u8> =
+            sqlx::query_scalar("SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert!(!raw_tx.is_empty());
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// Merge into a 'sending' tx is accepted (TS status validation allows
+    /// it) but NOT advanced — SendWaiting owns the in-flight broadcast
+    /// (TS parity: the advance is gated on `wasNoSend`).
+    #[tokio::test]
+    async fn test_merge_sending_accepted_but_not_advanced() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        insert_existing_tx(&storage, user_id, &txid, "sending").await;
+        insert_req(&storage, &txid, "sending").await;
+
+        let args = wallet_payment_args(beef_bytes, "merge into sending");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.is_merge);
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("sending")
+        );
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("sending")
+        );
+    }
+
+    /// Merge into a tx with a status outside completed/unproven/sending/
+    /// nosend is an error (TS parity, internalizeAction.ts:327-332).
+    #[tokio::test]
+    async fn test_merge_invalid_preexisting_status_errors() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        insert_existing_tx(&storage, user_id, &txid, "failed").await;
+
+        let args = wallet_payment_args(beef_bytes, "merge into failed");
+        let result = internalize_action_internal(&storage, user_id, args).await;
+
+        assert!(result.is_err(), "merging into a 'failed' tx must error");
     }
 }

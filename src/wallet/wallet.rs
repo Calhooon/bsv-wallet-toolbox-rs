@@ -2210,17 +2210,18 @@ where
             .await
             .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
 
-        // Internalization is a pure state import — no broadcast here.
-        // The proven_tx_req is created with 'unsent' status, so the monitor
-        // daemon's send_waiting_transactions task will handle broadcasting
-        // asynchronously. This matches the Go wallet-toolbox architecture
-        // and avoids phantom UTXOs that occurred when the previous "courtesy
-        // broadcast" failed silently (outputs were left spendable for txs
-        // that never reached the network).
+        // Broadcast happens synchronously inside the storage layer's
+        // internalize_action (TS parity: wallet-toolbox storage/methods/
+        // internalizeAction.ts newInternalize -> shareReqsWithWorld). On
+        // success the req is advanced to 'unmined'; on hard network
+        // rejection the storage call errors after marking the tx failed and
+        // its outputs unspendable; on transient failure the req stays
+        // 'unsent' and the monitor daemon's send_waiting_transactions task
+        // remains the retry backstop.
         if !result.is_merge && result.send_with_results.is_none() {
             tracing::debug!(
                 txid = %result.txid,
-                "Internalized tx saved — send_waiting will broadcast"
+                "Internalized tx saved and shared with the network"
             );
         }
 
@@ -2856,47 +2857,47 @@ fn build_unsigned_transaction(
         // NEVER trust a storage-supplied script for a derivable output
         // (GHSA guard: always-re-derive is stricter than pre-fix TS, which
         // only derived when storage sent an empty script).
-        let derived_change: Option<Vec<u8>> = if let (Some(key_deriver), Some(suffix)) =
-            (key_deriver, &output.derivation_suffix)
-        {
-            use bsv_rs::wallet::{Protocol, SecurityLevel};
+        let derived_change: Option<Vec<u8>> =
+            if let (Some(key_deriver), Some(suffix)) = (key_deriver, &output.derivation_suffix) {
+                use bsv_rs::wallet::{Protocol, SecurityLevel};
 
-            // BRC-29 protocol: security level 2, protocol name "3241645161d8"
-            let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
-            // Key ID has a SPACE between prefix and suffix
-            let key_id = format!("{} {}", result.derivation_prefix, suffix);
+                // BRC-29 protocol: security level 2, protocol name "3241645161d8"
+                let brc29_protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+                // Key ID has a SPACE between prefix and suffix
+                let key_id = format!("{} {}", result.derivation_prefix, suffix);
 
-            let pubkey = key_deriver
-                .derive_private_key(
-                    &brc29_protocol,
-                    &key_id,
-                    &bsv_rs::wallet::Counterparty::Self_,
-                )
-                .map_err(|e| {
-                    Error::TransactionError(format!("Failed to derive change key: {}", e))
-                })?
-                .public_key();
-
-            use bsv_rs::script::template::ScriptTemplate;
-            Some(
-                bsv_rs::script::templates::P2PKH::new()
-                    .lock(&pubkey.hash160())
+                let pubkey = key_deriver
+                    .derive_private_key(
+                        &brc29_protocol,
+                        &key_id,
+                        &bsv_rs::wallet::Counterparty::Self_,
+                    )
                     .map_err(|e| {
-                        Error::TransactionError(format!("Failed to create P2PKH script: {}", e))
+                        Error::TransactionError(format!("Failed to derive change key: {}", e))
                     })?
-                    .to_binary(),
-            )
-        } else {
-            None
-        };
+                    .public_key();
 
-        let supplied: Option<Vec<u8>> = if output.locking_script.is_empty() {
-            None
-        } else {
-            Some(hex::decode(&output.locking_script).map_err(|e| {
-                Error::TransactionError(format!("Invalid locking script: {}", e))
-            })?)
-        };
+                use bsv_rs::script::template::ScriptTemplate;
+                Some(
+                    bsv_rs::script::templates::P2PKH::new()
+                        .lock(&pubkey.hash160())
+                        .map_err(|e| {
+                            Error::TransactionError(format!("Failed to create P2PKH script: {}", e))
+                        })?
+                        .to_binary(),
+                )
+            } else {
+                None
+            };
+
+        let supplied: Option<Vec<u8>> =
+            if output.locking_script.is_empty() {
+                None
+            } else {
+                Some(hex::decode(&output.locking_script).map_err(|e| {
+                    Error::TransactionError(format!("Invalid locking script: {}", e))
+                })?)
+            };
 
         // Classify + verify (GHSA guard):
         //  1. requested echo — byte-identical (script, satoshis) claim;
@@ -4101,7 +4102,9 @@ mod tests {
     // 2.4.0 buildSignableTransaction guards; ours is stricter — no
     // commission allowance because wallet-infra never adds one).
 
-    fn ghsa_result(outputs: Vec<crate::storage::StorageCreateTransactionOutput>) -> crate::storage::StorageCreateActionResult {
+    fn ghsa_result(
+        outputs: Vec<crate::storage::StorageCreateTransactionOutput>,
+    ) -> crate::storage::StorageCreateActionResult {
         crate::storage::StorageCreateActionResult {
             outputs,
             version: 1,
@@ -4109,7 +4112,11 @@ mod tests {
         }
     }
 
-    fn ghsa_storage_output(vout: u32, sats: u64, script_hex: &str) -> crate::storage::StorageCreateTransactionOutput {
+    fn ghsa_storage_output(
+        vout: u32,
+        sats: u64,
+        script_hex: &str,
+    ) -> crate::storage::StorageCreateTransactionOutput {
         crate::storage::StorageCreateTransactionOutput {
             vout,
             satoshis: sats,
@@ -4174,7 +4181,10 @@ mod tests {
         // storage silently dropped the second requested output
         let result = ghsa_result(vec![ghsa_storage_output(0, 1000, "aabb")]);
         let err = build_unsigned_transaction(&result, None, None, Some(&requested)).unwrap_err();
-        assert!(format!("{err:?}").contains("omitted or substituted"), "got: {err:?}");
+        assert!(
+            format!("{err:?}").contains("omitted or substituted"),
+            "got: {err:?}"
+        );
     }
 
     #[test]
