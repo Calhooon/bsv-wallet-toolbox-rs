@@ -546,7 +546,18 @@ pub async fn create_action_internal(
             None, // derivation_prefix for user outputs
             xo.derivation_suffix.as_deref(),
             false, // not change
-            true,  // spendable
+            // spendable = true is CORRECT and INTENTIONAL — do NOT "fix" it.
+            // createAction records every output it builds, INCLUDING payments to
+            // third parties, with spendable = true. This matches the reference
+            // (ts-stack wallet-toolbox createAction.ts makeDefaultOutput defaults
+            // spendable: true; the user-output branch does not override it).
+            // `spendable = true` does NOT mean "this wallet can spend it" —
+            // that is gated by the BASKET (coin selection is basket-scoped;
+            // a basket_id = NULL payment is never selected). A usable balance is
+            // Σ spendable in the change/default basket, never SUM(spendable=1).
+            // See docs/reading-a-balance.md (bsv-wallet-cli). Changing this to a
+            // basket-conditional would DIVERGE from the reference — a parity bug.
+            true,  // spendable (see the note above before touching this)
         )
         .await?;
 
