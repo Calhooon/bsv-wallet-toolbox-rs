@@ -9,10 +9,15 @@
 //! - `SEEN_ON_NETWORK` / `SEEN_MULTIPLE_NODES` — spendability gate: mark the
 //!   proven_tx_req `unmined` and the transaction `unproven` (exactly what a
 //!   successful ARC `post_beef` does).
-//! - `MINED` — additionally raise the shared CheckForProofs trigger flag so
-//!   the proof is fetched immediately (event-driven, no schedule polling).
-//!   SSE data frames do NOT carry the merkle path — only the webhook does —
-//!   so MINED always triggers a fetch through the services stack.
+//! - `MINED` — since arcade v0.10.1 (upstream #259) the SSE frame carries the
+//!   BUMP inline (`merklePath`/`blockHash`/`blockHeight`). When present, the
+//!   proof is ingested directly through the SAME validated funnel as the
+//!   webhook path ([`MonitorStorage::ingest_push_proof`]: BUMP parse → compute
+//!   root → ChainTracker verification → latch) — push is a hint, never truth.
+//!   When absent (older instance, best-effort enrichment miss) or when the
+//!   inline ingest does not conclude `Ingested`, fall back to the pre-v0.10.1
+//!   behavior: raise the shared CheckForProofs trigger flag so the proof is
+//!   fetched immediately through the services stack.
 //! - `REJECTED` / `DOUBLE_SPEND_ATTEMPTED` — mark the proven_tx_req
 //!   `invalid` / `doubleSpend` so it is never re-broadcast.
 //!
@@ -44,6 +49,21 @@ const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// A connection that survived this long resets the backoff.
 const HEALTHY_CONNECTION: Duration = Duration::from_secs(30);
+
+/// Extract inline proof material from an enriched MINED frame:
+/// `(BUMP bytes, block height, block hash)`.
+///
+/// Returns `None` unless the merkle path is present, non-empty, and valid hex
+/// AND the block height is present — partial enrichment (best-effort upstream)
+/// must fall back to the fetch path, never latch partial data. The block hash
+/// may legitimately be absent; the ingest funnel treats it as informational
+/// (validation is root-vs-height against our own headers).
+fn inline_proof_material(ev: &ArcadeStatusEvent) -> Option<(Vec<u8>, u32, String)> {
+    let mp_hex = ev.merkle_path.as_deref().filter(|s| !s.is_empty())?;
+    let block_height = ev.block_height?;
+    let bytes = hex::decode(mp_hex).ok()?;
+    Some((bytes, block_height, ev.block_hash.clone().unwrap_or_default()))
+}
 
 /// Monitor task that subscribes to the Arcade V2 SSE status stream.
 pub struct ArcadeEventsTask<S>
@@ -102,21 +122,88 @@ where
     /// Apply one Arcade status event to storage. Returns whether anything
     /// was updated. Public so the webhook path (status-only payloads) and
     /// tests can reuse identical mapping logic.
+    ///
+    /// Status-only entry point: equivalent to [`Self::apply_event`] with no
+    /// inline proof material (MINED always falls back to the fetch trigger).
     pub async fn apply_status_event(
         storage: &S,
         txid: &str,
         tx_status: &str,
         proof_trigger: &AtomicBool,
     ) -> Result<bool> {
-        match tx_status {
+        let ev = ArcadeStatusEvent {
+            txid: txid.to_string(),
+            tx_status: tx_status.to_string(),
+            timestamp: None,
+            block_hash: None,
+            block_height: None,
+            merkle_path: None,
+            event_id: None,
+        };
+        Self::apply_event(storage, &ev, proof_trigger).await
+    }
+
+    /// Apply one full Arcade status event (possibly proof-bearing) to storage.
+    ///
+    /// On MINED with inline proof material (arcade ≥ v0.10.1 enriched frame),
+    /// the proof is ingested through [`MonitorStorage::ingest_push_proof`] —
+    /// the same SPV-gated funnel as the webhook path. Any outcome other than
+    /// a successful validated latch falls back to the fetch trigger, so a
+    /// missing, malformed, or root-mismatched inline proof can never make the
+    /// wallet worse off than the pre-v0.10.1 behavior.
+    pub async fn apply_event(
+        storage: &S,
+        ev: &ArcadeStatusEvent,
+        proof_trigger: &AtomicBool,
+    ) -> Result<bool> {
+        let txid = ev.txid.as_str();
+        match ev.tx_status.as_str() {
             statuses::SEEN_ON_NETWORK | statuses::SEEN_MULTIPLE_NODES => {
                 storage.mark_transaction_seen_on_network(txid).await
             }
             statuses::MINED => {
-                // Ensure spendability even if we never saw SEEN_ON_NETWORK,
-                // then trigger an immediate proof fetch (SSE frames don't
-                // carry the merkle path; the fetch goes through services).
+                // Ensure spendability even if we never saw SEEN_ON_NETWORK.
                 let updated = storage.mark_transaction_seen_on_network(txid).await?;
+
+                if let Some((merkle_path, block_height, block_hash)) = inline_proof_material(ev) {
+                    match storage
+                        .ingest_push_proof(txid, &merkle_path, block_height, &block_hash)
+                        .await
+                    {
+                        Ok(Some(crate::ProofIngestOutcome::Ingested(status))) => {
+                            tracing::info!(
+                                txid = %txid,
+                                block_height = ?status.block_height,
+                                "Arcade MINED event — inline SSE proof verified and ingested"
+                            );
+                            return Ok(true);
+                        }
+                        Ok(Some(outcome)) => {
+                            // Rejected (bad root / unparseable) or tracker
+                            // deferral — never latch, fall back to fetch.
+                            tracing::warn!(
+                                txid = %txid,
+                                outcome = ?outcome,
+                                "Arcade MINED event — inline SSE proof not accepted, falling back to fetch"
+                            );
+                        }
+                        Ok(None) => {
+                            // Backend has no inline-ingest support.
+                            tracing::debug!(
+                                txid = %txid,
+                                "Arcade MINED event — storage lacks inline proof ingest, falling back to fetch"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                txid = %txid,
+                                error = %e,
+                                "Arcade MINED event — inline SSE proof ingest errored, falling back to fetch"
+                            );
+                        }
+                    }
+                }
+
                 proof_trigger.store(true, Ordering::SeqCst);
                 tracing::info!(txid = %txid, "Arcade MINED event — triggering immediate proof fetch");
                 Ok(updated)
@@ -169,14 +256,7 @@ where
                     ev = rx.recv() => {
                         match ev {
                             Some(ev) => {
-                                match Self::apply_status_event(
-                                    &storage,
-                                    &ev.txid,
-                                    &ev.tx_status,
-                                    &proof_trigger,
-                                )
-                                .await
-                                {
+                                match Self::apply_event(&storage, &ev, &proof_trigger).await {
                                     Ok(updated) => {
                                         events_processed.fetch_add(1, Ordering::Relaxed);
                                         tracing::debug!(
@@ -315,5 +395,58 @@ mod tests {
     fn test_task_name() {
         // Name constant used by TaskType::ArcadeEvents wiring
         assert_eq!("arcade_events", "arcade_events");
+    }
+
+    /// An arcade ≥ v0.10.1 enriched MINED frame parses with the inline proof
+    /// fields populated (shape from the live arcade-v2-us-1 deploy, probe tx
+    /// 104be47e…9d01, block 959011 — merklePath truncated for the unit test;
+    /// the full real-bytes SPV test lives in bsv-wallet-cli's integration
+    /// suite against the captured fixture).
+    #[test]
+    fn test_enriched_mined_frame_parses_and_yields_material() {
+        let json = r#"{
+            "txid": "104be47e38ae90d7d3ca7804823bd07170cb964bfdc38306df47456ef8939d01",
+            "txStatus": "MINED",
+            "timestamp": "2026-07-22T19:06:51.907Z",
+            "blockHash": "000000000000000010448a04a3987b48732871b40b46bc7cbaefebe502623179",
+            "blockHeight": 959011,
+            "merklePath": "fea3a20e00"
+        }"#;
+        let ev: ArcadeStatusEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.tx_status, "MINED");
+        assert_eq!(ev.block_height, Some(959011));
+        let (bytes, height, hash) = inline_proof_material(&ev).expect("material");
+        assert_eq!(bytes, vec![0xfe, 0xa3, 0xa2, 0x0e, 0x00]);
+        assert_eq!(height, 959011);
+        assert!(hash.starts_with("00000000"));
+    }
+
+    /// Pre-v0.10.1 frames (status-only) parse unchanged and yield no inline
+    /// material — the fetch fallback path is taken.
+    #[test]
+    fn test_legacy_frame_parses_with_no_material() {
+        let json = r#"{"txid":"aa","txStatus":"MINED","timestamp":"2026-07-22T19:06:51Z"}"#;
+        let ev: ArcadeStatusEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.merkle_path, None);
+        assert!(inline_proof_material(&ev).is_none());
+    }
+
+    /// Partial enrichment must NEVER yield material: merklePath without
+    /// blockHeight, empty merklePath, and non-hex merklePath all fall back.
+    #[test]
+    fn test_partial_enrichment_falls_back() {
+        let base = |mp: &str, height: Option<u32>| ArcadeStatusEvent {
+            txid: "aa".into(),
+            tx_status: "MINED".into(),
+            timestamp: None,
+            block_hash: None,
+            block_height: height,
+            merkle_path: Some(mp.to_string()),
+            event_id: None,
+        };
+        assert!(inline_proof_material(&base("fea3", None)).is_none()); // no height
+        assert!(inline_proof_material(&base("", Some(1))).is_none()); // empty path
+        assert!(inline_proof_material(&base("zzzz", Some(1))).is_none()); // not hex
+        assert!(inline_proof_material(&base("fea3", Some(1))).is_some()); // complete
     }
 }

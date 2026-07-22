@@ -692,6 +692,12 @@ impl SseFrameParser {
 }
 
 /// A transaction status update from the Arcade SSE stream.
+///
+/// Since arcade v0.10.1 (upstream #259), MINED/IMMUTABLE frames additionally
+/// carry `blockHash`, `blockHeight` and `merklePath` (BUMP hex) — the same
+/// enriched shape as the webhook callback body. Enrichment is best-effort
+/// (`omitempty` upstream): all three fields default to `None`, so frames from
+/// older instances and non-mined frames parse unchanged.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ArcadeStatusEvent {
     /// Transaction ID.
@@ -702,6 +708,17 @@ pub struct ArcadeStatusEvent {
     /// Event timestamp.
     #[serde(default)]
     pub timestamp: Option<String>,
+    /// Block hash — present on MINED/IMMUTABLE frames (arcade ≥ v0.10.1).
+    #[serde(rename = "blockHash", default)]
+    pub block_hash: Option<String>,
+    /// Block height — present on MINED/IMMUTABLE frames (arcade ≥ v0.10.1).
+    #[serde(rename = "blockHeight", default)]
+    pub block_height: Option<u32>,
+    /// BRC-74 BUMP merkle path (hex) — present on MINED/IMMUTABLE frames
+    /// (arcade ≥ v0.10.1, best-effort). A hint, never truth: consumers must
+    /// SPV-verify against their own headers before latching.
+    #[serde(rename = "merklePath", default)]
+    pub merkle_path: Option<String>,
     /// SSE event id (for `Last-Event-ID` resume). Not part of the JSON
     /// payload; populated from the SSE frame.
     #[serde(skip)]

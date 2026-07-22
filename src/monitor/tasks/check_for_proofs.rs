@@ -126,11 +126,17 @@ where
             Ok(results) => {
                 let items_processed = results.len() as u32;
                 for result in &results {
+                    // With arcade ≥ v0.10.1, proofs normally arrive pushed
+                    // (SSE-inline / webhook) before this backstop runs — a
+                    // completion landing HERE means the push channels missed
+                    // it. Sustained backstop hits are an arcade push
+                    // regression signal; grep for "proof_backstop_hit".
                     tracing::info!(
                         txid = %result.txid,
                         status = ?result.status,
                         block_height = ?result.block_height,
-                        "Transaction status synchronized"
+                        marker = "proof_backstop_hit",
+                        "Transaction status synchronized by backstop fetch"
                     );
                 }
                 Ok(TaskResult {

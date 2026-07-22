@@ -4419,6 +4419,20 @@ impl MonitorStorage for StorageSqlx {
         }
         Ok(updated)
     }
+
+    async fn ingest_push_proof(
+        &self,
+        txid: &str,
+        merkle_path: &[u8],
+        block_height: u32,
+        block_hash: &str,
+    ) -> Result<Option<ProofIngestOutcome>> {
+        // Same funnel as the webhook path: BUMP parse → compute root →
+        // ChainTracker validation → proven_txs insert → complete records.
+        self.ingest_merkle_proof(txid, merkle_path, block_height, block_hash, None)
+            .await
+            .map(Some)
+    }
 }
 
 // =============================================================================

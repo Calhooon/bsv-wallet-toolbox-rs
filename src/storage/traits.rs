@@ -1060,4 +1060,29 @@ pub trait MonitorStorage: WalletStorageProvider {
         );
         Ok(false)
     }
+
+    /// Ingest a push-delivered merkle proof (Arcade ≥ v0.10.1 enriches MINED
+    /// SSE frames and webhook callbacks with the BUMP).
+    ///
+    /// The proof is a HINT, never truth: implementations must run the same
+    /// validation funnel as the webhook path (BUMP parse → compute root for
+    /// txid → verify against the backend's own ChainTracker headers) before
+    /// latching anything. `StorageSqlx` overrides this by delegating to
+    /// `ingest_merkle_proof`.
+    ///
+    /// Returns `Ok(None)` when the backend does not support inline proof
+    /// ingestion — the caller must fall back to its fetch-through-services
+    /// path (the pre-v0.10.1 behavior). Returns `Ok(Some(outcome))` when the
+    /// funnel ran; a non-`Ingested` outcome means the proof was rejected or
+    /// deferred and the caller should also fall back to fetch.
+    async fn ingest_push_proof(
+        &self,
+        txid: &str,
+        merkle_path: &[u8],
+        block_height: u32,
+        block_hash: &str,
+    ) -> Result<Option<ProofIngestOutcome>> {
+        let _ = (txid, merkle_path, block_height, block_hash);
+        Ok(None)
+    }
 }
