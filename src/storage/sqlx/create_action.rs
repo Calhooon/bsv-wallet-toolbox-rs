@@ -557,7 +557,7 @@ pub async fn create_action_internal(
             // Σ spendable in the change/default basket, never SUM(spendable=1).
             // See docs/reading-a-balance.md (bsv-wallet-cli). Changing this to a
             // basket-conditional would DIVERGE from the reference — a parity bug.
-            true,  // spendable (see the note above before touching this)
+            true, // spendable (see the note above before touching this)
         )
         .await?;
 

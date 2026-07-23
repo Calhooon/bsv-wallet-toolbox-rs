@@ -62,7 +62,11 @@ fn inline_proof_material(ev: &ArcadeStatusEvent) -> Option<(Vec<u8>, u32, String
     let mp_hex = ev.merkle_path.as_deref().filter(|s| !s.is_empty())?;
     let block_height = ev.block_height?;
     let bytes = hex::decode(mp_hex).ok()?;
-    Some((bytes, block_height, ev.block_hash.clone().unwrap_or_default()))
+    Some((
+        bytes,
+        block_height,
+        ev.block_hash.clone().unwrap_or_default(),
+    ))
 }
 
 /// Monitor task that subscribes to the Arcade V2 SSE status stream.

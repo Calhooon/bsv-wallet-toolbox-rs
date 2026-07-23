@@ -13,7 +13,7 @@ use crate::storage::entities::{TableOutput, TableTransaction, TransactionStatus}
 use crate::storage::traits::{
     BeefVerificationMode, StorageInternalizeActionResult, WalletStorageReader,
 };
-use bsv_rs::transaction::Beef;
+use bsv_rs::transaction::{Beef, Transaction};
 use bsv_rs::wallet::{
     BasketInsertion, InternalizeActionArgs, InternalizeActionResult, WalletPayment,
 };
@@ -50,6 +50,21 @@ struct OutputData {
     existing_output_id: Option<i64>,
     existing_basket_id: Option<i64>,
     existing_is_change: bool,
+}
+
+/// A recorded spendability transition applied by [`mark_user_inputs_spent`].
+///
+/// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:33-37
+/// (`SpentInputTransition`). Each entry captures exactly what was changed on
+/// one outputs row so that [`restore_inputs_to_spendable`] can revert ONLY
+/// those changes if the internalize is rolled back after a failed broadcast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpentInputTransition {
+    /// The `outputs.output_id` whose spendability was cleared.
+    output_id: i64,
+    /// `true` when `spent_by` was also set (same-user row); `false` when only
+    /// `spendable` was cleared (other-user row — `spent_by` untouched).
+    set_spent_by: bool,
 }
 
 // =============================================================================
@@ -99,7 +114,7 @@ pub async fn internalize_action_internal(
 
     // Extract ALL data from the transaction before any await points.
     // This is necessary because Transaction contains RefCell which is not Send.
-    let (tx_outputs_count, tx_version, tx_lock_time, raw_tx, extracted_outputs) = {
+    let (tx_outputs_count, tx_version, tx_lock_time, raw_tx, extracted_outputs, input_outpoints) = {
         let tx = beef_tx.tx().ok_or_else(|| {
             Error::ValidationError(format!("Transaction {} is txid-only in BEEF", txid))
         })?;
@@ -111,12 +126,18 @@ pub async fn internalize_action_internal(
             .map(|o| (o.satoshis.unwrap_or(0), o.locking_script.to_binary()))
             .collect();
 
+        // Extract the input outpoints — the coins this transaction CONSUMES.
+        // Needed to mark any wallet-tracked UTXOs among them as spent
+        // (TS parity: internalizeAction.ts:73-97 markUserInputsSpent).
+        let input_outpoints = extract_input_outpoints(tx);
+
         (
             tx.outputs.len(),
             tx.version,
             tx.lock_time,
             tx.to_binary(),
             outputs,
+            input_outpoints,
         )
     };
     // tx is now dropped, safe to await
@@ -525,6 +546,20 @@ pub async fn internalize_action_internal(
         }
     }
 
+    // Step 9b: Mark the wallet coins consumed by this transaction's INPUTS as
+    // spent, inside the ambient SQL transaction.
+    // TS parity: wallet-toolbox storage/methods/internalizeAction.ts:589-595
+    // (newInternalize — after the transactions insert so transaction_id is
+    // known, before the broadcast attempt) and :496-504 (mergedInternalize —
+    // idempotent re-mark after labels; the merge path never restores).
+    // Without this, an internalized tx that spends the wallet's own UTXO
+    // (e.g. a payment built externally against wallet change) left the
+    // consumed coin spendable=1 / spent_by NULL, so coin selection
+    // (create_action.rs allocate_change_input) kept re-picking a
+    // provably-spent coin — the live incident Calgooon/btc-relay-rs#16.
+    let spent_input_transitions =
+        mark_user_inputs_spent(&mut tx, user_id, transaction_id, &input_outpoints).await?;
+
     // Step 10: Create proven_tx_req if no proof
     // Store the complete BEEF in proven_tx_reqs so it can be used when building
     // output BEEFs for spending. This is especially important for unconfirmed
@@ -549,7 +584,7 @@ pub async fn internalize_action_internal(
     // Committing the state import first is crash-safe: if we die before the
     // broadcast, the req is 'unsent' and SendWaiting remains the backstop.
     if new_req_created {
-        broadcast_new_internalized_req(storage, &txid, &args.tx).await?;
+        broadcast_new_internalized_req(storage, &txid, &args.tx, &spent_input_transitions).await?;
     }
 
     Ok(StorageInternalizeActionResult {
@@ -941,6 +976,153 @@ async fn create_proven_tx_req(
 }
 
 // =============================================================================
+// Spent-Input Parity (mark inputs spent / restore on failed broadcast)
+// =============================================================================
+
+/// Extracts the `(source_txid, vout)` outpoints consumed by a transaction's
+/// inputs.
+///
+/// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:73-97 —
+/// only inputs that carry a source txid participate; inputs without one are
+/// skipped (they cannot name an outpoint to look up).
+fn extract_input_outpoints(tx: &Transaction) -> Vec<(String, u32)> {
+    tx.inputs
+        .iter()
+        .filter_map(|i| {
+            i.source_txid
+                .clone()
+                .map(|txid| (txid, i.source_output_index))
+        })
+        .collect()
+}
+
+/// Marks the wallet-tracked coins consumed by an internalized transaction's
+/// inputs as spent. Runs inside the ambient SQL transaction.
+///
+/// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:73-97
+/// (`markUserInputsSpent`); the outpoint lookup at :39-56 is deliberately NOT
+/// filtered by user — an externally-built payment can consume coins tracked by
+/// any user of this storage, and every stale row at the outpoint must stop
+/// matching coin selection (create_action.rs `allocate_change_input`).
+///
+/// Per matching row the mark applies ONLY IF the row is currently `spendable`
+/// AND its `spent_by` is NULL or already this transaction (merge-path
+/// idempotency). A row claimed by a competing transaction is left untouched
+/// and is NOT recorded as a transition.
+///
+/// - Same-user row: `spendable = 0` AND `spent_by = transaction_id`.
+/// - Other-user row: `spendable = 0` only — `spent_by` FK-references the
+///   OWNING user's transactions table rows, so it stays untouched.
+///
+/// `spending_description` is never written (TS parity: `markUserInputsSpent`
+/// writes none — unlike createAction's spend path, create_action.rs
+/// `update_output_spent`).
+///
+/// An empty `input_outpoints` returns an empty transition list with no DB
+/// work. Returns the applied transitions for [`restore_inputs_to_spendable`].
+async fn mark_user_inputs_spent(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    transaction_id: i64,
+    input_outpoints: &[(String, u32)],
+) -> Result<Vec<SpentInputTransition>> {
+    let mut transitions: Vec<SpentInputTransition> = Vec::new();
+    if input_outpoints.is_empty() {
+        return Ok(transitions);
+    }
+
+    let now = Utc::now();
+    for (source_txid, vout) in input_outpoints {
+        let rows = sqlx::query(
+            "SELECT output_id, user_id, spendable, spent_by FROM outputs WHERE txid = ? AND vout = ?",
+        )
+        .bind(source_txid)
+        .bind(*vout as i32)
+        .fetch_all(&mut *conn)
+        .await?;
+
+        for row in rows {
+            let output_id: i64 = row.get("output_id");
+            let row_user_id: i64 = row.get("user_id");
+            let spendable: bool = row.get("spendable");
+            let spent_by: Option<i64> = row.get("spent_by");
+
+            // Only currently-spendable rows not claimed by a COMPETING
+            // transaction transition (spent_by == this transaction_id is the
+            // idempotent merge re-mark).
+            if !spendable || !(spent_by.is_none() || spent_by == Some(transaction_id)) {
+                continue;
+            }
+
+            if row_user_id == user_id {
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 0, spent_by = ?, updated_at = ? WHERE output_id = ?",
+                )
+                .bind(transaction_id)
+                .bind(now)
+                .bind(output_id)
+                .execute(&mut *conn)
+                .await?;
+                transitions.push(SpentInputTransition {
+                    output_id,
+                    set_spent_by: true,
+                });
+            } else {
+                sqlx::query("UPDATE outputs SET spendable = 0, updated_at = ? WHERE output_id = ?")
+                    .bind(now)
+                    .bind(output_id)
+                    .execute(&mut *conn)
+                    .await?;
+                transitions.push(SpentInputTransition {
+                    output_id,
+                    set_spent_by: false,
+                });
+            }
+        }
+    }
+
+    Ok(transitions)
+}
+
+/// Reverts the spendability transitions recorded by [`mark_user_inputs_spent`].
+///
+/// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:120-128
+/// (`restoreInputsToSpendable`), invoked ONLY on broadcast non-success
+/// (:626-636). Reverts ONLY the recorded transitions — rows skipped at mark
+/// time (e.g. already spent by a competing transaction) are not in the list,
+/// so a competing `spent_by` is never clobbered. An empty list is a no-op;
+/// applying the same list twice is harmless (the restore is idempotent).
+async fn restore_inputs_to_spendable(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    transitions: &[SpentInputTransition],
+) -> Result<()> {
+    if transitions.is_empty() {
+        return Ok(());
+    }
+
+    let now = Utc::now();
+    for t in transitions {
+        if t.set_spent_by {
+            sqlx::query(
+                "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
+            )
+            .bind(now)
+            .bind(t.output_id)
+            .execute(pool)
+            .await?;
+        } else {
+            sqlx::query("UPDATE outputs SET spendable = 1, updated_at = ? WHERE output_id = ?")
+                .bind(now)
+                .bind(t.output_id)
+                .execute(pool)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
+// =============================================================================
 // Synchronous Broadcast (new-path internalize)
 // =============================================================================
 
@@ -974,6 +1156,7 @@ async fn broadcast_new_internalized_req(
     storage: &StorageSqlx,
     txid: &str,
     atomic_beef: &[u8],
+    spent_input_transitions: &[SpentInputTransition],
 ) -> Result<()> {
     let services = match storage.get_services() {
         Ok(s) => s,
@@ -1039,6 +1222,13 @@ async fn broadcast_new_internalized_req(
                 // Hard reject confirmed — roll back the internalize so no
                 // spendable outputs are left behind (TS :612-622 semantics).
                 mark_internalized_tx_failed(storage, txid).await?;
+                // The tx never made it to the network, so the coins its
+                // inputs consumed are still live — restore exactly the
+                // transitions Step 9b applied (TS parity:
+                // internalizeAction.ts:626-636 → restoreInputsToSpendable
+                // :120-128). Transition-scoped: competing spent_by claims
+                // were skipped at mark time and are never touched here.
+                restore_inputs_to_spendable(storage.pool(), spent_input_transitions).await?;
                 return Err(Error::BroadcastFailed(format!(
                     "internalized tx {} rejected by network (double_spend={}, invalid={})",
                     txid, is_double_spend, is_invalid
@@ -1090,6 +1280,13 @@ async fn broadcast_new_internalized_req(
 /// 1. Sets the transaction status to 'failed'
 /// 2. Marks all outputs created by this transaction as unspendable (spendable = 0)
 /// 3. Sets the proven_tx_req status to 'invalid'
+///
+/// NOTE: restoring the INPUT coins this internalize marked spent (Step 9b,
+/// `mark_user_inputs_spent`) is NOT done here — it is transition-scoped and
+/// the transitions are only known to the internalize call itself, so the
+/// broadcast failure path (`broadcast_new_internalized_req`) calls
+/// `restore_inputs_to_spendable` alongside this function. Callers reaching
+/// this via the storage trait (txid only) cannot restore inputs.
 pub async fn mark_internalized_tx_failed(storage: &StorageSqlx, txid: &str) -> Result<()> {
     let now = Utc::now();
 
@@ -1168,16 +1365,26 @@ mod tests {
 
     /// Helper to create a simple test transaction and AtomicBEEF.
     fn create_test_atomic_beef() -> (Vec<u8>, String, u64) {
+        create_test_atomic_beef_spending(
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            0,
+        )
+    }
+
+    /// Variant of `create_test_atomic_beef` whose single input spends the
+    /// given outpoint — used to build an externally-authored tx that consumes
+    /// a SEEDED wallet UTXO (the Calgooon/btc-relay-rs#16 incident shape).
+    fn create_test_atomic_beef_spending(
+        source_txid: &str,
+        source_vout: u32,
+    ) -> (Vec<u8>, String, u64) {
         // Create a simple transaction
         let mut tx = Transaction::new();
         tx.version = 1;
         tx.lock_time = 0;
 
-        // Add a dummy input
-        let mut input = TransactionInput::new(
-            "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            0,
-        );
+        // Add the input spending the requested outpoint
+        let mut input = TransactionInput::new(source_txid.to_string(), source_vout);
         input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
         tx.inputs.push(input);
 
@@ -1992,5 +2199,453 @@ mod tests {
         let result = internalize_action_internal(&storage, user_id, args).await;
 
         assert!(result.is_err(), "merging into a 'failed' tx must error");
+    }
+
+    // =========================================================================
+    // Spent-input parity tests (TS: internalizeAction.ts markUserInputsSpent /
+    // restoreInputsToSpendable; ts test suite
+    // test/storage/internalizeActionMarkInputsSpent.test.ts)
+    // =========================================================================
+
+    /// Creates a second test user (cross-user outpoint tests).
+    async fn create_second_user(storage: &StorageSqlx) -> i64 {
+        let (user, _) = storage
+            .find_or_insert_user(
+                "03b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2",
+            )
+            .await
+            .unwrap();
+        user.user_id
+    }
+
+    /// Seeds a confirmed wallet coin: a 'completed' transactions row plus a
+    /// default-basket change output (spendable = 1, spent_by NULL) at
+    /// (txid, vout). Returns (transaction_id, output_id).
+    async fn seed_change_coin(
+        storage: &StorageSqlx,
+        user_id: i64,
+        txid: &str,
+        vout: u32,
+        satoshis: i64,
+    ) -> (i64, i64) {
+        let tx_id = insert_existing_tx(storage, user_id, txid, "completed").await;
+        let basket = storage
+            .find_or_create_default_basket(user_id)
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let result = sqlx::query(
+            r#"
+            INSERT INTO outputs (
+                user_id, transaction_id, basket_id, txid, vout, satoshis,
+                locking_script, script_length, type, spendable, change,
+                provided_by, purpose, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, X'00', 1, 'P2PKH', 1, 1, 'storage', 'change', ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(tx_id)
+        .bind(basket.basket_id)
+        .bind(txid)
+        .bind(vout as i32)
+        .bind(satoshis)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        (tx_id, result.last_insert_rowid())
+    }
+
+    /// Reads (spendable, spent_by, spending_description) for an output row.
+    async fn output_state(
+        storage: &StorageSqlx,
+        output_id: i64,
+    ) -> (bool, Option<i64>, Option<String>) {
+        let row = sqlx::query(
+            "SELECT spendable, spent_by, spending_description FROM outputs WHERE output_id = ?",
+        )
+        .bind(output_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        (
+            row.get("spendable"),
+            row.get("spent_by"),
+            row.get("spending_description"),
+        )
+    }
+
+    /// ts case 1: an owned spendable coin at a consumed outpoint is marked
+    /// spendable = 0 + spent_by = the internalizing transaction, and the
+    /// transition records set_spent_by = true. spending_description is never
+    /// written (TS parity: markUserInputsSpent writes none).
+    #[tokio::test]
+    async fn test_mark_inputs_spent_owned_coin() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let coin_txid = "11".repeat(32);
+        let (_coin_tx_id, output_id) =
+            seed_change_coin(&storage, user_id, &coin_txid, 0, 5000).await;
+        let spender_tx_id =
+            insert_existing_tx(&storage, user_id, &"22".repeat(32), "unproven").await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let transitions =
+            mark_user_inputs_spent(&mut conn, user_id, spender_tx_id, &[(coin_txid.clone(), 0)])
+                .await
+                .unwrap();
+        drop(conn);
+
+        assert_eq!(
+            transitions,
+            vec![SpentInputTransition {
+                output_id,
+                set_spent_by: true
+            }]
+        );
+        let (spendable, spent_by, desc) = output_state(&storage, output_id).await;
+        assert!(!spendable);
+        assert_eq!(spent_by, Some(spender_tx_id));
+        assert_eq!(
+            desc, None,
+            "internalize must never write spending_description"
+        );
+    }
+
+    /// ts case 2: an unknown outpoint yields no transitions and no error;
+    /// an empty outpoint list is likewise a no-op.
+    #[tokio::test]
+    async fn test_mark_inputs_spent_unknown_outpoint_noop() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let spender_tx_id =
+            insert_existing_tx(&storage, user_id, &"22".repeat(32), "unproven").await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let transitions =
+            mark_user_inputs_spent(&mut conn, user_id, spender_tx_id, &[("33".repeat(32), 7)])
+                .await
+                .unwrap();
+        assert!(transitions.is_empty());
+
+        let transitions = mark_user_inputs_spent(&mut conn, user_id, spender_tx_id, &[])
+            .await
+            .unwrap();
+        assert!(transitions.is_empty());
+    }
+
+    /// ts case 3: a coin already claimed by a COMPETING transaction is
+    /// skipped — no overwrite, no transition. Covers both the
+    /// spendable = 0 + spent_by = competing shape and the pathological
+    /// spendable = 1 + spent_by = competing shape.
+    #[tokio::test]
+    async fn test_mark_inputs_spent_skips_competing_spent_by() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let coin_txid = "11".repeat(32);
+        let (_c1, out1) = seed_change_coin(&storage, user_id, &coin_txid, 0, 5000).await;
+        let (_c2, out2) = seed_change_coin(&storage, user_id, &"55".repeat(32), 1, 6000).await;
+        let competing_tx_id =
+            insert_existing_tx(&storage, user_id, &"66".repeat(32), "unproven").await;
+        let spender_tx_id =
+            insert_existing_tx(&storage, user_id, &"22".repeat(32), "unproven").await;
+
+        sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
+            .bind(competing_tx_id)
+            .bind(out1)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE outputs SET spendable = 1, spent_by = ? WHERE output_id = ?")
+            .bind(competing_tx_id)
+            .bind(out2)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let transitions = mark_user_inputs_spent(
+            &mut conn,
+            user_id,
+            spender_tx_id,
+            &[(coin_txid.clone(), 0), ("55".repeat(32), 1)],
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        assert!(transitions.is_empty(), "competing claims must be skipped");
+        let (spendable, spent_by, _) = output_state(&storage, out1).await;
+        assert!(!spendable);
+        assert_eq!(spent_by, Some(competing_tx_id), "no overwrite");
+        let (spendable, spent_by, _) = output_state(&storage, out2).await;
+        assert!(spendable);
+        assert_eq!(spent_by, Some(competing_tx_id), "no overwrite");
+    }
+
+    /// ts case 4: the outpoint lookup is cross-user (TS :39-56). Both users'
+    /// rows at the outpoint flip spendable = 0, but ONLY the internalizing
+    /// user's row gets spent_by — the other user's spent_by FK-references
+    /// THEIR transactions and stays untouched.
+    #[tokio::test]
+    async fn test_mark_inputs_spent_cross_user_rows() {
+        let storage = create_test_storage().await;
+        let user_a = create_test_user(&storage).await;
+        let user_b = create_second_user(&storage).await;
+        let coin_txid = "11".repeat(32);
+        let (_ta, out_a) = seed_change_coin(&storage, user_a, &coin_txid, 0, 5000).await;
+        let (_tb, out_b) = seed_change_coin(&storage, user_b, &coin_txid, 0, 5000).await;
+        let spender_tx_id =
+            insert_existing_tx(&storage, user_a, &"22".repeat(32), "unproven").await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let transitions =
+            mark_user_inputs_spent(&mut conn, user_a, spender_tx_id, &[(coin_txid.clone(), 0)])
+                .await
+                .unwrap();
+        drop(conn);
+
+        assert_eq!(transitions.len(), 2);
+        assert!(
+            transitions
+                .iter()
+                .any(|t| t.output_id == out_a && t.set_spent_by),
+            "owner row records set_spent_by = true"
+        );
+        assert!(
+            transitions
+                .iter()
+                .any(|t| t.output_id == out_b && !t.set_spent_by),
+            "other-user row records set_spent_by = false"
+        );
+
+        let (spendable, spent_by, _) = output_state(&storage, out_a).await;
+        assert!(!spendable);
+        assert_eq!(spent_by, Some(spender_tx_id));
+        let (spendable, spent_by, _) = output_state(&storage, out_b).await;
+        assert!(!spendable);
+        assert_eq!(spent_by, None, "cross-user spent_by must stay untouched");
+    }
+
+    /// ts case 5: restore reverses both transition shapes — set_spent_by
+    /// rows get spendable = 1 + spent_by = NULL; spendable-only rows get
+    /// spendable = 1 with spent_by untouched.
+    #[tokio::test]
+    async fn test_restore_reverses_transitions() {
+        let storage = create_test_storage().await;
+        let user_a = create_test_user(&storage).await;
+        let user_b = create_second_user(&storage).await;
+        let coin_txid = "11".repeat(32);
+        let (_ta, out_a) = seed_change_coin(&storage, user_a, &coin_txid, 0, 5000).await;
+        let (_tb, out_b) = seed_change_coin(&storage, user_b, &coin_txid, 0, 5000).await;
+        let spender_tx_id =
+            insert_existing_tx(&storage, user_a, &"22".repeat(32), "unproven").await;
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let transitions =
+            mark_user_inputs_spent(&mut conn, user_a, spender_tx_id, &[(coin_txid.clone(), 0)])
+                .await
+                .unwrap();
+        drop(conn);
+        assert_eq!(transitions.len(), 2);
+
+        restore_inputs_to_spendable(storage.pool(), &transitions)
+            .await
+            .unwrap();
+
+        let (spendable, spent_by, _) = output_state(&storage, out_a).await;
+        assert!(spendable);
+        assert_eq!(spent_by, None);
+        let (spendable, spent_by, _) = output_state(&storage, out_b).await;
+        assert!(spendable);
+        assert_eq!(spent_by, None);
+    }
+
+    /// ts case 6: restore never clobbers a pre-existing COMPETING spent_by —
+    /// rows skipped at mark time are not in the transition list, so they are
+    /// untouched. Double-restore of the recorded list is harmless.
+    #[tokio::test]
+    async fn test_restore_does_not_clobber_competing_spent_by() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (_c1, out_marked) =
+            seed_change_coin(&storage, user_id, &"11".repeat(32), 0, 5000).await;
+        let (_c2, out_competing) =
+            seed_change_coin(&storage, user_id, &"55".repeat(32), 0, 6000).await;
+        let competing_tx_id =
+            insert_existing_tx(&storage, user_id, &"66".repeat(32), "unproven").await;
+        let spender_tx_id =
+            insert_existing_tx(&storage, user_id, &"22".repeat(32), "unproven").await;
+
+        sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
+            .bind(competing_tx_id)
+            .bind(out_competing)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let transitions = mark_user_inputs_spent(
+            &mut conn,
+            user_id,
+            spender_tx_id,
+            &[("11".repeat(32), 0), ("55".repeat(32), 0)],
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        assert_eq!(transitions.len(), 1, "competing row not in transitions");
+
+        restore_inputs_to_spendable(storage.pool(), &transitions)
+            .await
+            .unwrap();
+        // Double-restore is harmless.
+        restore_inputs_to_spendable(storage.pool(), &transitions)
+            .await
+            .unwrap();
+
+        let (spendable, spent_by, _) = output_state(&storage, out_marked).await;
+        assert!(spendable);
+        assert_eq!(spent_by, None);
+        let (spendable, spent_by, _) = output_state(&storage, out_competing).await;
+        assert!(!spendable, "competing row untouched by restore");
+        assert_eq!(spent_by, Some(competing_tx_id));
+    }
+
+    /// ts case 7: restoring an empty transition list is a no-op.
+    #[tokio::test]
+    async fn test_restore_empty_list_noop() {
+        let storage = create_test_storage().await;
+        restore_inputs_to_spendable(storage.pool(), &[])
+            .await
+            .unwrap();
+    }
+
+    /// ts case 8: inputs without a source txid are ignored by the outpoint
+    /// extraction (they cannot name an outpoint to look up).
+    #[test]
+    fn test_extract_input_outpoints_skips_missing_source_txid() {
+        let mut tx = Transaction::new();
+        tx.inputs.push(TransactionInput::new("aa".repeat(32), 3));
+        let mut missing = TransactionInput::new("bb".repeat(32), 1);
+        missing.source_txid = None;
+        tx.inputs.push(missing);
+
+        let outpoints = extract_input_outpoints(&tx);
+        assert_eq!(outpoints, vec![("aa".repeat(32), 3)]);
+    }
+
+    /// Incident regression (Calgooon/btc-relay-rs#16, success path): a
+    /// default-basket change UTXO consumed by an externally-built
+    /// internalized tx must stop matching coin selection — the selectable
+    /// count DROPS (the stale-UTXO loop is dead). Basket insertion is used so
+    /// the internalized output lands OUTSIDE the default basket, leaving the
+    /// seeded coin as the only candidate.
+    #[tokio::test]
+    async fn test_internalize_spending_wallet_utxo_marks_it_spent() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let coin_txid = "44".repeat(32);
+        let (_coin_tx_id, coin_output_id) =
+            seed_change_coin(&storage, user_id, &coin_txid, 0, 20000).await;
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef_spending(&coin_txid, 0);
+        let mock = MockWalletServicesBuilder::default()
+            .post_beef_success()
+            .build();
+        WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+        let args = InternalizeActionArgs {
+            tx: beef_bytes,
+            outputs: vec![InternalizeOutput {
+                output_index: 0,
+                protocol: BASKET_INSERTION_PROTOCOL.to_string(),
+                payment_remittance: None,
+                insertion_remittance: Some(BasketInsertion {
+                    basket: "external".to_string(),
+                    custom_instructions: None,
+                    tags: None,
+                }),
+            }],
+            description: "externally-built spend of wallet change".to_string(),
+            labels: None,
+            seek_permission: None,
+        };
+
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+        assert!(result.base.accepted);
+
+        // The consumed coin no longer matches the coin-selection predicate.
+        assert_eq!(
+            count_selectable_coins(&storage, user_id).await,
+            0,
+            "consumed coin must drop out of coin selection"
+        );
+
+        let internalized_tx_id: i64 = sqlx::query_scalar(
+            "SELECT transaction_id FROM transactions WHERE user_id = ? AND txid = ?",
+        )
+        .bind(user_id)
+        .bind(&txid)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+
+        let (spendable, spent_by, desc) = output_state(&storage, coin_output_id).await;
+        assert!(!spendable);
+        assert_eq!(spent_by, Some(internalized_tx_id));
+        assert_eq!(desc, None);
+    }
+
+    /// Incident regression (broadcast hard-fail): when the internalized tx is
+    /// definitively rejected by the network, the internalize errors and the
+    /// consumed coin RETURNS to selectable (restore path), while the failed
+    /// tx's own outputs stay unspendable.
+    #[tokio::test]
+    async fn test_internalize_broadcast_hard_fail_restores_consumed_coin() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let coin_txid = "44".repeat(32);
+        let (_coin_tx_id, coin_output_id) =
+            seed_change_coin(&storage, user_id, &coin_txid, 0, 20000).await;
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef_spending(&coin_txid, 0);
+        // Default get_status_for_txids mock returns no results, so the
+        // reconcile step finds the tx dead and the rejection stands.
+        let mock = MockWalletServicesBuilder::default()
+            .post_beef_double_spend(&txid, "competing_txid")
+            .build();
+        WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+        let args = wallet_payment_args(beef_bytes, "hard-fail spend of wallet change");
+        let result = internalize_action_internal(&storage, user_id, args).await;
+        assert!(result.is_err(), "hard reject must fail the internalize");
+
+        // The consumed coin is restored to selectable.
+        let (spendable, spent_by, _) = output_state(&storage, coin_output_id).await;
+        assert!(spendable, "consumed coin must be restored");
+        assert_eq!(spent_by, None);
+        assert_eq!(
+            count_selectable_coins(&storage, user_id).await,
+            1,
+            "restored coin is selectable again"
+        );
+
+        // The failed internalized tx leaves no spendable outputs behind.
+        let spendable_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM outputs WHERE user_id = ? AND txid = ? AND spendable = 1",
+        )
+        .bind(user_id)
+        .bind(&txid)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(spendable_count, 0);
     }
 }
