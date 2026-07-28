@@ -913,11 +913,22 @@ pub trait MonitorStorage: WalletStorageProvider {
 
     /// Attempt to recover transactions incorrectly marked as failed.
     ///
-    /// This method:
-    /// 1. Queries proven_tx_reqs with status: unfail
-    /// 2. For each, checks if transaction has a merkle path on-chain
-    /// 3. If found: restores the transaction as unproven
-    /// 4. If not found: marks as invalid
+    /// Two phases:
+    ///
+    /// 1. **Auto-unfail canary (producer)**: every failed transaction whose
+    ///    req sits in terminal 'invalid'/'doubleSpend' is periodically
+    ///    re-verified against the chain (hourly backoff, daily after 24
+    ///    checks, never abandoned). A tx the network reports known/mined is
+    ///    a false-fail and is recovered: req → 'unmined' (attempts 0, so
+    ///    `synchronize_transaction_statuses` completes it with a proof),
+    ///    tx → 'unproven', outputs re-validated via is_utxo, consumed
+    ///    inputs re-marked spent. Without this sweep no code path ever
+    ///    writes 'unfail' and phase 2 is unreachable.
+    /// 2. **Explicit 'unfail' requests (consumer)**: reqs manually set to
+    ///    'unfail' are checked for a merkle path; found → same recovery;
+    ///    positive no-proof answer → back to 'invalid' (the canary keeps
+    ///    watching it); provider error → held at 'unfail' (an outage must
+    ///    not terminalize a recovery request).
     async fn un_fail(&self) -> Result<()>;
 
     /// Review and synchronize transaction statuses.

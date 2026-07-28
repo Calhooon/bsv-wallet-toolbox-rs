@@ -13,15 +13,17 @@ use super::{MonitorTask, TaskResult};
 
 /// Task that recovers transactions that were incorrectly marked as failed.
 ///
-/// This task:
-/// 1. Queries proven_tx_reqs with status 'unfail'
-/// 2. For each transaction, checks if it has a merkle path on chain
-/// 3. If merkle path found:
-///    - Updates proven_tx_req status to 'unmined'
-///    - Updates transaction status to 'unproven'
-///    - Creates UTXOs for spendable outputs
-/// 4. If not found:
-///    - Updates proven_tx_req status to 'invalid'
+/// Delegates to `MonitorStorage::un_fail`, which runs two phases:
+///
+/// 1. The auto-unfail canary (producer): re-verifies failed transactions
+///    whose reqs are terminal 'invalid'/'doubleSpend' against the chain
+///    (hourly backoff, never abandoned) and recovers any the network
+///    reports known/mined — the false-fail incident class where a
+///    broadcast reject during an index-disagreement window wedged a
+///    mined tx at 'failed' forever.
+/// 2. The explicit-'unfail' consumer: recovers reqs manually set to
+///    'unfail' when a merkle path exists; holds them through provider
+///    outages instead of terminalizing.
 pub struct UnfailTask<S, V>
 where
     S: MonitorStorage + 'static,

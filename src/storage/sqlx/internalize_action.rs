@@ -985,7 +985,7 @@ async fn create_proven_tx_req(
 /// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:73-97 —
 /// only inputs that carry a source txid participate; inputs without one are
 /// skipped (they cannot name an outpoint to look up).
-fn extract_input_outpoints(tx: &Transaction) -> Vec<(String, u32)> {
+pub(crate) fn extract_input_outpoints(tx: &Transaction) -> Vec<(String, u32)> {
     tx.inputs
         .iter()
         .filter_map(|i| {
