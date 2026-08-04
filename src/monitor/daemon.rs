@@ -376,8 +376,22 @@ where
         }
     }
 
-    /// Run all enabled tasks once (for testing).
+    /// Run all enabled tasks once, then return each task's result.
+    ///
+    /// This is the one-shot equivalent of [`Monitor::start`] and is what an
+    /// ephemeral wallet process (e.g. `bsv-wallet tick`) uses to advance
+    /// pending work without holding a daemon open. Notably `check_for_proofs`
+    /// is force-triggered below, so a single `run_once` CAN back-fill
+    /// `transactions.proven_tx_id` for a tx that mined while nothing was
+    /// running — it does not have to wait for a new block header.
     pub async fn run_once(&self) -> Result<HashMap<TaskType, TaskResult>> {
+        // Same prerequisite `start()` establishes: storage-side operations
+        // (synchronize_transaction_statuses, send_waiting_transactions, ...)
+        // reach the blockchain through the services handle on storage. Without
+        // this, run_once silently reports 0 processed for every storage-driven
+        // task because `get_services()` fails.
+        self.storage.set_services(self.services.clone());
+
         let mut results = HashMap::new();
 
         if self.options.tasks.clock.enabled {

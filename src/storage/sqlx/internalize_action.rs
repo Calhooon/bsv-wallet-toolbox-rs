@@ -142,6 +142,18 @@ pub async fn internalize_action_internal(
     };
     // tx is now dropped, safe to await
 
+    // Step 1c: Extract the BUMP that proves `txid` (if the BEEF carries one).
+    //
+    // Done here, synchronously, because `Beef` holds `RefCell`-bearing
+    // transactions and must not be borrowed across an await point.
+    let bump_claim = extract_bump_claim(&beef, &txid);
+
+    // Step 1d: VALIDATE that claimed proof against the wallet's ChainTracker.
+    // `Some` means the proof is safe to store as a `proven_txs` row; `None`
+    // means it must not be trusted and the txid needs a `proven_tx_req` so the
+    // CheckForProofs backstop re-derives the proof from a service.
+    let validated_bump = validate_bump_claim(storage, &txid, bump_claim).await;
+
     // Step 2: Get the user's default (change) basket
     // NOTE: This uses its own connection (known limitation).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
@@ -261,8 +273,27 @@ pub async fn internalize_action_internal(
     }
 
     // Step 7: Process the internalization
+    //
+    // `has_proof` = the BEEF CLAIMS the tx is mined (it carries a BUMP for it).
+    // `validated_bump` = that claim was CONFIRMED against the ChainTracker and
+    // is therefore storable. Only a confirmed proof may produce a 'completed'
+    // transaction, because 'completed' means "proven" — see the
+    // `proven_tx_id` linkage below.
+    //
+    // TS parity: wallet-toolbox storage/methods/internalizeAction.ts:423-427
+    // (`findOrInsertTargetTransaction`) derives status from whether a
+    // provenTx row exists — `(provenTx != null) ? 'completed' : 'unproven'` —
+    // and writes `provenTxId` in the same record. 'completed' therefore
+    // implies a linked provenTx BY CONSTRUCTION. This port previously set
+    // 'completed' from `has_proof` alone while never writing `proven_tx_id`
+    // and never creating a req, so the tx was unreachable by every
+    // proof-linking path forever (Calgooon/bsv-wallet-toolbox-rs#8).
     let has_proof = beef.find_bump(&txid).is_some();
-    let status = if has_proof { "completed" } else { "unproven" };
+    let status = if validated_bump.is_some() {
+        "completed"
+    } else {
+        "unproven"
+    };
 
     let transaction_id = if is_merge {
         let etx = existing_tx
@@ -293,30 +324,38 @@ pub async fn internalize_action_internal(
         // allocate_change_input), so the merged outputs would be permanently
         // unselectable — 'nosend' has no other retirement path.
         //
-        // With BUMP: promote tx -> 'completed' and retire req 'nosend' ->
-        // 'completed' (TS also records a proven_txs row here; this crate's
-        // internalize path leaves proof ingestion to CheckForProofs, matching
-        // its non-merge path which also sets 'completed' without a proven_txs
-        // row).
-        // Without BUMP: promote tx -> 'unproven' and advance the req to
+        // With a VALIDATED BUMP: record the proven_txs row, promote tx ->
+        // 'completed' WITH `proven_tx_id` linked, and retire req 'nosend' ->
+        // 'completed' (also carrying `proven_tx_id`). TS parity:
+        // internalizeAction.ts:547-556 — `findOrInsertProvenTxFromBump` then
+        // `updateTransaction({ provenTxId, status: 'completed' })` and
+        // `req.provenTxId = proven.provenTxId; req.status = 'completed'`.
+        // Retiring the req to 'completed' takes it out of the CheckForProofs
+        // eligible set, so the proof MUST be linked here or it never will be.
+        // Without a validated BUMP (no BUMP at all, or one the ChainTracker
+        // would not confirm): promote tx -> 'unproven' and advance the req to
         // 'unmined' (creating it if absent) so CheckForProofs owns it.
         //
         // Other statuses are intentionally left alone ('sending' is owned by
         // SendWaiting; 'unproven'/'completed' by CheckForProofs) — this
         // mirrors the TS `wasNoSend` gate exactly.
         if etx.status == TransactionStatus::NoSend {
-            if has_proof {
+            if let Some(ref vb) = validated_bump {
+                let proven_tx_id = insert_proven_tx_from_bump(&mut tx, &txid, &raw_tx, vb).await?;
+
                 sqlx::query(
-                    "UPDATE transactions SET status = 'completed', updated_at = ? WHERE transaction_id = ?",
+                    "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE transaction_id = ?",
                 )
+                .bind(proven_tx_id)
                 .bind(now)
                 .bind(tx_id)
                 .execute(&mut *tx)
                 .await?;
 
                 sqlx::query(
-                    "UPDATE proven_tx_reqs SET status = 'completed', updated_at = ? WHERE txid = ? AND status = 'nosend'",
+                    "UPDATE proven_tx_reqs SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ? AND status = 'nosend'",
                 )
+                .bind(proven_tx_id)
                 .bind(now)
                 .bind(&txid)
                 .execute(&mut *tx)
@@ -363,13 +402,24 @@ pub async fn internalize_action_internal(
         // raw transactions together.
         let input_beef_bytes = &args.tx;
 
+        // Record the proven_txs row FIRST so the transaction row can be born
+        // already linked to it. TS parity: internalizeAction.ts:586-588 —
+        // `findOrInsertProvenTxFromBump` runs before
+        // `findOrInsertTargetTransaction`, which then carries `provenTxId`.
+        // Same SQL transaction, so 'completed' and the link commit together
+        // (no window where a 'completed' tx has a NULL proven_tx_id).
+        let new_proven_tx_id = match validated_bump {
+            Some(ref vb) => Some(insert_proven_tx_from_bump(&mut tx, &txid, &raw_tx, vb).await?),
+            None => None,
+        };
+
         let result = sqlx::query(
             r#"
             INSERT INTO transactions (
                 user_id, txid, status, reference, description, satoshis,
-                version, lock_time, raw_tx, input_beef, is_outgoing, created_at, updated_at
+                version, lock_time, raw_tx, input_beef, is_outgoing, proven_tx_id, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             "#,
         )
         .bind(user_id)
@@ -382,6 +432,7 @@ pub async fn internalize_action_internal(
         .bind(tx_lock_time as i64)
         .bind(&raw_tx)
         .bind(input_beef_bytes)
+        .bind(new_proven_tx_id)
         .bind(now)
         .bind(now)
         .execute(&mut *tx)
@@ -560,13 +611,30 @@ pub async fn internalize_action_internal(
     let spent_input_transitions =
         mark_user_inputs_spent(&mut tx, user_id, transaction_id, &input_outpoints).await?;
 
-    // Step 10: Create proven_tx_req if no proof
+    // Step 10: Create a proven_tx_req unless the tx is already PROVEN.
     // Store the complete BEEF in proven_tx_reqs so it can be used when building
     // output BEEFs for spending. This is especially important for unconfirmed
     // transactions where we need the ancestor chain.
+    //
+    // The gate is `validated_bump.is_none()`, not `!has_proof`: a BEEF that
+    // merely CLAIMS a proof we could not confirm must still get a req, or
+    // nothing will ever link its `proven_tx_id`. `transactions.proven_tx_id`
+    // is written by exactly one code path — `ingest_merkle_proof` — and that
+    // path is only ever reached over `proven_tx_reqs` rows, so a transaction
+    // with no req is permanently unprovable (issue #8).
+    //
+    // Req status depends on WHY we are creating it:
+    // - no BUMP at all  -> 'unsent': the tx may not be on the network yet, so
+    //   hand it to the broadcast path below (SendWaiting is the backstop).
+    // - unconfirmable BUMP -> 'unmined': the payer asserts it is already
+    //   mined, so do NOT re-broadcast; let CheckForProofs chain-verify it and
+    //   fetch a proof from a service (a bogus BUMP simply fails triage there).
     let mut new_req_created = false;
-    if !has_proof && !is_merge {
-        new_req_created = create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, "unsent").await?;
+    if validated_bump.is_none() && !is_merge {
+        let req_status = if has_proof { "unmined" } else { "unsent" };
+        let created = create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, req_status).await?;
+        // Only an 'unsent' req is ours to broadcast.
+        new_req_created = created && req_status == "unsent";
     }
 
     // Commit the SQL transaction. All DB operations above are now atomically persisted.
@@ -896,6 +964,183 @@ async fn add_tag_to_output(
     }
 
     Ok(())
+}
+
+// =============================================================================
+// Proof linkage (proof-bearing internalize)
+// =============================================================================
+
+/// An unverified merkle-proof claim lifted out of an incoming BEEF's BUMP.
+///
+/// "Claim" is deliberate: nothing here has been checked against a block header
+/// yet. Only [`validate_bump_claim`] may turn one of these into a
+/// [`ValidatedBump`].
+struct BumpClaim {
+    /// Block height the BUMP asserts.
+    height: u32,
+    /// Position of `txid` in the block's transaction order, taken from the
+    /// BUMP's level-0 leaf (TS parity: `bump.path[0].find(p => p.hash === txid).offset`).
+    idx: i64,
+    /// Merkle root computed from the BUMP for this txid — the value the
+    /// ChainTracker must confirm.
+    computed_root: String,
+    /// Canonical BUMP binary, stored verbatim once validated.
+    merkle_path: Vec<u8>,
+}
+
+/// A merkle proof that a ChainTracker has CONFIRMED for its claimed height,
+/// and is therefore safe to persist as a `proven_txs` row.
+struct ValidatedBump {
+    height: u32,
+    idx: i64,
+    merkle_root: String,
+    merkle_path: Vec<u8>,
+}
+
+/// Lifts the BUMP proving `txid` out of a BEEF, if it carries one.
+///
+/// Synchronous by design: `Beef` owns `RefCell`-bearing transactions and must
+/// not be held across an await point, so every field is copied out here.
+/// Returns `None` when there is no BUMP for `txid`, when the root cannot be
+/// computed from it, or when `txid` is absent from the BUMP's level-0 leaves.
+fn extract_bump_claim(beef: &Beef, txid: &str) -> Option<BumpClaim> {
+    let bump = beef.find_bump(txid)?;
+
+    // compute_root(Some(txid)) fails unless txid is actually in the path, so a
+    // malformed or unrelated BUMP is rejected right here.
+    let computed_root = bump.compute_root(Some(txid)).ok()?;
+
+    // TS parity: internalizeAction.ts:465-472 — the leaf index comes from the
+    // level-0 entry whose hash IS the txid; TS throws when it is missing.
+    let idx = bump
+        .path
+        .first()?
+        .iter()
+        .find(|leaf| {
+            leaf.hash
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case(txid))
+        })?
+        .offset as i64;
+
+    Some(BumpClaim {
+        height: bump.block_height,
+        idx,
+        computed_root,
+        merkle_path: bump.to_binary(),
+    })
+}
+
+/// Validates a [`BumpClaim`] against the storage's ChainTracker.
+///
+/// This is the SAME check `StorageSqlx::ingest_merkle_proof` performs before it
+/// stores any proof (`is_valid_root_for_height` at the claimed height) — an
+/// incoming BEEF's BUMP gets no more trust than a proof pulled from a service.
+///
+/// Returns `None` — meaning "do not store this proof" — when:
+/// - there is no claim,
+/// - no ChainTracker is wired (we cannot verify, so we must not assert),
+/// - the tracker says the root is not the one at that height, or
+/// - the tracker errored (unknown, not proven).
+///
+/// A `None` result is not fatal: the caller records the txid as 'unproven' with
+/// a `proven_tx_req`, and the CheckForProofs backstop obtains a proof the
+/// normal way.
+async fn validate_bump_claim(
+    storage: &StorageSqlx,
+    txid: &str,
+    claim: Option<BumpClaim>,
+) -> Option<ValidatedBump> {
+    let claim = claim?;
+
+    let Some(tracker) = storage.get_chain_tracker().await else {
+        tracing::debug!(
+            txid = %txid,
+            height = claim.height,
+            "internalize_action: BEEF carries a BUMP but no ChainTracker is wired — \
+             not trusting it; txid will be tracked as unproven"
+        );
+        return None;
+    };
+
+    match tracker
+        .is_valid_root_for_height(&claim.computed_root, claim.height)
+        .await
+    {
+        Ok(true) => Some(ValidatedBump {
+            height: claim.height,
+            idx: claim.idx,
+            merkle_root: claim.computed_root,
+            merkle_path: claim.merkle_path,
+        }),
+        Ok(false) => {
+            tracing::warn!(
+                txid = %txid,
+                height = claim.height,
+                computed_root = %claim.computed_root,
+                "internalize_action: incoming BEEF's BUMP does NOT match the merkle root \
+                 at its claimed height — proof rejected, txid tracked as unproven"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                txid = %txid,
+                height = claim.height,
+                error = %e,
+                "internalize_action: ChainTracker could not confirm the incoming BEEF's BUMP \
+                 — proof not stored, txid tracked as unproven"
+            );
+            None
+        }
+    }
+}
+
+/// Inserts the `proven_txs` row for a ChainTracker-validated BUMP and returns
+/// its `proven_tx_id`.
+///
+/// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:462-489
+/// (`findOrInsertProvenTxFromBump`) — find-or-insert keyed on txid, storing
+/// height, leaf index, the BUMP binary, the raw tx and the merkle root.
+///
+/// Runs on the caller's connection so it commits atomically with the
+/// transaction row that links to it. `block_hash` is left empty: the internalize
+/// path has no block header in hand, and `ReviewStatus`/`Reorg` refresh it —
+/// the same tolerance `synchronize_transaction_statuses` already has when a
+/// proof arrives without a header (`unwrap_or_default`).
+async fn insert_proven_tx_from_bump(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    raw_tx: &[u8],
+    vb: &ValidatedBump,
+) -> Result<i64> {
+    let now = Utc::now();
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO proven_txs
+            (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(txid)
+    .bind(vb.height as i64)
+    .bind(vb.idx)
+    .bind(&vb.merkle_root)
+    .bind(&vb.merkle_path)
+    .bind(raw_tx)
+    .bind(now)
+    .bind(now)
+    .execute(&mut *conn)
+    .await?;
+
+    let proven_tx_id: i64 =
+        sqlx::query_scalar("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(&mut *conn)
+            .await?;
+
+    Ok(proven_tx_id)
 }
 
 /// Gets known txids for a user (for TrustKnown BEEF verification mode).
@@ -1335,7 +1580,9 @@ mod tests {
     use crate::storage::sqlx::StorageSqlx;
     use crate::storage::traits::WalletStorageWriter;
     use bsv_rs::script::{LockingScript, UnlockingScript};
-    use bsv_rs::transaction::{Beef, Transaction, TransactionInput, TransactionOutput};
+    use bsv_rs::transaction::{
+        Beef, MerklePath, MockChainTracker, Transaction, TransactionInput, TransactionOutput,
+    };
     use bsv_rs::wallet::{BasketInsertion, InternalizeOutput, WalletPayment};
 
     /// Helper to create test storage.
@@ -1868,6 +2115,119 @@ mod tests {
         }
     }
 
+    /// Test height used by every proof-bearing internalize fixture.
+    const PROVEN_HEIGHT: u32 = 800_123;
+
+    /// Builds an AtomicBEEF for a single tx that CARRIES a BUMP proving it,
+    /// plus a `MockChainTracker` that confirms that BUMP's root at its height.
+    ///
+    /// The BUMP is a single-leaf (coinbase-shaped) path, so its computed root
+    /// is the txid itself and the leaf offset is 0 — both deterministic.
+    fn create_proven_atomic_beef() -> (Vec<u8>, String, u64, MerklePath, MockChainTracker) {
+        let mut tx = Transaction::new();
+        tx.version = 1;
+        tx.lock_time = 0;
+
+        let mut input = TransactionInput::new(
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            0,
+        );
+        input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+        tx.inputs.push(input);
+
+        let satoshis = 10000u64;
+        tx.outputs.push(TransactionOutput {
+            satoshis: Some(satoshis),
+            locking_script: LockingScript::from_hex(
+                "76a914000000000000000000000000000000000000000088ac",
+            )
+            .unwrap(),
+            change: false,
+        });
+
+        let txid = tx.id();
+        let raw_tx = tx.to_binary();
+
+        let bump = MerklePath::from_coinbase_txid(&txid, PROVEN_HEIGHT);
+        let merkle_root = bump.compute_root(Some(&txid)).unwrap();
+
+        let mut beef = Beef::new();
+        let bump_index = beef.merge_bump(bump.clone());
+        beef.merge_raw_tx(raw_tx, Some(bump_index));
+
+        let beef_bytes = beef.to_binary_atomic(&txid).unwrap();
+
+        let mut tracker = MockChainTracker::new(PROVEN_HEIGHT + 6);
+        tracker.add_root(PROVEN_HEIGHT, merkle_root);
+
+        (beef_bytes, txid, satoshis, bump, tracker)
+    }
+
+    /// The whole `proven_txs` row recorded for a txid, if any.
+    async fn proven_tx_row(
+        storage: &StorageSqlx,
+        txid: &str,
+    ) -> Option<(i64, i64, i64, String, Vec<u8>, Vec<u8>)> {
+        sqlx::query_as(
+            "SELECT proven_tx_id, height, idx, merkle_root, merkle_path, raw_tx \
+             FROM proven_txs WHERE txid = ?",
+        )
+        .bind(txid)
+        .fetch_optional(storage.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn tx_proven_tx_id(storage: &StorageSqlx, txid: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT proven_tx_id FROM transactions WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn req_proven_tx_id(storage: &StorageSqlx, txid: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT proven_tx_id FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap()
+    }
+
+    /// The invariant issue #8 restores, asserted against the whole DB:
+    /// a `completed` transaction ALWAYS has a linked `proven_tx_id`.
+    async fn assert_completed_implies_proven(storage: &StorageSqlx) {
+        let unlinked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM transactions WHERE status = 'completed' AND proven_tx_id IS NULL",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            unlinked, 0,
+            "'completed' must imply a linked proven_tx_id (issue #8)"
+        );
+    }
+
+    /// Every tx that is not yet proven must have a req in a status the
+    /// CheckForProofs backstop actually queries, or a status that hands off to
+    /// one (`unsent` -> SendWaiting -> `unmined`). A tx with NO req at all is
+    /// permanently unprovable.
+    async fn assert_unproven_is_reachable(storage: &StorageSqlx) {
+        let orphaned: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM transactions t \
+             WHERE t.proven_tx_id IS NULL \
+               AND NOT EXISTS (SELECT 1 FROM proven_tx_reqs r WHERE r.txid = t.txid)",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            orphaned, 0,
+            "an unproven tx with no proven_tx_req can never be proven (issue #8)"
+        );
+    }
+
     async fn req_status(storage: &StorageSqlx, txid: &str) -> Option<String> {
         sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
             .bind(txid)
@@ -2199,6 +2559,278 @@ mod tests {
         let result = internalize_action_internal(&storage, user_id, args).await;
 
         assert!(result.is_err(), "merging into a 'failed' tx must error");
+    }
+
+    // =========================================================================
+    // Proof-linkage tests — issue #8.
+    //
+    // TS parity target: internalizeAction.ts:586-588 (newInternalize) and
+    // :547-556 (mergedInternalize) both call `findOrInsertProvenTxFromBump`
+    // before writing the transaction, so 'completed' implies a linked provenTx
+    // BY CONSTRUCTION (:423-427 findOrInsertTargetTransaction).
+    // =========================================================================
+
+    /// A proof-bearing internalize whose BUMP the ChainTracker CONFIRMS must
+    /// record a `proven_txs` row and link it from the transaction. Before the
+    /// fix this produced `status='completed'` with `proven_tx_id` NULL and no
+    /// `proven_tx_req` at all — permanently unprovable, because
+    /// `transactions.proven_tx_id` is only ever written by
+    /// `ingest_merkle_proof`, which is only reached over req rows.
+    #[tokio::test]
+    async fn test_new_internalize_validated_bump_links_proven_tx() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, satoshis, bump, tracker) = create_proven_atomic_beef();
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+
+        let args = wallet_payment_args(beef_bytes, "proof-bearing internalize");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.base.accepted);
+        assert!(!result.is_merge);
+        assert_eq!(result.satoshis, satoshis as i64);
+
+        // 'completed' is only legitimate WITH the link.
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("completed")
+        );
+        let linked = tx_proven_tx_id(&storage, &txid).await;
+        assert!(
+            linked.is_some(),
+            "a 'completed' internalized tx must link proven_tx_id"
+        );
+
+        // ...and the row it links to must be the BEEF's own BUMP.
+        let (proven_tx_id, height, idx, merkle_root, merkle_path, raw_tx) =
+            proven_tx_row(&storage, &txid)
+                .await
+                .expect("proven_txs row must exist");
+        assert_eq!(Some(proven_tx_id), linked);
+        assert_eq!(height, PROVEN_HEIGHT as i64);
+        assert_eq!(idx, 0, "single-leaf BUMP puts the txid at offset 0");
+        assert_eq!(merkle_root, bump.compute_root(Some(&txid)).unwrap());
+        assert_eq!(merkle_path, bump.to_binary());
+        assert!(!raw_tx.is_empty(), "proven_txs.raw_tx must be populated");
+
+        // A proven tx needs no req (nothing left to fetch) — TS parity:
+        // the `if (pr.proven == null)` gate at internalizeAction.ts:597.
+        assert_eq!(req_status(&storage, &txid).await, None);
+
+        assert_completed_implies_proven(&storage).await;
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// With NO ChainTracker wired the wallet cannot verify an incoming BEEF's
+    /// BUMP, so it must NOT be stored or asserted. The tx stays 'unproven' and
+    /// gets a req the CheckForProofs backstop will actually reach — the txid is
+    /// never left in a state nothing can advance.
+    #[tokio::test]
+    async fn test_new_internalize_bump_not_trusted_without_chaintracker() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis, _bump, _tracker) = create_proven_atomic_beef();
+        // Deliberately no set_chain_tracker.
+
+        let args = wallet_payment_args(beef_bytes, "unverifiable proof claim");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.base.accepted);
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven"),
+            "an unverifiable BUMP must not produce a 'completed' tx"
+        );
+        assert_eq!(tx_proven_tx_id(&storage, &txid).await, None);
+        assert!(
+            proven_tx_row(&storage, &txid).await.is_none(),
+            "an unverified BUMP must never be stored as a proven_txs row"
+        );
+
+        // 'unmined' IS in the CheckForProofs eligible set
+        // (storage_sqlx.rs synchronize_transaction_statuses), and because the
+        // payer asserts the tx is already mined we must not re-broadcast it.
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("unmined"),
+            "a claimed-but-unverified proof must hand the txid to CheckForProofs"
+        );
+
+        assert_completed_implies_proven(&storage).await;
+        assert_unproven_is_reachable(&storage).await;
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// A ChainTracker that rejects the claimed root must not yield a stored
+    /// proof. (`verify_beef_merkle_proofs` in Strict mode already refuses the
+    /// whole internalize for a bad root; this pins that a rejected proof is
+    /// never persisted either way.)
+    #[tokio::test]
+    async fn test_new_internalize_rejected_bump_stores_no_proof() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis, _bump, _good) = create_proven_atomic_beef();
+
+        // A tracker that knows the height but has a DIFFERENT root there.
+        let mut liar = MockChainTracker::new(PROVEN_HEIGHT + 6);
+        liar.add_root(PROVEN_HEIGHT, "aa".repeat(32));
+        storage.set_chain_tracker(Arc::new(liar)).await;
+
+        let args = wallet_payment_args(beef_bytes, "bogus proof claim");
+        let result = internalize_action_internal(&storage, user_id, args).await;
+
+        // Either the internalize is refused outright, or it is accepted as
+        // unproven — but never as a stored proof.
+        assert!(
+            proven_tx_row(&storage, &txid).await.is_none(),
+            "a root the ChainTracker rejects must never be stored"
+        );
+        if result.is_ok() {
+            assert_eq!(
+                tx_status(&storage, user_id, &txid).await.as_deref(),
+                Some("unproven")
+            );
+            assert_eq!(tx_proven_tx_id(&storage, &txid).await, None);
+            assert_unproven_is_reachable(&storage).await;
+        }
+        assert_completed_implies_proven(&storage).await;
+    }
+
+    /// Merge into a 'nosend' tx with a VALIDATED BUMP: the req is retired to
+    /// 'completed', which removes it from the CheckForProofs eligible set — so
+    /// the proof must be linked on BOTH the transaction and the req right here,
+    /// or nothing ever will. TS parity: internalizeAction.ts:547-556.
+    #[tokio::test]
+    async fn test_merge_nosend_validated_bump_links_proven_tx() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis, _bump, tracker) = create_proven_atomic_beef();
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+
+        insert_existing_tx(&storage, user_id, &txid, "nosend").await;
+        insert_req(&storage, &txid, "nosend").await;
+
+        let args = wallet_payment_args(beef_bytes, "merge nosend with proof");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert!(result.is_merge);
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("completed")
+        );
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("completed")
+        );
+
+        let (proven_tx_id, height, ..) = proven_tx_row(&storage, &txid)
+            .await
+            .expect("proven_txs row must exist");
+        assert_eq!(height, PROVEN_HEIGHT as i64);
+        assert_eq!(tx_proven_tx_id(&storage, &txid).await, Some(proven_tx_id));
+        assert_eq!(
+            req_proven_tx_id(&storage, &txid).await,
+            Some(proven_tx_id),
+            "a retired 'completed' req must carry the proof it was retired for"
+        );
+
+        assert_completed_implies_proven(&storage).await;
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// Merge into a 'nosend' tx whose BUMP cannot be verified (no
+    /// ChainTracker): fall back to the unproven hand-off rather than retiring
+    /// the req to a terminal 'completed' with nothing linked.
+    #[tokio::test]
+    async fn test_merge_nosend_unverifiable_bump_falls_back_to_unmined() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis, _bump, _tracker) = create_proven_atomic_beef();
+        // Deliberately no set_chain_tracker.
+
+        insert_existing_tx(&storage, user_id, &txid, "nosend").await;
+        insert_req(&storage, &txid, "nosend").await;
+
+        let args = wallet_payment_args(beef_bytes, "merge nosend, unverifiable proof");
+        internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("unmined"),
+            "must stay in the CheckForProofs eligible set, not retire to 'completed'"
+        );
+        assert!(proven_tx_row(&storage, &txid).await.is_none());
+        assert_completed_implies_proven(&storage).await;
+        assert_unproven_is_reachable(&storage).await;
+    }
+
+    /// The no-BUMP path is unchanged: 'unproven' tx + 'unsent' req that the
+    /// broadcast path owns. Guards against the fix over-reaching.
+    #[tokio::test]
+    async fn test_new_internalize_without_bump_still_creates_unsent_req() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
+
+        let args = wallet_payment_args(beef_bytes, "no proof at all");
+        internalize_action_internal(&storage, user_id, args)
+            .await
+            .ok();
+
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert!(proven_tx_row(&storage, &txid).await.is_none());
+        assert!(
+            req_status(&storage, &txid).await.is_some(),
+            "a tx with no proof must always have a req"
+        );
+        assert_unproven_is_reachable(&storage).await;
+    }
+
+    /// `extract_bump_claim` returns `None` for a BEEF with no BUMP, and the
+    /// txid's own level-0 offset for one that has it.
+    #[test]
+    fn test_extract_bump_claim() {
+        let (beef_bytes, txid, _satoshis, bump, _tracker) = create_proven_atomic_beef();
+        let beef = Beef::from_binary(&beef_bytes).unwrap();
+        let claim = extract_bump_claim(&beef, &txid).expect("BUMP present");
+        assert_eq!(claim.height, PROVEN_HEIGHT);
+        assert_eq!(claim.idx, 0);
+        assert_eq!(claim.computed_root, bump.compute_root(Some(&txid)).unwrap());
+        assert_eq!(claim.merkle_path, bump.to_binary());
+
+        let (plain_bytes, plain_txid, _s) = create_test_atomic_beef();
+        let plain = Beef::from_binary(&plain_bytes).unwrap();
+        assert!(extract_bump_claim(&plain, &plain_txid).is_none());
+    }
+
+    /// A BUMP that does not actually contain the target txid yields no claim —
+    /// an unrelated proof can never be attached to a txid.
+    #[test]
+    fn test_extract_bump_claim_rejects_unrelated_bump() {
+        let (beef_bytes, txid, ..) = create_proven_atomic_beef();
+        let mut beef = Beef::from_binary(&beef_bytes).unwrap();
+        // Replace the BUMP with one proving a DIFFERENT txid at the same height.
+        let other = MerklePath::from_coinbase_txid(&"7c".repeat(32), PROVEN_HEIGHT);
+        beef.bumps = vec![other];
+        assert!(
+            extract_bump_claim(&beef, &txid).is_none(),
+            "a BUMP that does not contain the txid must not be usable as its proof"
+        );
     }
 
     // =========================================================================

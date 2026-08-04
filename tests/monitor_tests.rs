@@ -332,6 +332,170 @@ mod monitor_integration {
     }
 
     // =========================================================================
+    // Test 5b: one-shot proof back-fill (issue #8)
+    // =========================================================================
+
+    /// A single `run_once()` must be able to back-fill `transactions.proven_tx_id`
+    /// for a tx that mined while nothing was running — no long-lived daemon and
+    /// no new-block trigger required. This is the path `bsv-wallet tick` uses.
+    ///
+    /// Deliberately does NOT pre-set services on storage: `run_once` establishes
+    /// that itself (the same prerequisite `start()` sets up), so an ephemeral
+    /// process cannot silently report "0 processed" for every storage-driven
+    /// task. Consumers whose confirmed-coin oracle is `proven_tx_id IS NOT NULL`
+    /// depend on this (Calgooon/bsv-wallet-toolbox-rs#8).
+    #[tokio::test]
+    async fn run_once_backfills_proven_tx_id_without_preset_services() {
+        use bsv_rs::transaction::MerklePath;
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        use bsv_wallet_toolbox_rs::services::TxStatusDetail;
+        use bsv_wallet_toolbox_rs::{GetMerklePathResult, GetStatusForTxidsResult};
+
+        let txid = "c".repeat(64);
+        let height = 851_234u32;
+
+        let bump = MerklePath::from_coinbase_txid(&txid, height);
+        let bump_hex = hex::encode(bump.to_binary());
+        let merkle_root = bump.compute_root(Some(&txid)).expect("compute_root");
+
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: txid.clone(),
+                    status: "mined".to_string(),
+                    depth: Some(3),
+                }],
+            }))
+            .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
+                name: Some("MockProvider".to_string()),
+                merkle_path: Some(bump_hex),
+                header: Some(bsv_wallet_toolbox_rs::BlockHeader {
+                    version: 1,
+                    previous_hash: "0".repeat(64),
+                    merkle_root: merkle_root.clone(),
+                    time: 1_700_000_000,
+                    bits: 486604799,
+                    nonce: 12345,
+                    hash: "d".repeat(64),
+                    height,
+                }),
+                error: None,
+                notes: vec![],
+            }))
+            .build();
+
+        // Build storage WITHOUT calling storage.set_services().
+        let storage = StorageSqlx::in_memory().await.expect("in_memory storage");
+        let storage_key = "02".to_string() + &"ab".repeat(32);
+        storage
+            .migrate("test-monitor", &storage_key)
+            .await
+            .expect("migrate");
+        storage.make_available().await.expect("make_available");
+        let storage = Arc::new(storage);
+        let services = Arc::new(mock);
+
+        let identity_key = "02".to_string() + &"cd".repeat(32);
+        let (user, _) = storage
+            .find_or_insert_user(&identity_key)
+            .await
+            .expect("find_or_insert_user");
+
+        let now = chrono::Utc::now();
+
+        // The shape issue #8 reports: an incoming coin internalized BEFORE it
+        // mined — tx 'unproven' with proven_tx_id NULL, req 'unmined'.
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, txid, status, reference, description, satoshis,
+                                      version, lock_time, raw_tx, is_outgoing, created_at, updated_at)
+            VALUES (?, ?, 'unproven', ?, 'incoming coin', 150000, 1, 0, X'01000000', 0, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(&txid)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .expect("insert transaction");
+
+        sqlx::query(
+            r#"
+            INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, created_at, updated_at)
+            VALUES (?, 'unmined', 0, '{}', 0, '{}', X'01000000', ?, ?)
+            "#,
+        )
+        .bind(&txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .expect("insert proven_tx_req");
+
+        // Precondition: the consumer oracle reads "not confirmed".
+        let before: Option<i64> =
+            sqlx::query_scalar("SELECT proven_tx_id FROM transactions WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .expect("read proven_tx_id");
+        assert!(before.is_none(), "precondition: proven_tx_id starts NULL");
+
+        let mut opts = all_tasks_disabled();
+        opts.tasks.check_for_proofs.enabled = true;
+
+        let monitor = Monitor::with_options(storage.clone(), services, opts);
+        let results = monitor.run_once().await.expect("run_once should succeed");
+
+        let proof_result = results
+            .get(&TaskType::CheckForProofs)
+            .expect("CheckForProofs must run under run_once");
+        assert!(
+            proof_result.errors.is_empty(),
+            "run_once must supply services to storage; got errors: {:?}",
+            proof_result.errors
+        );
+        assert!(
+            proof_result.items_processed > 0,
+            "one run_once must process the mined req, got {}",
+            proof_result.items_processed
+        );
+
+        // The whole point: the consumer oracle now reads "confirmed".
+        let after: Option<i64> =
+            sqlx::query_scalar("SELECT proven_tx_id FROM transactions WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .expect("read proven_tx_id");
+        assert!(
+            after.is_some(),
+            "a single run_once must back-fill transactions.proven_tx_id"
+        );
+
+        let tx_status: String =
+            sqlx::query_scalar("SELECT status FROM transactions WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .expect("read tx status");
+        assert_eq!(tx_status, "completed");
+
+        let stored_root: String =
+            sqlx::query_scalar("SELECT merkle_root FROM proven_txs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .expect("proven_txs row must exist");
+        assert_eq!(stored_root, merkle_root);
+    }
+
+    // =========================================================================
     // Test 6: send_waiting_integration
     // =========================================================================
 
