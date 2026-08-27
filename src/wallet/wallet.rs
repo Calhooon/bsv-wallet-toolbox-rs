@@ -1252,6 +1252,27 @@ where
             .and_then(|o| o.sign_and_process)
             .unwrap_or(true);
 
+        // BRC-100 isSignAction, ported verbatim from the authoritative TS SDK
+        // (ts-sdk src/wallet/validationHelpers.ts):
+        //
+        //   vargs.isSignAction = vargs.isNewTx &&
+        //     (!vargs.options.signAndProcess ||
+        //      vargs.inputs.some(i => i.unlockingScript === undefined))
+        //
+        // The second disjunct is the one this port was missing: ANY caller
+        // input declared with only `unlockingScriptLength` (no script yet)
+        // FORCES the deferred-signing path, because the wallet cannot produce
+        // that script — the caller builds it (a covenant unlock, a multisig,
+        // ...) and supplies it later via sign_action. Checking only
+        // `sign_and_process` made create_action try to sign such an input
+        // itself and abort with "requires signing but has no
+        // derivation_prefix", which broke every two-phase covenant spend
+        // against this wallet while the same call succeeded on the TS stack.
+        let is_sign_action = is_sign_action(
+            sign_and_process,
+            args.inputs.as_deref().unwrap_or(&[]),
+        );
+
         let no_send = args
             .options
             .as_ref()
@@ -1265,7 +1286,7 @@ where
             .unwrap_or(false);
 
         // If sign_and_process is true and we have inputs to sign, sign them
-        if sign_and_process && !storage_result.inputs.is_empty() {
+        if !is_sign_action && !storage_result.inputs.is_empty() {
             // Build the unsigned transaction from storage result
             // Pass the key_deriver so we can compute locking scripts for change outputs
             let unsigned_tx = build_unsigned_transaction(
@@ -2046,9 +2067,40 @@ where
         let mut txid_array = [0u8; 32];
         txid_array.copy_from_slice(&txid_bytes);
 
+        // BRC-100: `SignActionResult.tx` is ATOMIC BEEF, not the bare signed
+        // transaction. Every consumer treats it that way — the TS toolbox
+        // returns AtomicBEEF here, and callers hand `signed.tx` to
+        // `Transaction.fromAtomicBEEF` or straight to an overlay `/submit`,
+        // both of which need the ancestry. Returning the raw tx made every
+        // deferred-signing caller fail AFTER broadcast, the worst possible
+        // moment: the spend is on the network but the caller cannot parse or
+        // submit what it got back. Build the AtomicBEEF exactly like
+        // create_action's inline branch: the cached input_beef plus the signed
+        // subject merged in.
+        let atomic_tx = {
+            let mut beef = match pending_tx.input_beef.as_deref() {
+                Some(input_beef) if !input_beef.is_empty() => {
+                    bsv_rs::transaction::Beef::from_binary(input_beef).map_err(|e| {
+                        bsv_rs::Error::WalletError(format!(
+                            "sign_action: failed to parse cached input_beef: {}",
+                            e
+                        ))
+                    })?
+                }
+                _ => bsv_rs::transaction::Beef::new(),
+            };
+            beef.merge_raw_tx(signed_tx.clone(), None);
+            beef.to_binary_atomic(&txid).map_err(|e| {
+                bsv_rs::Error::WalletError(format!(
+                    "sign_action: failed to encode AtomicBEEF for result.tx: {}",
+                    e
+                ))
+            })?
+        };
+
         Ok(SignActionResult {
             txid: Some(txid_array),
-            tx: Some(signed_tx),
+            tx: Some(atomic_tx),
             send_with_results: process_result.send_with_results.map(|results| {
                 results
                     .into_iter()
@@ -3215,6 +3267,29 @@ where
 // Tests
 // =============================================================================
 
+/// BRC-100 `isSignAction`, ported verbatim from the authoritative TS SDK
+/// (`ts-sdk src/wallet/validationHelpers.ts`):
+///
+/// ```ts
+/// vargs.isSignAction = vargs.isNewTx &&
+///   (!vargs.options.signAndProcess ||
+///    vargs.inputs.some(i => i.unlockingScript === undefined))
+/// ```
+///
+/// `is_new_tx` is already established by the caller (create_action has
+/// validated a real transaction by this point), so this evaluates the
+/// disjunction: deferred signing is forced either by the caller opting out of
+/// sign-and-process, or by ANY caller input declared with only
+/// `unlockingScriptLength` — a script the wallet cannot produce (a covenant
+/// unlock, a multisig, ...), which the caller builds and supplies later via
+/// `sign_action`.
+fn is_sign_action(
+    sign_and_process: bool,
+    caller_inputs: &[bsv_rs::wallet::CreateActionInput],
+) -> bool {
+    !sign_and_process || caller_inputs.iter().any(|i| i.unlocking_script.is_none())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4194,5 +4269,52 @@ mod tests {
         let result = ghsa_result(vec![ghsa_storage_output(0, 42_000, "76a914deadbeef88ac")]);
         let err = build_unsigned_transaction(&result, None, None, Some(&[])).unwrap_err();
         assert!(format!("{err:?}").contains("injected"));
+    }
+
+    // ── is_sign_action (BRC-100, ts-sdk validationHelpers.ts) ────────────────
+
+    fn covenant_input(unlocking_script: Option<Vec<u8>>) -> bsv_rs::wallet::CreateActionInput {
+        bsv_rs::wallet::CreateActionInput {
+            outpoint: bsv_rs::wallet::Outpoint {
+                txid: [0u8; 32],
+                vout: 0,
+            },
+            input_description: "pf head".to_string(),
+            unlocking_script,
+            unlocking_script_length: Some(2000),
+            sequence_number: None,
+        }
+    }
+
+    /// The defect this pins (found live, zanaadu#283 follow-up): a two-phase
+    /// covenant spend declares its head input with only a script LENGTH, and
+    /// create_action must return a signable transaction for it — not try to
+    /// sign it itself and abort with "requires signing but has no
+    /// derivation_prefix". The TS stack has always deferred here; this port
+    /// checked only sign_and_process and broke every CLI-wallet covenant buy.
+    #[test]
+    fn a_scriptless_caller_input_forces_deferred_signing() {
+        assert!(is_sign_action(true, &[covenant_input(None)]));
+    }
+
+    #[test]
+    fn sign_and_process_false_defers_even_with_full_scripts() {
+        assert!(is_sign_action(false, &[covenant_input(Some(vec![0x51]))]));
+        assert!(is_sign_action(false, &[]));
+    }
+
+    #[test]
+    fn fully_scripted_inputs_with_sign_and_process_sign_inline() {
+        assert!(!is_sign_action(true, &[covenant_input(Some(vec![0x51]))]));
+        // the everyday payment: no caller inputs at all, wallet funds it
+        assert!(!is_sign_action(true, &[]));
+    }
+
+    #[test]
+    fn one_scriptless_input_among_scripted_ones_still_defers() {
+        assert!(is_sign_action(
+            true,
+            &[covenant_input(Some(vec![0x51])), covenant_input(None)]
+        ));
     }
 }
