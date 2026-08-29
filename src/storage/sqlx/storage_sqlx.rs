@@ -2912,6 +2912,159 @@ impl StorageSqlx {
     }
 }
 
+/// Outcome of [`StorageSqlx::retire_undeliverable_tx`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetireOutcome {
+    /// The status service says the tx is known/mined after all — promoted to
+    /// `unmined`/`unproven`, nothing released.
+    Alive,
+    /// Retired: req → the given terminal status, tx → `failed`, its own
+    /// outputs unspendable; `restored` inputs were VERIFIED unspent on chain
+    /// and released, `kept` were not verifiable and stay locked.
+    Retired { restored: u32, kept: u32 },
+}
+
+impl StorageSqlx {
+    /// THE RELEASE RULE (2026-08-29) — the ONE path that may give a
+    /// broadcast-failed transaction's inputs back to coin selection.
+    ///
+    /// Background: `send_waiting_transactions` had three arms that, after a
+    /// retry budget or a single broadcaster's "invalid", marked the tx
+    /// `failed` and BLINDLY ran `UPDATE outputs SET spendable = 1,
+    /// spent_by = NULL WHERE spent_by = ?`. A tx one broadcaster rejects can
+    /// be alive in another's orphan pool (a parent broadcast through a
+    /// different channel, not yet seen here) and mines the moment that
+    /// parent lands — the LOW fleet's 2026-08-29 run A: restored inputs
+    /// were re-spent, the earlier copy mined, every later spend became
+    /// `UTXO_SPENT` and every child an orphan (that incident's live releaser
+    /// was a harness sweep with the same single-source verdict; these arms
+    /// are the toolbox's own copies of the defect).
+    ///
+    /// Rule: an input is released ONLY when
+    /// 1. the tx is NOT alive per the status service
+    ///    (`reconcile_tx_status_via_services`: known/mined ⇒
+    ///    [`RetireOutcome::Alive`], promoted, nothing touched), AND
+    /// 2. that input is VERIFIED unspent by `services.is_utxo` — an error or
+    ///    `false` keeps it locked (`spent_by` intact, `spendable = 0`). An
+    ///    unknown must never release money; a locked coin is recoverable by
+    ///    an operator, a double-spent one is not.
+    ///
+    /// The tx's own outputs (change) are marked unspendable and the tx
+    /// `failed` so its phantom change never funds — and orphans — a new tx.
+    pub(crate) async fn retire_undeliverable_tx(
+        &self,
+        services: &dyn WalletServices,
+        txid: &str,
+        proven_tx_req_id: i64,
+        attempts: i64,
+        req_status: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<RetireOutcome> {
+        if super::process_action::reconcile_tx_status_via_services(services, txid).await {
+            sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
+                .bind(now)
+                .bind(proven_tx_req_id)
+                .execute(self.pool())
+                .await?;
+            sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ? AND status IN ('sending', 'unproven')")
+                .bind(now)
+                .bind(txid)
+                .execute(self.pool())
+                .await?;
+            return Ok(RetireOutcome::Alive);
+        }
+
+        sqlx::query("UPDATE proven_tx_reqs SET status = ?, attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+            .bind(req_status)
+            .bind(attempts)
+            .bind(now)
+            .bind(proven_tx_req_id)
+            .execute(self.pool())
+            .await?;
+
+        let tx_row: Option<(i64,)> = sqlx::query_as(
+            "SELECT transaction_id FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven')",
+        )
+        .bind(txid)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some((transaction_id,)) = tx_row else {
+            return Ok(RetireOutcome::Retired {
+                restored: 0,
+                kept: 0,
+            });
+        };
+
+        // Its own outputs never fund anything again.
+        sqlx::query(
+            "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+        )
+        .bind(now)
+        .bind(transaction_id)
+        .execute(self.pool())
+        .await?;
+
+        // Its inputs: released one by one, each on a chain verification.
+        let input_rows = sqlx::query(
+            r#"
+            SELECT o.output_id, t.txid AS source_txid, o.vout, o.locking_script
+            FROM outputs o
+            JOIN transactions t ON o.transaction_id = t.transaction_id
+            WHERE o.spent_by = ?
+            "#,
+        )
+        .bind(transaction_id)
+        .fetch_all(self.pool())
+        .await?;
+        let mut restored = 0u32;
+        let mut kept = 0u32;
+        for input_row in &input_rows {
+            let output_id: i64 = input_row.get("output_id");
+            let source_txid: String = input_row.get("source_txid");
+            let vout: i32 = input_row.get("vout");
+            let locking_script: Option<Vec<u8>> = input_row.get("locking_script");
+            let script = locking_script.as_deref().unwrap_or(&[]);
+            let unspent = match services.is_utxo(&source_txid, vout as u32, script).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "send_waiting: is_utxo({}:{}) failed ({}) — input stays LOCKED (an unknown never releases)",
+                        source_txid, vout, e
+                    );
+                    false
+                }
+            };
+            if unspent {
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
+                )
+                .bind(now)
+                .bind(output_id)
+                .execute(self.pool())
+                .await?;
+                restored += 1;
+            } else {
+                kept += 1;
+                tracing::info!(
+                    "send_waiting: input {}:{} not verifiably unspent — NOT restoring",
+                    source_txid,
+                    vout
+                );
+            }
+        }
+
+        sqlx::query(
+            "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+        )
+        .bind(now)
+        .bind(transaction_id)
+        .execute(self.pool())
+        .await?;
+
+        Ok(RetireOutcome::Retired { restored, kept })
+    }
+}
+
 #[async_trait]
 impl MonitorStorage for StorageSqlx {
     async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
@@ -3514,244 +3667,104 @@ impl MonitorStorage for StorageSqlx {
                                 continue;
                             }
 
-                            if attempts > 6 {
-                                // Max retries exceeded — mark as invalid
-                                sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-                                    .bind(attempts as i64)
-                                    .bind(now)
-                                    .bind(req.proven_tx_req_id)
-                                    .execute(self.pool())
-                                    .await?;
-
-                                let tx_row: Option<(i64,)> = sqlx::query_as(
-                                    "SELECT transaction_id FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven')",
-                                )
-                                .bind(&req.txid)
-                                .fetch_optional(self.pool())
-                                .await?;
-
-                                if let Some((transaction_id,)) = tx_row {
-                                    sqlx::query(
-                                        "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
-                                    )
-                                    .bind(now)
-                                    .bind(transaction_id)
-                                    .execute(self.pool())
-                                    .await?;
-
-                                    sqlx::query(
-                                        "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
-                                    )
-                                    .bind(now)
-                                    .bind(transaction_id)
-                                    .execute(self.pool())
-                                    .await?;
-
-                                    sqlx::query(
-                                        "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-                                    )
-                                    .bind(now)
-                                    .bind(transaction_id)
-                                    .execute(self.pool())
-                                    .await?;
-
-                                    tracing::info!(
-                                        "send_waiting: tx {} orphan mempool — failed after {} attempts, inputs restored",
-                                        req.txid, attempts
-                                    );
-                                }
-                            } else {
-                                // Keep in sending status for retry — do NOT lock inputs
-                                sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-                                    .bind(attempts as i64)
-                                    .bind(now)
-                                    .bind(req.proven_tx_req_id)
-                                    .execute(self.pool())
-                                    .await?;
-
-                                tracing::warn!(
-                                    "send_waiting: tx {} orphan mempool (attempt {}/6) — will retry",
-                                    req.txid, attempts
-                                );
-                            }
-
-                            send_with_results.push(SendWithResult {
-                                txid: req.txid.clone(),
-                                status: "failed".to_string(),
-                            });
-                            continue;
-                        }
-
-                        if is_double_spend {
-                            // Double-spend: reconcile against chain first (like the
-                            // immediate broadcast path does), then UTXO-verify inputs.
-                            let reconciled =
-                                super::process_action::reconcile_tx_status_via_services(
-                                    &*services, &req.txid,
-                                )
-                                .await;
-
-                            if reconciled {
-                                // Tx is actually alive on chain — treat as success
-                                sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
-                                    .bind(now)
-                                    .bind(req.proven_tx_req_id)
-                                    .execute(self.pool())
-                                    .await?;
-                                sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
-                                    .bind(now)
-                                    .bind(&req.txid)
-                                    .execute(self.pool())
-                                    .await?;
-                                tracing::info!(
-                                    "send_waiting: tx {} reported as double-spend but found alive on chain — treating as success",
-                                    req.txid
-                                );
-                                send_with_results.push(SendWithResult {
-                                    txid: req.txid.clone(),
-                                    status: "unproven".to_string(),
-                                });
-                                continue;
-                            }
-
-                            // Confirmed double-spend — UTXO-verify before restoring inputs
-                            sqlx::query("UPDATE proven_tx_reqs SET status = 'doubleSpend', updated_at = ? WHERE proven_tx_req_id = ?")
-                                .bind(now)
-                                .bind(req.proven_tx_req_id)
-                                .execute(self.pool())
-                                .await?;
-
-                            let tx_row: Option<(i64,)> = sqlx::query_as(
-                                "SELECT transaction_id FROM transactions WHERE txid = ?",
-                            )
-                            .bind(&req.txid)
-                            .fetch_optional(self.pool())
-                            .await?;
-
-                            if let Some((transaction_id,)) = tx_row {
-                                // Mark change outputs non-spendable
-                                sqlx::query(
-                                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
-                                )
-                                .bind(now)
-                                .bind(transaction_id)
-                                .execute(self.pool())
-                                .await?;
-
-                                // UTXO-verified restore: only restore inputs confirmed unspent
-                                let input_rows = sqlx::query(
-                                    r#"
-                                    SELECT o.output_id, t.txid AS source_txid, o.vout, o.locking_script
-                                    FROM outputs o
-                                    JOIN transactions t ON o.transaction_id = t.transaction_id
-                                    WHERE o.spent_by = ?
-                                    "#,
-                                )
-                                .bind(transaction_id)
-                                .fetch_all(self.pool())
-                                .await?;
-
-                                let mut restored = 0u32;
-                                for input_row in &input_rows {
-                                    let output_id: i64 = input_row.get("output_id");
-                                    let source_txid: String = input_row.get("source_txid");
-                                    let vout: i32 = input_row.get("vout");
-                                    let locking_script: Option<Vec<u8>> =
-                                        input_row.get("locking_script");
-                                    let script = locking_script.as_deref().unwrap_or(&[]);
-
-                                    let is_utxo = services
-                                        .is_utxo(&source_txid, vout as u32, script)
-                                        .await
-                                        .unwrap_or(false);
-
-                                    if is_utxo {
-                                        sqlx::query(
-                                            "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
-                                        )
-                                        .bind(now)
-                                        .bind(output_id)
-                                        .execute(self.pool())
-                                        .await?;
-                                        restored += 1;
-                                    } else {
-                                        tracing::info!(
-                                            "send_waiting: input {}:{} consumed on-chain — NOT restoring",
-                                            source_txid, vout
-                                        );
-                                    }
-
-                                    // Rate limit: ~3 req/sec
-                                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-                                }
-
-                                // Mark transaction as failed
-                                sqlx::query(
-                                    "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-                                )
-                                .bind(now)
-                                .bind(transaction_id)
-                                .execute(self.pool())
-                                .await?;
-
-                                tracing::info!(
-                                    "send_waiting: tx {} double-spend confirmed — {}/{} inputs restored (UTXO-verified)",
-                                    req.txid, restored, input_rows.len()
-                                );
-                            }
-                        } else if is_invalid || attempts > 6 {
-                            // Definitive rejection or too many retries — mark invalid
-                            // and transition transaction to failed with output cleanup.
-                            // Safe to blindly restore: tx was malformed or never broadcast
-                            // successfully, inputs weren't spent by a competitor.
-                            sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+                            // THE RELEASE RULE (2026-08-29, the LOW run-A double-spend
+                            // chain): an orphan-mempool verdict means a broadcaster HOLDS
+                            // the bytes — they can mine the moment the parent lands. This
+                            // arm used to fail the tx after 6 attempts and BLINDLY restore
+                            // its inputs (`spent_by = NULL`), so the next spend of those
+                            // inputs double-spent a tx still alive in a peer's orphan
+                            // pool. A held tx is never failed here; it stays retryable
+                            // (the parent may land any time) and abandonment belongs to a
+                            // corroborated, multi-source reconcile — never to a retry
+                            // counter.
+                            sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
                                 .bind(attempts as i64)
                                 .bind(now)
                                 .bind(req.proven_tx_req_id)
                                 .execute(self.pool())
                                 .await?;
-
-                            // Transition transaction to failed (covers both outgoing 'sending'
-                            // and internalized 'unproven' txs whose broadcast was retried)
-                            let tx_row: Option<(i64,)> = sqlx::query_as(
-                                "SELECT transaction_id FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven')",
-                            )
-                            .bind(&req.txid)
-                            .fetch_optional(self.pool())
-                            .await?;
-
-                            if let Some((transaction_id,)) = tx_row {
-                                // Mark change outputs non-spendable (phantom UTXO prevention)
-                                sqlx::query(
-                                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
-                                )
-                                .bind(now)
-                                .bind(transaction_id)
-                                .execute(self.pool())
-                                .await?;
-
-                                // Restore input UTXOs (safe for invalid/exhausted retries)
-                                sqlx::query(
-                                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
-                                )
-                                .bind(now)
-                                .bind(transaction_id)
-                                .execute(self.pool())
-                                .await?;
-
-                                // Mark transaction as failed
-                                sqlx::query(
-                                    "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-                                )
-                                .bind(now)
-                                .bind(transaction_id)
-                                .execute(self.pool())
-                                .await?;
-
-                                tracing::info!(
-                                    "send_waiting: tx {} failed after {} attempts — inputs restored, change outputs marked non-spendable",
+                            if attempts > 6 {
+                                tracing::warn!(
+                                    "send_waiting: tx {} still held in a broadcaster's orphan pool after {} attempts — NOT failing, inputs stay locked; a corroborated reconcile owns abandonment",
                                     req.txid, attempts
                                 );
+                            } else {
+                                tracing::warn!(
+                                    "send_waiting: tx {} orphan mempool (attempt {}) — will retry",
+                                    req.txid,
+                                    attempts
+                                );
+                            }
+                            send_with_results.push(SendWithResult {
+                                txid: req.txid.clone(),
+                                status: "sending".to_string(),
+                            });
+                            continue;
+                        }
+
+                        if is_double_spend {
+                            // Double-spend: THE RELEASE RULE — alive-check first, then
+                            // every input released only on its own chain verification
+                            // (`retire_undeliverable_tx`, shared with the invalid and
+                            // transport arms since 2026-08-29).
+                            match self
+                                .retire_undeliverable_tx(
+                                    &*services,
+                                    &req.txid,
+                                    req.proven_tx_req_id,
+                                    attempts as i64,
+                                    "doubleSpend",
+                                    now,
+                                )
+                                .await?
+                            {
+                                RetireOutcome::Alive => {
+                                    tracing::info!(
+                                        "send_waiting: tx {} reported as double-spend but found alive on chain — treating as success",
+                                        req.txid
+                                    );
+                                    send_with_results.push(SendWithResult {
+                                        txid: req.txid.clone(),
+                                        status: "unproven".to_string(),
+                                    });
+                                    continue;
+                                }
+                                RetireOutcome::Retired { restored, kept } => {
+                                    tracing::info!(
+                                        "send_waiting: tx {} double-spend confirmed — {} input(s) restored (UTXO-verified), {} kept locked",
+                                        req.txid, restored, kept
+                                    );
+                                }
+                            }
+                        } else if is_invalid || attempts > 6 {
+                            match self
+                                .retire_undeliverable_tx(
+                                    &*services,
+                                    &req.txid,
+                                    req.proven_tx_req_id,
+                                    attempts as i64,
+                                    "invalid",
+                                    now,
+                                )
+                                .await?
+                            {
+                                RetireOutcome::Alive => {
+                                    tracing::info!(
+                                        "send_waiting: tx {} reported invalid/undeliverable but found alive on chain — treating as success",
+                                        req.txid
+                                    );
+                                    send_with_results.push(SendWithResult {
+                                        txid: req.txid.clone(),
+                                        status: "unproven".to_string(),
+                                    });
+                                    continue;
+                                }
+                                RetireOutcome::Retired { restored, kept } => {
+                                    tracing::info!(
+                                        "send_waiting: tx {} failed after {} attempts — {} input(s) restored (UTXO-verified), {} kept locked, change outputs marked non-spendable",
+                                        req.txid, attempts, restored, kept
+                                    );
+                                }
                             }
                         } else {
                             sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
@@ -3778,50 +3791,34 @@ impl MonitorStorage for StorageSqlx {
                     );
 
                     if attempts > 6 {
-                        // Too many retries — give up
-                        sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-                            .bind(attempts as i64)
-                            .bind(now)
-                            .bind(req.proven_tx_req_id)
-                            .execute(self.pool())
-                            .await?;
-
-                        let tx_row: Option<(i64,)> = sqlx::query_as(
-                            "SELECT transaction_id FROM transactions WHERE txid = ? AND status = 'sending'",
-                        )
-                        .bind(&req.txid)
-                        .fetch_optional(self.pool())
-                        .await?;
-
-                        if let Some((transaction_id,)) = tx_row {
-                            sqlx::query(
-                                "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+                        match self
+                            .retire_undeliverable_tx(
+                                &*services,
+                                &req.txid,
+                                req.proven_tx_req_id,
+                                attempts as i64,
+                                "invalid",
+                                now,
                             )
-                            .bind(now)
-                            .bind(transaction_id)
-                            .execute(self.pool())
-                            .await?;
-
-                            sqlx::query(
-                                "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE spent_by = ?",
-                            )
-                            .bind(now)
-                            .bind(transaction_id)
-                            .execute(self.pool())
-                            .await?;
-
-                            sqlx::query(
-                                "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-                            )
-                            .bind(now)
-                            .bind(transaction_id)
-                            .execute(self.pool())
-                            .await?;
-
-                            tracing::info!(
-                                "send_waiting: tx {} abandoned after {} attempts — inputs restored, outputs cleaned",
-                                req.txid, attempts
-                            );
+                            .await?
+                        {
+                            RetireOutcome::Alive => {
+                                tracing::info!(
+                                    "send_waiting: tx {} unreachable by transport but found alive on chain — treating as success",
+                                    req.txid
+                                );
+                                send_with_results.push(SendWithResult {
+                                    txid: req.txid.clone(),
+                                    status: "unproven".to_string(),
+                                });
+                                continue;
+                            }
+                            RetireOutcome::Retired { restored, kept } => {
+                                tracing::info!(
+                                    "send_waiting: tx {} abandoned after {} transport errors — {} input(s) restored (UTXO-verified), {} kept locked",
+                                    req.txid, attempts, restored, kept
+                                );
+                            }
                         }
                     } else {
                         sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")

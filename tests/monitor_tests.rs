@@ -1030,4 +1030,353 @@ mod monitor_integration {
                 .expect("count");
         assert_eq!(unmined as usize, total);
     }
+
+    // =========================================================================
+    // THE RELEASE RULE (2026-08-29, the LOW run-A double-spend chain): a
+    // broadcast-failed tx's inputs may return to coin selection ONLY when the
+    // tx is not alive per the status service AND each input is verified
+    // unspent on chain. Never a blind `spent_by = NULL`; an orphan-mempool
+    // verdict (a broadcaster HOLDS the bytes) never fails the tx at all.
+    // =========================================================================
+
+    /// One parent (completed) → one child (sending) spending parent:0, with
+    /// the child's req at `attempts` and one change output of its own.
+    /// Returns (child txid, child transaction_id, parent output_id, child
+    /// change output_id).
+    async fn seed_parent_child(
+        storage: &StorageSqlx,
+        req_status: &str,
+        attempts: i64,
+    ) -> (String, i64, i64, i64) {
+        use bsv_rs::script::{LockingScript, UnlockingScript};
+        use bsv_rs::transaction::{Beef, Transaction, TransactionInput, TransactionOutput};
+
+        let identity_key = "02".to_string() + &"5e".repeat(32);
+        let (user, _) = storage
+            .find_or_insert_user(&identity_key)
+            .await
+            .expect("user");
+        let lock =
+            LockingScript::from_hex("76a914000000000000000000000000000000000000000088ac").unwrap();
+
+        // Parent: a coinbase-shaped tx with one P2PKH output.
+        let mut parent = Transaction::new();
+        parent.version = 1;
+        let mut pin = TransactionInput::new("0".repeat(64), 0xffff_ffff);
+        pin.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+        parent.inputs.push(pin);
+        parent.outputs.push(TransactionOutput {
+            satoshis: Some(5_000),
+            locking_script: lock.clone(),
+            change: false,
+        });
+        let parent_txid = parent.id();
+        let parent_raw = parent.to_binary();
+
+        // Child: spends parent:0, one change output.
+        let mut child = Transaction::new();
+        child.version = 1;
+        let mut cin = TransactionInput::new(parent_txid.clone(), 0);
+        cin.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+        child.inputs.push(cin);
+        child.outputs.push(TransactionOutput {
+            satoshis: Some(4_000),
+            locking_script: lock.clone(),
+            change: true,
+        });
+        let child_txid = child.id();
+        let child_raw = child.to_binary();
+        let mut beef = Beef::new();
+        beef.merge_raw_tx(parent_raw.clone(), None);
+        let input_beef = beef.to_binary();
+
+        let old = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let parent_id: i64 = sqlx::query_scalar(
+            r#"INSERT INTO transactions (user_id, txid, status, reference, description, satoshis,
+                                        version, lock_time, raw_tx, is_outgoing, created_at, updated_at)
+               VALUES (?, ?, 'completed', ?, 'parent', 5000, 1, 0, ?, 0, ?, ?) RETURNING transaction_id"#,
+        )
+        .bind(user.user_id)
+        .bind(&parent_txid)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&parent_raw)
+        .bind(old)
+        .bind(old)
+        .fetch_one(storage.pool())
+        .await
+        .expect("parent tx");
+        let child_id: i64 = sqlx::query_scalar(
+            r#"INSERT INTO transactions (user_id, txid, status, reference, description, satoshis,
+                                        version, lock_time, raw_tx, is_outgoing, created_at, updated_at)
+               VALUES (?, ?, 'sending', ?, 'child', -1000, 1, 0, ?, 1, ?, ?) RETURNING transaction_id"#,
+        )
+        .bind(user.user_id)
+        .bind(&child_txid)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&child_raw)
+        .bind(old)
+        .bind(old)
+        .fetch_one(storage.pool())
+        .await
+        .expect("child tx");
+        // The parent's output, LOCKED by the child.
+        let parent_out: i64 = sqlx::query_scalar(
+            r#"INSERT INTO outputs (user_id, transaction_id, spendable, change, vout, satoshis,
+                                   provided_by, purpose, type, txid, spent_by, locking_script, created_at, updated_at)
+               VALUES (?, ?, 0, 1, 0, 5000, 'you', 'change', 'P2PKH', ?, ?, ?, ?, ?) RETURNING output_id"#,
+        )
+        .bind(user.user_id)
+        .bind(parent_id)
+        .bind(&parent_txid)
+        .bind(child_id)
+        .bind(lock.to_binary())
+        .bind(old)
+        .bind(old)
+        .fetch_one(storage.pool())
+        .await
+        .expect("parent output");
+        // The child's own change output (spendable today).
+        let child_out: i64 = sqlx::query_scalar(
+            r#"INSERT INTO outputs (user_id, transaction_id, spendable, change, vout, satoshis,
+                                   provided_by, purpose, type, txid, locking_script, created_at, updated_at)
+               VALUES (?, ?, 1, 1, 0, 4000, 'you', 'change', 'P2PKH', ?, ?, ?, ?) RETURNING output_id"#,
+        )
+        .bind(user.user_id)
+        .bind(child_id)
+        .bind(&child_txid)
+        .bind(lock.to_binary())
+        .bind(old)
+        .bind(old)
+        .fetch_one(storage.pool())
+        .await
+        .expect("child output");
+        sqlx::query(
+            r#"INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, input_beef, created_at, updated_at)
+               VALUES (?, ?, ?, '{}', 0, '{}', ?, ?, ?, ?)"#,
+        )
+        .bind(&child_txid)
+        .bind(req_status)
+        .bind(attempts)
+        .bind(&child_raw)
+        .bind(&input_beef)
+        .bind(old)
+        .bind(old)
+        .execute(storage.pool())
+        .await
+        .expect("child req");
+        (child_txid, child_id, parent_out, child_out)
+    }
+
+    fn broadcaster_verdict(
+        txid: &str,
+        status: &str,
+        orphan: bool,
+        double_spend: bool,
+    ) -> bsv_wallet_toolbox_rs::PostBeefResult {
+        use bsv_wallet_toolbox_rs::services::PostTxResultForTxid;
+        bsv_wallet_toolbox_rs::PostBeefResult {
+            name: "MockProvider".to_string(),
+            status: "error".to_string(),
+            txid_results: vec![PostTxResultForTxid {
+                txid: txid.to_string(),
+                status: status.to_string(),
+                double_spend,
+                competing_txs: None,
+                data: Some(status.to_string()),
+                orphan_mempool: orphan,
+                service_error: false,
+                block_hash: None,
+                block_height: None,
+                notes: vec![],
+            }],
+            error: None,
+            notes: vec![],
+        }
+    }
+
+    async fn output_lock(storage: &StorageSqlx, output_id: i64) -> (i64, Option<i64>) {
+        sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE output_id = ?")
+            .bind(output_id)
+            .fetch_one(storage.pool())
+            .await
+            .expect("output")
+    }
+
+    async fn tx_and_req(storage: &StorageSqlx, txid: &str) -> (String, String, i64) {
+        let t: String = sqlx::query_scalar("SELECT status FROM transactions WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(storage.pool())
+            .await
+            .expect("tx status");
+        let (r, a): (String, i64) =
+            sqlx::query_as("SELECT status, attempts FROM proven_tx_reqs WHERE txid = ?")
+                .bind(txid)
+                .fetch_one(storage.pool())
+                .await
+                .expect("req");
+        (t, r, a)
+    }
+
+    async fn run_send_waiting(storage: Arc<StorageSqlx>, services: Arc<MockWalletServices>) {
+        let mut opts = all_tasks_disabled();
+        opts.tasks.send_waiting.enabled = true;
+        let monitor = Monitor::with_options(storage, services, opts);
+        let results = monitor.run_once().await.expect("run_once");
+        let r = results
+            .get(&TaskType::SendWaiting)
+            .expect("SendWaiting ran");
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+    }
+
+    /// RED→GREEN: the orphan-mempool arm used to fail the tx on attempt 7 and
+    /// blindly restore its inputs. A broadcaster HOLDS the bytes; the inputs
+    /// must stay locked and the tx retryable, however many attempts.
+    #[tokio::test]
+    async fn orphan_mempool_never_releases_inputs_whatever_the_attempt_count() {
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        let storage0 = StorageSqlx::in_memory().await.expect("in_memory");
+        let storage_key = "02".to_string() + &"ab".repeat(32);
+        storage0.migrate("t", &storage_key).await.expect("migrate");
+        storage0.make_available().await.expect("avail");
+        let (child, child_id, parent_out, _child_out) =
+            seed_parent_child(&storage0, "unsent", 6).await;
+        let mock = MockWalletServices::builder()
+            .post_beef_response(MockResponse::Success(vec![broadcaster_verdict(
+                &child, "error", true, false,
+            )]))
+            .build();
+        let services = Arc::new(mock);
+        storage0.set_services(services.clone() as Arc<dyn WalletServices>);
+        let storage = Arc::new(storage0);
+
+        run_send_waiting(storage.clone(), services).await;
+
+        assert_eq!(
+            output_lock(&storage, parent_out).await,
+            (0, Some(child_id)),
+            "the input stays LOCKED by the held tx"
+        );
+        let (t, r, a) = tx_and_req(&storage, &child).await;
+        assert_eq!(t, "sending", "a held tx is never failed");
+        assert_eq!(r, "unsent", "still retryable");
+        assert_eq!(a, 7);
+    }
+
+    /// RED→GREEN: the invalid/exhausted arm blindly restored every input. An
+    /// input the chain oracle reports SPENT (a competitor took it) must stay
+    /// locked even though the tx itself is retired.
+    #[tokio::test]
+    async fn invalid_after_retries_keeps_inputs_the_chain_says_are_spent() {
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        let storage0 = StorageSqlx::in_memory().await.expect("in_memory");
+        let storage_key = "02".to_string() + &"ab".repeat(32);
+        storage0.migrate("t", &storage_key).await.expect("migrate");
+        storage0.make_available().await.expect("avail");
+        let (child, child_id, parent_out, child_out) =
+            seed_parent_child(&storage0, "unsent", 0).await;
+        let mock = MockWalletServices::builder()
+            .post_beef_response(MockResponse::Success(vec![broadcaster_verdict(
+                &child, "466", false, false,
+            )]))
+            .is_utxo_response(MockResponse::Success(false))
+            .build();
+        let services = Arc::new(mock);
+        storage0.set_services(services.clone() as Arc<dyn WalletServices>);
+        let storage = Arc::new(storage0);
+
+        run_send_waiting(storage.clone(), services).await;
+
+        let (t, r, _) = tx_and_req(&storage, &child).await;
+        assert_eq!(t, "failed");
+        assert_eq!(r, "invalid");
+        assert_eq!(
+            output_lock(&storage, parent_out).await,
+            (0, Some(child_id)),
+            "a spent-elsewhere input is NOT restored"
+        );
+        assert_eq!(
+            output_lock(&storage, child_out).await.0,
+            0,
+            "the failed tx's own change is unspendable"
+        );
+    }
+
+    /// The honest release still works: an input the chain oracle verifies
+    /// UNSPENT is returned to coin selection when the tx is retired.
+    #[tokio::test]
+    async fn invalid_after_retries_restores_only_verified_unspent_inputs() {
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        let storage0 = StorageSqlx::in_memory().await.expect("in_memory");
+        let storage_key = "02".to_string() + &"ab".repeat(32);
+        storage0.migrate("t", &storage_key).await.expect("migrate");
+        storage0.make_available().await.expect("avail");
+        let (child, _child_id, parent_out, _) = seed_parent_child(&storage0, "unsent", 0).await;
+        let mock = MockWalletServices::builder()
+            .post_beef_response(MockResponse::Success(vec![broadcaster_verdict(
+                &child, "466", false, false,
+            )]))
+            .is_utxo_response(MockResponse::Success(true))
+            .build();
+        let services = Arc::new(mock);
+        storage0.set_services(services.clone() as Arc<dyn WalletServices>);
+        let storage = Arc::new(storage0);
+
+        run_send_waiting(storage.clone(), services).await;
+
+        let (t, r, _) = tx_and_req(&storage, &child).await;
+        assert_eq!((t.as_str(), r.as_str()), ("failed", "invalid"));
+        assert_eq!(
+            output_lock(&storage, parent_out).await,
+            (1, None),
+            "a VERIFIED-unspent input is released"
+        );
+    }
+
+    /// RED→GREEN: the transport-error arm failed the tx after 6 errors with
+    /// no alive check and a blind restore. A tx the status service reports
+    /// MINED is promoted, and nothing is released.
+    #[tokio::test]
+    async fn transport_dead_after_retries_checks_alive_before_failing() {
+        use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse};
+        use bsv_wallet_toolbox_rs::services::TxStatusDetail;
+        use bsv_wallet_toolbox_rs::GetStatusForTxidsResult;
+        let storage0 = StorageSqlx::in_memory().await.expect("in_memory");
+        let storage_key = "02".to_string() + &"ab".repeat(32);
+        storage0.migrate("t", &storage_key).await.expect("migrate");
+        storage0.make_available().await.expect("avail");
+        let (child, child_id, parent_out, _) = seed_parent_child(&storage0, "unsent", 6).await;
+        let mock = MockWalletServices::builder()
+            .post_beef_response(MockResponse::Error(
+                MockErrorKind::BroadcastFailed,
+                "every broadcaster down".to_string(),
+            ))
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: child.clone(),
+                    status: "mined".to_string(),
+                    depth: Some(1),
+                }],
+            }))
+            .build();
+        let services = Arc::new(mock);
+        storage0.set_services(services.clone() as Arc<dyn WalletServices>);
+        let storage = Arc::new(storage0);
+
+        run_send_waiting(storage.clone(), services).await;
+
+        let (t, r, _) = tx_and_req(&storage, &child).await;
+        assert_eq!(
+            (t.as_str(), r.as_str()),
+            ("unproven", "unmined"),
+            "alive ⇒ promoted"
+        );
+        assert_eq!(
+            output_lock(&storage, parent_out).await,
+            (0, Some(child_id)),
+            "nothing released for a tx that is alive"
+        );
+    }
 }
