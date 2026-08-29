@@ -43,5 +43,7 @@ pub use crate::storage::broadcast::{
     classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome,
 };
 pub use beef_verification::{verify_beef_merkle_proofs, verify_txid_merkle_proof};
-pub use storage_sqlx::{StorageSqlx, DEFAULT_MAX_OUTPUT_SCRIPT};
+pub use storage_sqlx::{
+    StorageSqlx, UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT, DEFAULT_MAX_OUTPUT_SCRIPT,
+};
 pub use sync::entity_names;

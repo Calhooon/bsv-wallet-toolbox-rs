@@ -133,7 +133,7 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 ### MonitorStorage Methods
 | Method | Description |
 |--------|-------------|
-| `synchronize_transaction_statuses()` | Query unmined/unknown/callback/sending/unconfirmed proven_tx_reqs, call `services.get_merkle_path()`, update proven_txs/proven_tx_reqs/transactions on proof found, increment attempts or mark invalid after 10 failures |
+| `synchronize_transaction_statuses()` | FIRST adopt proof-less transactions that have no req (`adopt_unproven_transactions`: link from an existing `proven_txs` row, else create an `unmined` req — bounded per pass), THEN query unmined/unknown/callback/sending/unconfirmed proven_tx_reqs, call `services.get_merkle_path()`, update proven_txs/proven_tx_reqs/transactions on proof found, increment attempts or mark invalid after 10 failures |
 | `send_waiting_transactions()` | Query unsent/sending proven_tx_reqs older than min age, build BEEF from raw_tx + input_beef, broadcast via `services.post_beef()`, handle double-spend detection |
 | `abort_abandoned()` | Query unsigned/unprocessed outgoing transactions older than timeout, abort each via `abort_action` |
 | `un_fail()` | Query unfail proven_tx_reqs, check chain for merkle path via services, restore to unmined/unproven if found, mark invalid if not |

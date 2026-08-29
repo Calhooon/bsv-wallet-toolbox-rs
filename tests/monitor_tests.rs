@@ -714,4 +714,320 @@ mod monitor_integration {
             "No tasks were enabled, so no results expected"
         );
     }
+
+    // =========================================================================
+    // The receive-proof gap (bsv-wallet-cli, 2026-08-29): proof-less
+    // transactions with NO proven_tx_req are invisible to CheckForProofs.
+    // =========================================================================
+
+    /// Shared fixture: mock services that report `txid` MINED (depth 2) and
+    /// serve a valid single-tx BUMP for it. Returns (mock, merkle_root).
+    fn mined_with_bump(txid: &str, height: u32) -> (MockWalletServices, String) {
+        use bsv_rs::transaction::MerklePath;
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        use bsv_wallet_toolbox_rs::services::TxStatusDetail;
+        use bsv_wallet_toolbox_rs::{GetMerklePathResult, GetStatusForTxidsResult};
+
+        let bump = MerklePath::from_coinbase_txid(txid, height);
+        let bump_hex = hex::encode(bump.to_binary());
+        let merkle_root = bump.compute_root(Some(txid)).expect("compute_root");
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: txid.to_string(),
+                    status: "mined".to_string(),
+                    depth: Some(2),
+                }],
+            }))
+            .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
+                name: Some("MockProvider".to_string()),
+                merkle_path: Some(bump_hex),
+                header: Some(bsv_wallet_toolbox_rs::BlockHeader {
+                    version: 1,
+                    previous_hash: "0".repeat(64),
+                    merkle_root: merkle_root.clone(),
+                    time: 1_700_000_000,
+                    bits: 486604799,
+                    nonce: 12345,
+                    hash: "e".repeat(64),
+                    height,
+                }),
+                error: None,
+                notes: vec![],
+            }))
+            .build();
+        (mock, merkle_root)
+    }
+
+    /// Insert a `transactions` row in the given status with NULL proven_tx_id
+    /// and NO proven_tx_req — the pre-0.3.52 internalize shape.
+    async fn insert_proofless_tx(storage: &StorageSqlx, user_id: i64, txid: &str, status: &str) {
+        let now = chrono::Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, txid, status, reference, description, satoshis,
+                                      version, lock_time, raw_tx, is_outgoing, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'Internalize external funding', 12345, 1, 0, X'01000000', 0, ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(txid)
+        .bind(status)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .expect("insert transaction");
+    }
+
+    async fn req_rows(storage: &StorageSqlx, txid: &str) -> Vec<(String, Option<i64>)> {
+        sqlx::query_as("SELECT status, proven_tx_id FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_all(storage.pool())
+            .await
+            .expect("read reqs")
+    }
+
+    async fn tx_link(storage: &StorageSqlx, txid: &str) -> (String, Option<i64>) {
+        sqlx::query_as("SELECT status, proven_tx_id FROM transactions WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(storage.pool())
+            .await
+            .expect("read tx")
+    }
+
+    /// THE GAP, red→green: a `'completed'` transaction with NULL
+    /// `proven_tx_id` and NO req (what every pre-0.3.52 internalize wrote)
+    /// must be adopted by ONE `run_once` and come out proven — req created,
+    /// BUMP ingested, `transactions.proven_tx_id` linked. Before this change
+    /// the walk below never saw the row and it stayed proof-less forever.
+    #[tokio::test]
+    async fn run_once_adopts_a_proofless_completed_tx_with_no_req() {
+        let txid = "f".repeat(64);
+        let (mock, merkle_root) = mined_with_bump(&txid, 852_001);
+        let (storage, services) = setup_storage_and_services(mock).await;
+        let identity_key = "02".to_string() + &"ef".repeat(32);
+        let (user, _) = storage
+            .find_or_insert_user(&identity_key)
+            .await
+            .expect("user");
+        insert_proofless_tx(&storage, user.user_id, &txid, "completed").await;
+        assert!(
+            req_rows(&storage, &txid).await.is_empty(),
+            "precondition: the legacy shape has NO req"
+        );
+
+        let mut opts = all_tasks_disabled();
+        opts.tasks.check_for_proofs.enabled = true;
+        let monitor = Monitor::with_options(storage.clone(), services, opts);
+        let results = monitor.run_once().await.expect("run_once");
+        let proof_result = results
+            .get(&TaskType::CheckForProofs)
+            .expect("CheckForProofs ran");
+        assert!(proof_result.errors.is_empty(), "{:?}", proof_result.errors);
+        assert!(
+            proof_result.items_processed > 0,
+            "the adopted tx must be proven in the SAME pass that adopted it"
+        );
+
+        let reqs = req_rows(&storage, &txid).await;
+        assert_eq!(reqs.len(), 1, "exactly one req adopted");
+        assert_eq!(reqs[0].0, "completed", "the req completed on the BUMP");
+        assert!(reqs[0].1.is_some(), "the req carries the proven_tx_id");
+
+        let (status, link) = tx_link(&storage, &txid).await;
+        assert_eq!(status, "completed");
+        assert!(link.is_some(), "transactions.proven_tx_id must be linked");
+        let stored_root: String =
+            sqlx::query_scalar("SELECT merkle_root FROM proven_txs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .expect("proven_txs row");
+        assert_eq!(stored_root, merkle_root);
+    }
+
+    /// An `'unproven'` row with no req (issue #8's unreachable shape) is
+    /// covered by the same adoption — the net is status-agnostic on purpose.
+    #[tokio::test]
+    async fn run_once_adopts_an_orphan_unproven_tx_too() {
+        let txid = "e".repeat(64);
+        let (mock, _) = mined_with_bump(&txid, 852_002);
+        let (storage, services) = setup_storage_and_services(mock).await;
+        let identity_key = "02".to_string() + &"ee".repeat(32);
+        let (user, _) = storage
+            .find_or_insert_user(&identity_key)
+            .await
+            .expect("user");
+        insert_proofless_tx(&storage, user.user_id, &txid, "unproven").await;
+
+        let mut opts = all_tasks_disabled();
+        opts.tasks.check_for_proofs.enabled = true;
+        let monitor = Monitor::with_options(storage.clone(), services, opts);
+        monitor.run_once().await.expect("run_once");
+
+        let (status, link) = tx_link(&storage, &txid).await;
+        assert_eq!(status, "completed", "proven ⇒ completed");
+        assert!(link.is_some());
+    }
+
+    /// A proof that is ALREADY stored (a `proven_txs` row exists) only needs
+    /// the link: no req is created and nothing is fetched — the services
+    /// here report the tx UNKNOWN, so a fetch could not have succeeded.
+    #[tokio::test]
+    async fn adoption_links_from_an_existing_proven_txs_row_without_fetching() {
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        use bsv_wallet_toolbox_rs::services::TxStatusDetail;
+        use bsv_wallet_toolbox_rs::GetStatusForTxidsResult;
+
+        let txid = "d".repeat(64);
+        let mock = MockWalletServices::builder()
+            .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: vec![TxStatusDetail {
+                    txid: txid.clone(),
+                    status: "unknown".to_string(),
+                    depth: None,
+                }],
+            }))
+            .build();
+        let (storage, services) = setup_storage_and_services(mock).await;
+        let identity_key = "02".to_string() + &"dd".repeat(32);
+        let (user, _) = storage
+            .find_or_insert_user(&identity_key)
+            .await
+            .expect("user");
+        insert_proofless_tx(&storage, user.user_id, &txid, "completed").await;
+        let now = chrono::Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+            VALUES (?, 852003, 0, ?, ?, X'00', X'01000000', ?, ?)
+            "#,
+        )
+        .bind(&txid)
+        .bind("b".repeat(64))
+        .bind("c".repeat(64))
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .expect("insert proven_txs");
+        let proven_id: i64 =
+            sqlx::query_scalar("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .expect("proven id");
+
+        let mut opts = all_tasks_disabled();
+        opts.tasks.check_for_proofs.enabled = true;
+        let monitor = Monitor::with_options(storage.clone(), services, opts);
+        monitor.run_once().await.expect("run_once");
+
+        let (status, link) = tx_link(&storage, &txid).await;
+        assert_eq!(status, "completed");
+        assert_eq!(link, Some(proven_id), "linked to the EXISTING proof row");
+        assert!(
+            req_rows(&storage, &txid).await.is_empty(),
+            "a linked row is no longer a candidate — no req is minted for it"
+        );
+    }
+
+    /// A row that already has a req — here `'nosend'`, the release-pin
+    /// flow's shape — belongs to that req's owner. Adoption must neither add
+    /// a second req (UNIQUE txid would refuse anyway) nor touch the status.
+    #[tokio::test]
+    async fn adoption_never_touches_a_tx_that_already_has_a_req() {
+        let txid = "c".repeat(64);
+        let (mock, _) = mined_with_bump(&txid, 852_004);
+        let (storage, services) = setup_storage_and_services(mock).await;
+        let identity_key = "02".to_string() + &"cc".repeat(32);
+        let (user, _) = storage
+            .find_or_insert_user(&identity_key)
+            .await
+            .expect("user");
+        insert_proofless_tx(&storage, user.user_id, &txid, "completed").await;
+        let now = chrono::Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, created_at, updated_at)
+            VALUES (?, 'nosend', 0, '{}', 0, '{}', X'01000000', ?, ?)
+            "#,
+        )
+        .bind(&txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .expect("insert nosend req");
+
+        let mut opts = all_tasks_disabled();
+        opts.tasks.check_for_proofs.enabled = true;
+        let monitor = Monitor::with_options(storage.clone(), services, opts);
+        monitor.run_once().await.expect("run_once");
+
+        let reqs = req_rows(&storage, &txid).await;
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].0, "nosend", "the nosend owner keeps its req");
+        let (status, link) = tx_link(&storage, &txid).await;
+        assert_eq!(status, "completed");
+        assert!(link.is_none(), "nothing proven behind the owner's back");
+    }
+
+    /// One pass adopts at most `ADOPT_UNPROVEN_TX_LIMIT` rows; the rest
+    /// drain on later passes. Calls the pass directly so the bound is
+    /// pinned as a number, not as a side effect of a mock's behaviour.
+    #[tokio::test]
+    async fn adoption_is_bounded_per_pass_and_drains() {
+        use bsv_wallet_toolbox_rs::storage::sqlx::ADOPT_UNPROVEN_TX_LIMIT;
+
+        let (storage, _services) = setup_storage_and_services(MockWalletServices::new()).await;
+        let identity_key = "02".to_string() + &"bb".repeat(32);
+        let (user, _) = storage
+            .find_or_insert_user(&identity_key)
+            .await
+            .expect("user");
+        let extra = 5usize;
+        let total = ADOPT_UNPROVEN_TX_LIMIT as usize + extra;
+        for i in 0..total {
+            let txid = format!("{:064x}", 0x1000 + i);
+            insert_proofless_tx(&storage, user.user_id, &txid, "completed").await;
+        }
+
+        let first = storage
+            .adopt_unproven_transactions()
+            .await
+            .expect("first pass");
+        assert_eq!(
+            first.reqs_created as usize,
+            ADOPT_UNPROVEN_TX_LIMIT as usize
+        );
+        assert_eq!(first.linked_from_proven_txs, 0);
+
+        let second = storage
+            .adopt_unproven_transactions()
+            .await
+            .expect("second pass");
+        assert_eq!(second.reqs_created as usize, extra, "the remainder drains");
+
+        let third = storage
+            .adopt_unproven_transactions()
+            .await
+            .expect("third pass");
+        assert_eq!(third.reqs_created, 0, "idempotent once every row has a req");
+
+        let unmined: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM proven_tx_reqs WHERE status = 'unmined'")
+                .fetch_one(storage.pool())
+                .await
+                .expect("count");
+        assert_eq!(unmined as usize, total);
+    }
 }

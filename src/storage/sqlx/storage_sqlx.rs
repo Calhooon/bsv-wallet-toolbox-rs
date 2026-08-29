@@ -2744,9 +2744,200 @@ impl StorageSqlx {
     }
 }
 
+/// Upper bound on the proof-less `transactions` rows ONE
+/// [`StorageSqlx::adopt_unproven_transactions`] pass turns into
+/// `proven_tx_reqs`. A backlog drains over successive passes (every
+/// new-header trigger / fallback tick of `CheckForProofs`); the bound keeps
+/// a single pass' write burst small and its runtime predictable.
+pub const ADOPT_UNPROVEN_TX_LIMIT: i64 = 200;
+
+/// Summary of one [`StorageSqlx::adopt_unproven_transactions`] pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UnprovenAdoption {
+    /// `transactions.proven_tx_id` links written from an EXISTING
+    /// `proven_txs` row — the proof was already stored (by any path) and
+    /// only the link was missing; no fetch is needed for these.
+    pub linked_from_proven_txs: u64,
+    /// `proven_tx_reqs` rows created (`'unmined'`) for proof-less
+    /// transactions that had NO req at all — the rows every proof path
+    /// was blind to.
+    pub reqs_created: u64,
+}
+
+impl StorageSqlx {
+    /// Bring every proof-less spendable transaction back into the
+    /// `CheckForProofs` eligible set (the bsv-wallet-cli receive-proof
+    /// gap, 2026-08-29).
+    ///
+    /// ## The gap
+    ///
+    /// `synchronize_transaction_statuses` walks `proven_tx_reqs` ONLY. A
+    /// `transactions` row that is `'completed'` (or `'unproven'`) with
+    /// `proven_tx_id IS NULL` and NO req is invisible to it — and to every
+    /// other proof path — forever. Before 0.3.52 `internalize_action` wrote
+    /// exactly that shape for every internalized coin (status `'completed'`
+    /// from `has_proof` alone, no `proven_tx_id`, no req; issue #8), so a
+    /// wallet that received coins on those releases carries spendable
+    /// outputs whose transactions can never be proven. Measured on the
+    /// LOW e2e fleet wallets: dozens of such rows per wallet, still
+    /// holding live outputs. The symptom downstream: every BEEF built on
+    /// one of those coins drags the whole raw ancestry (no BUMP truncates
+    /// it), so BEEF handoffs grow without bound and ARC fee-rejects the
+    /// package (the 2026-07 "465 fee too low" incident shape).
+    ///
+    /// 0.3.52 restored `completed ⇒ proven` for NEW internalizes; this
+    /// pass repairs the rows that predate it and any future producer that
+    /// slips — a self-healing task rather than a one-shot migration, so a
+    /// regression re-heals on the next tick instead of accumulating.
+    ///
+    /// ## What one pass does (bounded, idempotent, additive)
+    ///
+    /// 1. **Link.** A `transactions` row whose txid ALREADY has a
+    ///    `proven_txs` row gets `proven_tx_id` linked (and `'completed'`,
+    ///    the status a proven tx has by definition); any proof-eligible
+    ///    req for it (`unmined`/`unknown`/`callback`/`sending`/
+    ///    `unconfirmed`) is completed with the same link so it leaves the
+    ///    eligible set. `proven_txs` rows are only ever written through a
+    ///    validated proof (`ingest_merkle_proof`, the BUMP-bearing
+    ///    internalize), so the link asserts nothing new.
+    /// 2. **Adopt.** For up to [`ADOPT_UNPROVEN_TX_LIMIT`] remaining
+    ///    proof-less rows (status `'completed'`/`'unproven'`, a txid, raw
+    ///    bytes, NO req), create the req as `'unmined'` — "broadcast
+    ///    externally, awaiting a proof", the same status the nosend-merge
+    ///    path uses for an externally-broadcast tx. From here the ordinary
+    ///    triage → fetch → [`StorageSqlx::ingest_merkle_proof`] flow owns
+    ///    it: a mined tx gets its BUMP and the link on a later pass; a tx
+    ///    the chain never saw is triaged `missing` every pass, exactly as
+    ///    an ordinary `'unmined'` req of a never-mined tx is today.
+    ///
+    /// Statuses are otherwise untouched: a `'completed'` row stays
+    /// spendable while its proof is fetched (coin selection accepts both
+    /// `completed` and `unproven`), and a row that has ANY req — even a
+    /// `'nosend'` one (the release-pin flow) or a terminal `'invalid'` —
+    /// is left to that req's owner. `review_status` remains the
+    /// tx↔req status-mismatch repair; this pass only covers the case it
+    /// cannot see (no req to mismatch against).
+    pub async fn adopt_unproven_transactions(&self) -> Result<UnprovenAdoption> {
+        let now = chrono::Utc::now();
+        let mut out = UnprovenAdoption::default();
+
+        // 1. Link from an existing proof. Rows in the eligible statuses
+        //    only — a 'failed'/'nosend' row is not made 'completed' by the
+        //    existence of a proof row somebody else wrote for the same txid.
+        let linked = sqlx::query(
+            r#"
+            UPDATE transactions
+            SET proven_tx_id = (SELECT p.proven_tx_id FROM proven_txs p
+                                WHERE p.txid = transactions.txid LIMIT 1),
+                status = 'completed',
+                updated_at = ?
+            WHERE proven_tx_id IS NULL
+              AND txid IS NOT NULL
+              AND status IN ('completed', 'unproven')
+              AND EXISTS (SELECT 1 FROM proven_txs p WHERE p.txid = transactions.txid)
+            "#,
+        )
+        .bind(now)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        out.linked_from_proven_txs = linked;
+        if linked > 0 {
+            // Retire the proof-eligible req (if any) with the same link so
+            // the next triage does not re-fetch a proof we already hold.
+            sqlx::query(
+                r#"
+                UPDATE proven_tx_reqs
+                SET status = 'completed',
+                    proven_tx_id = (SELECT p.proven_tx_id FROM proven_txs p
+                                    WHERE p.txid = proven_tx_reqs.txid LIMIT 1),
+                    updated_at = ?
+                WHERE proven_tx_id IS NULL
+                  AND status IN ('unmined', 'unknown', 'callback', 'sending', 'unconfirmed')
+                  AND EXISTS (SELECT 1 FROM proven_txs p WHERE p.txid = proven_tx_reqs.txid)
+                "#,
+            )
+            .bind(now)
+            .execute(self.pool())
+            .await?;
+        }
+
+        // 2. Adopt the req-less remainder, bounded per pass.
+        let candidates: Vec<(String, Vec<u8>, Option<Vec<u8>>)> = sqlx::query_as(
+            r#"
+            SELECT t.txid, t.raw_tx, t.input_beef
+            FROM transactions t
+            WHERE t.proven_tx_id IS NULL
+              AND t.txid IS NOT NULL
+              AND t.raw_tx IS NOT NULL
+              AND t.status IN ('completed', 'unproven')
+              AND NOT EXISTS (SELECT 1 FROM proven_tx_reqs r WHERE r.txid = t.txid)
+            ORDER BY t.transaction_id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(ADOPT_UNPROVEN_TX_LIMIT)
+        .fetch_all(self.pool())
+        .await?;
+
+        for (txid, raw_tx, input_beef) in candidates {
+            // `txid` is UNIQUE on proven_tx_reqs, so OR IGNORE makes the
+            // adoption atomic against any concurrent creator (a req that
+            // appeared since the SELECT keeps its own owner/status).
+            let created = sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO proven_tx_reqs
+                    (txid, status, attempts, history, notify, notified, raw_tx, input_beef, created_at, updated_at)
+                VALUES (?, 'unmined', 0, '{}', '{}', 0, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&txid)
+            .bind(&raw_tx)
+            .bind(&input_beef)
+            .bind(now)
+            .bind(now)
+            .execute(self.pool())
+            .await?
+            .rows_affected();
+            if created > 0 {
+                out.reqs_created += 1;
+                tracing::debug!(
+                    txid = %txid,
+                    "adopt_unproven_transactions: created 'unmined' proven_tx_req for a proof-less transaction"
+                );
+            }
+        }
+
+        Ok(out)
+    }
+}
+
 #[async_trait]
 impl MonitorStorage for StorageSqlx {
     async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
+        // Receive-proof gap (2026-08-29): a proof-less transaction with NO
+        // req is invisible to the walk below. Repair first (bounded,
+        // idempotent), so this very pass can triage what it adopted. A
+        // failure here degrades to exactly the pre-existing behaviour —
+        // never fewer proofs than before — and is logged, not swallowed.
+        match self.adopt_unproven_transactions().await {
+            Ok(adopted) if adopted.reqs_created > 0 || adopted.linked_from_proven_txs > 0 => {
+                tracing::info!(
+                    reqs_created = adopted.reqs_created,
+                    linked_from_proven_txs = adopted.linked_from_proven_txs,
+                    marker = "unproven_tx_adopted",
+                    "synchronize_transaction_statuses: adopted proof-less transactions into the proof set"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "synchronize_transaction_statuses: adopt_unproven_transactions failed; continuing with the existing req set"
+                );
+            }
+        }
+
         // Query proven_tx_reqs with statuses that need synchronization
         let statuses = vec![
             ProvenTxReqStatus::Unmined,
