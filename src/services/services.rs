@@ -4,10 +4,17 @@
 //! support for each method type. It implements the `WalletServices` trait.
 
 use async_trait::async_trait;
+use std::collections::HashSet;
 use std::sync::{Arc as StdArc, RwLock};
 
 use crate::chaintracks::Chain;
 use crate::lock_utils::{lock_read, lock_write};
+use crate::services::broadcast_memory::{
+    apply_sticky_provider_order, unproven_ancestors_in_beef, BroadcastMemory,
+    BROADCAST_STATUS_ACCEPTED, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2, PROVIDER_BITAILS,
+    PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
+};
+use crate::services::traits::PostBeefDelivery;
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
@@ -126,6 +133,11 @@ pub struct Services {
 
     /// Post BEEF mode.
     pub post_beef_mode: PostBeefMode,
+
+    /// Broadcast acceptance memory (reduced sends + sticky provider order),
+    /// attached by the wallet / monitor / storage. `None` = the full package
+    /// in the static order, exactly the pre-0.3.56 behavior.
+    broadcast_memory: RwLock<Option<StdArc<dyn BroadcastMemory>>>,
 }
 
 // Type aliases for service collections
@@ -158,6 +170,22 @@ trait RawTxService {
 #[async_trait]
 trait PostBeefService {
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult>;
+
+    /// `post_beef` with the provider's seen set (txids it has already
+    /// accepted or seen, from the attached `BroadcastMemory`). The default
+    /// ignores the set and reports a conventional full-package delivery;
+    /// the ARC-family providers override it with their reduced sends.
+    async fn post_beef_seen(
+        &self,
+        beef: &[u8],
+        txids: &[String],
+        seen: &HashSet<String>,
+    ) -> Result<(PostBeefResult, PostBeefDelivery)> {
+        let _ = seen;
+        let result = self.post_beef(beef, txids).await?;
+        let delivery = PostBeefDelivery::full_package(beef.len(), &result, txids);
+        Ok((result, delivery))
+    }
 }
 
 #[async_trait]
@@ -236,12 +264,30 @@ impl PostBeefService for Arc {
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
         self.post_beef(beef, txids).await
     }
+
+    async fn post_beef_seen(
+        &self,
+        beef: &[u8],
+        txids: &[String],
+        seen: &HashSet<String>,
+    ) -> Result<(PostBeefResult, PostBeefDelivery)> {
+        self.post_beef_seen(beef, txids, seen).await
+    }
 }
 
 #[async_trait]
 impl PostBeefService for Arcade {
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
         self.post_beef(beef, txids).await
+    }
+
+    async fn post_beef_seen(
+        &self,
+        beef: &[u8],
+        txids: &[String],
+        seen: &HashSet<String>,
+    ) -> Result<(PostBeefResult, PostBeefDelivery)> {
+        self.post_beef_seen(beef, txids, seen).await
     }
 }
 
@@ -406,17 +452,26 @@ impl Services {
         // failover so a transient Arcade outage never blocks a broadcast.
         if let Some(ref arcade_provider) = arcade {
             post_beef_services.add(
-                "ArcadeV2",
+                PROVIDER_ARCADE_V2,
                 StdArc::clone(arcade_provider) as PostBeefProvider,
             );
         }
-        post_beef_services.add("TaalArcBeef", StdArc::clone(&arc_taal) as PostBeefProvider);
-        if let Some(ref gp) = arc_gorillapool {
-            post_beef_services.add("GorillaPoolArcBeef", StdArc::clone(gp) as PostBeefProvider);
-        }
-        post_beef_services.add("Bitails", StdArc::clone(&bitails) as PostBeefProvider);
         post_beef_services.add(
-            "WhatsOnChain",
+            PROVIDER_TAAL_ARC,
+            StdArc::clone(&arc_taal) as PostBeefProvider,
+        );
+        if let Some(ref gp) = arc_gorillapool {
+            post_beef_services.add(
+                PROVIDER_GORILLAPOOL_ARC,
+                StdArc::clone(gp) as PostBeefProvider,
+            );
+        }
+        post_beef_services.add(
+            PROVIDER_BITAILS,
+            StdArc::clone(&bitails) as PostBeefProvider,
+        );
+        post_beef_services.add(
+            PROVIDER_WHATSONCHAIN,
             StdArc::clone(&whatsonchain) as PostBeefProvider,
         );
 
@@ -467,7 +522,49 @@ impl Services {
             bsv_exchange_rate: RwLock::new(None),
             fiat_exchange_rates: RwLock::new(fiat_rates),
             post_beef_mode: PostBeefMode::default(),
+            broadcast_memory: RwLock::new(None),
         })
+    }
+
+    /// Record what `provider_name` just accepted and make it the sticky
+    /// provider for the next broadcast. Memory faults are logged, never
+    /// surfaced: the memory is an optimization and the broadcast already
+    /// succeeded.
+    async fn remember_acceptance(
+        &self,
+        memory: &dyn BroadcastMemory,
+        provider_name: &str,
+        txids: &[String],
+        delivery: &PostBeefDelivery,
+        sticky: Option<&str>,
+    ) {
+        let accepted: Vec<String> = if delivery.accepted_txids.is_empty() {
+            txids.to_vec()
+        } else {
+            delivery.accepted_txids.clone()
+        };
+        if let Err(e) = memory
+            .record_broadcast_seen_many(provider_name, BROADCAST_STATUS_ACCEPTED, &accepted)
+            .await
+        {
+            tracing::warn!(
+                name = %provider_name,
+                error = %e,
+                "broadcast memory: could not record the acceptance"
+            );
+        }
+        if sticky != Some(provider_name) {
+            if let Err(e) = memory
+                .set_broadcast_pref(PREF_LAST_ACCEPTED_PROVIDER, provider_name)
+                .await
+            {
+                tracing::warn!(
+                    name = %provider_name,
+                    error = %e,
+                    "broadcast memory: could not persist the sticky provider"
+                );
+            }
+        }
     }
 
     /// Create mainnet services.
@@ -979,9 +1076,22 @@ impl WalletServices for Services {
         })
     }
 
+    fn set_broadcast_memory(&self, memory: StdArc<dyn BroadcastMemory>) {
+        match lock_write(&self.broadcast_memory) {
+            Ok(mut slot) => *slot = Some(memory),
+            Err(e) => tracing::warn!(error = %e, "could not attach the broadcast memory"),
+        }
+    }
+
+    fn broadcast_memory(&self) -> Option<StdArc<dyn BroadcastMemory>> {
+        lock_read(&self.broadcast_memory)
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>> {
         // Get owned copies of services to avoid holding lock across await
-        let all_services: Vec<(String, String, PostBeefProvider)> = {
+        let mut all_services: Vec<(String, String, PostBeefProvider)> = {
             let services = lock_read(&self.post_beef_services)?;
             services.all_services_owned()
         };
@@ -990,19 +1100,89 @@ impl WalletServices for Services {
             return Err(Error::NoServicesAvailable);
         }
 
+        let subject = txids.last().cloned().unwrap_or_default();
+        let memory = self.broadcast_memory();
+
+        // Sticky provider order: the provider that accepted the previous
+        // broadcast is tried first (never ahead of a configured Arcade
+        // unless it IS Arcade). The static order and the in-memory demotion
+        // of a failing provider (`move_to_last`) stay as they were.
+        let mut sticky: Option<String> = None;
+        if let Some(memory) = &memory {
+            match memory.get_broadcast_pref(PREF_LAST_ACCEPTED_PROVIDER).await {
+                Ok(Some(name)) => {
+                    apply_sticky_provider_order(&mut all_services, &name, PROVIDER_ARCADE_V2);
+                    sticky = Some(name);
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "broadcast memory: could not read the sticky provider; using the static order"
+                ),
+            }
+        }
+
+        // The subject's unproven ancestors decide what each provider may
+        // skip. Parsed once per broadcast; nothing to look up without a
+        // memory.
+        let unproven_ancestors: Vec<String> = if memory.is_some() {
+            unproven_ancestors_in_beef(beef, &subject)
+        } else {
+            Vec::new()
+        };
+
         let mut results = Vec::new();
 
         match self.post_beef_mode {
             PostBeefMode::UntilSuccess => {
                 for (_service_name, provider_name, service) in all_services {
+                    // One seen-set query per provider actually tried
+                    // (usually one per broadcast).
+                    let seen: HashSet<String> = match &memory {
+                        Some(memory) if !unproven_ancestors.is_empty() => memory
+                            .broadcast_seen_for(&provider_name, &unproven_ancestors)
+                            .await
+                            .unwrap_or_else(|e| {
+                                tracing::warn!(
+                                    name = %provider_name,
+                                    error = %e,
+                                    "broadcast memory: seen-set lookup failed; sending the full package"
+                                );
+                                HashSet::new()
+                            }),
+                        _ => HashSet::new(),
+                    };
+
                     let mut call = ServiceCall::new();
-                    match service.post_beef(beef, txids).await {
-                        Ok(result) => {
+                    let started = std::time::Instant::now();
+                    match service.post_beef_seen(beef, txids, &seen).await {
+                        Ok((result, delivery)) => {
                             let is_success = result.is_success();
                             if is_success {
                                 call.mark_success(None);
                                 lock_write(&self.post_beef_services)?
                                     .add_call_success(&provider_name, call);
+                                tracing::info!(
+                                    name = %provider_name,
+                                    txid = %subject,
+                                    reduced = delivery.reduced,
+                                    bytes = delivery.bytes_sent,
+                                    fallback_full = delivery.fallback_full,
+                                    seen = seen.len(),
+                                    unproven_ancestors = unproven_ancestors.len(),
+                                    ms = started.elapsed().as_millis(),
+                                    "broadcast accepted"
+                                );
+                                if let Some(memory) = &memory {
+                                    self.remember_acceptance(
+                                        memory.as_ref(),
+                                        &provider_name,
+                                        txids,
+                                        &delivery,
+                                        sticky.as_deref(),
+                                    )
+                                    .await;
+                                }
                             } else {
                                 call.mark_failure(Some(result.status.clone()));
                                 lock_write(&self.post_beef_services)?
@@ -1028,7 +1208,7 @@ impl WalletServices for Services {
                 }
             }
             PostBeefMode::PromiseAll => {
-                // Post to all services in parallel
+                // Post to all services in parallel (always the full package)
                 let futures: Vec<_> = all_services
                     .iter()
                     .map(|(_service_name, _provider_name, service)| {
@@ -1051,6 +1231,18 @@ impl WalletServices for Services {
                                 call.mark_success(None);
                                 lock_write(&self.post_beef_services)?
                                     .add_call_success(provider_name, call);
+                                if let Some(memory) = &memory {
+                                    let delivery =
+                                        PostBeefDelivery::full_package(beef.len(), &r, txids);
+                                    self.remember_acceptance(
+                                        memory.as_ref(),
+                                        provider_name,
+                                        txids,
+                                        &delivery,
+                                        sticky.as_deref(),
+                                    )
+                                    .await;
+                                }
                             } else {
                                 call.mark_failure(Some(r.status.clone()));
                                 lock_write(&self.post_beef_services)?

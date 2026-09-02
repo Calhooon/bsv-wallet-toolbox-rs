@@ -352,7 +352,7 @@ The `Services` constructor sets up provider priority for each operation:
 |-----------|----------------|
 | `get_merkle_path` | WhatsOnChain -> Bitails |
 | `get_raw_tx` | WhatsOnChain -> Bitails |
-| `post_beef` | GorillaPool ARC -> TAAL ARC -> Bitails -> WhatsOnChain |
+| `post_beef` | ArcadeV2 (opt-in, first) -> TAAL ARC -> GorillaPool ARC -> Bitails -> WhatsOnChain; with a `BroadcastMemory` attached, the last accepting provider is tried first (never ahead of Arcade unless it is Arcade) |
 | `get_utxo_status` | WhatsOnChain |
 | `get_status_for_txids` | WhatsOnChain -> Bitails |
 | `get_script_hash_history` | WhatsOnChain -> Bitails |
@@ -492,3 +492,22 @@ Use `get_services_call_history(reset)` to retrieve and optionally reset counters
 - [../CLAUDE.md](../CLAUDE.md) - Parent module overview
 - [providers/CLAUDE.md](./providers/CLAUDE.md) - Provider implementation details
 - [../chaintracks/CLAUDE.md](../chaintracks/CLAUDE.md) - Block header tracking (provides `Chain` type)
+
+## Broadcast Acceptance Memory (broadcast_memory.rs, 0.3.56)
+
+`BroadcastMemory` (persisted by `StorageSqlx`, `InMemoryBroadcastMemory` for tests) remembers per
+postBeef provider which txids it already accepted / saw / mined. `Services::post_beef` consults it
+when one is attached (`WalletServices::set_broadcast_memory`; the `Wallet`, the `Monitor` and
+`StorageSqlx::set_services` attach the storage's memory automatically):
+
+- Classic ARC (`arc.rs`, `reduced_send_plan`): every unproven ancestor seen -> subject alone as EF
+  (`/v1/tx`); some seen -> JSON EF batch of the unseen ancestors + subject (`/v1/txs`); none seen
+  -> full BEEF, exactly as before. A reduced send refused for what reads as a missing parent
+  (`missing_parent_hint`, orphan verdict, rejected ancestor, unsupported batch endpoint) is retried
+  ONCE with the full BEEF. `469` bodies saying the verification timed out are transient.
+- Arcade (`arcade.rs`, `beef_to_ef_batch_skipping`): seen unproven txs stay out of the EF batch
+  (the subject is always sent); a missing-parent refusal / `REJECTED` retries once with the full batch.
+- On success the accepting provider's txids are recorded (`accepted`) and it becomes the sticky
+  provider (`broadcast_prefs.last_accepted_provider`). SSE/webhook seen reports record `seen` for
+  the reporting plane; proofs record `mined` for `network` (counts for every provider).
+- No memory attached = full package, static order: nothing changes for existing callers.
