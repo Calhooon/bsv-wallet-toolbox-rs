@@ -423,6 +423,13 @@ where
         // Ensure the user exists in storage and get user_id
         let (user, _is_new) = storage.find_or_insert_user(&identity_key).await?;
 
+        // Hand the storage's persisted broadcast memory to the services so
+        // broadcasts send each provider only what it has not already seen
+        // and keep trying the last accepting provider first (0.3.56).
+        if let Some(memory) = storage.broadcast_memory() {
+            services.set_broadcast_memory(memory);
+        }
+
         Ok(Self {
             proto_wallet,
             storage: Arc::new(storage),

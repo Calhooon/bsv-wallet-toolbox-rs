@@ -1212,6 +1212,19 @@ impl WalletStorageProvider for WalletStorageManager {
         unimplemented!("Use async get_settings() method instead")
     }
 
+    fn broadcast_memory(
+        &self,
+    ) -> Option<Arc<dyn crate::services::broadcast_memory::BroadcastMemory>> {
+        // Sync trait method: never block on the async locks. When they are
+        // contended there is simply no memory to hand out this time.
+        let stores = self.stores.try_read().ok()?;
+        let active = self.active_index.try_read().ok()?;
+        let idx = (*active).or(if stores.is_empty() { None } else { Some(0) })?;
+        stores
+            .get(idx)
+            .and_then(|store| store.storage.broadcast_memory())
+    }
+
     fn set_services(&self, services: Arc<dyn WalletServices>) {
         // Use blocking write since this trait method is sync
         // Note: This may block if the lock is held by an async task

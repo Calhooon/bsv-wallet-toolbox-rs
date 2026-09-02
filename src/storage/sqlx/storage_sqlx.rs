@@ -32,6 +32,16 @@ use super::create_action::{
     MAX_BEEF_RECURSION_DEPTH,
 };
 
+/// Every schema migration, in order. Each statement is `IF NOT EXISTS`, so
+/// the whole list is idempotent on a database at any earlier schema.
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_initial", include_str!("migrations/001_initial.sql")),
+    (
+        super::broadcast_seen::MIGRATION_002_BROADCAST_SEEN_NAME,
+        super::broadcast_seen::MIGRATION_002_BROADCAST_SEEN_SQL,
+    ),
+];
+
 /// Default maximum length for output scripts stored in the outputs table.
 /// Scripts longer than this will be retrieved from the raw transaction.
 pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
@@ -64,6 +74,9 @@ pub struct StorageSqlx {
     /// Maps task_name -> (instance_id, expiry).
     #[allow(dead_code)]
     task_locks: RwLock<HashMap<String, (String, std::time::Instant)>>,
+    /// Persisted broadcast acceptance memory over the same pool (0.3.56):
+    /// the `broadcast_seen` / `broadcast_prefs` tables.
+    broadcast_memory: Arc<super::broadcast_seen::SqlxBroadcastMemory>,
 }
 
 impl StorageSqlx {
@@ -87,6 +100,9 @@ impl StorageSqlx {
             .pragma("synchronous", "NORMAL")
             .create_if_missing(true);
         let pool = SqlitePool::connect_with(options).await?;
+        let broadcast_memory = Arc::new(super::broadcast_seen::SqlxBroadcastMemory::new(
+            pool.clone(),
+        ));
 
         Ok(Self {
             pool,
@@ -97,6 +113,7 @@ impl StorageSqlx {
             services: std::sync::RwLock::new(None),
             active_transactions: RwLock::new(HashMap::new()),
             task_locks: RwLock::new(HashMap::new()),
+            broadcast_memory,
         })
     }
 
@@ -150,28 +167,18 @@ impl StorageSqlx {
         &self.pool
     }
 
-    /// Run the initial migration SQL.
+    /// The persisted broadcast acceptance memory over this storage's pool
+    /// (`broadcast_seen` / `broadcast_prefs`). A shared handle: the same
+    /// instance the wallet and the monitor attach to the services.
+    pub fn sqlx_broadcast_memory(&self) -> Arc<super::broadcast_seen::SqlxBroadcastMemory> {
+        Arc::clone(&self.broadcast_memory)
+    }
+
+    /// Run every migration, in order (see [`MIGRATIONS`]). Idempotent.
     async fn run_migrations(&self) -> Result<()> {
-        let sql = include_str!("migrations/001_initial.sql");
-
-        // Remove comments and split by semicolons
-        let sql_without_comments: String = sql
-            .lines()
-            .filter(|line| !line.trim().starts_with("--"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Split by semicolons and execute each statement
-        for statement in sql_without_comments.split(';') {
-            let statement = statement.trim();
-            if !statement.is_empty() {
-                sqlx::query(statement)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| Error::MigrationError(format!("{}: {}", e, statement)))?;
-            }
+        for (name, sql) in MIGRATIONS {
+            super::broadcast_seen::apply_migration_sql(&self.pool, name, sql).await?;
         }
-
         Ok(())
     }
 
@@ -2003,6 +2010,9 @@ impl WalletStorageWriter for StorageSqlx {
         let settings = self.read_settings().await?;
 
         if let Some(settings) = settings {
+            // Additive schema (0.3.56): a database created before migration
+            // 002 gets the broadcast tables on open, not only on `migrate`.
+            self.ensure_broadcast_schema().await?;
             let mut cached = lock_write(&self.settings)?;
             *cached = Some(settings.clone());
             Ok(settings)
@@ -2039,12 +2049,17 @@ impl WalletStorageWriter for StorageSqlx {
             *name = storage_name.to_string();
         }
 
-        Ok("001_initial".to_string())
+        Ok(MIGRATIONS
+            .last()
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_default())
     }
 
     async fn destroy(&self) -> Result<()> {
         // Drop all tables in reverse dependency order
         let tables = [
+            "broadcast_seen",
+            "broadcast_prefs",
             "sync_states",
             "monitor_events",
             "tx_labels_map",
@@ -2583,7 +2598,20 @@ impl WalletStorageProvider for StorageSqlx {
         unsafe { &*(&*guard as *const String) }
     }
 
+    fn broadcast_memory(
+        &self,
+    ) -> Option<Arc<dyn crate::services::broadcast_memory::BroadcastMemory>> {
+        Some(Arc::clone(&self.broadcast_memory)
+            as Arc<
+                dyn crate::services::broadcast_memory::BroadcastMemory,
+            >)
+    }
+
     fn set_services(&self, services: Arc<dyn WalletServices>) {
+        // The services get this storage's persisted broadcast memory, so
+        // broadcasts send each provider only what it has not seen (0.3.56).
+        services.set_broadcast_memory(Arc::clone(&self.broadcast_memory)
+            as Arc<dyn crate::services::broadcast_memory::BroadcastMemory>);
         // If lock is poisoned, log and skip rather than panicking
         match lock_write(&self.services) {
             Ok(mut guard) => *guard = Some(services),
@@ -2701,6 +2729,14 @@ impl StorageSqlx {
         .bind(now)
         .execute(self.pool())
         .await?;
+
+        // Mined: every provider has it. Remember it for reduced sends.
+        self.record_broadcast_seen_quiet(
+            txid,
+            crate::services::broadcast_memory::BROADCAST_PROVIDER_NETWORK,
+            crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
+        )
+        .await;
 
         // Get the proven_tx_id
         let proven_tx_id: Option<(i64,)> =
@@ -4608,6 +4644,26 @@ impl MonitorStorage for StorageSqlx {
     }
 
     async fn mark_transaction_seen_on_network(&self, txid: &str) -> Result<bool> {
+        self.mark_transaction_seen_on_network_by(
+            txid,
+            crate::services::broadcast_memory::BROADCAST_PROVIDER_NETWORK,
+        )
+        .await
+    }
+
+    async fn mark_transaction_seen_on_network_by(
+        &self,
+        txid: &str,
+        provider: &str,
+    ) -> Result<bool> {
+        // The reporting plane has the tx: remember it for reduced sends.
+        self.record_broadcast_seen_quiet(
+            txid,
+            provider,
+            crate::services::broadcast_memory::BROADCAST_STATUS_SEEN,
+        )
+        .await;
+
         let now = chrono::Utc::now();
 
         // Same transition a successful post_beef broadcast performs in
@@ -5423,7 +5479,7 @@ mod tests {
             .migrate("test-storage", "0".repeat(64).as_str())
             .await
             .unwrap();
-        assert_eq!(version, "001_initial");
+        assert_eq!(version, "002_broadcast_seen");
 
         // Make available
         let settings = storage.make_available().await.unwrap();

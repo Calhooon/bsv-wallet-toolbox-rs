@@ -18,6 +18,8 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | `sync.rs` | Multi-storage synchronization (2713 lines) |
 | `beef_verification.rs` | BEEF merkle proof verification (989 lines) |
 | `migrations/001_initial.sql` | Initial schema with 16 tables (284 lines) |
+| `migrations/002_broadcast_seen.sql` | `broadcast_seen` + `broadcast_prefs` (broadcast acceptance memory, 0.3.56); applied on `migrate()` AND `make_available()` |
+| `broadcast_seen.rs` | `SqlxBroadcastMemory` (`BroadcastMemory` over the pool), `StorageSqlx::{record_broadcast_seen, broadcast_seen_for, broadcast_seen_any, get/set_broadcast_pref}` |
 
 ## Key Exports
 

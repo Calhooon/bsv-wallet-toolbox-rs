@@ -137,6 +137,14 @@ where
         rand_bytes(&mut bytes);
         let instance_id = hex::encode(bytes);
 
+        // The storage's persisted broadcast memory drives the reduced sends
+        // and the sticky provider order of `send_waiting` re-broadcasts too.
+        if let Some(memory) =
+            crate::storage::WalletStorageProvider::broadcast_memory(storage.as_ref())
+        {
+            crate::services::WalletServices::set_broadcast_memory(services.as_ref(), memory);
+        }
+
         Self {
             storage,
             services,

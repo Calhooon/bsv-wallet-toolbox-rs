@@ -760,6 +760,16 @@ pub trait WalletStorageProvider: WalletStorageSync {
     /// # Arguments
     /// * `services` - The wallet services to use for blockchain operations
     fn set_services(&self, services: Arc<dyn WalletServices>);
+
+    /// The storage's persisted broadcast acceptance memory, if it keeps one
+    /// (`StorageSqlx` does: the `broadcast_seen` / `broadcast_prefs`
+    /// tables). The wallet and the monitor hand it to the services so
+    /// broadcasts send each provider only what it has not already seen.
+    fn broadcast_memory(
+        &self,
+    ) -> Option<Arc<dyn crate::services::broadcast_memory::BroadcastMemory>> {
+        None
+    }
 }
 
 // =============================================================================
@@ -1052,6 +1062,21 @@ pub trait MonitorStorage: WalletStorageProvider {
             "mark_transaction_seen_on_network called on storage that does not override this method"
         );
         Ok(false)
+    }
+
+    /// [`MonitorStorage::mark_transaction_seen_on_network`] naming the plane
+    /// that reported it: a postBeef provider name such as
+    /// [`PROVIDER_ARCADE_V2`](crate::services::PROVIDER_ARCADE_V2), or
+    /// [`BROADCAST_PROVIDER_NETWORK`](crate::services::BROADCAST_PROVIDER_NETWORK)
+    /// when unknown, so the broadcast memory can credit that provider. The
+    /// default ignores the provider.
+    async fn mark_transaction_seen_on_network_by(
+        &self,
+        txid: &str,
+        provider: &str,
+    ) -> Result<bool> {
+        let _ = provider;
+        self.mark_transaction_seen_on_network(txid).await
     }
 
     /// Mark a broadcast transaction as fatally rejected by the broadcaster.

@@ -78,7 +78,7 @@ pub use storage::{classify_broadcast_results, BroadcastOutcome};
 
 // Re-export StorageSqlx when sqlite or mysql feature is enabled
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
-pub use storage::{RetireOutcome, StorageSqlx};
+pub use storage::{RetireOutcome, SqlxBroadcastMemory, StorageSqlx};
 
 // Re-export StorageClient when remote feature is enabled
 #[cfg(feature = "remote")]
@@ -108,6 +108,15 @@ pub use services::{
     GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, ScriptHistoryItem,
     ServiceCallHistory, ServiceCollection, Services, ServicesOptions, TxStatusDetail, UtxoDetail,
     WalletServices, WhatsOnChain, WhatsOnChainConfig, ARCADE_V2_MAINNET,
+};
+
+// Broadcast acceptance memory (reduced sends + sticky provider order)
+pub use services::{
+    apply_sticky_provider_order, beef_to_ef_batch_skipping, missing_parent_hint,
+    unproven_ancestors_in_beef, BroadcastMemory, EfBatch, EfBatchEntry, InMemoryBroadcastMemory,
+    PostBeefDelivery, BROADCAST_PROVIDER_NETWORK, BROADCAST_STATUS_ACCEPTED,
+    BROADCAST_STATUS_MINED, BROADCAST_STATUS_SEEN, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2,
+    PROVIDER_BITAILS, PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
 };
 
 // Re-export Wallet types

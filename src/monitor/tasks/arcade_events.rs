@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::services::broadcast_memory::PROVIDER_ARCADE_V2;
 use crate::services::providers::arcade::{statuses, ArcadeSseClient, ArcadeStatusEvent};
 use crate::storage::MonitorStorage;
 use crate::Result;
@@ -163,11 +164,15 @@ where
         let txid = ev.txid.as_str();
         match ev.tx_status.as_str() {
             statuses::SEEN_ON_NETWORK | statuses::SEEN_MULTIPLE_NODES => {
-                storage.mark_transaction_seen_on_network(txid).await
+                storage
+                    .mark_transaction_seen_on_network_by(txid, PROVIDER_ARCADE_V2)
+                    .await
             }
             statuses::MINED => {
                 // Ensure spendability even if we never saw SEEN_ON_NETWORK.
-                let updated = storage.mark_transaction_seen_on_network(txid).await?;
+                let updated = storage
+                    .mark_transaction_seen_on_network_by(txid, PROVIDER_ARCADE_V2)
+                    .await?;
 
                 if let Some((merkle_path, block_height, block_hash)) = inline_proof_material(ev) {
                     match storage

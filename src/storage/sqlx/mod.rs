@@ -33,6 +33,7 @@
 
 mod abort_action;
 mod beef_verification;
+mod broadcast_seen;
 mod create_action;
 mod internalize_action;
 mod process_action;
@@ -43,6 +44,9 @@ pub use crate::storage::broadcast::{
     classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome,
 };
 pub use beef_verification::{verify_beef_merkle_proofs, verify_txid_merkle_proof};
+pub use broadcast_seen::{
+    SqlxBroadcastMemory, MIGRATION_002_BROADCAST_SEEN_NAME, MIGRATION_002_BROADCAST_SEEN_SQL,
+};
 pub use storage_sqlx::{
     RetireOutcome, StorageSqlx, UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT,
     DEFAULT_MAX_OUTPUT_SCRIPT,
