@@ -415,7 +415,29 @@ impl Arc {
     ///
     /// ARC accepts BEEF v1 format. If the beef is v2 and can be downgraded,
     /// it will be converted automatically.
+    /// Broadcast a BEEF and log how long the ARC round trip took (info level):
+    /// the time a caller waits on `createAction` is mostly this, so it must be
+    /// observable in a served wallet's log without a debugger.
     pub async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
+        let started = std::time::Instant::now();
+        let result = self.post_beef_inner(beef, txids).await;
+        let outcome = match &result {
+            Ok(r) => r.status.clone(),
+            Err(_) => "error".to_string(),
+        };
+        tracing::info!(
+            name = %self.name,
+            subject = %txids.last().cloned().unwrap_or_default(),
+            beef_bytes = beef.len(),
+            txs = txids.len(),
+            http_ms = started.elapsed().as_millis(),
+            outcome = %outcome,
+            "ARC submit timing"
+        );
+        result
+    }
+
+    async fn post_beef_inner(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
         let mut result = PostBeefResult {
             name: self.name.clone(),
             status: "success".to_string(),
