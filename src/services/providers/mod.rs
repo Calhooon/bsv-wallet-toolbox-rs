@@ -16,8 +16,9 @@ pub mod whatsonchain;
 
 pub use arc::{Arc, ArcConfig};
 pub use arcade::{
-    arcade_status_rank, beef_to_ef_batch, is_fatal_status, Arcade, ArcadeConfig, ArcadeSseClient,
-    ArcadeStatusEvent, ArcadeTxInfo, SseEvent, SseFrameParser, ARCADE_V2_MAINNET,
+    arcade_status_rank, beef_to_ef_batch, beef_to_ef_batch_skipping, is_fatal_status,
+    missing_parent_hint, Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent, ArcadeTxInfo,
+    EfBatch, EfBatchEntry, SseEvent, SseFrameParser, ARCADE_V2_MAINNET,
 };
 pub use bhs::{BhsConfig, BlockHeaderService};
 pub use bitails::{Bitails, BitailsConfig};

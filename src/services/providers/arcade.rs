@@ -35,10 +35,10 @@
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use crate::services::traits::{PostBeefResult, PostTxResultForTxid};
+use crate::services::traits::{PostBeefDelivery, PostBeefResult, PostTxResultForTxid};
 use crate::{Error, Result};
 
 /// Live Arcade V2 mainnet endpoint (verified 2026-07-10).
@@ -225,7 +225,38 @@ impl Arcade {
     /// - Nothing unproven → nothing to submit (success, noted).
     ///
     /// Arcade responds `202` and dedupes ancestors (`duplicates` count).
+    ///
+    /// The full batch every time (no seen set); see [`Arcade::post_beef_seen`]
+    /// for the reduced send a broadcast memory enables.
     pub async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
+        self.post_beef_seen(beef, txids, &HashSet::new())
+            .await
+            .map(|(result, _)| result)
+    }
+
+    /// [`Arcade::post_beef`] with this Arcade's seen set (txids it already
+    /// accepted or reported, or that are mined, from a
+    /// [`BroadcastMemory`](crate::services::BroadcastMemory)): unproven
+    /// transactions in `seen` stay out of the EF batch, the subject is always
+    /// sent ([`beef_to_ef_batch_skipping`]).
+    ///
+    /// If Arcade refuses the reduced batch for what reads as a missing parent
+    /// (a 4xx whose text matches [`missing_parent_hint`], or a `REJECTED`
+    /// verdict, which is also how Arcade surfaces mempool orphans), the full
+    /// batch is sent ONCE more and the fallback is logged. The verdict
+    /// handling stays asynchronous (SSE / webhook / polling) exactly as for
+    /// a full submit.
+    ///
+    /// Returns the result plus the [`PostBeefDelivery`]: bytes actually sent,
+    /// whether the send was reduced, and every txid the batch handed Arcade
+    /// (all of them on a `202`; `/txs` duplicates are txids Arcade already
+    /// had).
+    pub async fn post_beef_seen(
+        &self,
+        beef: &[u8],
+        txids: &[String],
+        seen: &HashSet<String>,
+    ) -> Result<(PostBeefResult, PostBeefDelivery)> {
         let mut result = PostBeefResult {
             name: self.name.clone(),
             status: "success".to_string(),
@@ -233,13 +264,14 @@ impl Arcade {
             error: None,
             notes: Vec::new(),
         };
+        let mut delivery = PostBeefDelivery::default();
 
         // Timing is logged at info: where a wallet's broadcast spends its time
         // (EF conversion vs the Arcade round trip) is the number a caller
         // waits on, so it must be observable without a debugger.
         let submit_started = std::time::Instant::now();
-        let (efs, subject_txid) = match beef_to_ef_batch(beef) {
-            Ok(v) => v,
+        let batch = match beef_to_ef_batch_skipping(beef, seen) {
+            Ok(b) => b,
             Err(e) => {
                 // Can't convert: report a service error so the caller can fail
                 // over to a BEEF-capable provider.
@@ -260,11 +292,11 @@ impl Arcade {
                     block_height: None,
                     notes: vec![make_note(&self.name, "postBeefEfConversionError")],
                 });
-                return Ok(result);
+                return Ok((result, delivery));
             }
         };
 
-        if efs.is_empty() {
+        if batch.entries.is_empty() {
             // Every transaction in the BEEF is already proven — nothing to broadcast.
             result
                 .notes
@@ -283,34 +315,49 @@ impl Arcade {
                     notes: vec![make_note(&self.name, "postBeefAllProven")],
                 });
             }
-            return Ok(result);
+            return Ok((result, delivery));
         }
 
         let ef_ms = submit_started.elapsed().as_millis();
-        let ef_bytes: usize = efs.iter().map(Vec::len).sum();
-        let http_started = std::time::Instant::now();
-        let submit_outcome = if efs.len() == 1 {
-            self.post_single_ef(&efs[0], &subject_txid).await
-        } else {
-            self.post_ef_batch(&efs, &subject_txid).await
-        };
-        tracing::info!(
-            name = %self.name,
-            txid = %subject_txid,
-            txs = efs.len(),
-            bytes = ef_bytes,
-            ef_ms,
-            http_ms = http_started.elapsed().as_millis(),
-            outcome = ?submit_outcome.as_ref().map(|o| match o {
-                SubmitOutcome::Accepted { .. } => "accepted",
-                SubmitOutcome::Rejected { .. } => "rejected",
-                _ => "other",
-            }),
-            "Arcade submit timing"
-        );
+        delivery.reduced = !batch.skipped.is_empty();
+        let mut delivered = batch;
+        let mut submit_outcome = self
+            .submit_ef_batch(&delivered, ef_ms, delivery.reduced, &mut delivery)
+            .await;
+
+        if delivery.reduced && reads_as_missing_parent(&submit_outcome) {
+            match beef_to_ef_batch_skipping(beef, &HashSet::new()) {
+                Ok(full) => {
+                    tracing::warn!(
+                        name = %self.name,
+                        txid = %delivered.subject_txid,
+                        skipped = delivered.skipped.len(),
+                        refusal = %describe_outcome(&submit_outcome),
+                        "Arcade refused the reduced EF batch (missing parent?); retrying once with the full batch"
+                    );
+                    result
+                        .notes
+                        .push(make_note(&self.name, "postBeefFallbackFull"));
+                    delivery.fallback_full = true;
+                    submit_outcome = self.submit_ef_batch(&full, 0, false, &mut delivery).await;
+                    delivered = full;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        name = %self.name,
+                        txid = %delivered.subject_txid,
+                        error = %e,
+                        "Arcade: the full-batch fallback could not be built; reporting the reduced verdict"
+                    );
+                }
+            }
+        }
+        let subject_txid = delivered.subject_txid.clone();
 
         match submit_outcome {
             Ok(SubmitOutcome::Accepted { note }) => {
+                delivery.accepted_txids =
+                    delivered.entries.iter().map(|e| e.txid.clone()).collect();
                 result.notes.push(make_note(&self.name, &note));
                 let mut reported: Vec<String> = txids.to_vec();
                 if !reported.contains(&subject_txid) {
@@ -410,7 +457,42 @@ impl Arcade {
             }
         }
 
-        Ok(result)
+        Ok((result, delivery))
+    }
+
+    /// Submit one EF batch: a single EF to `POST /tx`, several as a binary
+    /// concat to `POST /txs`. Logs the submit timing at info and adds the
+    /// bytes sent to `delivery`.
+    async fn submit_ef_batch(
+        &self,
+        batch: &EfBatch,
+        ef_ms: u128,
+        reduced: bool,
+        delivery: &mut PostBeefDelivery,
+    ) -> Result<SubmitOutcome> {
+        let ef_bytes: usize = batch.entries.iter().map(|e| e.ef.len()).sum();
+        delivery.bytes_sent += ef_bytes;
+        let http_started = std::time::Instant::now();
+        let outcome = if batch.entries.len() == 1 {
+            self.post_single_ef(&batch.entries[0].ef, &batch.subject_txid)
+                .await
+        } else {
+            self.post_ef_batch(&batch.entries, &batch.subject_txid)
+                .await
+        };
+        tracing::info!(
+            name = %self.name,
+            txid = %batch.subject_txid,
+            txs = batch.entries.len(),
+            skipped = batch.skipped.len(),
+            reduced,
+            bytes = ef_bytes,
+            ef_ms,
+            http_ms = http_started.elapsed().as_millis(),
+            outcome = %describe_outcome(&outcome),
+            "Arcade submit timing"
+        );
+        outcome
     }
 
     /// Submit one EF binary to `POST /tx`.
@@ -433,6 +515,7 @@ impl Arcade {
                     name = %self.name,
                     txid = %data.txid,
                     tx_status = %data.tx_status,
+                    extra_info = ?data.extra_info,
                     "Arcade /tx response"
                 );
                 // Resubmission of a known tx returns its CURRENT status —
@@ -461,12 +544,16 @@ impl Arcade {
     }
 
     /// Submit multiple EF binaries as binary concat to `POST /txs`.
-    async fn post_ef_batch(&self, efs: &[Vec<u8>], subject_txid: &str) -> Result<SubmitOutcome> {
+    async fn post_ef_batch(
+        &self,
+        entries: &[EfBatchEntry],
+        subject_txid: &str,
+    ) -> Result<SubmitOutcome> {
         let url = format!("{}/txs", self.url);
-        let total_len: usize = efs.iter().map(|e| e.len()).sum();
+        let total_len: usize = entries.iter().map(|e| e.ef.len()).sum();
         let mut body = Vec::with_capacity(total_len);
-        for ef in efs {
-            body.extend_from_slice(ef);
+        for entry in entries {
+            body.extend_from_slice(&entry.ef);
         }
 
         let response = self
@@ -603,6 +690,28 @@ fn classify_http_error(prefix: &str, status: reqwest::StatusCode, body: String) 
 // BEEF → EF conversion
 // =============================================================================
 
+/// One transaction of an EF batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EfBatchEntry {
+    /// Transaction id.
+    pub txid: String,
+    /// The transaction in Extended Format (BRC-30).
+    pub ef: Vec<u8>,
+}
+
+/// The EF batch a BEEF converts to; see [`beef_to_ef_batch_skipping`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EfBatch {
+    /// EFs to submit, in dependency order (parents before children). The
+    /// subject, when unproven, is always last.
+    pub entries: Vec<EfBatchEntry>,
+    /// The txid of the BEEF's subject (last-sorted) transaction.
+    pub subject_txid: String,
+    /// Unproven transactions left out because they were in the skip set
+    /// (never the subject), in dependency order.
+    pub skipped: Vec<String>,
+}
+
 /// Convert a BEEF into Extended Format (BRC-30) binaries for Arcade V2.
 ///
 /// Arcade V2 only accepts EF — it rejects BEEF and cannot look up spent parent
@@ -617,6 +726,22 @@ fn classify_http_error(prefix: &str, status: reqwest::StatusCode, body: String) 
 /// subject (last-sorted) transaction. `efs` is empty when every transaction is
 /// already proven.
 pub fn beef_to_ef_batch(beef: &[u8]) -> Result<(Vec<Vec<u8>>, String)> {
+    let batch = beef_to_ef_batch_skipping(beef, &HashSet::new())?;
+    Ok((
+        batch.entries.into_iter().map(|e| e.ef).collect(),
+        batch.subject_txid,
+    ))
+}
+
+/// [`beef_to_ef_batch`] minus the unproven transactions in `skip`: the ones
+/// the target broadcaster has already accepted or seen (its
+/// [`BroadcastMemory`](crate::services::BroadcastMemory) seen set).
+///
+/// The skip applies at the "emit this EF" decision only: every transaction
+/// of the BEEF still goes into the source map, so a child of a skipped parent
+/// links its inputs and EF-encodes exactly as before. The subject (the
+/// last-sorted transaction) is ALWAYS emitted, even when it is in `skip`.
+pub fn beef_to_ef_batch_skipping(beef: &[u8], skip: &HashSet<String>) -> Result<EfBatch> {
     use bsv_rs::transaction::{Beef, Transaction};
 
     let mut beef = Beef::from_binary(beef)
@@ -626,7 +751,8 @@ pub fn beef_to_ef_batch(beef: &[u8]) -> Result<(Vec<Vec<u8>>, String)> {
 
     // txid → parsed transaction, for linking input sources one level deep.
     // Parsed BEEF transactions have no sources linked themselves, so the
-    // clones stay flat (no recursive blowup).
+    // clones stay flat (no recursive blowup). Skipped transactions stay in
+    // the map: their children still need them as sources.
     let mut tx_map: HashMap<String, Transaction> = HashMap::with_capacity(beef.txs.len());
     for btx in &beef.txs {
         if let Some(tx) = btx.tx() {
@@ -634,15 +760,24 @@ pub fn beef_to_ef_batch(beef: &[u8]) -> Result<(Vec<Vec<u8>>, String)> {
         }
     }
 
-    let mut efs = Vec::new();
-    let mut subject_txid = String::new();
+    let subject_txid = beef.txs.last().map(|btx| btx.txid()).unwrap_or_default();
+    let mut batch = EfBatch {
+        entries: Vec::new(),
+        subject_txid: subject_txid.clone(),
+        skipped: Vec::new(),
+    };
 
     for btx in &beef.txs {
         let txid = btx.txid();
-        subject_txid = txid.clone();
 
         if btx.has_proof() {
             // Already mined — provides source data for children, nothing to broadcast.
+            continue;
+        }
+
+        if txid != subject_txid && skip.contains(&txid) {
+            // The broadcaster already has it; its outputs still source children.
+            batch.skipped.push(txid);
             continue;
         }
 
@@ -673,10 +808,46 @@ pub fn beef_to_ef_batch(beef: &[u8]) -> Result<(Vec<Vec<u8>>, String)> {
         let ef = tx
             .to_ef()
             .map_err(|e| Error::ServiceError(format!("EF conversion for {}: {}", txid, e)))?;
-        efs.push(ef);
+        batch.entries.push(EfBatchEntry { txid, ef });
     }
 
-    Ok((efs, subject_txid))
+    Ok(batch)
+}
+
+/// Whether a broadcaster's refusal text reads as "I do not have the parent":
+/// it mentions `missing`, `parent`, `orphan` or `inputs` (case-insensitive).
+/// Drives the one-shot full-package fallback after a reduced send.
+pub fn missing_parent_hint(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    ["missing", "parent", "orphan", "inputs"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// Whether a reduced Arcade submit was refused for what reads as a missing
+/// parent: an HTTP rejection whose text matches [`missing_parent_hint`], or a
+/// `REJECTED` verdict (Arcade surfaces mempool orphans as `REJECTED`; a
+/// `DOUBLE_SPEND_ATTEMPTED` is never a parent problem).
+fn reads_as_missing_parent(outcome: &Result<SubmitOutcome>) -> bool {
+    match outcome {
+        Ok(SubmitOutcome::Rejected { detail, .. }) => missing_parent_hint(detail),
+        Ok(SubmitOutcome::Fatal {
+            tx_status,
+            double_spend,
+        }) => !double_spend && tx_status == statuses::REJECTED,
+        _ => false,
+    }
+}
+
+/// A one-word label for a submit outcome (logs).
+fn describe_outcome(outcome: &Result<SubmitOutcome>) -> &'static str {
+    match outcome {
+        Ok(SubmitOutcome::Accepted { .. }) => "accepted",
+        Ok(SubmitOutcome::Fatal { .. }) => "fatal",
+        Ok(SubmitOutcome::Rejected { .. }) => "rejected",
+        Ok(SubmitOutcome::ServiceError { .. }) => "service_error",
+        Err(_) => "error",
+    }
 }
 
 // =============================================================================
@@ -901,6 +1072,8 @@ struct ArcadeSubmitResponse {
     txid: String,
     #[serde(rename = "txStatus")]
     tx_status: String,
+    #[serde(rename = "extraInfo", default)]
+    extra_info: Option<String>,
 }
 
 /// Response to `POST /txs` (summary only — no per-tx results).

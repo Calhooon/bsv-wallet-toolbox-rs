@@ -144,6 +144,28 @@ pub trait WalletServices: Send + Sync {
     /// Post BEEF transaction to miners.
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>>;
 
+    /// Attach a [`BroadcastMemory`](crate::services::BroadcastMemory) so
+    /// `post_beef` can send each provider only what it has not already seen
+    /// and try the last accepting provider first.
+    ///
+    /// The default ignores the memory (a services backend that does not do
+    /// its own provider fan-out has nothing to reduce). `Services` overrides
+    /// it; the `Wallet`, the `Monitor` and `StorageSqlx::set_services` call
+    /// it with the storage's persisted memory.
+    fn set_broadcast_memory(
+        &self,
+        memory: std::sync::Arc<dyn crate::services::broadcast_memory::BroadcastMemory>,
+    ) {
+        let _ = memory;
+    }
+
+    /// The attached broadcast memory, if any.
+    fn broadcast_memory(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::services::broadcast_memory::BroadcastMemory>> {
+        None
+    }
+
     /// Get UTXO status for a script hash.
     ///
     /// # Arguments
@@ -459,6 +481,42 @@ pub struct GetMerklePathResult {
 // =============================================================================
 // Post BEEF Result
 // =============================================================================
+
+/// How a provider actually delivered one broadcast: what went over the wire
+/// and which txids the provider took. Feeds the per-broadcast log line and
+/// the [`BroadcastMemory`](crate::services::BroadcastMemory).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PostBeefDelivery {
+    /// The send omitted transactions the provider had already seen (EF of
+    /// the subject alone, or an EF batch of the unseen ancestors).
+    pub reduced: bool,
+    /// Bytes actually sent (all attempts, including a full-package
+    /// fallback).
+    pub bytes_sent: usize,
+    /// A reduced send was refused for what read as a missing parent and the
+    /// full package was sent once more.
+    pub fallback_full: bool,
+    /// txids the provider accepted in this delivery: the subject plus every
+    /// unproven transaction it took in the same package. Empty on failure.
+    pub accepted_txids: Vec<String>,
+}
+
+impl PostBeefDelivery {
+    /// A conventional full-package delivery: `bytes` sent, nothing omitted,
+    /// `accepted` recorded only when `result` is a success.
+    pub fn full_package(bytes: usize, result: &PostBeefResult, accepted: &[String]) -> Self {
+        Self {
+            reduced: false,
+            bytes_sent: bytes,
+            fallback_full: false,
+            accepted_txids: if result.is_success() {
+                accepted.to_vec()
+            } else {
+                Vec::new()
+            },
+        }
+    }
+}
 
 /// Result of posting a BEEF transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]

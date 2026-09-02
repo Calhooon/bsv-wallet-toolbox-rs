@@ -27,12 +27,20 @@
 //! let result = services.post_beef(&beef_bytes, &["txid..."]).await?;
 //! ```
 
+pub mod broadcast_memory;
 pub mod collection;
 pub mod mock;
 pub mod providers;
 #[allow(clippy::module_inception)]
 pub mod services;
 pub mod traits;
+
+pub use broadcast_memory::{
+    apply_sticky_provider_order, unproven_ancestors_in_beef, BroadcastMemory,
+    InMemoryBroadcastMemory, BROADCAST_PROVIDER_NETWORK, BROADCAST_STATUS_ACCEPTED,
+    BROADCAST_STATUS_MINED, BROADCAST_STATUS_SEEN, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2,
+    PROVIDER_BITAILS, PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
+};
 
 // Re-export Chain from chaintracks for convenience
 pub use crate::chaintracks::Chain;
@@ -41,9 +49,9 @@ pub use crate::chaintracks::Chain;
 pub use traits::{
     BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
     GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
-    GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult,
-    PostTxResultForTxid, ScriptHistoryItem, ServicesCallHistory, TxStatusDetail, UtxoDetail,
-    WalletServices,
+    GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefDelivery,
+    PostBeefResult, PostTxResultForTxid, ScriptHistoryItem, ServicesCallHistory, TxStatusDetail,
+    UtxoDetail, WalletServices,
 };
 
 pub use collection::{
@@ -51,10 +59,11 @@ pub use collection::{
     ServiceToCall,
 };
 pub use providers::{
-    arcade_status_rank, beef_to_ef_batch, is_fatal_status, Arc, ArcConfig, Arcade, ArcadeConfig,
-    ArcadeSseClient, ArcadeStatusEvent, ArcadeTxInfo, BhsConfig, Bitails, BitailsConfig,
-    BlockHeaderService, ChaintracksConfig, ChaintracksServiceClient, FallbackChainTracker,
-    SseEvent, SseFrameParser, WhatsOnChain, WhatsOnChainConfig, ARCADE_V2_MAINNET,
+    arcade_status_rank, beef_to_ef_batch, beef_to_ef_batch_skipping, is_fatal_status,
+    missing_parent_hint, Arc, ArcConfig, Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent,
+    ArcadeTxInfo, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
+    ChaintracksServiceClient, EfBatch, EfBatchEntry, FallbackChainTracker, SseEvent,
+    SseFrameParser, WhatsOnChain, WhatsOnChainConfig, ARCADE_V2_MAINNET,
 };
 pub use services::Services;
 

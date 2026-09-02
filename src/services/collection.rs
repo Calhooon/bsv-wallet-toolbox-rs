@@ -408,6 +408,30 @@ impl<S> ServiceCollection<S> {
         }
     }
 
+    /// Move a provider to the front of the list (prioritize). The relative
+    /// order of the other providers is preserved; an unknown name is a no-op.
+    pub fn move_to_first(&mut self, name: &str) {
+        if let Some(pos) = self.services.iter().position(|s| s.name == name) {
+            if pos == 0 {
+                return;
+            }
+            let service = self.services.remove(pos);
+            self.services.insert(0, service);
+
+            // Keep the index pointing at the same provider it did before.
+            if self.index == pos {
+                self.index = 0;
+            } else if self.index < pos {
+                self.index += 1;
+            }
+        }
+    }
+
+    /// Provider names in their current order.
+    pub fn provider_names(&self) -> Vec<&str> {
+        self.services.iter().map(|s| s.name.as_str()).collect()
+    }
+
     /// Record a successful call.
     pub fn add_call_success(&mut self, provider_name: &str, call: ServiceCall) {
         let h = self.get_or_create_history(provider_name);
@@ -659,6 +683,39 @@ mod tests {
             .map(|s| s.name.as_str())
             .collect();
         assert_eq!(names, vec!["provider2", "provider3", "provider1"]);
+    }
+
+    #[test]
+    fn test_service_collection_move_to_first() {
+        let mut collection = ServiceCollection::<String>::new("test")
+            .with("provider1", "service1".to_string())
+            .with("provider2", "service2".to_string())
+            .with("provider3", "service3".to_string());
+
+        collection.next(); // index 1 = provider2
+        collection.move_to_first("provider3");
+        assert_eq!(
+            collection.provider_names(),
+            vec!["provider3", "provider1", "provider2"]
+        );
+        // The current index still points at provider2.
+        assert_eq!(collection.current_name(), Some("provider2"));
+
+        // Already first / unknown: no-ops.
+        collection.move_to_first("provider3");
+        collection.move_to_first("nope");
+        assert_eq!(
+            collection.provider_names(),
+            vec!["provider3", "provider1", "provider2"]
+        );
+
+        // Moving the current provider first follows it.
+        collection.move_to_first("provider2");
+        assert_eq!(collection.current_name(), Some("provider2"));
+        assert_eq!(
+            collection.provider_names(),
+            vec!["provider2", "provider3", "provider1"]
+        );
     }
 
     #[test]
