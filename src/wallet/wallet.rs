@@ -1865,22 +1865,38 @@ where
             ));
         }
 
-        // Merge any client-provided unlocking scripts from args.spends
+        // Merge any client-provided unlocking scripts AND sequence numbers from
+        // args.spends. BRC-100 lets a signAction spend carry `sequenceNumber`;
+        // covenant spends (PUSHTX) grind nSequence so the preimage they signed
+        // is the one the network sees. Ignoring it here produced transactions
+        // whose covenant CHECKSIG failed ("Signature must be zero for failed
+        // CHECK(MULTI)SIG": the signed preimage carried the ground sequence,
+        // the broadcast bytes carried 0xffffffff). The sequence is patched into
+        // the raw bytes BEFORE signing so the wallet's own SIGHASH_ALL inputs
+        // commit to it too.
         let mut inputs = pending_tx.inputs.clone();
+        let mut raw_tx = pending_tx.raw_tx.clone();
         for (vin, spend) in &args.spends {
             if let Some(input) = inputs.iter_mut().find(|i| i.vin == *vin) {
                 if !spend.unlocking_script.is_empty() {
                     input.unlocking_script = Some(spend.unlocking_script.clone());
                 }
             }
+            if let Some(sequence) = spend.sequence_number {
+                raw_tx = crate::wallet::signer::set_input_sequence(&raw_tx, *vin, sequence)
+                    .map_err(|e| {
+                        bsv_rs::Error::WalletError(format!(
+                            "signAction spend {vin}: cannot set sequence {sequence:#x}: {e}"
+                        ))
+                    })?;
+            }
         }
 
         // Sign the transaction using the wallet signer
-        let signed_tx = match self.signer.sign_transaction(
-            &pending_tx.raw_tx,
-            &inputs,
-            &self.proto_wallet,
-        ) {
+        let signed_tx = match self
+            .signer
+            .sign_transaction(&raw_tx, &inputs, &self.proto_wallet)
+        {
             Ok(tx) => tx,
             Err(e) => {
                 // Signing failed - abort the transaction to release locked UTXOs

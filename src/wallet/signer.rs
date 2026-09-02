@@ -859,6 +859,42 @@ fn insert_unlocking_script(
     Ok(result)
 }
 
+/// Rewrite one input's nSequence in serialized transaction bytes (BRC-100
+/// `signAction` spends may carry `sequenceNumber`; covenant spends grind it).
+/// Everything else is copied byte for byte.
+pub fn set_input_sequence(tx_data: &[u8], input_index: u32, sequence: u32) -> Result<Vec<u8>> {
+    let (version, inputs, outputs, locktime) = parse_transaction(tx_data)?;
+    if input_index as usize >= inputs.len() {
+        return Err(Error::ValidationError(format!(
+            "input {input_index} out of range ({} inputs)",
+            inputs.len()
+        )));
+    }
+    let mut result = Vec::with_capacity(tx_data.len());
+    result.extend_from_slice(&version.to_le_bytes());
+    write_varint(&mut result, inputs.len() as u64);
+    for (i, input) in inputs.iter().enumerate() {
+        result.extend_from_slice(&input.txid);
+        result.extend_from_slice(&input.vout.to_le_bytes());
+        write_varint(&mut result, input.script.len() as u64);
+        result.extend_from_slice(&input.script);
+        let seq = if i == input_index as usize {
+            sequence
+        } else {
+            input.sequence
+        };
+        result.extend_from_slice(&seq.to_le_bytes());
+    }
+    write_varint(&mut result, outputs.len() as u64);
+    for output in &outputs {
+        result.extend_from_slice(&output.satoshis.to_le_bytes());
+        write_varint(&mut result, output.script.len() as u64);
+        result.extend_from_slice(&output.script);
+    }
+    result.extend_from_slice(&locktime.to_le_bytes());
+    Ok(result)
+}
+
 /// Writes a varint to the output buffer.
 fn write_varint(output: &mut Vec<u8>, value: u64) {
     if value < 0xfd {
@@ -1022,5 +1058,33 @@ mod tests {
         // RIPEMD160 of that = b472a266d0bd89c13706a4132ccfb16f7c3b9fcb
         let expected = hex::decode("b472a266d0bd89c13706a4132ccfb16f7c3b9fcb").unwrap();
         assert_eq!(result.to_vec(), expected);
+    }
+
+    #[test]
+    fn set_input_sequence_rewrites_only_the_target_input() {
+        // 2-input, 1-output skeleton: version 1, empty scripts, seq 0xffffffff.
+        let mut tx = Vec::new();
+        tx.extend_from_slice(&1u32.to_le_bytes());
+        tx.push(2);
+        for vout in 0u32..2 {
+            tx.extend_from_slice(&[0xabu8; 32]);
+            tx.extend_from_slice(&vout.to_le_bytes());
+            tx.push(0);
+            tx.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
+        }
+        tx.push(1);
+        tx.extend_from_slice(&1000u64.to_le_bytes());
+        tx.push(0);
+        tx.extend_from_slice(&0u32.to_le_bytes());
+
+        let out = set_input_sequence(&tx, 1, 0x1234_5678).unwrap();
+        assert_eq!(out.len(), tx.len());
+        let (_, inputs, _, _) = parse_transaction(&out).unwrap();
+        assert_eq!(inputs[0].sequence, 0xffff_ffff);
+        assert_eq!(inputs[1].sequence, 0x1234_5678);
+        // Everything but the 4 sequence bytes is identical.
+        let differing = out.iter().zip(tx.iter()).filter(|(a, b)| a != b).count();
+        assert!(differing > 0 && differing <= 4, "{differing} bytes differ");
+        assert!(set_input_sequence(&tx, 2, 1).is_err(), "out of range input");
     }
 }
