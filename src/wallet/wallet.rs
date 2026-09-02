@@ -1268,10 +1268,8 @@ where
         // itself and abort with "requires signing but has no
         // derivation_prefix", which broke every two-phase covenant spend
         // against this wallet while the same call succeeded on the TS stack.
-        let is_sign_action = is_sign_action(
-            sign_and_process,
-            args.inputs.as_deref().unwrap_or(&[]),
-        );
+        let is_sign_action =
+            is_sign_action(sign_and_process, args.inputs.as_deref().unwrap_or(&[]));
 
         let no_send = args
             .options
@@ -1412,7 +1410,7 @@ where
                     .unwrap_or_default(),
             };
 
-            let process_result = match self.storage.process_action(&auth, process_args).await {
+            let mut process_result = match self.storage.process_action(&auth, process_args).await {
                 Ok(result) => result,
                 Err(e) => {
                     // Processing failed - abort the transaction to release locked UTXOs
@@ -1624,6 +1622,11 @@ where
                 {
                     tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
                 }
+                mark_send_with_result_after_broadcast(
+                    &mut process_result.send_with_results,
+                    &txid,
+                    &broadcast_outcome,
+                );
 
                 // On permanent failure, return an error with details
                 // On service error or orphan mempool (transient), the tx stays in 'sending' for retry — not an error
@@ -1933,7 +1936,7 @@ where
             send_with,
         };
 
-        let process_result = match self.storage.process_action(&auth, process_args).await {
+        let mut process_result = match self.storage.process_action(&auth, process_args).await {
             Ok(result) => result,
             Err(e) => {
                 // Processing failed - abort the transaction to release locked UTXOs
@@ -2038,6 +2041,11 @@ where
             {
                 tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
             }
+            mark_send_with_result_after_broadcast(
+                &mut process_result.send_with_results,
+                &txid,
+                &broadcast_outcome,
+            );
 
             // On permanent failure, return an error with details
             match &broadcast_outcome {
@@ -2813,6 +2821,29 @@ fn compute_txid(raw_tx: &[u8]) -> String {
     let mut reversed = hash2.to_vec();
     reversed.reverse();
     hex::encode(reversed)
+}
+
+/// Reflect an immediate broadcast's classified outcome in the `sendWithResults`
+/// entry for `txid`.
+///
+/// `process_action` records the entry BEFORE the broadcast, as `sending`. Once
+/// the broadcaster has ACCEPTED the transaction the entry is `unproven` — the
+/// ts wallet-toolbox contract (`attemptToPostReqsToNetwork` sets `'unproven'`
+/// on success), and the signal a serving wallet (bsv-wallet-cli `/createAction`)
+/// uses to answer at once instead of re-verifying presence inline. A transient
+/// outcome (service error, orphan mempool: the tx may or may not be out) leaves
+/// it `sending`; permanent failures never reach a result at all — they return
+/// an error.
+fn mark_send_with_result_after_broadcast(
+    results: &mut Option<Vec<crate::storage::SendWithResult>>,
+    txid: &str,
+    outcome: &BroadcastOutcome,
+) {
+    if let (Some(results), BroadcastOutcome::Success) = (results.as_mut(), outcome) {
+        for r in results.iter_mut().filter(|r| r.txid == txid) {
+            r.status = "unproven".to_string();
+        }
+    }
 }
 
 /// Builds an unsigned transaction from StorageCreateActionResult.

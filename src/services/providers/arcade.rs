@@ -234,6 +234,10 @@ impl Arcade {
             notes: Vec::new(),
         };
 
+        // Timing is logged at info: where a wallet's broadcast spends its time
+        // (EF conversion vs the Arcade round trip) is the number a caller
+        // waits on, so it must be observable without a debugger.
+        let submit_started = std::time::Instant::now();
         let (efs, subject_txid) = match beef_to_ef_batch(beef) {
             Ok(v) => v,
             Err(e) => {
@@ -282,11 +286,28 @@ impl Arcade {
             return Ok(result);
         }
 
+        let ef_ms = submit_started.elapsed().as_millis();
+        let ef_bytes: usize = efs.iter().map(Vec::len).sum();
+        let http_started = std::time::Instant::now();
         let submit_outcome = if efs.len() == 1 {
             self.post_single_ef(&efs[0], &subject_txid).await
         } else {
             self.post_ef_batch(&efs, &subject_txid).await
         };
+        tracing::info!(
+            name = %self.name,
+            txid = %subject_txid,
+            txs = efs.len(),
+            bytes = ef_bytes,
+            ef_ms,
+            http_ms = http_started.elapsed().as_millis(),
+            outcome = ?submit_outcome.as_ref().map(|o| match o {
+                SubmitOutcome::Accepted { .. } => "accepted",
+                SubmitOutcome::Rejected { .. } => "rejected",
+                _ => "other",
+            }),
+            "Arcade submit timing"
+        );
 
         match submit_outcome {
             Ok(SubmitOutcome::Accepted { note }) => {
@@ -314,13 +335,17 @@ impl Arcade {
                 tx_status,
                 double_spend,
             }) => {
+                // Terminal-fatal verdict (REJECTED / DOUBLE_SPEND_ATTEMPTED):
+                // DEFINITIVE. `status` carries the explicit rejection marker so
+                // `classify_broadcast_results` fails the tx permanently instead
+                // of scheduling a retry that can never succeed.
                 result.status = "error".to_string();
                 result
                     .notes
                     .push(make_note(&self.name, "postBeefFatalStatus"));
                 result.txid_results.push(PostTxResultForTxid {
                     txid: subject_txid.clone(),
-                    status: "error".to_string(),
+                    status: crate::storage::broadcast::STATUS_REJECTED.to_string(),
                     double_spend,
                     orphan_mempool: false,
                     competing_txs: None,
@@ -329,6 +354,24 @@ impl Arcade {
                     block_hash: None,
                     block_height: None,
                     notes: vec![make_note(&self.name, "postBeefFatalStatus")],
+                });
+            }
+            Ok(SubmitOutcome::Rejected { code, detail }) => {
+                // HTTP-level rejection of the submission (465 fee too low, 4xx
+                // validation): DEFINITIVE, the same bytes can never be accepted.
+                result.status = "error".to_string();
+                result.notes.push(make_note(&self.name, "postBeefRejected"));
+                result.txid_results.push(PostTxResultForTxid {
+                    txid: subject_txid.clone(),
+                    status: code.to_string(),
+                    double_spend: false,
+                    orphan_mempool: false,
+                    competing_txs: None,
+                    data: Some(detail),
+                    service_error: false,
+                    block_hash: None,
+                    block_height: None,
+                    notes: vec![make_note(&self.name, "postBeefRejected")],
                 });
             }
             Ok(SubmitOutcome::ServiceError { detail }) => {
@@ -409,9 +452,7 @@ impl Arcade {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
                 tracing::warn!(name = %self.name, %status, body = %body, txid = %subject_txid, "Arcade /tx error");
-                Ok(SubmitOutcome::ServiceError {
-                    detail: format!("Arcade error: HTTP {} - {}", status, body),
-                })
+                Ok(classify_http_error("Arcade error", status, body))
             }
             Err(e) => Ok(SubmitOutcome::ServiceError {
                 detail: format!("Request failed: {}", e),
@@ -462,9 +503,9 @@ impl Arcade {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
                 tracing::warn!(name = %self.name, %status, body = %body, txid = %subject_txid, "Arcade /txs error");
-                Ok(SubmitOutcome::ServiceError {
-                    detail: format!("Arcade batch error: HTTP {} - {}", status, body),
-                })
+                // A batch rejection is the subject's rejection too: an invalid
+                // ancestor can never make the subject valid.
+                Ok(classify_http_error("Arcade batch error", status, body))
             }
             Err(e) => Ok(SubmitOutcome::ServiceError {
                 detail: format!("Request failed: {}", e),
@@ -524,13 +565,38 @@ enum SubmitOutcome {
     Accepted {
         note: String,
     },
+    /// A terminal-fatal transaction status in a 2xx body (REJECTED /
+    /// DOUBLE_SPEND_ATTEMPTED). Definitive.
     Fatal {
         tx_status: String,
         double_spend: bool,
     },
+    /// An HTTP rejection of the submission itself (465 fee too low, 4xx
+    /// validation — see `arc::status_codes::is_rejection`). Definitive.
+    Rejected {
+        code: u16,
+        detail: String,
+    },
+    /// A fault of the service or of our access to it. Transient.
     ServiceError {
         detail: String,
     },
+}
+
+/// Map a non-2xx submit response to a definitive rejection or a transient
+/// service error, by the same code table classic ARC uses.
+fn classify_http_error(prefix: &str, status: reqwest::StatusCode, body: String) -> SubmitOutcome {
+    let code = status.as_u16();
+    if crate::services::providers::arc::status_codes::is_rejection(code) {
+        SubmitOutcome::Rejected {
+            code,
+            detail: format!("{} rejected: HTTP {} - {}", prefix, status, body),
+        }
+    } else {
+        SubmitOutcome::ServiceError {
+            detail: format!("{}: HTTP {} - {}", prefix, status, body),
+        }
+    }
 }
 
 // =============================================================================

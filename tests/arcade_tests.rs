@@ -322,6 +322,111 @@ mod arcade_submit {
             "DOUBLE_SPEND_ATTEMPTED must set double_spend"
         );
         assert!(!r.service_error, "fatal verdict is not a service error");
+        // Definitive: classifies as a (chain-verified) DoubleSpend, never a retry.
+        assert!(bsv_wallet_toolbox_rs::storage::is_definitive_rejection(r));
+        let outcome =
+            bsv_wallet_toolbox_rs::classify_broadcast_results(std::slice::from_ref(&result));
+        assert!(
+            matches!(
+                outcome,
+                bsv_wallet_toolbox_rs::BroadcastOutcome::DoubleSpend { .. }
+            ),
+            "got {:?}",
+            outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn fatal_rejected_status_is_a_definitive_rejection() {
+        let (beef, _parent_txid, child_txid) = build_proven_parent_beef();
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/tx")
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"txid":"{}","status":202,"txStatus":"REJECTED"}}"#,
+                child_txid
+            ))
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let result = arcade
+            .post_beef(&beef, std::slice::from_ref(&child_txid))
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, "error");
+        let r = &result.txid_results[0];
+        assert_eq!(r.status, "rejected");
+        assert!(!r.double_spend);
+        assert!(!r.service_error);
+        let outcome =
+            bsv_wallet_toolbox_rs::classify_broadcast_results(std::slice::from_ref(&result));
+        assert!(
+            matches!(
+                outcome,
+                bsv_wallet_toolbox_rs::BroadcastOutcome::InvalidTx { .. }
+            ),
+            "REJECTED must be a permanent failure, got {:?}",
+            outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn http_465_fee_too_low_is_a_definitive_rejection() {
+        let (beef, _parent_txid, child_txid) = build_proven_parent_beef();
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/tx")
+            .with_status(465)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"type":"error","title":"Fee too low","status":465}"#)
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let result = arcade.post_beef(&beef, &[child_txid]).await.unwrap();
+
+        assert_eq!(result.status, "error");
+        let r = &result.txid_results[0];
+        assert_eq!(r.status, "465");
+        assert!(!r.service_error, "465 is not retryable");
+        assert!(r.data.as_deref().unwrap_or("").contains("465"));
+        let outcome =
+            bsv_wallet_toolbox_rs::classify_broadcast_results(std::slice::from_ref(&result));
+        assert!(
+            matches!(
+                outcome,
+                bsv_wallet_toolbox_rs::BroadcastOutcome::InvalidTx { .. }
+            ),
+            "got {:?}",
+            outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_http_rejection_is_definitive_for_the_subject() {
+        // Two unproven txs go through `/txs`; a 4xx validation rejection of the
+        // batch is the subject's rejection too.
+        let (beef, _root, _parent, child_txid) = build_three_level_beef();
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/txs")
+            .with_status(422)
+            .with_body("unprocessable")
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let result = arcade.post_beef(&beef, &[child_txid]).await.unwrap();
+        let r = &result.txid_results[0];
+        assert_eq!(r.status, "422");
+        assert!(!r.service_error);
     }
 
     #[tokio::test]

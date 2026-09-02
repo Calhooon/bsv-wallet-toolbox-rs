@@ -42,10 +42,13 @@ pub mod client;
 pub use traits::*;
 
 // Re-export storage implementations
-pub use broadcast::{classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome};
+pub use broadcast::{
+    classify_broadcast_results, is_definitive_rejection, validate_beef_for_broadcast,
+    BroadcastOutcome, STATUS_REJECTED,
+};
 
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
-pub use sqlx::StorageSqlx;
+pub use sqlx::{RetireOutcome, StorageSqlx};
 
 #[cfg(feature = "remote")]
 pub use client::StorageClient;

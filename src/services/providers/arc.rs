@@ -34,6 +34,25 @@ pub mod status_codes {
     pub const FEE_TOO_LOW: u16 = 465;
     /// Cumulative fee validation failed.
     pub const CUMULATIVE_FEE_FAILED: u16 = 473;
+
+    /// Whether an HTTP status from an ARC-family broadcaster (classic ARC,
+    /// Arcade V2) is a DEFINITIVE rejection of the submitted transaction, as
+    /// opposed to a transient fault of the service or of our access to it.
+    ///
+    /// Definitive (re-submitting the same bytes can never succeed):
+    /// * `400` bad request / `422` unprocessable — the submission itself was
+    ///   rejected at validation;
+    /// * `460..=469` — ARC's transaction-level rejections: not extended format,
+    ///   unlocking scripts, inputs, malformed, outputs, fees (465), conflicts,
+    ///   BEEF validation, merkle roots;
+    /// * `471..=473` — frozen (policy / consensus) and cumulative-fee failures.
+    ///
+    /// Transient (kept for retry through `SendWaitingTask`): `401`/`403`
+    /// (our credentials), `404` (route), `408`/`429` (load), `409` (ARC's
+    /// generic error, ambiguous), `413` (this provider's size limit), `5xx`.
+    pub fn is_rejection(code: u16) -> bool {
+        matches!(code, 400 | 422 | 460..=469 | 471..=473)
+    }
 }
 
 /// Configuration for ARC provider.
@@ -317,17 +336,52 @@ impl Arc {
             Ok(resp) => {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
+                let code = status.as_u16();
 
-                let error_msg = match status.as_u16() {
+                let error_msg = match code {
                     status_codes::NOT_EXTENDED_FORMAT => {
                         "ARC expects transaction in extended format".to_string()
                     }
                     status_codes::FEE_TOO_LOW | status_codes::CUMULATIVE_FEE_FAILED => {
-                        "ARC rejected transaction: fee too low".to_string()
+                        format!(
+                            "ARC rejected transaction: fee too low (HTTP {}) - {}",
+                            code, body
+                        )
                     }
                     401 | 403 => "ARC: unauthorized".to_string(),
+                    c if status_codes::is_rejection(c) => {
+                        format!("ARC rejected transaction: HTTP {} - {}", status, body)
+                    }
                     _ => format!("ARC error: HTTP {} - {}", status, body),
                 };
+
+                // A transaction-level rejection (465 fee too low, 461 script,
+                // 462 inputs, ...) is DEFINITIVE: the same bytes can never be
+                // accepted, so it must not be reported as a transient
+                // `service_error` that `classify_broadcast_results` turns into a
+                // phantom "will retry" success. The numeric code goes in
+                // `status` so the classifier (and any log) sees exactly why.
+                if status_codes::is_rejection(code) {
+                    tracing::warn!(
+                        name = %self.name,
+                        txid = %txid,
+                        code,
+                        body = %body,
+                        "ARC definitively rejected the transaction"
+                    );
+                    return Ok(PostTxResultForTxid {
+                        txid,
+                        status: code.to_string(),
+                        double_spend: false,
+                        orphan_mempool: false,
+                        competing_txs: None,
+                        data: Some(error_msg),
+                        service_error: false,
+                        block_hash: None,
+                        block_height: None,
+                        notes: vec![make_note(&self.name, "postRawTxRejected")],
+                    });
+                }
 
                 Ok(PostTxResultForTxid {
                     txid,

@@ -443,18 +443,29 @@ pub async fn create_action_internal(
     let derivation_prefix = random_derivation(16);
 
     // A caller-complete transaction — every provided input already carries a full
-    // unlocking script — is byte-frozen: the caller signed it (SIGHASH_ALL) and/or
-    // it carries an OP_PUSH_TX covenant preimage that commits the exact outputs.
-    // It MUST be broadcast verbatim. `generate_change` otherwise runs
-    // unconditionally and, to replenish the change-UTXO pool (target_net_count) or
-    // recapture surplus, appends a funding input + a change output — changing the
-    // tx shape, which invalidates every provided signature (consensus NULLFAIL,
-    // ARC 461) and breaks any covenant preimage. This is the path BRC-100 clients
-    // use to broadcast a pre-assembled, fully-signed multi-party covenant spend
-    // (e.g. a 2-of-2 funding/commit/settle): createAction must honor the exact
-    // bytes — no extra inputs, no change, no re-signing (the signer already skips
-    // inputs that carry an unlocking script). Mirrors "exact funding ⇒ no change"
-    // in the TS/Go references, made explicit so pool-replenishment can't intrude.
+    // unlocking script — is decided by two questions (see `caller_complete_plan`):
+    //
+    // 1. Is it SELF-SUFFICIENT (inputs cover outputs plus the fee the caller
+    //    fixed as inputs − outputs)? Then it is byte-frozen and MUST be broadcast
+    //    verbatim: no funding input, no change, no re-signing (the signer already
+    //    skips inputs that carry an unlocking script). This is the b23a960 path —
+    //    a SIGHASH_ALL multi-party covenant spend, an OP_PUSH_TX commit/settle —
+    //    where appending anything invalidates every provided signature
+    //    (consensus NULLFAIL, ARC 461) and breaks the covenant preimage.
+    // 2. Otherwise, do the provided SIGNATURES permit funding? An input signed
+    //    ANYONECANPAY|SINGLE (0xc3) or ANYONECANPAY|NONE (0xc2) commits only to
+    //    its own input (and, for SINGLE, its same-index output) — precisely so a
+    //    wallet can ADD a funding input and a change output afterwards. That is
+    //    the Zanaadu V3 publish shape (one covenant input signed 0xc3, 1 sat in,
+    //    1,001 sats out: the wallet pays the 1,000-sat platform fee plus the
+    //    miner fee), and it is what MetaNet's TS toolbox does with it. When every
+    //    provided input is such an input (or carries no signature at all), the
+    //    shortfall is funded by `generate_change`, which only APPENDS: provided
+    //    inputs keep their indices and order, provided outputs keep theirs, so
+    //    every own-index commitment still verifies. A SIGHASH_ALL input
+    //    (0x41/0x43, or ALL|ANYONECANPAY 0xc1 whose output set is sealed) can
+    //    never be funded — adding an input or an output breaks it — so a
+    //    shortfall there stays a hard InsufficientFunds, exactly as before.
     let caller_complete = args
         .inputs
         .as_ref()
@@ -464,16 +475,53 @@ pub async fn create_action_internal(
     let change_result = if caller_complete {
         let in_sats: u64 = extended_inputs.iter().map(|i| i.satoshis).sum();
         let out_sats: u64 = extended_outputs.iter().map(|o| o.satoshis).sum();
-        if in_sats < out_sats {
-            return Err(Error::InsufficientFunds {
-                needed: out_sats,
-                available: in_sats,
-            });
-        }
-        // Inputs - outputs is the (caller-fixed) miner fee. No change.
-        GenerateChangeResult {
-            allocated_change_inputs: Vec::new(),
-            change_outputs: Vec::new(),
+        let fundable = caller_inputs_permit_funding(args.inputs.as_deref().unwrap_or(&[]));
+        let fee_required = caller_fixed_fee_required(&params);
+        match caller_complete_plan(in_sats, out_sats, fee_required, fundable) {
+            CallerCompletePlan::Verbatim => {
+                // Inputs - outputs is the (caller-fixed) miner fee. No change.
+                tracing::debug!(
+                    in_sats,
+                    out_sats,
+                    fundable,
+                    "caller-complete tx is self-sufficient — broadcasting verbatim (no funding, no change)"
+                );
+                GenerateChangeResult {
+                    allocated_change_inputs: Vec::new(),
+                    change_outputs: Vec::new(),
+                }
+            }
+            CallerCompletePlan::Unfundable => {
+                tracing::warn!(
+                    in_sats,
+                    out_sats,
+                    "caller-complete tx has a shortfall but every provided input is signed \
+                     SIGHASH_ALL (no ANYONECANPAY): the wallet cannot add a funding input \
+                     without invalidating the caller's signatures"
+                );
+                return Err(Error::InsufficientFunds {
+                    needed: out_sats,
+                    available: in_sats,
+                });
+            }
+            CallerCompletePlan::Fund => {
+                tracing::debug!(
+                    in_sats,
+                    out_sats,
+                    fee_required,
+                    "caller-complete tx signed ANYONECANPAY has a shortfall — appending a funding input and change"
+                );
+                generate_change(
+                    &mut tx,
+                    user_id,
+                    change_basket.basket_id,
+                    transaction_id,
+                    &params,
+                    &derivation_prefix,
+                    is_delayed,
+                )
+                .await?
+            }
         }
     } else {
         generate_change(
@@ -1338,6 +1386,193 @@ async fn insert_output(
     .await?;
 
     Ok(result.last_insert_rowid())
+}
+
+// =============================================================================
+// Caller-complete funding rule
+// =============================================================================
+
+/// What `create_action` does with a caller-complete transaction (every provided
+/// input already carries a full unlocking script).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallerCompletePlan {
+    /// Self-sufficient: broadcast the caller's bytes verbatim. No funding input,
+    /// no change output. `inputs − outputs` is the miner fee the caller fixed.
+    Verbatim,
+    /// Short of funds, but every provided signature permits the wallet to append
+    /// inputs and outputs: run `generate_change` to fund the shortfall (and the
+    /// miner fee) and to collect change. Provided inputs and outputs keep their
+    /// indices and order.
+    Fund,
+    /// Short of funds and at least one provided signature commits to the whole
+    /// transaction: appending anything would invalidate it, so the shortfall is
+    /// a hard `InsufficientFunds`.
+    Unfundable,
+}
+
+/// The rule, as a pure function.
+///
+/// * `fee_required` is the wallet's own fee for the transaction AS PROVIDED
+///   (provided inputs and outputs only), so a fundable transaction whose surplus
+///   is below it gets a funding input instead of a "fee too low" rejection.
+/// * A transaction whose signatures forbid funding is self-sufficient whenever
+///   inputs cover outputs: the fee is the caller's to fix, not ours to judge.
+fn caller_complete_plan(
+    in_sats: u64,
+    out_sats: u64,
+    fee_required: u64,
+    fundable: bool,
+) -> CallerCompletePlan {
+    let covers_outputs = in_sats >= out_sats;
+    let self_sufficient = covers_outputs && (!fundable || in_sats - out_sats >= fee_required);
+    if self_sufficient {
+        CallerCompletePlan::Verbatim
+    } else if fundable {
+        CallerCompletePlan::Fund
+    } else {
+        CallerCompletePlan::Unfundable
+    }
+}
+
+/// The miner fee the wallet would require for the transaction exactly as the
+/// caller provided it (its fixed inputs and outputs only, no change).
+fn caller_fixed_fee_required(params: &GenerateChangeParams) -> u64 {
+    let input_script_lengths: Vec<u32> = params
+        .fixed_inputs
+        .iter()
+        .map(|i| i.unlocking_script_length)
+        .collect();
+    let output_script_lengths: Vec<u32> = params
+        .fixed_outputs
+        .iter()
+        .map(|o| o.locking_script_length)
+        .collect();
+    let size = calculate_transaction_size(&input_script_lengths, &output_script_lengths);
+    (size * params.fee_rate).div_ceil(1000)
+}
+
+/// Whether every caller-provided input's signatures allow the wallet to append
+/// its own funding inputs and change outputs. Empty input lists are not
+/// caller-complete and are never "fundable" through this path.
+fn caller_inputs_permit_funding(inputs: &[bsv_rs::wallet::CreateActionInput]) -> bool {
+    !inputs.is_empty()
+        && inputs.iter().all(|input| {
+            input
+                .unlocking_script
+                .as_deref()
+                .map(|script| input_commitment(script) != InputCommitment::WholeTx)
+                .unwrap_or(false)
+        })
+}
+
+/// Sighash flag bits of the byte appended to every BSV signature.
+const SIGHASH_BASE_MASK: u8 = 0x1f;
+const SIGHASH_ALL: u8 = 0x01;
+const SIGHASH_NONE: u8 = 0x02;
+const SIGHASH_SINGLE: u8 = 0x03;
+const SIGHASH_ANYONECANPAY: u8 = 0x80;
+
+/// What the signatures in a caller-provided unlocking script commit to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputCommitment {
+    /// A signature commits to the whole transaction: SIGHASH_ALL without
+    /// ANYONECANPAY commits to every input and output; ALL|ANYONECANPAY commits
+    /// to every output. Appending a funding input or a change output breaks it.
+    WholeTx,
+    /// Every signature carries ANYONECANPAY with base NONE or SINGLE: it commits
+    /// only to its own input (and, for SINGLE, the output at its own index).
+    /// Inputs and outputs appended AFTER the provided ones leave it valid.
+    OwnOnly,
+    /// No signature in the script (a hash puzzle, OP_TRUE, bare data): nothing
+    /// constrains the transaction shape.
+    Unconstrained,
+}
+
+/// Classify a caller-provided unlocking script by the sighash flags of the DER
+/// signatures it pushes. Position-independent, so it covers P2PKH
+/// (`<sig> <pubkey>`), multisig and OP_PUSH_TX covenant unlocks alike.
+fn input_commitment(unlocking_script: &[u8]) -> InputCommitment {
+    let mut saw_signature = false;
+    for push in script_pushes(unlocking_script) {
+        let Some(sighash) = der_signature_sighash(push) else {
+            continue;
+        };
+        saw_signature = true;
+        let anyone_can_pay = sighash & SIGHASH_ANYONECANPAY != 0;
+        if !anyone_can_pay || sighash & SIGHASH_BASE_MASK == SIGHASH_ALL {
+            return InputCommitment::WholeTx;
+        }
+    }
+    if saw_signature {
+        InputCommitment::OwnOnly
+    } else {
+        InputCommitment::Unconstrained
+    }
+}
+
+/// The data pushes of a script, in order: direct pushes (0x01..0x4b) and
+/// OP_PUSHDATA1/2/4. Every other opcode carries no payload and is skipped.
+/// Stops at the first push that runs past the end of the script.
+fn script_pushes(script: &[u8]) -> Vec<&[u8]> {
+    let mut pushes = Vec::new();
+    let mut i = 0usize;
+    while i < script.len() {
+        let op = script[i];
+        i += 1;
+        let len = match op {
+            0x01..=0x4b => op as usize,
+            0x4c => {
+                let Some(&n) = script.get(i) else { break };
+                i += 1;
+                n as usize
+            }
+            0x4d => {
+                let Some(bytes) = script.get(i..i + 2) else {
+                    break;
+                };
+                i += 2;
+                u16::from_le_bytes([bytes[0], bytes[1]]) as usize
+            }
+            0x4e => {
+                let Some(bytes) = script.get(i..i + 4) else {
+                    break;
+                };
+                i += 4;
+                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
+            }
+            _ => continue,
+        };
+        let Some(data) = script.get(i..i + len) else {
+            break;
+        };
+        pushes.push(data);
+        i += len;
+    }
+    pushes
+}
+
+/// If `data` is `<DER signature><sighash byte>` (`0x30 len 0x02 rlen r 0x02
+/// slen s flags` with a valid base type), return the sighash byte.
+fn der_signature_sighash(data: &[u8]) -> Option<u8> {
+    let n = data.len();
+    // 8-byte minimal DER body (1-byte r and s) .. 72-byte maximal (33 + 33), plus flags.
+    if !(9..=73).contains(&n) || data[0] != 0x30 || data[1] as usize != n - 3 || data[2] != 0x02 {
+        return None;
+    }
+    let r_len = data[3] as usize;
+    let s_tag = 4 + r_len;
+    if s_tag + 1 >= n - 1 || data[s_tag] != 0x02 {
+        return None;
+    }
+    let s_len = data[s_tag + 1] as usize;
+    if s_tag + 2 + s_len != n - 1 {
+        return None;
+    }
+    let flags = data[n - 1];
+    match flags & SIGHASH_BASE_MASK {
+        SIGHASH_ALL | SIGHASH_NONE | SIGHASH_SINGLE => Some(flags),
+        _ => None,
+    }
 }
 
 // =============================================================================
@@ -5777,5 +6012,471 @@ mod tests {
             !has_proof,
             "Missing tx data (None) must set has_proof = false, allowing stored BEEF merge"
         );
+    }
+
+    // =========================================================================
+    // Caller-complete funding rule (sighash-aware)
+    // =========================================================================
+
+    /// A structurally valid `<DER sig><sighash>` push with 32-byte r and s.
+    fn fake_der_signature(sighash: u8) -> Vec<u8> {
+        let mut sig = vec![0x30, 0x44, 0x02, 0x20];
+        sig.extend(std::iter::repeat_n(0x11u8, 32));
+        sig.extend([0x02, 0x20]);
+        sig.extend(std::iter::repeat_n(0x22u8, 32));
+        sig.push(sighash);
+        sig
+    }
+
+    /// `<sig> <pubkey>` — a P2PKH-shaped unlocking script signed with `sighash`.
+    fn p2pkh_unlock(sighash: u8) -> Vec<u8> {
+        let sig = fake_der_signature(sighash);
+        let mut script = vec![sig.len() as u8];
+        script.extend(sig);
+        script.push(33);
+        script.extend(std::iter::repeat_n(0x02u8, 33));
+        script
+    }
+
+    #[test]
+    fn test_der_signature_sighash_reads_the_trailing_flag_byte() {
+        assert_eq!(der_signature_sighash(&fake_der_signature(0x41)), Some(0x41));
+        assert_eq!(der_signature_sighash(&fake_der_signature(0xc3)), Some(0xc3));
+        // Minimal DER (1-byte r and s) + flags = 9 bytes.
+        assert_eq!(
+            der_signature_sighash(&[0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x43]),
+            Some(0x43)
+        );
+        // Not a signature: a pubkey, a hash, empty, wrong tags, bad base type.
+        let mut pubkey = vec![0x02u8];
+        pubkey.extend(std::iter::repeat_n(0xabu8, 32));
+        assert_eq!(der_signature_sighash(&pubkey), None);
+        assert_eq!(der_signature_sighash(&[0xaa; 32]), None);
+        assert_eq!(der_signature_sighash(&[]), None);
+        let mut wrong_len = fake_der_signature(0x41);
+        wrong_len[1] = 0x40;
+        assert_eq!(der_signature_sighash(&wrong_len), None);
+        assert_eq!(der_signature_sighash(&fake_der_signature(0x40)), None);
+        assert_eq!(der_signature_sighash(&fake_der_signature(0x44)), None);
+    }
+
+    #[test]
+    fn test_script_pushes_handles_every_push_encoding_and_stops_on_truncation() {
+        // direct push, OP_PUSHDATA1, OP_PUSHDATA2, an opcode, OP_0
+        let mut script = vec![0x02, 0xaa, 0xbb];
+        script.extend([0x4c, 0x01, 0xcc]);
+        script.extend([0x4d, 0x02, 0x00, 0xdd, 0xee]);
+        script.push(0xac); // OP_CHECKSIG
+        script.push(0x00); // OP_0
+        let pushes = script_pushes(&script);
+        assert_eq!(
+            pushes,
+            vec![&[0xaa, 0xbb][..], &[0xcc][..], &[0xdd, 0xee][..]]
+        );
+
+        // A push that claims more bytes than remain ends the walk.
+        let truncated = vec![0x01, 0xaa, 0x05, 0xbb];
+        assert_eq!(script_pushes(&truncated), vec![&[0xaa][..]]);
+        assert!(script_pushes(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_input_commitment_by_sighash() {
+        // SIGHASH_ALL|FORKID and ALL|FORKID|... commit to the whole tx.
+        assert_eq!(
+            input_commitment(&p2pkh_unlock(0x41)),
+            InputCommitment::WholeTx
+        );
+        assert_eq!(
+            input_commitment(&p2pkh_unlock(0x01)),
+            InputCommitment::WholeTx
+        );
+        // ALL|ANYONECANPAY seals the output set: still not fundable.
+        assert_eq!(
+            input_commitment(&p2pkh_unlock(0xc1)),
+            InputCommitment::WholeTx
+        );
+        // SINGLE|ANYONECANPAY|FORKID (the Zanaadu covenant) and NONE|ANYONECANPAY
+        // commit to their own input (+ own output) only.
+        assert_eq!(
+            input_commitment(&p2pkh_unlock(0xc3)),
+            InputCommitment::OwnOnly
+        );
+        assert_eq!(
+            input_commitment(&p2pkh_unlock(0xc2)),
+            InputCommitment::OwnOnly
+        );
+        assert_eq!(
+            input_commitment(&p2pkh_unlock(0x83)),
+            InputCommitment::OwnOnly
+        );
+        // A covenant unlock: preimage-like data pushes around the signature —
+        // position-independent detection.
+        let mut covenant = vec![0x4c, 0x60];
+        covenant.extend(std::iter::repeat_n(0x01u8, 0x60));
+        let sig = fake_der_signature(0xc3);
+        covenant.push(sig.len() as u8);
+        covenant.extend(sig);
+        covenant.push(0x51); // OP_1
+        assert_eq!(input_commitment(&covenant), InputCommitment::OwnOnly);
+        // Two signatures, one of them SIGHASH_ALL: the whole tx is committed.
+        let mut multisig = vec![0x00];
+        for flags in [0xc3u8, 0x41] {
+            let sig = fake_der_signature(flags);
+            multisig.push(sig.len() as u8);
+            multisig.extend(sig);
+        }
+        assert_eq!(input_commitment(&multisig), InputCommitment::WholeTx);
+        // No signature at all: nothing constrains the shape.
+        assert_eq!(input_commitment(&[0x51]), InputCommitment::Unconstrained);
+        assert_eq!(
+            input_commitment(&[0x04, 0xde, 0xad, 0xbe, 0xef]),
+            InputCommitment::Unconstrained
+        );
+        assert_eq!(input_commitment(&[]), InputCommitment::Unconstrained);
+    }
+
+    #[test]
+    fn test_caller_complete_plan_rule() {
+        use CallerCompletePlan::*;
+        // Self-sufficient, signatures forbid funding: verbatim whatever the fee.
+        assert_eq!(caller_complete_plan(5_000, 4_000, 100, false), Verbatim);
+        assert_eq!(caller_complete_plan(4_000, 4_000, 100, false), Verbatim);
+        // Shortfall, signatures forbid funding: hard insufficient funds.
+        assert_eq!(caller_complete_plan(1, 1_001, 100, false), Unfundable);
+        // Shortfall, signatures permit funding: fund it.
+        assert_eq!(caller_complete_plan(1, 1_001, 100, true), Fund);
+        // Fundable and the surplus covers our fee: verbatim (surplus = caller's fee).
+        assert_eq!(caller_complete_plan(5_000, 4_000, 100, true), Verbatim);
+        assert_eq!(caller_complete_plan(4_100, 4_000, 100, true), Verbatim);
+        // Fundable but the surplus is below our fee: fund rather than 465.
+        assert_eq!(caller_complete_plan(4_099, 4_000, 100, true), Fund);
+        assert_eq!(caller_complete_plan(4_000, 4_000, 100, true), Fund);
+    }
+
+    /// Seed a spendable, NON-change output (a covenant UTXO the caller will spend
+    /// with its own unlocking script). Returns the parent txid (hex).
+    async fn seed_custom_output(
+        storage: &StorageSqlx,
+        user_id: i64,
+        satoshis: i64,
+        locking_script: &[u8],
+        tag: &str,
+    ) -> String {
+        let now = Utc::now();
+        let txid = format!("{:0>64}", tag);
+        let raw_tx = seed_raw_tx();
+        let tx_result = sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
+            VALUES (?, 'completed', ?, 1, ?, 1, 0, 'Seed covenant transaction', ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(format!("seed_custom_{}", tag))
+        .bind(satoshis)
+        .bind(&txid)
+        .bind(&raw_tx)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        let transaction_id = tx_result.last_insert_rowid();
+
+        sqlx::query(
+            r#"
+            INSERT INTO outputs (
+                user_id, transaction_id, basket_id, vout, satoshis, locking_script,
+                txid, type, spendable, change, provided_by, purpose, output_description,
+                created_at, updated_at
+            )
+            VALUES (?, ?, NULL, 0, ?, ?, ?, 'custom', 1, 0, 'you', '', 'seeded covenant', ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(transaction_id)
+        .bind(satoshis)
+        .bind(locking_script)
+        .bind(&txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+
+        txid
+    }
+
+    fn covenant_input(txid: &str, unlocking_script: Vec<u8>) -> bsv_rs::wallet::CreateActionInput {
+        bsv_rs::wallet::CreateActionInput {
+            outpoint: bsv_rs::wallet::Outpoint::from_string(&format!("{}.0", txid)).unwrap(),
+            input_description: "covenant input".to_string(),
+            unlocking_script: Some(unlocking_script),
+            unlocking_script_length: None,
+            sequence_number: None,
+        }
+    }
+
+    fn p2pkh_output(satoshis: u64, description: &str) -> CreateActionOutput {
+        CreateActionOutput {
+            locking_script: hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac")
+                .unwrap(),
+            satoshis,
+            output_description: description.to_string(),
+            basket: None,
+            custom_instructions: None,
+            tags: None,
+        }
+    }
+
+    async fn caller_complete_storage() -> (StorageSqlx, i64) {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        (storage, user.user_id)
+    }
+
+    /// The Zanaadu V3 publish shape: ONE covenant input signed
+    /// SIGHASH_SINGLE|ANYONECANPAY|FORKID (0xc3), 1 sat in, 1,001 sats out. The
+    /// wallet must append a funding input and a change output, and must leave the
+    /// caller's input at vin 0 and outputs at vout 0/1 untouched.
+    #[tokio::test]
+    async fn test_caller_complete_anyonecanpay_shortfall_gets_funding_input_and_change() {
+        let (storage, user_id) = caller_complete_storage().await;
+        let covenant_lock = vec![0x51u8]; // OP_TRUE stand-in for the covenant script
+        let cov_txid = seed_custom_output(&storage, user_id, 1, &covenant_lock, "c0c3").await;
+        seed_change_output(&storage, user_id, 100_000).await;
+
+        let unlock = p2pkh_unlock(0xc3);
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "V3 publish".to_string(),
+            input_beef: None,
+            inputs: Some(vec![covenant_input(&cov_txid, unlock.clone())]),
+            outputs: Some(vec![
+                CreateActionOutput {
+                    locking_script: covenant_lock.clone(),
+                    satoshis: 1,
+                    output_description: "next covenant state".to_string(),
+                    basket: None,
+                    custom_instructions: None,
+                    tags: None,
+                },
+                p2pkh_output(1_000, "platform fee"),
+            ]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let result = create_action_internal(&storage, None, user_id, args)
+            .await
+            .expect("an ANYONECANPAY shortfall must be funded, not rejected");
+
+        // The caller's input stays first; the wallet's funding is appended after it.
+        assert_eq!(result.inputs[0].vin, 0);
+        assert_eq!(result.inputs[0].source_txid, cov_txid);
+        assert_eq!(result.inputs[0].source_vout, 0);
+        assert_eq!(result.inputs[0].source_satoshis, 1);
+        assert_eq!(result.inputs[0].provided_by, StorageProvidedBy::You);
+        assert_eq!(
+            result.inputs[0].unlocking_script_length as usize,
+            unlock.len()
+        );
+        assert!(
+            result.inputs.len() >= 2,
+            "a funding input must be appended, got {:?}",
+            result.inputs
+        );
+        for (i, input) in result.inputs.iter().enumerate().skip(1) {
+            assert_eq!(input.vin as usize, i);
+            assert_eq!(input.provided_by, StorageProvidedBy::Storage);
+        }
+
+        // The caller's outputs keep vout 0 and 1 byte-for-byte; change is appended.
+        assert_eq!(result.outputs[0].vout, 0);
+        assert_eq!(result.outputs[0].satoshis, 1);
+        assert_eq!(
+            result.outputs[0].locking_script,
+            hex::encode(&covenant_lock)
+        );
+        assert_eq!(result.outputs[1].vout, 1);
+        assert_eq!(result.outputs[1].satoshis, 1_000);
+        let change: Vec<_> = result
+            .outputs
+            .iter()
+            .filter(|o| o.purpose.as_deref() == Some("change"))
+            .collect();
+        assert!(!change.is_empty(), "a change output must be appended");
+        assert!(change.iter().all(|o| o.vout >= 2));
+
+        // Funded: inputs cover outputs plus a positive miner fee.
+        let in_total: u64 = result.inputs.iter().map(|i| i.source_satoshis).sum();
+        let out_total: u64 = result.outputs.iter().map(|o| o.satoshis).sum();
+        assert!(
+            in_total > out_total,
+            "in {} must exceed out {}",
+            in_total,
+            out_total
+        );
+        assert!(
+            in_total - out_total < 1_000,
+            "fee {} is implausibly large",
+            in_total - out_total
+        );
+    }
+
+    /// Same shortfall, but the caller signed SIGHASH_ALL|FORKID (0x41): the
+    /// signatures commit to every input and output, so funding is impossible and
+    /// the shortfall is a hard InsufficientFunds even though change is available.
+    #[tokio::test]
+    async fn test_caller_complete_sighash_all_shortfall_is_insufficient_funds() {
+        let (storage, user_id) = caller_complete_storage().await;
+        let cov_txid = seed_custom_output(&storage, user_id, 1, &[0x51], "a041").await;
+        seed_change_output(&storage, user_id, 100_000).await;
+
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "sealed shortfall".to_string(),
+            input_beef: None,
+            inputs: Some(vec![covenant_input(&cov_txid, p2pkh_unlock(0x41))]),
+            outputs: Some(vec![p2pkh_output(1_000, "payment")]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let err = create_action_internal(&storage, None, user_id, args)
+            .await
+            .expect_err("a SIGHASH_ALL shortfall cannot be funded");
+        assert!(
+            matches!(
+                err,
+                Error::InsufficientFunds {
+                    needed: 1_000,
+                    available: 1
+                }
+            ),
+            "got {:?}",
+            err
+        );
+
+        // Nothing was allocated: the change UTXO is still spendable.
+        let (spendable, spent_by): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT spendable, spent_by FROM outputs WHERE \"change\" = 1 AND satoshis = 100000",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(spendable, 1);
+        assert_eq!(spent_by, None);
+    }
+
+    /// The b23a960 regression: a fully SIGHASH_ALL 2-in/3-out transaction that
+    /// already covers its outputs is broadcast verbatim — no funding input and no
+    /// change output are injected even though change UTXOs are available.
+    #[tokio::test]
+    async fn test_caller_complete_sighash_all_self_sufficient_is_verbatim() {
+        let (storage, user_id) = caller_complete_storage().await;
+        let in_a = seed_custom_output(&storage, user_id, 30_000, &[0x51], "a1").await;
+        let in_b = seed_custom_output(&storage, user_id, 30_000, &[0x51], "b2").await;
+        seed_change_output(&storage, user_id, 100_000).await;
+
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "2-of-2 covenant settle".to_string(),
+            input_beef: None,
+            inputs: Some(vec![
+                covenant_input(&in_a, p2pkh_unlock(0x41)),
+                covenant_input(&in_b, p2pkh_unlock(0x41)),
+            ]),
+            outputs: Some(vec![
+                p2pkh_output(20_000, "party a"),
+                p2pkh_output(20_000, "party b"),
+                p2pkh_output(19_500, "party c"),
+            ]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let result = create_action_internal(&storage, None, user_id, args)
+            .await
+            .expect("self-sufficient caller-complete tx");
+        assert_eq!(result.inputs.len(), 2, "no funding input may be injected");
+        assert_eq!(result.outputs.len(), 3, "no change output may be injected");
+        assert!(result
+            .inputs
+            .iter()
+            .all(|i| i.provided_by == StorageProvidedBy::You));
+        assert!(result
+            .outputs
+            .iter()
+            .all(|o| o.purpose.as_deref() != Some("change")));
+        assert_eq!(result.inputs[0].source_txid, in_a);
+        assert_eq!(result.inputs[1].source_txid, in_b);
+    }
+
+    /// An ANYONECANPAY|SINGLE input whose surplus already covers the wallet's fee
+    /// is self-sufficient too: the surplus is the caller's chosen miner fee and
+    /// the bytes go out verbatim.
+    #[tokio::test]
+    async fn test_caller_complete_anyonecanpay_self_sufficient_is_verbatim() {
+        let (storage, user_id) = caller_complete_storage().await;
+        let cov_txid = seed_custom_output(&storage, user_id, 5_000, &[0x51], "c5c3").await;
+        seed_change_output(&storage, user_id, 100_000).await;
+
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "covenant close".to_string(),
+            input_beef: None,
+            inputs: Some(vec![covenant_input(&cov_txid, p2pkh_unlock(0xc3))]),
+            outputs: Some(vec![p2pkh_output(4_000, "payout")]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let result = create_action_internal(&storage, None, user_id, args)
+            .await
+            .unwrap();
+        assert_eq!(result.inputs.len(), 1);
+        assert_eq!(result.outputs.len(), 1);
+    }
+
+    /// An ANYONECANPAY|SINGLE input that covers its outputs but not the wallet's
+    /// miner fee is funded instead of being sent out to a "fee too low" rejection.
+    #[tokio::test]
+    async fn test_caller_complete_anyonecanpay_fee_gap_is_funded() {
+        let (storage, user_id) = caller_complete_storage().await;
+        let cov_txid = seed_custom_output(&storage, user_id, 1_001, &[0x51], "c1c3").await;
+        seed_change_output(&storage, user_id, 100_000).await;
+
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "zero-fee covenant".to_string(),
+            input_beef: None,
+            inputs: Some(vec![covenant_input(&cov_txid, p2pkh_unlock(0xc3))]),
+            outputs: Some(vec![p2pkh_output(1_000, "payment")]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let result = create_action_internal(&storage, None, user_id, args)
+            .await
+            .unwrap();
+        assert!(result.inputs.len() >= 2, "the fee gap must be funded");
+        assert_eq!(result.inputs[0].source_txid, cov_txid);
+        assert_eq!(result.outputs[0].vout, 0);
+        assert_eq!(result.outputs[0].satoshis, 1_000);
+        let in_total: u64 = result.inputs.iter().map(|i| i.source_satoshis).sum();
+        let out_total: u64 = result.outputs.iter().map(|o| o.satoshis).sum();
+        assert!(in_total > out_total);
     }
 }

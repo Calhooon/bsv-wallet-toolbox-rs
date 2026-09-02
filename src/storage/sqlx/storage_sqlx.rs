@@ -3063,6 +3063,47 @@ impl StorageSqlx {
 
         Ok(RetireOutcome::Retired { restored, kept })
     }
+
+    /// THE RELEASE RULE, addressed by txid — for a caller that learned AFTER the
+    /// broadcast that the transaction never reached the network (a serving
+    /// wallet's asynchronous presence verification coming back definitively
+    /// absent; a broadcaster's out-of-band fatal verdict).
+    ///
+    /// Same path, same guarantees as [`Self::retire_undeliverable_tx`]: the tx
+    /// is alive-checked first (known/mined ⇒ promoted, nothing released), then
+    /// each input is released ONLY on its own `services.is_utxo` verification,
+    /// the tx's own outputs go unspendable and the tx is `failed` with its req
+    /// at `req_status` (`"invalid"` for a dropped broadcast, `"doubleSpend"`
+    /// for a named competitor). The unfail canary keeps re-verifying `invalid`
+    /// reqs against the chain, so a false verdict is recoverable.
+    ///
+    /// Returns `Ok(None)` when no proven_tx_req exists for `txid` (nothing was
+    /// ever queued for the network under that id); nothing is touched then.
+    pub async fn retire_undeliverable_txid(
+        &self,
+        services: &dyn WalletServices,
+        txid: &str,
+        req_status: &str,
+    ) -> Result<Option<RetireOutcome>> {
+        let req: Option<(i64, i64)> =
+            sqlx::query_as("SELECT proven_tx_req_id, attempts FROM proven_tx_reqs WHERE txid = ?")
+                .bind(txid)
+                .fetch_optional(self.pool())
+                .await?;
+        let Some((proven_tx_req_id, attempts)) = req else {
+            return Ok(None);
+        };
+        self.retire_undeliverable_tx(
+            services,
+            txid,
+            proven_tx_req_id,
+            attempts.saturating_add(1),
+            req_status,
+            chrono::Utc::now(),
+        )
+        .await
+        .map(Some)
+    }
 }
 
 #[async_trait]
@@ -3624,12 +3665,17 @@ impl MonitorStorage for StorageSqlx {
                                 .any(|tr| tr.double_spend && !tr.orphan_mempool)
                         });
 
-                        // Check for definitive rejection (invalid tx, not just service error)
+                        // Check for definitive rejection (invalid tx, not just service error):
+                        // ARC/Arcade 4xx rejection codes and Arcade's fatal statuses
+                        // (`is_definitive_rejection`), plus the historical "46x"/"invalid"
+                        // status sniff. Routed to `retire_undeliverable_tx` below, which
+                        // alive-checks first and releases inputs only per-input verified.
                         let is_invalid = results_vec.iter().any(|r| {
                             r.txid_results.iter().any(|tr| {
-                                // ARC 46x codes = definitive tx rejection
-                                !tr.orphan_mempool
-                                    && (tr.status.contains("46") || tr.status.contains("invalid"))
+                                crate::storage::broadcast::is_definitive_rejection(tr)
+                                    || (!tr.orphan_mempool
+                                        && (tr.status.contains("46")
+                                            || tr.status.contains("invalid")))
                             })
                         });
 

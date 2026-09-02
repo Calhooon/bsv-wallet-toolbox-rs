@@ -149,17 +149,65 @@ async fn test_json_error_response() {
 
     let result = arc.post_beef(&beef, &txids).await.unwrap();
 
-    assert_eq!(result.status, "error");
+    // A 465 is a DEFINITIVE rejection of the transaction (the same bytes can
+    // never be accepted): not a `service_error`, and classified as a permanent
+    // InvalidTx — never a transient "will retry" that hands back a phantom txid.
+    assert!(!result.is_success());
     assert!(!result.txid_results.is_empty());
-    assert!(result.txid_results[0].service_error);
-    let data = result.txid_results[0].data.as_ref().unwrap();
+    let tr = &result.txid_results[0];
+    assert!(
+        !tr.service_error,
+        "465 fee-too-low must not be reported as a transient service error"
+    );
+    assert_eq!(tr.status, "465");
+    assert!(bsv_wallet_toolbox_rs::storage::is_definitive_rejection(tr));
+    let data = tr.data.as_ref().unwrap();
     assert!(
         data.contains("fee too low") || data.contains("Fee") || data.contains("465"),
         "Expected fee-related error, got: {}",
         data
     );
+    let outcome = bsv_wallet_toolbox_rs::classify_broadcast_results(std::slice::from_ref(&result));
+    assert!(
+        matches!(
+            outcome,
+            bsv_wallet_toolbox_rs::BroadcastOutcome::InvalidTx { .. }
+        ),
+        "465 must classify as a permanent InvalidTx, got {:?}",
+        outcome
+    );
 
     mock.assert_async().await;
+}
+
+// =============================================================================
+// Test 4b: transient HTTP faults from ARC stay retryable
+// =============================================================================
+
+#[tokio::test]
+async fn test_arc_transient_http_faults_stay_service_errors() {
+    for code in [401usize, 404, 409, 413, 429, 503] {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/v1/tx")
+            .with_status(code)
+            .with_body("nope")
+            .create_async()
+            .await;
+        let arc =
+            ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("testArc")).unwrap();
+        let result = arc
+            .post_beef(&[0x01, 0x00, 0x00, 0x00], &["d".repeat(64)])
+            .await
+            .unwrap();
+        let tr = &result.txid_results[0];
+        assert!(
+            tr.service_error,
+            "HTTP {} must stay a transient service error",
+            code
+        );
+        assert!(!bsv_wallet_toolbox_rs::storage::is_definitive_rejection(tr));
+    }
 }
 
 // =============================================================================
