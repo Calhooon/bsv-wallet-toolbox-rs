@@ -1054,20 +1054,29 @@ pub async fn update_transaction_status_after_broadcast_internal(
 
     match effective_outcome {
         BroadcastOutcome::Success => {
-            // Broadcast succeeded — update to unproven/unmined
-            sqlx::query("UPDATE transactions SET status = ?, updated_at = ? WHERE txid = ?")
-                .bind(TransactionStatus::Unproven.as_str())
-                .bind(now)
-                .bind(txid)
-                .execute(&mut *tx)
-                .await?;
+            // Broadcast succeeded: unproven / unmined. A broadcaster's
+            // acceptance never lifts a `failed` transaction (an abort or a
+            // retire that landed first stands, 0.3.60) nor a `completed` one,
+            // and never reopens a req already judged `invalid` / `doubleSpend`.
+            sqlx::query(
+                "UPDATE transactions SET status = ?, updated_at = ? \
+                 WHERE txid = ? AND status NOT IN ('failed', 'completed')",
+            )
+            .bind(TransactionStatus::Unproven.as_str())
+            .bind(now)
+            .bind(txid)
+            .execute(&mut *tx)
+            .await?;
 
-            sqlx::query("UPDATE proven_tx_reqs SET status = ?, updated_at = ? WHERE txid = ?")
-                .bind(proven_tx_req_status::UNMINED)
-                .bind(now)
-                .bind(txid)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE proven_tx_reqs SET status = ?, updated_at = ? \
+                 WHERE txid = ? AND status NOT IN ('completed', 'invalid', 'doubleSpend')",
+            )
+            .bind(proven_tx_req_status::UNMINED)
+            .bind(now)
+            .bind(txid)
+            .execute(&mut *tx)
+            .await?;
         }
 
         BroadcastOutcome::ServiceError { .. } => {

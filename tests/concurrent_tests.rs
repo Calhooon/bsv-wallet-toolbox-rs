@@ -579,19 +579,22 @@ mod concurrent {
         let broadcast_result = broadcast_handle.await.unwrap();
         let abort_result = abort_handle.await.unwrap();
 
-        // broadcast should succeed since the tx is in "sending" state
-        // abort should fail because "sending" is not an abortable status
+        // Since 0.3.60 a 'sending' transaction the wallet holds no chain
+        // evidence for is aborted on the caller's word (the broadcaster's
+        // acceptance is not chain evidence), and a broadcast acceptance that
+        // lands after the abort never lifts the failed transaction back.
+        // Whichever runs first, both calls succeed and the abort stands.
         assert!(
             broadcast_result.is_ok(),
             "Broadcast status update should succeed: {:?}",
             broadcast_result.err()
         );
         assert!(
-            abort_result.is_err(),
-            "Abort should fail for 'sending' status transactions"
+            abort_result.is_ok(),
+            "Abort of a broadcast transaction without chain evidence succeeds: {:?}",
+            abort_result.err()
         );
 
-        // Final status should be "unproven" (broadcast success)
         let final_status: (String,) =
             sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
                 .bind(&txid)
@@ -599,8 +602,25 @@ mod concurrent {
                 .await
                 .unwrap();
         assert_eq!(
-            final_status.0, "unproven",
-            "Final status should be 'unproven' after broadcast success"
+            final_status.0, "failed",
+            "the abort stands whichever side ran first"
+        );
+        let req_status: (String,) =
+            sqlx::query_as("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(req_status.0, "invalid", "the req is not reopened either");
+        let released: (Option<i64>,) =
+            sqlx::query_as("SELECT spent_by FROM outputs WHERE transaction_id = ? AND vout = 0")
+                .bind(tx_id)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert!(
+            released.0.is_none(),
+            "the input lock is released by the abort"
         );
     }
 
