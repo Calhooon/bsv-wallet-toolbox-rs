@@ -3107,7 +3107,7 @@ impl StorageSqlx {
         // it is a phantom too (the poisoned chain, 2026-09-02).
         self.mark_broadcast_rejected_quiet(txid).await;
         let (descendants_restored, descendants_kept) = self
-            .retire_poisoned_descendants(services, txid, transaction_id, now)
+            .retire_poisoned_descendants(Some(services), txid, transaction_id, now)
             .await?;
 
         Ok(RetireOutcome::Retired {

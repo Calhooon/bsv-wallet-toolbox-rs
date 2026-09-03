@@ -56,7 +56,7 @@ pub use locked_inputs::{
 };
 pub use poisoned_chain::{
     chain_knowledge, utxo_verdict, ChainKnowledge, InternalizedPhantom, PoisonOutcome,
-    PoisonReport, PoisonedTx, UtxoVerdict,
+    PoisonReport, PoisonedTx, UtxoVerdict, DEFAULT_ABSENCE_MINUTES,
 };
 pub use storage_sqlx::{
     RetireOutcome, StorageSqlx, UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT,

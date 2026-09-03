@@ -18,6 +18,17 @@
 //! the chain index knows, and [`StorageSqlx::retire_poisoned_chain_from`]
 //! retires from there.
 //!
+//! The climb honours the absence threshold (0.3.60). "Not yet indexed" is
+//! not "absent": on 2026-09-03 (beta, fleet w2) a head spend lost its race
+//! and Arcade rejected it 45 s after broadcast; the climb asked the chain
+//! index about the parent, a live bytes transaction 48 s old, read the 404
+//! as absence, retired the parent, and released the five coins it had
+//! already spent on the network (34,522 sats). The next two actions spent
+//! those coins again, were double spends, and were rejected in turn. A
+//! parent younger than `absence_minutes` is never climbed through: the
+//! verdict was about the child, and the parent gets the same absence clock
+//! every other unproven transaction gets.
+//!
 //! [`StorageSqlx::retire_poisoned_chain`] retires the root and every unproven
 //! descendant under THE RELEASE RULE (`retire_undeliverable_tx`): the root is
 //! alive-checked first, an input from outside the poisoned set is released
@@ -56,6 +67,12 @@ const CLIMB_PACE: Duration = Duration::from_millis(350);
 
 /// The longest climb (a wallet's unproven chain is rarely deeper).
 const CLIMB_LIMIT: usize = 64;
+
+/// Default minutes an unproven transaction must be old before a chain-index
+/// absence counts against it: the reconciler's absence threshold, and the
+/// age below which [`StorageSqlx::poisoned_root_of`] never climbs through a
+/// parent (a transaction the index has not seen yet is not a phantom).
+pub const DEFAULT_ABSENCE_MINUTES: i64 = 30;
 
 /// One transaction of a poisoned chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,8 +362,9 @@ impl StorageSqlx {
     }
 
     /// The unproven (or failed) transactions of this wallet whose outputs
-    /// `txid` spends: the candidates for the upward climb.
-    async fn climbable_parents(&self, txid: &str) -> Result<Vec<String>> {
+    /// `txid` spends: the candidates for the upward climb, each with its
+    /// age in minutes.
+    async fn climbable_parents(&self, txid: &str) -> Result<Vec<(String, i64)>> {
         let rows = sqlx::query(
             "SELECT DISTINCT t.txid, t.transaction_id FROM outputs o \
              JOIN transactions t ON o.transaction_id = t.transaction_id \
@@ -356,40 +374,50 @@ impl StorageSqlx {
         .bind(txid)
         .fetch_all(self.pool())
         .await?;
+        let now = Utc::now();
         let mut parents = Vec::new();
         for row in &rows {
             let parent: String = row.get("txid");
-            let status: String =
-                sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
-                    .bind(row.get::<i64, _>("transaction_id"))
-                    .fetch_one(self.pool())
-                    .await?;
+            let detail = sqlx::query(
+                "SELECT status, CAST(created_at AS TEXT) AS created_at \
+                 FROM transactions WHERE transaction_id = ?",
+            )
+            .bind(row.get::<i64, _>("transaction_id"))
+            .fetch_one(self.pool())
+            .await?;
+            let status: String = detail.get("status");
             if CLIMBABLE_STATUSES.contains(&status.as_str()) {
-                parents.push(parent);
+                let created_at: String = detail.get("created_at");
+                let created_at = super::broadcast_seen::parse_db_timestamp(&created_at);
+                let age_minutes = (now - created_at).num_minutes().max(0);
+                parents.push((parent, age_minutes));
             }
         }
         Ok(parents)
     }
 
     /// Climb from `txid` to the topmost absent ancestor: while a parent of
-    /// the current transaction is in this wallet, not proven, and unknown to
-    /// the status service, the poison starts above. The climb stops at the
-    /// first parent the chain knows (recorded as chain evidence), when the
-    /// status service cannot answer (never climb on silence), or after
-    /// [`CLIMB_LIMIT`] steps. Returns `(root, climbed)`: the root and the
-    /// transactions passed on the way up (`txid` first; empty when `txid`
-    /// is the root). Read-only apart from the memory rows.
+    /// the current transaction is in this wallet, not proven, older than
+    /// `absence_minutes`, and unknown to the status service, the poison
+    /// starts above. The climb stops at the first parent the chain knows
+    /// (recorded as chain evidence), at a parent younger than the threshold
+    /// (not yet indexed is not absent; the verdict was about the child),
+    /// when the status service cannot answer (never climb on silence), or
+    /// after [`CLIMB_LIMIT`] steps. Returns `(root, climbed)`: the root and
+    /// the transactions passed on the way up (`txid` first; empty when
+    /// `txid` is the root). Read-only apart from the memory rows.
     pub async fn poisoned_root_of(
         &self,
         services: &dyn WalletServices,
         txid: &str,
+        absence_minutes: i64,
     ) -> Result<(String, Vec<String>)> {
         let mut current = txid.to_string();
         let mut climbed: Vec<String> = Vec::new();
         for _ in 0..CLIMB_LIMIT {
             let parents = self.climbable_parents(&current).await?;
             let mut next: Option<String> = None;
-            for parent in &parents {
+            for (parent, age_minutes) in &parents {
                 tokio::time::sleep(CLIMB_PACE).await;
                 match chain_knowledge(services, parent).await {
                     knowledge @ (ChainKnowledge::Mined | ChainKnowledge::Known) => {
@@ -409,6 +437,15 @@ impl StorageSqlx {
                             parent = %parent,
                             ?knowledge,
                             "poisoned chain: parent is on the chain, the climb stops below it"
+                        );
+                    }
+                    ChainKnowledge::Unknown if *age_minutes < absence_minutes => {
+                        tracing::info!(
+                            child = %current,
+                            parent = %parent,
+                            age_minutes,
+                            absence_minutes,
+                            "poisoned chain: the parent is not in the chain index yet but younger than the absence threshold; not absent, the climb stops below it"
                         );
                     }
                     ChainKnowledge::Unknown => {
@@ -448,15 +485,19 @@ impl StorageSqlx {
     }
 
     /// [`StorageSqlx::retire_poisoned_chain`] from the topmost absent
-    /// ancestor of `txid` ([`StorageSqlx::poisoned_root_of`]).
+    /// ancestor of `txid` ([`StorageSqlx::poisoned_root_of`] with
+    /// `absence_minutes`).
     pub async fn retire_poisoned_chain_from(
         &self,
         services: &dyn WalletServices,
         txid: &str,
         req_status: &str,
         execute: bool,
+        absence_minutes: i64,
     ) -> Result<PoisonReport> {
-        let (root, climbed) = self.poisoned_root_of(services, txid).await?;
+        let (root, climbed) = self
+            .poisoned_root_of(services, txid, absence_minutes)
+            .await?;
         let mut report = self
             .retire_poisoned_chain(services, &root, req_status, execute)
             .await?;
@@ -567,7 +608,7 @@ impl StorageSqlx {
         for tx in &chain {
             let status = if tx.depth == 0 { req_status } else { "invalid" };
             self.retire_one_poisoned(
-                services,
+                Some(services),
                 tx,
                 &poisoned_ids,
                 root_txid,
@@ -595,12 +636,14 @@ impl StorageSqlx {
 
     /// The descendant half of [`StorageSqlx::retire_poisoned_chain`], for a
     /// caller that has just retired the root itself
-    /// (`retire_undeliverable_tx`). Returns `(restored, kept)` over the
-    /// descendants' outside inputs; nothing happens when a descendant is
-    /// proven.
+    /// (`retire_undeliverable_tx`, the broadcast abort). Returns
+    /// `(restored, kept)` over the descendants' outside inputs; nothing
+    /// happens when a descendant is proven. Without `services` no chain
+    /// oracle is available: every outside input stays locked and is
+    /// scheduled for the re-checks (an unknown never releases money).
     pub(crate) async fn retire_poisoned_descendants(
         &self,
-        services: &dyn WalletServices,
+        services: Option<&dyn WalletServices>,
         root_txid: &str,
         root_transaction_id: i64,
         now: DateTime<Utc>,
@@ -648,11 +691,17 @@ impl StorageSqlx {
     /// verification (kept ones scheduled for re-checks), own outputs
     /// invalidated, `failed`, req at `req_status`, memory `rejected`. A
     /// non-retirable status (already `failed`) still gets its outputs
-    /// invalidated and its locked inputs re-examined.
+    /// invalidated and its locked inputs re-examined. Without `services`
+    /// every outside input is kept and scheduled.
+    ///
+    /// "Not in the unspent set" is a real spend only when the coin's source
+    /// is on chain (proven in this wallet, or known to the status service);
+    /// a source the index has not seen yet makes the answer `Unknown`, so
+    /// the coin is re-checked instead of being written off as spent.
     #[allow(clippy::too_many_arguments)]
     async fn retire_one_poisoned(
         &self,
-        services: &dyn WalletServices,
+        services: Option<&dyn WalletServices>,
         tx: &PoisonedTx,
         poisoned_ids: &HashSet<i64>,
         root_txid: &str,
@@ -664,7 +713,7 @@ impl StorageSqlx {
         // only when the coin came from OUTSIDE the poisoned set.
         let inputs = sqlx::query(
             "SELECT o.output_id, o.transaction_id AS parent_id, t.txid AS source_txid, \
-                    o.vout, o.locking_script, o.satoshis \
+                    t.status AS source_status, o.vout, o.locking_script, o.satoshis \
              FROM outputs o JOIN transactions t ON o.transaction_id = t.transaction_id \
              WHERE o.spent_by = ?",
         )
@@ -676,6 +725,7 @@ impl StorageSqlx {
             let parent_id: i64 = input.get("parent_id");
             let source_txid: Option<String> = input.get("source_txid");
             let source_txid = source_txid.unwrap_or_default();
+            let source_status: String = input.get("source_status");
             let vout: i64 = input.get("vout");
             let satoshis: i64 = input.get("satoshis");
             if poisoned_ids.contains(&parent_id) || source_txid == root_txid {
@@ -689,7 +739,24 @@ impl StorageSqlx {
             }
             let locking_script: Option<Vec<u8>> = input.get("locking_script");
             let script = locking_script.as_deref().unwrap_or(&[]);
-            match utxo_verdict(services, &source_txid, vout as u32, script).await {
+            let verdict = match services {
+                Some(services) => {
+                    match utxo_verdict(services, &source_txid, vout as u32, script).await {
+                        UtxoVerdict::Spent if source_status != "completed" => {
+                            tokio::time::sleep(CLIMB_PACE).await;
+                            match chain_knowledge(services, &source_txid).await {
+                                ChainKnowledge::Mined | ChainKnowledge::Known => UtxoVerdict::Spent,
+                                ChainKnowledge::Unknown | ChainKnowledge::Unavailable => {
+                                    UtxoVerdict::Unknown
+                                }
+                            }
+                        }
+                        other => other,
+                    }
+                }
+                None => UtxoVerdict::Unknown,
+            };
+            match verdict {
                 UtxoVerdict::Unspent => {
                     sqlx::query(
                         "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? \

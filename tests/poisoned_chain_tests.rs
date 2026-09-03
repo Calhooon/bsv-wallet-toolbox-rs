@@ -13,7 +13,7 @@ use bsv_wallet_toolbox_rs::services::TxStatusDetail;
 use bsv_wallet_toolbox_rs::{
     GetStatusForTxidsResult, PoisonOutcome, RetireOutcome, StorageSqlx, WalletStorageWriter,
     BROADCAST_PROVIDER_NETWORK, BROADCAST_STATUS_ACCEPTED, BROADCAST_STATUS_REJECTED,
-    BROADCAST_STATUS_SEEN, PROVIDER_ARCADE_V2,
+    BROADCAST_STATUS_SEEN, DEFAULT_ABSENCE_MINUTES, PROVIDER_ARCADE_V2,
 };
 
 /// An on-chain parent (outside the poisoned set).
@@ -545,23 +545,50 @@ async fn seed_climb(g_status: &str) -> (StorageSqlx, ClimbIds) {
     (storage, ClimbIds { g0, p2_0, x0, ch0 })
 }
 
+/// Age every non-proven transaction of the fixture by `minutes`: the climb
+/// never passes through a parent younger than the absence threshold, so a
+/// fixture that wants the climb has to be older than it.
+async fn backdate(storage: &StorageSqlx, minutes: i64) {
+    sqlx::query(
+        "UPDATE transactions SET created_at = datetime('now', ?) WHERE status <> 'completed'",
+    )
+    .bind(format!("-{} minutes", minutes))
+    .execute(storage.pool())
+    .await
+    .expect("backdate");
+}
+
+/// The status service's answer: `known` mined, everything else unknown.
+fn known_as_mined(known: &[&str]) -> MockResponse<GetStatusForTxidsResult> {
+    MockResponse::Success(GetStatusForTxidsResult {
+        name: "MockProvider".to_string(),
+        status: "success".to_string(),
+        error: None,
+        results: known
+            .iter()
+            .map(|txid| TxStatusDetail {
+                txid: txid.to_string(),
+                status: "mined".to_string(),
+                depth: Some(3),
+            })
+            .collect(),
+    })
+}
+
 /// A status service that knows only `known` (as mined).
 fn chain_knows(known: &[&str]) -> MockWalletServices {
     MockWalletServices::builder()
-        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
-            name: "MockProvider".to_string(),
-            status: "success".to_string(),
-            error: None,
-            results: known
-                .iter()
-                .map(|txid| TxStatusDetail {
-                    txid: txid.to_string(),
-                    status: "mined".to_string(),
-                    depth: Some(3),
-                })
-                .collect(),
-        }))
+        .get_status_for_txids_response(known_as_mined(known))
         .build()
+}
+
+/// The `locked_input_checks` verdict recorded for `output_id`, if any.
+async fn locked_verdict(storage: &StorageSqlx, output_id: i64) -> Option<String> {
+    sqlx::query_scalar("SELECT last_verdict FROM locked_input_checks WHERE output_id = ?")
+        .bind(output_id)
+        .fetch_optional(storage.pool())
+        .await
+        .expect("locked verdict")
 }
 
 #[tokio::test]
@@ -592,9 +619,13 @@ async fn the_climb_stops_at_the_first_chain_known_parent() {
     // G is still unproven in the wallet (no proof fetched): only the status
     // service can tell the climb it is on chain.
     let (storage, ids) = seed_climb("unproven").await;
+    backdate(&storage, DEFAULT_ABSENCE_MINUTES + 15).await;
     let services = chain_knows(&[G]);
 
-    let (root, climbed) = storage.poisoned_root_of(&services, CH).await.unwrap();
+    let (root, climbed) = storage
+        .poisoned_root_of(&services, CH, DEFAULT_ABSENCE_MINUTES)
+        .await
+        .unwrap();
     assert_eq!(root, P2, "P2 is the topmost absent ancestor");
     assert_eq!(climbed, vec![CH.to_string(), X.to_string()]);
     // The chain-known parent was recorded as chain evidence on the way.
@@ -608,7 +639,7 @@ async fn the_climb_stops_at_the_first_chain_known_parent() {
     assert_eq!(tx_status(&storage, P2).await, "unproven");
 
     let report = storage
-        .retire_poisoned_chain_from(&services, CH, "invalid", true)
+        .retire_poisoned_chain_from(&services, CH, "invalid", true, DEFAULT_ABSENCE_MINUTES)
         .await
         .unwrap();
     assert_eq!(report.outcome, PoisonOutcome::Retired);
@@ -643,7 +674,10 @@ async fn the_climb_never_moves_on_a_silent_status_service() {
             "down".to_string(),
         ))
         .build();
-    let (root, climbed) = storage.poisoned_root_of(&down, CH).await.unwrap();
+    let (root, climbed) = storage
+        .poisoned_root_of(&down, CH, DEFAULT_ABSENCE_MINUTES)
+        .await
+        .unwrap();
     assert_eq!(root, CH, "silence is not absence: no climb");
     assert!(climbed.is_empty());
 }
@@ -940,10 +974,14 @@ async fn migration_003_creates_the_locked_input_table_on_open() {
 #[tokio::test]
 async fn a_proven_parent_needs_no_lookup_to_stop_the_climb() {
     let (storage, ids) = seed_climb("completed").await;
+    backdate(&storage, DEFAULT_ABSENCE_MINUTES + 15).await;
     // The status service knows nothing at all; a completed parent is on
     // chain by definition and is never asked about.
     let services = MockWalletServices::new();
-    let (root, climbed) = storage.poisoned_root_of(&services, CH).await.unwrap();
+    let (root, climbed) = storage
+        .poisoned_root_of(&services, CH, DEFAULT_ABSENCE_MINUTES)
+        .await
+        .unwrap();
     assert_eq!(root, P2);
     assert_eq!(climbed, vec![CH.to_string(), X.to_string()]);
     assert_eq!(
@@ -952,10 +990,110 @@ async fn a_proven_parent_needs_no_lookup_to_stop_the_climb() {
         "X and P2 only"
     );
     let report = storage
-        .retire_poisoned_chain_from(&services, CH, "invalid", true)
+        .retire_poisoned_chain_from(&services, CH, "invalid", true, DEFAULT_ABSENCE_MINUTES)
         .await
         .unwrap();
     assert_eq!(report.retirable_txids(), vec![P2, X, CH]);
     assert_eq!(output_state(&storage, ids.g0).await, (1, None));
     assert_eq!(tx_status(&storage, G).await, "completed");
+}
+
+#[tokio::test]
+async fn a_parent_younger_than_the_absence_threshold_stops_the_climb() {
+    // The 2026-09-03 shape (beta, fleet w2): CH lost its head race and the
+    // broadcaster rejected it; X, its parent, is a live transaction the
+    // chain index has not seen yet, 48 s after broadcast. Not yet indexed
+    // is not absent: the verdict was about CH, and X keeps its own absence
+    // clock.
+    let (storage, ids) = seed_climb("unproven").await;
+    let services = chain_knows(&[G]);
+    let (root, climbed) = storage
+        .poisoned_root_of(&services, CH, DEFAULT_ABSENCE_MINUTES)
+        .await
+        .unwrap();
+    assert_eq!(root, CH, "X is 0 min old: the climb stops below it");
+    assert!(climbed.is_empty());
+    assert_eq!(
+        services.call_count("get_status_for_txids"),
+        1,
+        "X was asked about (chain evidence would have been recorded), P2 was not"
+    );
+
+    let report = storage
+        .retire_poisoned_chain_from(&services, CH, "invalid", true, DEFAULT_ABSENCE_MINUTES)
+        .await
+        .unwrap();
+    assert_eq!(report.outcome, PoisonOutcome::Retired);
+    assert_eq!(report.root, CH);
+    assert_eq!(report.retirable_txids(), vec![CH]);
+    assert_eq!(tx_status(&storage, CH).await, "failed");
+    assert_eq!(
+        tx_status(&storage, X).await,
+        "unproven",
+        "the live parent is untouched"
+    );
+    assert_eq!(tx_status(&storage, P2).await, "unproven");
+    // X's coin is CH's only outside input; the UTXO oracle vouches for it
+    // (the default mock answers unspent), so it is back in coin selection.
+    assert_eq!(output_state(&storage, ids.x0).await, (1, None));
+    // G's coin belongs to P2's spend and was never part of this.
+    assert_eq!(output_state(&storage, ids.g0).await.0, 0);
+    assert_eq!(output_state(&storage, ids.p2_0).await.0, 0);
+    assert_eq!(output_state(&storage, ids.ch0).await.0, 0);
+}
+
+#[tokio::test]
+async fn a_spent_verdict_is_terminal_only_when_the_source_is_on_chain() {
+    // CH is retired alone (X is young). The UTXO oracle says X:0 is not in
+    // the unspent set, but the chain index does not know X: "not unspent"
+    // is not "spent" for a coin whose source the index has not seen. The
+    // coin is kept and re-checked, not written off.
+    let (storage, ids) = seed_climb("unproven").await;
+    let not_in_the_unspent_set = MockResponse::Success(GetUtxoStatusResult {
+        name: "MockProvider".to_string(),
+        status: "success".to_string(),
+        is_utxo: Some(false),
+        details: vec![],
+        error: None,
+    });
+    let source_unknown = MockWalletServices::builder()
+        .get_utxo_status_response(not_in_the_unspent_set.clone())
+        .get_status_for_txids_response(known_as_mined(&[G]))
+        .build();
+    let report = storage
+        .retire_poisoned_chain_from(
+            &source_unknown,
+            CH,
+            "invalid",
+            true,
+            DEFAULT_ABSENCE_MINUTES,
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.retirable_txids(), vec![CH]);
+    assert_eq!((report.restored, report.kept), (0, 1));
+    assert_eq!(output_state(&storage, ids.x0).await.0, 0, "kept locked");
+    assert_eq!(
+        locked_verdict(&storage, ids.x0).await.as_deref(),
+        Some("unknown"),
+        "re-checked with backoff, not terminal"
+    );
+
+    // The same answer with X known to the chain is a real spend: terminal.
+    let (storage, ids) = seed_climb("unproven").await;
+    let source_known = MockWalletServices::builder()
+        .get_utxo_status_response(not_in_the_unspent_set)
+        .get_status_for_txids_response(known_as_mined(&[G, X]))
+        .build();
+    let report = storage
+        .retire_poisoned_chain_from(&source_known, CH, "invalid", true, DEFAULT_ABSENCE_MINUTES)
+        .await
+        .unwrap();
+    assert_eq!(report.retirable_txids(), vec![CH]);
+    assert_eq!((report.restored, report.kept), (0, 1));
+    assert_eq!(output_state(&storage, ids.x0).await.0, 0);
+    assert_eq!(
+        locked_verdict(&storage, ids.x0).await.as_deref(),
+        Some("spent")
+    );
 }
