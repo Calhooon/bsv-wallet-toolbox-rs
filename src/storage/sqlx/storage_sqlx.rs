@@ -40,6 +40,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         super::broadcast_seen::MIGRATION_002_BROADCAST_SEEN_NAME,
         super::broadcast_seen::MIGRATION_002_BROADCAST_SEEN_SQL,
     ),
+    (
+        super::locked_inputs::MIGRATION_003_LOCKED_INPUT_CHECKS_NAME,
+        super::locked_inputs::MIGRATION_003_LOCKED_INPUT_CHECKS_SQL,
+    ),
 ];
 
 /// Default maximum length for output scripts stored in the outputs table.
@@ -2013,6 +2017,7 @@ impl WalletStorageWriter for StorageSqlx {
             // Additive schema (0.3.56): a database created before migration
             // 002 gets the broadcast tables on open, not only on `migrate`.
             self.ensure_broadcast_schema().await?;
+            self.ensure_locked_inputs_schema().await?;
             let mut cached = lock_write(&self.settings)?;
             *cached = Some(settings.clone());
             Ok(settings)
@@ -3081,6 +3086,7 @@ impl StorageSqlx {
                 restored += 1;
             } else {
                 kept += 1;
+                self.schedule_locked_input_check(output_id, "unknown").await;
                 tracing::info!(
                     "send_waiting: input {}:{} not verifiably unspent — NOT restoring",
                     source_txid,
@@ -5507,7 +5513,7 @@ mod tests {
             .migrate("test-storage", "0".repeat(64).as_str())
             .await
             .unwrap();
-        assert_eq!(version, "002_broadcast_seen");
+        assert_eq!(version, "003_locked_input_checks");
 
         // Make available
         let settings = storage.make_available().await.unwrap();

@@ -49,8 +49,9 @@ pub use broadcast::{
 
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
 pub use sqlx::{
-    InternalizedPhantom, PoisonOutcome, PoisonReport, PoisonedTx, RetireOutcome,
-    SqlxBroadcastMemory, StorageSqlx,
+    chain_knowledge, locked_input_backoff_minutes, utxo_verdict, ChainKnowledge,
+    InternalizedPhantom, LockedInputCheck, LockedInputReport, LockedInputVerdict, PoisonOutcome,
+    PoisonReport, PoisonedTx, RetireOutcome, SqlxBroadcastMemory, StorageSqlx, UtxoVerdict,
 };
 
 #[cfg(feature = "remote")]

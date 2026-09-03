@@ -351,7 +351,13 @@ async fn the_chain_is_retired_three_deep_with_the_outside_input_released() {
 async fn an_outside_input_the_chain_cannot_vouch_for_stays_locked() {
     let s = seed("unproven").await;
     let services = MockWalletServices::builder()
-        .is_utxo_response(MockResponse::Success(false))
+        .get_utxo_status_response(MockResponse::Success(GetUtxoStatusResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            is_utxo: Some(false),
+            details: vec![],
+            error: None,
+        }))
         .build();
     let report = s
         .storage
@@ -477,4 +483,479 @@ async fn retire_undeliverable_walks_the_descendants_too() {
     );
     // R (an ancestor, not a descendant) is untouched by this path.
     assert_eq!(tx_status(&s.storage, R).await, "unproven");
+}
+
+// =============================================================================
+// 0.3.59: the upward climb and the locked-input re-checks
+// =============================================================================
+
+use bsv_wallet_toolbox_rs::services::mock::MockErrorKind;
+use bsv_wallet_toolbox_rs::{
+    ChainKnowledge, GetUtxoStatusResult, LockedInputVerdict, BROADCAST_PROVIDER_CHAIN,
+    BROADCAST_STATUS_MINED,
+};
+
+/// A chain-known grandparent.
+const G: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+/// Unproven and unknown to the chain: the real root of the poison.
+const P2: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+/// Unproven and unknown: the transaction the verdict came from.
+const X: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+/// Unproven child of X.
+const CH: &str = "4444444444444444444444444444444444444444444444444444444444444444";
+
+struct ClimbIds {
+    g0: i64,
+    p2_0: i64,
+    x0: i64,
+    ch0: i64,
+}
+
+/// G (`g_status`, known to the chain) -> P2 (unproven) -> X (unproven) -> CH
+/// (unproven).
+async fn seed_climb(g_status: &str) -> (StorageSqlx, ClimbIds) {
+    let storage = StorageSqlx::in_memory().await.expect("storage");
+    let storage_key = "02".to_string() + &"ab".repeat(32);
+    storage
+        .migrate("climb-tests", &storage_key)
+        .await
+        .expect("migrate");
+    storage.make_available().await.expect("make_available");
+    let identity = "02".to_string() + &"cd".repeat(32);
+    let (user, _) = storage.find_or_insert_user(&identity).await.expect("user");
+    let user_id = user.user_id;
+    let basket = storage
+        .find_or_create_default_basket(user_id)
+        .await
+        .expect("basket")
+        .basket_id;
+
+    let g = insert_tx(&storage, user_id, G, g_status, false).await;
+    let p2 = insert_tx(&storage, user_id, P2, "unproven", true).await;
+    let x = insert_tx(&storage, user_id, X, "unproven", true).await;
+    let ch = insert_tx(&storage, user_id, CH, "unproven", true).await;
+
+    let g0 = insert_output(&storage, user_id, basket, g, G, 0, 30_000, false, Some(p2)).await;
+    let p2_0 = insert_output(&storage, user_id, basket, p2, P2, 0, 29_000, false, Some(x)).await;
+    let x0 = insert_output(&storage, user_id, basket, x, X, 0, 28_000, false, Some(ch)).await;
+    let ch0 = insert_output(&storage, user_id, basket, ch, CH, 0, 27_000, true, None).await;
+    for txid in [P2, X, CH] {
+        insert_req(&storage, txid, "unmined").await;
+    }
+    (storage, ClimbIds { g0, p2_0, x0, ch0 })
+}
+
+/// A status service that knows only `known` (as mined).
+fn chain_knows(known: &[&str]) -> MockWalletServices {
+    MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: known
+                .iter()
+                .map(|txid| TxStatusDetail {
+                    txid: txid.to_string(),
+                    status: "mined".to_string(),
+                    depth: Some(3),
+                })
+                .collect(),
+        }))
+        .build()
+}
+
+#[tokio::test]
+async fn chain_knowledge_reads_the_status_service() {
+    let services = chain_knows(&[G]);
+    assert_eq!(
+        bsv_wallet_toolbox_rs::chain_knowledge(&services, G).await,
+        ChainKnowledge::Mined
+    );
+    assert_eq!(
+        bsv_wallet_toolbox_rs::chain_knowledge(&services, X).await,
+        ChainKnowledge::Unknown
+    );
+    let down = MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Error(
+            MockErrorKind::ServiceError,
+            "down".to_string(),
+        ))
+        .build();
+    assert_eq!(
+        bsv_wallet_toolbox_rs::chain_knowledge(&down, G).await,
+        ChainKnowledge::Unavailable
+    );
+}
+
+#[tokio::test]
+async fn the_climb_stops_at_the_first_chain_known_parent() {
+    // G is still unproven in the wallet (no proof fetched): only the status
+    // service can tell the climb it is on chain.
+    let (storage, ids) = seed_climb("unproven").await;
+    let services = chain_knows(&[G]);
+
+    let (root, climbed) = storage.poisoned_root_of(&services, CH).await.unwrap();
+    assert_eq!(root, P2, "P2 is the topmost absent ancestor");
+    assert_eq!(climbed, vec![CH.to_string(), X.to_string()]);
+    // The chain-known parent was recorded as chain evidence on the way.
+    assert_eq!(
+        memory_status(&storage, G, BROADCAST_PROVIDER_CHAIN)
+            .await
+            .as_deref(),
+        Some(BROADCAST_STATUS_MINED)
+    );
+    // Nothing was touched by the climb.
+    assert_eq!(tx_status(&storage, P2).await, "unproven");
+
+    let report = storage
+        .retire_poisoned_chain_from(&services, CH, "invalid", true)
+        .await
+        .unwrap();
+    assert_eq!(report.outcome, PoisonOutcome::Retired);
+    assert_eq!(report.root, P2);
+    assert_eq!(report.origin, CH);
+    assert_eq!(report.climbed, vec![CH.to_string(), X.to_string()]);
+    assert_eq!(report.retirable_txids(), vec![P2, X, CH]);
+    assert_eq!(report.failed, 3);
+    // G's coin (the only outside input of the set) is back.
+    assert_eq!((report.restored, report.restored_sats), (1, 30_000));
+    assert_eq!(output_state(&storage, ids.g0).await, (1, None));
+    // The inside coins stay dead.
+    assert_eq!(output_state(&storage, ids.p2_0).await.0, 0);
+    assert_eq!(output_state(&storage, ids.x0).await.0, 0);
+    assert_eq!(output_state(&storage, ids.ch0).await.0, 0);
+    assert_eq!(
+        tx_status(&storage, G).await,
+        "unproven",
+        "not part of the poison"
+    );
+    for txid in [P2, X, CH] {
+        assert_eq!(tx_status(&storage, txid).await, "failed", "{}", txid);
+    }
+}
+
+#[tokio::test]
+async fn the_climb_never_moves_on_a_silent_status_service() {
+    let (storage, _ids) = seed_climb("unproven").await;
+    let down = MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Error(
+            MockErrorKind::ServiceError,
+            "down".to_string(),
+        ))
+        .build();
+    let (root, climbed) = storage.poisoned_root_of(&down, CH).await.unwrap();
+    assert_eq!(root, CH, "silence is not absence: no climb");
+    assert!(climbed.is_empty());
+}
+
+#[tokio::test]
+async fn a_kept_locked_input_is_rechecked_and_restored_on_a_later_pass() {
+    let s = seed("unproven").await;
+    // The UTXO lookup is rate-limited during the retire: P:0 stays locked.
+    let limited = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Error(
+            MockErrorKind::ServiceError,
+            "429".to_string(),
+        ))
+        .build();
+    let report = s
+        .storage
+        .retire_poisoned_chain(&limited, R, "invalid", true)
+        .await
+        .unwrap();
+    assert_eq!((report.restored, report.kept), (0, 1));
+    assert_eq!(output_state(&s.storage, s.ids.p0).await.0, 0);
+    assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 1);
+    let next = s
+        .storage
+        .locked_input_next_check(s.ids.p0)
+        .await
+        .unwrap()
+        .expect("scheduled");
+    let wait = (next - chrono::Utc::now()).num_seconds();
+    assert!(
+        (30..=90).contains(&wait),
+        "first re-check in a minute: {}s",
+        wait
+    );
+
+    // Not due yet: the next pass leaves it alone.
+    let early = s
+        .storage
+        .recheck_locked_inputs(&MockWalletServices::new(), 20, true)
+        .await
+        .unwrap();
+    assert_eq!(early.due, 0);
+    assert_eq!(output_state(&s.storage, s.ids.p0).await.0, 0);
+
+    // Due, and the chain vouches for it now: restored.
+    sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
+        .execute(s.storage.pool())
+        .await
+        .unwrap();
+    let dry = s
+        .storage
+        .recheck_locked_inputs(&MockWalletServices::new(), 20, false)
+        .await
+        .unwrap();
+    assert_eq!(dry.due, 1);
+    assert_eq!(dry.checks[0].verdict, LockedInputVerdict::Restored);
+    assert!(!dry.executed);
+    assert_eq!(
+        output_state(&s.storage, s.ids.p0).await.0,
+        0,
+        "dry run touches nothing"
+    );
+
+    let wet = s
+        .storage
+        .recheck_locked_inputs(&MockWalletServices::new(), 20, true)
+        .await
+        .unwrap();
+    assert!(wet.executed);
+    assert_eq!((wet.restored, wet.restored_sats), (1, 50_000));
+    assert_eq!(wet.checks[0].output_id, s.ids.p0);
+    assert_eq!(wet.checks[0].source_txid, P);
+    assert_eq!(wet.checks[0].locked_by, C1);
+    assert_eq!(output_state(&s.storage, s.ids.p0).await, (1, None));
+    assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_spent_locked_input_is_left_locked_and_never_rechecked_again() {
+    let s = seed("unproven").await;
+    let limited = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Error(
+            MockErrorKind::ServiceError,
+            "429".to_string(),
+        ))
+        .build();
+    s.storage
+        .retire_poisoned_chain(&limited, R, "invalid", true)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
+        .execute(s.storage.pool())
+        .await
+        .unwrap();
+
+    // Not in the unspent set, and the source is on chain: spent for real.
+    let spent = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Success(GetUtxoStatusResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            is_utxo: Some(false),
+            details: vec![],
+            error: None,
+        }))
+        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: vec![TxStatusDetail {
+                txid: P.to_string(),
+                status: "mined".to_string(),
+                depth: Some(10),
+            }],
+        }))
+        .build();
+    let report = s
+        .storage
+        .recheck_locked_inputs(&spent, 20, true)
+        .await
+        .unwrap();
+    assert_eq!(report.spent, 1);
+    assert_eq!(report.checks[0].verdict, LockedInputVerdict::Spent);
+    let (spendable, spent_by) = output_state(&s.storage, s.ids.p0).await;
+    assert_eq!(spendable, 0);
+    assert!(spent_by.is_some(), "left locked");
+    assert_eq!(
+        s.storage.locked_inputs_pending().await.unwrap(),
+        0,
+        "terminal"
+    );
+    let again = s
+        .storage
+        .recheck_locked_inputs(&spent, 20, true)
+        .await
+        .unwrap();
+    assert_eq!(again.due, 0);
+}
+
+#[tokio::test]
+async fn an_undecided_recheck_backs_off_and_an_unknown_source_is_not_a_spend() {
+    let s = seed("unproven").await;
+    let limited = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Error(
+            MockErrorKind::ServiceError,
+            "429".to_string(),
+        ))
+        .build();
+    s.storage
+        .retire_poisoned_chain(&limited, R, "invalid", true)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
+        .execute(s.storage.pool())
+        .await
+        .unwrap();
+
+    // Still rate-limited: second attempt, two minutes of backoff.
+    let report = s
+        .storage
+        .recheck_locked_inputs(&limited, 20, true)
+        .await
+        .unwrap();
+    assert_eq!(report.unknown, 1);
+    assert_eq!(report.checks[0].verdict, LockedInputVerdict::Unknown);
+    assert_eq!(report.checks[0].attempts, 2);
+    assert_eq!(report.checks[0].next_check_minutes, Some(2));
+    let next = s
+        .storage
+        .locked_input_next_check(s.ids.p0)
+        .await
+        .unwrap()
+        .expect("still scheduled");
+    let wait = (next - chrono::Utc::now()).num_seconds();
+    assert!((90..=150).contains(&wait), "two minutes: {}s", wait);
+    assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 1);
+
+    // Not in the unspent set but the source is unknown to the chain: not a
+    // spend, keep re-checking.
+    sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
+        .execute(s.storage.pool())
+        .await
+        .unwrap();
+    let unknown_source = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Success(GetUtxoStatusResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            is_utxo: Some(false),
+            details: vec![],
+            error: None,
+        }))
+        .build();
+    let report = s
+        .storage
+        .recheck_locked_inputs(&unknown_source, 20, true)
+        .await
+        .unwrap();
+    assert_eq!(report.checks[0].verdict, LockedInputVerdict::Unknown);
+    assert_eq!(report.checks[0].attempts, 3);
+    assert_eq!(report.checks[0].next_check_minutes, Some(4));
+    assert_eq!(output_state(&s.storage, s.ids.p0).await.0, 0);
+}
+
+#[tokio::test]
+async fn adoption_finds_locked_inputs_of_failed_transactions_that_predate_the_table() {
+    let s = seed("unproven").await;
+    // C1 failed by some older path, its inputs still locked, no rows.
+    sqlx::query("UPDATE transactions SET status = 'failed' WHERE txid = ?")
+        .bind(C1)
+        .execute(s.storage.pool())
+        .await
+        .unwrap();
+    assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 0);
+
+    // P:0 unspent (restored); R:0 not in the unspent set and R unknown to
+    // the chain (kept, backoff).
+    let services = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Sequence(vec![
+            MockResponse::Success(GetUtxoStatusResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                is_utxo: Some(true),
+                details: vec![],
+                error: None,
+            }),
+            MockResponse::Success(GetUtxoStatusResult {
+                name: "MockProvider".to_string(),
+                status: "success".to_string(),
+                is_utxo: Some(false),
+                details: vec![],
+                error: None,
+            }),
+        ]))
+        .build();
+    let report = s
+        .storage
+        .recheck_locked_inputs(&services, 20, true)
+        .await
+        .unwrap();
+    assert_eq!(report.adopted, 2, "P:0 and R:0");
+    assert_eq!(report.due, 2);
+    assert_eq!((report.restored, report.unknown), (1, 1));
+    assert_eq!(output_state(&s.storage, s.ids.p0).await, (1, None));
+    assert_eq!(output_state(&s.storage, s.ids.r0).await.0, 0);
+
+    // Once R is retired as a phantom, its coin is dropped from the checks.
+    sqlx::query("UPDATE transactions SET status = 'failed' WHERE txid = ?")
+        .bind(R)
+        .execute(s.storage.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
+        .execute(s.storage.pool())
+        .await
+        .unwrap();
+    let report = s
+        .storage
+        .recheck_locked_inputs(&services, 20, true)
+        .await
+        .unwrap();
+    assert_eq!(report.checks[0].verdict, LockedInputVerdict::Phantom);
+    assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn migration_003_creates_the_locked_input_table_on_open() {
+    let storage = StorageSqlx::in_memory().await.unwrap();
+    let version = storage
+        .migrate("m003", &("02".to_string() + &"ab".repeat(32)))
+        .await
+        .unwrap();
+    assert_eq!(version, "003_locked_input_checks");
+    let table: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'locked_input_checks'",
+    )
+    .fetch_optional(storage.pool())
+    .await
+    .unwrap();
+    assert!(table.is_some());
+    // Dropped (a database from before 0.3.59) and re-created on make_available.
+    sqlx::query("DROP TABLE locked_input_checks")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    storage.make_available().await.unwrap();
+    let table: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'locked_input_checks'",
+    )
+    .fetch_optional(storage.pool())
+    .await
+    .unwrap();
+    assert!(table.is_some());
+}
+
+#[tokio::test]
+async fn a_proven_parent_needs_no_lookup_to_stop_the_climb() {
+    let (storage, ids) = seed_climb("completed").await;
+    // The status service knows nothing at all; a completed parent is on
+    // chain by definition and is never asked about.
+    let services = MockWalletServices::new();
+    let (root, climbed) = storage.poisoned_root_of(&services, CH).await.unwrap();
+    assert_eq!(root, P2);
+    assert_eq!(climbed, vec![CH.to_string(), X.to_string()]);
+    assert_eq!(
+        services.call_count("get_status_for_txids"),
+        2,
+        "X and P2 only"
+    );
+    let report = storage
+        .retire_poisoned_chain_from(&services, CH, "invalid", true)
+        .await
+        .unwrap();
+    assert_eq!(report.retirable_txids(), vec![P2, X, CH]);
+    assert_eq!(output_state(&storage, ids.g0).await, (1, None));
+    assert_eq!(tx_status(&storage, G).await, "completed");
 }

@@ -481,7 +481,10 @@ mod tests {
                 .migrate("old-wallet", &"1".repeat(64))
                 .await
                 .unwrap();
-            assert_eq!(version, MIGRATION_002_BROADCAST_SEEN_NAME);
+            assert_eq!(
+                version,
+                super::super::locked_inputs::MIGRATION_003_LOCKED_INPUT_CHECKS_NAME
+            );
             sqlx::query("DROP TABLE broadcast_seen")
                 .execute(storage.pool())
                 .await
@@ -520,7 +523,10 @@ mod tests {
             .migrate("old-wallet", &"1".repeat(64))
             .await
             .unwrap();
-        assert_eq!(version, MIGRATION_002_BROADCAST_SEEN_NAME);
+        assert_eq!(
+            version,
+            super::super::locked_inputs::MIGRATION_003_LOCKED_INPUT_CHECKS_NAME
+        );
         storage.pool().close().await;
     }
 

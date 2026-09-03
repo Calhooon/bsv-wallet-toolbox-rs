@@ -36,6 +36,7 @@ mod beef_verification;
 mod broadcast_seen;
 mod create_action;
 mod internalize_action;
+mod locked_inputs;
 mod poisoned_chain;
 mod process_action;
 mod storage_sqlx;
@@ -48,7 +49,15 @@ pub use beef_verification::{verify_beef_merkle_proofs, verify_txid_merkle_proof}
 pub use broadcast_seen::{
     SqlxBroadcastMemory, MIGRATION_002_BROADCAST_SEEN_NAME, MIGRATION_002_BROADCAST_SEEN_SQL,
 };
-pub use poisoned_chain::{InternalizedPhantom, PoisonOutcome, PoisonReport, PoisonedTx};
+pub use locked_inputs::{
+    locked_input_backoff_minutes, LockedInputCheck, LockedInputReport, LockedInputVerdict,
+    LOCKED_INPUT_BACKOFF_CAP_MINUTES, MIGRATION_003_LOCKED_INPUT_CHECKS_NAME,
+    MIGRATION_003_LOCKED_INPUT_CHECKS_SQL,
+};
+pub use poisoned_chain::{
+    chain_knowledge, utxo_verdict, ChainKnowledge, InternalizedPhantom, PoisonOutcome,
+    PoisonReport, PoisonedTx, UtxoVerdict,
+};
 pub use storage_sqlx::{
     RetireOutcome, StorageSqlx, UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT,
     DEFAULT_MAX_OUTPUT_SCRIPT,

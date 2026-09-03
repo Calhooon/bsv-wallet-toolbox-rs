@@ -2,7 +2,7 @@
 //!
 //! When a transaction never reached the network (its broadcaster 202'd an EF
 //! child whose parent had not propagated, a definitive `REJECTED`, a
-//! presence probe absent everywhere for long enough), every later
+//! presence probe absent from the chain index for long enough), every later
 //! transaction of this wallet that spends one of its outputs is a phantom
 //! too: change chained on phantom change, an internalized payment whose
 //! source never existed (the 10,000 sats of the 2026-09-02 beta incident),
@@ -10,21 +10,34 @@
 //! mine, and every input they took from OUTSIDE the phantom set is a coin
 //! frozen behind a transaction that will never settle.
 //!
+//! The poison also runs UP: a phantom's parent that is itself unproven and
+//! unknown to the chain index is part of the same poison (the EF child was
+//! sent alone because the memory said the parent was seen; the parent never
+//! propagated either). [`StorageSqlx::poisoned_root_of`] climbs from a
+//! verdict to the topmost absent ancestor, stopping at the first transaction
+//! the chain index knows, and [`StorageSqlx::retire_poisoned_chain_from`]
+//! retires from there.
+//!
 //! [`StorageSqlx::retire_poisoned_chain`] retires the root and every unproven
 //! descendant under THE RELEASE RULE (`retire_undeliverable_tx`): the root is
 //! alive-checked first, an input from outside the poisoned set is released
-//! only on its own `is_utxo` verification, the set's own outputs go
-//! unspendable, the transactions turn `failed` with their reqs `invalid`,
-//! and the broadcast memory forgets them (`rejected`). A chain that reaches
-//! a proven transaction is refused: a proven descendant means the root is
-//! on chain and the verdict was wrong.
+//! only on its own chain verification (and scheduled for re-checks with
+//! backoff when the chain cannot say, see `locked_inputs`), the set's own
+//! outputs go unspendable, the transactions turn `failed` with their reqs
+//! `invalid`, and the broadcast memory forgets them (`rejected`). A chain
+//! that reaches a proven transaction is refused: a proven descendant means
+//! the root is on chain and the verdict was wrong.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
 use crate::error::Result;
+use crate::services::broadcast_memory::{
+    BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_MINED, BROADCAST_STATUS_SEEN,
+};
 use crate::services::WalletServices;
 
 use super::storage_sqlx::StorageSqlx;
@@ -33,6 +46,16 @@ use super::storage_sqlx::StorageSqlx;
 /// `completed` refuses the whole retire; creation-time statuses
 /// (`unsigned`, `unprocessed`, `nonfinal`) are left to `abort_action`.
 const RETIRABLE_STATUSES: &[&str] = &["unproven", "sending", "nosend"];
+
+/// Statuses a parent may be in for the upward climb to pass through it (not
+/// proven: a `completed` parent is on chain by definition).
+const CLIMBABLE_STATUSES: &[&str] = &["unproven", "sending", "nosend", "failed"];
+
+/// Pause between two chain lookups of a climb (WhatsOnChain's public rate).
+const CLIMB_PACE: Duration = Duration::from_millis(350);
+
+/// The longest climb (a wallet's unproven chain is rarely deeper).
+const CLIMB_LIMIT: usize = 64;
 
 /// One transaction of a poisoned chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,8 +66,8 @@ pub struct PoisonedTx {
     pub transaction_id: i64,
     /// Status before retirement.
     pub status: String,
-    /// `false` for a received (internalized) transaction: its spendable
-    /// outputs are payments that trace to a phantom source.
+    /// `false` for a received (internalized) transaction: its outputs are
+    /// payments that trace to a phantom source.
     pub is_outgoing: bool,
     /// 0 for the root, 1 for a direct spender of its outputs, and so on.
     pub depth: u32,
@@ -90,8 +113,14 @@ pub enum PoisonOutcome {
 /// The result of one poison retirement (or dry run).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoisonReport {
-    /// The txid the retire started from.
+    /// The txid the retire started from after the upward climb (equals
+    /// `origin` when nothing above it was absent).
     pub root: String,
+    /// The txid the verdict came from.
+    pub origin: String,
+    /// The transactions the climb passed through on the way from `origin`
+    /// up to `root` (`origin` first; empty when `root == origin`).
+    pub climbed: Vec<String>,
     /// The decision.
     pub outcome: PoisonOutcome,
     /// Whether changes were applied (`false` on a dry run or a non-retire
@@ -106,13 +135,14 @@ pub struct PoisonReport {
     pub restored: u32,
     /// Satoshis of the released inputs.
     pub restored_sats: i64,
-    /// Outside inputs the chain could not vouch for: kept locked.
+    /// Outside inputs the chain could not vouch for: kept locked and
+    /// scheduled for re-checks.
     pub kept: u32,
     /// Spendable outputs of the set invalidated.
     pub invalidated: u32,
     /// Satoshis of the invalidated outputs.
     pub invalidated_sats: i64,
-    /// Internalized payments among the invalidated outputs.
+    /// Internalized payments among the set's outputs.
     pub internalized: Vec<InternalizedPhantom>,
 }
 
@@ -120,6 +150,8 @@ impl PoisonReport {
     fn new(root: &str, outcome: PoisonOutcome) -> Self {
         Self {
             root: root.to_string(),
+            origin: root.to_string(),
+            climbed: Vec::new(),
             outcome,
             executed: false,
             chain: Vec::new(),
@@ -143,23 +175,88 @@ impl PoisonReport {
     }
 }
 
-/// A spendable-or-not answer for one outside input.
-async fn verify_unspent(
-    services: &dyn WalletServices,
-    source_txid: &str,
-    vout: u32,
-    script: &[u8],
-) -> bool {
-    match services.is_utxo(source_txid, vout, script).await {
-        Ok(v) => v,
+/// What the status service (chain index plus mempool: WhatsOnChain, Bitails)
+/// knows about a transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainKnowledge {
+    /// Mined.
+    Mined,
+    /// In a node's mempool.
+    Known,
+    /// The service answered and does not know it.
+    Unknown,
+    /// The service could not answer: no verdict either way.
+    Unavailable,
+}
+
+impl ChainKnowledge {
+    /// Mined or known: the chain vouches for it.
+    pub fn is_known(self) -> bool {
+        matches!(self, Self::Mined | Self::Known)
+    }
+}
+
+/// Ask the status service about `txid` (one `get_status_for_txids`).
+pub async fn chain_knowledge(services: &dyn WalletServices, txid: &str) -> ChainKnowledge {
+    match services
+        .get_status_for_txids(std::slice::from_ref(&txid.to_string()), false)
+        .await
+    {
+        Ok(result) if result.status == "success" => {
+            match result.results.iter().find(|d| d.txid == txid) {
+                Some(d) if d.status == "mined" => ChainKnowledge::Mined,
+                Some(d) if d.status == "known" => ChainKnowledge::Known,
+                _ => ChainKnowledge::Unknown,
+            }
+        }
+        Ok(result) => {
+            tracing::warn!(txid = %txid, error = ?result.error, "chain knowledge: status service answered with an error");
+            ChainKnowledge::Unavailable
+        }
         Err(e) => {
-            tracing::warn!(
-                source_txid = %source_txid,
-                vout,
-                error = %e,
-                "poisoned chain: is_utxo failed, input stays LOCKED (an unknown never releases)"
-            );
-            false
+            tracing::warn!(txid = %txid, error = %e, "chain knowledge: status service unavailable");
+            ChainKnowledge::Unavailable
+        }
+    }
+}
+
+/// The chain's answer for one outpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UtxoVerdict {
+    /// In the unspent set: safe to release.
+    Unspent,
+    /// Not in the unspent set (spent, or its source never existed).
+    Spent,
+    /// The lookup failed or was inconclusive (rate limit, outage).
+    Unknown,
+}
+
+/// Ask the UTXO service about `txid:vout` (one `get_utxo_status` by script
+/// hash, the same call `is_utxo` makes), keeping the three answers apart.
+pub async fn utxo_verdict(
+    services: &dyn WalletServices,
+    txid: &str,
+    vout: u32,
+    locking_script: &[u8],
+) -> UtxoVerdict {
+    let hash = services.hash_output_script(locking_script);
+    let outpoint = format!("{}.{}", txid, vout);
+    match services
+        .get_utxo_status(&hash, None, Some(&outpoint), false)
+        .await
+    {
+        Ok(result) if result.status == "success" => match result.is_utxo {
+            Some(true) => UtxoVerdict::Unspent,
+            Some(false) => UtxoVerdict::Spent,
+            None => UtxoVerdict::Unknown,
+        },
+        Ok(result) => {
+            tracing::debug!(outpoint = %outpoint, error = ?result.error, "utxo verdict: service answered with an error");
+            UtxoVerdict::Unknown
+        }
+        Err(e) => {
+            tracing::debug!(outpoint = %outpoint, error = %e, "utxo verdict: lookup failed");
+            UtxoVerdict::Unknown
         }
     }
 }
@@ -247,6 +344,127 @@ impl StorageSqlx {
         Ok(rows.iter().map(|r| r.get::<i64, _>("spent_by")).collect())
     }
 
+    /// The unproven (or failed) transactions of this wallet whose outputs
+    /// `txid` spends: the candidates for the upward climb.
+    async fn climbable_parents(&self, txid: &str) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT t.txid, t.transaction_id FROM outputs o \
+             JOIN transactions t ON o.transaction_id = t.transaction_id \
+             WHERE o.spent_by = (SELECT transaction_id FROM transactions WHERE txid = ? LIMIT 1) \
+               AND t.txid IS NOT NULL ORDER BY t.transaction_id",
+        )
+        .bind(txid)
+        .fetch_all(self.pool())
+        .await?;
+        let mut parents = Vec::new();
+        for row in &rows {
+            let parent: String = row.get("txid");
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
+                    .bind(row.get::<i64, _>("transaction_id"))
+                    .fetch_one(self.pool())
+                    .await?;
+            if CLIMBABLE_STATUSES.contains(&status.as_str()) {
+                parents.push(parent);
+            }
+        }
+        Ok(parents)
+    }
+
+    /// Climb from `txid` to the topmost absent ancestor: while a parent of
+    /// the current transaction is in this wallet, not proven, and unknown to
+    /// the status service, the poison starts above. The climb stops at the
+    /// first parent the chain knows (recorded as chain evidence), when the
+    /// status service cannot answer (never climb on silence), or after
+    /// [`CLIMB_LIMIT`] steps. Returns `(root, climbed)`: the root and the
+    /// transactions passed on the way up (`txid` first; empty when `txid`
+    /// is the root). Read-only apart from the memory rows.
+    pub async fn poisoned_root_of(
+        &self,
+        services: &dyn WalletServices,
+        txid: &str,
+    ) -> Result<(String, Vec<String>)> {
+        let mut current = txid.to_string();
+        let mut climbed: Vec<String> = Vec::new();
+        for _ in 0..CLIMB_LIMIT {
+            let parents = self.climbable_parents(&current).await?;
+            let mut next: Option<String> = None;
+            for parent in &parents {
+                tokio::time::sleep(CLIMB_PACE).await;
+                match chain_knowledge(services, parent).await {
+                    knowledge @ (ChainKnowledge::Mined | ChainKnowledge::Known) => {
+                        let status = if knowledge == ChainKnowledge::Mined {
+                            BROADCAST_STATUS_MINED
+                        } else {
+                            BROADCAST_STATUS_SEEN
+                        };
+                        self.record_broadcast_status_quiet(
+                            parent,
+                            BROADCAST_PROVIDER_CHAIN,
+                            status,
+                        )
+                        .await;
+                        tracing::debug!(
+                            child = %current,
+                            parent = %parent,
+                            ?knowledge,
+                            "poisoned chain: parent is on the chain, the climb stops below it"
+                        );
+                    }
+                    ChainKnowledge::Unknown => {
+                        if next.is_none() {
+                            next = Some(parent.clone());
+                        } else {
+                            tracing::info!(
+                                child = %current,
+                                parent = %parent,
+                                "poisoned chain: another absent parent, left for its own pass"
+                            );
+                        }
+                    }
+                    ChainKnowledge::Unavailable => {
+                        tracing::warn!(
+                            child = %current,
+                            parent = %parent,
+                            "poisoned chain: status service unavailable, the climb stops here"
+                        );
+                    }
+                }
+            }
+            match next {
+                Some(parent) => {
+                    tracing::warn!(
+                        child = %current,
+                        parent = %parent,
+                        "poisoned chain: the parent is absent from the chain too, climbing"
+                    );
+                    climbed.push(current.clone());
+                    current = parent;
+                }
+                None => break,
+            }
+        }
+        Ok((current, climbed))
+    }
+
+    /// [`StorageSqlx::retire_poisoned_chain`] from the topmost absent
+    /// ancestor of `txid` ([`StorageSqlx::poisoned_root_of`]).
+    pub async fn retire_poisoned_chain_from(
+        &self,
+        services: &dyn WalletServices,
+        txid: &str,
+        req_status: &str,
+        execute: bool,
+    ) -> Result<PoisonReport> {
+        let (root, climbed) = self.poisoned_root_of(services, txid).await?;
+        let mut report = self
+            .retire_poisoned_chain(services, &root, req_status, execute)
+            .await?;
+        report.origin = txid.to_string();
+        report.climbed = climbed;
+        Ok(report)
+    }
+
     /// Retire `root_txid` and every unproven descendant (see the module
     /// docs). `req_status` is the root's proven_tx_req status (`"invalid"`
     /// for a phantom, `"doubleSpend"` for a named competitor); descendants
@@ -307,6 +525,14 @@ impl StorageSqlx {
         // The alive check: the status service knowing the root promotes it
         // (mempool or chain) and ends the retire.
         if super::process_action::reconcile_tx_status_via_services(services, root_txid).await {
+            // The status service knows it: chain evidence, so no reconciler
+            // re-examines the same root every pass.
+            self.record_broadcast_status_quiet(
+                root_txid,
+                BROADCAST_PROVIDER_CHAIN,
+                BROADCAST_STATUS_SEEN,
+            )
+            .await;
             if execute {
                 sqlx::query(
                     "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? \
@@ -419,9 +645,10 @@ impl StorageSqlx {
     }
 
     /// Retire one transaction of a poisoned set: outside inputs released on
-    /// verification, own outputs invalidated, `failed`, req at `req_status`,
-    /// memory `rejected`. A non-retirable status (already `failed`) still
-    /// gets its outputs invalidated and its locked inputs re-examined.
+    /// verification (kept ones scheduled for re-checks), own outputs
+    /// invalidated, `failed`, req at `req_status`, memory `rejected`. A
+    /// non-retirable status (already `failed`) still gets its outputs
+    /// invalidated and its locked inputs re-examined.
     #[allow(clippy::too_many_arguments)]
     async fn retire_one_poisoned(
         &self,
@@ -462,26 +689,44 @@ impl StorageSqlx {
             }
             let locking_script: Option<Vec<u8>> = input.get("locking_script");
             let script = locking_script.as_deref().unwrap_or(&[]);
-            if verify_unspent(services, &source_txid, vout as u32, script).await {
-                sqlx::query(
-                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? \
-                     WHERE output_id = ? AND spent_by = ?",
-                )
-                .bind(now)
-                .bind(output_id)
-                .bind(tx.transaction_id)
-                .execute(self.pool())
-                .await?;
-                report.restored += 1;
-                report.restored_sats += satoshis.max(0);
-            } else {
-                report.kept += 1;
-                tracing::info!(
-                    txid = %tx.txid,
-                    source = %source_txid,
-                    vout,
-                    "poisoned chain: input not verifiably unspent, stays LOCKED"
-                );
+            match utxo_verdict(services, &source_txid, vout as u32, script).await {
+                UtxoVerdict::Unspent => {
+                    sqlx::query(
+                        "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? \
+                         WHERE output_id = ? AND spent_by = ?",
+                    )
+                    .bind(now)
+                    .bind(output_id)
+                    .bind(tx.transaction_id)
+                    .execute(self.pool())
+                    .await?;
+                    report.restored += 1;
+                    report.restored_sats += satoshis.max(0);
+                    tracing::warn!(
+                        txid = %tx.txid,
+                        source = %source_txid,
+                        vout,
+                        satoshis,
+                        "poisoned chain: outside input verifiably unspent, restored to coin selection"
+                    );
+                }
+                verdict @ (UtxoVerdict::Spent | UtxoVerdict::Unknown) => {
+                    report.kept += 1;
+                    let label = if verdict == UtxoVerdict::Spent {
+                        "spent"
+                    } else {
+                        "unknown"
+                    };
+                    tracing::info!(
+                        txid = %tx.txid,
+                        source = %source_txid,
+                        vout,
+                        satoshis,
+                        verdict = label,
+                        "poisoned chain: outside input not verifiably unspent, stays LOCKED and is re-checked later"
+                    );
+                    self.schedule_locked_input_check(output_id, label).await;
+                }
             }
         }
 

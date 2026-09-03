@@ -79,8 +79,9 @@ pub use storage::{classify_broadcast_results, BroadcastOutcome};
 // Re-export StorageSqlx when sqlite or mysql feature is enabled
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
 pub use storage::{
-    InternalizedPhantom, PoisonOutcome, PoisonReport, PoisonedTx, RetireOutcome,
-    SqlxBroadcastMemory, StorageSqlx,
+    chain_knowledge, locked_input_backoff_minutes, utxo_verdict, ChainKnowledge,
+    InternalizedPhantom, LockedInputCheck, LockedInputReport, LockedInputVerdict, PoisonOutcome,
+    PoisonReport, PoisonedTx, RetireOutcome, SqlxBroadcastMemory, StorageSqlx, UtxoVerdict,
 };
 
 // Re-export StorageClient when remote feature is enabled
