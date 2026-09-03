@@ -1306,7 +1306,7 @@ mod storage_wiring {
     use bsv_wallet_toolbox_rs::storage::StorageSqlx;
     use bsv_wallet_toolbox_rs::{
         MonitorStorage, ProofIngestOutcome, Wallet, WalletStorageProvider, WalletStorageWriter,
-        BROADCAST_PROVIDER_NETWORK,
+        BROADCAST_PROVIDER_CHAIN,
     };
 
     async fn setup_storage() -> StorageSqlx {
@@ -1393,7 +1393,10 @@ mod storage_wiring {
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        assert_eq!(provider, BROADCAST_PROVIDER_NETWORK);
+        assert_eq!(
+            provider, BROADCAST_PROVIDER_CHAIN,
+            "a proof is chain evidence"
+        );
         assert_eq!(status, "mined");
 
         // A push "seen" for the same txid never downgrades mined.
@@ -1404,7 +1407,7 @@ mod storage_wiring {
         let (status,): (String,) =
             sqlx::query_as("SELECT status FROM broadcast_seen WHERE txid = ? AND provider = ?")
                 .bind(&txid)
-                .bind(BROADCAST_PROVIDER_NETWORK)
+                .bind(BROADCAST_PROVIDER_CHAIN)
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();

@@ -92,11 +92,27 @@ pub const BROADCAST_STATUS_UNKNOWN: &str = "unknown";
 /// provider before an ancestor is skipped on its strength.
 pub const BROADCAST_SEEN_STALE_SECS: i64 = 600;
 
-/// The pseudo-provider for facts about the network as a whole (a mined
-/// proof, a seen report whose reporting plane is unknown, a chain-index
-/// presence). Rows recorded under it count toward EVERY provider's seen set
-/// unless that provider has its own negative row.
+/// The pseudo-provider for facts about the network as a whole (a seen report
+/// from a peer node or an unspecified plane). Rows recorded under it count
+/// toward EVERY provider's seen set unless that provider has its own
+/// negative row.
 pub const BROADCAST_PROVIDER_NETWORK: &str = "network";
+
+/// The pseudo-provider for facts a CHAIN INDEX (or a validated merkle proof)
+/// established: WhatsOnChain / Bitails holding the transaction, a proof
+/// ingested. Rows recorded under it count toward every provider like the
+/// network rows, and they are the only evidence a reconciler trusts for an
+/// unproven transaction older than its absence threshold: a broadcaster
+/// reporting `SEEN_MULTIPLE_NODES` two hours after a transaction the chain
+/// index never saw is not chain evidence (2026-09-02, w0).
+pub const BROADCAST_PROVIDER_CHAIN: &str = "chain";
+
+/// Whether `provider` is one of the pseudo-providers whose rows count for
+/// every real provider ([`BROADCAST_PROVIDER_NETWORK`],
+/// [`BROADCAST_PROVIDER_CHAIN`]).
+pub fn is_global_provider(provider: &str) -> bool {
+    provider == BROADCAST_PROVIDER_NETWORK || provider == BROADCAST_PROVIDER_CHAIN
+}
 
 /// `broadcast_prefs.key` holding the name of the provider that accepted the
 /// most recent broadcast.
@@ -289,15 +305,15 @@ fn qualifying_record<'a>(
     let own = records
         .iter()
         .find(|r| r.txid == txid && r.provider == provider);
-    let network = records
-        .iter()
-        .find(|r| r.txid == txid && r.provider == BROADCAST_PROVIDER_NETWORK);
     let own_status = own.and_then(|r| r.ladder_status());
     if own_status.is_some_and(|s| s.is_negative()) {
         return None;
     }
+    let global = records
+        .iter()
+        .filter(|r| r.txid == txid && is_global_provider(&r.provider));
     let mut best: Option<&BroadcastSeenRecord> = None;
-    for candidate in [own, network].into_iter().flatten() {
+    for candidate in own.into_iter().chain(global) {
         if candidate
             .ladder_status()
             .is_some_and(|s| s.is_network_evidence())
@@ -541,7 +557,7 @@ impl BroadcastMemory for InMemoryBroadcastMemory {
             .iter()
             .filter(|((txid, prov), _)| {
                 wanted.contains(txid)
-                    && provider.is_none_or(|p| prov == p || prov == BROADCAST_PROVIDER_NETWORK)
+                    && provider.is_none_or(|p| prov == p || is_global_provider(prov))
             })
             .map(|((txid, prov), (status, at))| BroadcastSeenRecord {
                 txid: txid.clone(),
@@ -830,6 +846,30 @@ mod tests {
         // Another provider gets only the network row.
         let taal = seen_set_from_records(PROVIDER_TAAL_ARC, &txids, &records);
         assert_eq!(taal, HashSet::from([c.clone()]));
+    }
+
+    #[test]
+    fn chain_index_rows_count_for_every_provider_like_the_network_rows() {
+        let a = "aa".repeat(32);
+        let b = "bb".repeat(32);
+        let txids = vec![a.clone(), b.clone()];
+        let records = vec![
+            rec(&a, BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_SEEN, 5),
+            rec(&b, BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_MINED, 5),
+            rec(&b, PROVIDER_ARCADE_V2, BROADCAST_STATUS_UNKNOWN, 1),
+        ];
+        assert_eq!(
+            seen_set_from_records(PROVIDER_TAAL_ARC, &txids, &records),
+            HashSet::from([a.clone(), b.clone()])
+        );
+        // A provider's negative row still vetoes the chain row for it.
+        assert_eq!(
+            seen_set_from_records(PROVIDER_ARCADE_V2, &txids, &records),
+            HashSet::from([a.clone()])
+        );
+        assert!(is_global_provider(BROADCAST_PROVIDER_CHAIN));
+        assert!(is_global_provider(BROADCAST_PROVIDER_NETWORK));
+        assert!(!is_global_provider(PROVIDER_ARCADE_V2));
     }
 
     #[test]

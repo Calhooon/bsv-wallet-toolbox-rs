@@ -2733,7 +2733,7 @@ impl StorageSqlx {
         // Mined: every provider has it. Remember it for reduced sends.
         self.record_broadcast_status_quiet(
             txid,
-            crate::services::broadcast_memory::BROADCAST_PROVIDER_NETWORK,
+            crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
             crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
         )
         .await;

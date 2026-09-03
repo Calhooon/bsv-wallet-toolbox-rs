@@ -1139,7 +1139,7 @@ async fn insert_proven_tx_from_bump(
     if let Err(e) = super::broadcast_seen::record_broadcast_status_on(
         conn,
         txid,
-        crate::services::broadcast_memory::BROADCAST_PROVIDER_NETWORK,
+        crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
         crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
     )
     .await

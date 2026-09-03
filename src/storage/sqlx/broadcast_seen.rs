@@ -14,7 +14,7 @@ use tokio::sync::OnceCell;
 use crate::error::{Error, Result};
 use crate::services::broadcast_memory::{
     ladder_step, BroadcastMemory, BroadcastSeenRecord, BroadcastStatus, LadderStep,
-    BROADCAST_PROVIDER_NETWORK, BROADCAST_STATUS_REJECTED,
+    BROADCAST_PROVIDER_CHAIN, BROADCAST_PROVIDER_NETWORK, BROADCAST_STATUS_REJECTED,
 };
 
 use super::storage_sqlx::StorageSqlx;
@@ -174,7 +174,7 @@ impl SqlxBroadcastMemory {
             let sql = match provider {
                 Some(_) => format!(
                     "SELECT txid, provider, status, CAST(seen_at AS TEXT) AS seen_at \
-                     FROM broadcast_seen WHERE provider IN (?, ?) AND txid IN ({})",
+                     FROM broadcast_seen WHERE provider IN (?, ?, ?) AND txid IN ({})",
                     placeholders
                 ),
                 None => format!(
@@ -185,7 +185,10 @@ impl SqlxBroadcastMemory {
             };
             let mut query = sqlx::query(&sql);
             if let Some(provider) = provider {
-                query = query.bind(provider).bind(BROADCAST_PROVIDER_NETWORK);
+                query = query
+                    .bind(provider)
+                    .bind(BROADCAST_PROVIDER_NETWORK)
+                    .bind(BROADCAST_PROVIDER_CHAIN);
             }
             for txid in chunk {
                 query = query.bind(txid);
