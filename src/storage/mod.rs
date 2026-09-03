@@ -48,7 +48,10 @@ pub use broadcast::{
 };
 
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
-pub use sqlx::{RetireOutcome, SqlxBroadcastMemory, StorageSqlx};
+pub use sqlx::{
+    InternalizedPhantom, PoisonOutcome, PoisonReport, PoisonedTx, RetireOutcome,
+    SqlxBroadcastMemory, StorageSqlx,
+};
 
 #[cfg(feature = "remote")]
 pub use client::StorageClient;

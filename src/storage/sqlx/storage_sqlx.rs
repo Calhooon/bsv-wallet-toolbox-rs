@@ -3097,7 +3097,17 @@ impl StorageSqlx {
         .execute(self.pool())
         .await?;
 
-        Ok(RetireOutcome::Retired { restored, kept })
+        // No provider skips it again, and everything this wallet built on
+        // it is a phantom too (the poisoned chain, 2026-09-02).
+        self.mark_broadcast_rejected_quiet(txid).await;
+        let (descendants_restored, descendants_kept) = self
+            .retire_poisoned_descendants(services, txid, transaction_id, now)
+            .await?;
+
+        Ok(RetireOutcome::Retired {
+            restored: restored + descendants_restored,
+            kept: kept + descendants_kept,
+        })
     }
 
     /// THE RELEASE RULE, addressed by txid — for a caller that learned AFTER the
@@ -4726,8 +4736,26 @@ impl MonitorStorage for StorageSqlx {
         .execute(self.pool())
         .await?;
 
+        if tx_result.rows_affected() > 0 {
+            // Its outputs never fund anything again: change chained on a
+            // rejected transaction is how a wallet poisons itself
+            // (2026-09-02). The inputs and the descendants are released /
+            // retired by the reconcile sweep, which has the services for
+            // the per-input chain verification.
+            sqlx::query(
+                "UPDATE outputs SET spendable = 0, updated_at = ? \
+                 WHERE transaction_id IN (SELECT transaction_id FROM transactions WHERE txid = ?)",
+            )
+            .bind(now)
+            .bind(txid)
+            .execute(self.pool())
+            .await?;
+        }
+
         let updated = req_result.rows_affected() > 0 || tx_result.rows_affected() > 0;
         if updated {
+            // No provider skips it again.
+            self.mark_broadcast_rejected_quiet(txid).await;
             tracing::warn!(
                 txid = %txid,
                 double_spend = double_spend,
