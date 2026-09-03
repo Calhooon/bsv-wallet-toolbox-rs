@@ -1136,12 +1136,13 @@ async fn insert_proven_tx_from_bump(
 
     // Mined: every provider has it. Remember it for reduced sends; never a
     // reason to fail the internalize.
-    if let Err(e) = sqlx::query(super::broadcast_seen::RECORD_SEEN_SQL)
-        .bind(txid)
-        .bind(crate::services::broadcast_memory::BROADCAST_PROVIDER_NETWORK)
-        .bind(crate::services::broadcast_memory::BROADCAST_STATUS_MINED)
-        .execute(&mut *conn)
-        .await
+    if let Err(e) = super::broadcast_seen::record_broadcast_status_on(
+        conn,
+        txid,
+        crate::services::broadcast_memory::BROADCAST_PROVIDER_NETWORK,
+        crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
+    )
+    .await
     {
         tracing::debug!(txid = %txid, error = %e, "broadcast_seen: mined record skipped");
     }

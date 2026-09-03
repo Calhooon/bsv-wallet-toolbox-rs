@@ -112,11 +112,14 @@ pub use services::{
 
 // Broadcast acceptance memory (reduced sends + sticky provider order)
 pub use services::{
-    apply_sticky_provider_order, beef_to_ef_batch_skipping, missing_parent_hint,
-    unproven_ancestors_in_beef, BroadcastMemory, EfBatch, EfBatchEntry, InMemoryBroadcastMemory,
-    PostBeefDelivery, BROADCAST_PROVIDER_NETWORK, BROADCAST_STATUS_ACCEPTED,
-    BROADCAST_STATUS_MINED, BROADCAST_STATUS_SEEN, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2,
-    PROVIDER_BITAILS, PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
+    apply_sticky_provider_order, beef_to_ef_batch_skipping, ladder_step, missing_parent_hint,
+    oldest_stale_ancestor, seen_set_from_records, unproven_ancestors_in_beef, BroadcastMemory,
+    BroadcastSeenRecord, BroadcastStatus, EfBatch, EfBatchEntry, InMemoryBroadcastMemory,
+    LadderStep, PostBeefDelivery, BROADCAST_PROVIDER_NETWORK, BROADCAST_SEEN_STALE_SECS,
+    BROADCAST_STATUS_ACCEPTED, BROADCAST_STATUS_MINED, BROADCAST_STATUS_REJECTED,
+    BROADCAST_STATUS_SEEN, BROADCAST_STATUS_UNKNOWN, PREF_LAST_ACCEPTED_PROVIDER,
+    PROVIDER_ARCADE_V2, PROVIDER_BITAILS, PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC,
+    PROVIDER_WHATSONCHAIN,
 };
 
 // Re-export Wallet types

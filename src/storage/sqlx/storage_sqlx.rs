@@ -2731,7 +2731,7 @@ impl StorageSqlx {
         .await?;
 
         // Mined: every provider has it. Remember it for reduced sends.
-        self.record_broadcast_seen_quiet(
+        self.record_broadcast_status_quiet(
             txid,
             crate::services::broadcast_memory::BROADCAST_PROVIDER_NETWORK,
             crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
@@ -4657,7 +4657,7 @@ impl MonitorStorage for StorageSqlx {
         provider: &str,
     ) -> Result<bool> {
         // The reporting plane has the tx: remember it for reduced sends.
-        self.record_broadcast_seen_quiet(
+        self.record_broadcast_status_quiet(
             txid,
             provider,
             crate::services::broadcast_memory::BROADCAST_STATUS_SEEN,

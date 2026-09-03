@@ -13,7 +13,7 @@ use bsv_rs::transaction::{
 use bsv_wallet_toolbox_rs::services::{
     beef_to_ef_batch, beef_to_ef_batch_skipping, Arc as ArcProvider, ArcConfig, Arcade,
     ArcadeConfig, BroadcastMemory, InMemoryBroadcastMemory, Services, ServicesOptions,
-    WalletServices, BROADCAST_STATUS_ACCEPTED, PREF_LAST_ACCEPTED_PROVIDER,
+    WalletServices, BROADCAST_STATUS_ACCEPTED, BROADCAST_STATUS_SEEN, PREF_LAST_ACCEPTED_PROVIDER,
     PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC,
 };
 use bsv_wallet_toolbox_rs::{classify_broadcast_results, BroadcastOutcome, Chain};
@@ -822,7 +822,8 @@ mod services_memory {
             .expect(1)
             .create_async()
             .await;
-        // GorillaPool accepts the full BEEF the first time...
+        // GorillaPool accepts the full BEEF the first two times (the second
+        // instance holds nothing but acceptances, which never skip)...
         let gp_full = gp
             .mock("POST", "/v1/tx")
             .match_body(mockito::Matcher::Regex(format!(
@@ -832,10 +833,10 @@ mod services_memory {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "SEEN_ON_NETWORK"))
-            .expect(1)
+            .expect(2)
             .create_async()
             .await;
-        // ...and the subject alone as EF the second time.
+        // ...and the subject alone as EF once the ancestors are SEEN.
         let gp_ef = gp
             .mock("POST", "/v1/tx")
             .match_body(mockito::Matcher::Regex(format!(
@@ -882,7 +883,8 @@ mod services_memory {
         }
 
         // Second instance (a restart): same memory, fresh static order.
-        // GorillaPool goes first and gets only the subject as EF.
+        // GorillaPool goes first, but an acceptance is not network
+        // evidence (2026-09-02): the full package goes out again.
         let services2 = two_arc_services(&taal.url(), &gp.url());
         services2.set_broadcast_memory(memory.clone());
         let results = services2
@@ -890,6 +892,31 @@ mod services_memory {
             .await
             .unwrap();
         assert_eq!(results.len(), 1, "the sticky provider accepted first");
+        assert_eq!(results[0].name, "arcGorillaPool");
+        assert!(
+            results[0]
+                .notes
+                .iter()
+                .any(|n| n.get("what").and_then(|v| v.as_str()) == Some("postBeefFull")),
+            "accepted alone never skips: {:?}",
+            results[0].notes
+        );
+
+        // The network vouches for the ancestors (a push verdict, a presence
+        // probe): now the subject alone goes out as EF.
+        for txid in [&c.a, &c.b] {
+            memory
+                .record_broadcast_status(txid, PROVIDER_GORILLAPOOL_ARC, BROADCAST_STATUS_SEEN)
+                .await
+                .unwrap();
+        }
+        let services3 = two_arc_services(&taal.url(), &gp.url());
+        services3.set_broadcast_memory(memory.clone());
+        let results = services3
+            .post_beef(&c.beef, std::slice::from_ref(&c.subject))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "arcGorillaPool");
         assert!(results[0]
             .notes
@@ -951,6 +978,320 @@ mod services_memory {
                 Some(BROADCAST_STATUS_ACCEPTED)
             );
         }
+    }
+}
+
+// =============================================================================
+// Arcade: a stale `seen` is re-checked with GET /tx/{oldest} (mockito)
+// =============================================================================
+
+mod arcade_stale_probe {
+    use super::*;
+    use bsv_wallet_toolbox_rs::services::{
+        BROADCAST_SEEN_STALE_SECS, BROADCAST_STATUS_REJECTED, BROADCAST_STATUS_UNKNOWN,
+        PROVIDER_ARCADE_V2,
+    };
+
+    fn arcade_services(url: &str) -> Services {
+        let options = ServicesOptions::mainnet().with_arcade(url, None);
+        Services::with_options(Chain::Main, options).unwrap()
+    }
+
+    /// `a` and `b` SEEN by Arcade `age_secs` ago (`a` a minute older, so it
+    /// is the oldest skipped ancestor).
+    fn memory_seen(c: &ChainBeef, age_secs: i64) -> StdArc<InMemoryBroadcastMemory> {
+        let memory = StdArc::new(InMemoryBroadcastMemory::new());
+        let at = chrono::Utc::now() - chrono::Duration::seconds(age_secs);
+        memory
+            .record_broadcast_status_at(&c.a, PROVIDER_ARCADE_V2, BROADCAST_STATUS_SEEN, at)
+            .unwrap();
+        memory
+            .record_broadcast_status_at(
+                &c.b,
+                PROVIDER_ARCADE_V2,
+                BROADCAST_STATUS_SEEN,
+                at + chrono::Duration::seconds(60),
+            )
+            .unwrap();
+        memory
+    }
+
+    fn tx_info(txid: &str, status: &str) -> String {
+        format!(r#"{{"txid":"{}","txStatus":"{}"}}"#, txid, status)
+    }
+
+    fn submit_accepted(txid: &str) -> String {
+        format!(r#"{{"txid":"{}","txStatus":"RECEIVED"}}"#, txid)
+    }
+
+    fn full_body(c: &ChainBeef) -> Vec<u8> {
+        beef_to_ef_batch_skipping(&c.beef, &HashSet::new())
+            .unwrap()
+            .entries
+            .iter()
+            .flat_map(|e| e.ef.clone())
+            .collect()
+    }
+
+    fn subject_ef(c: &ChainBeef) -> Vec<u8> {
+        ef_of(
+            &beef_to_ef_batch_skipping(&c.beef, &set(&[&c.a, &c.b])).unwrap(),
+            &c.subject,
+        )
+    }
+
+    #[tokio::test]
+    async fn fresh_seen_skips_without_a_probe() {
+        let c = build_chain();
+        let memory = memory_seen(&c, 30);
+        let mut arcade = mockito::Server::new_async().await;
+        let probe = arcade
+            .mock("GET", mockito::Matcher::Regex("^/tx/".to_string()))
+            .expect(0)
+            .create_async()
+            .await;
+        let single = arcade
+            .mock("POST", "/tx")
+            .match_body(subject_ef(&c))
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(submit_accepted(&c.subject))
+            .expect(1)
+            .create_async()
+            .await;
+        let batch = arcade.mock("POST", "/txs").expect(0).create_async().await;
+
+        let services = arcade_services(&arcade.url());
+        services.set_broadcast_memory(memory.clone());
+        let results = services
+            .post_beef(&c.beef, std::slice::from_ref(&c.subject))
+            .await
+            .unwrap();
+        probe.assert_async().await;
+        single.assert_async().await;
+        batch.assert_async().await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_success());
+        assert_eq!(
+            memory.status_of(&c.a, PROVIDER_ARCADE_V2).as_deref(),
+            Some(BROADCAST_STATUS_SEEN)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_seen_reconfirmed_by_the_broadcaster_keeps_the_reduced_send() {
+        let c = build_chain();
+        let memory = memory_seen(&c, BROADCAST_SEEN_STALE_SECS + 600);
+        let before = memory.seen_at_of(&c.a, PROVIDER_ARCADE_V2).unwrap();
+        let mut arcade = mockito::Server::new_async().await;
+        let probe = arcade
+            .mock("GET", format!("/tx/{}", c.a).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(tx_info(&c.a, "SEEN_ON_NETWORK"))
+            .expect(1)
+            .create_async()
+            .await;
+        let other_probe = arcade
+            .mock("GET", format!("/tx/{}", c.b).as_str())
+            .expect(0)
+            .create_async()
+            .await;
+        let single = arcade
+            .mock("POST", "/tx")
+            .match_body(subject_ef(&c))
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(submit_accepted(&c.subject))
+            .expect(1)
+            .create_async()
+            .await;
+        let batch = arcade.mock("POST", "/txs").expect(0).create_async().await;
+
+        let services = arcade_services(&arcade.url());
+        services.set_broadcast_memory(memory.clone());
+        let results = services
+            .post_beef(&c.beef, std::slice::from_ref(&c.subject))
+            .await
+            .unwrap();
+        probe.assert_async().await;
+        other_probe.assert_async().await;
+        single.assert_async().await;
+        batch.assert_async().await;
+        assert!(results[0].is_success());
+        // The re-confirmation refreshed the evidence.
+        let after = memory.seen_at_of(&c.a, PROVIDER_ARCADE_V2).unwrap();
+        assert!(after > before, "seen_at refreshed by the probe");
+        assert_eq!(
+            memory.status_of(&c.a, PROVIDER_ARCADE_V2).as_deref(),
+            Some(BROADCAST_STATUS_SEEN)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_seen_rejected_by_the_broadcaster_falls_back_to_the_full_package() {
+        let c = build_chain();
+        let memory = memory_seen(&c, BROADCAST_SEEN_STALE_SECS + 600);
+        let mut arcade = mockito::Server::new_async().await;
+        let probe = arcade
+            .mock("GET", format!("/tx/{}", c.a).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(tx_info(&c.a, "REJECTED"))
+            .expect(1)
+            .create_async()
+            .await;
+        let single = arcade.mock("POST", "/tx").expect(0).create_async().await;
+        let batch = arcade
+            .mock("POST", "/txs")
+            .match_body(full_body(&c))
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"duplicates":0,"submitted":3,"total":3}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let services = arcade_services(&arcade.url());
+        services.set_broadcast_memory(memory.clone());
+        let results = services
+            .post_beef(&c.beef, std::slice::from_ref(&c.subject))
+            .await
+            .unwrap();
+        probe.assert_async().await;
+        single.assert_async().await;
+        batch.assert_async().await;
+        assert!(results[0].is_success());
+        // The rejected ancestor is remembered as such, and the batch's
+        // acceptance does not launder it.
+        assert_eq!(
+            memory.status_of(&c.a, PROVIDER_ARCADE_V2).as_deref(),
+            Some(BROADCAST_STATUS_REJECTED)
+        );
+        assert_eq!(
+            memory.status_of(&c.b, PROVIDER_ARCADE_V2).as_deref(),
+            Some(BROADCAST_STATUS_SEEN),
+            "only the probed ancestor changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_seen_unknown_to_the_broadcaster_falls_back_to_the_full_package() {
+        let c = build_chain();
+        let memory = memory_seen(&c, BROADCAST_SEEN_STALE_SECS + 600);
+        let mut arcade = mockito::Server::new_async().await;
+        let probe = arcade
+            .mock("GET", format!("/tx/{}", c.a).as_str())
+            .with_status(404)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"transaction not found"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let batch = arcade
+            .mock("POST", "/txs")
+            .match_body(full_body(&c))
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"duplicates":0,"submitted":3,"total":3}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let services = arcade_services(&arcade.url());
+        services.set_broadcast_memory(memory.clone());
+        let results = services
+            .post_beef(&c.beef, std::slice::from_ref(&c.subject))
+            .await
+            .unwrap();
+        probe.assert_async().await;
+        batch.assert_async().await;
+        assert!(results[0].is_success());
+        assert_eq!(
+            memory.status_of(&c.a, PROVIDER_ARCADE_V2).as_deref(),
+            Some(BROADCAST_STATUS_UNKNOWN)
+        );
+        // The next broadcast keeps `a` in the package (unknown never
+        // qualifies, so it is not even re-probed), while `b`, stale too, is
+        // re-checked and stays skipped.
+        let probe_a = arcade
+            .mock("GET", format!("/tx/{}", c.a).as_str())
+            .expect(0)
+            .create_async()
+            .await;
+        let probe_b = arcade
+            .mock("GET", format!("/tx/{}", c.b).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(tx_info(&c.b, "SEEN_MULTIPLE_NODES"))
+            .expect(1)
+            .create_async()
+            .await;
+        let reduced_body: Vec<u8> = beef_to_ef_batch_skipping(&c.beef, &set(&[&c.b]))
+            .unwrap()
+            .entries
+            .iter()
+            .flat_map(|e| e.ef.clone())
+            .collect();
+        let batch2 = arcade
+            .mock("POST", "/txs")
+            .match_body(reduced_body)
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"duplicates":1,"submitted":1,"total":2}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let results = services
+            .post_beef(&c.beef, std::slice::from_ref(&c.subject))
+            .await
+            .unwrap();
+        assert!(results[0].is_success());
+        probe_a.assert_async().await;
+        probe_b.assert_async().await;
+        batch2.assert_async().await;
+        assert_eq!(
+            memory.status_of(&c.a, PROVIDER_ARCADE_V2).as_deref(),
+            Some(BROADCAST_STATUS_UNKNOWN),
+            "the batch acceptance does not launder the absence"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_probe_sends_the_full_package_and_leaves_the_memory_alone() {
+        let c = build_chain();
+        let memory = memory_seen(&c, BROADCAST_SEEN_STALE_SECS + 600);
+        let mut arcade = mockito::Server::new_async().await;
+        let probe = arcade
+            .mock("GET", format!("/tx/{}", c.a).as_str())
+            .with_status(503)
+            .expect(1)
+            .create_async()
+            .await;
+        let batch = arcade
+            .mock("POST", "/txs")
+            .match_body(full_body(&c))
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"duplicates":0,"submitted":3,"total":3}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let services = arcade_services(&arcade.url());
+        services.set_broadcast_memory(memory.clone());
+        let results = services
+            .post_beef(&c.beef, std::slice::from_ref(&c.subject))
+            .await
+            .unwrap();
+        probe.assert_async().await;
+        batch.assert_async().await;
+        assert!(results[0].is_success());
+        assert_eq!(
+            memory.status_of(&c.a, PROVIDER_ARCADE_V2).as_deref(),
+            Some(BROADCAST_STATUS_SEEN),
+            "a transient probe fault is not a verdict"
+        );
     }
 }
 

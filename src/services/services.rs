@@ -567,6 +567,125 @@ impl Services {
         }
     }
 
+    /// The unproven ancestors `provider_name` may leave out of this send:
+    /// the memory's network-evidence rows
+    /// ([`seen_set_from_records`](crate::services::seen_set_from_records);
+    /// an acceptance alone never counts), re-checked against Arcade with
+    /// one `GET /tx/{txid}` when the oldest evidence is older than
+    /// [`BROADCAST_SEEN_STALE_SECS`](crate::services::BROADCAST_SEEN_STALE_SECS):
+    /// `SEEN_*` / `MINED` confirms the chain, a `REJECTED` /
+    /// `DOUBLE_SPEND_ATTEMPTED` / 404 / pre-gate answer means the memory
+    /// was stale (that ancestor is recorded `rejected` / `unknown` and the
+    /// full package goes out). Any fault answers with the full package: the
+    /// memory is an optimization, never a reason to send less than the
+    /// network might need.
+    async fn skippable_ancestors(
+        &self,
+        memory: &dyn BroadcastMemory,
+        provider_name: &str,
+        unproven_ancestors: &[String],
+    ) -> HashSet<String> {
+        use crate::services::broadcast_memory::{
+            oldest_stale_ancestor, seen_set_from_records, BroadcastStatus,
+            BROADCAST_SEEN_STALE_SECS, BROADCAST_STATUS_REJECTED, BROADCAST_STATUS_UNKNOWN,
+        };
+
+        let records = match memory
+            .broadcast_records(Some(provider_name), unproven_ancestors)
+            .await
+        {
+            Ok(records) => records,
+            Err(e) => {
+                tracing::warn!(
+                    name = %provider_name,
+                    error = %e,
+                    "broadcast memory: record lookup failed; sending the full package"
+                );
+                return HashSet::new();
+            }
+        };
+        let mut seen = seen_set_from_records(provider_name, unproven_ancestors, &records);
+        if seen.is_empty() || provider_name != PROVIDER_ARCADE_V2 {
+            return seen;
+        }
+        let Some(arcade) = &self.arcade else {
+            return seen;
+        };
+        let skipped: Vec<String> = unproven_ancestors
+            .iter()
+            .filter(|txid| seen.contains(*txid))
+            .cloned()
+            .collect();
+        let Some(stale) = oldest_stale_ancestor(
+            provider_name,
+            &skipped,
+            &records,
+            chrono::Utc::now(),
+            BROADCAST_SEEN_STALE_SECS,
+        ) else {
+            return seen;
+        };
+
+        let stale_txid: &str = &stale;
+        let record = |status: &'static str| async move {
+            if let Err(e) = memory
+                .record_broadcast_status(stale_txid, provider_name, status)
+                .await
+            {
+                tracing::warn!(txid = %stale_txid, status, error = %e, "broadcast memory: could not record the probe verdict");
+            }
+        };
+        match arcade.get_tx_status(&stale).await {
+            Ok(Some(info)) => {
+                let status = BroadcastStatus::from_arcade_status(&info.tx_status);
+                if status.is_network_evidence() {
+                    tracing::info!(
+                        name = %provider_name,
+                        txid = %stale,
+                        tx_status = %info.tx_status,
+                        skipped = skipped.len(),
+                        "broadcast memory: stale seen re-confirmed by the broadcaster; reduced send stands"
+                    );
+                    record(status.as_str()).await;
+                } else {
+                    let recorded = if status == BroadcastStatus::Rejected {
+                        BROADCAST_STATUS_REJECTED
+                    } else {
+                        BROADCAST_STATUS_UNKNOWN
+                    };
+                    tracing::warn!(
+                        name = %provider_name,
+                        txid = %stale,
+                        tx_status = %info.tx_status,
+                        recorded,
+                        "broadcast memory: stale seen NOT confirmed by the broadcaster; sending the full package"
+                    );
+                    record(recorded).await;
+                    seen.clear();
+                }
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    name = %provider_name,
+                    txid = %stale,
+                    "broadcast memory: stale seen is unknown to the broadcaster (404); sending the full package"
+                );
+                record(BROADCAST_STATUS_UNKNOWN).await;
+                seen.clear();
+            }
+            Err(e) => {
+                tracing::warn!(
+                    name = %provider_name,
+                    txid = %stale,
+                    error = %e,
+                    "broadcast memory: stale seen could not be re-checked; sending the full package"
+                );
+                seen.clear();
+            }
+        }
+        seen
+    }
+
     /// Create mainnet services.
     pub fn mainnet() -> Result<Self> {
         Self::new(Chain::Main)
@@ -1136,20 +1255,18 @@ impl WalletServices for Services {
         match self.post_beef_mode {
             PostBeefMode::UntilSuccess => {
                 for (_service_name, provider_name, service) in all_services {
-                    // One seen-set query per provider actually tried
-                    // (usually one per broadcast).
+                    // One record query per provider actually tried (usually
+                    // one per broadcast), plus at most one Arcade status
+                    // probe when the oldest evidence is stale.
                     let seen: HashSet<String> = match &memory {
-                        Some(memory) if !unproven_ancestors.is_empty() => memory
-                            .broadcast_seen_for(&provider_name, &unproven_ancestors)
+                        Some(memory) if !unproven_ancestors.is_empty() => {
+                            self.skippable_ancestors(
+                                memory.as_ref(),
+                                &provider_name,
+                                &unproven_ancestors,
+                            )
                             .await
-                            .unwrap_or_else(|e| {
-                                tracing::warn!(
-                                    name = %provider_name,
-                                    error = %e,
-                                    "broadcast memory: seen-set lookup failed; sending the full package"
-                                );
-                                HashSet::new()
-                            }),
+                        }
                         _ => HashSet::new(),
                     };
 
