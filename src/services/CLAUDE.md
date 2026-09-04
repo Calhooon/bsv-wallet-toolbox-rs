@@ -354,7 +354,7 @@ The `Services` constructor sets up provider priority for each operation:
 | `get_raw_tx` | WhatsOnChain -> Bitails |
 | `post_beef` | ArcadeV2 (opt-in, first) -> TAAL ARC -> GorillaPool ARC -> Bitails -> WhatsOnChain; with a `BroadcastMemory` attached, the last accepting provider is tried first (never ahead of Arcade unless it is Arcade) |
 | `get_utxo_status` | WhatsOnChain |
-| `get_status_for_txids` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails; each provider after the first is asked ONLY about the txids no earlier provider could place (`unknown` is a gap, not a verdict) |
+| `get_status_for_txids` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails; each provider after the first is asked about every txid no earlier provider placed as `mined` (`unknown` is a gap, not a verdict, and a broadcaster's `known` is its word, not the chain's: a chain index's `mined`/`known`/`unknown` replaces it; Arcade's `known` stands only when no chain index answered) |
 | `get_script_hash_history` | WhatsOnChain -> Bitails |
 | `get_height` | BHS (if configured) -> WhatsOnChain -> Bitails (not via ServiceCollection) |
 
