@@ -25,6 +25,19 @@ use super::StorageSqlx;
 /// Maximum satoshi value (total BTC supply in satoshis).
 const MAX_SATOSHIS: u64 = 2_100_000_000_000_000;
 
+/// How many merkle paths one BEEF assembly may fetch from services.
+///
+/// The ancestor walk runs newest-first and stops at the first proven
+/// ancestor, so in practice one or two fetches settle a chain. The budget
+/// only caps the pathological case where nothing on the chain is mined yet.
+const MAX_PROOF_FETCHES_PER_WALK: usize = 8;
+
+/// Do not ask the chain for a proof of a transaction this wallet only just
+/// recorded. Mining is monotonic along a chain (an ancestor is older than
+/// its descendant), so skipping a young ancestor costs nothing: if it were
+/// mined, the next hop back is mined too and answers there instead.
+const MIN_AGE_FOR_PROOF_LOOKUP_SECS: i64 = 90;
+
 /// Special satoshi value indicating "use maximum possible".
 const MAX_POSSIBLE_SATOSHIS: u64 = 2_099_999_999_999_999;
 
@@ -1992,6 +2005,262 @@ async fn validate_stored_beef(
     true
 }
 
+/// Prunes a BEEF down to the transactions the given roots actually need.
+///
+/// A transaction that carries a BUMP is self-proving: its merkle path
+/// establishes it is in a block, so none of its ancestors belong in the BEEF.
+/// This walks the dependency graph from `roots` and stops at every proven
+/// transaction, keeping the artifact to one root transaction plus only its
+/// recursive proof dependencies, which is what the TypeScript builder emits.
+///
+/// Unused BUMPs are dropped with the transactions that referenced them and the
+/// surviving bump indices are rediscovered on merge, so the result always
+/// serializes with consistent indices.
+///
+/// Roots that are absent from `beef` are ignored. If that leaves nothing to
+/// keep, `beef` is left untouched: pruning must never empty a BEEF.
+pub(super) fn prune_beef_to_roots(beef: &mut Beef, roots: &[String]) {
+    if beef.txs.is_empty() || roots.is_empty() {
+        return;
+    }
+
+    // `BeefTx::txid()` re-hashes the raw bytes on every call, so index once.
+    let txids: Vec<String> = beef.txs.iter().map(|tx| tx.txid()).collect();
+    let mut index: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::with_capacity(txids.len());
+    for (i, t) in txids.iter().enumerate() {
+        index.insert(t.as_str(), i);
+    }
+
+    let mut needed: HashSet<usize> = HashSet::new();
+    let mut queue: std::collections::VecDeque<usize> = roots
+        .iter()
+        .filter_map(|r| index.get(r.as_str()).copied())
+        .collect();
+
+    while let Some(i) = queue.pop_front() {
+        if !needed.insert(i) {
+            continue;
+        }
+        let tx = &beef.txs[i];
+        // Proven, or nothing to walk into: this branch terminates here.
+        if tx.bump_index().is_some() || tx.is_txid_only() {
+            continue;
+        }
+        let raw = match tx.raw_tx() {
+            Some(r) => r.to_vec(),
+            None => continue,
+        };
+        if let Ok(parents) = parse_input_txids(&raw) {
+            for parent in parents {
+                if let Some(&pi) = index.get(parent.as_str()) {
+                    if !needed.contains(&pi) {
+                        queue.push_back(pi);
+                    }
+                }
+            }
+        }
+    }
+
+    if needed.is_empty() || needed.len() == beef.txs.len() {
+        return;
+    }
+
+    // Rebuild: bumps first so each merged transaction rediscovers its index.
+    let mut pruned = Beef::with_version(beef.version);
+    pruned.atomic_txid = beef.atomic_txid.clone();
+
+    let mut kept: Vec<usize> = needed.into_iter().collect();
+    kept.sort_unstable();
+
+    let mut bump_indices: Vec<usize> = kept
+        .iter()
+        .filter_map(|&i| beef.txs[i].bump_index())
+        .collect();
+    bump_indices.sort_unstable();
+    bump_indices.dedup();
+    for bi in bump_indices {
+        if let Some(bump) = beef.bumps.get(bi) {
+            pruned.merge_bump(bump.clone());
+        }
+    }
+
+    for i in kept {
+        let tx = &beef.txs[i];
+        if tx.is_txid_only() {
+            pruned.merge_txid_only(txids[i].clone());
+        } else if let Some(raw) = tx.raw_tx() {
+            pruned.merge_raw_tx(raw.to_vec(), None);
+        } else if let Some(t) = tx.tx() {
+            pruned.merge_transaction(t.clone());
+        }
+    }
+
+    *beef = pruned;
+}
+
+/// Seconds since this wallet first recorded the transaction, if it knows it.
+async fn local_record_age_secs(conn: &mut SqliteConnection, txid: &str) -> Option<i64> {
+    let row: Option<(chrono::DateTime<Utc>,)> = sqlx::query_as(
+        r#"
+        SELECT created_at FROM transactions WHERE txid = ?
+        UNION ALL
+        SELECT created_at FROM proven_tx_reqs WHERE txid = ?
+        ORDER BY created_at ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(txid)
+    .bind(txid)
+    .fetch_optional(&mut *conn)
+    .await
+    .ok()
+    .flatten();
+
+    row.map(|(created,)| (Utc::now() - created).num_seconds())
+}
+
+/// Asks services for a transaction's merkle path and records it.
+///
+/// A BEEF only ever gets smaller by acquiring bumps and proofs, and a wallet
+/// serving `create_action` cannot rely on its monitor having run: a wallet
+/// started without the monitor (or one holding a transaction it did not build)
+/// never records a proof, so every later spend drags the whole unproven chain.
+/// This is the same fall-through the TypeScript builder takes when storage
+/// cannot prove a transaction, and it records the result so the cost is paid
+/// once per ancestor rather than on every spend.
+///
+/// The write goes through the CALLER'S connection. `create_action` runs inside
+/// an open SQLite write transaction, so a second pooled connection would block
+/// on its own database lock until `busy_timeout` expired.
+/// [`StorageSqlx::ingest_merkle_proof`] does exactly this over the pool and is
+/// the path every other proof source uses; this is its connection-scoped twin,
+/// minus the broadcast-memory note (another pooled write) which the ordinary
+/// monitor path records anyway.
+///
+/// Returns the BUMP bytes only when the proof validated and was stored.
+async fn fetch_and_store_merkle_path(
+    conn: &mut SqliteConnection,
+    storage: Option<&StorageSqlx>,
+    txid: &str,
+) -> Option<Vec<u8>> {
+    let storage = storage?;
+    let services = storage.get_services().ok()?;
+
+    let result = match services.get_merkle_path(txid, false).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(txid = %txid, error = %e, "merkle path lookup failed");
+            return None;
+        }
+    };
+
+    let bytes = hex::decode(result.merkle_path.as_deref()?).ok()?;
+    let header = result.header.as_ref()?;
+
+    let bump = match MerklePath::from_binary(&bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::debug!(txid = %txid, error = %e, "merkle path did not parse");
+            return None;
+        }
+    };
+    let computed_root = match bump.compute_root(Some(txid)) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(txid = %txid, error = %e, "merkle root did not compute");
+            return None;
+        }
+    };
+
+    // Never store a proof the chain rejects. Matches ingest_merkle_proof:
+    // with no tracker wired, the proof is accepted as the provider gave it.
+    if let Some(tracker) = storage.get_chain_tracker().await {
+        match tracker
+            .is_valid_root_for_height(&computed_root, header.height)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    txid = %txid,
+                    height = header.height,
+                    "ChainTracker rejected the merkle root, proof discarded"
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::debug!(txid = %txid, error = %e, "ChainTracker error, proof not stored");
+                return None;
+            }
+        }
+    }
+
+    let now = Utc::now();
+    if let Err(e) = sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+        VALUES (?, ?, 0, ?, ?, ?,
+            COALESCE(
+                (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
+                (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
+            ),
+            ?, ?)
+        "#,
+    )
+    .bind(txid)
+    .bind(header.height as i64)
+    .bind(&header.hash)
+    .bind(&header.merkle_root)
+    .bind(&bytes)
+    .bind(txid)
+    .bind(txid)
+    .bind(now)
+    .bind(now)
+    .execute(&mut *conn)
+    .await
+    {
+        tracing::debug!(txid = %txid, error = %e, "could not record proven tx");
+        return None;
+    }
+
+    let proven_tx_id: Option<(i64,)> =
+        sqlx::query_as("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await
+            .ok()
+            .flatten();
+
+    // A proven transaction is completed by definition. Same two updates
+    // ingest_merkle_proof makes, so a later monitor pass finds nothing to do.
+    let _ = sqlx::query(
+        "UPDATE proven_tx_reqs SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
+    )
+    .bind(proven_tx_id.map(|r| r.0))
+    .bind(now)
+    .bind(txid)
+    .execute(&mut *conn)
+    .await;
+
+    let _ = sqlx::query(
+        "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
+    )
+    .bind(proven_tx_id.map(|r| r.0))
+    .bind(now)
+    .bind(txid)
+    .execute(&mut *conn)
+    .await;
+
+    tracing::info!(
+        txid = %txid,
+        height = header.height,
+        "recorded merkle proof during BEEF assembly, the ancestor chain terminates here"
+    );
+
+    Some(bytes)
+}
+
 /// Core BFS ancestor walk for BEEF construction.
 ///
 /// Given a queue of `(txid, depth)` pairs, walks the ancestor chain using:
@@ -2004,7 +2273,7 @@ async fn validate_stored_beef(
 ///
 /// This is the shared core used by both `build_input_beef` (create_action) and
 /// `rebuild_beef_for_broadcast` (send_waiting_transactions).
-async fn beef_bfs_walk(
+pub(super) async fn beef_bfs_walk(
     conn: &mut SqliteConnection,
     beef: &mut Beef,
     pending_txids: &mut Vec<(String, usize)>,
@@ -2012,6 +2281,8 @@ async fn beef_bfs_walk(
     storage: Option<&StorageSqlx>,
     chain_tracker: Option<&dyn ChainTracker>,
 ) -> Result<()> {
+    let mut proof_fetch_budget = MAX_PROOF_FETCHES_PER_WALK;
+
     while let Some((txid, depth)) = pending_txids.first().cloned() {
         pending_txids.remove(0);
 
@@ -2030,6 +2301,19 @@ async fn beef_bfs_walk(
         }
         processed_txids.insert(txid.clone());
 
+        // A BUMP already in the BEEF proves this transaction regardless of what
+        // our own proven_txs table knows: the merkle path is the evidence. Carry
+        // its raw bytes if they are still missing and stop: no ancestor of a
+        // proven transaction belongs in the BEEF.
+        if beef.find_bump(&txid).is_some() {
+            if beef.find_txid(&txid).is_none() {
+                if let Some(data) = get_tx_with_proof(&mut *conn, &txid).await? {
+                    beef.merge_raw_tx(data.raw_tx, None);
+                }
+            }
+            continue;
+        }
+
         // Check if already in BEEF (from user inputBEEF or previously merged)
         if beef.find_txid(&txid).is_some() {
             continue;
@@ -2039,7 +2323,24 @@ async fn beef_bfs_walk(
         // TS/Go pattern: if a tx has a merkle proof, add tx + BUMP and STOP.
         // Do NOT merge stored input_beef for proven txs — the BUMP terminates
         // the chain and ancestors are irrelevant.
-        let tx_data_opt = get_tx_with_proof(&mut *conn, &txid).await?;
+        let mut tx_data_opt = get_tx_with_proof(&mut *conn, &txid).await?;
+
+        // We hold the ancestor but not its proof. Ask the chain for the merkle
+        // path once and record it: a BUMP terminates the walk here instead of
+        // dragging this ancestor's whole unproven history into the BEEF.
+        if let Some(data) = tx_data_opt.as_mut() {
+            if data.merkle_path.is_none() && proof_fetch_budget > 0 {
+                let old_enough = local_record_age_secs(&mut *conn, &txid)
+                    .await
+                    .map(|age| age >= MIN_AGE_FOR_PROOF_LOOKUP_SECS)
+                    .unwrap_or(true);
+                if old_enough {
+                    proof_fetch_budget -= 1;
+                    data.merkle_path =
+                        fetch_and_store_merkle_path(&mut *conn, storage, &txid).await;
+                }
+            }
+        }
 
         // Only merge stored input_beef for UNPROVEN transactions.
         // TS: "if (r.inputBEEF) beef.mergeBeef(r.inputBEEF)" — only when no proof.
@@ -2053,6 +2354,22 @@ async fn beef_bfs_walk(
         if !has_proof {
             if let Some(mut stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
                 compact_stored_beef(&mut *conn, &mut stored_beef).await?;
+
+                // A stored input_beef is whatever the chain looked like when the
+                // transaction was built; ancestors proven since then make most of
+                // it dead weight. Keep only the subject's closure, or, when the
+                // stored BEEF holds only ancestors, the closure of its inputs.
+                let mut stored_roots = vec![txid.clone()];
+                if stored_beef.find_txid(&txid).is_none() {
+                    if let Some(data) = tx_data_opt.as_ref() {
+                        if let Ok(inputs) = parse_input_txids(&data.raw_tx) {
+                            if !inputs.is_empty() {
+                                stored_roots = inputs;
+                            }
+                        }
+                    }
+                }
+                prune_beef_to_roots(&mut stored_beef, &stored_roots);
 
                 let stored_beef_valid = if let Some(tracker) = chain_tracker {
                     validate_stored_beef(&mut stored_beef, tracker, &txid).await
@@ -2171,6 +2488,8 @@ pub(super) async fn rebuild_beef_for_broadcast(
         return Ok(beef);
     }
 
+    let root_txids: Vec<String> = pending_txids.iter().map(|(t, _)| t.clone()).collect();
+
     beef_bfs_walk(
         conn,
         &mut beef,
@@ -2180,6 +2499,8 @@ pub(super) async fn rebuild_beef_for_broadcast(
         None, // No chain_tracker for broadcast rebuilds — validated at creation time
     )
     .await?;
+
+    prune_beef_to_roots(&mut beef, &root_txids);
 
     Ok(beef)
 }
@@ -2279,6 +2600,10 @@ async fn build_input_beef(
         }
     }
 
+    // The roots this BEEF has to prove: every direct input of the new
+    // transaction. Captured before the walk drains the queue.
+    let root_txids: Vec<String> = pending_txids.iter().map(|(t, _)| t.clone()).collect();
+
     // Delegate the BFS ancestor walk to the shared core function.
     beef_bfs_walk(
         &mut *conn,
@@ -2289,6 +2614,11 @@ async fn build_input_beef(
         chain_tracker,
     )
     .await?;
+
+    // One root transaction plus only its recursive proof dependencies: drop
+    // everything a merged BEEF dragged along that no root reaches through an
+    // unproven transaction.
+    prune_beef_to_roots(&mut beef, &root_txids);
 
     // Verify BEEF against ChainTracker before trimming known_txids
     // This matches TypeScript/Go behavior: verify after building, before returning
@@ -2677,13 +3007,11 @@ async fn try_network_fallback(
                 .execute(&mut *conn)
                 .await;
 
-                // Also try to get merkle proof from the network
-                let merkle_path = match services.get_merkle_path(txid, false).await {
-                    Ok(mp_result) => mp_result
-                        .merkle_path
-                        .and_then(|hex_str| hex::decode(&hex_str).ok()),
-                    Err(_) => None,
-                };
+                // Also try to get the merkle proof from the network, and record
+                // it: a proof fetched and thrown away has to be fetched again on
+                // every later spend.
+                let merkle_path =
+                    fetch_and_store_merkle_path(&mut *conn, Some(storage), txid).await;
 
                 return Ok(Some(BeefTxData {
                     raw_tx: raw_tx.clone(),
@@ -2764,11 +3092,11 @@ pub(super) async fn compact_stored_beef(
         }
     }
 
-    // NOTE: Do NOT call beef.trim_known_proven() here.
-    // It removes raw_tx entries for proven ancestors, but bumps still
-    // reference those txids — creating orphaned bump refs that fail
-    // verify_valid(). No reference implementation (Go/TS SDK or toolbox)
-    // has this function.
+    // Trimming is deliberately left to the caller: only the caller knows which
+    // transactions the BEEF has to prove. `prune_beef_to_roots` takes those
+    // roots and stops at every BUMP. `Beef::trim_known_proven` is not used:
+    // it walks from whichever transactions nothing else spends, so an unproven
+    // input can be dropped merely because a proven sibling descends from it.
 
     Ok(())
 }
@@ -6478,5 +6806,788 @@ mod tests {
         let in_total: u64 = result.inputs.iter().map(|i| i.source_satoshis).sum();
         let out_total: u64 = result.outputs.iter().map(|o| o.satoshis).sum();
         assert!(in_total > out_total);
+    }
+
+    // =========================================================================
+    // BEEF closure: a proven ancestor terminates the chain
+    //
+    // Mirrors the TypeScript builder in
+    // packages/wallet/wallet-toolbox/src/storage/methods/getBeefForTransaction.ts:
+    // a stored proven transaction contributes its raw bytes plus its BUMP and
+    // returns no dependencies, an unproven one contributes its bytes and its
+    // input txids, and knownTxids collapse to txid-only entries.
+    // =========================================================================
+
+    /// A minimal spend of `parent:vout`: one input, one OP_TRUE output.
+    /// Returns the raw bytes and the txid.
+    fn synth_tx(parent_txid: &str, vout: u32, satoshis: u64) -> (Vec<u8>, String) {
+        let mut raw: Vec<u8> = Vec::new();
+        raw.extend_from_slice(&1u32.to_le_bytes()); // version
+        raw.push(1); // input count
+        let mut prev = hex::decode(parent_txid).unwrap();
+        prev.reverse();
+        raw.extend_from_slice(&prev);
+        raw.extend_from_slice(&vout.to_le_bytes());
+        raw.push(0); // empty unlocking script
+        raw.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // sequence
+        raw.push(1); // output count
+        raw.extend_from_slice(&satoshis.to_le_bytes());
+        raw.push(1); // locking script length
+        raw.push(0x51); // OP_TRUE
+        raw.extend_from_slice(&0u32.to_le_bytes()); // locktime
+
+        let txid = txid_of(&raw);
+        (raw, txid)
+    }
+
+    fn txid_of(raw: &[u8]) -> String {
+        use bsv_rs::primitives::hash::sha256d;
+        let mut h = sha256d(raw);
+        h.reverse();
+        hex::encode(h)
+    }
+
+    /// A single-leaf merkle path: the txid is the only transaction in its block,
+    /// so the computed root is the txid itself.
+    fn synth_bump(height: u32, txid: &str) -> MerklePath {
+        MerklePath {
+            block_height: height,
+            path: vec![vec![bsv_rs::transaction::MerklePathLeaf {
+                offset: 0,
+                hash: Some(txid.to_string()),
+                txid: true,
+                duplicate: false,
+            }]],
+        }
+    }
+
+    /// A chain of `n` spends. `chain[0]` is the oldest. Every hop spends the
+    /// previous hop's output 0, which is exactly the shape a covenant UTXO
+    /// traded from wallet to wallet produces.
+    fn synth_chain(n: usize) -> Vec<(Vec<u8>, String)> {
+        let mut out = Vec::new();
+        let mut parent = "11".repeat(32);
+        for i in 0..n {
+            let (raw, txid) = synth_tx(&parent, 0, 10_000 - i as u64);
+            parent = txid.clone();
+            out.push((raw, txid));
+        }
+        out
+    }
+
+    fn beef_txids(beef: &Beef) -> HashSet<String> {
+        beef.txs.iter().map(|t| t.txid()).collect()
+    }
+
+    async fn seed_proven_chain_tx(storage: &StorageSqlx, txid: &str, raw_tx: &[u8], height: u32) {
+        let bump = synth_bump(height, txid);
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root,
+                                    merkle_path, raw_tx, created_at, updated_at)
+            VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(txid)
+        .bind(height as i64)
+        .bind(format!("block_{}", height))
+        .bind(txid)
+        .bind(bump.to_binary())
+        .bind(raw_tx)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn seed_unproven_tx(
+        storage: &StorageSqlx,
+        txid: &str,
+        raw_tx: &[u8],
+        input_beef: Option<&[u8]>,
+    ) {
+        let now = Utc::now();
+        let (user, _) = storage.find_or_insert_user("02abcd").await.unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis,
+                                      version, lock_time, description, txid, raw_tx, input_beef,
+                                      created_at, updated_at)
+            VALUES (?, 'unproven', ?, 1, 1000, 1, 0, 'chain hop', ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(format!("ref_{}", &txid[..8]))
+        .bind(txid)
+        .bind(raw_tx)
+        .bind(input_beef)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn test_prune_stops_at_a_proven_ancestor() {
+        let chain = synth_chain(3); // a <- b <- c
+        let mut beef = Beef::new();
+        let bump_idx = beef.merge_bump(synth_bump(900_000, &chain[1].1));
+        beef.merge_raw_tx(chain[0].0.clone(), None);
+        beef.merge_raw_tx(chain[1].0.clone(), Some(bump_idx));
+        beef.merge_raw_tx(chain[2].0.clone(), None);
+
+        prune_beef_to_roots(&mut beef, &[chain[2].1.clone()]);
+
+        let kept = beef_txids(&beef);
+        assert_eq!(kept.len(), 2, "only the root and its proven parent remain");
+        assert!(kept.contains(&chain[2].1), "the root is kept");
+        assert!(kept.contains(&chain[1].1), "the proven parent is kept");
+        assert!(
+            !kept.contains(&chain[0].1),
+            "the proven parent's own parent must be dropped"
+        );
+        assert_eq!(beef.bumps.len(), 1, "the surviving bump is kept");
+        assert!(beef.verify_valid(true).valid, "the pruned BEEF is valid");
+    }
+
+    #[test]
+    fn test_prune_carries_an_unproven_ancestor_whole() {
+        let chain = synth_chain(3);
+        let mut beef = Beef::new();
+        for (raw, _) in &chain {
+            beef.merge_raw_tx(raw.clone(), None);
+        }
+
+        prune_beef_to_roots(&mut beef, &[chain[2].1.clone()]);
+
+        assert_eq!(
+            beef.txs.len(),
+            3,
+            "with no proof anywhere the whole chain is still required"
+        );
+    }
+
+    #[test]
+    fn test_prune_ten_hops_with_the_middle_ones_proven() {
+        let chain = synth_chain(10);
+        let mut beef = Beef::new();
+        for (i, (raw, txid)) in chain.iter().enumerate() {
+            // Hops 3, 4 and 5 were mined; the rest are still unproven.
+            if (3..=5).contains(&i) {
+                let idx = beef.merge_bump(synth_bump(965_000 + i as u32, txid));
+                beef.merge_raw_tx(raw.clone(), Some(idx));
+            } else {
+                beef.merge_raw_tx(raw.clone(), None);
+            }
+        }
+        assert_eq!(beef.txs.len(), 10);
+
+        prune_beef_to_roots(&mut beef, &[chain[9].1.clone()]);
+
+        // Walking back from hop 9: 9, 8, 7, 6 are unproven and needed; hop 5 is
+        // proven so it terminates the chain; hops 0..=4 are gone.
+        let kept = beef_txids(&beef);
+        let expected: HashSet<String> = chain[5..].iter().map(|(_, t)| t.clone()).collect();
+        assert_eq!(kept, expected, "exactly hops 5..9 survive");
+        assert_eq!(beef.bumps.len(), 1, "only hop 5's bump is still referenced");
+        assert!(beef.verify_valid(true).valid);
+    }
+
+    #[test]
+    fn test_prune_keeps_an_unproven_root_below_a_proven_root() {
+        // Both an unproven transaction and a proven descendant of it are being
+        // spent. The unproven one still needs its own history, so it must
+        // survive even though a proven transaction descends from it. This is
+        // the case a root-blind trim gets wrong.
+        let chain = synth_chain(3); // a <- b <- c
+        let mut beef = Beef::new();
+        beef.merge_raw_tx(chain[0].0.clone(), None);
+        beef.merge_raw_tx(chain[1].0.clone(), None);
+        let idx = beef.merge_bump(synth_bump(900_001, &chain[2].1));
+        beef.merge_raw_tx(chain[2].0.clone(), Some(idx));
+
+        prune_beef_to_roots(&mut beef, &[chain[1].1.clone(), chain[2].1.clone()]);
+
+        let kept = beef_txids(&beef);
+        assert!(kept.contains(&chain[2].1), "the proven root is kept");
+        assert!(kept.contains(&chain[1].1), "the unproven root is kept");
+        assert!(
+            kept.contains(&chain[0].1),
+            "the unproven root still needs its own parent"
+        );
+    }
+
+    #[test]
+    fn test_prune_leaves_a_beef_alone_when_no_root_is_present() {
+        let chain = synth_chain(2);
+        let mut beef = Beef::new();
+        for (raw, _) in &chain {
+            beef.merge_raw_tx(raw.clone(), None);
+        }
+        prune_beef_to_roots(&mut beef, &["00".repeat(32)]);
+        assert_eq!(beef.txs.len(), 2, "pruning must never empty a BEEF");
+    }
+
+    #[tokio::test]
+    async fn test_walk_terminates_at_a_proven_ancestor() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let chain = synth_chain(3);
+        seed_unproven_tx(&storage, &chain[0].1, &chain[0].0, None).await;
+        seed_proven_chain_tx(&storage, &chain[1].1, &chain[1].0, 965_100).await;
+        seed_unproven_tx(&storage, &chain[2].1, &chain[2].0, None).await;
+
+        let mut beef = Beef::new();
+        let mut pending = vec![(chain[2].1.clone(), 0usize)];
+        let mut processed = HashSet::new();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending,
+            &mut processed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let kept = beef_txids(&beef);
+        assert!(kept.contains(&chain[2].1), "the subject is carried whole");
+        assert!(
+            kept.contains(&chain[1].1),
+            "the proven parent contributes its transaction"
+        );
+        assert_eq!(beef.bumps.len(), 1, "and its BUMP");
+        assert!(
+            !kept.contains(&chain[0].1),
+            "the recursion stops at the proven parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_walk_carries_an_unproven_ancestor_whole() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let chain = synth_chain(3);
+        seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, 965_050).await;
+        seed_unproven_tx(&storage, &chain[1].1, &chain[1].0, None).await;
+        seed_unproven_tx(&storage, &chain[2].1, &chain[2].0, None).await;
+
+        let mut beef = Beef::new();
+        let mut pending = vec![(chain[2].1.clone(), 0usize)];
+        let mut processed = HashSet::new();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending,
+            &mut processed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let kept = beef_txids(&beef);
+        assert_eq!(kept.len(), 3, "the unproven middle hop is carried whole");
+        assert!(kept.contains(&chain[1].1));
+        assert_eq!(beef.bumps.len(), 1, "the walk still reaches the proof");
+    }
+
+    #[tokio::test]
+    async fn test_walk_honours_a_bump_already_in_the_beef() {
+        // The parent has no proven_txs row of its own, but the caller's
+        // inputBEEF already carries a BUMP for it. That proof is the evidence:
+        // the parent's stored ancestry must not be dragged in behind it.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let chain = synth_chain(3);
+
+        // The parent's stored input_beef still holds the whole unproven history.
+        let mut stored = Beef::new();
+        stored.merge_raw_tx(chain[0].0.clone(), None);
+        let stored_bytes = stored.to_binary();
+
+        seed_unproven_tx(&storage, &chain[0].1, &chain[0].0, None).await;
+        seed_unproven_tx(&storage, &chain[1].1, &chain[1].0, Some(&stored_bytes)).await;
+
+        let mut beef = Beef::new();
+        beef.merge_bump(synth_bump(965_200, &chain[1].1));
+        let mut pending = vec![(chain[1].1.clone(), 0usize)];
+        let mut processed = HashSet::new();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending,
+            &mut processed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let kept = beef_txids(&beef);
+        assert!(kept.contains(&chain[1].1), "the proven parent is carried");
+        assert!(
+            !kept.contains(&chain[0].1),
+            "a BUMP in the BEEF terminates the chain, stored ancestry and all"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_trims_known_txids_to_txid_only() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let chain = synth_chain(2);
+        seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, 965_010).await;
+        seed_unproven_tx(&storage, &chain[1].1, &chain[1].0, None).await;
+
+        let inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: chain[1].1.clone(),
+            vout: 0,
+            satoshis: 1_000,
+            locking_script: vec![0x51],
+            unlocking_script_length: 107,
+            input_description: Some("spend".to_string()),
+            output: None,
+        }];
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let untrimmed = build_input_beef(&mut conn, None, &inputs, &[], None, &[], false, None)
+            .await
+            .unwrap()
+            .expect("a BEEF is produced");
+
+        let trimmed = build_input_beef(
+            &mut conn,
+            None,
+            &inputs,
+            &[],
+            None,
+            &[chain[0].1.clone()],
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("a BEEF is produced");
+
+        assert!(
+            trimmed.len() < untrimmed.len(),
+            "a known txid drops its raw bytes: {} vs {}",
+            trimmed.len(),
+            untrimmed.len()
+        );
+        let parsed = Beef::from_binary(&trimmed).unwrap();
+        let known = parsed
+            .find_txid(&chain[0].1)
+            .expect("the known ancestor is still referenced");
+        assert!(known.is_txid_only(), "and is referenced by txid alone");
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_ten_hops_stops_at_the_proven_hop() {
+        // The reported defect end to end: ten hops of one covenant UTXO, the
+        // middle ones mined. The BEEF for the next spend must carry hops 5..9
+        // and nothing older.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let chain = synth_chain(10);
+        for (i, (raw, txid)) in chain.iter().enumerate() {
+            if i == 5 {
+                seed_proven_chain_tx(&storage, txid, raw, 965_200).await;
+            } else {
+                // Every hop stored the whole ancestry it saw at build time.
+                let mut stored = Beef::new();
+                for (r, _) in chain.iter().take(i) {
+                    stored.merge_raw_tx(r.clone(), None);
+                }
+                let stored_bytes = if i == 0 {
+                    None
+                } else {
+                    Some(stored.to_binary())
+                };
+                seed_unproven_tx(&storage, txid, raw, stored_bytes.as_deref()).await;
+            }
+        }
+
+        let inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: chain[9].1.clone(),
+            vout: 0,
+            satoshis: 1_000,
+            locking_script: vec![0x51],
+            unlocking_script_length: 107,
+            input_description: Some("next hop".to_string()),
+            output: None,
+        }];
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let bytes = build_input_beef(&mut conn, None, &inputs, &[], None, &[], false, None)
+            .await
+            .unwrap()
+            .expect("a BEEF is produced");
+
+        let beef = Beef::from_binary(&bytes).unwrap();
+        let kept = beef_txids(&beef);
+        let expected: HashSet<String> = chain[5..].iter().map(|(_, t)| t.clone()).collect();
+        assert_eq!(
+            kept, expected,
+            "exactly hops 5..9; the proven hop terminates the closure"
+        );
+    }
+
+    /// Move a seeded transaction's record back in time so the proof lookup
+    /// does not skip it as too young to be mined.
+    async fn backdate_tx(storage: &StorageSqlx, txid: &str, minutes: i64) {
+        let then = Utc::now() - chrono::Duration::minutes(minutes);
+        sqlx::query("UPDATE transactions SET created_at = ? WHERE txid = ?")
+            .bind(then)
+            .bind(txid)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_skips_a_proof_lookup_for_a_young_transaction() {
+        // A transaction this wallet recorded seconds ago cannot be mined yet,
+        // and its ancestors answer the question anyway. No network call.
+        use crate::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
+        use crate::storage::traits::WalletStorageProvider;
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let chain = synth_chain(2);
+        seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, 965_000).await;
+        seed_unproven_tx(&storage, &chain[1].1, &chain[1].0, None).await;
+
+        let services = std::sync::Arc::new(
+            MockWalletServices::builder()
+                .get_merkle_path_response(MockResponse::Error(
+                    MockErrorKind::ServiceError,
+                    "must not be called".to_string(),
+                ))
+                .build(),
+        );
+        storage.set_services(services.clone());
+
+        let inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: chain[1].1.clone(),
+            vout: 0,
+            satoshis: 1_000,
+            locking_script: vec![0x51],
+            unlocking_script_length: 107,
+            input_description: Some("spend".to_string()),
+            output: None,
+        }];
+
+        let mut conn = storage.pool().acquire().await.unwrap();
+        build_input_beef(
+            &mut conn,
+            None,
+            &inputs,
+            &[],
+            None,
+            &[],
+            false,
+            Some(&storage),
+        )
+        .await
+        .unwrap()
+        .expect("a BEEF is produced");
+
+        assert_eq!(
+            services.call_count("get_merkle_path"),
+            0,
+            "a transaction recorded seconds ago is not worth asking about"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_input_beef_fetches_a_missing_proof_inside_the_open_transaction() {
+        // The wallet holds the parent but no proof for it, exactly what a
+        // wallet running without its monitor looks like. The builder must ask
+        // services once, record the proof on the CALLER'S open transaction (a
+        // second pooled connection would block on that transaction's write
+        // lock), and stop the chain there.
+        use crate::services::mock::{MockResponse, MockWalletServices};
+        use crate::services::traits::{BlockHeader, GetMerklePathResult};
+        use crate::storage::traits::WalletStorageProvider;
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        let chain = synth_chain(3);
+        // Every hop unproven, and the parent's stored BEEF still holds the
+        // whole history behind it.
+        let mut stored = Beef::new();
+        stored.merge_raw_tx(chain[0].0.clone(), None);
+        let stored_bytes = stored.to_binary();
+        seed_unproven_tx(&storage, &chain[0].1, &chain[0].0, None).await;
+        seed_unproven_tx(&storage, &chain[1].1, &chain[1].0, Some(&stored_bytes)).await;
+        seed_unproven_tx(&storage, &chain[2].1, &chain[2].0, None).await;
+        backdate_tx(&storage, &chain[1].1, 30).await;
+
+        let bump = synth_bump(965_300, &chain[1].1);
+        let services = MockWalletServices::builder()
+            .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
+                name: Some("MockProvider".to_string()),
+                merkle_path: Some(hex::encode(bump.to_binary())),
+                header: Some(BlockHeader {
+                    version: 1,
+                    previous_hash: "00".repeat(32),
+                    merkle_root: chain[1].1.clone(),
+                    time: 0,
+                    bits: 0,
+                    nonce: 0,
+                    hash: "ab".repeat(32),
+                    height: 965_300,
+                }),
+                error: None,
+                notes: vec![],
+            }))
+            .build();
+        storage.set_services(std::sync::Arc::new(services));
+
+        let inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: chain[1].1.clone(),
+            vout: 0,
+            satoshis: 1_000,
+            locking_script: vec![0x51],
+            unlocking_script_length: 107,
+            input_description: Some("spend".to_string()),
+            output: None,
+        }];
+
+        // An open write transaction that has already written, so the database
+        // write lock is held for the whole call.
+        let mut tx = storage.pool().begin().await.unwrap();
+        sqlx::query("UPDATE settings SET storage_name = storage_name")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+
+        let bytes = build_input_beef(
+            &mut tx,
+            None,
+            &inputs,
+            &[],
+            None,
+            &[],
+            false,
+            Some(&storage),
+        )
+        .await
+        .unwrap()
+        .expect("a BEEF is produced");
+        tx.commit().await.unwrap();
+
+        let beef = Beef::from_binary(&bytes).unwrap();
+        let kept = beef_txids(&beef);
+        assert_eq!(kept.len(), 1, "only the proven parent is needed");
+        assert!(kept.contains(&chain[1].1));
+        assert_eq!(beef.bumps.len(), 1, "carrying the freshly fetched BUMP");
+        assert!(
+            !kept.contains(&chain[0].1),
+            "the parent's stored ancestry is dropped once it is proven"
+        );
+
+        let stored_proof: Option<(String,)> =
+            sqlx::query_as("SELECT txid FROM proven_txs WHERE txid = ?")
+                .bind(&chain[1].1)
+                .fetch_optional(storage.pool())
+                .await
+                .unwrap();
+        assert!(
+            stored_proof.is_some(),
+            "the proof is recorded, so the next spend pays no network cost"
+        );
+    }
+
+    // =========================================================================
+    // Live-store diagnostic (ignored by default)
+    //
+    // Runs the real BEEF assembly walk against a COPY of a wallet store and
+    // reports the shape of the BEEF the wallet would submit.
+    //
+    //   BEEF_DIAG_DB=/path/to/copy/wallet.db \
+    //   BEEF_DIAG_TXIDS=<comma separated root txids> \
+    //   cargo test --lib beef_diag_live_store -- --ignored --nocapture
+    // =========================================================================
+
+    /// Report one assembled BEEF: tx count, bytes, bumps, and whether any
+    /// proven ancestor dragged its own parents in.
+    fn beef_diag_report(label: &str, beef: &mut Beef, roots: &[String], elapsed_ms: u128) {
+        let bytes = beef.to_binary();
+        let all: std::collections::HashSet<String> = beef.txs.iter().map(|t| t.txid()).collect();
+
+        let mut with_bump = 0usize;
+        let mut txid_only = 0usize;
+        let mut violations: Vec<String> = Vec::new();
+
+        // A tx carrying a BUMP is self-proving; none of its parents belong in
+        // the BEEF unless some other unproven tx needs them.
+        let mut needed_by_unproven: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for tx in &mut beef.txs {
+            if tx.bump_index().is_some() || tx.is_txid_only() {
+                continue;
+            }
+            if let Some(raw) = tx.raw_tx().map(|r| r.to_vec()) {
+                if let Ok(ins) = parse_input_txids(&raw) {
+                    for i in ins {
+                        needed_by_unproven.insert(i);
+                    }
+                }
+            }
+        }
+
+        // A root is always legitimately present: it is an input being spent.
+        let root_set: std::collections::HashSet<&String> = roots.iter().collect();
+
+        for tx in &mut beef.txs {
+            if tx.is_txid_only() {
+                txid_only += 1;
+                continue;
+            }
+            if tx.bump_index().is_none() {
+                continue;
+            }
+            with_bump += 1;
+            let txid = tx.txid();
+            let raw = match tx.raw_tx().map(|r| r.to_vec()) {
+                Some(r) => r,
+                None => continue,
+            };
+            if let Ok(parents) = parse_input_txids(&raw) {
+                for p in parents {
+                    if all.contains(&p)
+                        && !needed_by_unproven.contains(&p)
+                        && !root_set.contains(&p)
+                    {
+                        violations.push(format!(
+                            "{}<-{}",
+                            &txid[..8.min(txid.len())],
+                            &p[..8.min(p.len())]
+                        ));
+                    }
+                }
+            }
+        }
+
+        let validity = beef.verify_valid(true);
+
+        println!("--------------------------------------------------------------");
+        println!("BEEF DIAG [{}]", label);
+        println!("  roots            : {}", roots.len());
+        for r in roots {
+            println!("                     {}", r);
+        }
+        println!("  transactions     : {}", beef.txs.len());
+        println!("  with BUMP        : {}", with_bump);
+        println!("  txid-only        : {}", txid_only);
+        println!("  bumps            : {}", beef.bumps.len());
+        println!(
+            "  total bytes      : {} ({} KB)",
+            bytes.len(),
+            bytes.len() / 1024
+        );
+        println!("  assembly ms      : {}", elapsed_ms);
+        println!("  structurally valid: {}", validity.valid);
+        println!(
+            "  proven ancestors dragging their own parents : {}",
+            if violations.is_empty() {
+                "none".to_string()
+            } else {
+                violations.join(", ")
+            }
+        );
+        println!("--------------------------------------------------------------");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn beef_diag_live_store() {
+        let db = match std::env::var("BEEF_DIAG_DB") {
+            Ok(v) => v,
+            Err(_) => {
+                println!("set BEEF_DIAG_DB to run this diagnostic");
+                return;
+            }
+        };
+        let roots: Vec<String> = std::env::var("BEEF_DIAG_TXIDS")
+            .expect("BEEF_DIAG_TXIDS required")
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let storage = StorageSqlx::new(&format!("sqlite:{}", db)).await.unwrap();
+        let mut conn = storage.pool().acquire().await.unwrap();
+
+        let mut beef = Beef::new();
+        let mut pending: Vec<(String, usize)> = roots.iter().map(|t| (t.clone(), 0)).collect();
+        let mut processed: HashSet<String> = HashSet::new();
+
+        // With services wired the walk fetches and records missing proofs, which
+        // is what lets the chain terminate. Set BEEF_DIAG_SERVICES=1 to include
+        // that path (writes land on the copy only).
+        let with_services = std::env::var("BEEF_DIAG_SERVICES").is_ok();
+        if with_services {
+            let services = crate::services::Services::new(crate::Chain::Main).unwrap();
+            crate::storage::traits::WalletStorageProvider::set_services(
+                &storage,
+                std::sync::Arc::new(services),
+            );
+        }
+        let storage_ref = if with_services { Some(&storage) } else { None };
+
+        let t0 = std::time::Instant::now();
+        beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending,
+            &mut processed,
+            storage_ref,
+            None,
+        )
+        .await
+        .unwrap();
+        let walk_ms = t0.elapsed().as_millis();
+
+        beef_diag_report("after walk, before prune", &mut beef, &roots, walk_ms);
+
+        let t1 = std::time::Instant::now();
+        prune_beef_to_roots(&mut beef, &roots);
+        let prune_ms = t1.elapsed().as_millis();
+
+        beef_diag_report(
+            "final (walk + prune)",
+            &mut beef,
+            &roots,
+            walk_ms + prune_ms,
+        );
     }
 }

@@ -28,8 +28,7 @@ use bsv_rs::wallet::{
 };
 
 use super::create_action::{
-    get_stored_beef, get_tx_with_proof, parse_input_txids, rebuild_beef_for_broadcast,
-    MAX_BEEF_RECURSION_DEPTH,
+    beef_bfs_walk, parse_input_txids, prune_beef_to_roots, rebuild_beef_for_broadcast,
 };
 
 /// Every schema migration, in order. Each statement is `IF NOT EXISTS`, so
@@ -1915,68 +1914,26 @@ impl WalletStorageReader for StorageSqlx {
                     .collect()
             };
 
+            // Same walk create_action uses, so a proven ancestor terminates the
+            // chain here too instead of dragging its own history along.
             let mut beef_struct = Beef::new();
             let mut processed_txids: HashSet<String> = HashSet::new();
-            let mut pending_txids: Vec<String> = unique_txids;
-            let mut depth: usize = 0;
+            let mut pending_txids: Vec<(String, usize)> =
+                unique_txids.iter().map(|t| (t.clone(), 0)).collect();
 
             let mut conn = self.pool.acquire().await?;
 
-            while !pending_txids.is_empty() && depth < MAX_BEEF_RECURSION_DEPTH {
-                let txid = pending_txids.remove(0);
+            beef_bfs_walk(
+                &mut conn,
+                &mut beef_struct,
+                &mut pending_txids,
+                &mut processed_txids,
+                Some(self),
+                None,
+            )
+            .await?;
 
-                if processed_txids.contains(&txid) {
-                    continue;
-                }
-                processed_txids.insert(txid.clone());
-
-                // Skip if already in BEEF (from a previously merged stored BEEF)
-                if beef_struct.find_txid(&txid).is_some() {
-                    continue;
-                }
-
-                // Try to get a stored BEEF and merge it directly (most efficient path)
-                if let Some(stored_beef) = get_stored_beef(&mut conn, &txid).await? {
-                    beef_struct.merge_beef(&stored_beef);
-                    for beef_tx in &stored_beef.txs {
-                        processed_txids.insert(beef_tx.txid());
-                    }
-                    depth += 1;
-                    continue;
-                }
-
-                // Fall back to individual transaction lookup
-                if let Some(tx_data) = get_tx_with_proof(&mut conn, &txid).await? {
-                    let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {
-                        match MerklePath::from_binary(merkle_path_bytes) {
-                            Ok(merkle_path) => Some(beef_struct.merge_bump(merkle_path)),
-                            Err(_) => None,
-                        }
-                    } else {
-                        None
-                    };
-
-                    beef_struct.merge_raw_tx(tx_data.raw_tx.clone(), bump_index);
-
-                    // If no merkle proof, recurse to ancestors so the BEEF
-                    // chain reaches proven transactions
-                    if bump_index.is_none() {
-                        if let Ok(input_txids) = parse_input_txids(&tx_data.raw_tx) {
-                            for input_txid in input_txids {
-                                if !processed_txids.contains(&input_txid)
-                                    && !pending_txids.contains(&input_txid)
-                                {
-                                    pending_txids.push(input_txid);
-                                }
-                            }
-                        }
-                    }
-                }
-                // If tx not found in any table, skip silently (it may be a
-                // coinbase or an external ancestor we don't have)
-
-                depth += 1;
-            }
+            prune_beef_to_roots(&mut beef_struct, &unique_txids);
 
             let beef_bytes = beef_struct.to_binary();
             // Only return BEEF if it contains data beyond the 4-byte header
@@ -4463,9 +4420,9 @@ impl MonitorStorage for StorageSqlx {
 
         // Find completed proven_tx_reqs with non-null input_beef.
         // Process in batches of 50 to avoid holding the connection too long.
-        let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        let rows: Vec<(i64, Vec<u8>, Option<Vec<u8>>)> = sqlx::query_as(
             r#"
-            SELECT proven_tx_req_id, input_beef
+            SELECT proven_tx_req_id, input_beef, raw_tx
             FROM proven_tx_reqs
             WHERE status = 'completed'
               AND input_beef IS NOT NULL
@@ -4483,7 +4440,7 @@ impl MonitorStorage for StorageSqlx {
 
         let mut compacted = 0u32;
 
-        for (req_id, beef_bytes) in &rows {
+        for (req_id, beef_bytes, raw_tx) in &rows {
             let mut beef = match Beef::from_binary(beef_bytes) {
                 Ok(b) => b,
                 Err(_) => continue,
@@ -4544,8 +4501,17 @@ impl MonitorStorage for StorageSqlx {
                 continue;
             }
 
-            // NOTE: Do NOT call beef.trim_known_proven() — it creates
-            // orphaned bump refs. No reference implementation has this.
+            // Now that ancestors carry proofs, drop everything the transaction's
+            // own inputs no longer reach: a BUMP terminates its branch. Rooted at
+            // the inputs, so an input that is still unproven keeps its history.
+            // (`Beef::trim_known_proven` is root-blind: it walks from whichever
+            // transactions nothing else spends, which can drop an unproven input
+            // that a proven sibling happens to descend from.)
+            if let Some(raw) = raw_tx {
+                if let Ok(roots) = parse_input_txids(raw) {
+                    prune_beef_to_roots(&mut beef, &roots);
+                }
+            }
 
             let new_bytes = beef.to_binary();
             let new_size = new_bytes.len();
