@@ -350,15 +350,22 @@ The `Services` constructor sets up provider priority for each operation:
 
 | Operation | Provider Order |
 |-----------|----------------|
-| `get_merkle_path` | WhatsOnChain -> Bitails |
+| `get_merkle_path` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails |
 | `get_raw_tx` | WhatsOnChain -> Bitails |
 | `post_beef` | ArcadeV2 (opt-in, first) -> TAAL ARC -> GorillaPool ARC -> Bitails -> WhatsOnChain; with a `BroadcastMemory` attached, the last accepting provider is tried first (never ahead of Arcade unless it is Arcade) |
 | `get_utxo_status` | WhatsOnChain |
-| `get_status_for_txids` | WhatsOnChain -> Bitails |
+| `get_status_for_txids` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails; each provider after the first is asked ONLY about the txids no earlier provider could place (`unknown` is a gap, not a verdict) |
 | `get_script_hash_history` | WhatsOnChain -> Bitails |
 | `get_height` | BHS (if configured) -> WhatsOnChain -> Bitails (not via ServiceCollection) |
 
 Note: `get_height` uses direct failover (not ServiceCollection-based) trying BHS first, then WhatsOnChain's `get_chain_info()`, then Bitails' `current_height()`.
+
+Note: when Arcade is configured (`ServicesOptions::with_arcade`), a wallet's
+own broadcaster is also its proof and status source. Arcade's `GET /tx/{txid}`
+answers `MINED` with `merklePath`, `blockHeight` and `blockHash`, so ONE call
+per txid serves both the batch triage and the proof, and the third-party
+indexers are only reached for what Arcade cannot answer. Ordering is unchanged
+when Arcade is not configured.
 
 ## Providers
 
@@ -382,6 +389,23 @@ Transaction broadcast service (mAPI):
 - Callback URLs for proof delivery
 - Double-spend detection
 - Merkle path retrieval (implements `MerklePathService` via `get_tx_data`)
+
+### Arcade V2 (providers/arcade.rs)
+
+Teranode broadcaster, and (when configured) the wallet's first-party read
+path:
+- EF-only submit, always-async, per-token SSE stream (see the module docs)
+- `GET /tx/{txid}` status document: `txStatus` plus, on `MINED`,
+  `merklePath` (BUMP), `blockHeight` and `blockHash` (arcade >= v0.10.1)
+- Merkle path retrieval (implements `MerklePathService`): a `MINED` document
+  serves the proof; anything else is a soft "no proof yet" so the collection
+  moves on
+- Batch triage (implements `StatusForTxidsService`): one `GET /tx/{txid}` per
+  txid, `ARCADE_STATUS_CONCURRENCY` in flight, the proof carried on each
+  `mined` detail. A 404 or a single failed call is reported `unknown`, never a
+  failed batch; only a batch where every call failed comes back as an error
+- Reads send the same auth as submits (`X-CallbackToken` plus configured
+  headers)
 
 ### Bitails (providers/bitails.rs)
 
@@ -444,14 +468,14 @@ These are implemented by the provider types and used via type-erased `Arc<dyn Tr
 
 **Trait implementations by provider:**
 
-| Trait | WhatsOnChain | ARC | Bitails |
-|-------|:---:|:---:|:---:|
-| `MerklePathService` | Y | Y | Y |
-| `RawTxService` | Y | - | Y |
-| `PostBeefService` | Y | Y | Y |
-| `UtxoStatusService` | Y | - | - |
-| `StatusForTxidsService` | Y | - | Y |
-| `ScriptHashHistoryService` | Y | - | Y |
+| Trait | WhatsOnChain | ARC | Arcade | Bitails |
+|-------|:---:|:---:|:---:|:---:|
+| `MerklePathService` | Y | Y | Y | Y |
+| `RawTxService` | Y | - | - | Y |
+| `PostBeefService` | Y | Y | Y | Y |
+| `UtxoStatusService` | Y | - | - | - |
+| `StatusForTxidsService` | Y | - | Y | Y |
+| `ScriptHashHistoryService` | Y | - | - | Y |
 
 ## Error Handling
 

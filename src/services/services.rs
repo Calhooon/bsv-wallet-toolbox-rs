@@ -232,6 +232,13 @@ impl MerklePathService for Arc {
 }
 
 #[async_trait]
+impl MerklePathService for Arcade {
+    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
+        self.get_merkle_path(txid).await
+    }
+}
+
+#[async_trait]
 impl RawTxService for WhatsOnChain {
     async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
         self.get_raw_tx(txid).await
@@ -318,6 +325,13 @@ impl StatusForTxidsService for Bitails {
 }
 
 #[async_trait]
+impl StatusForTxidsService for Arcade {
+    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
+        self.get_status_for_txids(txids).await
+    }
+}
+
+#[async_trait]
 impl ScriptHashHistoryService for WhatsOnChain {
     async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
         self.get_script_hash_history(hash).await
@@ -328,6 +342,26 @@ impl ScriptHashHistoryService for WhatsOnChain {
 impl ScriptHashHistoryService for Bitails {
     async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
         self.get_script_hash_history(hash).await
+    }
+}
+
+/// Fill the `unknown` entries of `into` with a later provider's answers.
+///
+/// Only entries still `unknown` are replaced, so an earlier provider's
+/// verdict (including the proof it carried) always wins. A txid the later
+/// provider also could not place stays `unknown`.
+fn merge_status_results(into: &mut GetStatusForTxidsResult, from: GetStatusForTxidsResult) {
+    for detail in from.results {
+        if detail.status == "unknown" {
+            continue;
+        }
+        if let Some(slot) = into
+            .results
+            .iter_mut()
+            .find(|d| d.txid == detail.txid && d.status == "unknown")
+        {
+            *slot = detail;
+        }
     }
 }
 
@@ -420,8 +454,20 @@ impl Services {
 
         // Build service collections
 
-        // getMerklePath: WoC, Bitails
+        // getMerklePath: Arcade (when configured) → WoC → Bitails
+        //
+        // A wallet that broadcasts through Arcade already has a first-party
+        // source for its own proofs: Arcade's MINED status document carries
+        // the BUMP. Asking it first means the third-party indexers are only
+        // touched for a transaction Arcade has no proof for. The order is
+        // unchanged when Arcade is not configured.
         let mut merkle_path_services = ServiceCollection::new("getMerklePath");
+        if let Some(ref arcade_provider) = arcade {
+            merkle_path_services.add(
+                PROVIDER_ARCADE_V2,
+                StdArc::clone(arcade_provider) as MerklePathProvider,
+            );
+        }
         merkle_path_services.add(
             "WhatsOnChain",
             StdArc::clone(&whatsonchain) as MerklePathProvider,
@@ -482,8 +528,19 @@ impl Services {
             StdArc::clone(&whatsonchain) as UtxoStatusProvider,
         );
 
-        // getStatusForTxids: WoC, Bitails
+        // getStatusForTxids: Arcade (when configured) → WoC → Bitails
+        //
+        // Arcade's status document answers the triage AND carries the proof
+        // for a mined transaction, so one call per txid does the work the
+        // batch status call plus a getMerklePath used to do. The order is
+        // unchanged when Arcade is not configured.
         let mut status_for_txids_services = ServiceCollection::new("getStatusForTxids");
+        if let Some(ref arcade_provider) = arcade {
+            status_for_txids_services.add(
+                PROVIDER_ARCADE_V2,
+                StdArc::clone(arcade_provider) as StatusForTxidsProvider,
+            );
+        }
         status_for_txids_services.add(
             "WhatsOnChain",
             StdArc::clone(&whatsonchain) as StatusForTxidsProvider,
@@ -1466,15 +1523,43 @@ impl WalletServices for Services {
         }
 
         let mut last_error = None;
+        let mut answer: Option<GetStatusForTxidsResult> = None;
 
         for (_service_name, provider_name, service) in all_services {
+            // The first provider is asked about everything. Every provider
+            // after it is asked ONLY about the txids no earlier provider
+            // could place, and its answers fill those gaps.
+            //
+            // This matters for a first-party provider with a partial view:
+            // Arcade knows the transactions it was handed, and answers
+            // "unknown" for anything broadcast before it was wired up. Left
+            // as-is, that "unknown" would retire a transaction the chain has
+            // long since mined. `unknown` is a gap, not a verdict.
+            let pending: Vec<String> = match &answer {
+                None => txids.to_vec(),
+                Some(previous) => previous
+                    .results
+                    .iter()
+                    .filter(|d| d.status == "unknown")
+                    .map(|d| d.txid.clone())
+                    .collect(),
+            };
+            if pending.is_empty() {
+                break;
+            }
+
             let mut call = ServiceCall::new();
-            match service.get_status_for_txids(txids).await {
+            match service.get_status_for_txids(&pending).await {
                 Ok(result) if result.status == "success" => {
                     call.mark_success(None);
                     lock_write(&self.get_status_for_txids_services)?
                         .add_call_success(&provider_name, call);
-                    return Ok(result);
+                    match answer {
+                        None => answer = Some(result),
+                        Some(ref mut previous) => {
+                            merge_status_results(previous, result);
+                        }
+                    }
                 }
                 Ok(result) => {
                     call.mark_failure(result.error.clone());
@@ -1489,6 +1574,10 @@ impl WalletServices for Services {
                     last_error = Some(e.to_string());
                 }
             }
+        }
+
+        if let Some(answer) = answer {
+            return Ok(answer);
         }
 
         Ok(GetStatusForTxidsResult {
@@ -1814,6 +1903,8 @@ impl WalletServices for Services {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::providers::ArcadeConfig;
+    use crate::services::traits::TxStatusDetail;
 
     #[test]
     fn test_services_creation() {
@@ -1924,6 +2015,107 @@ mod tests {
         );
         // Note: can't use unwrap_err() because dyn ChainTracker doesn't impl Debug.
         // The is_err() assertion above is sufficient to verify the error case.
+    }
+
+    // =========================================================================
+    // Provider order: Arcade first when configured
+    // =========================================================================
+
+    /// Provider names of a collection, in the order they will be tried.
+    fn provider_order<S: Clone>(collection: &RwLock<ServiceCollection<S>>) -> Vec<String> {
+        collection
+            .read()
+            .unwrap()
+            .all_services_from_current()
+            .into_iter()
+            .map(|(_service, provider, _s)| provider)
+            .collect()
+    }
+
+    fn arcade_services() -> Services {
+        Services::with_options(
+            Chain::Main,
+            ServicesOptions::mainnet().with_arcade(
+                crate::services::ARCADE_V2_MAINNET,
+                Some(ArcadeConfig::with_callback_token("tok")),
+            ),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_arcade_leads_the_read_collections_when_configured() {
+        let services = arcade_services();
+
+        assert_eq!(
+            provider_order(&services.get_merkle_path_services),
+            vec!["ArcadeV2", "WhatsOnChain", "Bitails"],
+            "a wallet on Arcade must not touch WoC for a proof Arcade has"
+        );
+        assert_eq!(
+            provider_order(&services.get_status_for_txids_services),
+            vec!["ArcadeV2", "WhatsOnChain", "Bitails"],
+        );
+    }
+
+    #[test]
+    fn test_read_collection_order_unchanged_without_arcade() {
+        let services = Services::mainnet().unwrap();
+
+        assert!(services.arcade.is_none());
+        assert_eq!(
+            provider_order(&services.get_merkle_path_services),
+            vec!["WhatsOnChain", "Bitails"],
+        );
+        assert_eq!(
+            provider_order(&services.get_status_for_txids_services),
+            vec!["WhatsOnChain", "Bitails"],
+        );
+    }
+
+    // =========================================================================
+    // Status merge: `unknown` is a gap, not a verdict
+    // =========================================================================
+
+    fn detail(txid: &str, status: &str) -> TxStatusDetail {
+        TxStatusDetail::new(txid, status, None)
+    }
+
+    fn status_result(name: &str, results: Vec<TxStatusDetail>) -> GetStatusForTxidsResult {
+        GetStatusForTxidsResult {
+            name: name.to_string(),
+            status: "success".to_string(),
+            error: None,
+            results,
+        }
+    }
+
+    #[test]
+    fn test_merge_status_results_fills_only_the_gaps() {
+        let mut first = status_result(
+            "ArcadeV2",
+            vec![
+                detail("aa", "mined"),
+                detail("bb", "unknown"),
+                detail("cc", "unknown"),
+            ],
+        );
+        // The later provider disagrees about "aa" (it must not win), places
+        // "bb", and cannot place "cc" either.
+        let second = status_result(
+            "WhatsOnChain",
+            vec![
+                detail("aa", "known"),
+                detail("bb", "mined"),
+                detail("cc", "unknown"),
+            ],
+        );
+
+        merge_status_results(&mut first, second);
+
+        assert_eq!(first.results[0].status, "mined", "first answer wins");
+        assert_eq!(first.results[1].status, "mined", "gap filled");
+        assert_eq!(first.results[2].status, "unknown", "still unplaced");
     }
 
     // =========================================================================

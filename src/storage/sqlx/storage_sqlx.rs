@@ -3177,8 +3177,14 @@ impl MonitorStorage for StorageSqlx {
         let txids: Vec<String> = reqs.iter().map(|r| r.txid.clone()).collect();
         let triage_result = services.get_status_for_txids(&txids, false).await;
 
-        // Build txid -> status lookup from triage results
-        let confirmed_txids: std::collections::HashSet<String> = match &triage_result {
+        // Build txid -> status lookup from triage results, plus the proofs
+        // the triage answer already carried (Arcade's MINED document does;
+        // WhatsOnChain's and Bitails' batch status answers never do).
+        #[allow(clippy::type_complexity)]
+        let (confirmed_txids, triage_proofs): (
+            std::collections::HashSet<String>,
+            std::collections::HashMap<String, (Vec<u8>, u32, String)>,
+        ) = match &triage_result {
             Ok(status_result) if status_result.status == "success" => {
                 let mut confirmed = 0u32;
                 let mut mempool = 0u32;
@@ -3211,15 +3217,39 @@ impl MonitorStorage for StorageSqlx {
                     })
                     .collect();
 
+                // A status provider that answers with the proof attached
+                // saves a whole getMerklePath round trip per transaction.
+                // Only a well-formed BUMP hex is taken; the proof is still a
+                // hint, validated against our own headers by
+                // `ingest_merkle_proof` before anything is latched.
+                let proofs: std::collections::HashMap<String, (Vec<u8>, u32, String)> =
+                    status_result
+                        .results
+                        .iter()
+                        .filter(|detail| detail.status == "mined")
+                        .filter_map(|detail| {
+                            let bytes = hex::decode(detail.merkle_path.as_deref()?).ok()?;
+                            Some((
+                                detail.txid.clone(),
+                                (
+                                    bytes,
+                                    detail.block_height?,
+                                    detail.block_hash.clone().unwrap_or_default(),
+                                ),
+                            ))
+                        })
+                        .collect();
+
                 tracing::info!(
                     total = reqs.len(),
                     confirmed,
                     mempool,
                     missing,
+                    with_proof = proofs.len(),
                     "synchronize_transaction_statuses: triage complete"
                 );
 
-                confirmed_set
+                (confirmed_set, proofs)
             }
             Ok(status_result) => {
                 // Status service returned non-success — skip sync (Go pattern)
@@ -3264,6 +3294,41 @@ impl MonitorStorage for StorageSqlx {
 
         for req in &confirmed_reqs {
             let txid = &req.txid;
+
+            // The triage answer already carried this transaction's proof:
+            // ingest it here, with no second lookup and no third-party
+            // indexer anywhere in the path. Same funnel as the webhook and
+            // SSE deliveries (BUMP parse -> compute root -> ChainTracker),
+            // so an inline proof that does not validate simply falls through
+            // to the fetch path below and can never leave the wallet worse
+            // off than before.
+            if let Some((merkle_path_bytes, block_height, block_hash)) =
+                triage_proofs.get(txid.as_str())
+            {
+                match self
+                    .ingest_merkle_proof(txid, merkle_path_bytes, *block_height, block_hash, None)
+                    .await?
+                {
+                    ProofIngestOutcome::Ingested(status) => {
+                        tracing::info!(
+                            txid = %txid,
+                            block_height = *block_height,
+                            marker = "triage_inline_proof",
+                            "synchronize_transaction_statuses: proof taken from the status answer, no merkle path fetch"
+                        );
+                        results.push(status);
+                        // No network fetch happened: no throttle to serve.
+                        continue;
+                    }
+                    not_ingested => {
+                        tracing::warn!(
+                            txid = %txid,
+                            outcome = ?not_ingested,
+                            "synchronize_transaction_statuses: inline triage proof rejected, falling back to merkle path fetch"
+                        );
+                    }
+                }
+            }
 
             // Attempt to get merkle path from services
             match services.get_merkle_path(txid, false).await {
@@ -6123,26 +6188,31 @@ mod tests {
                     txid: "tx_confirmed_deep".to_string(),
                     status: "mined".to_string(),
                     depth: Some(6),
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_confirmed_shallow".to_string(),
                     status: "mined".to_string(),
                     depth: Some(1),
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_mempool".to_string(),
                     status: "known".to_string(),
                     depth: Some(0),
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_unknown".to_string(),
                     status: "unknown".to_string(),
                     depth: None,
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_mined_zero_depth".to_string(),
                     status: "mined".to_string(),
                     depth: Some(0), // mined but depth 0 -> not confirmed
+                    ..Default::default()
                 },
             ],
         };
@@ -6267,16 +6337,19 @@ mod tests {
                     txid: "tx_a".to_string(),
                     status: "unknown".to_string(),
                     depth: None,
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_b".to_string(),
                     status: "unknown".to_string(),
                     depth: None,
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_c".to_string(),
                     status: "known".to_string(),
                     depth: Some(0),
+                    ..Default::default()
                 },
             ],
         };
@@ -7216,6 +7289,7 @@ mod tests {
                     txid: txid.to_string(),
                     status: status.to_string(),
                     depth: Some(1),
+                    ..Default::default()
                 }],
             })
         }

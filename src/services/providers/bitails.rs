@@ -624,6 +624,7 @@ impl Bitails {
                         txid: txid.clone(),
                         status,
                         depth,
+                        ..Default::default()
                     });
                 }
                 None => {
@@ -631,6 +632,7 @@ impl Bitails {
                         txid: txid.clone(),
                         status: "unknown".to_string(),
                         depth: None,
+                        ..Default::default()
                     });
                 }
             }

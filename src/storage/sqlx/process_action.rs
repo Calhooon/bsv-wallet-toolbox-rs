@@ -2719,6 +2719,7 @@ mod tests {
                     txid: "no_match".to_string(),
                     status: "unknown".to_string(),
                     depth: None,
+                    ..Default::default()
                 }],
             }))
             .build();
@@ -2877,6 +2878,7 @@ mod tests {
                     txid: String::new(), // will be matched by txid field below
                     status: "known".to_string(),
                     depth: None,
+                    ..Default::default()
                 }],
             }))
             .build();
@@ -2894,6 +2896,7 @@ mod tests {
                     txid: txid.clone(),
                     status: "known".to_string(),
                     depth: None,
+                    ..Default::default()
                 }],
             }))
             .build();
@@ -2957,6 +2960,7 @@ mod tests {
                     txid: txid.clone(),
                     status: "mined".to_string(),
                     depth: Some(3),
+                    ..Default::default()
                 }],
             }))
             .build();
@@ -3009,6 +3013,7 @@ mod tests {
                     txid: txid.clone(),
                     status: "unknown".to_string(),
                     depth: None,
+                    ..Default::default()
                 }],
             }))
             .build();
@@ -3151,6 +3156,7 @@ mod tests {
                     txid: txid.clone(),
                     status: "known".to_string(),
                     depth: None,
+                    ..Default::default()
                 }],
             }))
             .build();
@@ -3297,6 +3303,7 @@ mod tests {
                     txid: "no_match".to_string(),
                     status: "unknown".to_string(),
                     depth: None,
+                    ..Default::default()
                 }],
             }))
             .is_utxo_response(MockResponse::Sequence(vec![

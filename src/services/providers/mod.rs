@@ -18,7 +18,7 @@ pub use arc::{Arc, ArcConfig};
 pub use arcade::{
     arcade_status_rank, beef_to_ef_batch, beef_to_ef_batch_skipping, is_fatal_status,
     missing_parent_hint, Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent, ArcadeTxInfo,
-    EfBatch, EfBatchEntry, SseEvent, SseFrameParser, ARCADE_V2_MAINNET,
+    EfBatch, EfBatchEntry, SseEvent, SseFrameParser, ARCADE_STATUS_CONCURRENCY, ARCADE_V2_MAINNET,
 };
 pub use bhs::{BhsConfig, BlockHeaderService};
 pub use bitails::{Bitails, BitailsConfig};

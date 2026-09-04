@@ -338,7 +338,13 @@ pub struct GetBeefResult {
 // =============================================================================
 
 /// Block header information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Default` is the all-zero header: a provider that knows only part of a
+/// header (Arcade's status document gives height, hash and, recomputed from
+/// the BUMP, merkle root, but no version/time/bits/nonce/previous hash) fills
+/// what it knows and leaves the rest zeroed. Consumers of a merkle path
+/// result read height, hash and merkle root only.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BlockHeader {
     /// Block version.
     pub version: u32,
@@ -675,7 +681,14 @@ pub struct GetStatusForTxidsResult {
 }
 
 /// Status detail for a single transaction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `merkle_path` / `block_height` / `block_hash` are populated only by a
+/// status provider whose answer ALREADY carries the proof (Arcade's `MINED`
+/// document does; WhatsOnChain's and Bitails' batch status answers do not).
+/// A caller that finds them set can record the proof without a second
+/// `getMerklePath` round trip. They are a hint, never truth: the proof still
+/// goes through the same ChainTracker validation as any other provider's.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TxStatusDetail {
     /// Transaction ID.
     pub txid: String,
@@ -686,6 +699,31 @@ pub struct TxStatusDetail {
     /// Confirmation depth (if mined).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
+
+    /// BRC-74 BUMP merkle path (hex), when the status answer carried it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merkle_path: Option<String>,
+
+    /// Height of the block containing the transaction, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_height: Option<u32>,
+
+    /// Hash of the block containing the transaction, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_hash: Option<String>,
+}
+
+impl TxStatusDetail {
+    /// A status detail with no proof attached (the shape every batch status
+    /// provider but Arcade returns).
+    pub fn new(txid: impl Into<String>, status: impl Into<String>, depth: Option<u32>) -> Self {
+        Self {
+            txid: txid.into(),
+            status: status.into(),
+            depth,
+            ..Default::default()
+        }
+    }
 }
 
 // =============================================================================

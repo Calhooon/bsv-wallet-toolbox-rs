@@ -1003,6 +1003,7 @@ mod tests {
                     txid: "tx123".to_string(),
                     status: "known".to_string(),
                     depth: Some(0),
+                    ..Default::default()
                 }],
             }))
             .build();

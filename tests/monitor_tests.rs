@@ -268,6 +268,7 @@ mod monitor_integration {
                     txid: txid.clone(),
                     status: "mined".to_string(),
                     depth: Some(2),
+                    ..Default::default()
                 }],
             }))
             .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
@@ -367,6 +368,7 @@ mod monitor_integration {
                     txid: txid.clone(),
                     status: "mined".to_string(),
                     depth: Some(3),
+                    ..Default::default()
                 }],
             }))
             .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
@@ -740,6 +742,7 @@ mod monitor_integration {
                     txid: txid.to_string(),
                     status: "mined".to_string(),
                     depth: Some(2),
+                    ..Default::default()
                 }],
             }))
             .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
@@ -894,6 +897,7 @@ mod monitor_integration {
                     txid: txid.clone(),
                     status: "unknown".to_string(),
                     depth: None,
+                    ..Default::default()
                 }],
             }))
             .build();
@@ -1358,6 +1362,7 @@ mod monitor_integration {
                     txid: child.clone(),
                     status: "mined".to_string(),
                     depth: Some(1),
+                    ..Default::default()
                 }],
             }))
             .build();
