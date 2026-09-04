@@ -1968,6 +1968,7 @@ async fn validate_stored_beef(
     if !validation.valid {
         tracing::warn!(
             txid = %txid,
+            detail = %describe_invalid_beef(stored_beef, &[txid.to_string()]),
             "Discarding stored input_beef: BEEF structure is invalid. \
              Will fall through to individual tx lookup / network fallback."
         );
@@ -2003,6 +2004,44 @@ async fn validate_stored_beef(
     }
 
     true
+}
+
+/// Why a BEEF failed structural validation, in one line, and the rejected
+/// bytes on disk. "BEEF structure is invalid" alone cost a seat a day of
+/// diagnosis (LOW p25, 2026-09-04): the sorter knows exactly which inputs
+/// are missing and which entries it could not place, so say so, and write
+/// the hex to `/tmp/beef-rejected-<millis>.hex` for a repro.
+pub(super) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String {
+    let sr = beef.sort_txs();
+    let short = |v: &[String]| -> String {
+        if v.is_empty() {
+            "none".to_string()
+        } else {
+            v.iter()
+                .map(|t| t.chars().take(16).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+    };
+    let bytes = beef.to_binary();
+    let dump = format!("/tmp/beef-rejected-{}.hex", Utc::now().timestamp_millis());
+    let dumped = match std::fs::write(&dump, hex::encode(&bytes)) {
+        Ok(()) => dump,
+        Err(e) => format!("not written ({e})"),
+    };
+    format!(
+        "roots [{}]; missing inputs [{}]; transactions with missing inputs [{}]; \
+         not valid [{}]; txid-only [{}]; {} tx(s), {} bump(s), {} bytes; dump {}",
+        short(roots),
+        short(&sr.missing_inputs),
+        short(&sr.with_missing_inputs),
+        short(&sr.not_valid),
+        short(&sr.txid_only),
+        beef.txs.len(),
+        beef.bumps.len(),
+        bytes.len(),
+        dumped
+    )
 }
 
 /// Prunes a BEEF down to the transactions the given roots actually need.
@@ -2630,9 +2669,10 @@ async fn build_input_beef(
             // Verify BEEF structure is valid (allow txid-only entries)
             let validation = beef.verify_valid(true);
             if !validation.valid {
-                return Err(Error::ValidationError(
-                    "inputBEEF: BEEF structure is invalid".to_string(),
-                ));
+                return Err(Error::ValidationError(format!(
+                    "inputBEEF: BEEF structure is invalid: {}",
+                    describe_invalid_beef(&mut beef, &root_txids)
+                )));
             }
 
             // Verify each merkle root against the ChainTracker
@@ -6928,6 +6968,45 @@ mod tests {
         .execute(storage.pool())
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn test_describe_invalid_beef_names_the_missing_parent_and_dumps_the_bytes() {
+        let chain = synth_chain(3); // a <- b <- c
+        let mut beef = Beef::new();
+        // c spends b, and b is absent: the BEEF cannot be valid.
+        beef.merge_raw_tx(chain[2].0.clone(), None);
+        assert!(
+            !beef.verify_valid(true).valid,
+            "the shape under test is invalid"
+        );
+        let text = describe_invalid_beef(&mut beef, &[chain[2].1.clone()]);
+        let b16: String = chain[1].1.chars().take(16).collect();
+        let c16: String = chain[2].1.chars().take(16).collect();
+        assert!(
+            text.contains(&format!("missing inputs [{b16}]")),
+            "names the absent parent: {text}"
+        );
+        assert!(
+            text.contains(&format!("transactions with missing inputs [{c16}]")),
+            "names the child that needs it: {text}"
+        );
+        assert!(
+            text.contains(&format!("roots [{c16}]")),
+            "names the root: {text}"
+        );
+        assert!(
+            text.contains("dump /tmp/beef-rejected-"),
+            "points at the dump: {text}"
+        );
+        let path = text.rsplit("dump ").next().unwrap().to_string();
+        let dumped = std::fs::read_to_string(&path).expect("the dump exists");
+        assert_eq!(
+            dumped,
+            hex::encode(beef.to_binary()),
+            "the dump is the rejected bytes"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
