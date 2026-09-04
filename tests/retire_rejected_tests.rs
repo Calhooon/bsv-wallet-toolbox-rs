@@ -169,6 +169,7 @@ fn alive_oracle() -> MockWalletServices {
                 txid: TXID.to_string(),
                 status: "known".to_string(),
                 depth: None,
+                ..Default::default()
             }],
         }))
         .build()

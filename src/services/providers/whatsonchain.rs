@@ -589,21 +589,25 @@ impl WhatsOnChain {
                         txid: txid.clone(),
                         status: "unknown".to_string(),
                         depth: None,
+                        ..Default::default()
                     },
                     Some(d) if d.error.as_deref() == Some("unknown") => TxStatusDetail {
                         txid: txid.clone(),
                         status: "unknown".to_string(),
                         depth: None,
+                        ..Default::default()
                     },
                     Some(d) if d.confirmations.is_none() => TxStatusDetail {
                         txid: txid.clone(),
                         status: "known".to_string(),
                         depth: Some(0),
+                        ..Default::default()
                     },
                     Some(d) => TxStatusDetail {
                         txid: txid.clone(),
                         status: "mined".to_string(),
                         depth: d.confirmations,
+                        ..Default::default()
                     },
                 }
             })
@@ -1073,21 +1077,25 @@ mod tests {
                         txid: txid.clone(),
                         status: "unknown".to_string(),
                         depth: None,
+                        ..Default::default()
                     },
                     Some(d) if d.error.as_deref() == Some("unknown") => TxStatusDetail {
                         txid: txid.clone(),
                         status: "unknown".to_string(),
                         depth: None,
+                        ..Default::default()
                     },
                     Some(d) if d.confirmations.is_none() => TxStatusDetail {
                         txid: txid.clone(),
                         status: "known".to_string(),
                         depth: Some(0),
+                        ..Default::default()
                     },
                     Some(d) => TxStatusDetail {
                         txid: txid.clone(),
                         status: "mined".to_string(),
                         depth: d.confirmations,
+                        ..Default::default()
                     },
                 }
             })

@@ -880,3 +880,606 @@ mod proof_ingestion {
         assert_eq!(tx_status(&storage, &txid).await, "failed");
     }
 }
+
+// =============================================================================
+// Arcade reads: merkle path + batch status (mockito)
+// =============================================================================
+
+mod arcade_reads {
+    use bsv_rs::transaction::MerklePath;
+    use bsv_wallet_toolbox_rs::services::{Arcade, ArcadeConfig};
+
+    fn txid_of(byte: &str) -> String {
+        byte.repeat(32)
+    }
+
+    fn mined_body(txid: &str, height: u32, bump_hex: &str) -> String {
+        format!(
+            r#"{{"txid":"{}","txStatus":"MINED","blockHeight":{},"blockHash":"{}","merklePath":"{}"}}"#,
+            txid,
+            height,
+            "bb".repeat(32),
+            bump_hex
+        )
+    }
+
+    #[tokio::test]
+    async fn mined_status_document_serves_the_merkle_path() {
+        let txid = txid_of("a1");
+        let height = 850_000u32;
+        let bump = MerklePath::from_coinbase_txid(&txid, height);
+        let expected_root = bump.compute_root(Some(&txid)).unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", format!("/tx/{}", txid).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mined_body(&txid, height, &bump.to_hex()))
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let result = arcade.get_merkle_path(&txid).await.unwrap();
+        mock.assert_async().await;
+
+        assert_eq!(result.name.as_deref(), Some("ArcadeV2"));
+        assert!(result.error.is_none());
+
+        // The BUMP comes back as hex and recomputes the block's merkle root.
+        let hex_path = result.merkle_path.expect("merkle path");
+        let parsed = MerklePath::from_binary(&hex::decode(&hex_path).unwrap()).unwrap();
+        assert_eq!(parsed.block_height, height);
+        assert_eq!(parsed.compute_root(Some(&txid)).unwrap(), expected_root);
+
+        // The header carries what the document knew plus the recomputed root.
+        let header = result.header.expect("header");
+        assert_eq!(header.height, height);
+        assert_eq!(header.hash, "bb".repeat(32));
+        assert_eq!(header.merkle_root, expected_root);
+    }
+
+    #[tokio::test]
+    async fn status_read_sends_the_configured_auth_headers() {
+        let txid = txid_of("a2");
+        let height = 850_001u32;
+        let bump = MerklePath::from_coinbase_txid(&txid, height);
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", format!("/tx/{}", txid).as_str())
+            .match_header("x-callbacktoken", "tok-read")
+            .match_header("authorization", "Bearer squirrel")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mined_body(&txid, height, &bump.to_hex()))
+            .create_async()
+            .await;
+
+        let mut config = ArcadeConfig::with_callback_token("tok-read");
+        config.headers = Some(
+            [("Authorization".to_string(), "Bearer squirrel".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let arcade = Arcade::new(server.url(), Some(config), None).unwrap();
+
+        let result = arcade.get_merkle_path(&txid).await.unwrap();
+        mock.assert_async().await;
+        assert!(result.merkle_path.is_some());
+    }
+
+    #[tokio::test]
+    async fn unmined_status_is_no_proof_yet_not_an_error() {
+        let txid = txid_of("a3");
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", format!("/tx/{}", txid).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"txid":"{}","txStatus":"SEEN_ON_NETWORK"}}"#,
+                txid
+            ))
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let result = arcade.get_merkle_path(&txid).await.unwrap();
+
+        assert!(result.merkle_path.is_none());
+        assert!(result.header.is_none());
+        assert!(result.error.is_none(), "SEEN is an answer, not a failure");
+        assert_eq!(
+            result.notes[0].get("what").and_then(|v| v.as_str()),
+            Some("getMerklePathNotMined")
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_transaction_is_no_proof_yet() {
+        let txid = txid_of("a4");
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", format!("/tx/{}", txid).as_str())
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let result = arcade.get_merkle_path(&txid).await.unwrap();
+
+        assert!(result.merkle_path.is_none());
+        assert!(result.error.is_none());
+        assert_eq!(
+            result.notes[0].get("what").and_then(|v| v.as_str()),
+            Some("getMerklePathNotFound")
+        );
+    }
+
+    #[tokio::test]
+    async fn server_error_is_no_proof_yet_never_a_hard_error() {
+        let txid = txid_of("a5");
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", format!("/tx/{}", txid).as_str())
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        // Ok(..) with no path: the collection moves on to the next provider.
+        let result = arcade.get_merkle_path(&txid).await.unwrap();
+
+        assert!(result.merkle_path.is_none());
+        assert!(result.error.is_some());
+        assert_eq!(
+            result.notes[0].get("what").and_then(|v| v.as_str()),
+            Some("getMerklePathServiceError")
+        );
+    }
+
+    #[tokio::test]
+    async fn mined_without_enrichment_yields_no_proof() {
+        let txid = txid_of("a6");
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", format!("/tx/{}", txid).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(r#"{{"txid":"{}","txStatus":"MINED"}}"#, txid))
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let result = arcade.get_merkle_path(&txid).await.unwrap();
+
+        assert!(result.merkle_path.is_none());
+        assert_eq!(
+            result.notes[0].get("what").and_then(|v| v.as_str()),
+            Some("getMerklePathNoPath")
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_status_carries_proofs_and_reports_unknown_for_404() {
+        let mined = txid_of("b1");
+        let seen = txid_of("b2");
+        let missing = txid_of("b3");
+        let height = 851_000u32;
+        let bump = MerklePath::from_coinbase_txid(&mined, height);
+
+        let mut server = mockito::Server::new_async().await;
+        let _m1 = server
+            .mock("GET", format!("/tx/{}", mined).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mined_body(&mined, height, &bump.to_hex()))
+            .create_async()
+            .await;
+        let _m2 = server
+            .mock("GET", format!("/tx/{}", seen).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"txid":"{}","txStatus":"SEEN_ON_NETWORK"}}"#,
+                seen
+            ))
+            .create_async()
+            .await;
+        let _m3 = server
+            .mock("GET", format!("/tx/{}", missing).as_str())
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let txids = vec![mined.clone(), seen.clone(), missing.clone()];
+        let result = arcade.get_status_for_txids(&txids).await.unwrap();
+
+        assert_eq!(result.status, "success");
+        assert_eq!(result.results.len(), 3);
+
+        // Answers come back in the requested order.
+        assert_eq!(result.results[0].txid, mined);
+        assert_eq!(result.results[0].status, "mined");
+        assert_eq!(result.results[0].depth, Some(1));
+        assert_eq!(result.results[0].block_height, Some(height));
+        assert_eq!(
+            result.results[0].merkle_path.as_deref(),
+            Some(bump.to_hex().as_str())
+        );
+
+        assert_eq!(result.results[1].status, "known");
+        assert!(result.results[1].merkle_path.is_none());
+
+        assert_eq!(result.results[2].status, "unknown");
+    }
+
+    #[tokio::test]
+    async fn batch_status_survives_one_failing_txid() {
+        let good = txid_of("c1");
+        let broken = txid_of("c2");
+        let height = 852_000u32;
+        let bump = MerklePath::from_coinbase_txid(&good, height);
+
+        let mut server = mockito::Server::new_async().await;
+        let _ok = server
+            .mock("GET", format!("/tx/{}", good).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mined_body(&good, height, &bump.to_hex()))
+            .create_async()
+            .await;
+        let _bad = server
+            .mock("GET", format!("/tx/{}", broken).as_str())
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let txids = vec![good.clone(), broken.clone()];
+        let result = arcade.get_status_for_txids(&txids).await.unwrap();
+
+        assert_eq!(
+            result.status, "success",
+            "one failing txid must not skip the batch"
+        );
+        assert_eq!(result.results[0].status, "mined");
+        assert!(result.results[0].merkle_path.is_some());
+        assert_eq!(result.results[1].txid, broken);
+        assert_eq!(result.results[1].status, "unknown");
+    }
+
+    #[tokio::test]
+    async fn batch_status_errors_when_nothing_could_be_answered() {
+        let one = txid_of("d1");
+        let two = txid_of("d2");
+
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(500)
+            .expect_at_least(2)
+            .create_async()
+            .await;
+
+        let arcade = Arcade::new(server.url(), None, None).unwrap();
+        let result = arcade.get_status_for_txids(&[one, two]).await.unwrap();
+
+        // Silence is not "nothing is mined": the collection must fall through
+        // to the next status provider.
+        assert_eq!(result.status, "error");
+        assert!(result.results.is_empty());
+        assert!(result.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn empty_batch_is_an_empty_success() {
+        let arcade = Arcade::new("https://unused.test", None, None).unwrap();
+        let result = arcade.get_status_for_txids(&[]).await.unwrap();
+        assert_eq!(result.status, "success");
+        assert!(result.results.is_empty());
+    }
+}
+
+// =============================================================================
+// Triage that carries the proof: synchronize_transaction_statuses (sqlite)
+// =============================================================================
+
+#[cfg(feature = "sqlite")]
+mod triage_inline_proofs {
+    use bsv_rs::transaction::{MerklePath, MockChainTracker};
+    use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
+    use bsv_wallet_toolbox_rs::services::{
+        GetMerklePathResult, GetStatusForTxidsResult, TxStatusDetail, WalletServices,
+    };
+    use bsv_wallet_toolbox_rs::storage::StorageSqlx;
+    use bsv_wallet_toolbox_rs::{
+        BlockHeader, MonitorStorage, WalletStorageProvider, WalletStorageWriter,
+    };
+    use std::sync::Arc;
+
+    async fn setup_storage() -> StorageSqlx {
+        let storage = StorageSqlx::in_memory().await.expect("in_memory storage");
+        let storage_key = "02".to_string() + &"ab".repeat(32);
+        storage
+            .migrate("test-triage", &storage_key)
+            .await
+            .expect("migrate");
+        storage.make_available().await.expect("make_available");
+        storage
+    }
+
+    /// Seed an unmined transaction + its proof request.
+    async fn seed_unmined(storage: &StorageSqlx, txid: &str) {
+        let identity_key = "02".to_string() + &"cd".repeat(32);
+        let (user, _) = storage
+            .find_or_insert_user(&identity_key)
+            .await
+            .expect("find_or_insert_user");
+        let now = chrono::Utc::now();
+
+        sqlx::query(
+            r#"
+            INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, created_at, updated_at)
+            VALUES (?, 'unmined', 0, '{}', 0, '{}', X'01000000', ?, ?)
+            "#,
+        )
+        .bind(txid)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .expect("insert proven_tx_req");
+
+        sqlx::query(
+            r#"
+            INSERT INTO transactions (user_id, txid, status, reference, description, satoshis,
+                                      version, lock_time, raw_tx, is_outgoing, created_at, updated_at)
+            VALUES (?, ?, 'unproven', ?, 'triage test tx', -500, 1, 0, X'01000000', 1, ?, ?)
+            "#,
+        )
+        .bind(user.user_id)
+        .bind(txid)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .expect("insert transaction");
+    }
+
+    async fn req_status(storage: &StorageSqlx, txid: &str) -> String {
+        let (s,): (String,) = sqlx::query_as("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(storage.pool())
+            .await
+            .expect("req status");
+        s
+    }
+
+    async fn proven_count(storage: &StorageSqlx, txid: &str) -> i64 {
+        let (c,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM proven_txs WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(storage.pool())
+            .await
+            .expect("proven count");
+        c
+    }
+
+    /// A "mined" triage answer carrying the proof, the way Arcade's MINED
+    /// status document does.
+    fn mined_with_proof(txid: &str, height: u32) -> TxStatusDetail {
+        let bump = MerklePath::from_coinbase_txid(txid, height);
+        TxStatusDetail {
+            txid: txid.to_string(),
+            status: "mined".to_string(),
+            depth: Some(1),
+            merkle_path: Some(bump.to_hex()),
+            block_height: Some(height),
+            block_hash: Some("bb".repeat(32)),
+        }
+    }
+
+    /// A tracker that accepts each (txid, height) pair's coinbase-style root.
+    fn tracker_for(pairs: &[(&str, u32)], tip: u32) -> MockChainTracker {
+        let mut tracker = MockChainTracker::new(tip);
+        for (txid, height) in pairs {
+            let root = MerklePath::from_coinbase_txid(txid, *height)
+                .compute_root(Some(txid))
+                .expect("root");
+            tracker.add_root(*height, root);
+        }
+        tracker
+    }
+
+    #[tokio::test]
+    async fn two_of_three_mined_with_proofs_complete_without_a_second_lookup() {
+        let storage = setup_storage().await;
+        let mined_a = "a".repeat(64);
+        let mined_b = "b".repeat(64);
+        let mempool = "c".repeat(64);
+        let (height_a, height_b) = (860_000u32, 860_001u32);
+
+        for txid in [&mined_a, &mined_b, &mempool] {
+            seed_unmined(&storage, txid).await;
+        }
+        storage
+            .set_chain_tracker(Arc::new(tracker_for(
+                &[(&mined_a, height_a), (&mined_b, height_b)],
+                height_b + 1,
+            )))
+            .await;
+
+        let mock = Arc::new(
+            MockWalletServices::builder()
+                .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                    name: "ArcadeV2".to_string(),
+                    status: "success".to_string(),
+                    error: None,
+                    results: vec![
+                        mined_with_proof(&mined_a, height_a),
+                        mined_with_proof(&mined_b, height_b),
+                        TxStatusDetail::new(&mempool, "known", Some(0)),
+                    ],
+                }))
+                // Any fall-through to the fetch path is a test failure.
+                .get_merkle_path_response(MockResponse::Error(
+                    MockErrorKind::ServiceError,
+                    "getMerklePath must not be called".to_string(),
+                ))
+                .build(),
+        );
+        storage.set_services(mock.clone() as Arc<dyn WalletServices>);
+
+        let synchronized = storage
+            .synchronize_transaction_statuses()
+            .await
+            .expect("synchronize");
+
+        assert_eq!(synchronized.len(), 2, "two proofs recorded");
+        assert_eq!(proven_count(&storage, &mined_a).await, 1);
+        assert_eq!(proven_count(&storage, &mined_b).await, 1);
+        assert_eq!(proven_count(&storage, &mempool).await, 0);
+
+        assert_eq!(req_status(&storage, &mined_a).await, "completed");
+        assert_eq!(req_status(&storage, &mined_b).await, "completed");
+        assert_eq!(req_status(&storage, &mempool).await, "unmined");
+
+        assert_eq!(
+            mock.call_count("get_merkle_path"),
+            0,
+            "the status answer already carried the proofs"
+        );
+        assert_eq!(mock.call_count("get_status_for_txids"), 1);
+    }
+
+    #[tokio::test]
+    async fn one_unanswerable_txid_does_not_skip_the_batch() {
+        let storage = setup_storage().await;
+        let mined_a = "1".repeat(64);
+        let mined_b = "2".repeat(64);
+        // Arcade's per-txid call failed for this one: reported unknown,
+        // never a hard error for the whole batch.
+        let unanswered = "3".repeat(64);
+        let (height_a, height_b) = (861_000u32, 861_001u32);
+
+        for txid in [&mined_a, &mined_b, &unanswered] {
+            seed_unmined(&storage, txid).await;
+        }
+        storage
+            .set_chain_tracker(Arc::new(tracker_for(
+                &[(&mined_a, height_a), (&mined_b, height_b)],
+                height_b + 1,
+            )))
+            .await;
+
+        let mock = Arc::new(
+            MockWalletServices::builder()
+                .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                    name: "ArcadeV2".to_string(),
+                    status: "success".to_string(),
+                    error: None,
+                    results: vec![
+                        mined_with_proof(&mined_a, height_a),
+                        mined_with_proof(&mined_b, height_b),
+                        TxStatusDetail::new(&unanswered, "unknown", None),
+                    ],
+                }))
+                .get_merkle_path_response(MockResponse::Error(
+                    MockErrorKind::ServiceError,
+                    "getMerklePath must not be called".to_string(),
+                ))
+                .build(),
+        );
+        storage.set_services(mock.clone() as Arc<dyn WalletServices>);
+
+        let synchronized = storage
+            .synchronize_transaction_statuses()
+            .await
+            .expect("synchronize");
+
+        assert_eq!(synchronized.len(), 2, "the batch was not skipped");
+        assert_eq!(proven_count(&storage, &mined_a).await, 1);
+        assert_eq!(proven_count(&storage, &mined_b).await, 1);
+        assert_eq!(req_status(&storage, &unanswered).await, "unmined");
+        assert_eq!(mock.call_count("get_merkle_path"), 0);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_inline_proof_falls_back_to_the_fetch() {
+        let storage = setup_storage().await;
+        let txid = "4".repeat(64);
+        let other = "5".repeat(64); // the BUMP the status answer lies with
+        let height = 862_000u32;
+
+        seed_unmined(&storage, &txid).await;
+        // The tracker only knows the honest root for this txid at this height.
+        storage
+            .set_chain_tracker(Arc::new(tracker_for(&[(&txid, height)], height + 1)))
+            .await;
+
+        let honest = MerklePath::from_coinbase_txid(&txid, height);
+        let honest_root = honest.compute_root(Some(&txid)).expect("root");
+
+        let mock = Arc::new(
+            MockWalletServices::builder()
+                .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                    name: "ArcadeV2".to_string(),
+                    status: "success".to_string(),
+                    error: None,
+                    // Mined, with a BUMP that proves a DIFFERENT transaction.
+                    results: vec![TxStatusDetail {
+                        txid: txid.clone(),
+                        status: "mined".to_string(),
+                        depth: Some(1),
+                        merkle_path: Some(MerklePath::from_coinbase_txid(&other, height).to_hex()),
+                        block_height: Some(height),
+                        block_hash: Some("bb".repeat(32)),
+                    }],
+                }))
+                .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
+                    name: Some("WhatsOnChain".to_string()),
+                    merkle_path: Some(honest.to_hex()),
+                    header: Some(BlockHeader {
+                        height,
+                        hash: "cc".repeat(32),
+                        merkle_root: honest_root.clone(),
+                        ..Default::default()
+                    }),
+                    error: None,
+                    notes: vec![],
+                }))
+                .build(),
+        );
+        storage.set_services(mock.clone() as Arc<dyn WalletServices>);
+
+        let synchronized = storage
+            .synchronize_transaction_statuses()
+            .await
+            .expect("synchronize");
+
+        assert_eq!(synchronized.len(), 1);
+        assert_eq!(proven_count(&storage, &txid).await, 1);
+        assert_eq!(req_status(&storage, &txid).await, "completed");
+        assert_eq!(
+            mock.call_count("get_merkle_path"),
+            1,
+            "a rejected inline proof must never leave the wallet worse off"
+        );
+
+        // The stored proof is the honest one, not the lie.
+        let (stored_root,): (String,) =
+            sqlx::query_as("SELECT merkle_root FROM proven_txs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(stored_root, honest_root);
+    }
+}

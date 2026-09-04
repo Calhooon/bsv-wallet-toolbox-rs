@@ -18,6 +18,14 @@
 //!    non-terminal statuses on a fresh connect (race-free) and supports
 //!    `Last-Event-ID` resume. See [`ArcadeSseClient`].
 //!
+//! Arcade is also a READ path. `GET /tx/{txid}` answers `MINED` with
+//! `blockHeight`, `blockHash` and `merklePath` (BUMP) for a mined
+//! transaction, so [`Arcade::get_merkle_path`] serves proofs and
+//! [`Arcade::get_status_for_txids`] serves batch triage from our own
+//! broadcaster instead of a third-party indexer. Both are registered FIRST in
+//! their service collections when Arcade is configured, with WhatsOnChain and
+//! Bitails kept behind them as failover.
+//!
 //! Status lifecycle: `RECEIVED → SENT_TO_NETWORK → ACCEPTED_BY_NETWORK →
 //! SEEN_ON_NETWORK → SEEN_MULTIPLE_NODES → MINED`; fatal statuses are
 //! `REJECTED` and `DOUBLE_SPEND_ATTEMPTED`. Gate spendability on
@@ -32,14 +40,25 @@
 //! (which sets `arcade_v2 = true`) to register the Arcade broadcaster as the
 //! first postBeef provider.
 
+use bsv_rs::transaction::MerklePath;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use crate::services::traits::{PostBeefDelivery, PostBeefResult, PostTxResultForTxid};
+use crate::services::traits::{
+    BlockHeader, GetMerklePathResult, GetStatusForTxidsResult, PostBeefDelivery, PostBeefResult,
+    PostTxResultForTxid, TxStatusDetail,
+};
 use crate::{Error, Result};
+
+/// How many `GET /tx/{txid}` status calls a batch triage runs at once.
+///
+/// Arcade answers a single-txid status in a few milliseconds; the bound is
+/// there to keep a several-hundred-txid wallet from opening a connection per
+/// transaction, not because Arcade is fragile.
+pub const ARCADE_STATUS_CONCURRENCY: usize = 8;
 
 /// Live Arcade V2 mainnet endpoint (verified 2026-07-10).
 pub const ARCADE_V2_MAINNET: &str = "https://arcade-v2-us-1.bsvblockchain.tech";
@@ -203,6 +222,33 @@ impl Arcade {
         }
         if self.config.skip_script_validation {
             headers.insert("X-SkipScriptValidation", "true".parse().unwrap());
+        }
+        if let Some(ref additional) = self.config.headers {
+            for (key, value) in additional {
+                if let (Ok(name), Ok(val)) = (
+                    reqwest::header::HeaderName::try_from(key.as_str()),
+                    reqwest::header::HeaderValue::from_str(value),
+                ) {
+                    headers.insert(name, val);
+                }
+            }
+        }
+        headers
+    }
+
+    /// Headers for read requests (`GET /tx/{txid}`).
+    ///
+    /// The same authentication the broadcaster sends: the `X-CallbackToken`
+    /// and any additional configured headers (where an API key or
+    /// `Authorization` lives). Submit-only headers (content type, status
+    /// verbosity, validation skips, callback URL) have no meaning on a GET
+    /// and are not sent.
+    fn read_headers(&self) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(ref token) = self.config.callback_token {
+            if let Ok(v) = token.parse() {
+                headers.insert("X-CallbackToken", v);
+            }
         }
         if let Some(ref additional) = self.config.headers {
             for (key, value) in additional {
@@ -608,6 +654,7 @@ impl Arcade {
         let response = self
             .client
             .get(&url)
+            .headers(self.read_headers())
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
@@ -624,6 +671,170 @@ impl Arcade {
                 "Arcade getTxStatus failed with status {}",
                 status
             ))),
+        }
+    }
+
+    /// Merkle path for `txid` from Arcade's own status document
+    /// (`GET /tx/{txid}`).
+    ///
+    /// A `MINED` document carries `merklePath` (BUMP), `blockHeight` and
+    /// `blockHash` since arcade v0.10.1, so a wallet broadcasting through
+    /// Arcade never has to ask a third-party indexer for the proof.
+    ///
+    /// Every answer that is not a usable proof (any non-`MINED` status
+    /// (`SEEN_ON_NETWORK`, `RECEIVED`, `REJECTED`, ...), a 404, a `MINED`
+    /// document with no or partial enrichment, an unparseable BUMP, a
+    /// transport failure) comes back as the same "no proof yet" result an
+    /// unmined transaction gets from WhatsOnChain: `merkle_path: None`, never
+    /// an `Err`, so the collection moves straight on to the next provider.
+    ///
+    /// The proof is a HINT, never truth. The caller recomputes the root and
+    /// validates it against its own headers exactly as it does for every
+    /// other provider.
+    pub async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
+        let info = match self.get_tx_status(txid).await {
+            Ok(Some(info)) => info,
+            Ok(None) => return Ok(self.no_merkle_path("getMerklePathNotFound", None)),
+            Err(e) => {
+                return Ok(self.no_merkle_path("getMerklePathServiceError", Some(e.to_string())))
+            }
+        };
+
+        if info.tx_status != statuses::MINED {
+            return Ok(self.no_merkle_path("getMerklePathNotMined", None));
+        }
+
+        let Some((bytes, bump)) = status_proof(&info) else {
+            return Ok(self.no_merkle_path("getMerklePathNoPath", None));
+        };
+
+        let block_height = info.block_height.unwrap_or(bump.block_height);
+        if block_height != bump.block_height {
+            tracing::warn!(
+                txid = %txid,
+                doc_height = block_height,
+                bump_height = bump.block_height,
+                "Arcade status document height disagrees with its own BUMP; dropping the proof"
+            );
+            return Ok(self.no_merkle_path("getMerklePathHeightMismatch", None));
+        }
+
+        // The root of the block this BUMP proves. Recomputed (never taken on
+        // trust) and handed on as the header's merkle root so the caller
+        // stores the real value instead of a zero placeholder; the caller
+        // validates it against its own headers before latching anything.
+        let merkle_root = match bump.compute_root(Some(txid)) {
+            Ok(root) => root,
+            Err(e) => {
+                return Ok(self.no_merkle_path("getMerklePathBadProof", Some(e.to_string())));
+            }
+        };
+
+        // `blockHash` may legitimately be absent (upstream enrichment is
+        // `omitempty`): it is informational, validation is root-vs-height
+        // against our own headers.
+        let block_hash = info.block_hash.clone().unwrap_or_default();
+
+        Ok(GetMerklePathResult {
+            name: Some(self.name.clone()),
+            merkle_path: Some(hex::encode(&bytes)),
+            header: Some(BlockHeader {
+                height: block_height,
+                hash: block_hash,
+                merkle_root,
+                ..Default::default()
+            }),
+            error: None,
+            notes: vec![make_note(&self.name, "getMerklePathSuccess")],
+        })
+    }
+
+    /// Batch triage: the current status of each txid, from Arcade's own
+    /// `GET /tx/{txid}` documents.
+    ///
+    /// One call per txid, [`ARCADE_STATUS_CONCURRENCY`] in flight at a time.
+    /// A `MINED` answer carries the proof with it (`merkle_path` /
+    /// `block_height` / `block_hash` on the detail), so a caller triaging a
+    /// wallet's unmined set can record the proofs it finds without a second
+    /// round trip per transaction.
+    ///
+    /// A txid Arcade has never seen (404) is reported `unknown`: that is an
+    /// answer, not a failure. A txid whose own call failed at the transport
+    /// is also reported `unknown` and never fails the batch. Only a batch in
+    /// which EVERY call failed at the transport comes back as an error, so
+    /// the collection falls through to the next status provider instead of
+    /// mistaking silence for "nothing is mined".
+    pub async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
+        if txids.is_empty() {
+            return Ok(GetStatusForTxidsResult {
+                name: self.name.clone(),
+                status: "success".to_string(),
+                error: None,
+                results: Vec::new(),
+            });
+        }
+
+        let answers: HashMap<String, std::result::Result<Option<ArcadeTxInfo>, String>> =
+            futures_util::stream::iter(txids.iter().cloned().map(|txid| async move {
+                let answer = self.get_tx_status(&txid).await.map_err(|e| e.to_string());
+                (txid, answer)
+            }))
+            .buffer_unordered(ARCADE_STATUS_CONCURRENCY)
+            .collect()
+            .await;
+
+        let mut unreachable = 0usize;
+        let mut last_error = None;
+        let mut results = Vec::with_capacity(txids.len());
+
+        for txid in txids {
+            match answers.get(txid) {
+                Some(Ok(Some(info))) => results.push(status_detail(txid, info)),
+                Some(Ok(None)) => results.push(TxStatusDetail::new(txid, "unknown", None)),
+                Some(Err(e)) => {
+                    unreachable += 1;
+                    last_error = Some(e.clone());
+                    tracing::debug!(
+                        txid = %txid,
+                        error = %e,
+                        "Arcade status call failed for one txid; reported unknown, batch continues"
+                    );
+                    results.push(TxStatusDetail::new(txid, "unknown", None));
+                }
+                None => results.push(TxStatusDetail::new(txid, "unknown", None)),
+            }
+        }
+
+        if unreachable == txids.len() {
+            return Ok(GetStatusForTxidsResult {
+                name: self.name.clone(),
+                status: "error".to_string(),
+                error: Some(format!(
+                    "Arcade could not answer any of {} status calls: {}",
+                    txids.len(),
+                    last_error.unwrap_or_else(|| "unknown error".to_string())
+                )),
+                results: Vec::new(),
+            });
+        }
+
+        Ok(GetStatusForTxidsResult {
+            name: self.name.clone(),
+            status: "success".to_string(),
+            error: None,
+            results,
+        })
+    }
+
+    /// A "no proof from here" merkle path result (never an error the
+    /// collection could mistake for a verdict).
+    fn no_merkle_path(&self, what: &str, error: Option<String>) -> GetMerklePathResult {
+        GetMerklePathResult {
+            name: Some(self.name.clone()),
+            merkle_path: None,
+            header: None,
+            error,
+            notes: vec![make_note(&self.name, what)],
         }
     }
 
@@ -1088,7 +1299,13 @@ struct ArcadeBatchResponse {
 }
 
 /// Response to `GET /tx/{txid}`.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// A `MINED` document additionally carries `blockHash`, `blockHeight` and
+/// `merklePath` (BUMP), the same enriched shape as the MINED SSE frame and
+/// the webhook callback body (arcade >= v0.10.1). Enrichment is best-effort
+/// (`omitempty` upstream), so all three default to `None` and documents from
+/// older instances or for unmined transactions parse unchanged.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ArcadeTxInfo {
     /// Transaction ID.
     pub txid: String,
@@ -1101,6 +1318,87 @@ pub struct ArcadeTxInfo {
     /// Extra info, if any.
     #[serde(rename = "extraInfo", default)]
     pub extra_info: Option<String>,
+    /// Block hash, present on MINED documents (arcade >= v0.10.1).
+    #[serde(rename = "blockHash", default)]
+    pub block_hash: Option<String>,
+    /// Block height, present on MINED documents (arcade >= v0.10.1).
+    #[serde(rename = "blockHeight", default)]
+    pub block_height: Option<u32>,
+    /// BRC-74 BUMP merkle path, present on MINED documents (arcade >=
+    /// v0.10.1, best-effort). A hint, never truth: consumers must SPV-verify
+    /// against their own headers before latching.
+    #[serde(rename = "merklePath", default)]
+    pub merkle_path: Option<String>,
+}
+
+/// The byte decodings of an Arcade merkle path worth trying, in order.
+///
+/// Arcade serializes the BUMP as hex. Base64 is tried as a fallback because
+/// the field is an `omitempty` string upstream and has been seen base64 in
+/// other ARC-family payloads. Both candidates are offered rather than the
+/// first that decodes, so a base64 string that happens to be legal hex still
+/// gets its second chance at the BUMP parse.
+pub(crate) fn decode_bump_candidates(encoded: &str) -> Vec<Vec<u8>> {
+    if encoded.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = Vec::with_capacity(2);
+    if let Ok(bytes) = hex::decode(encoded) {
+        candidates.push(bytes);
+    }
+    if let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded) {
+        candidates.push(bytes);
+    }
+    candidates
+}
+
+/// The proof material in a status document: `(BUMP bytes, parsed BUMP)`.
+///
+/// `None` unless the merkle path is present, non-empty, decodable and parses
+/// as a BUMP, AND the block height is present. Partial enrichment (upstream
+/// is best-effort) falls back to the fetch path rather than latching half an
+/// answer: the same rule the SSE inline-proof path applies.
+pub(crate) fn status_proof(info: &ArcadeTxInfo) -> Option<(Vec<u8>, MerklePath)> {
+    info.block_height?;
+    for bytes in decode_bump_candidates(info.merkle_path.as_deref()?) {
+        if let Ok(bump) = MerklePath::from_binary(&bytes) {
+            return Some((bytes, bump));
+        }
+    }
+    None
+}
+
+/// Map one Arcade status document onto a [`TxStatusDetail`], carrying the
+/// proof when the document has one.
+pub(crate) fn status_detail(txid: &str, info: &ArcadeTxInfo) -> TxStatusDetail {
+    if info.tx_status == statuses::MINED {
+        // Arcade reports MINED without a confirmation count. Depth 1 is the
+        // honest floor: the transaction is in a block.
+        let mut detail = TxStatusDetail::new(txid, "mined", Some(1));
+        if let Some((bytes, bump)) = status_proof(info) {
+            let height = info.block_height.unwrap_or(bump.block_height);
+            if height == bump.block_height {
+                detail.merkle_path = Some(hex::encode(&bytes));
+                detail.block_height = Some(height);
+                detail.block_hash = info.block_hash.clone();
+            } else {
+                tracing::warn!(
+                    txid = %txid,
+                    doc_height = height,
+                    bump_height = bump.block_height,
+                    "Arcade status document height disagrees with its own BUMP; proof not carried"
+                );
+            }
+        }
+        return detail;
+    }
+    if is_fatal_status(&info.tx_status) || arcade_status_rank(&info.tx_status) == 0 {
+        // REJECTED / DOUBLE_SPEND_ATTEMPTED / anything unrecognised: no
+        // proof is coming, and the transaction is not in the mempool.
+        return TxStatusDetail::new(txid, "unknown", None);
+    }
+    // RECEIVED .. SEEN_MULTIPLE_NODES: known to the network, not yet mined.
+    TxStatusDetail::new(txid, "known", Some(0))
 }
 
 fn make_note(provider: &str, what: &str) -> HashMap<String, serde_json::Value> {
@@ -1212,5 +1510,150 @@ mod tests {
         let a = Arcade::new("https://example.test/", None, None).unwrap();
         assert_eq!(a.url(), "https://example.test");
         assert_eq!(a.name(), "ArcadeV2");
+    }
+
+    // =========================================================================
+    // Status document -> proof / triage
+    // =========================================================================
+
+    fn mined_doc(txid: &str, height: u32) -> ArcadeTxInfo {
+        ArcadeTxInfo {
+            txid: txid.to_string(),
+            tx_status: statuses::MINED.to_string(),
+            block_hash: Some("bb".repeat(32)),
+            block_height: Some(height),
+            merkle_path: Some(MerklePath::from_coinbase_txid(txid, height).to_hex()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_decode_bump_candidates_hex_and_base64() {
+        let txid = "aa".repeat(32);
+        let bytes = MerklePath::from_coinbase_txid(&txid, 850_000).to_binary();
+
+        let from_hex = decode_bump_candidates(&hex::encode(&bytes));
+        assert!(from_hex.contains(&bytes), "hex encoding must decode");
+
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let from_b64 = decode_bump_candidates(&b64);
+        assert!(from_b64.contains(&bytes), "base64 encoding must decode");
+
+        assert!(decode_bump_candidates("").is_empty());
+    }
+
+    #[test]
+    fn test_status_proof_needs_height_and_parseable_path() {
+        let txid = "aa".repeat(32);
+        let height = 850_000u32;
+
+        let (bytes, bump) = status_proof(&mined_doc(&txid, height)).expect("proof");
+        assert_eq!(bump.block_height, height);
+        assert_eq!(
+            bytes,
+            MerklePath::from_coinbase_txid(&txid, height).to_binary()
+        );
+
+        // Partial enrichment: height missing.
+        let mut no_height = mined_doc(&txid, height);
+        no_height.block_height = None;
+        assert!(status_proof(&no_height).is_none());
+
+        // Partial enrichment: path missing.
+        let mut no_path = mined_doc(&txid, height);
+        no_path.merkle_path = None;
+        assert!(status_proof(&no_path).is_none());
+
+        // Garbage that is legal hex but not a BUMP.
+        let mut garbage = mined_doc(&txid, height);
+        garbage.merkle_path = Some("dead".to_string());
+        assert!(status_proof(&garbage).is_none());
+    }
+
+    #[test]
+    fn test_status_proof_accepts_a_base64_merkle_path() {
+        let txid = "cc".repeat(32);
+        let height = 851_000u32;
+        let bytes = MerklePath::from_coinbase_txid(&txid, height).to_binary();
+
+        let mut doc = mined_doc(&txid, height);
+        doc.merkle_path = Some(base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            &bytes,
+        ));
+
+        let (decoded, bump) = status_proof(&doc).expect("base64 proof");
+        assert_eq!(decoded, bytes);
+        assert_eq!(bump.block_height, height);
+    }
+
+    #[test]
+    fn test_status_detail_mined_carries_the_proof() {
+        let txid = "aa".repeat(32);
+        let height = 850_000u32;
+        let detail = status_detail(&txid, &mined_doc(&txid, height));
+
+        assert_eq!(detail.status, "mined");
+        assert_eq!(detail.depth, Some(1));
+        assert_eq!(detail.block_height, Some(height));
+        assert_eq!(detail.block_hash.as_deref(), Some("bb".repeat(32).as_str()));
+        assert_eq!(
+            detail.merkle_path.as_deref(),
+            Some(
+                MerklePath::from_coinbase_txid(&txid, height)
+                    .to_hex()
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn test_status_detail_height_mismatch_drops_the_proof() {
+        let txid = "aa".repeat(32);
+        let mut doc = mined_doc(&txid, 850_000);
+        doc.block_height = Some(850_001); // disagrees with its own BUMP
+
+        let detail = status_detail(&txid, &doc);
+        assert_eq!(detail.status, "mined");
+        assert!(
+            detail.merkle_path.is_none(),
+            "an incoherent document must not carry a proof"
+        );
+    }
+
+    #[test]
+    fn test_status_detail_in_flight_is_known_and_fatal_is_unknown() {
+        let txid = "aa".repeat(32);
+
+        for status in [
+            statuses::RECEIVED,
+            statuses::SENT_TO_NETWORK,
+            statuses::ACCEPTED_BY_NETWORK,
+            statuses::SEEN_ON_NETWORK,
+            statuses::SEEN_MULTIPLE_NODES,
+        ] {
+            let doc = ArcadeTxInfo {
+                txid: txid.clone(),
+                tx_status: status.to_string(),
+                ..Default::default()
+            };
+            let detail = status_detail(&txid, &doc);
+            assert_eq!(detail.status, "known", "{} is in the mempool", status);
+            assert_eq!(detail.depth, Some(0));
+            assert!(detail.merkle_path.is_none());
+        }
+
+        for status in [
+            statuses::REJECTED,
+            statuses::DOUBLE_SPEND_ATTEMPTED,
+            "SOME_FUTURE_STATUS",
+        ] {
+            let doc = ArcadeTxInfo {
+                txid: txid.clone(),
+                tx_status: status.to_string(),
+                ..Default::default()
+            };
+            assert_eq!(status_detail(&txid, &doc).status, "unknown", "{}", status);
+        }
     }
 }

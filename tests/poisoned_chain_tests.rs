@@ -222,6 +222,7 @@ fn alive_oracle(txid: &str) -> MockWalletServices {
                 txid: txid.to_string(),
                 status: "known".to_string(),
                 depth: None,
+                ..Default::default()
             }],
         }))
         .build()
@@ -570,6 +571,7 @@ fn known_as_mined(known: &[&str]) -> MockResponse<GetStatusForTxidsResult> {
                 txid: txid.to_string(),
                 status: "mined".to_string(),
                 depth: Some(3),
+                ..Default::default()
             })
             .collect(),
     })
@@ -790,6 +792,7 @@ async fn a_spent_locked_input_is_left_locked_and_never_rechecked_again() {
                 txid: P.to_string(),
                 status: "mined".to_string(),
                 depth: Some(10),
+                ..Default::default()
             }],
         }))
         .build();

@@ -361,16 +361,19 @@ fn test_get_status_for_txids_result() {
                 txid: "tx1".to_string(),
                 status: "mined".to_string(),
                 depth: Some(10),
+                ..Default::default()
             },
             TxStatusDetail {
                 txid: "tx2".to_string(),
                 status: "known".to_string(),
                 depth: Some(0),
+                ..Default::default()
             },
             TxStatusDetail {
                 txid: "tx3".to_string(),
                 status: "unknown".to_string(),
                 depth: None,
+                ..Default::default()
             },
         ],
     };
@@ -975,21 +978,25 @@ async fn test_triage_flow_filters_confirmed_txids() {
                     txid: "tx_confirmed_1".to_string(),
                     status: "mined".to_string(),
                     depth: Some(3),
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_confirmed_2".to_string(),
                     status: "mined".to_string(),
                     depth: Some(1),
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_mempool".to_string(),
                     status: "known".to_string(),
                     depth: Some(0),
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_unknown".to_string(),
                     status: "unknown".to_string(),
                     depth: None,
+                    ..Default::default()
                 },
             ],
         }))
@@ -1108,11 +1115,13 @@ async fn test_triage_flow_confirmed_txids_get_proofs() {
                     txid: "tx_mined".to_string(),
                     status: "mined".to_string(),
                     depth: Some(2),
+                    ..Default::default()
                 },
                 TxStatusDetail {
                     txid: "tx_mempool".to_string(),
                     status: "known".to_string(),
                     depth: Some(0),
+                    ..Default::default()
                 },
             ],
         }))

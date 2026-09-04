@@ -3,6 +3,9 @@
 //! This module provides service providers for interacting with blockchain APIs:
 //! - WhatsOnChain - UTXO status, raw transactions, merkle proofs
 //! - ARC (TAAL, GorillaPool) - Transaction broadcasting with BEEF
+//! - Arcade V2 - Teranode broadcaster; when configured it is also the FIRST
+//!   merkle path and batch status provider, so a wallet reads its own proofs
+//!   from its own broadcaster instead of a third-party indexer
 //! - Bitails - Alternative merkle proof provider
 //!
 //! # Architecture
@@ -66,7 +69,7 @@ pub use providers::{
     missing_parent_hint, Arc, ArcConfig, Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent,
     ArcadeTxInfo, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
     ChaintracksServiceClient, EfBatch, EfBatchEntry, FallbackChainTracker, SseEvent,
-    SseFrameParser, WhatsOnChain, WhatsOnChainConfig, ARCADE_V2_MAINNET,
+    SseFrameParser, WhatsOnChain, WhatsOnChainConfig, ARCADE_STATUS_CONCURRENCY, ARCADE_V2_MAINNET,
 };
 pub use services::Services;
 
