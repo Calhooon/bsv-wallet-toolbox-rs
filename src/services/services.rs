@@ -201,6 +201,15 @@ trait UtxoStatusService {
 #[async_trait]
 trait StatusForTxidsService {
     async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult>;
+
+    /// Whether this provider indexes the chain (WhatsOnChain, Bitails) or
+    /// answers for its own inbox (Arcade). Only a chain index's `known` /
+    /// `unknown` is a verdict about the network; a broadcaster's `known` is
+    /// its word that it holds the transaction, and stands only until a chain
+    /// index answers (see [`merge_status_results`]).
+    fn is_chain_index(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait]
@@ -329,6 +338,15 @@ impl StatusForTxidsService for Arcade {
     async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
         self.get_status_for_txids(txids).await
     }
+
+    /// Arcade answers for the transactions it was handed, from its own
+    /// status store: a broadcaster, not a chain index. On 2026-09-02 (beta)
+    /// it kept answering `ACCEPTED_BY_NETWORK` for three transactions the
+    /// chain had mined two days earlier, and `SEEN_MULTIPLE_NODES` for
+    /// phantoms the chain index never saw.
+    fn is_chain_index(&self) -> bool {
+        false
+    }
 }
 
 #[async_trait]
@@ -345,21 +363,48 @@ impl ScriptHashHistoryService for Bitails {
     }
 }
 
-/// Fill the `unknown` entries of `into` with a later provider's answers.
+/// Merge a later provider's answers into `into`.
 ///
-/// Only entries still `unknown` are replaced, so an earlier provider's
-/// verdict (including the proof it carried) always wins. A txid the later
-/// provider also could not place stays `unknown`.
-fn merge_status_results(into: &mut GetStatusForTxidsResult, from: GetStatusForTxidsResult) {
+/// `mined` is the only final answer: a slot at `mined` (with the proof it
+/// carried) is never touched, and an incoming `mined` always takes the
+/// slot. Below that, the chain index decides. `decided` holds the txids a
+/// chain index has answered (any status) so far:
+///
+/// * a chain index's `known` takes any non-mined slot, and its `unknown`
+///   takes a slot no chain index has decided yet, which is how a
+///   broadcaster's stale `known` for a transaction the chain never saw
+///   becomes `unknown` (the 2026-09-02 phantoms: Arcade `SEEN_MULTIPLE_NODES`
+///   for hours, WhatsOnChain 404);
+/// * a broadcaster's `known` only fills a slot no chain index has decided
+///   (a gap), never overriding a chain index; its `unknown` never replaces
+///   anything (its inbox is not the chain).
+///
+/// So a chain index that knows a transaction beats one that does not, and a
+/// broadcaster's word stands only where no chain index could answer at all
+/// (an outage never turns a held transaction into an absent one).
+fn merge_status_results(
+    into: &mut GetStatusForTxidsResult,
+    from: GetStatusForTxidsResult,
+    from_is_chain_index: bool,
+    decided: &mut HashSet<String>,
+) {
     for detail in from.results {
-        if detail.status == "unknown" {
+        let Some(slot) = into.results.iter_mut().find(|d| d.txid == detail.txid) else {
+            continue;
+        };
+        let already_decided = decided.contains(&detail.txid);
+        if from_is_chain_index {
+            decided.insert(detail.txid.clone());
+        }
+        if slot.status == "mined" {
             continue;
         }
-        if let Some(slot) = into
-            .results
-            .iter_mut()
-            .find(|d| d.txid == detail.txid && d.status == "unknown")
-        {
+        let take = match detail.status.as_str() {
+            "mined" => true,
+            "known" => from_is_chain_index || !already_decided,
+            _ => from_is_chain_index && !already_decided,
+        };
+        if take {
             *slot = detail;
         }
     }
@@ -1529,23 +1574,37 @@ impl WalletServices for Services {
 
         let mut last_error = None;
         let mut answer: Option<GetStatusForTxidsResult> = None;
+        // The txids a chain index has answered so far (see
+        // `merge_status_results`).
+        let mut decided: HashSet<String> = HashSet::new();
 
         for (_service_name, provider_name, service) in all_services {
             // The first provider is asked about everything. Every provider
             // after it is asked ONLY about the txids no earlier provider
-            // could place, and its answers fill those gaps.
+            // placed as MINED, and its answers are merged under the rule of
+            // `merge_status_results`.
             //
-            // This matters for a first-party provider with a partial view:
-            // Arcade knows the transactions it was handed, and answers
-            // "unknown" for anything broadcast before it was wired up. Left
-            // as-is, that "unknown" would retire a transaction the chain has
-            // long since mined. `unknown` is a gap, not a verdict.
+            // `unknown` is a gap, not a verdict: Arcade knows the
+            // transactions it was handed and answers "unknown" for anything
+            // broadcast before it was wired up; left as-is, that would
+            // retire a transaction the chain has long since mined.
+            //
+            // `known` from a broadcaster is not a verdict either: it is the
+            // broadcaster's word that it holds the transaction. Arcade kept
+            // answering `ACCEPTED_BY_NETWORK` for three transactions the
+            // chain had mined two days earlier (the soak wallet,
+            // 2026-09-02..04), and `SEEN_MULTIPLE_NODES` for phantoms the
+            // chain index never saw. A `known` that stopped the fan-out here
+            // left the mined ones unproven forever (no chain index was ever
+            // asked, so no proof was ever fetched) and let the phantoms pass
+            // the reconciler's alive check every pass. Only `mined` ends the
+            // question; the chain index answers the rest.
             let pending: Vec<String> = match &answer {
                 None => txids.to_vec(),
                 Some(previous) => previous
                     .results
                     .iter()
-                    .filter(|d| d.status == "unknown")
+                    .filter(|d| d.status != "mined")
                     .map(|d| d.txid.clone())
                     .collect(),
             };
@@ -1559,8 +1618,10 @@ impl WalletServices for Services {
                     call.mark_success(None);
                     lock_write(&self.get_status_for_txids_services)?
                         .add_call_success(&provider_name, call);
+                    let chain_index = service.is_chain_index();
                     tracing::debug!(
                         provider = %provider_name,
+                        chain_index,
                         asked = pending.len(),
                         placed = result
                             .results
@@ -1570,9 +1631,36 @@ impl WalletServices for Services {
                         "get_status_for_txids: provider answered"
                     );
                     match answer {
-                        None => answer = Some(result),
+                        None => {
+                            if chain_index {
+                                decided.extend(result.results.iter().map(|d| d.txid.clone()));
+                            }
+                            answer = Some(result);
+                        }
                         Some(ref mut previous) => {
-                            merge_status_results(previous, result);
+                            let before: Vec<(String, String)> = previous
+                                .results
+                                .iter()
+                                .map(|d| (d.txid.clone(), d.status.clone()))
+                                .collect();
+                            merge_status_results(previous, result, chain_index, &mut decided);
+                            for (txid, was) in before {
+                                let now = previous
+                                    .results
+                                    .iter()
+                                    .find(|d| d.txid == txid)
+                                    .map(|d| d.status.as_str())
+                                    .unwrap_or("unknown");
+                                if was != now {
+                                    tracing::debug!(
+                                        txid = %txid,
+                                        provider = %provider_name,
+                                        was = %was,
+                                        now = %now,
+                                        "get_status_for_txids: a later provider changed the answer"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -2105,8 +2193,16 @@ mod tests {
         }
     }
 
+    fn statuses(result: &GetStatusForTxidsResult) -> Vec<(&str, &str)> {
+        result
+            .results
+            .iter()
+            .map(|d| (d.txid.as_str(), d.status.as_str()))
+            .collect()
+    }
+
     #[test]
-    fn test_merge_status_results_fills_only_the_gaps() {
+    fn test_merge_status_results_fills_the_gaps_and_keeps_mined() {
         let mut first = status_result(
             "ArcadeV2",
             vec![
@@ -2115,6 +2211,7 @@ mod tests {
                 detail("cc", "unknown"),
             ],
         );
+        let mut decided = HashSet::new();
         // The later provider disagrees about "aa" (it must not win), places
         // "bb", and cannot place "cc" either.
         let second = status_result(
@@ -2126,11 +2223,282 @@ mod tests {
             ],
         );
 
-        merge_status_results(&mut first, second);
+        merge_status_results(&mut first, second, true, &mut decided);
 
-        assert_eq!(first.results[0].status, "mined", "first answer wins");
-        assert_eq!(first.results[1].status, "mined", "gap filled");
-        assert_eq!(first.results[2].status, "unknown", "still unplaced");
+        assert_eq!(
+            statuses(&first),
+            vec![("aa", "mined"), ("bb", "mined"), ("cc", "unknown")],
+            "mined is final, the gap is filled, the unplaced stays unplaced"
+        );
+        assert_eq!(decided.len(), 3, "a chain index decided all three");
+    }
+
+    /// The soak wallet, 2026-09-02..04: Arcade answered `ACCEPTED_BY_NETWORK`
+    /// (`known`) for three transactions WhatsOnChain had at 290+
+    /// confirmations. The broadcaster's `known` is not a verdict: the chain
+    /// index's `mined` takes the slot, so the proof pass fetches the proof.
+    #[test]
+    fn test_a_broadcasters_known_yields_to_the_chain_index_mined() {
+        let mut first = status_result("ArcadeV2", vec![detail("f5", "known")]);
+        let mut decided = HashSet::new();
+        let woc = status_result(
+            "WhatsOnChain",
+            vec![TxStatusDetail::new("f5", "mined", Some(299))],
+        );
+        merge_status_results(&mut first, woc, true, &mut decided);
+        assert_eq!(statuses(&first), vec![("f5", "mined")]);
+        assert_eq!(first.results[0].depth, Some(299));
+    }
+
+    /// The 2026-09-02 phantom shape: Arcade `SEEN_MULTIPLE_NODES` for hours,
+    /// WhatsOnChain 404. The chain index decides: `unknown`, so the
+    /// reconciler's alive check and climb see the absence instead of the
+    /// broadcaster's word.
+    #[test]
+    fn test_a_broadcasters_known_the_chain_index_never_saw_is_unknown() {
+        let mut first = status_result("ArcadeV2", vec![detail("x", "known")]);
+        let mut decided = HashSet::new();
+        let woc = status_result("WhatsOnChain", vec![detail("x", "unknown")]);
+        merge_status_results(&mut first, woc, true, &mut decided);
+        assert_eq!(statuses(&first), vec![("x", "unknown")]);
+        // A second chain index that does not know it either changes nothing.
+        let bitails = status_result("Bitails", vec![detail("x", "unknown")]);
+        merge_status_results(&mut first, bitails, true, &mut decided);
+        assert_eq!(statuses(&first), vec![("x", "unknown")]);
+    }
+
+    /// Among chain indexes, one that knows the transaction beats one that
+    /// does not, in either order; and a chain index's `known` is never
+    /// downgraded by a later chain index's `unknown`.
+    #[test]
+    fn test_a_chain_index_that_knows_beats_one_that_does_not() {
+        let mut first = status_result("WhatsOnChain", vec![detail("k", "unknown")]);
+        let mut decided: HashSet<String> = ["k".to_string()].into_iter().collect();
+        let bitails = status_result("Bitails", vec![detail("k", "known")]);
+        merge_status_results(&mut first, bitails, true, &mut decided);
+        assert_eq!(statuses(&first), vec![("k", "known")]);
+
+        let mut first = status_result("WhatsOnChain", vec![detail("k", "known")]);
+        let mut decided: HashSet<String> = ["k".to_string()].into_iter().collect();
+        let bitails = status_result("Bitails", vec![detail("k", "unknown")]);
+        merge_status_results(&mut first, bitails, true, &mut decided);
+        assert_eq!(statuses(&first), vec![("k", "known")]);
+    }
+
+    /// A broadcaster asked after a chain index (the round-robin rotation)
+    /// fills gaps and carries proofs, but never overrides the chain index.
+    #[test]
+    fn test_a_broadcaster_never_overrides_a_chain_index() {
+        let mut first = status_result(
+            "WhatsOnChain",
+            vec![
+                detail("a", "unknown"),
+                detail("b", "known"),
+                detail("c", "known"),
+            ],
+        );
+        let mut decided: HashSet<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let arcade = status_result(
+            "ArcadeV2",
+            vec![
+                detail("a", "known"),
+                detail("b", "unknown"),
+                TxStatusDetail::new("c", "mined", Some(1)),
+            ],
+        );
+        merge_status_results(&mut first, arcade, false, &mut decided);
+        assert_eq!(
+            statuses(&first),
+            vec![("a", "unknown"), ("b", "known"), ("c", "mined")],
+            "no override, no downgrade, mined with its proof taken"
+        );
+
+        // With no chain index having decided, the broadcaster's known fills
+        // the gap (an outage never turns a held transaction into an absent one).
+        let mut first = status_result("Bitails", vec![detail("a", "unknown")]);
+        let mut decided = HashSet::new();
+        let arcade = status_result("ArcadeV2", vec![detail("a", "known")]);
+        merge_status_results(&mut first, arcade, false, &mut decided);
+        assert_eq!(statuses(&first), vec![("a", "known")]);
+    }
+
+    /// A batch status provider for the fan-out cells: canned answers, and a
+    /// record of what it was asked.
+    struct MockStatusProvider {
+        chain_index: bool,
+        answers: std::collections::HashMap<String, TxStatusDetail>,
+        fail: bool,
+        asked: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl MockStatusProvider {
+        fn new(chain_index: bool, answers: Vec<TxStatusDetail>) -> StdArc<Self> {
+            StdArc::new(Self {
+                chain_index,
+                answers: answers.into_iter().map(|d| (d.txid.clone(), d)).collect(),
+                fail: false,
+                asked: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn failing(chain_index: bool) -> StdArc<Self> {
+            StdArc::new(Self {
+                chain_index,
+                answers: Default::default(),
+                fail: true,
+                asked: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn asked(&self) -> Vec<Vec<String>> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl StatusForTxidsService for MockStatusProvider {
+        async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
+            self.asked.lock().unwrap().push(txids.to_vec());
+            if self.fail {
+                return Err(Error::NetworkError("down".to_string()));
+            }
+            Ok(GetStatusForTxidsResult {
+                name: "mock".to_string(),
+                status: "success".to_string(),
+                error: None,
+                results: txids
+                    .iter()
+                    .map(|t| {
+                        self.answers
+                            .get(t)
+                            .cloned()
+                            .unwrap_or_else(|| detail(t, "unknown"))
+                    })
+                    .collect(),
+            })
+        }
+
+        fn is_chain_index(&self) -> bool {
+            self.chain_index
+        }
+    }
+
+    fn services_with_status_providers(
+        providers: Vec<(&str, StdArc<MockStatusProvider>)>,
+    ) -> Services {
+        let mut services = Services::mainnet().unwrap();
+        let mut collection = ServiceCollection::new("getStatusForTxids");
+        for (name, provider) in providers {
+            collection.add(name, provider as StatusForTxidsProvider);
+        }
+        services.get_status_for_txids_services = RwLock::new(collection);
+        services
+    }
+
+    /// The fan-out over the real provider order (Arcade, then the chain
+    /// indexes): Arcade's `mined` (with its proof) ends the question for
+    /// that txid; its `known` is put to the chain index, which answers
+    /// `mined` for the two-day-old soak transactions and `unknown` for the
+    /// phantom; its `unknown` is a gap the chain index fills.
+    #[tokio::test]
+    async fn test_fan_out_puts_a_broadcasters_known_to_the_chain_index() {
+        let mut arcade_mined = TxStatusDetail::new("m", "mined", Some(1));
+        arcade_mined.merkle_path = Some("beef".to_string());
+        let arcade = MockStatusProvider::new(
+            false,
+            vec![
+                arcade_mined,
+                detail("stale", "known"),
+                detail("phantom", "known"),
+                detail("old", "unknown"),
+            ],
+        );
+        let woc = MockStatusProvider::new(
+            true,
+            vec![
+                detail("m", "known"),
+                TxStatusDetail::new("stale", "mined", Some(291)),
+                detail("phantom", "unknown"),
+                TxStatusDetail::new("old", "mined", Some(9601)),
+            ],
+        );
+        let bitails = MockStatusProvider::new(true, vec![detail("phantom", "unknown")]);
+        let services = services_with_status_providers(vec![
+            ("ArcadeV2", arcade.clone()),
+            ("WhatsOnChain", woc.clone()),
+            ("Bitails", bitails.clone()),
+        ]);
+        let txids: Vec<String> = ["m", "stale", "phantom", "old"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let result = services.get_status_for_txids(&txids, false).await.unwrap();
+
+        assert_eq!(result.status, "success");
+        assert_eq!(
+            statuses(&result),
+            vec![
+                ("m", "mined"),
+                ("stale", "mined"),
+                ("phantom", "unknown"),
+                ("old", "mined")
+            ]
+        );
+        assert_eq!(
+            result.results[0].merkle_path.as_deref(),
+            Some("beef"),
+            "Arcade's proof is kept"
+        );
+        assert_eq!(
+            result.results[1].depth,
+            Some(291),
+            "the chain index's depth"
+        );
+        assert_eq!(
+            arcade.asked(),
+            vec![txids.clone()],
+            "the broadcaster is asked about everything"
+        );
+        assert_eq!(
+            woc.asked(),
+            vec![vec![
+                "stale".to_string(),
+                "phantom".to_string(),
+                "old".to_string()
+            ]],
+            "the chain index is asked about everything Arcade did not place as mined"
+        );
+        assert_eq!(
+            bitails.asked(),
+            vec![vec!["phantom".to_string()]],
+            "the second chain index only about what is still not mined"
+        );
+    }
+
+    /// Every chain index down: the broadcaster's `known` stands (a held
+    /// transaction is not declared absent on silence), its `mined` still
+    /// answers, and the batch is a success.
+    #[tokio::test]
+    async fn test_fan_out_keeps_a_broadcasters_known_when_no_chain_index_answers() {
+        let arcade = MockStatusProvider::new(
+            false,
+            vec![
+                TxStatusDetail::new("m", "mined", Some(1)),
+                detail("held", "known"),
+            ],
+        );
+        let services = services_with_status_providers(vec![
+            ("ArcadeV2", arcade),
+            ("WhatsOnChain", MockStatusProvider::failing(true)),
+            ("Bitails", MockStatusProvider::failing(true)),
+        ]);
+        let txids = vec!["m".to_string(), "held".to_string()];
+
+        let result = services.get_status_for_txids(&txids, false).await.unwrap();
+
+        assert_eq!(result.status, "success");
+        assert_eq!(statuses(&result), vec![("m", "mined"), ("held", "known")]);
     }
 
     // =========================================================================
