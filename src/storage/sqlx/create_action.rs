@@ -2006,6 +2006,19 @@ async fn validate_stored_beef(
     true
 }
 
+/// Mark the level-0 leaf whose hash is `txid` as a txid leaf. A BUMP merged
+/// from a sibling's proof carries our transaction as a plain hash; flagging
+/// it is what lets the BEEF's own linker and validator treat it as proven.
+pub(super) fn flag_txid_leaf(bump: &mut MerklePath, txid: &str) {
+    if let Some(level0) = bump.path.first_mut() {
+        for leaf in level0.iter_mut() {
+            if leaf.hash.as_deref() == Some(txid) {
+                leaf.txid = true;
+            }
+        }
+    }
+}
+
 /// Why a BEEF failed structural validation, in one line, and the rejected
 /// bytes on disk. "BEEF structure is invalid" alone cost a seat a day of
 /// diagnosis (LOW p25, 2026-09-04): the sorter knows exactly which inputs
@@ -2342,13 +2355,32 @@ pub(super) async fn beef_bfs_walk(
 
         // A BUMP already in the BEEF proves this transaction regardless of what
         // our own proven_txs table knows: the merkle path is the evidence. Carry
-        // its raw bytes if they are still missing and stop: no ancestor of a
-        // proven transaction belongs in the BEEF.
-        if beef.find_bump(&txid).is_some() {
-            if beef.find_txid(&txid).is_none() {
-                if let Some(data) = get_tx_with_proof(&mut *conn, &txid).await? {
-                    beef.merge_raw_tx(data.raw_tx, None);
-                }
+        // its raw bytes if they are still missing, LINK the transaction to that
+        // BUMP, and stop: no ancestor of a proven transaction belongs in the BEEF.
+        //
+        // The link is explicit on purpose. `find_bump` matches any level-0 leaf
+        // whose hash is this txid, flagged or not, but a merged BUMP built from a
+        // sibling's proof carries this txid as a plain sibling hash (`txid:
+        // false`), and the merge's own linker only accepts flagged leaves. Left
+        // unlinked, the transaction reads as unproven, the sorter demands its
+        // parent, the parent was never walked, and the whole BEEF is refused:
+        // LOW seat p25, five roots, two of them siblings in block 964422,
+        // "missing inputs [2617c486…]" (2026-09-04).
+        if let Some(bump_idx) = beef.bumps.iter().position(|b| b.contains(&txid)) {
+            flag_txid_leaf(&mut beef.bumps[bump_idx], &txid);
+            // Decide from a copy: no borrow of `beef` may live across the await.
+            let existing = beef
+                .find_txid(&txid)
+                .map(|e| (e.bump_index().is_some(), e.raw_tx().map(<[u8]>::to_vec)));
+            let raw = match existing {
+                Some((true, _)) => None,
+                Some((false, raw)) => raw,
+                None => get_tx_with_proof(&mut *conn, &txid)
+                    .await?
+                    .map(|data| data.raw_tx),
+            };
+            if let Some(raw) = raw {
+                beef.merge_raw_tx(raw, Some(bump_idx));
             }
             continue;
         }
@@ -7222,6 +7254,125 @@ mod tests {
             !kept.contains(&chain[0].1),
             "a BUMP in the BEEF terminates the chain, stored ancestry and all"
         );
+    }
+
+    #[tokio::test]
+    async fn test_walk_links_a_root_that_a_siblings_bump_carries_unflagged() {
+        // LOW seat p25 (2026-09-04): two roots mined as siblings in one block.
+        // Root A's proof was merged first, and the combined BUMP carries B's
+        // hash only as A's sibling (txid: false). B has stored history behind
+        // it. Walking B must link it to that BUMP, not leave it unproven with
+        // a parent the walk never fetched.
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+        let chain = synth_chain(2); // parent <- B
+        let (raw_b, txid_b) = (chain[1].0.clone(), chain[1].1.clone());
+        let txid_a = "aa".repeat(32);
+        seed_unproven_tx(&storage, &chain[0].1, &chain[0].0, None).await;
+        seed_unproven_tx(&storage, &txid_b, &raw_b, None).await;
+        let mut beef = Beef::new();
+        beef.merge_bump(MerklePath {
+            block_height: 964_422,
+            path: vec![vec![
+                bsv_rs::transaction::MerklePathLeaf {
+                    offset: 0,
+                    hash: Some(txid_a.clone()),
+                    txid: true,
+                    duplicate: false,
+                },
+                bsv_rs::transaction::MerklePathLeaf {
+                    offset: 1,
+                    hash: Some(txid_b.clone()),
+                    txid: false,
+                    duplicate: false,
+                },
+            ]],
+        });
+        let mut pending = vec![(txid_b.clone(), 0usize)];
+        let mut processed = HashSet::new();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending,
+            &mut processed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let b = beef.find_txid(&txid_b).expect("B is carried");
+        assert_eq!(
+            b.bump_index(),
+            Some(0),
+            "B is linked to the BUMP that holds it"
+        );
+        assert!(
+            !beef_txids(&beef).contains(&chain[0].1),
+            "a proven root's parent is never dragged in"
+        );
+        assert!(
+            beef.verify_valid(true).valid,
+            "the BEEF is valid: {}",
+            describe_invalid_beef(&mut beef, std::slice::from_ref(&txid_b))
+        );
+        prune_beef_to_roots(&mut beef, std::slice::from_ref(&txid_b));
+        assert!(
+            beef.verify_valid(true).valid,
+            "and stays valid after the trim"
+        );
+    }
+
+    /// Replay a real wallet's input BEEF build. Ignored unless `BEEF_CASE_DB`
+    /// points at a wallet.db copy and `BEEF_CASE_ROOTS` lists the input txids
+    /// (comma separated): `BEEF_CASE_DB=... BEEF_CASE_ROOTS=a,b cargo test
+    /// --lib -- --ignored replay_input_beef_case`. The p25 case of 2026-09-04
+    /// lives at ~/bsv/wallet-cases/p25-0829 (five roots, two sibling proofs).
+    #[tokio::test]
+    #[ignore = "needs BEEF_CASE_DB and BEEF_CASE_ROOTS"]
+    async fn replay_input_beef_case() {
+        let db = std::env::var("BEEF_CASE_DB").expect("BEEF_CASE_DB");
+        let roots: Vec<String> = std::env::var("BEEF_CASE_ROOTS")
+            .expect("BEEF_CASE_ROOTS")
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let storage = StorageSqlx::open(&db).await.unwrap();
+        storage.make_available().await.unwrap();
+        let mut beef = Beef::new();
+        let mut pending: Vec<(String, usize)> = roots.iter().cloned().map(|t| (t, 0)).collect();
+        let mut processed = HashSet::new();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending,
+            &mut processed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        prune_beef_to_roots(&mut beef, &roots);
+        let valid = beef.verify_valid(true).valid;
+        println!(
+            "replay: valid={valid} {} tx(s), {} bump(s), {} bytes",
+            beef.txs.len(),
+            beef.bumps.len(),
+            beef.to_binary().len()
+        );
+        if !valid {
+            panic!("{}", describe_invalid_beef(&mut beef, &roots));
+        }
+        for root in &roots {
+            let tx = beef.find_txid(root).expect("every root is carried");
+            assert!(
+                tx.bump_index().is_some() || tx.raw_tx().is_some(),
+                "root {root} is proven or carried whole"
+            );
+        }
     }
 
     #[tokio::test]
