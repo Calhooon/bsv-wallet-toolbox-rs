@@ -430,10 +430,18 @@ where
             services.set_broadcast_memory(memory);
         }
 
+        let services = Arc::new(services);
+
+        // And hand the services to the storage. The storage layer reaches the
+        // chain on its own for the transactions and merkle proofs a BEEF needs
+        // and cannot find locally; without this handle those paths are silently
+        // dead and every BEEF is built from local knowledge alone.
+        storage.set_services(services.clone());
+
         Ok(Self {
             proto_wallet,
             storage: Arc::new(storage),
-            services: Arc::new(services),
+            services,
             identity_key,
             chain,
             options,
