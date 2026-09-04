@@ -1042,6 +1042,11 @@ impl WalletServices for Services {
                         call.mark_success(None);
                         lock_write(&self.get_merkle_path_services)?
                             .add_call_success(&provider_name, call);
+                        tracing::debug!(
+                            provider = %provider_name,
+                            txid = %txid,
+                            "get_merkle_path: proof served"
+                        );
 
                         // If the provider didn't resolve the block header,
                         // extract the block hash from the proof's "target"
@@ -1554,6 +1559,16 @@ impl WalletServices for Services {
                     call.mark_success(None);
                     lock_write(&self.get_status_for_txids_services)?
                         .add_call_success(&provider_name, call);
+                    tracing::debug!(
+                        provider = %provider_name,
+                        asked = pending.len(),
+                        placed = result
+                            .results
+                            .iter()
+                            .filter(|d| d.status != "unknown")
+                            .count(),
+                        "get_status_for_txids: provider answered"
+                    );
                     match answer {
                         None => answer = Some(result),
                         Some(ref mut previous) => {
