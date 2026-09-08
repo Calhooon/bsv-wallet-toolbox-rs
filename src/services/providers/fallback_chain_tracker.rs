@@ -6,8 +6,17 @@
 //!
 //! Matches the Go toolbox's `servicequeue.Queue` pattern: try providers in
 //! sequence, first success wins, errors from one provider are logged and
-//! the next is tried. Only returns `Ok(false)` (not an error) if ALL
-//! providers fail — matching the TS toolbox's lenient behavior.
+//! the next is tried.
+//!
+//! The four arms of `is_valid_root_for_height` (0.3.66, F2 of the reorg
+//! review): the primary's `Ok(true)` is true; the primary's DEFINITE
+//! `Ok(false)` is confirmed against WoC when WoC answers and stands on its
+//! own when WoC fails (chaintracks is first-party and it answered); the
+//! primary's `Err` defers to WoC when WoC answers and is an `Err` when WoC
+//! fails too. An outage is never a verdict: before 0.3.66 a double outage
+//! answered `Ok(false)`, which every caller read as "the chain refutes this
+//! root", and from inside `createAction` that mass-refuted valid proofs.
+//! Positives are cached; nothing else is.
 
 use async_trait::async_trait;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
@@ -64,11 +73,12 @@ impl RootCache {
 /// Chain tracker with ChainTracks primary and WoC fallback.
 ///
 /// Logic for `is_valid_root_for_height`:
-/// 1. Check cache — if hit, compare root and return
-/// 2. Try primary (ChainTracks) — if success, cache and return
-/// 3. If primary fails, try WoC fallback
-/// 4. If WoC succeeds, cache and return
-/// 5. If both fail, return `Ok(false)` (lenient — never hard-error)
+/// 1. Check the cache (positives only): on a hit, compare and return.
+/// 2. Ask the primary (ChainTracks). `Ok(true)`: cache and return true.
+/// 3. Ask WoC. When WoC answers, compare (cache a match) and return.
+/// 4. When WoC fails: the primary's definite `Ok(false)` stands
+///    (`Ok(false)`); the primary's `Err` becomes
+///    `Err(ChainTrackerError::NetworkError)` (both failed: no verdict).
 pub struct FallbackChainTracker {
     primary: ChaintracksServiceClient,
     woc_base_url: String,
@@ -144,18 +154,19 @@ impl ChainTracker for FallbackChainTracker {
         }
 
         // 2. Try primary (ChainTracks)
-        match ChaintracksServiceClient::is_valid_root_for_height(&self.primary, root, height).await
-        {
+        let primary_answer =
+            ChaintracksServiceClient::is_valid_root_for_height(&self.primary, root, height).await;
+        match &primary_answer {
             Ok(true) => {
                 self.cache.insert(height, root.to_lowercase());
                 return Ok(true);
             }
             Ok(false) => {
-                // Primary returned a root that doesn't match. Cache the actual root
-                // from ChainTracks. We still fall through to WoC in case CT has bad data,
-                // but this is unlikely.
+                // A definite mismatch from the first-party header service.
+                // WoC is still asked in case ChainTracks has bad data, but
+                // this answer stands on its own when WoC cannot be reached.
                 tracing::debug!(
-                    "ChainTracks root mismatch at height {} — trying WoC fallback",
+                    "ChainTracks root mismatch at height {}; confirming with WoC",
                     height
                 );
             }
@@ -177,15 +188,33 @@ impl ChainTracker for FallbackChainTracker {
                 }
                 Ok(valid)
             }
-            Err(e) => {
-                tracing::warn!(
-                    "Both ChainTracks and WoC failed for height {}: {}",
-                    height,
-                    e
-                );
-                // 5. Both failed — return Ok(false), not an error (match TS behavior)
-                Ok(false)
-            }
+            Err(woc_error) => match primary_answer {
+                // Unreachable: a primary `true` returned above. Kept total.
+                Ok(true) => Ok(true),
+                // 4a. ChainTracks answered a definite false; WoC's fault
+                // does not unsay it.
+                Ok(false) => {
+                    tracing::debug!(
+                        "WoC unavailable for height {} ({}); ChainTracks' mismatch stands",
+                        height,
+                        woc_error
+                    );
+                    Ok(false)
+                }
+                // 4b. Nobody answered: an outage is an error, never a verdict.
+                Err(primary_error) => {
+                    tracing::warn!(
+                        "Both ChainTracks and WoC failed for height {}: chaintracks: {}; WoC: {}",
+                        height,
+                        primary_error,
+                        woc_error
+                    );
+                    Err(ChainTrackerError::NetworkError(format!(
+                        "both chaintracks and WoC failed for height {}: chaintracks: {}; WoC: {}",
+                        height, primary_error, woc_error
+                    )))
+                }
+            },
         }
     }
 
@@ -380,11 +409,11 @@ mod tests {
     }
 
     // =========================================================================
-    // Test 5: Both fail — returns Ok(false), not an error
+    // Test 5: Both fail: an error, never a verdict (F2 of the reorg review)
     // =========================================================================
 
     #[tokio::test]
-    async fn test_both_fail_returns_false_not_error() {
+    async fn test_both_fail_returns_an_error_not_a_verdict() {
         let mut ct_server = mockito::Server::new_async().await;
         let mut woc_server = mockito::Server::new_async().await;
 
@@ -394,8 +423,63 @@ mod tests {
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
         let result = tracker.is_valid_root_for_height("any_root", 943495).await;
 
-        // Must be Ok(false), NOT Err — match TS lenient behavior
-        assert!(!result.unwrap());
+        // A double outage used to answer Ok(false), which every caller read
+        // as "the chain refutes this root".
+        assert!(
+            matches!(result, Err(ChainTrackerError::NetworkError(_))),
+            "got {result:?}"
+        );
+    }
+
+    // =========================================================================
+    // Test 5b: the four arms, named (F2b of the reorg review)
+    // =========================================================================
+
+    /// (a) primary true; (b) primary definite false + WoC answers: compare;
+    /// (c) primary definite false + WoC fails: false stands; (d) primary
+    /// error + WoC answers: compare; (e) primary error + WoC fails: Err.
+    #[tokio::test]
+    async fn the_four_arms_of_the_fallback_tracker() {
+        let mut ct_server = mockito::Server::new_async().await;
+        let mut woc_server = mockito::Server::new_async().await;
+
+        // (a)
+        let _a = mock_ct_header(&mut ct_server, 1, "root_a").await;
+        let t = make_tracker(&ct_server.url(), &woc_server.url());
+        assert!(t.is_valid_root_for_height("root_a", 1).await.unwrap());
+
+        // (b) primary says the real root is "real"; WoC agrees: the asked
+        // root is refuted; and confirmed when WoC names the asked root.
+        let _b_ct = mock_ct_header(&mut ct_server, 2, "real_b").await;
+        let _b_woc = mock_woc_header(&mut woc_server, 2, "real_b").await;
+        let t = make_tracker(&ct_server.url(), &woc_server.url());
+        assert!(!t.is_valid_root_for_height("wrong_b", 2).await.unwrap());
+        let _b2_ct = mock_ct_header(&mut ct_server, 3, "stale_c").await;
+        let _b2_woc = mock_woc_header(&mut woc_server, 3, "asked_c").await;
+        let t = make_tracker(&ct_server.url(), &woc_server.url());
+        assert!(t.is_valid_root_for_height("asked_c", 3).await.unwrap());
+
+        // (c) primary definite false, WoC rate limited: false stands.
+        let _c_ct = mock_ct_header(&mut ct_server, 4, "real_d").await;
+        let _c_woc = mock_woc_rate_limited(&mut woc_server, 4).await;
+        let t = make_tracker(&ct_server.url(), &woc_server.url());
+        assert!(!t.is_valid_root_for_height("wrong_d", 4).await.unwrap());
+
+        // (d) primary error, WoC answers: compare.
+        let _d_ct = mock_ct_error(&mut ct_server, 5).await;
+        let _d_woc = mock_woc_header(&mut woc_server, 5, "root_e").await;
+        let t = make_tracker(&ct_server.url(), &woc_server.url());
+        assert!(t.is_valid_root_for_height("root_e", 5).await.unwrap());
+        assert!(!t.is_valid_root_for_height("other_e", 5).await.unwrap());
+
+        // (e) primary error, WoC error: Err.
+        let _e_ct = mock_ct_error(&mut ct_server, 6).await;
+        let _e_woc = mock_woc_rate_limited(&mut woc_server, 6).await;
+        let t = make_tracker(&ct_server.url(), &woc_server.url());
+        assert!(matches!(
+            t.is_valid_root_for_height("any", 6).await,
+            Err(ChainTrackerError::NetworkError(_))
+        ));
     }
 
     // =========================================================================
@@ -490,11 +574,11 @@ mod tests {
     }
 
     // =========================================================================
-    // Test 9: WoC rate limited (429) — returns Ok(false), not error
+    // Test 9: WoC rate limited (429) behind a primary error: an error
     // =========================================================================
 
     #[tokio::test]
-    async fn test_woc_rate_limited_returns_false() {
+    async fn test_woc_rate_limited_behind_a_primary_error_is_an_error() {
         let mut ct_server = mockito::Server::new_async().await;
         let mut woc_server = mockito::Server::new_async().await;
 
@@ -504,8 +588,8 @@ mod tests {
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
         let result = tracker.is_valid_root_for_height("any_root", 943495).await;
 
-        // Should be Ok(false), not Err
-        assert!(!result.unwrap());
+        // A 429 is a fault, never "the chain refutes this root".
+        assert!(matches!(result, Err(ChainTrackerError::NetworkError(_))));
     }
 
     // =========================================================================

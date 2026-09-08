@@ -191,12 +191,63 @@ pub struct MockWalletServices {
 
     /// Call counters by method name.
     call_counts: Mutex<HashMap<String, usize>>,
+
+    /// The chain tip header `get_chain_tip_header` answers when set; else a
+    /// synthetic header at the configured height (its hash the hash of its
+    /// bytes), unless `set_tip_unavailable` made the tip unreadable.
+    tip_header: Mutex<Option<BlockHeader>>,
+
+    /// When set, `get_chain_tip_header` errors (a header service outage).
+    tip_unavailable: std::sync::atomic::AtomicBool,
+
+    /// Headers `get_header_for_height` answers by height (else the
+    /// synthetic tip at the configured height, else 80 zero bytes).
+    headers_by_height: Mutex<HashMap<u32, BlockHeader>>,
+}
+
+/// A deterministic header at `height` whose `hash` is the hash of its
+/// bytes, as a real header service serves it.
+fn synthetic_header(height: u32) -> BlockHeader {
+    let mut header = BlockHeader {
+        version: 1,
+        previous_hash: "00".repeat(32),
+        merkle_root: "00".repeat(32),
+        time: 1231006505,
+        bits: 486604799,
+        nonce: height,
+        hash: String::new(),
+        height,
+    };
+    header.hash =
+        crate::monitor::reorg_ops::block_hash_of_header(&header.to_binary()).unwrap_or_default();
+    header
 }
 
 impl MockWalletServices {
     /// Create a new builder for MockWalletServices.
     pub fn builder() -> MockWalletServicesBuilder {
         MockWalletServicesBuilder::default()
+    }
+
+    /// Set the chain tip header (`get_chain_tip_header`).
+    pub fn set_tip_header(&self, header: BlockHeader) {
+        *self.tip_header.lock().unwrap() = Some(header);
+        self.tip_unavailable
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make the chain tip unreadable (`get_chain_tip_header` errors).
+    pub fn set_tip_unavailable(&self) {
+        self.tip_unavailable
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Set the header `get_header_for_height` answers at `header.height`.
+    pub fn set_header_for_height(&self, header: BlockHeader) {
+        self.headers_by_height
+            .lock()
+            .unwrap()
+            .insert(header.height, header);
     }
 
     /// Create a MockWalletServices with all-success defaults.
@@ -469,6 +520,9 @@ impl MockWalletServicesBuilder {
             is_utxo_response: Mutex::new(self.is_utxo_response),
             call_history: Mutex::new(Vec::new()),
             call_counts: Mutex::new(HashMap::new()),
+            tip_header: Mutex::new(None),
+            tip_unavailable: std::sync::atomic::AtomicBool::new(false),
+            headers_by_height: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -575,8 +629,29 @@ impl WalletServices for MockWalletServices {
 
     async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>> {
         self.record_call("get_header_for_height", vec![format!("{}", height)], true);
+        if let Some(header) = self.headers_by_height.lock().unwrap().get(&height) {
+            return Ok(header.to_binary());
+        }
+        if height == self.height {
+            return Ok(synthetic_header(height).to_binary());
+        }
         // Return a mock 80-byte header
         Ok(vec![0u8; 80])
+    }
+
+    async fn get_chain_tip_header(&self) -> Result<BlockHeader> {
+        if self
+            .tip_unavailable
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.record_call("get_chain_tip_header", vec![], false);
+            return Err(Error::ServiceError(
+                "mock: the chain tip header is unavailable".to_string(),
+            ));
+        }
+        let tip = self.tip_header.lock().unwrap().clone();
+        self.record_call("get_chain_tip_header", vec![], true);
+        Ok(tip.unwrap_or_else(|| synthetic_header(self.height)))
     }
 
     async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader> {

@@ -14,7 +14,7 @@ use crate::services::broadcast_memory::{
     BROADCAST_STATUS_ACCEPTED, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2, PROVIDER_BITAILS,
     PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
 };
-use crate::services::traits::PostBeefDelivery;
+use crate::services::traits::{merkle_path_note, PostBeefDelivery, NOTE_REFUTED};
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
@@ -965,6 +965,27 @@ impl WalletServices for Services {
         }
     }
 
+    async fn get_chain_tip_header(&self) -> Result<BlockHeader> {
+        // The header service only: chaintracks (first-party), then BHS.
+        // Never a courier, so the height and the hash the monitor's header
+        // task observes come from one source.
+        if let Some(ref ct) = self.chaintracks {
+            match ct.primary().find_chain_tip_header().await {
+                Ok(header) => return Ok(header),
+                Err(e) => tracing::debug!("Chaintracks tip header failed, trying BHS: {}", e),
+            }
+        }
+        if let Some(ref bhs) = self.bhs {
+            match bhs.find_chain_tip_header().await {
+                Ok(header) => return Ok(header),
+                Err(e) => tracing::debug!("BHS tip header failed: {}", e),
+            }
+        }
+        Err(Error::ServiceError(
+            "get_chain_tip_header: no header service configured".to_string(),
+        ))
+    }
+
     async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>> {
         // Try Chaintracks first
         if let Some(ref ct) = self.chaintracks {
@@ -1174,6 +1195,12 @@ impl WalletServices for Services {
                                 "Provider {} returned proof with unresolvable header for txid {}",
                                 provider_name, txid
                             ));
+                            // A fault, not evidence (the per-provider verdict).
+                            notes.push(merkle_path_note(
+                                &provider_name,
+                                "getMerklePathHeaderUnresolved",
+                                Some("header could not be resolved"),
+                            ));
                             continue;
                         }
 
@@ -1181,10 +1208,14 @@ impl WalletServices for Services {
                         // merkle root against ChainTracker BEFORE returning.
                         // This mirrors Go's whatsonchain/service.go where bad proofs
                         // trigger automatic provider failover via the service loop.
+                        // Every failure leaves a per-provider verdict note: the
+                        // tracker's definite false is a REFUTATION (retained and
+                        // retried by the re-prove), everything else a FAULT.
                         if let Some(ref mp_hex) = result.merkle_path {
                             if let Some(ref ct) = self.chaintracks {
                                 if let Some(ref header) = result.header {
-                                    let validation_failed = match hex::decode(mp_hex) {
+                                    let failure: Option<(&str, String)> = match hex::decode(mp_hex)
+                                    {
                                         Ok(mp_bytes) => {
                                             match bsv_rs::transaction::MerklePath::from_binary(
                                                 &mp_bytes,
@@ -1198,7 +1229,7 @@ impl WalletServices for Services {
                                                             )
                                                             .await
                                                         {
-                                                            Ok(true) => false,
+                                                            Ok(true) => None,
                                                             Ok(false) => {
                                                                 tracing::warn!(
                                                                     txid = %txid,
@@ -1209,7 +1240,13 @@ impl WalletServices for Services {
                                                                      computed root does not match ChainTracker. \
                                                                      Trying next provider."
                                                                 );
-                                                                true
+                                                                Some((
+                                                                    NOTE_REFUTED,
+                                                                    format!(
+                                                                        "root {} refuted at height {}",
+                                                                        computed_root, header.height
+                                                                    ),
+                                                                ))
                                                             }
                                                             Err(e) => {
                                                                 tracing::warn!(
@@ -1219,7 +1256,10 @@ impl WalletServices for Services {
                                                                     "ChainTracker error during service-layer \
                                                                      merkle root validation. Trying next provider."
                                                                 );
-                                                                true
+                                                                Some((
+                                                                    "getMerklePathTrackerError",
+                                                                    e.to_string(),
+                                                                ))
                                                             }
                                                         }
                                                     }
@@ -1231,7 +1271,10 @@ impl WalletServices for Services {
                                                             "Failed to compute merkle root from BUMP. \
                                                              Trying next provider."
                                                         );
-                                                        true
+                                                        Some((
+                                                            "getMerklePathBadProof",
+                                                            e.to_string(),
+                                                        ))
                                                     }
                                                 },
                                                 Err(e) => {
@@ -1242,7 +1285,7 @@ impl WalletServices for Services {
                                                         "Failed to parse BUMP binary for validation. \
                                                          Trying next provider."
                                                     );
-                                                    true
+                                                    Some(("getMerklePathBadProof", e.to_string()))
                                                 }
                                             }
                                         }
@@ -1254,11 +1297,11 @@ impl WalletServices for Services {
                                                 "Failed to decode merkle path hex for validation. \
                                                  Trying next provider."
                                             );
-                                            true
+                                            Some(("getMerklePathBadProof", e.to_string()))
                                         }
                                     };
 
-                                    if validation_failed {
+                                    if let Some((what, error)) = failure {
                                         let mut fail_call = ServiceCall::new();
                                         fail_call.mark_failure(Some(format!(
                                             "invalid merkle root for txid {} at height {}",
@@ -1270,12 +1313,19 @@ impl WalletServices for Services {
                                             "Provider {} returned invalid merkle proof for txid {}",
                                             provider_name, txid
                                         ));
+                                        notes.push(merkle_path_note(
+                                            &provider_name,
+                                            what,
+                                            Some(&error),
+                                        ));
                                         continue;
                                     }
                                 }
                             }
                         }
 
+                        // The served answer carries every provider's verdict so far.
+                        result.notes = notes;
                         return Ok(result);
                     } else {
                         call.mark_failure(Some("no proof".to_string()));
@@ -1289,6 +1339,12 @@ impl WalletServices for Services {
                     lock_write(&self.get_merkle_path_services)?
                         .add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
+                    // A fault, not evidence (the per-provider verdict).
+                    notes.push(merkle_path_note(
+                        &provider_name,
+                        "getMerklePathError",
+                        Some(&e.to_string()),
+                    ));
                 }
             }
         }

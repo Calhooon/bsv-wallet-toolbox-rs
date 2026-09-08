@@ -124,6 +124,17 @@ pub trait WalletServices: Send + Sync {
     /// Get block header for a specific height.
     async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>>;
 
+    /// The chain tip header (height AND hash) from the header service
+    /// (chaintracks, then BHS; never a courier). The monitor's header task
+    /// observes the tip through this, so the height and the hash always come
+    /// from one source. The default is for backends without a header
+    /// service.
+    async fn get_chain_tip_header(&self) -> Result<BlockHeader> {
+        Err(crate::error::Error::ServiceError(
+            "get_chain_tip_header: no header service configured".to_string(),
+        ))
+    }
+
     /// Get a block header by its hash.
     async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader>;
 
@@ -482,6 +493,250 @@ pub struct GetMerklePathResult {
     /// Notes about the retrieval process.
     #[serde(default)]
     pub notes: Vec<HashMap<String, serde_json::Value>>,
+}
+
+/// What ONE provider said about a transaction's merkle path, derived from
+/// the per-provider notes (`what` + `name`) every provider and the
+/// `Services` ladder write into `notes`. The reorg re-prove decides on these
+/// (F4/F7 of the reorg review): a stored proof is demoted only on POSITIVE
+/// evidence, at least two providers that answered cleanly "not mined",
+/// never on a fault (a 429, a timeout, a 5xx, a tracker error) and never on
+/// a path the tracker refuted (retained and retried instead).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderVerdict {
+    /// The provider answered cleanly and holds no proof: a 404, an empty
+    /// body for an unmined transaction, or a status below MINED.
+    NotMined { provider: String },
+    /// The provider served a path the ladder accepted.
+    Proof { provider: String },
+    /// The provider served a path the chain tracker refuted.
+    Refuted { provider: String },
+    /// The provider (or the tracker validating its answer, or the header
+    /// resolution) errored.
+    Fault { provider: String, error: String },
+    /// The provider knows the transaction but served no usable path and no
+    /// verdict (a record with an empty merkle path); counts as nothing.
+    Inconclusive { provider: String },
+}
+
+/// Note kinds that are a clean "not mined" answer.
+pub const NOTE_NOT_MINED: &[&str] = &[
+    "getMerklePathNotFound",
+    "getMerklePathNoData",
+    "getMerklePathNotMined",
+];
+
+/// Note kinds that are a fault (the answer is unusable, not evidence).
+pub const NOTE_FAULT: &[&str] = &[
+    "getMerklePathBadStatus",
+    "getMerklePathServiceError",
+    "getMerklePathError",
+    "getMerklePathTrackerError",
+    "getMerklePathHeaderUnresolved",
+    "getMerklePathBadProof",
+    "getMerklePathMultiple",
+    "getMerklePathHeightMismatch",
+];
+
+/// The note kind the ladder writes when the chain tracker refutes a served
+/// path.
+pub const NOTE_REFUTED: &str = "getMerklePathInvalidRoot";
+
+/// The note kind a provider writes when it served a path.
+pub const NOTE_PROOF: &str = "getMerklePathSuccess";
+
+/// Note kinds that are inconclusive (known, no path).
+pub const NOTE_INCONCLUSIVE: &[&str] = &["getMerklePathNoPath"];
+
+/// Build one per-provider note (`what`, `name`, `when`, optional `error`).
+pub fn merkle_path_note(
+    provider: &str,
+    what: &str,
+    error: Option<&str>,
+) -> HashMap<String, serde_json::Value> {
+    let mut note = HashMap::new();
+    note.insert(
+        "what".to_string(),
+        serde_json::Value::String(what.to_string()),
+    );
+    note.insert(
+        "name".to_string(),
+        serde_json::Value::String(provider.to_string()),
+    );
+    note.insert(
+        "when".to_string(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    if let Some(e) = error {
+        note.insert(
+            "error".to_string(),
+            serde_json::Value::String(e.to_string()),
+        );
+    }
+    note
+}
+
+impl GetMerklePathResult {
+    /// One verdict per provider name, in first-seen order. Precedence when a
+    /// provider left several notes: `Refuted` over `Fault` over `NotMined`
+    /// over `Proof` over `Inconclusive` (a served path that later failed
+    /// validation is a refutation, not a proof). Notes of unknown kinds are
+    /// ignored.
+    pub fn provider_verdicts(&self) -> Vec<ProviderVerdict> {
+        fn rank(v: &ProviderVerdict) -> u8 {
+            match v {
+                ProviderVerdict::Refuted { .. } => 5,
+                ProviderVerdict::Fault { .. } => 4,
+                ProviderVerdict::NotMined { .. } => 3,
+                ProviderVerdict::Proof { .. } => 2,
+                ProviderVerdict::Inconclusive { .. } => 1,
+            }
+        }
+        let mut order: Vec<String> = Vec::new();
+        let mut best: HashMap<String, ProviderVerdict> = HashMap::new();
+        for note in &self.notes {
+            let Some(what) = note.get("what").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let provider = note
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let error = note
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or(what)
+                .to_string();
+            let verdict = if what == NOTE_REFUTED {
+                ProviderVerdict::Refuted {
+                    provider: provider.clone(),
+                }
+            } else if NOTE_FAULT.contains(&what) {
+                ProviderVerdict::Fault {
+                    provider: provider.clone(),
+                    error,
+                }
+            } else if NOTE_NOT_MINED.contains(&what) {
+                ProviderVerdict::NotMined {
+                    provider: provider.clone(),
+                }
+            } else if what == NOTE_PROOF {
+                ProviderVerdict::Proof {
+                    provider: provider.clone(),
+                }
+            } else if NOTE_INCONCLUSIVE.contains(&what) {
+                ProviderVerdict::Inconclusive {
+                    provider: provider.clone(),
+                }
+            } else {
+                continue;
+            };
+            match best.get(&provider) {
+                Some(existing) if rank(existing) >= rank(&verdict) => {}
+                Some(_) => {
+                    best.insert(provider, verdict);
+                }
+                None => {
+                    order.push(provider.clone());
+                    best.insert(provider, verdict);
+                }
+            }
+        }
+        order
+            .into_iter()
+            .filter_map(|name| best.remove(&name))
+            .collect()
+    }
+
+    /// The providers that answered cleanly "not mined" (distinct names).
+    pub fn not_mined_witnesses(&self) -> Vec<String> {
+        self.provider_verdicts()
+            .into_iter()
+            .filter_map(|v| match v {
+                ProviderVerdict::NotMined { provider } => Some(provider),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The providers whose served path the chain tracker refuted.
+    pub fn refuted_witnesses(&self) -> Vec<String> {
+        self.provider_verdicts()
+            .into_iter()
+            .filter_map(|v| match v {
+                ProviderVerdict::Refuted { provider } => Some(provider),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The provider faults, as `name: error`.
+    pub fn faults(&self) -> Vec<String> {
+        self.provider_verdicts()
+            .into_iter()
+            .filter_map(|v| match v {
+                ProviderVerdict::Fault { provider, error } => Some(format!("{provider}: {error}")),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod merkle_path_verdict_tests {
+    use super::*;
+
+    fn result(notes: Vec<HashMap<String, serde_json::Value>>) -> GetMerklePathResult {
+        GetMerklePathResult {
+            name: Some("Services".into()),
+            merkle_path: None,
+            header: None,
+            error: None,
+            notes,
+        }
+    }
+
+    #[test]
+    fn a_clean_negative_is_a_witness_and_a_provider_error_is_a_fault() {
+        let r = result(vec![
+            merkle_path_note("WoC", "getMerklePathNotFound", None),
+            merkle_path_note("Bitails", "getMerklePathBadStatus", Some("HTTP 429")),
+            merkle_path_note("Arcade", "getMerklePathNotMined", None),
+            merkle_path_note("TAAL", "getMerklePathNoPath", None),
+        ]);
+        assert_eq!(
+            r.not_mined_witnesses(),
+            vec!["WoC".to_string(), "Arcade".to_string()]
+        );
+        assert_eq!(r.faults(), vec!["Bitails: HTTP 429".to_string()]);
+        assert!(r.refuted_witnesses().is_empty());
+        assert_eq!(r.provider_verdicts().len(), 4);
+    }
+
+    #[test]
+    fn a_served_path_the_tracker_refuted_is_a_refutation_not_a_proof() {
+        let r = result(vec![
+            merkle_path_note("WoC", "getMerklePathSuccess", None),
+            merkle_path_note("WoC", "getMerklePathInvalidRoot", None),
+            merkle_path_note("Bitails", "getMerklePathSuccess", None),
+            merkle_path_note("Bitails", "getMerklePathTrackerError", Some("timeout")),
+        ]);
+        assert_eq!(r.refuted_witnesses(), vec!["WoC".to_string()]);
+        assert_eq!(r.faults(), vec!["Bitails: timeout".to_string()]);
+        assert!(r.not_mined_witnesses().is_empty());
+    }
+
+    #[test]
+    fn one_provider_never_counts_twice_and_unknown_notes_are_ignored() {
+        let r = result(vec![
+            merkle_path_note("WoC", "getMerklePathNotFound", None),
+            merkle_path_note("WoC", "getMerklePathNoData", None),
+            merkle_path_note("WoC", "somethingElse", None),
+        ]);
+        assert_eq!(r.not_mined_witnesses(), vec!["WoC".to_string()]);
+        assert_eq!(r.provider_verdicts().len(), 1);
+    }
 }
 
 // =============================================================================
