@@ -198,7 +198,7 @@ where
                                 txid = %txid,
                                 block_height,
                                 processed_height,
-                                "Arcade MINED event — inline proof deferred (block above the processed header)"
+                                "Arcade MINED event: inline proof deferred (block above the processed header)"
                             );
                         }
                         Ok(Some(outcome)) => {
