@@ -233,3 +233,60 @@ where
         Ok(result)
     }
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+    use crate::services::mock::MockWalletServices;
+    use crate::{StorageSqlx, WalletStorageWriter};
+
+    async fn storage() -> Arc<StorageSqlx> {
+        let s = StorageSqlx::in_memory().await.unwrap();
+        s.migrate("review-test", &"0".repeat(64)).await.unwrap();
+        s.make_available().await.unwrap();
+        Arc::new(s)
+    }
+
+    /// F14: while the proof gate is CLOSED (0) the audit runs nothing above
+    /// height 0: it skips (`reorg_review_skipped` in the log) and touches no
+    /// row, even one whose root disagrees with the canonical header. Once
+    /// the gate is open the same row is found stale.
+    #[tokio::test]
+    async fn a_closed_gate_audits_nothing_and_an_open_gate_finds_the_stale_row() {
+        let storage = storage().await;
+        let txid = "a".repeat(64);
+        sqlx::query(
+            "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx) VALUES (?, 5, 0, '', ?, X'00', X'00')",
+        )
+        .bind(&txid)
+        .bind("aa".repeat(32))
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        // The header service's root at height 5 (the synthetic header's,
+        // all zeros) disagrees with the stored root.
+        let services = Arc::new(MockWalletServices::builder().height(5).build());
+        let task = ReviewProvenTxsTask::new(storage.clone(), services.clone());
+
+        assert_eq!(storage.max_acceptable_proof_height().await.unwrap(), 0);
+        let result = task.run().await.unwrap();
+        assert_eq!(result.items_processed, 0, "nothing audited while closed");
+        assert!(result.errors.is_empty());
+        assert_eq!(
+            services.call_count("get_header_for_height"),
+            0,
+            "no header read"
+        );
+        let report = task.review(0).await.unwrap();
+        assert_eq!(
+            report,
+            ReviewReport::default(),
+            "height 0 is an empty audit"
+        );
+
+        storage.set_max_acceptable_proof_height(5).await.unwrap();
+        let report = task.review(5).await.unwrap();
+        assert_eq!((report.max_height, report.anchors, report.stale), (5, 1, 1));
+        assert!(services.call_count("get_header_for_height") >= 1);
+    }
+}
