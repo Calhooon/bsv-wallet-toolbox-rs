@@ -18,8 +18,10 @@
 
 mod config;
 mod daemon;
+pub mod reorg_ops;
 pub mod tasks;
 
 pub use config::{ArcadeMonitorConfig, MonitorOptions, TaskConfig, TransactionStatusUpdate};
 pub use daemon::{Monitor, MonitorHealth, TaskHealth};
+pub use reorg_ops::{reprove_anchor, HeaderTracker, ReproveOutcome, ReproveTally};
 pub use tasks::{ArcadeEventsTask, MonitorTask, TaskResult};

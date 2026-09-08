@@ -55,6 +55,7 @@ mod monitor_integration {
         opts.tasks.reorg = TaskConfig::disabled();
         opts.tasks.check_no_sends = TaskConfig::disabled();
         opts.tasks.review_status = TaskConfig::disabled();
+        opts.tasks.review_proven_txs = TaskConfig::disabled();
         opts.tasks.purge = TaskConfig::disabled();
         opts.tasks.monitor_call_history = TaskConfig::disabled();
         opts.tasks.compact_beef = TaskConfig::disabled();

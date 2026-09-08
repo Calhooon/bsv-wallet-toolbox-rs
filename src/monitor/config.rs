@@ -107,6 +107,9 @@ pub struct TasksConfig {
     pub check_no_sends: TaskConfig,
     /// Review transaction status task configuration.
     pub review_status: TaskConfig,
+    /// M19 R1: the lagged audit of recent stored proofs against the
+    /// canonical headers (ts-stack `TaskReviewProvenTxs`).
+    pub review_proven_txs: TaskConfig,
     /// Purge old data task configuration.
     pub purge: TaskConfig,
     /// Compact stored input_beef blobs task configuration.
@@ -169,6 +172,11 @@ impl Default for TasksConfig {
                 enabled: true,
                 interval: Duration::from_secs(900), // 15 minutes
                 start_immediately: false,
+            },
+            review_proven_txs: TaskConfig {
+                enabled: true,
+                interval: Duration::from_secs(10 * 60), // 10 minutes
+                start_immediately: true, // a restarted daemon heals first
             },
             purge: TaskConfig {
                 enabled: true,

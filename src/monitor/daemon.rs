@@ -16,7 +16,8 @@ use super::config::{MonitorOptions, TaskConfig};
 use super::tasks::{
     ArcadeEventsTask, CheckForProofsTask, CheckNoSendsTask, ClockTask, CompactBeefTask,
     FailAbandonedTask, MonitorCallHistoryTask, MonitorTask, NewHeaderTask, PurgeTask, ReorgTask,
-    ReviewStatusTask, SendWaitingTask, SyncWhenIdleTask, TaskResult, TaskType, UnfailTask,
+    ReviewProvenTxsTask, ReviewStatusTask, SendWaitingTask, SyncWhenIdleTask, TaskResult,
+    TaskType, UnfailTask,
 };
 
 /// Generate random bytes using the `rand` crate's thread-local CSPRNG.
@@ -187,8 +188,21 @@ where
 
         // Start new_header task and extract its trigger flag for check_for_proofs wiring.
         // TS pattern: NewHeaderTask sets checkNow flag → CheckForProofsTask reads it.
+        // M19 R1: the header task, the reorg task and the review task share
+        // one deactivated-header queue and one processed height; the header
+        // task publishes the processed height into the storage's proof gate.
+        let reorg_queue = crate::monitor::reorg_ops::new_reorg_queue();
+        let processed_height = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let new_header_task = if self.options.tasks.new_header.enabled {
-            let task = Arc::new(NewHeaderTask::new(self.services.clone()));
+            let task = Arc::new(NewHeaderTask::with_shared(
+                self.services.clone(),
+                reorg_queue.clone(),
+                processed_height.clone(),
+            ));
+            {
+                let storage = self.storage.clone();
+                task.set_gate_sink(Arc::new(move |h| storage.set_max_acceptable_proof_height(h)));
+            }
             let handle = self.spawn_task(
                 TaskType::NewHeader,
                 task.clone(),
@@ -202,10 +216,29 @@ where
 
         // Start reorg task
         if self.options.tasks.reorg.enabled {
-            let task = ReorgTask::new(self.storage.clone(), self.services.clone());
+            let task = ReorgTask::with_queue(
+                self.storage.clone(),
+                self.services.clone(),
+                reorg_queue.clone(),
+            );
             let handle =
                 self.spawn_task(TaskType::Reorg, Arc::new(task), &self.options.tasks.reorg);
             handles.insert(TaskType::Reorg, handle);
+        }
+
+        // Start the review_proven_txs task (the lagged audit, M19 R1).
+        if self.options.tasks.review_proven_txs.enabled {
+            let task = ReviewProvenTxsTask::new(
+                self.storage.clone(),
+                self.services.clone(),
+                processed_height.clone(),
+            );
+            let handle = self.spawn_task(
+                TaskType::ReviewProvenTxs,
+                Arc::new(task),
+                &self.options.tasks.review_proven_txs,
+            );
+            handles.insert(TaskType::ReviewProvenTxs, handle);
         }
 
         // Shared CheckForProofs trigger flag. Raised by:
@@ -408,16 +441,40 @@ where
             results.insert(TaskType::Clock, result);
         }
 
+        let reorg_queue = crate::monitor::reorg_ops::new_reorg_queue();
+        let processed_height = Arc::new(std::sync::atomic::AtomicU32::new(0));
         if self.options.tasks.new_header.enabled {
-            let task = NewHeaderTask::new(self.services.clone());
+            let task = NewHeaderTask::with_shared(
+                self.services.clone(),
+                reorg_queue.clone(),
+                processed_height.clone(),
+            );
+            {
+                let storage = self.storage.clone();
+                task.set_gate_sink(Arc::new(move |h| storage.set_max_acceptable_proof_height(h)));
+            }
             let result = task.run().await?;
             results.insert(TaskType::NewHeader, result);
         }
 
         if self.options.tasks.reorg.enabled {
-            let task = ReorgTask::new(self.storage.clone(), self.services.clone());
+            let task = ReorgTask::with_queue(
+                self.storage.clone(),
+                self.services.clone(),
+                reorg_queue.clone(),
+            );
             let result = task.run().await?;
             results.insert(TaskType::Reorg, result);
+        }
+
+        if self.options.tasks.review_proven_txs.enabled {
+            let task = ReviewProvenTxsTask::new(
+                self.storage.clone(),
+                self.services.clone(),
+                processed_height.clone(),
+            );
+            let result = task.run().await?;
+            results.insert(TaskType::ReviewProvenTxs, result);
         }
 
         if self.options.tasks.check_for_proofs.enabled {

@@ -16,6 +16,7 @@ use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
 use std::collections::HashSet;
 
+use super::storage_sqlx::demote_stale_proof_on;
 use super::StorageSqlx;
 
 // =============================================================================
@@ -2325,6 +2326,31 @@ async fn fetch_and_store_merkle_path(
 ///
 /// This is the shared core used by both `build_input_beef` (create_action) and
 /// `rebuild_beef_for_broadcast` (send_waiting_transactions).
+/// M19 R1: does the chain tracker REFUTE a stored bump for `txid`?
+///
+/// Only a definite `false` from the tracker refutes; no tracker, a tracker
+/// fault, or a bump whose root cannot be computed keeps today's behavior
+/// (the bump is attached and the final BEEF validation decides), so an
+/// unknown never reads as a stale proof.
+pub(super) async fn stored_bump_refuted(
+    chain_tracker: Option<&dyn ChainTracker>,
+    merkle_path: &MerklePath,
+    txid: &str,
+) -> bool {
+    let Some(tracker) = chain_tracker else {
+        return false;
+    };
+    let Ok(root) = merkle_path.compute_root(Some(txid)) else {
+        return false;
+    };
+    matches!(
+        tracker
+            .is_valid_root_for_height(&root, merkle_path.block_height)
+            .await,
+        Ok(false)
+    )
+}
+
 pub(super) async fn beef_bfs_walk(
     conn: &mut SqliteConnection,
     beef: &mut Beef,
@@ -2473,7 +2499,36 @@ pub(super) async fn beef_bfs_walk(
             // If we have a merkle proof, add both tx and proof - no need to recurse
             let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {
                 match MerklePath::from_binary(merkle_path_bytes) {
-                    Ok(merkle_path) => Some(beef.merge_bump(merkle_path)),
+                    Ok(merkle_path) => {
+                        // M19 R1 (ts-stack `getBeefForTransaction` with
+                        // `skipInvalidProofs`: "proof is currently invalid,
+                        // recurse deeper via the rawTx path"): a STORED bump the
+                        // chain tracker now refutes (a reorg moved the block) is
+                        // not attached. The transaction rides as a raw-tx leg,
+                        // its parents are walked one level deeper, and the stale
+                        // row is demoted on this connection so `check_for_proofs`
+                        // re-proves it. Before this, every spend touching such a
+                        // row was refused with "Invalid merkle root" (loop 8,
+                        // 2026-09-07, 28 seats).
+                        if stored_bump_refuted(chain_tracker, &merkle_path, &txid).await {
+                            tracing::warn!(
+                                txid = %txid,
+                                height = merkle_path.block_height,
+                                marker = "stale_proof_skipped",
+                                "beef walk: the stored merkle proof no longer matches the chain; walking the raw-tx leg instead"
+                            );
+                            if let Err(e) = demote_stale_proof_on(&mut *conn, &txid).await {
+                                tracing::warn!(
+                                    txid = %txid,
+                                    error = %e,
+                                    "beef walk: could not demote the stale proof (the walk continues without it)"
+                                );
+                            }
+                            None
+                        } else {
+                            Some(beef.merge_bump(merkle_path))
+                        }
+                    }
                     Err(e) => {
                         // Continue without proof - will need to recurse to ancestors
                         tracing::warn!(

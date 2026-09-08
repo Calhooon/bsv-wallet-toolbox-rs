@@ -16,7 +16,7 @@ use bsv_rs::wallet::{
     ListOutputsArgs, ListOutputsResult, RelinquishCertificateArgs, RelinquishOutputArgs,
 };
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::services::WalletServices;
 use crate::storage::entities::*;
 
@@ -859,11 +859,36 @@ pub enum ProofIngestOutcome {
         /// The root computed from the supplied BUMP.
         computed_root: String,
     },
+    /// The block is newer than the last header the monitor watched stay the
+    /// chain tip for a full cycle (the proof LAG, ts-stack's
+    /// `TaskCheckForProofs.maxAcceptableHeight`). Not stored and never an
+    /// attempt: the fetch path re-presents it once the header has aged.
+    /// This is what keeps an orphan's proof out of `proven_txs` (2026-09-07:
+    /// a 34 MB block at 965771 lost to a 58-tx block within seconds).
+    DeferredAboveProcessedHeight {
+        /// The block the proof claims.
+        block_height: u32,
+        /// The highest height whose proofs may be stored right now.
+        processed_height: u32,
+    },
     /// The supplied merkle path could not be parsed, or the root could not
     /// be computed for this txid.
     InvalidProof(String),
     /// The ChainTracker errored (transient) — retry later.
     TrackerError(String),
+}
+
+/// One stored proof's anchor: the block a `proven_txs` row claims (M19 R1).
+///
+/// `block_hash` is empty for rows written by `internalize_action` before
+/// 0.3.65 (the validated bump carried no hash); compare by `merkle_root`
+/// when the hash is empty, by both otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvenTxAnchor {
+    pub txid: String,
+    pub height: u32,
+    pub block_hash: String,
+    pub merkle_root: String,
 }
 
 /// Storage operations used by the monitor daemon.
@@ -875,6 +900,55 @@ pub enum ProofIngestOutcome {
 /// The trait mirrors Go's `MonitoredStorage` interface.
 #[async_trait]
 pub trait MonitorStorage: WalletStorageProvider {
+    /// M19 R1, the proof LAG gate (ts-stack `TaskCheckForProofs.maxAcceptableHeight`):
+    /// the highest block height whose proofs may be stored right now, set by the
+    /// header task once a header has remained the chain tip for a full cycle.
+    /// `0` means no gate (cold start). Backends that never store proofs keep the
+    /// default.
+    fn set_max_acceptable_proof_height(&self, height: u32) {
+        let _ = height;
+    }
+
+    /// The current proof LAG gate (see `set_max_acceptable_proof_height`).
+    fn max_acceptable_proof_height(&self) -> u32 {
+        0
+    }
+
+    /// Every stored proof anchored to `block_hash` (M19 R1: the reorg task's
+    /// input for a deactivated header).
+    async fn find_proven_txs_by_block_hash(&self, block_hash: &str) -> Result<Vec<ProvenTxAnchor>> {
+        let _ = block_hash;
+        Err(Error::StorageError(
+            "find_proven_txs_by_block_hash is not supported by this storage".to_string(),
+        ))
+    }
+
+    /// Every stored proof with `min_height <= height <= max_height` (M19 R1: the
+    /// lagged audit's input).
+    async fn find_proven_txs_in_heights(
+        &self,
+        min_height: u32,
+        max_height: u32,
+    ) -> Result<Vec<ProvenTxAnchor>> {
+        let _ = (min_height, max_height);
+        Err(Error::StorageError(
+            "find_proven_txs_in_heights is not supported by this storage".to_string(),
+        ))
+    }
+
+    /// Demote a stored proof the chain no longer confirms (M19 R1, ts-stack
+    /// `reproveHeader` when no replacement is available): delete the
+    /// `proven_txs` row, return the transaction to `unmined`, and reset its
+    /// `proven_tx_reqs` row so `check_for_proofs` re-proves it. A demoted
+    /// transaction stays spendable as an unconfirmed ancestor (a raw-tx BEEF
+    /// leg); nothing is lost, only re-proved. Returns whether a row existed.
+    async fn demote_stale_proof(&self, txid: &str) -> Result<bool> {
+        let _ = txid;
+        Err(Error::StorageError(
+            "demote_stale_proof is not supported by this storage".to_string(),
+        ))
+    }
+
     /// Synchronize transaction statuses by fetching merkle proofs.
     ///
     /// This method:

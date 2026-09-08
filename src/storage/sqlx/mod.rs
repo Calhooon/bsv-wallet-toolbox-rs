@@ -39,6 +39,8 @@ mod internalize_action;
 mod locked_inputs;
 mod poisoned_chain;
 mod process_action;
+#[cfg(test)]
+mod reorg_tests;
 mod storage_sqlx;
 mod sync;
 

@@ -80,6 +80,10 @@ pub struct StorageSqlx {
     /// Persisted broadcast acceptance memory over the same pool (0.3.56):
     /// the `broadcast_seen` / `broadcast_prefs` tables.
     broadcast_memory: Arc<super::broadcast_seen::SqlxBroadcastMemory>,
+    /// M19 R1, the proof LAG gate: the highest block height whose proofs may
+    /// be stored (0 = no gate). Set by the monitor's header task once a
+    /// header has remained the chain tip for a full cycle.
+    max_acceptable_proof_height: std::sync::atomic::AtomicU32,
 }
 
 impl StorageSqlx {
@@ -117,6 +121,7 @@ impl StorageSqlx {
             active_transactions: RwLock::new(HashMap::new()),
             task_locks: RwLock::new(HashMap::new()),
             broadcast_memory,
+            max_acceptable_proof_height: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -2641,6 +2646,29 @@ impl StorageSqlx {
             }
         };
 
+        // M19 R1 (ts-stack `TaskCheckForProofs.maxAcceptableHeight`): a proof
+        // for a block the monitor has not yet watched stay the chain tip for
+        // a full cycle is DEFERRED, never stored and never an attempt. This is
+        // what keeps an orphan's proof out of `proven_txs` (2026-09-07: a
+        // 34 MB block at 965771 lost to a 58-tx block within seconds, and
+        // Arcade's inline proofs had arrived 5 s after the block).
+        let processed_height = self
+            .max_acceptable_proof_height
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if processed_height > 0 && block_height > processed_height {
+            tracing::debug!(
+                txid = %txid,
+                block_height,
+                processed_height,
+                marker = "proof_deferred_above_processed_height",
+                "ingest_merkle_proof: deferred until the header has aged one cycle"
+            );
+            return Ok(ProofIngestOutcome::DeferredAboveProcessedHeight {
+                block_height,
+                processed_height,
+            });
+        }
+
         // Layer 1: Validate the merkle proof before storing. Bad proofs
         // (e.g. from provider rate limiting) are rejected instead of stored
         // permanently.
@@ -2669,28 +2697,84 @@ impl StorageSqlx {
             .unwrap_or_else(|| computed_root.clone());
         let now = chrono::Utc::now();
 
-        sqlx::query(
-            r#"
-            INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
-            VALUES (?, ?, 0, ?, ?,  ?,
-                COALESCE(
-                    (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
-                    (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
-                ),
-                ?, ?)
-            "#,
+        // M19 R1 (ts-stack `internalizeAction`: "in the event of a reorg, the
+        // proof in this beef should replace the proof in storage"; Arcade's
+        // `reorg_reanchor` MINED is the same message): a VALIDATED proof for a
+        // different block than the stored anchor REPLACES it. `INSERT OR
+        // IGNORE` used to drop every re-anchor on the floor (loop 8, 28 seats
+        // kept proofs against the orphan). The same anchor is a no-op.
+        let existing: Option<(String, i64, String)> = sqlx::query_as(
+            "SELECT block_hash, height, merkle_root FROM proven_txs WHERE txid = ?",
         )
         .bind(txid)
-        .bind(block_height as i64)
-        .bind(block_hash)
-        .bind(&merkle_root)
-        .bind(merkle_path_bytes)
-        .bind(txid)
-        .bind(txid)
-        .bind(now)
-        .bind(now)
-        .execute(self.pool())
+        .fetch_optional(self.pool())
         .await?;
+        match &existing {
+            Some((stored_hash, stored_height, stored_root))
+                if same_proof_anchor(
+                    stored_hash,
+                    *stored_height,
+                    stored_root,
+                    block_hash,
+                    block_height,
+                    &merkle_root,
+                ) =>
+            {
+                tracing::debug!(
+                    txid = %txid,
+                    block_height,
+                    "ingest_merkle_proof: the stored anchor already matches; nothing to write"
+                );
+            }
+            Some((stored_hash, stored_height, stored_root)) => {
+                tracing::info!(
+                    txid = %txid,
+                    stored_height = *stored_height,
+                    stored_block_hash = %stored_hash,
+                    stored_merkle_root = %stored_root,
+                    block_height,
+                    block_hash = %block_hash,
+                    merkle_root = %merkle_root,
+                    marker = "proof_replaced",
+                    "ingest_merkle_proof: a validated proof for a different block replaces the stored anchor (reorg re-anchor)"
+                );
+                sqlx::query(
+                    "UPDATE proven_txs SET height = ?, idx = 0, block_hash = ?, merkle_root = ?, merkle_path = ?, updated_at = ? WHERE txid = ?",
+                )
+                .bind(block_height as i64)
+                .bind(block_hash)
+                .bind(&merkle_root)
+                .bind(merkle_path_bytes)
+                .bind(now)
+                .bind(txid)
+                .execute(self.pool())
+                .await?;
+            }
+            None => {
+                sqlx::query(
+                    r#"
+                    INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+                    VALUES (?, ?, 0, ?, ?,  ?,
+                        COALESCE(
+                            (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
+                            (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
+                        ),
+                        ?, ?)
+                    "#,
+                )
+                .bind(txid)
+                .bind(block_height as i64)
+                .bind(block_hash)
+                .bind(&merkle_root)
+                .bind(merkle_path_bytes)
+                .bind(txid)
+                .bind(txid)
+                .bind(now)
+                .bind(now)
+                .execute(self.pool())
+                .await?;
+            }
+        }
 
         // Mined: every provider has it. Remember it for reduced sends.
         self.record_broadcast_status_quiet(
@@ -2706,6 +2790,22 @@ impl StorageSqlx {
                 .bind(txid)
                 .fetch_optional(self.pool())
                 .await?;
+        // M19 R1: `INSERT OR IGNORE` also swallows a NOT NULL violation, so a
+        // proof for a transaction whose raw bytes are nowhere in storage used
+        // to report `Ingested` while storing nothing and then complete the
+        // request with no proof link. Say so instead; nothing is latched.
+        if proven_tx_id.is_none() {
+            tracing::warn!(
+                txid = %txid,
+                block_height,
+                marker = "proof_not_stored_no_raw_tx",
+                "ingest_merkle_proof: no raw transaction bytes in storage; the proof was not stored"
+            );
+            return Ok(ProofIngestOutcome::InvalidProof(format!(
+                "proof for {} not stored: no raw transaction bytes in storage",
+                txid
+            )));
+        }
 
         // Update proven_tx_req to completed
         sqlx::query(
@@ -3115,8 +3215,123 @@ impl StorageSqlx {
     }
 }
 
+/// M19 R1: is a freshly validated proof the SAME anchor as the stored one?
+///
+/// A stored row written by `internalize_action` before 0.3.65 carries an
+/// empty `block_hash` (the validated bump had none), so the comparison falls
+/// back to height + merkle root there; with both hashes known, the hash and
+/// the height decide (the root is implied by the hash).
+pub(crate) fn same_proof_anchor(
+    stored_hash: &str,
+    stored_height: i64,
+    stored_root: &str,
+    new_hash: &str,
+    new_height: u32,
+    new_root: &str,
+) -> bool {
+    if stored_height != new_height as i64 {
+        return false;
+    }
+    if !stored_hash.is_empty() && !new_hash.is_empty() {
+        return stored_hash.eq_ignore_ascii_case(new_hash);
+    }
+    stored_root.eq_ignore_ascii_case(new_root)
+}
+
+/// M19 R1: demote one stored proof on an open connection (the walk in
+/// `create_action.rs` runs inside the caller's transaction and must not take
+/// the pool's write lock a second time). Returns whether a row existed.
+pub(super) async fn demote_stale_proof_on(
+    conn: &mut sqlx::SqliteConnection,
+    txid: &str,
+) -> Result<bool> {
+    let now = chrono::Utc::now();
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((proven_tx_id,)) = existing else {
+        return Ok(false);
+    };
+    sqlx::query(
+        "UPDATE transactions SET status = 'unmined', proven_tx_id = NULL, updated_at = ? WHERE proven_tx_id = ?",
+    )
+    .bind(now)
+    .bind(proven_tx_id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE proven_tx_reqs SET status = 'unmined', proven_tx_id = NULL, attempts = 0, updated_at = ? WHERE txid = ?",
+    )
+    .bind(now)
+    .bind(txid)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("DELETE FROM proven_txs WHERE proven_tx_id = ?")
+        .bind(proven_tx_id)
+        .execute(&mut *conn)
+        .await?;
+    tracing::warn!(
+        txid = %txid,
+        proven_tx_id,
+        marker = "stale_proof_demoted",
+        "demote_stale_proof: the stored proof is gone; the transaction is unmined again and will be re-proved"
+    );
+    Ok(true)
+}
+
+fn anchor_from_row(row: (String, i64, String, String)) -> ProvenTxAnchor {
+    ProvenTxAnchor {
+        txid: row.0,
+        height: row.1.max(0) as u32,
+        block_hash: row.2,
+        merkle_root: row.3,
+    }
+}
+
 #[async_trait]
 impl MonitorStorage for StorageSqlx {
+    fn set_max_acceptable_proof_height(&self, height: u32) {
+        self.max_acceptable_proof_height
+            .store(height, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn max_acceptable_proof_height(&self) -> u32 {
+        self.max_acceptable_proof_height
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn find_proven_txs_by_block_hash(&self, block_hash: &str) -> Result<Vec<ProvenTxAnchor>> {
+        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT txid, height, block_hash, merkle_root FROM proven_txs WHERE lower(block_hash) = lower(?) ORDER BY height ASC, proven_tx_id ASC",
+        )
+        .bind(block_hash)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.into_iter().map(anchor_from_row).collect())
+    }
+
+    async fn find_proven_txs_in_heights(
+        &self,
+        min_height: u32,
+        max_height: u32,
+    ) -> Result<Vec<ProvenTxAnchor>> {
+        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT txid, height, block_hash, merkle_root FROM proven_txs WHERE height >= ? AND height <= ? ORDER BY height ASC, proven_tx_id ASC",
+        )
+        .bind(min_height as i64)
+        .bind(max_height as i64)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.into_iter().map(anchor_from_row).collect())
+    }
+
+    async fn demote_stale_proof(&self, txid: &str) -> Result<bool> {
+        let mut conn = self.pool().acquire().await?;
+        demote_stale_proof_on(&mut conn, txid).await
+    }
+
     async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
         // Receive-proof gap (2026-08-29): a proof-less transaction with NO
         // req is invisible to the walk below. Repair first (bounded,
@@ -3320,6 +3535,20 @@ impl MonitorStorage for StorageSqlx {
                         // No network fetch happened: no throttle to serve.
                         continue;
                     }
+                    ProofIngestOutcome::DeferredAboveProcessedHeight {
+                        block_height: deferred_height,
+                        processed_height,
+                    } => {
+                        // M19 R1: the header has not aged one cycle yet. No
+                        // fetch (it would be deferred too) and no attempt.
+                        tracing::debug!(
+                            txid = %txid,
+                            block_height = deferred_height,
+                            processed_height,
+                            "synchronize_transaction_statuses: inline triage proof deferred (proof lag), next cycle"
+                        );
+                        continue;
+                    }
                     not_ingested => {
                         tracing::warn!(
                             txid = %txid,
@@ -3370,8 +3599,25 @@ impl MonitorStorage for StorageSqlx {
                             ProofIngestOutcome::Ingested(status) => {
                                 results.push(status);
                             }
+                            ProofIngestOutcome::DeferredAboveProcessedHeight {
+                                block_height: deferred_height,
+                                processed_height,
+                            } => {
+                                // M19 R1: no attempt counted; the next header
+                                // cycle re-presents this proof.
+                                tracing::debug!(
+                                    txid = %txid,
+                                    block_height = deferred_height,
+                                    processed_height,
+                                    "synchronize_transaction_statuses: fetched proof deferred (proof lag), next cycle"
+                                );
+                                continue;
+                            }
                             not_ingested => {
                                 match &not_ingested {
+                                    ProofIngestOutcome::DeferredAboveProcessedHeight { .. } => {
+                                        unreachable!()
+                                    }
                                     ProofIngestOutcome::InvalidMerkleRoot { computed_root } => {
                                         tracing::warn!(
                                             "synchronize_transaction_statuses: invalid merkle root for txid {} at height {} (computed {}). ChainTracker rejected root. Skipping.",

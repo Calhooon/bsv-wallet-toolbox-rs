@@ -13,6 +13,7 @@ mod monitor_call_history;
 mod new_header;
 mod purge;
 mod reorg;
+mod review_proven_txs;
 mod review_status;
 mod send_waiting;
 mod sync_when_idle;
@@ -28,6 +29,7 @@ pub use monitor_call_history::MonitorCallHistoryTask;
 pub use new_header::NewHeaderTask;
 pub use purge::{PurgeConfig, PurgeTask};
 pub use reorg::{DeactivatedHeader, ReorgTask};
+pub use review_proven_txs::{ReviewProvenTxsTask, REVIEW_HEIGHTS};
 pub use review_status::ReviewStatusTask;
 pub use send_waiting::SendWaitingTask;
 pub use sync_when_idle::SyncWhenIdleTask;
@@ -116,6 +118,7 @@ pub enum TaskType {
     /// Handle blockchain reorganizations.
     Reorg,
     /// Review and sync transaction status.
+    ReviewProvenTxs,
     ReviewStatus,
     /// Sync storage when wallet is idle.
     SyncWhenIdle,
@@ -137,6 +140,7 @@ impl TaskType {
             TaskType::NewHeader => "new_header",
             TaskType::Purge => "purge",
             TaskType::Reorg => "reorg",
+            TaskType::ReviewProvenTxs => "review_proven_txs",
             TaskType::ReviewStatus => "review_status",
             TaskType::SyncWhenIdle => "sync_when_idle",
         }

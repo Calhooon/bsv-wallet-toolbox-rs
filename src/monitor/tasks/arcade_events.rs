@@ -187,6 +187,20 @@ where
                             );
                             return Ok(true);
                         }
+                        Ok(Some(crate::ProofIngestOutcome::DeferredAboveProcessedHeight {
+                            block_height,
+                            processed_height,
+                        })) => {
+                            // M19 R1: the proof lag. Not a rejection; the
+                            // fetch path re-presents it once the header has
+                            // stayed the tip for a full cycle.
+                            tracing::debug!(
+                                txid = %txid,
+                                block_height,
+                                processed_height,
+                                "Arcade MINED event — inline proof deferred (block above the processed header)"
+                            );
+                        }
                         Ok(Some(outcome)) => {
                             // Rejected (bad root / unparseable) or tracker
                             // deferral — never latch, fall back to fetch.

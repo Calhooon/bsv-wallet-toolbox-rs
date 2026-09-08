@@ -1116,23 +1116,60 @@ async fn insert_proven_tx_from_bump(
 ) -> Result<i64> {
     let now = Utc::now();
 
-    sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO proven_txs
-            (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
-        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(txid)
-    .bind(vb.height as i64)
-    .bind(vb.idx)
-    .bind(&vb.merkle_root)
-    .bind(&vb.merkle_path)
-    .bind(raw_tx)
-    .bind(now)
-    .bind(now)
-    .execute(&mut *conn)
-    .await?;
+    // M19 R1 (ts-stack `internalizeAction`: "in the event of a reorg, we CAN
+    // assume that the proof contained in this beef should replace the proof
+    // in storage"): the bump was validated against the chain tracker, so a
+    // stored anchor for a DIFFERENT block is stale and this one replaces it.
+    let existing: Option<(i64, String)> =
+        sqlx::query_as("SELECT height, merkle_root FROM proven_txs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    match existing {
+        Some((height, root))
+            if height == vb.height as i64 && root.eq_ignore_ascii_case(&vb.merkle_root) => {}
+        Some((height, root)) => {
+            tracing::info!(
+                txid = %txid,
+                stored_height = height,
+                stored_merkle_root = %root,
+                height = vb.height,
+                merkle_root = %vb.merkle_root,
+                marker = "proof_replaced",
+                "internalize: a validated bump for a different block replaces the stored proof (reorg re-anchor)"
+            );
+            sqlx::query(
+                "UPDATE proven_txs SET height = ?, idx = ?, block_hash = '', merkle_root = ?, merkle_path = ?, updated_at = ? WHERE txid = ?",
+            )
+            .bind(vb.height as i64)
+            .bind(vb.idx)
+            .bind(&vb.merkle_root)
+            .bind(&vb.merkle_path)
+            .bind(now)
+            .bind(txid)
+            .execute(&mut *conn)
+            .await?;
+        }
+        None => {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO proven_txs
+                    (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+                VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(txid)
+            .bind(vb.height as i64)
+            .bind(vb.idx)
+            .bind(&vb.merkle_root)
+            .bind(&vb.merkle_path)
+            .bind(raw_tx)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
 
     // Mined: every provider has it. Remember it for reduced sends; never a
     // reason to fail the internalize.

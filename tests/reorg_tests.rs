@@ -29,7 +29,7 @@ mod reorg {
     // =========================================================================
 
     /// A mock WalletServices that returns configurable merkle path results.
-    struct MockServices {
+    pub(crate) struct MockServices {
         /// If set, get_merkle_path returns this result for all txids.
         merkle_result: tokio::sync::RwLock<Option<GetMerklePathResult>>,
         /// Track how many times get_merkle_path was called.
@@ -45,6 +45,12 @@ mod reorg {
         }
 
         /// Create a mock that returns a valid merkle path.
+        /// M19 R1: a provider answer with a REAL proof for a named block.
+        pub(crate) fn with_proof(result: GetMerklePathResult) -> Self {
+            let s = Self::new();
+            s.merkle_result.try_write().unwrap().replace(result);
+            s
+        }
         fn with_valid_proof() -> Self {
             let s = Self::new();
             let result = GetMerklePathResult {
@@ -68,7 +74,7 @@ mod reorg {
         }
 
         /// Create a mock that returns no merkle path (proof not found).
-        fn with_no_proof() -> Self {
+        pub(crate) fn with_no_proof() -> Self {
             let s = Self::new();
             let result = GetMerklePathResult {
                 merkle_path: None,
@@ -764,5 +770,199 @@ mod reorg {
         // Verify the task metadata
         assert_eq!(task.name(), "reorg");
         assert_eq!(task.default_interval(), Duration::from_secs(60));
+    }
+}
+
+// =============================================================================
+// M19 R1 (2026-09-08): the reorg task's real semantics, run past the delay.
+// A deactivated header names a block; every stored proof anchored to it is
+// re-proved: a provider's validated proof for the canonical block REPLACES
+// it, and with no proof it is DEMOTED (the transaction is unmined again).
+// =============================================================================
+#[cfg(feature = "sqlite")]
+mod reorg_m19 {
+    use std::sync::Arc;
+
+    use bsv_rs::transaction::{MerklePath, MerklePathLeaf, MockChainTracker};
+    use bsv_wallet_toolbox_rs::monitor::tasks::ReorgTask;
+    use bsv_wallet_toolbox_rs::services::{BlockHeader, GetMerklePathResult};
+    use bsv_wallet_toolbox_rs::storage::MonitorStorage;
+    use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, WalletStorageWriter};
+    use chrono::Utc;
+
+    /// The block-1 coinbase (a real transaction) and its txid.
+    const COINBASE_HEX: &str = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000";
+    const COINBASE_TXID: &str = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+    const ORPHAN: &str = "0000000000000000153e10f465dba9697e4bde364fdf3a3224a736b019ffbfb1";
+    const CANONICAL: &str = "0000000000000000146bc084ec137a3c9608a07159128c66302051b6fe176e33";
+
+    fn single_leaf_bump_hex(height: u32, txid: &str) -> String {
+        hex::encode(
+            MerklePath {
+                block_height: height,
+                path: vec![vec![MerklePathLeaf {
+                    offset: 0,
+                    hash: Some(txid.to_string()),
+                    txid: true,
+                    duplicate: false,
+                }]],
+            }
+            .to_binary(),
+        )
+    }
+
+    fn header(height: u32, hash: &str, root: &str) -> BlockHeader {
+        BlockHeader {
+            hash: hash.to_string(),
+            height,
+            version: 0x20000000,
+            merkle_root: root.to_string(),
+            time: 1_700_000_000,
+            nonce: 0,
+            bits: 0,
+            previous_hash: "p".repeat(64),
+        }
+    }
+
+    async fn setup() -> (Arc<StorageSqlx>, AuthId) {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-storage", &"0".repeat(64)).await.unwrap();
+        storage.make_available().await.unwrap();
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+        (Arc::new(storage), auth)
+    }
+
+    /// A completed transaction with a stored proof anchored to `block_hash`
+    /// and a completed request, the way the fleet's seats held the orphan.
+    async fn seed_proven(storage: &StorageSqlx, user_id: i64, txid: &str, height: u32, block_hash: &str) {
+        let now = Utc::now();
+        let raw = hex::decode(COINBASE_HEX).unwrap();
+        let bump = hex::decode(single_leaf_bump_hex(height, txid)).unwrap();
+        let proven_tx_id: i64 = sqlx::query_scalar(
+            "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?) RETURNING proven_tx_id",
+        )
+        .bind(txid)
+        .bind(height as i64)
+        .bind(block_hash)
+        .bind(txid)
+        .bind(&bump)
+        .bind(&raw)
+        .bind(now)
+        .bind(now)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, description, txid, version, lock_time, proven_tx_id, created_at, updated_at) VALUES (?, 'completed', ?, 1, 1000, 'stake', ?, 1, 0, ?, ?, ?)",
+        )
+        .bind(user_id)
+        .bind(format!("ref-{}", &txid[..8]))
+        .bind(txid)
+        .bind(proven_tx_id)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, proven_tx_id, created_at, updated_at) VALUES (?, 'completed', 3, '{}', 0, '{}', ?, ?, ?, ?)",
+        )
+        .bind(txid)
+        .bind(&raw)
+        .bind(proven_tx_id)
+        .bind(now)
+        .bind(now)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn state(storage: &StorageSqlx, txid: &str) -> (Option<(i64, String)>, String, String) {
+        let proven: Option<(i64, String)> =
+            sqlx::query_as("SELECT height, block_hash FROM proven_txs WHERE txid = ?")
+                .bind(txid)
+                .fetch_optional(storage.pool())
+                .await
+                .unwrap();
+        let (tx_status,): (String,) = sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        let (req_status,): (String,) = sqlx::query_as("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        (proven, tx_status, req_status)
+    }
+
+    #[tokio::test]
+    async fn a_deactivated_header_with_no_replacement_proof_demotes_the_stored_proof() {
+        let (storage, auth) = setup().await;
+        seed_proven(&storage, auth.user_id.unwrap(), COINBASE_TXID, 965771, ORPHAN).await;
+        let services = Arc::new(super::reorg::MockServices::with_no_proof());
+        let task = ReorgTask::new(storage.clone(), services.clone());
+        task.queue_deactivated_header(ORPHAN.to_string(), 965771).await;
+
+        let result = task.run_now().await.unwrap();
+        assert_eq!(result.items_processed, 1, "one proof demoted: {:?}", result.errors);
+        let (proven, tx_status, req_status) = state(&storage, COINBASE_TXID).await;
+        assert!(proven.is_none(), "the orphan's proof is gone");
+        assert_eq!(tx_status, "unmined");
+        assert_eq!(req_status, "unmined");
+        assert_eq!(task.pending_count().await, 0, "nothing to retry");
+    }
+
+    #[tokio::test]
+    async fn a_deactivated_header_with_a_validated_replacement_proof_re_anchors_the_stored_proof() {
+        let (storage, auth) = setup().await;
+        seed_proven(&storage, auth.user_id.unwrap(), COINBASE_TXID, 965771, ORPHAN).await;
+        // The storage validates the provider's proof against ITS tracker.
+        let mut tracker = MockChainTracker::new(1_000_000);
+        tracker.add_root(965773, COINBASE_TXID.to_string());
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+        let services = Arc::new(super::reorg::MockServices::with_proof(GetMerklePathResult {
+            merkle_path: Some(single_leaf_bump_hex(965773, COINBASE_TXID)),
+            name: Some("mock".to_string()),
+            header: Some(header(965773, CANONICAL, COINBASE_TXID)),
+            error: None,
+            notes: vec![],
+        }));
+        let task = ReorgTask::new(storage.clone(), services.clone());
+        task.queue_deactivated_header(ORPHAN.to_string(), 965771).await;
+
+        let result = task.run_now().await.unwrap();
+        assert_eq!(result.items_processed, 1, "one proof replaced: {:?}", result.errors);
+        let (proven, tx_status, req_status) = state(&storage, COINBASE_TXID).await;
+        assert_eq!(proven, Some((965773, CANONICAL.to_string())), "re-anchored to the canonical block");
+        assert_eq!(tx_status, "completed", "a replaced proof keeps the transaction completed");
+        assert_eq!(req_status, "completed");
+        assert!(storage.find_proven_txs_by_block_hash(ORPHAN).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_proof_the_providers_still_anchor_to_the_same_block_is_left_alone() {
+        let (storage, auth) = setup().await;
+        seed_proven(&storage, auth.user_id.unwrap(), COINBASE_TXID, 965771, ORPHAN).await;
+        let mut tracker = MockChainTracker::new(1_000_000);
+        tracker.add_root(965771, COINBASE_TXID.to_string());
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+        let services = Arc::new(super::reorg::MockServices::with_proof(GetMerklePathResult {
+            merkle_path: Some(single_leaf_bump_hex(965771, COINBASE_TXID)),
+            name: Some("mock".to_string()),
+            header: Some(header(965771, ORPHAN, COINBASE_TXID)),
+            error: None,
+            notes: vec![],
+        }));
+        let task = ReorgTask::new(storage.clone(), services.clone());
+        task.queue_deactivated_header(ORPHAN.to_string(), 965771).await;
+        let result = task.run_now().await.unwrap();
+        assert_eq!(result.items_processed, 0, "unchanged: {:?}", result.errors);
+        let (proven, tx_status, _) = state(&storage, COINBASE_TXID).await;
+        assert_eq!(proven, Some((965771, ORPHAN.to_string())));
+        assert_eq!(tx_status, "completed");
     }
 }
