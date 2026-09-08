@@ -235,6 +235,14 @@ pub enum LadderStep {
 /// Repeating `unknown` keeps the row untouched so `seen_at` stays the FIRST
 /// observed absence (the absence clock). Repeating `rejected` likewise.
 /// Repeating `accepted` or `seen` refreshes `seen_at` (fresh evidence).
+///
+/// THE ONE SANCTIONED DOWNGRADE lives outside the ladder: the stale-proof
+/// demotion (`StorageSqlx::demote_stale_proof`) forgets a `mined` row
+/// through `broadcast_seen::forget_mined_on` when the chain positively
+/// refutes the proof that produced it. A `mined` row was network evidence
+/// of a block; when the block leaves the chain the evidence goes with it,
+/// and a row left behind would make reduced sends omit the transaction as
+/// txid-only while it is unproven again. No other path lowers a status.
 pub fn ladder_step(existing: Option<BroadcastStatus>, incoming: BroadcastStatus) -> LadderStep {
     use BroadcastStatus::*;
     let Some(existing) = existing else {

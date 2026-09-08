@@ -1,15 +1,23 @@
-//! Reorg task - handles blockchain reorganizations.
+//! Reorg task: handles blockchain reorganizations.
 //!
 //! The reference (ts-stack `TaskReorg`): deactivated headers arrive on a
-//! queue, age briefly (a short fork must not churn storage), and every
-//! `proven_txs` row citing a deactivated header is re-proved
-//! (`reproveHeader`). Ours (M19 R1, 2026-09-08) differs in one deliberate
-//! way: when no valid replacement proof exists the stored proof is DEMOTED
-//! (the transaction is unmined again and re-proved later) instead of
-//! retained, because a retained stale proof refuses every spend that
-//! touches it (loop 8: 28 seats, `createAction` 400). The queue is fed by
-//! the header task's same-height hash change and tip decrease
-//! (`HeaderTracker`); the review task is the backup for events it missed.
+//! queue and age ten minutes before they are processed (a short fork must
+//! not churn storage); every `proven_txs` row citing a deactivated header is
+//! re-proved (`reproveHeader`); a header whose rows came back `unchanged` or
+//! `unavailable` is retried, aged again, at most three times, and then the
+//! original proof data is RETAINED ("maximum retries exceeded"). In normal
+//! operation there is rarely any work here because the proof LAG keeps most
+//! orphan proofs out of storage in the first place.
+//!
+//! Ours conforms, with one stated difference (`docs/REORG-DIVERGENCES.md`):
+//! a row the chain POSITIVELY refutes (`reprove_anchor`: the tracker answers
+//! a definite false, at least two providers answer cleanly "not mined", no
+//! provider serves a path) is DEMOTED to the pre-proof state, because a
+//! retained stale proof refuses every spend that touches it (loop 8,
+//! 2026-09-07: 28 seats, `createAction` 400). Faults never demote. The
+//! queue is fed by the header task (a same-height hash change and the ring
+//! walk); the review task is the net for what the queue missed, and for a
+//! one-shot process whose queue does not outlive it.
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -23,14 +31,13 @@ use crate::Result;
 
 pub use crate::monitor::reorg_ops::DeactivatedHeader;
 
-/// Maximum retry attempts for a deactivated header whose re-prove hit a
-/// transient fault (a network error, a tracker error).
-const MAX_RETRY_COUNT: u32 = 3;
+/// How many times a deactivated header is processed before the original
+/// proof data is retained (the reference's `maxRetries`).
+pub const MAX_RETRY_COUNT: u32 = 3;
 
-/// Delay before processing a deactivated header. Short on purpose: the proof
-/// lag already keeps most orphan proofs out, and a seat with a stale proof
-/// cannot spend until it is re-proved.
-const REORG_PROCESS_DELAY_SECS: i64 = 2 * 60;
+/// How long a deactivated header ages before each processing (the
+/// reference's `agedMsecs`, ten minutes).
+pub const REORG_PROCESS_DELAY_SECS: i64 = 10 * 60;
 
 /// Task that handles blockchain reorganizations.
 pub struct ReorgTask<S, V>
@@ -66,7 +73,7 @@ where
     /// Queue a deactivated header for processing.
     pub async fn queue_deactivated_header(&self, hash: String, height: u32) {
         let header = DeactivatedHeader {
-            hash,
+            hash: hash.clone(),
             height,
             deactivated_at: chrono::Utc::now(),
             retry_count: 0,
@@ -76,7 +83,8 @@ where
         tracing::info!(
             task = "reorg",
             height = height,
-            "Queued deactivated header for reorg processing"
+            hash = %hash,
+            "Queued deactivated header"
         );
     }
 
@@ -115,9 +123,13 @@ where
                 retry_count = header.retry_count,
                 "Processing deactivated header"
             );
-            let tally =
-                reprove_block_hash(self.storage.as_ref(), self.services.as_ref(), &header.hash)
-                    .await;
+            let tally = reprove_block_hash(
+                self.storage.as_ref(),
+                self.services.as_ref(),
+                &header.hash,
+                header.height,
+            )
+            .await;
             tracing::info!(
                 task = "reorg",
                 hash = %header.hash,
@@ -134,15 +146,27 @@ where
             for e in &tally.errors {
                 result.add_error(e.clone());
             }
-            // Only a transient fault or a deferral earns a retry: the header
-            // stays queued so the next pass finishes the work.
-            if (!tally.errors.is_empty() || tally.deferred > 0)
-                && header.retry_count < MAX_RETRY_COUNT
-            {
-                let mut again = header.clone();
-                again.retry_count += 1;
-                again.deactivated_at = now;
-                requeue.push(again);
+            // The reference retries on `unchanged` or `unavailable` (ours:
+            // unchanged, deferred, a transient fault); a replacement or a
+            // demotion is final. After MAX_RETRY_COUNT tries the original
+            // proof data is retained and the header dropped: the review task
+            // is the net.
+            if tally.wants_retry() {
+                if header.retry_count + 1 >= MAX_RETRY_COUNT {
+                    tracing::warn!(
+                        task = "reorg",
+                        hash = %header.hash,
+                        height = header.height,
+                        tries = header.retry_count + 1,
+                        marker = "reorg_max_retries_exceeded",
+                        "maximum retries exceeded, original retained"
+                    );
+                } else {
+                    let mut again = header.clone();
+                    again.retry_count += 1;
+                    again.deactivated_at = now;
+                    requeue.push(again);
+                }
             }
         }
         if !requeue.is_empty() {
@@ -182,21 +206,16 @@ mod tests {
     }
 
     #[test]
-    fn test_max_retry_count() {
+    fn the_reorg_constants_conform_to_the_reference() {
+        // ts-stack TaskReorg: agedMsecs = 10 minutes, maxRetries = 3.
         assert_eq!(MAX_RETRY_COUNT, 3);
+        assert_eq!(REORG_PROCESS_DELAY_SECS, 600);
     }
 
     #[test]
-    fn test_reorg_process_delay_is_short() {
-        // Two minutes: the proof lag keeps orphan proofs out; a seat with a
-        // stale proof cannot spend until it is re-proved.
-        assert_eq!(REORG_PROCESS_DELAY_SECS, 120);
-    }
-
-    #[test]
-    fn test_deactivated_header() {
+    fn test_deactivated_header_creation() {
         let header = DeactivatedHeader {
-            hash: "000000000000000001234567890abcdef".to_string(),
+            hash: "abc123".to_string(),
             height: 800000,
             deactivated_at: chrono::Utc::now(),
             retry_count: 0,

@@ -861,10 +861,12 @@ pub enum ProofIngestOutcome {
     },
     /// The block is newer than the last header the monitor watched stay the
     /// chain tip for a full cycle (the proof LAG, ts-stack's
-    /// `TaskCheckForProofs.maxAcceptableHeight`). Not stored and never an
-    /// attempt: the fetch path re-presents it once the header has aged.
-    /// This is what keeps an orphan's proof out of `proven_txs` (2026-09-07:
-    /// a 34 MB block at 965771 lost to a 58-tx block within seconds).
+    /// `TaskCheckForProofs.maxAcceptableHeight`), or no header has been
+    /// processed yet (`processed_height` 0: the gate is CLOSED). Not stored
+    /// and never an attempt: the fetch path re-presents it once the header
+    /// has aged. This is what keeps an orphan's proof out of `proven_txs`
+    /// (2026-09-07: a 34 MB block at 965771 lost to a 58-tx block within
+    /// seconds).
     DeferredAboveProcessedHeight {
         /// The block the proof claims.
         block_height: u32,
@@ -881,14 +883,32 @@ pub enum ProofIngestOutcome {
 /// One stored proof's anchor: the block a `proven_txs` row claims (M19 R1).
 ///
 /// `block_hash` is empty for rows written by `internalize_action` before
-/// 0.3.65 (the validated bump carried no hash); compare by `merkle_root`
-/// when the hash is empty, by both otherwise.
+/// 0.3.65 (the validated bump carried no hash) and for rows written since
+/// when the header at that height could not be read; compare by
+/// `merkle_root` when the hash is empty, by both otherwise. The review task
+/// backfills an empty hash once the row's root is canonical.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvenTxAnchor {
     pub txid: String,
     pub height: u32,
     pub block_hash: String,
     pub merkle_root: String,
+}
+
+/// The header task's persisted state (the reference's `TaskNewHeader`
+/// fields plus the ring of recent tips): the last observed tip, the header
+/// waiting to survive one cycle, and the last few `(height, hash)` tips in
+/// observation order. Persisted by `StorageSqlx` in `monitor_state`
+/// (migration 004) so a one-shot process conforms across runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HeaderTrackerState {
+    /// The most recent chain tip observed, `(height, hash)`.
+    pub last: Option<(u32, String)>,
+    /// The header queued to be processed once it has stayed the tip for a
+    /// full cycle.
+    pub queued: Option<(u32, String)>,
+    /// The ring of recent tips, oldest first.
+    pub ring: Vec<(u32, String)>,
 }
 
 /// Storage operations used by the monitor daemon.
@@ -900,18 +920,34 @@ pub struct ProvenTxAnchor {
 /// The trait mirrors Go's `MonitoredStorage` interface.
 #[async_trait]
 pub trait MonitorStorage: WalletStorageProvider {
-    /// M19 R1, the proof LAG gate (ts-stack `TaskCheckForProofs.maxAcceptableHeight`):
-    /// the highest block height whose proofs may be stored right now, set by the
-    /// header task once a header has remained the chain tip for a full cycle.
-    /// `0` means no gate (cold start). Backends that never store proofs keep the
-    /// default.
-    fn set_max_acceptable_proof_height(&self, height: u32) {
-        let _ = height;
+    /// The proof LAG gate (ts-stack `TaskCheckForProofs.maxAcceptableHeight`):
+    /// the highest block height whose merkle proofs may be stored right now,
+    /// set by the header task once a header has remained the chain tip for a
+    /// full cycle. `0` is CLOSED: every proof is deferred, never stored and
+    /// never an attempt, exactly as the reference processes nothing while its
+    /// `maxAcceptableHeight` is undefined. `StorageSqlx` persists it as ONE
+    /// row in `monitor_state` (migration 004) that every instance and every
+    /// process opened on the same database reads. The default is for
+    /// backends that never store proofs themselves.
+    async fn max_acceptable_proof_height(&self) -> Result<u32> {
+        Ok(0)
     }
 
-    /// The current proof LAG gate (see `set_max_acceptable_proof_height`).
-    fn max_acceptable_proof_height(&self) -> u32 {
-        0
+    /// Set the proof LAG gate (see `max_acceptable_proof_height`).
+    async fn set_max_acceptable_proof_height(&self, height: u32) -> Result<()> {
+        let _ = height;
+        Ok(())
+    }
+
+    /// The header task's persisted state, if the backend keeps one.
+    async fn load_header_tracker_state(&self) -> Result<Option<HeaderTrackerState>> {
+        Ok(None)
+    }
+
+    /// Persist the header task's state (see `load_header_tracker_state`).
+    async fn save_header_tracker_state(&self, state: &HeaderTrackerState) -> Result<()> {
+        let _ = state;
+        Ok(())
     }
 
     /// Every stored proof anchored to `block_hash` (M19 R1: the reorg task's
@@ -936,16 +972,37 @@ pub trait MonitorStorage: WalletStorageProvider {
         ))
     }
 
-    /// Demote a stored proof the chain no longer confirms (M19 R1, ts-stack
-    /// `reproveHeader` when no replacement is available): delete the
-    /// `proven_txs` row, return the transaction to `unmined`, and reset its
-    /// `proven_tx_reqs` row so `check_for_proofs` re-proves it. A demoted
-    /// transaction stays spendable as an unconfirmed ancestor (a raw-tx BEEF
-    /// leg); nothing is lost, only re-proved. Returns whether a row existed.
+    /// Demote a stored proof the chain positively refutes: REVERT TO THE
+    /// PRE-PROOF STATE with the bytes preserved, in one transaction. The
+    /// `proven_tx_reqs` row goes back to `unmined` (attempts 0, no proof
+    /// link; re-created with the proof row's raw bytes when the purge had
+    /// deleted it), every linked transaction goes back to `unproven` (still
+    /// spendable, still listed), the terminal `mined` broadcast memory is
+    /// forgotten, and the `proven_txs` row is deleted last. Nothing is lost,
+    /// only re-proved by `check_for_proofs`. Returns whether a row existed.
+    ///
+    /// The reference never demotes (a stale proof is retained and retried);
+    /// ours demotes only on positive network evidence (see
+    /// `docs/REORG-DIVERGENCES.md`).
     async fn demote_stale_proof(&self, txid: &str) -> Result<bool> {
         let _ = txid;
         Err(Error::StorageError(
             "demote_stale_proof is not supported by this storage".to_string(),
+        ))
+    }
+
+    /// Fill an EMPTY stored `block_hash` for `txid`'s proof (a row written
+    /// without a header in hand); the review task calls it once the row's
+    /// merkle root equals the canonical root at its height. Returns whether
+    /// a row was filled.
+    async fn set_proven_tx_block_hash_if_empty(
+        &self,
+        txid: &str,
+        block_hash: &str,
+    ) -> Result<bool> {
+        let _ = (txid, block_hash);
+        Err(Error::StorageError(
+            "set_proven_tx_block_hash_if_empty is not supported by this storage".to_string(),
         ))
     }
 

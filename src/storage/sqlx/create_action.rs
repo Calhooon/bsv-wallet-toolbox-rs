@@ -16,7 +16,9 @@ use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
 use std::collections::HashSet;
 
-use super::storage_sqlx::demote_stale_proof_on;
+use super::storage_sqlx::{
+    bump_leaf_index, store_validated_proof_on, StoreProofOutcome, ValidatedProofRow,
+};
 use super::StorageSqlx;
 
 // =============================================================================
@@ -127,7 +129,7 @@ struct GenerateChangeResult {
 
 /// An allocated change input.
 #[derive(Debug, Clone)]
-struct AllocatedChangeInput {
+pub(super) struct AllocatedChangeInput {
     #[allow(dead_code)]
     output_id: i64,
     satoshis: u64,
@@ -1217,7 +1219,7 @@ async fn find_or_insert_tx_label_map(
 }
 
 /// Finds or creates an output basket.
-async fn find_or_insert_output_basket(
+pub(super) async fn find_or_insert_output_basket(
     storage: &StorageSqlx,
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -1852,7 +1854,7 @@ async fn release_change_input(conn: &mut SqliteConnection, output_id: i64) -> Re
 }
 
 /// Allocates a change input from the default basket.
-async fn allocate_change_input(
+pub(super) async fn allocate_change_input(
     conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,
@@ -2187,9 +2189,11 @@ async fn local_record_age_secs(conn: &mut SqliteConnection, txid: &str) -> Optio
 /// an open SQLite write transaction, so a second pooled connection would block
 /// on its own database lock until `busy_timeout` expired.
 /// [`StorageSqlx::ingest_merkle_proof`] does exactly this over the pool and is
-/// the path every other proof source uses; this is its connection-scoped twin,
-/// minus the broadcast-memory note (another pooled write) which the ordinary
-/// monitor path records anyway.
+/// the path every other proof source uses; this is its connection-scoped twin
+/// through the SAME store funnel (`store_validated_proof_on`: the proof LAG
+/// gate read on this connection, replace-on-differ, the no-raw guard). A proof
+/// the gate DEFERS (the header has not aged one cycle) is not stored and the
+/// walk continues raw, exactly as before the fetch existed.
 ///
 /// Returns the BUMP bytes only when the proof validated and was stored.
 async fn fetch_and_store_merkle_path(
@@ -2249,48 +2253,55 @@ async fn fetch_and_store_merkle_path(
         }
     }
 
-    let now = Utc::now();
-    if let Err(e) = sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
-        VALUES (?, ?, 0, ?, ?, ?,
-            COALESCE(
-                (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
-                (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
-            ),
-            ?, ?)
-        "#,
+    let stored = match store_validated_proof_on(
+        &mut *conn,
+        &ValidatedProofRow {
+            txid,
+            block_height: header.height,
+            block_hash: &header.hash,
+            merkle_root: &header.merkle_root,
+            merkle_path: &bytes,
+            idx: bump_leaf_index(&bump, txid),
+            raw_tx: None,
+        },
     )
-    .bind(txid)
-    .bind(header.height as i64)
-    .bind(&header.hash)
-    .bind(&header.merkle_root)
-    .bind(&bytes)
-    .bind(txid)
-    .bind(txid)
-    .bind(now)
-    .bind(now)
-    .execute(&mut *conn)
     .await
     {
-        tracing::debug!(txid = %txid, error = %e, "could not record proven tx");
-        return None;
-    }
-
-    let proven_tx_id: Option<(i64,)> =
-        sqlx::query_as("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *conn)
-            .await
-            .ok()
-            .flatten();
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::debug!(txid = %txid, error = %e, "could not record proven tx");
+            return None;
+        }
+    };
+    let proven_tx_id = match stored {
+        StoreProofOutcome::Stored { proven_tx_id, .. }
+        | StoreProofOutcome::Unchanged { proven_tx_id } => proven_tx_id,
+        StoreProofOutcome::Deferred {
+            block_height,
+            processed_height,
+        } => {
+            tracing::debug!(
+                txid = %txid,
+                block_height,
+                processed_height,
+                marker = "proof_deferred_above_processed_height",
+                "beef walk: the fetched proof is above the proof gate; not stored, the raw-tx leg is walked"
+            );
+            return None;
+        }
+        StoreProofOutcome::NoRawTx => {
+            tracing::debug!(txid = %txid, "beef walk: no raw bytes in storage for the proof; not stored");
+            return None;
+        }
+    };
+    let now = Utc::now();
 
     // A proven transaction is completed by definition. Same two updates
     // ingest_merkle_proof makes, so a later monitor pass finds nothing to do.
     let _ = sqlx::query(
         "UPDATE proven_tx_reqs SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
     )
-    .bind(proven_tx_id.map(|r| r.0))
+    .bind(proven_tx_id)
     .bind(now)
     .bind(txid)
     .execute(&mut *conn)
@@ -2299,7 +2310,7 @@ async fn fetch_and_store_merkle_path(
     let _ = sqlx::query(
         "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
     )
-    .bind(proven_tx_id.map(|r| r.0))
+    .bind(proven_tx_id)
     .bind(now)
     .bind(txid)
     .execute(&mut *conn)
@@ -2326,12 +2337,14 @@ async fn fetch_and_store_merkle_path(
 ///
 /// This is the shared core used by both `build_input_beef` (create_action) and
 /// `rebuild_beef_for_broadcast` (send_waiting_transactions).
-/// M19 R1: does the chain tracker REFUTE a stored bump for `txid`?
+/// Does the chain tracker DEFINITELY refute a stored bump for `txid`?
 ///
-/// Only a definite `false` from the tracker refutes; no tracker, a tracker
-/// fault, or a bump whose root cannot be computed keeps today's behavior
-/// (the bump is attached and the final BEEF validation decides), so an
-/// unknown never reads as a stale proof.
+/// Only `Ok(false)` from the tracker refutes; no tracker, a tracker fault
+/// (`Err`, since 0.3.66 what the fallback tracker answers when both header
+/// sources fail), or a bump whose root cannot be computed keeps the bump
+/// attached and lets the final BEEF verification decide, as before the
+/// reorg work. An unknown never reads as a stale proof, and the walk never
+/// mutates storage on this answer.
 pub(super) async fn stored_bump_refuted(
     chain_tracker: Option<&dyn ChainTracker>,
     merkle_path: &MerklePath,
@@ -2500,14 +2513,17 @@ pub(super) async fn beef_bfs_walk(
             let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {
                 match MerklePath::from_binary(merkle_path_bytes) {
                     Ok(merkle_path) => {
-                        // M19 R1 (ts-stack `getBeefForTransaction` with
-                        // `skipInvalidProofs`: "proof is currently invalid,
+                        // ts-stack `getBeefForTransaction` with
+                        // `skipInvalidProofs` ("proof is currently invalid,
                         // recurse deeper via the rawTx path"): a STORED bump the
-                        // chain tracker now refutes (a reorg moved the block) is
-                        // not attached. The transaction rides as a raw-tx leg,
-                        // its parents are walked one level deeper, and the stale
-                        // row is demoted on this connection so `check_for_proofs`
-                        // re-proves it. Before this, every spend touching such a
+                        // chain tracker DEFINITELY refutes (a reorg moved the
+                        // block) is not attached. The transaction rides as a
+                        // raw-tx leg and its parents are walked one level
+                        // deeper. The walk never mutates storage: a tracker
+                        // fault keeps the bump (the final BEEF verification
+                        // decides, as before), and the stale row is demoted
+                        // only by the reorg or review task on positive network
+                        // evidence. Before this, every spend touching such a
                         // row was refused with "Invalid merkle root" (loop 8,
                         // 2026-09-07, 28 seats).
                         if stored_bump_refuted(chain_tracker, &merkle_path, &txid).await {
@@ -2517,13 +2533,6 @@ pub(super) async fn beef_bfs_walk(
                                 marker = "stale_proof_skipped",
                                 "beef walk: the stored merkle proof no longer matches the chain; walking the raw-tx leg instead"
                             );
-                            if let Err(e) = demote_stale_proof_on(&mut *conn, &txid).await {
-                                tracing::warn!(
-                                    txid = %txid,
-                                    error = %e,
-                                    "beef walk: could not demote the stale proof (the walk continues without it)"
-                                );
-                            }
                             None
                         } else {
                             Some(beef.merge_bump(merkle_path))
@@ -7633,6 +7642,12 @@ mod tests {
         seed_unproven_tx(&storage, &chain[1].1, &chain[1].0, Some(&stored_bytes)).await;
         seed_unproven_tx(&storage, &chain[2].1, &chain[2].0, None).await;
         backdate_tx(&storage, &chain[1].1, 30).await;
+        // The proof LAG gate is closed on a fresh database; this test pins
+        // the fetch-and-store, so the gate is open (the deferral is pinned
+        // in `reorg_tests`).
+        crate::storage::MonitorStorage::set_max_acceptable_proof_height(&storage, u32::MAX)
+            .await
+            .unwrap();
 
         let bump = synth_bump(965_300, &chain[1].1);
         let services = MockWalletServices::builder()

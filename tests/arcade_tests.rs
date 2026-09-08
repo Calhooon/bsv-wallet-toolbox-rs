@@ -617,6 +617,11 @@ mod proof_ingestion {
             .await
             .expect("migrate");
         storage.make_available().await.expect("make_available");
+        // The proof LAG gate is closed on a fresh database; these tests pin
+        // the ingest itself, so the gate is open here.
+        bsv_wallet_toolbox_rs::MonitorStorage::set_max_acceptable_proof_height(&storage, u32::MAX)
+            .await
+            .expect("open the proof gate");
         storage
     }
 
@@ -1212,6 +1217,11 @@ mod triage_inline_proofs {
             .await
             .expect("migrate");
         storage.make_available().await.expect("make_available");
+        // The proof LAG gate is closed on a fresh database; these tests pin
+        // the triage's inline ingest, so the gate is open here.
+        bsv_wallet_toolbox_rs::MonitorStorage::set_max_acceptable_proof_height(&storage, u32::MAX)
+            .await
+            .expect("open the proof gate");
         storage
     }
 

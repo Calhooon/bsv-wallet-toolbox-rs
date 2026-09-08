@@ -1251,6 +1251,82 @@ impl MonitorStorage for WalletStorageManager {
             .await
     }
 
+    // The reorg-resilience surface (0.3.66) forwards to the active storage,
+    // so a monitor over the manager drives the same persisted proof gate,
+    // tracker state and anchors the active storage's own funnel reads.
+    async fn max_acceptable_proof_height(&self) -> Result<u32> {
+        self.run_as_writer(|active| async move { active.max_acceptable_proof_height().await })
+            .await
+    }
+
+    async fn set_max_acceptable_proof_height(&self, height: u32) -> Result<()> {
+        self.run_as_writer(
+            |active| async move { active.set_max_acceptable_proof_height(height).await },
+        )
+        .await
+    }
+
+    async fn load_header_tracker_state(
+        &self,
+    ) -> Result<Option<crate::storage::HeaderTrackerState>> {
+        self.run_as_writer(|active| async move { active.load_header_tracker_state().await })
+            .await
+    }
+
+    async fn save_header_tracker_state(
+        &self,
+        state: &crate::storage::HeaderTrackerState,
+    ) -> Result<()> {
+        let state = state.clone();
+        self.run_as_writer(|active| async move { active.save_header_tracker_state(&state).await })
+            .await
+    }
+
+    async fn find_proven_txs_by_block_hash(
+        &self,
+        block_hash: &str,
+    ) -> Result<Vec<crate::storage::ProvenTxAnchor>> {
+        let block_hash = block_hash.to_string();
+        self.run_as_writer(|active| async move {
+            active.find_proven_txs_by_block_hash(&block_hash).await
+        })
+        .await
+    }
+
+    async fn find_proven_txs_in_heights(
+        &self,
+        min_height: u32,
+        max_height: u32,
+    ) -> Result<Vec<crate::storage::ProvenTxAnchor>> {
+        self.run_as_writer(|active| async move {
+            active
+                .find_proven_txs_in_heights(min_height, max_height)
+                .await
+        })
+        .await
+    }
+
+    async fn demote_stale_proof(&self, txid: &str) -> Result<bool> {
+        let txid = txid.to_string();
+        self.run_as_writer(|active| async move { active.demote_stale_proof(&txid).await })
+            .await
+    }
+
+    async fn set_proven_tx_block_hash_if_empty(
+        &self,
+        txid: &str,
+        block_hash: &str,
+    ) -> Result<bool> {
+        let txid = txid.to_string();
+        let block_hash = block_hash.to_string();
+        self.run_as_writer(|active| async move {
+            active
+                .set_proven_tx_block_hash_if_empty(&txid, &block_hash)
+                .await
+        })
+        .await
+    }
+
     async fn send_waiting_transactions(
         &self,
         min_transaction_age: Duration,

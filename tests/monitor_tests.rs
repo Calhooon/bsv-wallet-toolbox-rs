@@ -35,6 +35,13 @@ mod monitor_integration {
             .await
             .expect("migrate");
         storage.make_available().await.expect("make_available");
+        // The proof LAG gate is closed on a fresh database (a single
+        // `run_once` can then store no proof: the gate opens on the second
+        // run). These tests pin the proof pipeline itself, so the gate is
+        // open here; the gate is pinned in the toolbox's own tests.
+        bsv_wallet_toolbox_rs::MonitorStorage::set_max_acceptable_proof_height(&storage, u32::MAX)
+            .await
+            .expect("open the proof gate");
 
         let services = Arc::new(mock);
         // set_services expects Arc<dyn WalletServices>
@@ -398,6 +405,9 @@ mod monitor_integration {
             .await
             .expect("migrate");
         storage.make_available().await.expect("make_available");
+        bsv_wallet_toolbox_rs::MonitorStorage::set_max_acceptable_proof_height(&storage, u32::MAX)
+            .await
+            .expect("open the proof gate");
         let storage = Arc::new(storage);
         let services = Arc::new(mock);
 

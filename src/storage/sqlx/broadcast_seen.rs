@@ -121,6 +121,22 @@ pub(crate) async fn record_broadcast_status_on(
     Ok(())
 }
 
+/// Forget the terminal `mined` rows of `txid`, on an open connection: THE
+/// ONE SANCTIONED DOWNGRADE of the ladder ([`ladder_step`] never lowers a
+/// positive and treats `mined` as terminal). It exists for exactly one
+/// caller, the stale-proof demotion in `storage_sqlx.rs`: a proof the chain
+/// positively refutes was never a `mined` fact, and a `mined` row left
+/// behind would make every reduced send omit the transaction as txid-only
+/// while it is unproven again. Rows of other statuses stay. Returns the
+/// number of rows forgotten.
+pub(crate) async fn forget_mined_on(conn: &mut SqliteConnection, txid: &str) -> Result<u64> {
+    let done = sqlx::query("DELETE FROM broadcast_seen WHERE txid = ? AND status = 'mined'")
+        .bind(txid)
+        .execute(&mut *conn)
+        .await?;
+    Ok(done.rows_affected())
+}
+
 /// [`BroadcastMemory`] over a `StorageSqlx` pool.
 ///
 /// The schema is ensured lazily, once per instance, before the first read
@@ -483,7 +499,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 version,
-                super::super::locked_inputs::MIGRATION_003_LOCKED_INPUT_CHECKS_NAME
+                super::super::monitor_state::MIGRATION_004_MONITOR_STATE_NAME
             );
             sqlx::query("DROP TABLE broadcast_seen")
                 .execute(storage.pool())
@@ -525,7 +541,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             version,
-            super::super::locked_inputs::MIGRATION_003_LOCKED_INPUT_CHECKS_NAME
+            super::super::monitor_state::MIGRATION_004_MONITOR_STATE_NAME
         );
         storage.pool().close().await;
     }

@@ -37,6 +37,7 @@ mod broadcast_seen;
 mod create_action;
 mod internalize_action;
 mod locked_inputs;
+mod monitor_state;
 mod poisoned_chain;
 mod process_action;
 #[cfg(test)]
@@ -55,6 +56,10 @@ pub use locked_inputs::{
     locked_input_backoff_minutes, LockedInputCheck, LockedInputReport, LockedInputVerdict,
     LOCKED_INPUT_BACKOFF_CAP_MINUTES, MIGRATION_003_LOCKED_INPUT_CHECKS_NAME,
     MIGRATION_003_LOCKED_INPUT_CHECKS_SQL,
+};
+pub use monitor_state::{
+    MIGRATION_004_MONITOR_STATE_NAME, MIGRATION_004_MONITOR_STATE_SQL,
+    MONITOR_STATE_KEY_HEADER_TRACKER, MONITOR_STATE_KEY_PROOF_GATE,
 };
 pub use poisoned_chain::{
     chain_knowledge, utxo_verdict, ChainKnowledge, InternalizedPhantom, PoisonOutcome,

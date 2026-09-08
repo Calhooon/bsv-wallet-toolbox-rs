@@ -22,6 +22,7 @@ use sqlx::{Row, SqliteConnection};
 use std::collections::{HashMap, HashSet};
 
 use super::beef_verification::verify_beef_merkle_proofs;
+use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
 use super::StorageSqlx;
 
 // =============================================================================
@@ -289,11 +290,10 @@ pub async fn internalize_action_internal(
     // and never creating a req, so the tx was unreachable by every
     // proof-linking path forever (Calgooon/bsv-wallet-toolbox-rs#8).
     let has_proof = beef.find_bump(&txid).is_some();
-    let status = if validated_bump.is_some() {
-        "completed"
-    } else {
-        "unproven"
-    };
+    // Whether a `proven_txs` row was actually WRITTEN for this transaction
+    // (a validated proof the LAG gate defers writes none): the status and
+    // the request below follow the row, never the claim.
+    let mut proof_stored = false;
 
     let transaction_id = if is_merge {
         let etx = existing_tx
@@ -340,9 +340,12 @@ pub async fn internalize_action_internal(
         // SendWaiting; 'unproven'/'completed' by CheckForProofs) — this
         // mirrors the TS `wasNoSend` gate exactly.
         if etx.status == TransactionStatus::NoSend {
-            if let Some(ref vb) = validated_bump {
-                let proven_tx_id = insert_proven_tx_from_bump(&mut tx, &txid, &raw_tx, vb).await?;
-
+            let stored_proof = match validated_bump {
+                Some(ref vb) => insert_proven_tx_from_bump(&mut tx, &txid, &raw_tx, vb).await?,
+                None => None,
+            };
+            proof_stored = stored_proof.is_some();
+            if let Some(proven_tx_id) = stored_proof {
                 sqlx::query(
                     "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE transaction_id = ?",
                 )
@@ -407,10 +410,18 @@ pub async fn internalize_action_internal(
         // `findOrInsertProvenTxFromBump` runs before
         // `findOrInsertTargetTransaction`, which then carries `provenTxId`.
         // Same SQL transaction, so 'completed' and the link commit together
-        // (no window where a 'completed' tx has a NULL proven_tx_id).
+        // (no window where a 'completed' tx has a NULL proven_tx_id). A
+        // validated proof the LAG gate defers stores no row: the transaction
+        // is then born 'unproven' with an 'unmined' request (below).
         let new_proven_tx_id = match validated_bump {
-            Some(ref vb) => Some(insert_proven_tx_from_bump(&mut tx, &txid, &raw_tx, vb).await?),
+            Some(ref vb) => insert_proven_tx_from_bump(&mut tx, &txid, &raw_tx, vb).await?,
             None => None,
+        };
+        proof_stored = new_proven_tx_id.is_some();
+        let status = if proof_stored {
+            "completed"
+        } else {
+            "unproven"
         };
 
         let result = sqlx::query(
@@ -616,8 +627,9 @@ pub async fn internalize_action_internal(
     // output BEEFs for spending. This is especially important for unconfirmed
     // transactions where we need the ancestor chain.
     //
-    // The gate is `validated_bump.is_none()`, not `!has_proof`: a BEEF that
-    // merely CLAIMS a proof we could not confirm must still get a req, or
+    // The gate is `!proof_stored`, not `!has_proof`: a BEEF that merely
+    // CLAIMS a proof we could not confirm (or one the proof LAG gate
+    // deferred) must still get a req, or
     // nothing will ever link its `proven_tx_id`. `transactions.proven_tx_id`
     // is written by exactly one code path — `ingest_merkle_proof` — and that
     // path is only ever reached over `proven_tx_reqs` rows, so a transaction
@@ -630,7 +642,7 @@ pub async fn internalize_action_internal(
     //   mined, so do NOT re-broadcast; let CheckForProofs chain-verify it and
     //   fetch a proof from a service (a bogus BUMP simply fails triage there).
     let mut new_req_created = false;
-    if validated_bump.is_none() && !is_merge {
+    if !proof_stored && !is_merge {
         let req_status = if has_proof { "unmined" } else { "unsent" };
         let created = create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, req_status).await?;
         // Only an 'unsent' req is ours to broadcast.
@@ -995,6 +1007,26 @@ struct ValidatedBump {
     idx: i64,
     merkle_root: String,
     merkle_path: Vec<u8>,
+    /// The block hash at `height` from the header service when it could be
+    /// read; empty otherwise (the review task backfills it once the root is
+    /// canonical).
+    block_hash: String,
+}
+
+/// The block hash at `height` from the storage's services (chaintracks
+/// first), or empty when no services are wired or the header cannot be
+/// read. Best effort: an internalize never fails on it.
+async fn block_hash_at_height(storage: &StorageSqlx, height: u32) -> String {
+    let Ok(services) = storage.get_services() else {
+        return String::new();
+    };
+    match services.get_header_for_height(height).await {
+        Ok(bytes) => crate::monitor::reorg_ops::block_hash_of_header(&bytes).unwrap_or_default(),
+        Err(e) => {
+            tracing::debug!(height, error = %e, "internalize: header unreadable; the proof row is stored without a block hash");
+            String::new()
+        }
+    }
 }
 
 /// Lifts the BUMP proving `txid` out of a BEEF, if it carries one.
@@ -1067,12 +1099,16 @@ async fn validate_bump_claim(
         .is_valid_root_for_height(&claim.computed_root, claim.height)
         .await
     {
-        Ok(true) => Some(ValidatedBump {
-            height: claim.height,
-            idx: claim.idx,
-            merkle_root: claim.computed_root,
-            merkle_path: claim.merkle_path,
-        }),
+        Ok(true) => {
+            let block_hash = block_hash_at_height(storage, claim.height).await;
+            Some(ValidatedBump {
+                height: claim.height,
+                idx: claim.idx,
+                merkle_root: claim.computed_root,
+                merkle_path: claim.merkle_path,
+                block_hash,
+            })
+        }
         Ok(false) => {
             tracing::warn!(
                 txid = %txid,
@@ -1096,101 +1132,68 @@ async fn validate_bump_claim(
     }
 }
 
-/// Inserts the `proven_txs` row for a ChainTracker-validated BUMP and returns
-/// its `proven_tx_id`.
+/// Stores the `proven_txs` row for a ChainTracker-validated BUMP through the
+/// ONE proof-store funnel (`store_validated_proof_on`) and returns its
+/// `proven_tx_id`, or `None` when the proof was DEFERRED above the proof LAG
+/// gate (the block's header has not stayed the chain tip for a full cycle,
+/// or no header has been processed yet). The caller then lands the
+/// transaction exactly where an unconfirmable BUMP lands it: `unproven` with
+/// an `unmined` request carrying its bytes, re-proved by `check_for_proofs`
+/// once the header has aged. The payment is never rejected.
 ///
 /// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:462-489
-/// (`findOrInsertProvenTxFromBump`) — find-or-insert keyed on txid, storing
-/// height, leaf index, the BUMP binary, the raw tx and the merkle root.
+/// (`findOrInsertProvenTxFromBump`), find-or-insert keyed on txid, with the
+/// replacement the reference performs on a reorg ("in the event of a reorg,
+/// we CAN assume that the proof contained in this beef should replace the
+/// proof in storage"): a stored anchor for a DIFFERENT block is replaced by
+/// this validated one. The block hash is the header service's when it could
+/// be read, else empty (the review task backfills it).
 ///
 /// Runs on the caller's connection so it commits atomically with the
-/// transaction row that links to it. `block_hash` is left empty: the internalize
-/// path has no block header in hand, and `ReviewStatus`/`Reorg` refresh it —
-/// the same tolerance `synchronize_transaction_statuses` already has when a
-/// proof arrives without a header (`unwrap_or_default`).
+/// transaction row that links to it.
 async fn insert_proven_tx_from_bump(
     conn: &mut SqliteConnection,
     txid: &str,
     raw_tx: &[u8],
     vb: &ValidatedBump,
-) -> Result<i64> {
-    let now = Utc::now();
-
-    // M19 R1 (ts-stack `internalizeAction`: "in the event of a reorg, we CAN
-    // assume that the proof contained in this beef should replace the proof
-    // in storage"): the bump was validated against the chain tracker, so a
-    // stored anchor for a DIFFERENT block is stale and this one replaces it.
-    let existing: Option<(i64, String)> =
-        sqlx::query_as("SELECT height, merkle_root FROM proven_txs WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *conn)
-            .await?;
-    match existing {
-        Some((height, root))
-            if height == vb.height as i64 && root.eq_ignore_ascii_case(&vb.merkle_root) => {}
-        Some((height, root)) => {
+) -> Result<Option<i64>> {
+    match store_validated_proof_on(
+        conn,
+        &ValidatedProofRow {
+            txid,
+            block_height: vb.height,
+            block_hash: &vb.block_hash,
+            merkle_root: &vb.merkle_root,
+            merkle_path: &vb.merkle_path,
+            idx: vb.idx,
+            raw_tx: Some(raw_tx),
+        },
+    )
+    .await?
+    {
+        StoreProofOutcome::Stored { proven_tx_id, .. }
+        | StoreProofOutcome::Unchanged { proven_tx_id } => Ok(Some(proven_tx_id)),
+        StoreProofOutcome::Deferred {
+            block_height,
+            processed_height,
+        } => {
             tracing::info!(
                 txid = %txid,
-                stored_height = height,
-                stored_merkle_root = %root,
-                height = vb.height,
-                merkle_root = %vb.merkle_root,
-                marker = "proof_replaced",
-                "internalize: a validated bump for a different block replaces the stored proof (reorg re-anchor)"
+                block_height,
+                processed_height,
+                marker = "proof_deferred_above_processed_height",
+                "internalize: the BEEF's proof is above the proof gate; the transaction is tracked as unproven until the header has aged"
             );
-            sqlx::query(
-                "UPDATE proven_txs SET height = ?, idx = ?, block_hash = '', merkle_root = ?, merkle_path = ?, updated_at = ? WHERE txid = ?",
-            )
-            .bind(vb.height as i64)
-            .bind(vb.idx)
-            .bind(&vb.merkle_root)
-            .bind(&vb.merkle_path)
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *conn)
-            .await?;
+            Ok(None)
         }
-        None => {
-            sqlx::query(
-                r#"
-                INSERT OR IGNORE INTO proven_txs
-                    (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
-                VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)
-                "#,
-            )
-            .bind(txid)
-            .bind(vb.height as i64)
-            .bind(vb.idx)
-            .bind(&vb.merkle_root)
-            .bind(&vb.merkle_path)
-            .bind(raw_tx)
-            .bind(now)
-            .bind(now)
-            .execute(&mut *conn)
-            .await?;
+        StoreProofOutcome::NoRawTx => {
+            tracing::warn!(
+                txid = %txid,
+                "internalize: the proof row could not be written; the transaction is tracked as unproven"
+            );
+            Ok(None)
         }
     }
-
-    // Mined: every provider has it. Remember it for reduced sends; never a
-    // reason to fail the internalize.
-    if let Err(e) = super::broadcast_seen::record_broadcast_status_on(
-        conn,
-        txid,
-        crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
-        crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
-    )
-    .await
-    {
-        tracing::debug!(txid = %txid, error = %e, "broadcast_seen: mined record skipped");
-    }
-
-    let proven_tx_id: i64 =
-        sqlx::query_scalar("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
-            .bind(txid)
-            .fetch_one(&mut *conn)
-            .await?;
-
-    Ok(proven_tx_id)
 }
 
 /// Gets known txids for a user (for TrustKnown BEEF verification mode).
@@ -1646,6 +1649,14 @@ mod tests {
             .await
             .unwrap();
         storage.make_available().await.unwrap();
+        // The proof LAG gate is CLOSED on a fresh database (nothing is
+        // stored before a header has aged a cycle); these tests exercise the
+        // storage of a validated proof, so the gate is open here. The
+        // deferral itself is pinned by
+        // `a_validated_bump_the_gate_defers_lands_unproven_with_an_unmined_request`.
+        crate::storage::MonitorStorage::set_max_acceptable_proof_height(&storage, u32::MAX)
+            .await
+            .unwrap();
         storage
     }
 
@@ -2670,6 +2681,58 @@ mod tests {
         assert_eq!(req_status(&storage, &txid).await, None);
 
         assert_completed_implies_proven(&storage).await;
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+    }
+
+    /// F8 of the reorg review: a VALIDATED BUMP the proof LAG gate defers
+    /// (the block is newer than the last processed header, or no header has
+    /// been processed yet) stores no proof row and lands the transaction
+    /// exactly where an unconfirmable BUMP lands it: 'unproven', reachable,
+    /// with an 'unmined' request carrying its bytes. The payment is never
+    /// rejected, and the coin is selectable.
+    #[tokio::test]
+    async fn a_validated_bump_the_gate_defers_lands_unproven_with_an_unmined_request() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (beef_bytes, txid, satoshis, _bump, tracker) = create_proven_atomic_beef();
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+        // The gate sits one block below the proof's height.
+        crate::storage::MonitorStorage::set_max_acceptable_proof_height(
+            &storage,
+            PROVEN_HEIGHT - 1,
+        )
+        .await
+        .unwrap();
+
+        let args = wallet_payment_args(beef_bytes, "proof above the gate");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+        assert!(result.base.accepted, "never rejected");
+        assert_eq!(result.satoshis, satoshis as i64);
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert_eq!(tx_proven_tx_id(&storage, &txid).await, None);
+        assert!(
+            proven_tx_row(&storage, &txid).await.is_none(),
+            "a deferred proof is never stored"
+        );
+        assert_eq!(
+            req_status(&storage, &txid).await.as_deref(),
+            Some("unmined"),
+            "re-proved by check_for_proofs once the header has aged"
+        );
+        let raw_tx: Vec<u8> =
+            sqlx::query_scalar("SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert!(!raw_tx.is_empty(), "the request carries the bytes");
+        assert_completed_implies_proven(&storage).await;
+        assert_unproven_is_reachable(&storage).await;
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
     }
 

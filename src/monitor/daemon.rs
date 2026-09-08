@@ -16,8 +16,8 @@ use super::config::{MonitorOptions, TaskConfig};
 use super::tasks::{
     ArcadeEventsTask, CheckForProofsTask, CheckNoSendsTask, ClockTask, CompactBeefTask,
     FailAbandonedTask, MonitorCallHistoryTask, MonitorTask, NewHeaderTask, PurgeTask, ReorgTask,
-    ReviewProvenTxsTask, ReviewStatusTask, SendWaitingTask, SyncWhenIdleTask, TaskResult,
-    TaskType, UnfailTask,
+    ReviewProvenTxsTask, ReviewStatusTask, SendWaitingTask, SyncWhenIdleTask, TaskResult, TaskType,
+    UnfailTask,
 };
 
 /// Generate random bytes using the `rand` crate's thread-local CSPRNG.
@@ -188,21 +188,16 @@ where
 
         // Start new_header task and extract its trigger flag for check_for_proofs wiring.
         // TS pattern: NewHeaderTask sets checkNow flag → CheckForProofsTask reads it.
-        // M19 R1: the header task, the reorg task and the review task share
-        // one deactivated-header queue and one processed height; the header
-        // task publishes the processed height into the storage's proof gate.
+        // The header task and the reorg task share one deactivated-header
+        // queue; the header task raises the storage's PERSISTED proof gate
+        // (migration 004), which the review task and every proof store read.
         let reorg_queue = crate::monitor::reorg_ops::new_reorg_queue();
-        let processed_height = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let new_header_task = if self.options.tasks.new_header.enabled {
-            let task = Arc::new(NewHeaderTask::with_shared(
+            let task = Arc::new(NewHeaderTask::with_queue(
+                self.storage.clone(),
                 self.services.clone(),
                 reorg_queue.clone(),
-                processed_height.clone(),
             ));
-            {
-                let storage = self.storage.clone();
-                task.set_gate_sink(Arc::new(move |h| storage.set_max_acceptable_proof_height(h)));
-            }
             let handle = self.spawn_task(
                 TaskType::NewHeader,
                 task.clone(),
@@ -226,13 +221,9 @@ where
             handles.insert(TaskType::Reorg, handle);
         }
 
-        // Start the review_proven_txs task (the lagged audit, M19 R1).
+        // Start the review_proven_txs task (the lagged audit).
         if self.options.tasks.review_proven_txs.enabled {
-            let task = ReviewProvenTxsTask::new(
-                self.storage.clone(),
-                self.services.clone(),
-                processed_height.clone(),
-            );
+            let task = ReviewProvenTxsTask::new(self.storage.clone(), self.services.clone());
             let handle = self.spawn_task(
                 TaskType::ReviewProvenTxs,
                 Arc::new(task),
@@ -441,18 +432,17 @@ where
             results.insert(TaskType::Clock, result);
         }
 
+        // One-shot: the header tracker's state and the proof gate are
+        // persisted, so two `run_once` calls behave like two daemon cycles
+        // (the gate opens on the SECOND run). The deactivated-header queue
+        // is per process; the review task below is the net for it.
         let reorg_queue = crate::monitor::reorg_ops::new_reorg_queue();
-        let processed_height = Arc::new(std::sync::atomic::AtomicU32::new(0));
         if self.options.tasks.new_header.enabled {
-            let task = NewHeaderTask::with_shared(
+            let task = NewHeaderTask::with_queue(
+                self.storage.clone(),
                 self.services.clone(),
                 reorg_queue.clone(),
-                processed_height.clone(),
             );
-            {
-                let storage = self.storage.clone();
-                task.set_gate_sink(Arc::new(move |h| storage.set_max_acceptable_proof_height(h)));
-            }
             let result = task.run().await?;
             results.insert(TaskType::NewHeader, result);
         }
@@ -468,11 +458,7 @@ where
         }
 
         if self.options.tasks.review_proven_txs.enabled {
-            let task = ReviewProvenTxsTask::new(
-                self.storage.clone(),
-                self.services.clone(),
-                processed_height.clone(),
-            );
+            let task = ReviewProvenTxsTask::new(self.storage.clone(), self.services.clone());
             let result = task.run().await?;
             results.insert(TaskType::ReviewProvenTxs, result);
         }
