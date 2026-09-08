@@ -176,7 +176,7 @@ impl Default for TasksConfig {
             review_proven_txs: TaskConfig {
                 enabled: true,
                 interval: Duration::from_secs(10 * 60), // 10 minutes
-                start_immediately: true, // a restarted daemon heals first
+                start_immediately: true,                // a restarted daemon heals first
             },
             purge: TaskConfig {
                 enabled: true,
