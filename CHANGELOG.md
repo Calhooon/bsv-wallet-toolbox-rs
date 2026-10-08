@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.1] - 2026-10-08
+
+### Fixed
+
+- One broadcaster's refusal is final only when no other source holds the transaction. An Arcade `REJECTED` (or conflict) pushed on the status stream now goes through `MonitorStorage::mark_transaction_rejected_by`: when another broadcaster accepted the transaction (a bare acceptance does not overrule a conflict), or the network holds it by a status source or another broadcaster's own status read, nothing is failed and the transaction stays for the proof task. The 2026-10-07 oversize post (Arcade 460 "missing input source data", GorillaPool ARC accepted, mined at 970030) was failed with its 47,377-sat change hidden.
+- The auto-unfail canary asks every source: the status sources, then each configured broadcaster's own status read (`WalletServices::get_broadcaster_statuses`, new, default empty) and a merkle path the chain tracker accepted, not only the source that refused the transaction.
+
+### Tests
+
+- Pinned: `create_action` marks a caller-named input that storage holds (a pf head in its basket) `spent_by` with the wallet's change, and `list_actions` lists both inputs from storage. This was already the behavior; a caller input storage does not hold (known only from `inputBEEF`) has no row to mark, as in the TypeScript toolbox.
+
+(Calgooon/zanaadu-v2#357.)
+
 ## [0.4.0] - 2026-10-08
 
 ### Changed, breaking
