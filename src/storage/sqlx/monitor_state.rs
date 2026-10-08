@@ -32,6 +32,10 @@ pub const MIGRATION_004_MONITOR_STATE_NAME: &str = "004_monitor_state";
 /// The proof LAG gate's row key.
 pub const MONITOR_STATE_KEY_PROOF_GATE: &str = "max_acceptable_proof_height";
 
+/// The highest processed header that has already counted a proof attempt
+/// (Calgooon/zanaadu-v2#368: one attempt per header, as the reference).
+pub const MONITOR_STATE_KEY_PROOF_ATTEMPT_HEIGHT: &str = "proof_attempt_height";
+
 /// The header tracker's row key (JSON in `text_value`).
 pub const MONITOR_STATE_KEY_HEADER_TRACKER: &str = "header_tracker";
 
@@ -53,6 +57,31 @@ pub(crate) async fn read_proof_gate_on(conn: &mut SqliteConnection) -> Result<u3
         .fetch_optional(&mut *conn)
         .await?;
     Ok(row.map(|(v,)| v.max(0) as u32).unwrap_or(0))
+}
+
+/// The header that last counted a proof attempt: `0` when absent.
+pub(crate) async fn read_proof_attempt_height_on(conn: &mut SqliteConnection) -> Result<u32> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT value FROM monitor_state WHERE key = ?")
+        .bind(MONITOR_STATE_KEY_PROOF_ATTEMPT_HEIGHT)
+        .fetch_optional(&mut *conn)
+        .await?;
+    Ok(row.map(|(v,)| v.max(0) as u32).unwrap_or(0))
+}
+
+/// Record the header that counted a proof attempt.
+pub(crate) async fn write_proof_attempt_height_on(
+    conn: &mut SqliteConnection,
+    height: u32,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO monitor_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(MONITOR_STATE_KEY_PROOF_ATTEMPT_HEIGHT)
+    .bind(height as i64)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 /// Write the proof LAG gate on an open connection.

@@ -26,7 +26,11 @@
 //!   behavior: raise the shared CheckForProofs trigger flag so the proof is
 //!   fetched immediately through the services stack.
 //! - `REJECTED` / `DOUBLE_SPEND_ATTEMPTED` — mark the proven_tx_req
-//!   `invalid` / `doubleSpend` so it is never re-broadcast. A REJECTED whose
+//!   `invalid` / `doubleSpend` so it is never re-broadcast, unless another
+//!   source holds the transaction (another broadcaster accepted it, or the
+//!   network has it): then Arcade's refusal is its own view and nothing is
+//!   applied (`MonitorStorage::mark_transaction_rejected_by`,
+//!   Calgooon/zanaadu-v2#357). A REJECTED whose
 //!   ARC code is 466 (or that names competing txs) is a conflict
 //!   (`doubleSpend`); one whose code is 476 (non-final, retryable) is not
 //!   applied.
@@ -289,13 +293,29 @@ where
                 }
                 // The input is owned by a competing or confirmed transaction:
                 // a conflict, so the inputs are never blind-released.
-                Some(ARCADE_CODE_CONFLICT) => storage.mark_transaction_rejected(txid, true).await,
-                _ if ev.competing_txs.as_ref().is_some_and(|c| !c.is_empty()) => {
-                    storage.mark_transaction_rejected(txid, true).await
+                Some(ARCADE_CODE_CONFLICT) => {
+                    storage
+                        .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, true)
+                        .await
                 }
-                _ => storage.mark_transaction_rejected(txid, false).await,
+                _ if ev.competing_txs.as_ref().is_some_and(|c| !c.is_empty()) => {
+                    storage
+                        .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, true)
+                        .await
+                }
+                // Arcade's word only: final when no other source holds it
+                // (`mark_transaction_rejected_by`, Calgooon/zanaadu-v2#357).
+                _ => {
+                    storage
+                        .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, false)
+                        .await
+                }
             },
-            ArcadeVerdict::Conflict => storage.mark_transaction_rejected(txid, true).await,
+            ArcadeVerdict::Conflict => {
+                storage
+                    .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, true)
+                    .await
+            }
             // RECEIVED / SENT_TO_NETWORK / ACCEPTED_BY_NETWORK, UNKNOWN /
             // PENDING_RETRY: before the network's word, nothing to record.
             // An ORPHAN word: the parents are missing from the view, a

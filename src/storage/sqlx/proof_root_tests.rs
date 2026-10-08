@@ -523,7 +523,7 @@ async fn compaction_attaches_no_unchecked_proof_without_a_tracker_answer() {
 /// A raw transaction no input of the subject reaches, padded past the
 /// monitor's 1000-byte threshold: dead weight the monitor's compaction
 /// prunes once it has upgraded something.
-fn unreached_filler() -> Vec<u8> {
+pub(super) fn unreached_filler() -> Vec<u8> {
     let mut raw = Vec::new();
     raw.extend_from_slice(&1u32.to_le_bytes()); // version
     raw.push(1); // vin count

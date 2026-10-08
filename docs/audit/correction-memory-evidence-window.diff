@@ -1,0 +1,156 @@
+diff --git a/src/storage/sqlx/storage_sqlx.rs b/src/storage/sqlx/storage_sqlx.rs
+index 2b5badf..7175425 100644
+--- a/src/storage/sqlx/storage_sqlx.rs
++++ b/src/storage/sqlx/storage_sqlx.rs
+@@ -5941,6 +5941,10 @@ impl StorageSqlx {
+     }
+ }
+ 
++/// How long a broadcast-memory row counts as another source holding a
++/// transaction one broadcaster refused (Calgooon/zanaadu-v2#357).
++const MEMORY_EVIDENCE_MAX_AGE_SECS: i64 = 2 * 60 * 60;
++
+ /// Private helpers for the `MonitorStorage::un_fail` recovery path.
+ impl StorageSqlx {
+     /// THE FINAL-VERSUS-TRANSIENT RULE for one broadcaster's refusal
+@@ -5969,8 +5973,15 @@ impl StorageSqlx {
+                 return None;
+             }
+         };
++        // A memory row is evidence only while fresh: a SEEN from hours ago
++        // says nothing about a mempool that has since evicted the
++        // transaction, and an unbounded row would hold an evicted
++        // transaction (and its inputs) forever. Past the window only the
++        // live read below decides.
++        let fresh_after =
++            chrono::Utc::now() - chrono::Duration::seconds(MEMORY_EVIDENCE_MAX_AGE_SECS);
+         records.into_iter().find_map(|r| {
+-            if Some(r.provider.as_str()) == refusing {
++            if Some(r.provider.as_str()) == refusing || r.seen_at < fresh_after {
+                 return None;
+             }
+             let status = r.ladder_status()?;
+@@ -8419,5 +8430,123 @@ mod tests {
+             assert_eq!(req_state(&storage, &txid).await, ("unmined".into(), 0));
+             assert_eq!(tx_status(&storage, &txid).await, "unproven");
+         }
++
++        // ============ LENS replay (not part of the lane) ============
++
++        async fn age_memory(storage: &StorageSqlx, txid: &str, provider: &str, hours: i64) {
++            sqlx::query(&format!(
++                "UPDATE broadcast_seen SET seen_at = datetime('now', '-{} hours') WHERE txid = ? AND provider = ?",
++                hours
++            ))
++            .bind(txid)
++            .bind(provider)
++            .execute(storage.pool())
++            .await
++            .unwrap();
++        }
++
++        fn evicted_everywhere(txid: &str) -> crate::services::mock::MockWalletServices {
++            MockWalletServicesBuilder::default()
++                .get_status_for_txids_response(status_response(txid, "unknown"))
++                .get_merkle_path_response(no_proof())
++                .broadcaster_statuses(vec![
++                    (PROVIDER_ARCADE_V2.to_string(), BroadcastStatus::Rejected),
++                    (PROVIDER_TAAL_ARC.to_string(), BroadcastStatus::Unknown),
++                    (
++                        PROVIDER_GORILLAPOOL_ARC.to_string(),
++                        BroadcastStatus::Unknown,
++                    ),
++                ])
++                .build()
++        }
++
++        /// LENS (corrected): GorillaPool SEEN six hours ago, evicted from
++        /// every mempool since. Past the memory window the live read
++        /// decides: nobody holds it, so Arcade's REJECTED is final and the
++        /// change is no longer counted (inputs go to the release rule).
++        #[tokio::test]
++        async fn lens_stale_seen_does_not_overrule_rejected() {
++            let storage = create_storage().await;
++            let (txid, change) = seed_broadcast(&storage, "b1").await;
++            storage
++                .record_broadcast_status(&txid, PROVIDER_GORILLAPOOL_ARC, "seen")
++                .await
++                .unwrap();
++            age_memory(&storage, &txid, PROVIDER_GORILLAPOOL_ARC, 6).await;
++            WalletStorageProvider::set_services(&storage, Arc::new(evicted_everywhere(&txid)));
++            let trigger = AtomicBool::new(false);
++            assert!(
++                ArcadeEventsTask::apply_status_event(&storage, &txid, "REJECTED", &trigger)
++                    .await
++                    .unwrap()
++            );
++            assert_eq!(tx_status(&storage, &txid).await, "failed");
++            assert_eq!(req_state(&storage, &txid).await.0, "invalid");
++            assert_eq!(output_state(&storage, change).await, (false, None));
++        }
++
++        /// LENS (corrected): a fresh SEEN still overrules (the incident).
++        #[tokio::test]
++        async fn lens_fresh_seen_still_overrules_rejected() {
++            let storage = create_storage().await;
++            let (txid, _) = seed_broadcast(&storage, "b2").await;
++            storage
++                .record_broadcast_status(&txid, PROVIDER_GORILLAPOOL_ARC, "seen")
++                .await
++                .unwrap();
++            age_memory(&storage, &txid, PROVIDER_GORILLAPOOL_ARC, 1).await;
++            WalletStorageProvider::set_services(&storage, Arc::new(evicted_everywhere(&txid)));
++            assert!(!storage
++                .mark_transaction_rejected_by(&txid, PROVIDER_ARCADE_V2, false)
++                .await
++                .unwrap());
++            assert_eq!(tx_status(&storage, &txid).await, "unproven");
++        }
++
++        /// LENS: every live source down (no broadcaster answers, status
++        /// sources error), no memory row: the refusal is final (fail closed
++        /// to `failed`, as the reference does unconditionally).
++        #[tokio::test]
++        async fn lens_sources_down_refusal_is_final() {
++            let storage = create_storage().await;
++            let (txid, _) = seed_broadcast(&storage, "b3").await;
++            let mock = MockWalletServicesBuilder::default()
++                .get_status_for_txids_response(MockResponse::Error(
++                    crate::services::mock::MockErrorKind::NetworkError,
++                    "down".into(),
++                ))
++                .build();
++            WalletStorageProvider::set_services(&storage, Arc::new(mock));
++            let applied = storage
++                .mark_transaction_rejected_by(&txid, PROVIDER_ARCADE_V2, false)
++                .await
++                .unwrap();
++            assert!(applied);
++            assert_eq!(tx_status(&storage, &txid).await, "failed");
++        }
++
++        /// LENS: the incident with SEEN (not ACCEPTED) from GorillaPool, then
++        /// Arcade MINED: stays unproven, change visible, proof triggered.
++        #[tokio::test]
++        async fn lens_incident_with_seen_then_mined() {
++            let storage = create_storage().await;
++            let (txid, change) = seed_broadcast(&storage, "b4").await;
++            storage
++                .record_broadcast_status(&txid, PROVIDER_GORILLAPOOL_ARC, "seen")
++                .await
++                .unwrap();
++            let trigger = AtomicBool::new(false);
++            assert!(
++                !ArcadeEventsTask::apply_status_event(&storage, &txid, "REJECTED", &trigger)
++                    .await
++                    .unwrap()
++            );
++            ArcadeEventsTask::apply_status_event(&storage, &txid, "MINED", &trigger)
++                .await
++                .unwrap();
++            assert!(trigger.load(Ordering::SeqCst));
++            assert_eq!(tx_status(&storage, &txid).await, "unproven");
++            assert_eq!(output_state(&storage, change).await, (true, None));
++        }
+     }
+ }

@@ -10,7 +10,7 @@ use std::sync::{Arc as StdArc, RwLock};
 use crate::chaintracks::Chain;
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::broadcast_memory::{
-    apply_sticky_provider_order, unproven_ancestors_in_beef, BroadcastMemory,
+    apply_sticky_provider_order, unproven_ancestors_in_beef, BroadcastMemory, BroadcastStatus,
     BROADCAST_STATUS_ACCEPTED, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2, PROVIDER_BITAILS,
     PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
 };
@@ -2079,6 +2079,48 @@ impl WalletServices for Services {
             has_proof,
             error: None,
         })
+    }
+
+    async fn get_broadcaster_statuses(&self, txid: &str) -> Vec<(String, BroadcastStatus)> {
+        // Arcade's status document and each classic ARC's `GET /v1/tx`, all
+        // at once. A broadcaster that errors says nothing; a 404 is
+        // `Unknown` (it does not hold the transaction).
+        let arcade = async {
+            match &self.arcade {
+                Some(arcade) => match arcade.get_tx_status(txid).await {
+                    Ok(Some(info)) => Some((
+                        PROVIDER_ARCADE_V2.to_string(),
+                        BroadcastStatus::from_arcade_status(&info.tx_status.to_ascii_uppercase()),
+                    )),
+                    Ok(None) => Some((PROVIDER_ARCADE_V2.to_string(), BroadcastStatus::Unknown)),
+                    Err(e) => {
+                        tracing::debug!(txid = %txid, error = %e, "broadcaster status: Arcade gave no answer");
+                        None
+                    }
+                },
+                None => None,
+            }
+        };
+        let arc_status = |name: &'static str, arc: Option<StdArc<Arc>>| async move {
+            let arc = arc?;
+            match arc.get_tx_data(txid).await {
+                Ok(Some(info)) => Some((
+                    name.to_string(),
+                    BroadcastStatus::from_arc_status(&info.tx_status.to_ascii_uppercase()),
+                )),
+                Ok(None) => Some((name.to_string(), BroadcastStatus::Unknown)),
+                Err(e) => {
+                    tracing::debug!(txid = %txid, provider = name, error = %e, "broadcaster status: ARC gave no answer");
+                    None
+                }
+            }
+        };
+        let (arcade, taal, gorillapool) = tokio::join!(
+            arcade,
+            arc_status(PROVIDER_TAAL_ARC, Some(StdArc::clone(&self.arc_taal))),
+            arc_status(PROVIDER_GORILLAPOOL_ARC, self.arc_gorillapool.clone()),
+        );
+        [arcade, taal, gorillapool].into_iter().flatten().collect()
     }
 
     fn get_services_call_history(&self, reset: bool) -> ServicesCallHistory {

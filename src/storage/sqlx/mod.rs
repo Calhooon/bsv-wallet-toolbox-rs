@@ -40,11 +40,15 @@ mod locked_inputs;
 mod monitor_state;
 mod poisoned_chain;
 mod process_action;
+#[cfg(test)]
+mod proof_attempt_backstop_tests;
 mod proof_root_checks;
 #[cfg(test)]
 mod proof_root_tests;
 #[cfg(test)]
 mod reorg_tests;
+#[cfg(test)]
+mod sibling_bump_tests;
 mod storage_sqlx;
 mod sync;
 

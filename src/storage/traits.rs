@@ -1241,6 +1241,26 @@ pub trait MonitorStorage: WalletStorageProvider {
         Ok(false)
     }
 
+    /// [`MonitorStorage::mark_transaction_rejected`] for a refusal by ONE
+    /// named broadcaster (`provider`, a broadcast-memory provider name).
+    ///
+    /// The refusal is final only when no other broadcaster accepted the
+    /// transaction and the network does not hold it
+    /// (Calgooon/zanaadu-v2#357: Arcade said REJECTED 460 "missing input
+    /// source data" for a post GorillaPool ARC had accepted, and the wallet
+    /// failed a transaction that was MINED a block later). Backends that
+    /// can weigh the other sources override this; the default applies the
+    /// refusal as before.
+    async fn mark_transaction_rejected_by(
+        &self,
+        txid: &str,
+        provider: &str,
+        double_spend: bool,
+    ) -> Result<bool> {
+        let _ = provider;
+        self.mark_transaction_rejected(txid, double_spend).await
+    }
+
     /// Ingest a push-delivered merkle proof (Arcade ≥ v0.10.1 enriches MINED
     /// SSE frames and webhook callbacks with the BUMP).
     ///

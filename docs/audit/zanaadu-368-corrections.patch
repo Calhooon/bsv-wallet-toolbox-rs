@@ -1,0 +1,203 @@
+diff --git a/src/storage/sqlx/monitor_state.rs b/src/storage/sqlx/monitor_state.rs
+index 0fd545b..e21751c 100644
+--- a/src/storage/sqlx/monitor_state.rs
++++ b/src/storage/sqlx/monitor_state.rs
+@@ -32,6 +32,10 @@ pub const MIGRATION_004_MONITOR_STATE_NAME: &str = "004_monitor_state";
+ /// The proof LAG gate's row key.
+ pub const MONITOR_STATE_KEY_PROOF_GATE: &str = "max_acceptable_proof_height";
+ 
++/// The highest processed header that has already counted a proof attempt
++/// (Calgooon/zanaadu-v2#368: one attempt per header, as the reference).
++pub const MONITOR_STATE_KEY_PROOF_ATTEMPT_HEIGHT: &str = "proof_attempt_height";
++
+ /// The header tracker's row key (JSON in `text_value`).
+ pub const MONITOR_STATE_KEY_HEADER_TRACKER: &str = "header_tracker";
+ 
+@@ -55,6 +59,31 @@ pub(crate) async fn read_proof_gate_on(conn: &mut SqliteConnection) -> Result<u3
+     Ok(row.map(|(v,)| v.max(0) as u32).unwrap_or(0))
+ }
+ 
++/// The header that last counted a proof attempt: `0` when absent.
++pub(crate) async fn read_proof_attempt_height_on(conn: &mut SqliteConnection) -> Result<u32> {
++    let row: Option<(i64,)> = sqlx::query_as("SELECT value FROM monitor_state WHERE key = ?")
++        .bind(MONITOR_STATE_KEY_PROOF_ATTEMPT_HEIGHT)
++        .fetch_optional(&mut *conn)
++        .await?;
++    Ok(row.map(|(v,)| v.max(0) as u32).unwrap_or(0))
++}
++
++/// Record the header that counted a proof attempt.
++pub(crate) async fn write_proof_attempt_height_on(
++    conn: &mut SqliteConnection,
++    height: u32,
++) -> Result<()> {
++    sqlx::query(
++        "INSERT INTO monitor_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) \
++         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
++    )
++    .bind(MONITOR_STATE_KEY_PROOF_ATTEMPT_HEIGHT)
++    .bind(height as i64)
++    .execute(&mut *conn)
++    .await?;
++    Ok(())
++}
++
+ /// Write the proof LAG gate on an open connection.
+ pub(crate) async fn write_proof_gate_on(conn: &mut SqliteConnection, height: u32) -> Result<()> {
+     sqlx::query(
+diff --git a/src/storage/sqlx/proof_attempt_backstop_tests.rs b/src/storage/sqlx/proof_attempt_backstop_tests.rs
+index 19d5def..29c077b 100644
+--- a/src/storage/sqlx/proof_attempt_backstop_tests.rs
++++ b/src/storage/sqlx/proof_attempt_backstop_tests.rs
+@@ -177,6 +177,7 @@ async fn a_never_held_never_mined_req_fails_past_the_limit_and_releases_its_inpu
+     nobody_holds(&s, &b.txid);
+ 
+     for pass in 1..=(LIMIT + 1) {
++        open_gate(&s, 1000 + pass as u32).await;
+         let out = s.synchronize_transaction_statuses().await.unwrap();
+         assert!(out.is_empty(), "pass {pass} writes nothing off");
+         assert_eq!(
+@@ -287,6 +288,7 @@ async fn the_357_incident_shape_stays_unproven_past_the_limit_and_proves() {
+     nobody_holds(&s, &b.txid);
+ 
+     for pass in 1..=3 {
++        open_gate(&s, 1000 + pass as u32).await;
+         assert!(s
+             .synchronize_transaction_statuses()
+             .await
+@@ -342,6 +344,7 @@ async fn a_req_the_status_sources_hold_is_not_failed_past_the_limit() {
+     WalletStorageProvider::set_services(&s, Arc::new(mock));
+ 
+     for pass in 1..=5 {
++        open_gate(&s, 1000 + pass as u32).await;
+         assert!(s
+             .synchronize_transaction_statuses()
+             .await
+@@ -527,3 +530,21 @@ async fn the_canary_watches_a_backstopped_req_hourly_and_recovers_it() {
+         (false, Some(b.transaction_id))
+     );
+ }
++
++/// One attempt per processed header, as the reference counts only the
++/// header-triggered run: a second pass at the same gate (an Arcade MINED
++/// word, the fallback timer, a `tick`) asks but counts nothing.
++#[tokio::test]
++async fn a_second_pass_at_the_same_header_counts_nothing() {
++    let s = storage().await;
++    let b = seed_broadcast(&s, "ab", 0).await;
++    nobody_holds(&s, &b.txid);
++
++    s.synchronize_transaction_statuses().await.unwrap();
++    s.synchronize_transaction_statuses().await.unwrap();
++    assert_eq!(attempts_of(&s, &b.txid).await, ("unmined".to_string(), 1));
++
++    open_gate(&s, 1001).await;
++    s.synchronize_transaction_statuses().await.unwrap();
++    assert_eq!(attempts_of(&s, &b.txid).await, ("unmined".to_string(), 2));
++}
+diff --git a/src/storage/sqlx/storage_sqlx.rs b/src/storage/sqlx/storage_sqlx.rs
+index 6ea760b..146e82c 100644
+--- a/src/storage/sqlx/storage_sqlx.rs
++++ b/src/storage/sqlx/storage_sqlx.rs
+@@ -3185,12 +3185,6 @@ impl StorageSqlx {
+ pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
+ pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;
+ 
+-/// How old a broadcast-memory seen/mined row may be and still keep a req
+-/// from the attempt backstop. The same 2 hours as the freshness window on
+-/// memory evidence against a broadcaster's refusal (Calgooon/zanaadu-v2#357):
+-/// past it only a live read counts.
+-const BACKSTOP_MEMORY_EVIDENCE_MAX_AGE_SECS: i64 = 2 * 60 * 60;
+-
+ /// Private helpers for the attempt backstop of
+ /// `MonitorStorage::synchronize_transaction_statuses`.
+ impl StorageSqlx {
+@@ -3201,29 +3195,6 @@ impl StorageSqlx {
+             PROOF_ATTEMPTS_LIMIT_TEST
+         }
+     }
+-
+-    /// A broadcast-memory row, no older than the freshness window, that says
+-    /// a broadcaster or the network holds `txid` (seen or mined). A bare
+-    /// acceptance is not evidence, and an unreadable memory says nothing.
+-    async fn fresh_memory_evidence(&self, txid: &str) -> Option<String> {
+-        let records = match self
+-            .broadcast_records(None, std::slice::from_ref(&txid.to_string()))
+-            .await
+-        {
+-            Ok(records) => records,
+-            Err(e) => {
+-                tracing::debug!(txid = %txid, error = %e, "broadcast memory unreadable: no memory evidence");
+-                return None;
+-            }
+-        };
+-        let fresh_after =
+-            chrono::Utc::now() - chrono::Duration::seconds(BACKSTOP_MEMORY_EVIDENCE_MAX_AGE_SECS);
+-        records.into_iter().find_map(|r| {
+-            let status = r.ladder_status()?;
+-            (r.seen_at >= fresh_after && status.is_network_evidence())
+-                .then(|| format!("{} {}", r.provider, status.as_str()))
+-        })
+-    }
+ }
+ 
+ /// M19 R1: is a freshly validated proof the SAME anchor as the stored one?
+@@ -3827,6 +3798,21 @@ impl MonitorStorage for StorageSqlx {
+             return Ok(Vec::new());
+         }
+ 
++        // One attempt per processed header: the reference counts only the
++        // header-triggered run (`countsAsAttempt = checkNow`,
++        // TaskCheckForProofs.ts:49), so its 144 is about a day of blocks. A
++        // pass at a gate already counted (an Arcade MINED word, the 2-hour
++        // fallback, a `tick`, a nosend proof) asks and writes off but counts
++        // nothing.
++        let counts_as_attempt = {
++            let mut conn = self.pool().acquire().await?;
++            let counted = super::monitor_state::read_proof_attempt_height_on(&mut conn).await?;
++            if proof_gate > counted {
++                super::monitor_state::write_proof_attempt_height_on(&mut conn, proof_gate).await?;
++            }
++            proof_gate > counted
++        };
++
+         let mut results = Vec::new();
+ 
+         // =====================================================================
+@@ -3869,7 +3855,17 @@ impl MonitorStorage for StorageSqlx {
+             }
+             let now = chrono::Utc::now();
+             if i64::from(req.attempts) > attempts_limit && !held_txids.contains(&req.txid) {
+-                if let Some(evidence) = self.fresh_memory_evidence(&req.txid).await {
++                // #357's hold rule, no refusing provider: a fresh seen/mined
++                // memory row, or a broadcaster's own status read (the status
++                // sources were asked this pass; `retire_undeliverable_tx`
++                // asks them once more).
++                let evidence = match self.memory_holds(&req.txid, None, false).await {
++                    Some(e) => Some(e),
++                    None => {
++                        Self::network_holds(services.as_ref(), &req.txid, None, false, false).await
++                    }
++                };
++                if let Some(evidence) = evidence {
+                     tracing::info!(
+                         txid = %req.txid,
+                         attempts = req.attempts,
+@@ -3917,7 +3913,7 @@ impl MonitorStorage for StorageSqlx {
+                     continue;
+                 }
+             }
+-            if confirmed_txids.contains(&req.txid) {
++            if confirmed_txids.contains(&req.txid) || !counts_as_attempt {
+                 continue;
+             }
+             sqlx::query(
+@@ -4102,7 +4098,7 @@ impl MonitorStorage for StorageSqlx {
+                                 continue;
+                             }
+                         }
+-                    } else {
++                    } else if counts_as_attempt {
+                         // No proof yet: an attempt. The status sources
+                         // call this transaction mined, so a source holds it
+                         // and the count alone never writes it off (#368).
