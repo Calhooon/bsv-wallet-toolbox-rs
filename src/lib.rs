@@ -34,7 +34,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use bsv_wallet_toolbox_rs::{Wallet, StorageSqlx, Services};
+//! use bsv_wallet_toolbox_rs::{Chain, Wallet, StorageSqlx, Services, ServicesOptions};
 //! use bsv_rs::wallet::WalletInterface;
 //!
 //! #[tokio::main]
@@ -42,8 +42,16 @@
 //!     // Open local SQLite storage
 //!     let storage = StorageSqlx::open("wallet.db").await?;
 //!
-//!     // Configure mainnet services
-//!     let services = Services::mainnet();
+//!     // Configure mainnet services with a header service
+//!     let options = ServicesOptions::mainnet()
+//!         .with_chaintracks_url("https://mainnet-chaintracks.babbage.systems");
+//!     let services = Services::with_options(Chain::Main, options)?;
+//!
+//!     // Wire its chain tracker into storage: without one the storage stores
+//!     // no merkle proof (ProofIngestOutcome::TrackerUnavailable).
+//!     if let Some(ref ct) = services.chaintracks {
+//!         storage.set_chain_tracker(ct.clone()).await;
+//!     }
 //!
 //!     // Create wallet with root key
 //!     let wallet = Wallet::new(Some(root_key), storage, services).await?;

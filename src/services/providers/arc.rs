@@ -74,6 +74,57 @@ pub mod status_codes {
     }
 }
 
+/// What one ARC-family status word in a 2xx body says: the ONE judgment of
+/// this client, for a single submit, a `/v1/txs` batch item and an
+/// ancestor's `GET /v1/tx` status alike.
+///
+/// The words are ARC's (arc@e7efc5b `internal/metamorph/metamorph_api/
+/// metamorph_api.proto:13-28`) and Arcade's (arcade@1ae1208
+/// `models/transaction.go:89-114`). REJECTED (with the reference's INVALID
+/// and MALFORMED, ts-stack@edf6e03 `packages/wallet/wallet-toolbox/src/
+/// services/providers/ARC.ts:48`) is a definitive rejection;
+/// DOUBLE_SPEND_ATTEMPTED a double spend; any word containing ORPHAN an
+/// orphan-mempool wait; MINED_IN_STALE_BLOCK a transient failure (the
+/// reference's getTxData path, `ARC.ts:373-376`); every other defined word
+/// is accepted; a word neither defines, or none, is an invalid answer
+/// (transient), never a success. Letter case is ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArcStatusVerdict {
+    Accepted,
+    DoubleSpend,
+    Orphan,
+    Rejected,
+    Stale,
+    Invalid,
+}
+
+pub(crate) fn arc_status_verdict(tx_status: &str) -> ArcStatusVerdict {
+    let word = tx_status.trim().to_ascii_uppercase();
+    if word.contains("ORPHAN") {
+        return ArcStatusVerdict::Orphan;
+    }
+    match word.as_str() {
+        "UNKNOWN"
+        | "QUEUED"
+        | "RECEIVED"
+        | "STORED"
+        | "ANNOUNCED_TO_NETWORK"
+        | "REQUESTED_BY_NETWORK"
+        | "SENT_TO_NETWORK"
+        | "ACCEPTED_BY_NETWORK"
+        | "SEEN_ON_NETWORK"
+        | "SEEN_MULTIPLE_NODES"
+        | "PENDING_RETRY"
+        | "STUMP_PROCESSING"
+        | "MINED"
+        | "IMMUTABLE" => ArcStatusVerdict::Accepted,
+        "DOUBLE_SPEND_ATTEMPTED" => ArcStatusVerdict::DoubleSpend,
+        "REJECTED" | "INVALID" | "MALFORMED" => ArcStatusVerdict::Rejected,
+        "MINED_IN_STALE_BLOCK" => ArcStatusVerdict::Stale,
+        _ => ArcStatusVerdict::Invalid,
+    }
+}
+
 /// Configuration for ARC provider.
 #[derive(Debug, Clone, Default)]
 pub struct ArcConfig {
@@ -292,79 +343,59 @@ impl Arc {
     /// Map a 2xx ARC body (a single submit, or one item of a `/v1/txs`
     /// batch) to a per-txid result.
     fn classify_arc_response(&self, data: ArcResponse) -> PostTxResultForTxid {
-        let is_double_spend = data.tx_status == "DOUBLE_SPEND_ATTEMPTED";
-        let is_orphan_mempool = data.tx_status == "SEEN_IN_ORPHAN_MEMPOOL";
-
-        if is_double_spend {
-            PostTxResultForTxid {
-                txid: data.txid,
-                status: "error".to_string(),
-                double_spend: true,
-                orphan_mempool: false,
-                competing_txs: data.competing_txs,
-                data: Some(format!(
-                    "{} {}",
-                    data.tx_status,
-                    data.extra_info.unwrap_or_default()
-                )),
-                service_error: false,
-                block_hash: None,
-                block_height: None,
-                notes: vec![make_note(&self.name, "postRawTxDoubleSpend")],
+        let detail = format!("{} {}", data.tx_status, data.extra_info.unwrap_or_default());
+        let mut r = PostTxResultForTxid {
+            txid: data.txid,
+            status: "error".to_string(),
+            double_spend: false,
+            orphan_mempool: false,
+            competing_txs: None,
+            data: Some(detail),
+            service_error: false,
+            block_hash: None,
+            block_height: None,
+            notes: Vec::new(),
+        };
+        // The word decides, never the 2xx ([`arc_status_verdict`]). EVERY
+        // accepted word is a success: the earlier narrowing to
+        // SEEN_ON_NETWORK/STORED/MINED reported a legitimately-accepted tx as
+        // a transient service_error, which (a) tripped the full-BEEF to EF
+        // fallback for 0-conf-ancestry BEEFs (EF drops the unproven parent,
+        // ARC orphans the child: a phantom tx) and (b) left the tx unrecorded
+        // so a CHAINED createAction saw "Insufficient funds: have 0".
+        // Cross-provider federation is the re-broadcast/monitor layer's
+        // responsibility, NOT this classifier.
+        let what = match arc_status_verdict(&data.tx_status) {
+            ArcStatusVerdict::Accepted => {
+                r.status = "success".to_string();
+                "postRawTxSuccess"
             }
-        } else if is_orphan_mempool {
-            PostTxResultForTxid {
-                txid: data.txid,
-                status: "error".to_string(),
-                double_spend: false,
-                orphan_mempool: true,
-                competing_txs: None,
-                data: Some(format!(
-                    "{} {}",
-                    data.tx_status,
-                    data.extra_info.unwrap_or_default()
-                )),
-                service_error: false,
-                block_hash: None,
-                block_height: None,
-                notes: vec![make_note(&self.name, "postRawTxOrphanMempool")],
+            ArcStatusVerdict::DoubleSpend => {
+                r.double_spend = true;
+                r.competing_txs = data.competing_txs;
+                "postRawTxDoubleSpend"
             }
-        } else {
-            // Canonical @bsv/sdk + @bsv/wallet-toolbox semantics: a 200 from ARC
-            // with a non-error txStatus means ARC ACCEPTED the tx (it is in ARC's
-            // mempool / the network has it). DOUBLE_SPEND_ATTEMPTED and *ORPHAN*
-            // are handled above as their own outcomes; EVERY other status (RECEIVED
-            // / QUEUED / ANNOUNCED_TO_NETWORK / REQUESTED_BY_NETWORK / SENT_TO_NETWORK
-            // / SEEN_ON_NETWORK / STORED / MINED) is SUCCESS — matching
-            // ts-sdk/src/transaction/broadcasters/ARC.ts and
-            // wallet-toolbox/src/services/providers/ARC.ts (which only treat
-            // DOUBLE_SPEND/ORPHAN as errors).
-            //
-            // The previous narrowing to only SEEN_ON_NETWORK/STORED/MINED reported
-            // a legitimately-accepted tx as a transient service_error, which
-            // (a) tripped the full-BEEF→EF fallback below for 0-conf-ancestry BEEFs
-            // (EF drops the unproven parent → ARC orphans the child → phantom tx),
-            // and (b) left the tx unrecorded so a CHAINED createAction saw
-            // "Insufficient funds: have 0". Cross-provider federation (broadcast to
-            // every reachable ARC, not just the first to accept) is the
-            // re-broadcast/monitor layer's responsibility, NOT this success classifier.
-            PostTxResultForTxid {
-                txid: data.txid,
-                status: "success".to_string(),
-                double_spend: false,
-                orphan_mempool: false,
-                competing_txs: None,
-                data: Some(format!(
-                    "{} {}",
-                    data.tx_status,
-                    data.extra_info.unwrap_or_default()
-                )),
-                service_error: false,
-                block_hash: None,
-                block_height: None,
-                notes: vec![make_note(&self.name, "postRawTxSuccess")],
+            ArcStatusVerdict::Orphan => {
+                r.orphan_mempool = true;
+                "postRawTxOrphanMempool"
             }
-        }
+            ArcStatusVerdict::Rejected => {
+                // Definitive: the node refused the bytes; a 2xx says only
+                // that ARC processed the request.
+                r.status = crate::storage::broadcast::STATUS_REJECTED.to_string();
+                "postRawTxRejected"
+            }
+            ArcStatusVerdict::Stale => {
+                r.service_error = true;
+                "postRawTxMinedInStaleBlock"
+            }
+            ArcStatusVerdict::Invalid => {
+                r.service_error = true;
+                "postRawTxInvalidStatus"
+            }
+        };
+        r.notes.push(make_note(&self.name, what));
+        r
     }
 
     /// Map a non-2xx ARC status and body to a per-txid result: a definitive
@@ -892,27 +923,38 @@ impl Arc {
 
             match self.get_tx_data(txid).await {
                 Ok(Some(data)) => {
-                    let status = if data.tx_status == "SEEN_ON_NETWORK"
-                        || data.tx_status == "STORED"
-                        || data.tx_status == "MINED"
-                    {
-                        "success"
-                    } else {
-                        result.status = "error".to_string();
-                        "error"
+                    // The same judgment as the submit answer.
+                    let verdict = arc_status_verdict(&data.tx_status);
+                    let status = match verdict {
+                        ArcStatusVerdict::Accepted => "success",
+                        ArcStatusVerdict::Rejected => crate::storage::broadcast::STATUS_REJECTED,
+                        _ => "error",
                     };
+                    if verdict != ArcStatusVerdict::Accepted {
+                        result.status = "error".to_string();
+                    }
 
                     result.txid_results.push(PostTxResultForTxid {
                         txid: txid.clone(),
                         status: status.to_string(),
-                        double_spend: data.tx_status == "DOUBLE_SPEND_ATTEMPTED",
-                        orphan_mempool: data.tx_status == "SEEN_IN_ORPHAN_MEMPOOL",
+                        double_spend: verdict == ArcStatusVerdict::DoubleSpend,
+                        orphan_mempool: verdict == ArcStatusVerdict::Orphan,
                         competing_txs: data.competing_txs,
                         data: Some(data.tx_status),
-                        service_error: false,
+                        service_error: matches!(
+                            verdict,
+                            ArcStatusVerdict::Stale | ArcStatusVerdict::Invalid
+                        ),
                         block_hash: data.block_hash,
                         block_height: data.block_height,
-                        notes: vec![make_note(&self.name, "postBeefGetTxDataSuccess")],
+                        notes: vec![make_note(
+                            &self.name,
+                            if verdict == ArcStatusVerdict::Accepted {
+                                "postBeefGetTxDataSuccess"
+                            } else {
+                                "postBeefGetTxDataError"
+                            },
+                        )],
                     });
                 }
                 Ok(None) => {
@@ -1445,6 +1487,56 @@ mod tests {
         assert!(!verdict.service_error, "a real 469 verdict is definitive");
         assert_eq!(verdict.status, "469");
         assert!(crate::storage::broadcast::is_definitive_rejection(&verdict));
+    }
+
+    /// The one verdict over ARC's enumeration (arc@e7efc5b
+    /// `metamorph_api.proto:13-28`), Arcade's (arcade@1ae1208
+    /// `models/transaction.go:89-114`) and the reference's extra failure
+    /// words, in any letter case.
+    #[test]
+    fn arc_status_verdict_covers_both_enumerations() {
+        for w in [
+            "UNKNOWN",
+            "QUEUED",
+            "RECEIVED",
+            "STORED",
+            "ANNOUNCED_TO_NETWORK",
+            "REQUESTED_BY_NETWORK",
+            "SENT_TO_NETWORK",
+            "ACCEPTED_BY_NETWORK",
+            "SEEN_ON_NETWORK",
+            "SEEN_MULTIPLE_NODES",
+            "PENDING_RETRY",
+            "STUMP_PROCESSING",
+            "MINED",
+            "IMMUTABLE",
+        ] {
+            assert_eq!(arc_status_verdict(w), ArcStatusVerdict::Accepted, "{w}");
+            assert_eq!(
+                arc_status_verdict(&w.to_ascii_lowercase()),
+                ArcStatusVerdict::Accepted
+            );
+        }
+        for w in ["REJECTED", "INVALID", "MALFORMED", "rejected"] {
+            assert_eq!(arc_status_verdict(w), ArcStatusVerdict::Rejected, "{w}");
+        }
+        assert_eq!(
+            arc_status_verdict("DOUBLE_SPEND_ATTEMPTED"),
+            ArcStatusVerdict::DoubleSpend
+        );
+        assert_eq!(
+            arc_status_verdict("SEEN_IN_ORPHAN_MEMPOOL"),
+            ArcStatusVerdict::Orphan
+        );
+        assert_eq!(
+            arc_status_verdict("MINED_IN_STALE_BLOCK"),
+            ArcStatusVerdict::Stale
+        );
+        assert_eq!(
+            arc_status_verdict("NOT_A_STATUS"),
+            ArcStatusVerdict::Invalid
+        );
+        assert_eq!(arc_status_verdict(""), ArcStatusVerdict::Invalid);
     }
 
     #[test]

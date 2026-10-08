@@ -128,7 +128,8 @@ pub struct Services {
     /// Cached fiat exchange rates.
     fiat_exchange_rates: RwLock<FiatExchangeRates>,
 
-    /// Chaintracks service client with WoC fallback (optional).
+    /// The chain tracker over the Chaintracks header service (optional);
+    /// an explorer behind it only under the break-glass setting.
     pub chaintracks: Option<StdArc<FallbackChainTracker>>,
 
     /// Post BEEF mode.
@@ -485,14 +486,24 @@ impl Services {
             None
         };
 
-        // Create Chaintracks client with WoC fallback if URL is configured
+        // The chain tracker: the header service alone. No explorer in the
+        // proof path unless the break-glass setting is on (P0-1c).
         let chaintracks = if let Some(ref ct_url) = options.chaintracks_url {
             let ct_config = ChaintracksConfig {
                 url: ct_url.clone(),
                 api_key: None,
             };
             let primary = ChaintracksServiceClient::new(ct_config);
-            Some(StdArc::new(FallbackChainTracker::new(primary, None)))
+            let tracker = if options.break_glass_explorer_headers {
+                tracing::warn!(
+                    marker = "break_glass_explorer_header",
+                    "break-glass: the explorer header fallback is ON; WhatsOnChain is asked for merkle roots and headers whenever the header service gives no answer"
+                );
+                FallbackChainTracker::with_break_glass_woc(primary, whatsonchain.base_url())
+            } else {
+                FallbackChainTracker::new(primary)
+            };
+            Some(StdArc::new(tracker))
         } else {
             None
         };
@@ -1007,24 +1018,41 @@ impl WalletServices for Services {
     }
 
     async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader> {
-        // Try Chaintracks first (preferred — no rate limits)
-        if let Some(ref ct) = self.chaintracks {
+        // The header service first (preferred, first party, no rate limits).
+        let header_service_error = if let Some(ref ct) = self.chaintracks {
             match ct.primary().find_header_for_block_hash(hash).await {
                 Ok(header) => return Ok(header),
-                Err(e) => tracing::warn!(
-                    "Chaintracks hash_to_header failed for {}, falling back to WoC/Bitails: {}",
-                    hash,
-                    e
-                ),
+                Err(e) => e.to_string(),
             }
+        } else {
+            "no header service configured".to_string()
+        };
+
+        // No explorer in the proof path (P0-1c): this header resolves a TSC
+        // proof's block and repairs stored proof rows, so an explorer is
+        // asked only under the break-glass setting.
+        if !self.options.break_glass_explorer_headers {
+            return Err(Error::ServiceError(format!(
+                "hash_to_header: the header service gave no header for {} ({}); the explorer header fallback is off (break-glass setting break_glass_explorer_headers)",
+                hash, header_service_error
+            )));
         }
 
-        // Try WhatsOnChain
+        tracing::warn!(
+            hash = %hash,
+            marker = "break_glass_explorer_header",
+            error = %header_service_error,
+            "break-glass: the header service gave no header; asking WhatsOnChain"
+        );
         if let Some(header) = self.whatsonchain.get_block_header_by_hash(hash).await? {
             return Ok(header);
         }
 
-        // Try Bitails
+        tracing::warn!(
+            hash = %hash,
+            marker = "break_glass_explorer_header",
+            "break-glass: WhatsOnChain has no such header; asking Bitails"
+        );
         if let Some(header) = self.bitails.get_block_header_by_hash(hash).await? {
             return Ok(header);
         }
@@ -2573,10 +2601,60 @@ mod tests {
         }
     }
 
+    /// P0-1c witness (bsv-stack-lean #48): `hash_to_header` resolves a TSC
+    /// proof's block (`get_merkle_path`, the BEEF build, the proven_txs
+    /// height repair at `storage_sqlx.rs:4029`) and, when the header service
+    /// fails, asks WhatsOnChain and then Bitails for the header. No explorer
+    /// in the proof path: with the header service unreachable and no
+    /// break-glass setting, the answer is an error naming the setting, and
+    /// no explorer is asked. Run with the network denied (rule 5): at the
+    /// base the error is the explorer request's own.
+    #[tokio::test]
+    async fn hash_to_header_asks_no_explorer_when_the_header_service_fails() {
+        let services = Services::with_options(
+            Chain::Main,
+            ServicesOptions::mainnet().with_chaintracks_url("http://127.0.0.1:9"),
+        )
+        .unwrap();
+        let err = services
+            .hash_to_header(&"00".repeat(32))
+            .await
+            .expect_err("the header service is unreachable");
+        assert!(
+            err.to_string().contains("break-glass"),
+            "refused before any explorer is asked, naming the setting: {err}"
+        );
+    }
+
+    /// The setting's wiring: the tracker `Services` builds holds no
+    /// explorer unless `break_glass_explorer_headers` is set, and then the
+    /// chain's own WhatsOnChain (testnet here, which the base got wrong: it
+    /// always named mainnet's).
+    #[test]
+    fn the_tracker_holds_no_explorer_unless_break_glass_is_set() {
+        let s = Services::with_options(
+            Chain::Main,
+            ServicesOptions::mainnet().with_chaintracks_url("http://127.0.0.1:9"),
+        )
+        .unwrap();
+        assert!(!ServicesOptions::default().break_glass_explorer_headers);
+        assert!(!s.chaintracks.as_ref().unwrap().break_glass_woc());
+
+        let s = Services::with_options(
+            Chain::Test,
+            ServicesOptions::testnet()
+                .with_chaintracks_url("http://127.0.0.1:9")
+                .with_break_glass_explorer_headers(true),
+        )
+        .unwrap();
+        assert!(s.chaintracks.as_ref().unwrap().break_glass_woc());
+        assert!(s.whatsonchain.base_url().ends_with("/test"));
+    }
+
     /// Build a FallbackChainTracker pointing at a mockito server.
     fn build_mock_chaintracks(server_url: &str) -> StdArc<FallbackChainTracker> {
         let primary = ChaintracksServiceClient::from_url(server_url);
-        StdArc::new(FallbackChainTracker::new(primary, None))
+        StdArc::new(FallbackChainTracker::new(primary))
     }
 
     /// Build a Services instance with custom merkle path providers and

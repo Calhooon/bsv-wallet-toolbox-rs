@@ -5,11 +5,18 @@
 //! localhost — no inbound anything. One token per wallet db/port means any
 //! number of concurrent wallets get independent streams.
 //!
-//! Event handling (maps Arcade statuses onto the existing status model):
+//! Event handling (maps Arcade statuses onto the existing status model through
+//! the one judgment, [`arcade_verdict`]; letter case is ignored):
 //! - `SEEN_ON_NETWORK` / `SEEN_MULTIPLE_NODES` — spendability gate: mark the
 //!   proven_tx_req `unmined` and the transaction `unproven` (exactly what a
-//!   successful ARC `post_beef` does).
-//! - `MINED` — since arcade v0.10.1 (upstream #259) the SSE frame carries the
+//!   successful ARC `post_beef` does). `STUMP_PROCESSING` (in a block, the
+//!   proof not built) does the same and raises the proof trigger.
+//! - `extraInfo = reorg_unmined` — a hint that disagrees with a mined word:
+//!   the proof trigger is raised (a re-ask) and nothing else is applied
+//!   (bsv-stack-lean `docs/RULINGS-2026-10.md:32`). A `reorg_reanchor` MINED
+//!   takes the MINED path: its path replaces the stored anchor only after
+//!   the funnel checks it against our headers.
+//! - `MINED` / `IMMUTABLE` — since arcade v0.10.1 (upstream #259) the SSE frame carries the
 //!   BUMP inline (`merklePath`/`blockHash`/`blockHeight`). When present, the
 //!   proof is ingested directly through the SAME validated funnel as the
 //!   webhook path ([`MonitorStorage::ingest_push_proof`]: BUMP parse → compute
@@ -19,7 +26,15 @@
 //!   behavior: raise the shared CheckForProofs trigger flag so the proof is
 //!   fetched immediately through the services stack.
 //! - `REJECTED` / `DOUBLE_SPEND_ATTEMPTED` — mark the proven_tx_req
-//!   `invalid` / `doubleSpend` so it is never re-broadcast.
+//!   `invalid` / `doubleSpend` so it is never re-broadcast. A REJECTED whose
+//!   ARC code is 466 (or that names competing txs) is a conflict
+//!   (`doubleSpend`); one whose code is 476 (non-final, retryable) is not
+//!   applied.
+//! - Anything else (`RECEIVED` .. `ACCEPTED_BY_NETWORK`, `UNKNOWN`,
+//!   `PENDING_RETRY`, an ORPHAN word, a word Arcade does not define):
+//!   nothing is applied; an undefined word is logged.
+//!
+//! [`arcade_verdict`]: crate::services::providers::arcade::arcade_verdict
 //!
 //! Connection lifecycle: a background tokio task (spawned in [`setup`]) holds
 //! the SSE connection open and reconnects with exponential backoff (1s → 60s
@@ -38,7 +53,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::services::broadcast_memory::PROVIDER_ARCADE_V2;
-use crate::services::providers::arcade::{statuses, ArcadeSseClient, ArcadeStatusEvent};
+use crate::services::providers::arcade::{
+    arcade_reorg_marker, arcade_verdict, ArcadeReorgMarker, ArcadeSseClient, ArcadeStatusEvent,
+    ArcadeVerdict, ARCADE_CODE_CONFLICT, ARCADE_CODE_NON_FINAL,
+};
 use crate::storage::MonitorStorage;
 use crate::Result;
 
@@ -143,6 +161,9 @@ where
             block_hash: None,
             block_height: None,
             merkle_path: None,
+            extra_info: None,
+            status_code: None,
+            competing_txs: None,
             event_id: None,
         };
         Self::apply_event(storage, &ev, proof_trigger).await
@@ -162,13 +183,36 @@ where
         proof_trigger: &AtomicBool,
     ) -> Result<bool> {
         let txid = ev.txid.as_str();
-        match ev.tx_status.as_str() {
-            statuses::SEEN_ON_NETWORK | statuses::SEEN_MULTIPLE_NODES => {
+        // `reorg_unmined` disagrees with a mined word: a hint, so it schedules
+        // a re-ask (the proof fetch, checked against our headers) and changes
+        // nothing by itself. `reorg_reanchor` rides a MINED with the new path,
+        // which the funnel below checks against our headers before it
+        // replaces the stored anchor.
+        if arcade_reorg_marker(ev.extra_info.as_deref()) == Some(ArcadeReorgMarker::Unmined) {
+            proof_trigger.store(true, Ordering::SeqCst);
+            tracing::info!(
+                txid = %txid,
+                status = %ev.tx_status,
+                "Arcade reorg_unmined: a re-ask is scheduled; the word itself changes nothing"
+            );
+            return Ok(false);
+        }
+        match arcade_verdict(&ev.tx_status) {
+            ArcadeVerdict::Seen => {
                 storage
                     .mark_transaction_seen_on_network_by(txid, PROVIDER_ARCADE_V2)
                     .await
             }
-            statuses::MINED => {
+            ArcadeVerdict::InBlock => {
+                // In a block, the proof not built: the network holds it, and
+                // the proof is worth asking for now.
+                let updated = storage
+                    .mark_transaction_seen_on_network_by(txid, PROVIDER_ARCADE_V2)
+                    .await?;
+                proof_trigger.store(true, Ordering::SeqCst);
+                Ok(updated)
+            }
+            ArcadeVerdict::Mined => {
                 // Ensure spendability even if we never saw SEEN_ON_NETWORK.
                 let updated = storage
                     .mark_transaction_seen_on_network_by(txid, PROVIDER_ARCADE_V2)
@@ -202,8 +246,9 @@ where
                             );
                         }
                         Ok(Some(outcome)) => {
-                            // Rejected (bad root / unparseable) or tracker
-                            // deferral — never latch, fall back to fetch.
+                            // Rejected (bad root / unparseable), a tracker
+                            // fault or no tracker at all — never latch, fall
+                            // back to fetch.
                             tracing::warn!(
                                 txid = %txid,
                                 outcome = ?outcome,
@@ -231,11 +276,39 @@ where
                 tracing::info!(txid = %txid, "Arcade MINED event — triggering immediate proof fetch");
                 Ok(updated)
             }
-            statuses::REJECTED => storage.mark_transaction_rejected(txid, false).await,
-            statuses::DOUBLE_SPEND_ATTEMPTED => storage.mark_transaction_rejected(txid, true).await,
-            // RECEIVED / SENT_TO_NETWORK / ACCEPTED_BY_NETWORK — pre-gate
-            // statuses, nothing to record yet.
-            _ => Ok(false),
+            ArcadeVerdict::Rejected => match ev.status_code {
+                // A peer's non-final verdict: retryable, never a verdict on
+                // the bytes; the transaction stays for the resubmit.
+                Some(ARCADE_CODE_NON_FINAL) => {
+                    tracing::info!(
+                        txid = %txid,
+                        extra_info = ?ev.extra_info,
+                        "Arcade REJECTED 476 (non-final, retryable): not applied"
+                    );
+                    Ok(false)
+                }
+                // The input is owned by a competing or confirmed transaction:
+                // a conflict, so the inputs are never blind-released.
+                Some(ARCADE_CODE_CONFLICT) => storage.mark_transaction_rejected(txid, true).await,
+                _ if ev.competing_txs.as_ref().is_some_and(|c| !c.is_empty()) => {
+                    storage.mark_transaction_rejected(txid, true).await
+                }
+                _ => storage.mark_transaction_rejected(txid, false).await,
+            },
+            ArcadeVerdict::Conflict => storage.mark_transaction_rejected(txid, true).await,
+            // RECEIVED / SENT_TO_NETWORK / ACCEPTED_BY_NETWORK, UNKNOWN /
+            // PENDING_RETRY: before the network's word, nothing to record.
+            // An ORPHAN word: the parents are missing from the view, a
+            // transient failure that changes nothing here.
+            ArcadeVerdict::Pending | ArcadeVerdict::Parked | ArcadeVerdict::Orphan => Ok(false),
+            ArcadeVerdict::Invalid => {
+                tracing::warn!(
+                    txid = %txid,
+                    status = %ev.tx_status,
+                    "Arcade pushed a status it does not define: not applied"
+                );
+                Ok(false)
+            }
         }
     }
 
@@ -465,6 +538,9 @@ mod tests {
             block_hash: None,
             block_height: height,
             merkle_path: Some(mp.to_string()),
+            extra_info: None,
+            status_code: None,
+            competing_txs: None,
             event_id: None,
         };
         assert!(inline_proof_material(&base("fea3", None)).is_none()); // no height

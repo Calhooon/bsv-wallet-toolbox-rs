@@ -878,6 +878,16 @@ pub enum ProofIngestOutcome {
     InvalidProof(String),
     /// The ChainTracker errored (transient) — retry later.
     TrackerError(String),
+    /// No ChainTracker is wired into the storage, so the root cannot be
+    /// checked against the active chain: nothing is stored and no attempt
+    /// is counted. The reference has no unchecked path either: its
+    /// `getChainTracker` throws when none is configured and
+    /// `validateCanonicalMerklePathResult` keeps a path only when
+    /// `isValidRootForHeight` answers true (ts-stack@fb1b2da
+    /// packages/wallet/wallet-toolbox/src/services/Services.ts:267-275,
+    /// services/getCanonicalMerklePath.ts:39). Before this variant such a
+    /// proof was stored as proven with a debug log (bsv-stack-lean #35, P0-1).
+    TrackerUnavailable,
 }
 
 /// One stored proof's anchor: the block a `proven_txs` row claims (M19 R1).

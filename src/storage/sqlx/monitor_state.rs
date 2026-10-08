@@ -141,7 +141,10 @@ mod tests {
                 .migrate("old-wallet", &"1".repeat(64))
                 .await
                 .unwrap();
-            assert_eq!(version, MIGRATION_004_MONITOR_STATE_NAME);
+            assert_eq!(
+                version,
+                super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
+            );
             sqlx::query("DROP TABLE monitor_state")
                 .execute(storage.pool())
                 .await

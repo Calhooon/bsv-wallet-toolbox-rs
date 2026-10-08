@@ -74,7 +74,7 @@ pub struct Services {
 - `get_bsv_exchange_rate()` - Get cached USD/BSV rate (via WhatsOnChain)
 - `get_fiat_exchange_rate(currency, base)` - Get fiat exchange rate (auto-refreshes from API)
 - `get_height()` - Get current blockchain height (BHS -> WoC -> Bitails failover)
-- `hash_to_header(hash)` - Get block header by hash (WoC -> Bitails)
+- `hash_to_header(hash)` - Get block header by hash from the Chaintracks header service; WoC -> Bitails only under `break_glass_explorer_headers` (off by default, every call logged at warn)
 - `n_lock_time_is_final(n_lock_time)` - Check if raw nLockTime value allows mining
 - `n_lock_time_is_final_for_tx(input)` - Check nLockTime finality with sequence info
 - `get_services_call_history(reset)` - Get diagnostics for all service calls
@@ -389,17 +389,32 @@ Transaction broadcast service (mAPI):
 - Callback URLs for proof delivery
 - Double-spend detection
 - Merkle path retrieval (implements `MerklePathService` via `get_tx_data`)
+- One status verdict (`arc_status_verdict`) for the single submit, a batch
+  item and an ancestor's status: REJECTED / INVALID / MALFORMED definitive,
+  DOUBLE_SPEND_ATTEMPTED a double spend, any ORPHAN word an orphan wait,
+  MINED_IN_STALE_BLOCK and an undefined word transient, every other ARC or
+  Arcade word accepted; a 2xx never decides by itself
 
 ### Arcade V2 (providers/arcade.rs)
 
 Teranode broadcaster, and (when configured) the wallet's first-party read
 path:
 - EF-only submit, always-async, per-token SSE stream (see the module docs)
-- `GET /tx/{txid}` status document: `txStatus` plus, on `MINED`,
-  `merklePath` (BUMP), `blockHeight` and `blockHash` (arcade >= v0.10.1)
-- Merkle path retrieval (implements `MerklePathService`): a `MINED` document
-  serves the proof; anything else is a soft "no proof yet" so the collection
-  moves on
+- One judgment of a status word, `arcade_verdict`, for the submit answer,
+  the status document and the SSE frame / webhook body alike (arcade@1ae1208
+  `models/transaction.go:89-114`, all twelve words, any letter case):
+  REJECTED, DOUBLE_SPEND_ATTEMPTED and any ORPHAN word fail; every other
+  defined word is accepted as its hint; an undefined word is an invalid
+  answer (transient). HTTP 400 with body `status` 476 (non-final) is
+  transient; `reorg_unmined` / `reorg_reanchor` (`arcade_reorg_marker`) are
+  re-asks, never a status change by themselves. Pinned by
+  `tests/vectors/arcade_status_verdicts.json`
+- `GET /tx/{txid}` status document: `txStatus` plus, on `MINED` /
+  `IMMUTABLE`, `merklePath` (BUMP), `blockHeight` and `blockHash`
+  (arcade >= v0.10.1)
+- Merkle path retrieval (implements `MerklePathService`): a `MINED` or
+  `IMMUTABLE` document serves the proof; anything else is a soft "no proof
+  yet" so the collection moves on
 - Batch triage (implements `StatusForTxidsService`): one `GET /tx/{txid}` per
   txid, `ARCADE_STATUS_CONCURRENCY` in flight, the proof carried on each
   `mined` detail. A 404 or a single failed call is reported `unknown`, never a

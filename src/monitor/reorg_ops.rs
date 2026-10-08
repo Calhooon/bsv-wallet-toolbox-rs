@@ -372,6 +372,10 @@ where
             Ok(Some(ProofIngestOutcome::InvalidMerkleRoot { .. })) => ReproveOutcome::Unchanged,
             Ok(Some(ProofIngestOutcome::TrackerError(e)))
             | Ok(Some(ProofIngestOutcome::InvalidProof(e))) => ReproveOutcome::TransientError(e),
+            // The storage cannot check a replacement: retained, retried.
+            Ok(Some(ProofIngestOutcome::TrackerUnavailable)) => ReproveOutcome::TransientError(
+                "storage has no chain tracker to check the replacement proof".to_string(),
+            ),
             Ok(None) => {
                 ReproveOutcome::TransientError("storage does not ingest proofs".to_string())
             }

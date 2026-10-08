@@ -1,21 +1,19 @@
-//! Fallback chain tracker with WoC backup and in-memory cache.
+//! The chain tracker the wallet checks merkle roots with: a ChainTracks
+//! header service and an in-memory cache of confirmed roots.
 //!
-//! Wraps `ChaintracksServiceClient` as the primary provider and falls back
-//! to WhatsOnChain's block-by-height API when ChainTracks has sync gaps
-//! (e.g. missing headers at certain heights).
+//! No explorer in the proof path (P0-1c, bsv-stack-lean #48; the owner's
+//! rule of 2026-09-15, "nothing routine through WhatsOnChain"). By default
+//! the header service's answer is the answer: `Ok(true)` is true, a
+//! definite `Ok(false)` is false, and an error is an error (unable to
+//! verify), never a verdict. Before P0-1c WhatsOnChain was asked whenever
+//! the header service failed or refuted, and its root was taken.
 //!
-//! Matches the Go toolbox's `servicequeue.Queue` pattern: try providers in
-//! sequence, first success wins, errors from one provider are logged and
-//! the next is tried.
-//!
-//! The four arms of `is_valid_root_for_height` (0.3.66, F2 of the reorg
-//! review): the primary's `Ok(true)` is true; the primary's DEFINITE
-//! `Ok(false)` is confirmed against WoC when WoC answers and stands on its
-//! own when WoC fails (chaintracks is first-party and it answered); the
-//! primary's `Err` defers to WoC when WoC answers and is an `Err` when WoC
-//! fails too. An outage is never a verdict: before 0.3.66 a double outage
-//! answered `Ok(false)`, which every caller read as "the chain refutes this
-//! root", and from inside `createAction` that mass-refuted valid proofs.
+//! Break-glass: [`FallbackChainTracker::with_break_glass_woc`] (from
+//! `ServicesOptions::break_glass_explorer_headers`, off by default) asks
+//! WhatsOnChain's block-by-height API only when the header service gave no
+//! answer, and logs every such call at warn level (marker
+//! `break_glass_explorer_header`). An explorer never overrules the header
+//! service's definite answer, break-glass or not.
 //! Positives are cached; nothing else is.
 
 use async_trait::async_trait;
@@ -70,18 +68,19 @@ impl RootCache {
     }
 }
 
-/// Chain tracker with ChainTracks primary and WoC fallback.
+/// Chain tracker over a ChainTracks header service.
 ///
 /// Logic for `is_valid_root_for_height`:
 /// 1. Check the cache (positives only): on a hit, compare and return.
-/// 2. Ask the primary (ChainTracks). `Ok(true)`: cache and return true.
-/// 3. Ask WoC. When WoC answers, compare (cache a match) and return.
-/// 4. When WoC fails: the primary's definite `Ok(false)` stands
-///    (`Ok(false)`); the primary's `Err` becomes
-///    `Err(ChainTrackerError::NetworkError)` (both failed: no verdict).
+/// 2. Ask the header service. `Ok(true)`: cache and return true. `Ok(false)`:
+///    return false.
+/// 3. The header service gave no answer: `Err(ChainTrackerError::NetworkError)`,
+///    unless break-glass is on, when WhatsOnChain is asked (logged at warn);
+///    when it answers, compare (cache a match); when it fails, `Err`.
 pub struct FallbackChainTracker {
     primary: ChaintracksServiceClient,
-    woc_base_url: String,
+    /// WhatsOnChain's API base, present only under break-glass.
+    break_glass_woc_base_url: Option<String>,
     client: Client,
     cache: RootCache,
 }
@@ -93,28 +92,43 @@ impl FallbackChainTracker {
         &self.primary
     }
 
-    /// Create a new fallback chain tracker.
-    ///
-    /// `woc_base_url` defaults to `https://api.whatsonchain.com/v1/bsv/main`
-    /// if `None` is provided.
-    pub fn new(primary: ChaintracksServiceClient, woc_base_url: Option<String>) -> Self {
-        let woc_base_url =
-            woc_base_url.unwrap_or_else(|| "https://api.whatsonchain.com/v1/bsv/main".to_string());
+    /// A tracker over the header service alone: no explorer is ever asked.
+    pub fn new(primary: ChaintracksServiceClient) -> Self {
+        Self::build(primary, None)
+    }
+
+    /// Break-glass: a tracker that asks WhatsOnChain at `woc_base_url` (e.g.
+    /// `https://api.whatsonchain.com/v1/bsv/main`) when the header service
+    /// gives no answer, logging every such call at warn level. Never the
+    /// default; never consulted against a definite answer.
+    pub fn with_break_glass_woc(
+        primary: ChaintracksServiceClient,
+        woc_base_url: impl Into<String>,
+    ) -> Self {
+        Self::build(primary, Some(woc_base_url.into()))
+    }
+
+    fn build(primary: ChaintracksServiceClient, break_glass_woc_base_url: Option<String>) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .unwrap_or_default();
         Self {
             primary,
-            woc_base_url,
+            break_glass_woc_base_url,
             client,
             cache: RootCache::new(1000),
         }
     }
 
-    /// Try WoC block-by-height API as fallback.
-    async fn woc_root_for_height(&self, height: u32) -> Result<String, String> {
-        let url = format!("{}/block/height/{}", self.woc_base_url, height);
+    /// Is the break-glass explorer fallback on?
+    pub fn break_glass_woc(&self) -> bool {
+        self.break_glass_woc_base_url.is_some()
+    }
+
+    /// Break-glass: WhatsOnChain's block-by-height API.
+    async fn woc_root_for_height(&self, woc_base_url: &str, height: u32) -> Result<String, String> {
+        let url = format!("{}/block/height/{}", woc_base_url, height);
         let response = self
             .client
             .get(&url)
@@ -153,34 +167,36 @@ impl ChainTracker for FallbackChainTracker {
             return Ok(cached_root.eq_ignore_ascii_case(root));
         }
 
-        // 2. Try primary (ChainTracks)
-        let primary_answer =
-            ChaintracksServiceClient::is_valid_root_for_height(&self.primary, root, height).await;
-        match &primary_answer {
-            Ok(true) => {
-                self.cache.insert(height, root.to_lowercase());
-                return Ok(true);
-            }
-            Ok(false) => {
-                // A definite mismatch from the first-party header service.
-                // WoC is still asked in case ChainTracks has bad data, but
-                // this answer stands on its own when WoC cannot be reached.
-                tracing::debug!(
-                    "ChainTracks root mismatch at height {}; confirming with WoC",
-                    height
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "ChainTracks failed for height {}, trying WoC fallback: {}",
-                    height,
-                    e
-                );
-            }
-        }
+        // 2. The header service.
+        let primary_error =
+            match ChaintracksServiceClient::is_valid_root_for_height(&self.primary, root, height)
+                .await
+            {
+                Ok(true) => {
+                    self.cache.insert(height, root.to_lowercase());
+                    return Ok(true);
+                }
+                // A definite answer from the header service stands; no
+                // explorer is asked to overrule it.
+                Ok(false) => return Ok(false),
+                Err(e) => e,
+            };
 
-        // 3. Try WoC fallback
-        match self.woc_root_for_height(height).await {
+        // 3. No answer. Without break-glass that is the answer: unable to
+        // verify, never an explorer's verdict.
+        let Some(woc_base_url) = self.break_glass_woc_base_url.as_deref() else {
+            return Err(ChainTrackerError::NetworkError(format!(
+                "header service gave no answer for height {}: {}",
+                height, primary_error
+            )));
+        };
+        tracing::warn!(
+            height,
+            marker = "break_glass_explorer_header",
+            error = %primary_error,
+            "break-glass: the header service gave no answer; asking WhatsOnChain for the merkle root"
+        );
+        match self.woc_root_for_height(woc_base_url, height).await {
             Ok(woc_root) => {
                 let valid = woc_root.eq_ignore_ascii_case(root);
                 if valid {
@@ -188,33 +204,19 @@ impl ChainTracker for FallbackChainTracker {
                 }
                 Ok(valid)
             }
-            Err(woc_error) => match primary_answer {
-                // Unreachable: a primary `true` returned above. Kept total.
-                Ok(true) => Ok(true),
-                // 4a. ChainTracks answered a definite false; WoC's fault
-                // does not unsay it.
-                Ok(false) => {
-                    tracing::debug!(
-                        "WoC unavailable for height {} ({}); ChainTracks' mismatch stands",
-                        height,
-                        woc_error
-                    );
-                    Ok(false)
-                }
-                // 4b. Nobody answered: an outage is an error, never a verdict.
-                Err(primary_error) => {
-                    tracing::warn!(
-                        "Both ChainTracks and WoC failed for height {}: chaintracks: {}; WoC: {}",
-                        height,
-                        primary_error,
-                        woc_error
-                    );
-                    Err(ChainTrackerError::NetworkError(format!(
-                        "both chaintracks and WoC failed for height {}: chaintracks: {}; WoC: {}",
-                        height, primary_error, woc_error
-                    )))
-                }
-            },
+            // Nobody answered: an outage is an error, never a verdict.
+            Err(woc_error) => {
+                tracing::warn!(
+                    "Both ChainTracks and WoC failed for height {}: chaintracks: {}; WoC: {}",
+                    height,
+                    primary_error,
+                    woc_error
+                );
+                Err(ChainTrackerError::NetworkError(format!(
+                    "both chaintracks and WoC failed for height {}: chaintracks: {}; WoC: {}",
+                    height, primary_error, woc_error
+                )))
+            }
         }
     }
 
@@ -239,8 +241,9 @@ mod tests {
         })
     }
 
+    /// A break-glass tracker: WhatsOnChain at `woc_url` behind the header service.
     fn make_tracker(ct_url: &str, woc_url: &str) -> FallbackChainTracker {
-        FallbackChainTracker::new(make_primary(ct_url), Some(woc_url.to_string()))
+        FallbackChainTracker::with_break_glass_woc(make_primary(ct_url), woc_url)
     }
 
     // Helper: mock ChainTracks /findHeaderHexForHeight endpoint.
@@ -435,9 +438,10 @@ mod tests {
     // Test 5b: the four arms, named (F2b of the reorg review)
     // =========================================================================
 
-    /// (a) primary true; (b) primary definite false + WoC answers: compare;
-    /// (c) primary definite false + WoC fails: false stands; (d) primary
-    /// error + WoC answers: compare; (e) primary error + WoC fails: Err.
+    /// Under break-glass: (a) primary true; (b) primary definite false:
+    /// false, WoC never asked; (c) primary definite false + WoC down: false;
+    /// (d) primary error + WoC answers: compare; (e) primary error + WoC
+    /// fails: Err.
     #[tokio::test]
     async fn the_four_arms_of_the_fallback_tracker() {
         let mut ct_server = mockito::Server::new_async().await;
@@ -448,16 +452,25 @@ mod tests {
         let t = make_tracker(&ct_server.url(), &woc_server.url());
         assert!(t.is_valid_root_for_height("root_a", 1).await.unwrap());
 
-        // (b) primary says the real root is "real"; WoC agrees: the asked
-        // root is refuted; and confirmed when WoC names the asked root.
+        // (b) primary says the real root is "real": the asked root is
+        // refuted, and WhatsOnChain is never asked, even when it would name
+        // the asked root (P0-1c: an explorer never overrules the header
+        // service's definite answer, break-glass or not).
         let _b_ct = mock_ct_header(&mut ct_server, 2, "real_b").await;
         let _b_woc = mock_woc_header(&mut woc_server, 2, "real_b").await;
         let t = make_tracker(&ct_server.url(), &woc_server.url());
         assert!(!t.is_valid_root_for_height("wrong_b", 2).await.unwrap());
         let _b2_ct = mock_ct_header(&mut ct_server, 3, "stale_c").await;
-        let _b2_woc = mock_woc_header(&mut woc_server, 3, "asked_c").await;
+        let b2_woc = woc_server
+            .mock("GET", "/block/height/3")
+            .with_status(200)
+            .with_body(r#"{"merkleroot":"asked_c"}"#)
+            .expect(0)
+            .create_async()
+            .await;
         let t = make_tracker(&ct_server.url(), &woc_server.url());
-        assert!(t.is_valid_root_for_height("asked_c", 3).await.unwrap());
+        assert!(!t.is_valid_root_for_height("asked_c", 3).await.unwrap());
+        b2_woc.assert_async().await;
 
         // (c) primary definite false, WoC rate limited: false stands.
         let _c_ct = mock_ct_header(&mut ct_server, 4, "real_d").await;
@@ -480,6 +493,49 @@ mod tests {
             t.is_valid_root_for_height("any", 6).await,
             Err(ChainTrackerError::NetworkError(_))
         ));
+    }
+
+    /// P0-1c witness (bsv-stack-lean #48): the tracker `Services` builds
+    /// from a `chaintracks_url` takes an explorer's root. The base builds it
+    /// as `FallbackChainTracker::new(primary, None)` (`services.rs:495`), the
+    /// same arms as here with WhatsOnChain's real URL; the mock stands in for
+    /// it. With the header service down the explorer's root is accepted, and
+    /// the explorer overrules the header service's own definite answer. The
+    /// rule (CLAUDE.md rule 21, the owner's rule of 2026-09-15): no explorer
+    /// in the proof path. Down is an error; a definite answer stands.
+    #[tokio::test]
+    async fn the_default_tracker_never_takes_an_explorers_root() {
+        let mut ct_server = mockito::Server::new_async().await;
+        let mut woc_server = mockito::Server::new_async().await;
+
+        // The header service is down; the explorer names the asked root.
+        let _a_ct = mock_ct_error(&mut ct_server, 900).await;
+        let _a_woc = mock_woc_header(&mut woc_server, 900, "explorer_root").await;
+        let t = default_tracker(&ct_server.url(), &woc_server.url());
+        let down = t.is_valid_root_for_height("explorer_root", 900).await;
+        assert!(
+            down.is_err(),
+            "the header service down is an error, never an explorer's verdict: {down:?}"
+        );
+
+        // The header service answers a different root; the explorer names
+        // the asked one.
+        let _b_ct = mock_ct_header(&mut ct_server, 901, "header_service_root").await;
+        let _b_woc = mock_woc_header(&mut woc_server, 901, "explorer_root").await;
+        let t = default_tracker(&ct_server.url(), &woc_server.url());
+        let refuted = t.is_valid_root_for_height("explorer_root", 901).await;
+        assert!(
+            matches!(refuted, Ok(false)),
+            "the header service's definite answer stands: {refuted:?}"
+        );
+    }
+
+    /// The tracker `Services` builds by default. It holds no explorer URL,
+    /// so the explorer mock (`_woc_url`) is never reachable from it.
+    fn default_tracker(ct_url: &str, _woc_url: &str) -> FallbackChainTracker {
+        let t = FallbackChainTracker::new(make_primary(ct_url));
+        assert!(!t.break_glass_woc());
+        t
     }
 
     // =========================================================================

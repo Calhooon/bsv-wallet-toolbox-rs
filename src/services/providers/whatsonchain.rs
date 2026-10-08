@@ -89,6 +89,11 @@ impl WhatsOnChain {
         })
     }
 
+    /// The API base for this provider's chain.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Get HTTP headers including optional API key.
     fn get_headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
