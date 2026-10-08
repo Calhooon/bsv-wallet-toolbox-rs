@@ -1,14 +1,20 @@
 # Changelog
 
-## [0.4.1] - unreleased
+## [0.4.1] - 2026-10-08
 
 ### Fixed
 
+- One broadcaster's refusal is final only when no other source holds the transaction. An Arcade `REJECTED` (or conflict) pushed on the status stream now goes through `MonitorStorage::mark_transaction_rejected_by`: when another broadcaster accepted the transaction (a bare acceptance does not overrule a conflict), or the network holds it by a status source or another broadcaster's own status read, nothing is failed and the transaction stays for the proof task. The 2026-10-07 oversize post (Arcade 460 "missing input source data", GorillaPool ARC accepted, mined at 970030) was failed with its 47,377-sat change hidden.
+- The auto-unfail canary asks every source: the status sources, then each configured broadcaster's own status read (`WalletServices::get_broadcaster_statuses`, new, default empty) and a merkle path the chain tracker accepted, not only the source that refused the transaction.
 - The proof attempt backstop reaches every req the proof task checks. `synchronize_transaction_statuses` counted an attempt only for a req the status sources called mined, so a broadcast transaction that no source holds and no broadcaster refused stayed `unproven` with attempts 0, its change spendable and its inputs locked, forever. Now a status pass that finds no proof is an attempt, as in the TypeScript `TaskCheckForProofs`, and once `attempts` is greater than the reference's limit (`unprovenAttemptsLimitMain` 144, `unprovenAttemptsLimitTest` 10) the req goes `invalid` and the transaction `failed` through the release rule (`retire_undeliverable_tx`: one more live status read, its own outputs unspendable, each input released only on its own `is_utxo`). A req a source still holds is never written off by the count alone: the status sources say known or mined, or the broadcast memory has a seen or mined row no older than 2 hours. A status source that cannot answer, a closed proof gate and a `sending` req count nothing.
 - A req the status sources call mined but that no merkle path arrives for is no longer set `invalid` at 144 attempts with its transaction left `unproven`; it keeps counting and waits for its proof.
 - A written-off req restarts at attempts 0, so the auto-unfail canary asks about it hourly (it reads `attempts` as its own counter and would have asked daily).
 
-(Calgooon/zanaadu-v2#368.)
+### Tests
+
+- Pinned: `create_action` marks a caller-named input that storage holds (a pf head in its basket) `spent_by` with the wallet's change, and `list_actions` lists both inputs from storage. This was already the behavior; a caller input storage does not hold (known only from `inputBEEF`) has no row to mark, as in the TypeScript toolbox.
+
+(Calgooon/zanaadu-v2#357, #368.)
 
 ## [0.4.0] - 2026-10-08
 

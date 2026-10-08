@@ -317,6 +317,27 @@ pub trait WalletServices: Send + Sync {
     fn get_services_call_history(&self, _reset: bool) -> ServicesCallHistory {
         ServicesCallHistory::default()
     }
+
+    /// Every configured broadcaster's own word on `txid`, read from its
+    /// status endpoint (Arcade `GET /tx/{txid}`, classic ARC
+    /// `GET /v1/tx/{txid}`), as `(provider name, ladder status)` with the
+    /// provider names of the broadcast memory
+    /// ([`PROVIDER_ARCADE_V2`](crate::services::PROVIDER_ARCADE_V2), ...).
+    ///
+    /// A broadcaster that cannot answer contributes nothing; one that does
+    /// not hold the transaction answers `Unknown`. Used where one
+    /// broadcaster's refusal must be weighed against every other source
+    /// (Calgooon/zanaadu-v2#357): a refusal is final only when no other
+    /// source holds the transaction.
+    ///
+    /// The default asks nobody (an empty list), which is right for mocks and
+    /// for services without broadcasters.
+    async fn get_broadcaster_statuses(
+        &self,
+        _txid: &str,
+    ) -> Vec<(String, crate::services::BroadcastStatus)> {
+        Vec::new()
+    }
 }
 
 // =============================================================================

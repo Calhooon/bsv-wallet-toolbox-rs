@@ -186,6 +186,10 @@ pub struct MockWalletServices {
     /// Response for is_utxo calls.
     is_utxo_response: Mutex<MockResponse<bool>>,
 
+    /// What `get_broadcaster_statuses` answers (empty by default: no
+    /// broadcaster asked).
+    broadcaster_statuses: Vec<(String, crate::services::BroadcastStatus)>,
+
     /// Record of all calls made.
     call_history: Mutex<Vec<MockCallRecord>>,
 
@@ -315,6 +319,7 @@ pub struct MockWalletServicesBuilder {
     get_status_for_txids_response: MockResponse<GetStatusForTxidsResult>,
     get_script_hash_history_response: MockResponse<GetScriptHashHistoryResult>,
     is_utxo_response: MockResponse<bool>,
+    broadcaster_statuses: Vec<(String, crate::services::BroadcastStatus)>,
 }
 
 impl Default for MockWalletServicesBuilder {
@@ -361,6 +366,7 @@ impl Default for MockWalletServicesBuilder {
                 history: vec![],
             }),
             is_utxo_response: MockResponse::Success(true),
+            broadcaster_statuses: Vec::new(),
         }
     }
 }
@@ -504,6 +510,16 @@ impl MockWalletServicesBuilder {
         self
     }
 
+    /// Set what `get_broadcaster_statuses` answers, as `(provider name,
+    /// ladder status)` for every txid.
+    pub fn broadcaster_statuses(
+        mut self,
+        statuses: Vec<(String, crate::services::BroadcastStatus)>,
+    ) -> Self {
+        self.broadcaster_statuses = statuses;
+        self
+    }
+
     /// Build the MockWalletServices.
     pub fn build(self) -> MockWalletServices {
         MockWalletServices {
@@ -518,6 +534,7 @@ impl MockWalletServicesBuilder {
             get_status_for_txids_response: Mutex::new(self.get_status_for_txids_response),
             get_script_hash_history_response: Mutex::new(self.get_script_hash_history_response),
             is_utxo_response: Mutex::new(self.is_utxo_response),
+            broadcaster_statuses: self.broadcaster_statuses,
             call_history: Mutex::new(Vec::new()),
             call_counts: Mutex::new(HashMap::new()),
             tip_header: Mutex::new(None),
@@ -783,6 +800,14 @@ impl WalletServices for MockWalletServices {
     fn hash_output_script(&self, script: &[u8]) -> String {
         let hash = sha256(script);
         hex::encode(&hash)
+    }
+
+    async fn get_broadcaster_statuses(
+        &self,
+        txid: &str,
+    ) -> Vec<(String, crate::services::BroadcastStatus)> {
+        self.record_call("get_broadcaster_statuses", vec![txid.to_string()], true);
+        self.broadcaster_statuses.clone()
     }
 
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool> {
