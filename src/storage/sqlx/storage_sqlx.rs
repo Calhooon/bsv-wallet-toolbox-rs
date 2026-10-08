@@ -3178,6 +3178,54 @@ impl StorageSqlx {
     }
 }
 
+/// The reference's `unprovenAttemptsLimitMain` / `unprovenAttemptsLimitTest`
+/// (wallet-toolbox src/monitor/Monitor.ts:105-106): a req is written off
+/// once `attempts` is GREATER than the limit
+/// (src/monitor/tasks/TaskCheckForProofs.ts:158).
+pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
+pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;
+
+/// How old a broadcast-memory seen/mined row may be and still keep a req
+/// from the attempt backstop. The same 2 hours as the freshness window on
+/// memory evidence against a broadcaster's refusal (Calgooon/zanaadu-v2#357):
+/// past it only a live read counts.
+const BACKSTOP_MEMORY_EVIDENCE_MAX_AGE_SECS: i64 = 2 * 60 * 60;
+
+/// Private helpers for the attempt backstop of
+/// `MonitorStorage::synchronize_transaction_statuses`.
+impl StorageSqlx {
+    fn proof_attempts_limit(&self) -> i64 {
+        if self.get_settings().chain.starts_with("main") {
+            PROOF_ATTEMPTS_LIMIT_MAIN
+        } else {
+            PROOF_ATTEMPTS_LIMIT_TEST
+        }
+    }
+
+    /// A broadcast-memory row, no older than the freshness window, that says
+    /// a broadcaster or the network holds `txid` (seen or mined). A bare
+    /// acceptance is not evidence, and an unreadable memory says nothing.
+    async fn fresh_memory_evidence(&self, txid: &str) -> Option<String> {
+        let records = match self
+            .broadcast_records(None, std::slice::from_ref(&txid.to_string()))
+            .await
+        {
+            Ok(records) => records,
+            Err(e) => {
+                tracing::debug!(txid = %txid, error = %e, "broadcast memory unreadable: no memory evidence");
+                return None;
+            }
+        };
+        let fresh_after =
+            chrono::Utc::now() - chrono::Duration::seconds(BACKSTOP_MEMORY_EVIDENCE_MAX_AGE_SECS);
+        records.into_iter().find_map(|r| {
+            let status = r.ladder_status()?;
+            (r.seen_at >= fresh_after && status.is_network_evidence())
+                .then(|| format!("{} {}", r.provider, status.as_str()))
+        })
+    }
+}
+
 /// M19 R1: is a freshly validated proof the SAME anchor as the stored one?
 ///
 /// A stored row written by `internalize_action` before 0.3.65 carries an
@@ -3753,6 +3801,134 @@ impl MonitorStorage for StorageSqlx {
             }
         };
 
+        // What the status sources hold right now (mempool or a block), for
+        // the attempt backstop below.
+        let held_txids: std::collections::HashSet<String> = match &triage_result {
+            Ok(status_result) => status_result
+                .results
+                .iter()
+                .filter(|d| d.status == "known" || d.status == "mined")
+                .map(|d| d.txid.clone())
+                .collect(),
+            Err(_) => Default::default(),
+        };
+
+        // The proof LAG gate: while it is CLOSED (no header processed yet)
+        // nothing can be stored, so nothing is fetched and no attempt is
+        // counted, exactly as the reference returns before its loop while
+        // `maxAcceptableHeight` is undefined. Said once per pass.
+        let proof_gate = self.max_acceptable_proof_height().await?;
+        if proof_gate == 0 {
+            tracing::info!(
+                confirmed = confirmed_txids.len(),
+                marker = "proof_gate_closed",
+                "synchronize_transaction_statuses: the proof gate is closed (no header has been processed yet); proofs are not fetched this pass"
+            );
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::new();
+
+        // =====================================================================
+        // THE ATTEMPT BACKSTOP (Calgooon/zanaadu-v2#368)
+        // The reference counts a proof attempt for ANY req its proof task
+        // checks and finds no proof for, and writes the req off once
+        // `attempts > unprovenAttemptsLimitMain` (144; 10 off mainnet):
+        // wallet-toolbox src/monitor/tasks/TaskCheckForProofs.ts:154-165,235
+        // and src/monitor/Monitor.ts:105-106. Before this pass only reqs the
+        // triage called mined were counted, so a transaction nobody holds and
+        // nobody refused stayed `unproven` with attempts 0 forever.
+        //
+        // Here: a status pass that does not call the req mined is an attempt
+        // (the mined ones are counted by the fetch loop below). Past the
+        // limit the req is written off through THE RELEASE RULE
+        // (`retire_undeliverable_tx`: one more live status read, then each
+        // input released only on its own `is_utxo`), UNLESS a source still
+        // holds the transaction: this pass's status answer says known or
+        // mined, or the broadcast memory has a seen/mined row inside the
+        // freshness window. A held req is never written off by the count
+        // alone; it keeps counting and the chain decides.
+        //
+        // A `sending` req is not counted: `send_waiting_transactions` owns
+        // its attempts (the re-broadcast budget) until it leaves `sending`.
+        // Read from the column: `find_proven_tx_reqs` does not carry these
+        // statuses through (`TableProvenTxReq.status` is `Pending` for them).
+        // =====================================================================
+        let attempts_limit = self.proof_attempts_limit();
+        let sending_ids: std::collections::HashSet<i64> = sqlx::query_scalar(
+            "SELECT proven_tx_req_id FROM proven_tx_reqs WHERE status = 'sending'",
+        )
+        .fetch_all(self.pool())
+        .await?
+        .into_iter()
+        .collect();
+        let mut written_off: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for req in &reqs {
+            if sending_ids.contains(&req.proven_tx_req_id) {
+                continue;
+            }
+            let now = chrono::Utc::now();
+            if i64::from(req.attempts) > attempts_limit && !held_txids.contains(&req.txid) {
+                if let Some(evidence) = self.fresh_memory_evidence(&req.txid).await {
+                    tracing::info!(
+                        txid = %req.txid,
+                        attempts = req.attempts,
+                        evidence = %evidence,
+                        marker = "proof_backstop_held",
+                        "synchronize_transaction_statuses: past the attempt limit but a source holds it; not written off"
+                    );
+                } else {
+                    // attempts restarts at 0: on an `invalid` req the column
+                    // is the unfail canary's own counter (hourly for its
+                    // first 24 checks), and a recovered req gets a whole
+                    // budget back.
+                    match self
+                        .retire_undeliverable_tx(
+                            services.as_ref(),
+                            &req.txid,
+                            req.proven_tx_req_id,
+                            0,
+                            "invalid",
+                            now,
+                        )
+                        .await?
+                    {
+                        RetireOutcome::Alive => {}
+                        RetireOutcome::Retired { restored, kept } => {
+                            tracing::warn!(
+                                txid = %req.txid,
+                                attempts = req.attempts,
+                                restored,
+                                kept,
+                                marker = "proof_backstop_written_off",
+                                "synchronize_transaction_statuses: no proof and no source holds it past the attempt limit; req invalid, transaction failed"
+                            );
+                            written_off.insert(req.txid.clone());
+                            results.push(TxSynchronizedStatus {
+                                txid: req.txid.clone(),
+                                status: ProvenTxReqStatus::Invalid,
+                                block_height: None,
+                                block_hash: None,
+                                merkle_root: None,
+                                merkle_path: None,
+                            });
+                        }
+                    }
+                    continue;
+                }
+            }
+            if confirmed_txids.contains(&req.txid) {
+                continue;
+            }
+            sqlx::query(
+                "UPDATE proven_tx_reqs SET attempts = attempts + 1, updated_at = ? WHERE proven_tx_req_id = ?",
+            )
+            .bind(now)
+            .bind(req.proven_tx_req_id)
+            .execute(self.pool())
+            .await?;
+        }
+
         // Filter reqs to only confirmed transactions
         let confirmed_reqs: Vec<&_> = reqs
             .iter()
@@ -3763,30 +3939,13 @@ impl MonitorStorage for StorageSqlx {
             tracing::debug!(
                 "synchronize_transaction_statuses: no confirmed transactions to fetch proofs for"
             );
-            return Ok(Vec::new());
-        }
-
-        // The proof LAG gate: while it is CLOSED (no header processed yet)
-        // nothing can be stored, so nothing is fetched and no attempt is
-        // counted, exactly as the reference returns before its loop while
-        // `maxAcceptableHeight` is undefined. Said once per pass.
-        let proof_gate = self.max_acceptable_proof_height().await?;
-        if proof_gate == 0 {
-            tracing::info!(
-                confirmed = confirmed_reqs.len(),
-                marker = "proof_gate_closed",
-                "synchronize_transaction_statuses: the proof gate is closed (no header has been processed yet); proofs are not fetched this pass"
-            );
-            return Ok(Vec::new());
+            return Ok(results);
         }
 
         tracing::debug!(
             "synchronize_transaction_statuses: fetching proofs for {} confirmed transactions",
             confirmed_reqs.len()
         );
-
-        let mut results = Vec::new();
-        let max_attempts = 144; // ~2.4 hours at 60s intervals (matches JS reference for mainnet)
 
         for req in &confirmed_reqs {
             let txid = &req.txid;
@@ -3944,39 +4103,17 @@ impl MonitorStorage for StorageSqlx {
                             }
                         }
                     } else {
-                        // No proof yet - increment attempts
-                        let attempts = req.attempts + 1;
-                        let now = chrono::Utc::now();
-
-                        if attempts >= max_attempts {
-                            // Too many attempts - mark as invalid
-                            sqlx::query(
-                                "UPDATE proven_tx_reqs SET status = 'invalid', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
-                            )
-                            .bind(attempts)
-                            .bind(now)
-                            .bind(req.proven_tx_req_id)
-                            .execute(self.pool())
-                            .await?;
-
-                            results.push(TxSynchronizedStatus {
-                                txid: txid.clone(),
-                                status: ProvenTxReqStatus::Invalid,
-                                block_height: None,
-                                block_hash: None,
-                                merkle_root: None,
-                                merkle_path: None,
-                            });
-                        } else {
-                            sqlx::query(
-                                "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
-                            )
-                            .bind(attempts)
-                            .bind(now)
-                            .bind(req.proven_tx_req_id)
-                            .execute(self.pool())
-                            .await?;
-                        }
+                        // No proof yet: an attempt. The status sources
+                        // call this transaction mined, so a source holds it
+                        // and the count alone never writes it off (#368).
+                        sqlx::query(
+                            "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
+                        )
+                        .bind(req.attempts + 1)
+                        .bind(chrono::Utc::now())
+                        .bind(req.proven_tx_req_id)
+                        .execute(self.pool())
+                        .await?;
                     }
                 }
                 Err(e) => {

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.1] - unreleased
+
+### Fixed
+
+- The proof attempt backstop reaches every req the proof task checks. `synchronize_transaction_statuses` counted an attempt only for a req the status sources called mined, so a broadcast transaction that no source holds and no broadcaster refused stayed `unproven` with attempts 0, its change spendable and its inputs locked, forever. Now a status pass that finds no proof is an attempt, as in the TypeScript `TaskCheckForProofs`, and once `attempts` is greater than the reference's limit (`unprovenAttemptsLimitMain` 144, `unprovenAttemptsLimitTest` 10) the req goes `invalid` and the transaction `failed` through the release rule (`retire_undeliverable_tx`: one more live status read, its own outputs unspendable, each input released only on its own `is_utxo`). A req a source still holds is never written off by the count alone: the status sources say known or mined, or the broadcast memory has a seen or mined row no older than 2 hours. A status source that cannot answer, a closed proof gate and a `sending` req count nothing.
+- A req the status sources call mined but that no merkle path arrives for is no longer set `invalid` at 144 attempts with its transaction left `unproven`; it keeps counting and waits for its proof.
+- A written-off req restarts at attempts 0, so the auto-unfail canary asks about it hourly (it reads `attempts` as its own counter and would have asked daily).
+
+(Calgooon/zanaadu-v2#368.)
+
 ## [0.4.0] - 2026-10-08
 
 ### Changed, breaking
