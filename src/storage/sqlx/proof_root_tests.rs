@@ -13,13 +13,14 @@ use chrono::{Duration, Utc};
 use super::create_action::{beef_bfs_walk, compact_stored_beef};
 use super::reorg_tests::{
     child_spending, insert_proven, insert_req, open_gate, proven_row, req_state, seed_completed_tx,
-    seed_user, single_leaf_bump, storage, tx_state, txid_of, COINBASE_HEX, COINBASE_TXID,
+    seed_user, single_leaf_bump, storage, tx_state, txid_of, ErrTracker, COINBASE_HEX,
+    COINBASE_TXID,
 };
 use super::StorageSqlx;
 use crate::services::mock::{MockResponse, MockWalletServices};
 use crate::services::{BlockHeader, GetMerklePathResult, WalletServices};
 use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
-use crate::storage::ProofIngestOutcome;
+use crate::storage::{MonitorStorage, ProofIngestOutcome};
 
 /// A tracker that knows the given `(height, root)` pairs and nothing else.
 fn tracker_with(roots: &[(u32, &str)]) -> MockChainTracker {
@@ -465,6 +466,167 @@ async fn compaction_checks_an_unchecked_proof_once() {
     let mut beef = stored_beef();
     compact(&s, &mut beef, Some(&tracker_with(&[]))).await;
     assert!(proven_row(&s, COINBASE_TXID).await.is_some());
+}
+
+// =============================================================================
+// Compaction refuses what the ingest refuses (P0-1c)
+// =============================================================================
+
+/// Compaction writes a proof into a BEEF the wallet keeps or sends; it is a
+/// store, so it refuses an unchecked stored proof exactly where the ingest
+/// refuses one: no tracker (`TrackerUnavailable`) and a tracker fault
+/// (`TrackerError`) attach nothing. The row is kept, unchecked, for a read
+/// that has a tracker. Before P0-1c compaction skipped only a refuted proof
+/// (`[SRC] bsv-wallet-toolbox-rs@786f401 src/storage/sqlx/storage_sqlx.rs:5097-5118`,
+/// `create_action.rs:3261-3270`), so an undecided one was merged unchecked.
+#[tokio::test]
+async fn compaction_attaches_no_unchecked_proof_without_a_tracker_answer() {
+    let raw = hex::decode(COINBASE_HEX).unwrap();
+    let err = ErrTracker;
+    for (case, tracker) in [
+        ("no tracker", None),
+        (
+            "a tracker fault",
+            Some(&err as &dyn bsv_rs::transaction::ChainTracker),
+        ),
+    ] {
+        let s = storage().await;
+        insert_proven(
+            &s,
+            COINBASE_TXID,
+            500,
+            &"o".repeat(64),
+            &raw,
+            &single_leaf_bump(500, COINBASE_TXID),
+        )
+        .await;
+        let mut beef = Beef::new();
+        beef.merge_raw_tx(raw.clone(), None);
+        let mut conn = s.pool().acquire().await.unwrap();
+        compact_stored_beef(&mut conn, &mut beef, tracker)
+            .await
+            .unwrap();
+        drop(conn);
+        assert!(
+            beef.find_txid(COINBASE_TXID)
+                .and_then(|t| t.bump_index())
+                .is_none(),
+            "{case}: an unchecked proof is not attached by compaction"
+        );
+        assert!(
+            proven_row(&s, COINBASE_TXID).await.is_some(),
+            "{case}: the row is kept for a read that can decide it"
+        );
+    }
+}
+
+/// A raw transaction no input of the subject reaches, padded past the
+/// monitor's 1000-byte threshold: dead weight the monitor's compaction
+/// prunes once it has upgraded something.
+fn unreached_filler() -> Vec<u8> {
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&1u32.to_le_bytes()); // version
+    raw.push(1); // vin count
+    raw.extend_from_slice(&[0x11; 32]); // prev txid, no such transaction
+    raw.extend_from_slice(&0u32.to_le_bytes()); // vout
+    raw.push(0); // script len
+    raw.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // sequence
+    raw.push(1); // vout count
+    raw.extend_from_slice(&0u64.to_le_bytes()); // value
+    let script_len: u16 = 1200;
+    raw.push(0xfd);
+    raw.extend_from_slice(&script_len.to_le_bytes());
+    raw.push(0x6a); // OP_RETURN
+    raw.extend(std::iter::repeat(0u8).take(script_len as usize - 1));
+    raw.extend_from_slice(&0u32.to_le_bytes()); // locktime
+    raw
+}
+
+/// The monitor's compaction (`MonitorStorage::compact_input_beefs`, the
+/// `CompactBeef` task and `bsv-wallet compact`) on a storage with no
+/// tracker: a completed request's stored input BEEF holds its parent as a
+/// raw leg, and `proven_txs` holds an unchecked proof for that parent. The
+/// stored BEEF is not rewritten with the proof; the row stays unchecked.
+#[tokio::test]
+async fn the_monitors_compaction_with_no_tracker_stores_no_unchecked_proof() {
+    let s = storage().await;
+    let parent_raw = hex::decode(COINBASE_HEX).unwrap();
+    let child_raw = child_spending(COINBASE_TXID);
+    let child_txid = txid_of(&child_raw);
+    insert_proven(
+        &s,
+        COINBASE_TXID,
+        500,
+        &"o".repeat(64),
+        &parent_raw,
+        &single_leaf_bump(500, COINBASE_TXID),
+    )
+    .await;
+    insert_req(
+        &s,
+        &child_txid,
+        &child_raw,
+        "completed",
+        0,
+        None,
+        Utc::now(),
+    )
+    .await;
+    let mut stored = Beef::new();
+    stored.merge_raw_tx(parent_raw.clone(), None);
+    stored.merge_raw_tx(unreached_filler(), None);
+    let stored_bytes = stored.to_binary();
+    assert!(
+        stored_bytes.len() > 1000,
+        "precondition: above the threshold"
+    );
+    sqlx::query("UPDATE proven_tx_reqs SET input_beef = ? WHERE txid = ?")
+        .bind(&stored_bytes)
+        .bind(&child_txid)
+        .execute(s.pool())
+        .await
+        .unwrap();
+    assert!(
+        s.get_chain_tracker().await.is_none(),
+        "precondition: no tracker"
+    );
+
+    let compacted = MonitorStorage::compact_input_beefs(&s).await.unwrap();
+
+    let (after,): (Vec<u8>,) =
+        sqlx::query_as("SELECT input_beef FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&child_txid)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+    let after = Beef::from_binary(&after).unwrap();
+    assert!(
+        after
+            .find_txid(COINBASE_TXID)
+            .and_then(|t| t.bump_index())
+            .is_none(),
+        "no unchecked proof is written into a stored BEEF"
+    );
+    assert_eq!(compacted, 0, "nothing was compacted");
+    assert!(proven_row(&s, COINBASE_TXID).await.is_some());
+
+    // With a tracker that confirms the root, the same pass attaches it,
+    // records the check and prunes the dead weight.
+    s.set_chain_tracker(Arc::new(tracker_with(&[(500, COINBASE_TXID)])))
+        .await;
+    assert_eq!(MonitorStorage::compact_input_beefs(&s).await.unwrap(), 1);
+    let (after,): (Vec<u8>,) =
+        sqlx::query_as("SELECT input_beef FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&child_txid)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+    let after = Beef::from_binary(&after).unwrap();
+    assert!(after
+        .find_txid(COINBASE_TXID)
+        .and_then(|t| t.bump_index())
+        .is_some());
+    assert!(after.txs.len() == 1, "the unreached filler is pruned");
 }
 
 /// A deployed wallet opened by `make_available()` alone (the way every CLI

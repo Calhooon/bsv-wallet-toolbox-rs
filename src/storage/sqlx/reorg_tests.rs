@@ -268,7 +268,7 @@ fn list_actions_args() -> ListActionsArgs {
 }
 
 /// A tracker in outage: every question is an error, never a verdict.
-struct ErrTracker;
+pub(super) struct ErrTracker;
 
 #[async_trait::async_trait]
 impl ChainTracker for ErrTracker {
