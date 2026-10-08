@@ -2022,6 +2022,67 @@ pub(super) fn flag_txid_leaf(bump: &mut MerklePath, txid: &str) {
     }
 }
 
+/// Merge `txid`'s merkle path into `beef` with `txid`'s own leaf flagged, and
+/// return the BUMP's index; `None` when the path does not carry `txid` at
+/// level 0 (it is not this transaction's proof).
+///
+/// A stored path can carry its own transaction as a plain hash and its
+/// sibling as the txid leaf: the provider's path for one of two transactions
+/// mined side by side (P0-1d, the beta write soak of 2026-10-08: the row for
+/// 65e78b0a flagged 867358fe). Linked by index alone, the link lives only in
+/// memory: bsv-rs's `verify_valid` accepts it (it checks `contains`), the
+/// bytes leave the wallet, and the next `merge_beef`'s strict linker drops it.
+/// The reference flags the leaf it links (ts-stack@edf6e03
+/// packages/sdk/src/transaction/Beef.ts:812-821, :1329-1341).
+pub(super) fn merge_proof_for(
+    beef: &mut Beef,
+    mut merkle_path: MerklePath,
+    txid: &str,
+) -> Option<usize> {
+    if !merkle_path.contains(txid) {
+        return None;
+    }
+    flag_txid_leaf(&mut merkle_path, txid);
+    // Two paths for one block combine and keep every flag set in either.
+    Some(beef.merge_bump(merkle_path))
+}
+
+/// Link every transaction in `beef` that has no BUMP to a BUMP whose level-0
+/// leaves carry its txid, and flag that leaf, as the reference's merge does
+/// (ts-stack@edf6e03 packages/sdk/src/transaction/Beef.ts:1329-1341). bsv-rs
+/// links only flagged leaves, so a BEEF that carries a proven transaction as
+/// a sibling hash (the template BEEF of P0-1d, handed back as `inputBEEF`)
+/// arrives with that transaction unproven and its parent demanded. Every
+/// level-0 hash of a merkle path is a transaction of that block, so the link
+/// claims nothing the path does not prove; the roots are still checked.
+pub(super) fn link_txids_carried_by_bumps(beef: &mut Beef) {
+    let unlinked: Vec<(usize, String)> = beef
+        .txs
+        .iter()
+        .enumerate()
+        .filter(|(_, tx)| tx.bump_index().is_none())
+        .map(|(i, tx)| (i, tx.txid()))
+        .collect();
+    let mut linked = false;
+    for (i, txid) in unlinked {
+        if let Some(bump_idx) = beef.bumps.iter().position(|b| b.contains(&txid)) {
+            flag_txid_leaf(&mut beef.bumps[bump_idx], &txid);
+            beef.txs[i].set_bump_index(Some(bump_idx));
+            linked = true;
+        }
+    }
+    if linked {
+        // A transaction that became proven moves ahead of its children.
+        beef.sort_txs();
+    }
+}
+
+/// `merge_beef`, then the reference's link of carried txids.
+fn merge_beef_linked(beef: &mut Beef, other: &Beef) {
+    beef.merge_beef(other);
+    link_txids_carried_by_bumps(beef);
+}
+
 /// Why a BEEF failed structural validation, in one line, and the rejected
 /// bytes on disk. "BEEF structure is invalid" alone cost a seat a day of
 /// diagnosis (LOW p25, 2026-09-04): the sorter knows exactly which inputs
@@ -2150,6 +2211,8 @@ pub(super) fn prune_beef_to_roots(beef: &mut Beef, roots: &[String]) {
             pruned.merge_transaction(t.clone());
         }
     }
+    // The rebuild links strictly; keep every link the original carried.
+    link_txids_carried_by_bumps(&mut pruned);
 
     *beef = pruned;
 }
@@ -2505,7 +2568,7 @@ pub(super) async fn beef_bfs_walk(
                 };
 
                 if stored_beef_valid {
-                    beef.merge_beef(&stored_beef);
+                    merge_beef_linked(beef, &stored_beef);
 
                     for beef_tx in &stored_beef.txs {
                         processed_txids.insert(beef_tx.txid());
@@ -2569,7 +2632,17 @@ pub(super) async fn beef_bfs_walk(
                             );
                             None
                         } else {
-                            Some(beef.merge_bump(merkle_path))
+                            // P0-1d: merged with this txid's own leaf
+                            // flagged, so the link survives the bytes.
+                            let bump_index = merge_proof_for(beef, merkle_path, &txid);
+                            if bump_index.is_none() {
+                                tracing::warn!(
+                                    txid = %txid,
+                                    marker = "stored_proof_not_for_txid",
+                                    "beef walk: the stored merkle path does not carry this txid; walking the raw-tx leg instead"
+                                );
+                            }
+                            bump_index
                         }
                     }
                     Err(e) => {
@@ -2753,7 +2826,10 @@ async fn build_input_beef(
         if !input_beef_bytes.is_empty() {
             match Beef::from_binary(input_beef_bytes) {
                 Ok(user_beef) => {
-                    beef.merge_beef(&user_beef);
+                    // P0-1d: a proven transaction the BEEF carries as a
+                    // sibling hash is linked here; the walk never revisits
+                    // a txid the caller's BEEF supplied.
+                    merge_beef_linked(&mut beef, &user_beef);
                     // Mark txids from user BEEF as already processed
                     for tx in &user_beef.txs {
                         processed_txids.insert(tx.txid());
@@ -3272,7 +3348,10 @@ pub(super) async fn compact_stored_beef(
                 {
                     continue;
                 }
-                let bump_index = beef.merge_bump(merkle_path);
+                // P0-1d: linked with its own leaf flagged.
+                let Some(bump_index) = merge_proof_for(beef, merkle_path, &txid) else {
+                    continue;
+                };
                 if let Some(tx) = beef.find_txid_mut(&txid) {
                     tx.set_bump_index(Some(bump_index));
                 }

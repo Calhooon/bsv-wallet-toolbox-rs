@@ -347,6 +347,20 @@ async fn replay_p0_1d_soak_walk() {
             describe_shape(&next),
             sr.missing_inputs
         );
+        if std::env::var("P0_1D_PRINT_TEMPLATE_BEEF").is_ok() && t.is_none() {
+            // The template's BEEF as the next createAction receives it, on
+            // one stdout line for the TypeScript SDK's check (piped, never
+            // written to a file).
+            let template: Vec<u8> = sqlx::query_scalar(
+                "SELECT raw_tx FROM transactions WHERE txid = 'd19a5317d65cb5cc233927deca1c5b04a34f28ad146cf5cb67a53a71dcde199b'",
+            )
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+            let mut t_beef = Beef::from_binary(&beef.to_binary()).unwrap();
+            t_beef.merge_raw_tx(template, None);
+            println!("P0_1D_TEMPLATE_BEEF {}", hex::encode(t_beef.to_binary()));
+        }
         assert!(
             leaf_flagged(&beef, &root),
             "65e78b0a's leaf is flagged ({name})"
