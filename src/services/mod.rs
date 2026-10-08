@@ -120,6 +120,15 @@ pub struct ServicesOptions {
     /// Chaintracks URL (optional) — e.g. `https://api.calhouninfra.com`
     pub chaintracks_url: Option<String>,
 
+    /// Break-glass: let the proof path ask explorers for block headers when
+    /// the header service gives no answer (the chain tracker asks
+    /// WhatsOnChain for a merkle root; `hash_to_header` asks WhatsOnChain,
+    /// then Bitails). Off by default: no explorer in the proof path (P0-1c,
+    /// the owner's rule of 2026-09-15). Every such call is logged at warn
+    /// level with the marker `break_glass_explorer_header`. An explorer never
+    /// overrules the header service's definite answer.
+    pub break_glass_explorer_headers: bool,
+
     /// BSV exchange rate cache duration in milliseconds
     pub bsv_update_msecs: u64,
 
@@ -147,6 +156,7 @@ impl Default for ServicesOptions {
             bhs_url: None,
             bhs_api_key: None,
             chaintracks_url: None,
+            break_glass_explorer_headers: false,
             bsv_update_msecs: 15 * 60 * 1000,       // 15 minutes
             fiat_update_msecs: 24 * 60 * 60 * 1000, // 24 hours (fiat rates change less frequently)
             fiat_exchange_rates: FiatExchangeRates::default(),
@@ -237,6 +247,13 @@ impl ServicesOptions {
     /// Set Chaintracks URL for block header lookups.
     pub fn with_chaintracks_url(mut self, url: impl Into<String>) -> Self {
         self.chaintracks_url = Some(url.into());
+        self
+    }
+
+    /// Break-glass: turn the explorer header fallback on or off (see
+    /// [`ServicesOptions::break_glass_explorer_headers`]). Off by default.
+    pub fn with_break_glass_explorer_headers(mut self, on: bool) -> Self {
+        self.break_glass_explorer_headers = on;
         self
     }
 

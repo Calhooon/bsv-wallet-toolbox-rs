@@ -634,11 +634,12 @@ async fn the_monitors_compaction_with_no_tracker_stores_no_unchecked_proof() {
 // =============================================================================
 
 /// The ingest with the tracker `Services` builds by default
-/// (`FallbackChainTracker::new(primary, None)`, `services.rs:495` at the
-/// base; the explorer's URL pointed at a local mock that names the root).
-/// The header service is unreachable: the proof must be refused as
-/// unverifiable (`TrackerError`) and nothing stored. At the base the
-/// explorer's root is taken and the proof stored.
+/// (`FallbackChainTracker::new(primary, None)` at `services.rs:495` before
+/// P0-1c, witnessed with the explorer's URL pointed at a local mock that
+/// names the root; `FallbackChainTracker::new(primary)` after, which holds
+/// no explorer). The header service is unreachable: the proof is refused
+/// as unverifiable (`TrackerError`) and nothing stored. Before P0-1c the
+/// explorer's root was taken and the proof stored.
 #[tokio::test]
 async fn with_the_header_service_down_a_proof_is_refused_never_checked_against_an_explorer() {
     use crate::services::{ChaintracksServiceClient, FallbackChainTracker};
@@ -668,7 +669,11 @@ async fn with_the_header_service_down_a_proof_is_refused_never_checked_against_a
         .create_async()
         .await;
     let primary = ChaintracksServiceClient::from_url("http://127.0.0.1:9");
-    let tracker = FallbackChainTracker::new(primary, Some(woc.url()));
+    let tracker = FallbackChainTracker::new(primary);
+    assert!(
+        !tracker.break_glass_woc(),
+        "the explorer is unreachable from it"
+    );
     s.set_chain_tracker(Arc::new(tracker)).await;
 
     let out = s
@@ -688,6 +693,106 @@ async fn with_the_header_service_down_a_proof_is_refused_never_checked_against_a
     );
     assert!(proven_row(&s, txid).await.is_none(), "nothing is stored");
     assert_eq!(req_state(&s, txid).await.unwrap().0, "unmined");
+}
+
+/// The same through `Services` as a wallet builds it (the CLI's
+/// `context.rs` wires `services.chaintracks` into storage): the header
+/// service unreachable, no break-glass, the proof is refused as
+/// unverifiable and nothing is stored. No explorer is reachable from the
+/// tracker; the run is offline.
+#[tokio::test]
+async fn the_services_tracker_with_its_header_service_down_refuses_the_proof() {
+    use crate::services::{Chain, Services, ServicesOptions};
+
+    let s = storage().await;
+    let txid = COINBASE_TXID;
+    insert_req(
+        &s,
+        txid,
+        &hex::decode(COINBASE_HEX).unwrap(),
+        "unmined",
+        0,
+        None,
+        Utc::now(),
+    )
+    .await;
+    open_gate(&s, 100).await;
+    let services = Services::with_options(
+        Chain::Main,
+        ServicesOptions::mainnet().with_chaintracks_url("http://127.0.0.1:9"),
+    )
+    .unwrap();
+    let tracker = services.chaintracks.clone().expect("a tracker");
+    assert!(!tracker.break_glass_woc());
+    s.set_chain_tracker(tracker).await;
+
+    let out = s
+        .ingest_merkle_proof(
+            txid,
+            &single_leaf_bump(100, txid),
+            100,
+            &"f".repeat(64),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(out, ProofIngestOutcome::TrackerError(_)),
+        "got {out:?}"
+    );
+    assert!(proven_row(&s, txid).await.is_none());
+}
+
+/// Break-glass, set on purpose: with the header service down, WhatsOnChain
+/// is asked (once) and its answer decides; the call is the documented,
+/// logged exception, never the default.
+#[tokio::test]
+async fn break_glass_asks_the_explorer_only_when_the_header_service_is_down() {
+    use crate::services::{ChaintracksServiceClient, FallbackChainTracker};
+
+    let s = storage().await;
+    let txid = COINBASE_TXID;
+    insert_req(
+        &s,
+        txid,
+        &hex::decode(COINBASE_HEX).unwrap(),
+        "unmined",
+        0,
+        None,
+        Utc::now(),
+    )
+    .await;
+    open_gate(&s, 100).await;
+    let mut woc = mockito::Server::new_async().await;
+    let asked = woc
+        .mock("GET", "/block/height/100")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(format!(r#"{{"merkleroot":"{txid}"}}"#))
+        .expect(1)
+        .create_async()
+        .await;
+    let tracker = FallbackChainTracker::with_break_glass_woc(
+        ChaintracksServiceClient::from_url("http://127.0.0.1:9"),
+        woc.url(),
+    );
+    s.set_chain_tracker(Arc::new(tracker)).await;
+
+    let out = s
+        .ingest_merkle_proof(
+            txid,
+            &single_leaf_bump(100, txid),
+            100,
+            &"f".repeat(64),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(out, ProofIngestOutcome::Ingested(_)),
+        "got {out:?}"
+    );
+    asked.assert_async().await;
 }
 
 /// A deployed wallet opened by `make_available()` alone (the way every CLI

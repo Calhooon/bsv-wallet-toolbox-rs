@@ -74,7 +74,7 @@ pub struct Services {
 - `get_bsv_exchange_rate()` - Get cached USD/BSV rate (via WhatsOnChain)
 - `get_fiat_exchange_rate(currency, base)` - Get fiat exchange rate (auto-refreshes from API)
 - `get_height()` - Get current blockchain height (BHS -> WoC -> Bitails failover)
-- `hash_to_header(hash)` - Get block header by hash (WoC -> Bitails)
+- `hash_to_header(hash)` - Get block header by hash from the Chaintracks header service; WoC -> Bitails only under `break_glass_explorer_headers` (off by default, every call logged at warn)
 - `n_lock_time_is_final(n_lock_time)` - Check if raw nLockTime value allows mining
 - `n_lock_time_is_final_for_tx(input)` - Check nLockTime finality with sequence info
 - `get_services_call_history(reset)` - Get diagnostics for all service calls
