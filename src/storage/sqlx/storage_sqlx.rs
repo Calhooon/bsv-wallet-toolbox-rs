@@ -4755,36 +4755,42 @@ impl MonitorStorage for StorageSqlx {
             if txid.is_empty() {
                 continue;
             }
-            match services
+            // EVERY status source, not only the one that refused it
+            // (Calgooon/zanaadu-v2#357): the status sources first, then each
+            // broadcaster's own status read and a tracker-checked merkle
+            // path. A failed transaction is usually failed on ONE
+            // broadcaster's word; the one that accepted it is the likeliest
+            // to know better.
+            let status_word = match services
                 .get_status_for_txids(std::slice::from_ref(&txid), false)
                 .await
             {
-                Ok(result) => {
-                    let net_status = result
-                        .results
-                        .iter()
-                        .find(|d| d.txid == txid)
-                        .map(|d| d.status.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    if net_status == "known" || net_status == "mined" {
-                        self.recover_false_failed_req(req_id, &txid, raw_tx.as_deref(), now)
-                            .await?;
-                        tracing::warn!(
-                            "un_fail canary: false-failed tx is {} on network — recovered txid={}",
-                            net_status,
-                            txid
-                        );
-                    } else {
-                        // Chain doesn't know it — factually failed (so far).
-                        // Re-stamp for the backoff; stays invalid, stays
-                        // watched, forever.
-                        self.restamp_false_fail_candidate(req_id, now).await?;
-                    }
+                Ok(result) => result
+                    .results
+                    .iter()
+                    .find(|d| d.txid == txid && (d.status == "known" || d.status == "mined"))
+                    .map(|d| format!("status sources {}", d.status)),
+                // Provider error: no evidence from these sources.
+                Err(_) => None,
+            };
+            let evidence = match status_word {
+                Some(word) => Some(word),
+                None => Self::network_holds(services.as_ref(), &txid, None, false, true).await,
+            };
+            match evidence {
+                Some(evidence) => {
+                    self.recover_false_failed_req(req_id, &txid, raw_tx.as_deref(), now)
+                        .await?;
+                    tracing::warn!(
+                        "un_fail canary: false-failed tx is on network ({}) — recovered txid={}",
+                        evidence,
+                        txid
+                    );
                 }
-                Err(_) => {
-                    // Provider error — no evidence, no state change beyond
-                    // the backoff re-stamp.
+                None => {
+                    // No source holds it — factually failed (so far).
+                    // Re-stamp for the backoff; stays invalid, stays
+                    // watched, forever.
                     self.restamp_false_fail_candidate(req_id, now).await?;
                 }
             }
@@ -5363,6 +5369,58 @@ impl MonitorStorage for StorageSqlx {
         Ok(updated)
     }
 
+    async fn mark_transaction_rejected_by(
+        &self,
+        txid: &str,
+        provider: &str,
+        double_spend: bool,
+    ) -> Result<bool> {
+        // Nothing the refusal could fail: no source is asked.
+        let open: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven') LIMIT 1",
+        )
+        .bind(txid)
+        .fetch_optional(self.pool())
+        .await?;
+        if open.is_none() {
+            return self.mark_transaction_rejected(txid, double_spend).await;
+        }
+
+        // THE FINAL-VERSUS-TRANSIENT RULE (Calgooon/zanaadu-v2#357): one
+        // broadcaster's refusal is final only when no other broadcaster
+        // accepted the transaction and the network does not hold it.
+        // Otherwise the refusal is that broadcaster's view (Arcade's 460
+        // "missing input source data" for a 1.9 MB post GorillaPool ARC
+        // accepted and a miner mined): the transaction stays as it is and
+        // the proof task proves it.
+        let mut evidence = self.memory_holds(txid, Some(provider), !double_spend).await;
+        if evidence.is_none() {
+            if let Ok(services) = self.get_services() {
+                evidence =
+                    Self::network_holds(services.as_ref(), txid, Some(provider), true, false).await;
+            }
+        }
+        if let Some(evidence) = evidence {
+            // The refusing broadcaster lacks it: it never skips this txid
+            // as an ancestor again. Every other row stays.
+            self.record_broadcast_status_quiet(
+                txid,
+                provider,
+                crate::services::broadcast_memory::BROADCAST_STATUS_REJECTED,
+            )
+            .await;
+            tracing::warn!(
+                txid = %txid,
+                provider = %provider,
+                double_spend = double_spend,
+                evidence = %evidence,
+                "broadcaster refused a transaction another source holds: not final, left for the proof task"
+            );
+            return Ok(false);
+        }
+        self.mark_transaction_rejected(txid, double_spend).await
+    }
+
     async fn ingest_push_proof(
         &self,
         txid: &str,
@@ -5885,6 +5943,87 @@ impl StorageSqlx {
 
 /// Private helpers for the `MonitorStorage::un_fail` recovery path.
 impl StorageSqlx {
+    /// THE FINAL-VERSUS-TRANSIENT RULE for one broadcaster's refusal
+    /// (Calgooon/zanaadu-v2#357), the memory half: the broadcast memory's
+    /// evidence that a source other than `refusing` holds `txid`. Another
+    /// broadcaster's `seen` / `mined` row or the network's / chain's
+    /// `seen` / `mined` row always counts; another broadcaster's bare
+    /// `accepted` row counts only when `accepted_counts` (a plain REJECTED:
+    /// the transaction is valid to a broadcaster that took it). A conflict
+    /// verdict passes `false`: two broadcasters can each take one side of a
+    /// double spend, so only the network's word overrules it.
+    async fn memory_holds(
+        &self,
+        txid: &str,
+        refusing: Option<&str>,
+        accepted_counts: bool,
+    ) -> Option<String> {
+        use crate::services::broadcast_memory::{is_global_provider, BroadcastStatus};
+        let records = match self
+            .broadcast_records(None, std::slice::from_ref(&txid.to_string()))
+            .await
+        {
+            Ok(records) => records,
+            Err(e) => {
+                tracing::debug!(txid = %txid, error = %e, "broadcast memory unreadable: no memory evidence");
+                return None;
+            }
+        };
+        records.into_iter().find_map(|r| {
+            if Some(r.provider.as_str()) == refusing {
+                return None;
+            }
+            let status = r.ladder_status()?;
+            let counts = status.is_network_evidence()
+                || (accepted_counts
+                    && status == BroadcastStatus::Accepted
+                    && !is_global_provider(&r.provider));
+            counts.then(|| format!("{} {}", r.provider, status.as_str()))
+        })
+    }
+
+    /// The rule's live half: whether the network holds `txid` by any source
+    /// but `refusing`, asked now. `ask_status`: the status sources
+    /// (`get_status_for_txids`, a `known` / `mined` answer under its merge
+    /// rule). Always: every broadcaster's own status read
+    /// (`get_broadcaster_statuses`, `seen` / `mined` only; a broadcaster's
+    /// "accepted" is not the network's word). `ask_proof`: a merkle path,
+    /// which `Services` serves only after the chain tracker accepted its
+    /// root. A source that cannot answer is no evidence either way.
+    async fn network_holds(
+        services: &dyn WalletServices,
+        txid: &str,
+        refusing: Option<&str>,
+        ask_status: bool,
+        ask_proof: bool,
+    ) -> Option<String> {
+        let txids = [txid.to_string()];
+        if ask_status {
+            if let Ok(result) = services.get_status_for_txids(&txids, false).await {
+                if let Some(detail) = result
+                    .results
+                    .iter()
+                    .find(|d| d.txid == txid && (d.status == "known" || d.status == "mined"))
+                {
+                    return Some(format!("status sources {}", detail.status));
+                }
+            }
+        }
+        for (provider, status) in services.get_broadcaster_statuses(txid).await {
+            if Some(provider.as_str()) != refusing && status.is_network_evidence() {
+                return Some(format!("{} {}", provider, status.as_str()));
+            }
+        }
+        if ask_proof {
+            if let Ok(result) = services.get_merkle_path(txid, false).await {
+                if result.merkle_path.is_some() {
+                    return Some("a merkle path the chain tracker accepted".to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// Restore a false-failed transaction whose chain evidence says it is
     /// known/mined: req → 'unmined' (attempts 0, so
     /// `synchronize_transaction_statuses` re-polls it and completes it with
@@ -7931,8 +8070,10 @@ mod tests {
             insert_tx(&storage, user_id, &txid, "failed").await;
             insert_req_aged(&storage, &txid, "invalid", &raw, 2).await;
 
+            // Every source: the status sources, no broadcaster, no proof.
             let mock = MockWalletServicesBuilder::default()
                 .get_status_for_txids_response(status_response(&txid, "unknown"))
+                .get_merkle_path_response(no_proof())
                 .build();
             WalletStorageProvider::set_services(&storage, Arc::new(mock));
 
@@ -8046,6 +8187,237 @@ mod tests {
 
             assert_eq!(req_state(&storage, &txid).await, ("invalid".into(), 0));
             assert_eq!(tx_status(&storage, &txid).await, "failed");
+        }
+
+        // =================================================================
+        // One broadcaster's refusal against every other source
+        // (Calgooon/zanaadu-v2#357)
+        // =================================================================
+
+        use crate::monitor::ArcadeEventsTask;
+        use crate::services::broadcast_memory::{
+            BroadcastStatus, BROADCAST_STATUS_ACCEPTED, PROVIDER_ARCADE_V2,
+            PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        fn no_proof() -> MockResponse<GetMerklePathResult> {
+            MockResponse::Success(GetMerklePathResult {
+                name: Some("mock".to_string()),
+                merkle_path: None,
+                header: None,
+                error: None,
+                notes: vec![],
+            })
+        }
+
+        /// A broadcast transaction as the wallet holds it after a submit one
+        /// broadcaster accepted: tx 'unproven', req 'unmined', its change
+        /// spendable. Returns (txid, change output id).
+        async fn seed_broadcast(storage: &StorageSqlx, seed: &str) -> (String, i64) {
+            let user_id = create_user(storage).await;
+            let (raw, txid) = spending_tx(&seed.repeat(32), 0);
+            let tx_id = insert_tx(storage, user_id, &txid, "unproven").await;
+            let change = insert_output(storage, user_id, tx_id, &txid, 0, true).await;
+            insert_req_aged(storage, &txid, "unmined", &raw, 0).await;
+            (txid, change)
+        }
+
+        async fn memory_status(storage: &StorageSqlx, txid: &str, provider: &str) -> String {
+            storage
+                .broadcast_status_of(txid, provider)
+                .await
+                .unwrap()
+                .map(|r| r.status)
+                .unwrap_or_default()
+        }
+
+        /// The incident (2026-10-07, the 1.9 MB post): Arcade 500 on submit,
+        /// GorillaPool ARC accepted, then Arcade's stream said REJECTED 460
+        /// "missing input source data" and the wallet failed a transaction
+        /// that was MINED at 970030. Now the REJECTED is Arcade's own view:
+        /// the transaction stays unproven with its change, and Arcade's later
+        /// MINED takes it to the proof task.
+        #[tokio::test]
+        async fn arcade_rejected_after_gorillapool_accepted_stays_unproven_and_mined_proves_it() {
+            let storage = create_storage().await;
+            let (txid, change) = seed_broadcast(&storage, "a1").await;
+            storage
+                .record_broadcast_status(&txid, PROVIDER_GORILLAPOOL_ARC, BROADCAST_STATUS_ACCEPTED)
+                .await
+                .unwrap();
+            let trigger = AtomicBool::new(false);
+
+            let applied =
+                ArcadeEventsTask::apply_status_event(&storage, &txid, "REJECTED", &trigger)
+                    .await
+                    .unwrap();
+
+            assert!(
+                !applied,
+                "a refusal another broadcaster overrules applies nothing"
+            );
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
+            assert_eq!(req_state(&storage, &txid).await.0, "unmined");
+            assert_eq!(output_state(&storage, change).await, (true, None));
+            // Arcade lacks it; GorillaPool's acceptance stands.
+            assert_eq!(
+                memory_status(&storage, &txid, PROVIDER_ARCADE_V2).await,
+                "rejected"
+            );
+            assert_eq!(
+                memory_status(&storage, &txid, PROVIDER_GORILLAPOOL_ARC).await,
+                "accepted"
+            );
+
+            // Later MINED: the proof task is asked now.
+            ArcadeEventsTask::apply_status_event(&storage, &txid, "MINED", &trigger)
+                .await
+                .unwrap();
+            assert!(trigger.load(Ordering::SeqCst));
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
+            assert_eq!(req_state(&storage, &txid).await.0, "unmined");
+        }
+
+        /// No memory row, but the network holds it by a live read of another
+        /// broadcaster (GorillaPool SEEN_ON_NETWORK): not final either.
+        #[tokio::test]
+        async fn refusal_overruled_by_another_broadcasters_live_status() {
+            let storage = create_storage().await;
+            let (txid, change) = seed_broadcast(&storage, "a2").await;
+            let mock = MockWalletServicesBuilder::default()
+                .get_status_for_txids_response(status_response(&txid, "unknown"))
+                .broadcaster_statuses(vec![
+                    (PROVIDER_ARCADE_V2.to_string(), BroadcastStatus::Rejected),
+                    (PROVIDER_GORILLAPOOL_ARC.to_string(), BroadcastStatus::Seen),
+                ])
+                .build();
+            WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+            let applied = storage
+                .mark_transaction_rejected_by(&txid, PROVIDER_ARCADE_V2, false)
+                .await
+                .unwrap();
+
+            assert!(!applied);
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
+            assert_eq!(output_state(&storage, change).await, (true, None));
+        }
+
+        /// A true rejection: every broadcaster refuses or never heard of it,
+        /// the status sources do not know it, the refusing broadcaster's own
+        /// acceptance is no evidence. Final: failed, req invalid, change
+        /// dead; and the canary, asking every source again an hour later,
+        /// finds nothing and keeps watching.
+        #[tokio::test]
+        async fn refusal_is_final_when_every_source_refuses() {
+            let storage = create_storage().await;
+            let (txid, change) = seed_broadcast(&storage, "a3").await;
+            storage
+                .record_broadcast_status(&txid, PROVIDER_ARCADE_V2, BROADCAST_STATUS_ACCEPTED)
+                .await
+                .unwrap();
+            let mock = MockWalletServicesBuilder::default()
+                .get_status_for_txids_response(status_response(&txid, "unknown"))
+                .get_merkle_path_response(no_proof())
+                .broadcaster_statuses(vec![
+                    (PROVIDER_ARCADE_V2.to_string(), BroadcastStatus::Rejected),
+                    (PROVIDER_TAAL_ARC.to_string(), BroadcastStatus::Unknown),
+                    (
+                        PROVIDER_GORILLAPOOL_ARC.to_string(),
+                        BroadcastStatus::Rejected,
+                    ),
+                ])
+                .build();
+            WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+            let applied = storage
+                .mark_transaction_rejected_by(&txid, PROVIDER_ARCADE_V2, false)
+                .await
+                .unwrap();
+
+            assert!(applied);
+            assert_eq!(tx_status(&storage, &txid).await, "failed");
+            assert_eq!(req_state(&storage, &txid).await.0, "invalid");
+            assert_eq!(output_state(&storage, change).await, (false, None));
+
+            // An hour on, the canary asks every source: still nobody.
+            sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
+                .bind(chrono::Utc::now() - chrono::Duration::hours(2))
+                .bind(&txid)
+                .execute(storage.pool())
+                .await
+                .unwrap();
+            MonitorStorage::un_fail(&storage).await.unwrap();
+            assert_eq!(req_state(&storage, &txid).await, ("invalid".into(), 1));
+            assert_eq!(tx_status(&storage, &txid).await, "failed");
+        }
+
+        /// A conflict verdict (466, a competitor): another broadcaster's bare
+        /// acceptance does not overrule it (each can hold one side of a
+        /// double spend); only the network's word would.
+        #[tokio::test]
+        async fn conflict_is_not_overruled_by_a_bare_acceptance() {
+            let storage = create_storage().await;
+            let (txid, _) = seed_broadcast(&storage, "a4").await;
+            storage
+                .record_broadcast_status(&txid, PROVIDER_GORILLAPOOL_ARC, BROADCAST_STATUS_ACCEPTED)
+                .await
+                .unwrap();
+
+            let applied = storage
+                .mark_transaction_rejected_by(&txid, PROVIDER_ARCADE_V2, true)
+                .await
+                .unwrap();
+
+            assert!(applied);
+            assert_eq!(tx_status(&storage, &txid).await, "failed");
+            assert_eq!(req_state(&storage, &txid).await.0, "doubleSpend");
+        }
+
+        /// The canary asks EVERY source, not only the one that refused: the
+        /// status sources and Arcade say nothing, GorillaPool says MINED.
+        /// Recovered without a hand-set 'unfail'.
+        #[tokio::test]
+        async fn canary_recovers_on_another_broadcasters_mined() {
+            let storage = create_storage().await;
+            let user_id = create_user(&storage).await;
+            let (raw, txid) = spending_tx(&"a5".repeat(32), 0);
+            insert_tx(&storage, user_id, &txid, "failed").await;
+            insert_req_aged(&storage, &txid, "invalid", &raw, 2).await;
+            let mock = MockWalletServicesBuilder::default()
+                .get_status_for_txids_response(status_response(&txid, "unknown"))
+                .get_merkle_path_response(no_proof())
+                .broadcaster_statuses(vec![
+                    (PROVIDER_ARCADE_V2.to_string(), BroadcastStatus::Rejected),
+                    (PROVIDER_GORILLAPOOL_ARC.to_string(), BroadcastStatus::Mined),
+                ])
+                .build();
+            WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+            MonitorStorage::un_fail(&storage).await.unwrap();
+
+            assert_eq!(req_state(&storage, &txid).await, ("unmined".into(), 0));
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
+        }
+
+        /// ... and a merkle path the chain tracker accepted is a source too.
+        #[tokio::test]
+        async fn canary_recovers_on_a_checked_merkle_path() {
+            let storage = create_storage().await;
+            let user_id = create_user(&storage).await;
+            let (raw, txid) = spending_tx(&"a6".repeat(32), 0);
+            insert_tx(&storage, user_id, &txid, "failed").await;
+            insert_req_aged(&storage, &txid, "invalid", &raw, 2).await;
+            let mock = MockWalletServicesBuilder::default()
+                .get_status_for_txids_response(status_response(&txid, "unknown"))
+                .build();
+            WalletStorageProvider::set_services(&storage, Arc::new(mock));
+
+            MonitorStorage::un_fail(&storage).await.unwrap();
+
+            assert_eq!(req_state(&storage, &txid).await, ("unmined".into(), 0));
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
         }
     }
 }
