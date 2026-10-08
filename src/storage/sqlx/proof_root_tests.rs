@@ -629,6 +629,67 @@ async fn the_monitors_compaction_with_no_tracker_stores_no_unchecked_proof() {
     assert!(after.txs.len() == 1, "the unreached filler is pruned");
 }
 
+// =============================================================================
+// No explorer in the proof path (P0-1c)
+// =============================================================================
+
+/// The ingest with the tracker `Services` builds by default
+/// (`FallbackChainTracker::new(primary, None)`, `services.rs:495` at the
+/// base; the explorer's URL pointed at a local mock that names the root).
+/// The header service is unreachable: the proof must be refused as
+/// unverifiable (`TrackerError`) and nothing stored. At the base the
+/// explorer's root is taken and the proof stored.
+#[tokio::test]
+async fn with_the_header_service_down_a_proof_is_refused_never_checked_against_an_explorer() {
+    use crate::services::{ChaintracksServiceClient, FallbackChainTracker};
+
+    let s = storage().await;
+    let txid = COINBASE_TXID;
+    insert_req(
+        &s,
+        txid,
+        &hex::decode(COINBASE_HEX).unwrap(),
+        "unmined",
+        0,
+        None,
+        Utc::now(),
+    )
+    .await;
+    open_gate(&s, 100).await;
+    let mut woc = mockito::Server::new_async().await;
+    let _woc = woc
+        .mock("GET", "/block/height/100")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(format!(
+            r#"{{"merkleroot":"{txid}","hash":"{}","height":100,"confirmations":100}}"#,
+            "0".repeat(64)
+        ))
+        .create_async()
+        .await;
+    let primary = ChaintracksServiceClient::from_url("http://127.0.0.1:9");
+    let tracker = FallbackChainTracker::new(primary, Some(woc.url()));
+    s.set_chain_tracker(Arc::new(tracker)).await;
+
+    let out = s
+        .ingest_merkle_proof(
+            txid,
+            &single_leaf_bump(100, txid),
+            100,
+            &"f".repeat(64),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(out, ProofIngestOutcome::TrackerError(_)),
+        "unable to verify, never an explorer's word: {out:?}"
+    );
+    assert!(proven_row(&s, txid).await.is_none(), "nothing is stored");
+    assert_eq!(req_state(&s, txid).await.unwrap().0, "unmined");
+}
+
 /// A deployed wallet opened by `make_available()` alone (the way every CLI
 /// command opens one) gets migration 005 before its first proof store, and
 /// every proof row it held before reads as unchecked.

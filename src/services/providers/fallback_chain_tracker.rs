@@ -482,6 +482,47 @@ mod tests {
         ));
     }
 
+    /// P0-1c witness (bsv-stack-lean #48): the tracker `Services` builds
+    /// from a `chaintracks_url` takes an explorer's root. The base builds it
+    /// as `FallbackChainTracker::new(primary, None)` (`services.rs:495`), the
+    /// same arms as here with WhatsOnChain's real URL; the mock stands in for
+    /// it. With the header service down the explorer's root is accepted, and
+    /// the explorer overrules the header service's own definite answer. The
+    /// rule (CLAUDE.md rule 21, the owner's rule of 2026-09-15): no explorer
+    /// in the proof path. Down is an error; a definite answer stands.
+    #[tokio::test]
+    async fn the_default_tracker_never_takes_an_explorers_root() {
+        let mut ct_server = mockito::Server::new_async().await;
+        let mut woc_server = mockito::Server::new_async().await;
+
+        // The header service is down; the explorer names the asked root.
+        let _a_ct = mock_ct_error(&mut ct_server, 900).await;
+        let _a_woc = mock_woc_header(&mut woc_server, 900, "explorer_root").await;
+        let t = default_tracker(&ct_server.url(), &woc_server.url());
+        let down = t.is_valid_root_for_height("explorer_root", 900).await;
+        assert!(
+            down.is_err(),
+            "the header service down is an error, never an explorer's verdict: {down:?}"
+        );
+
+        // The header service answers a different root; the explorer names
+        // the asked one.
+        let _b_ct = mock_ct_header(&mut ct_server, 901, "header_service_root").await;
+        let _b_woc = mock_woc_header(&mut woc_server, 901, "explorer_root").await;
+        let t = default_tracker(&ct_server.url(), &woc_server.url());
+        let refuted = t.is_valid_root_for_height("explorer_root", 901).await;
+        assert!(
+            matches!(refuted, Ok(false)),
+            "the header service's definite answer stands: {refuted:?}"
+        );
+    }
+
+    /// The tracker `Services` builds by default, with the explorer's URL
+    /// pointed at `woc_url` where the constructor takes one.
+    fn default_tracker(ct_url: &str, woc_url: &str) -> FallbackChainTracker {
+        FallbackChainTracker::new(make_primary(ct_url), Some(woc_url.to_string()))
+    }
+
     // =========================================================================
     // Test 6: Cache hit — no provider calls on second request
     // =========================================================================

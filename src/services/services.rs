@@ -2573,6 +2573,31 @@ mod tests {
         }
     }
 
+    /// P0-1c witness (bsv-stack-lean #48): `hash_to_header` resolves a TSC
+    /// proof's block (`get_merkle_path`, the BEEF build, the proven_txs
+    /// height repair at `storage_sqlx.rs:4029`) and, when the header service
+    /// fails, asks WhatsOnChain and then Bitails for the header. No explorer
+    /// in the proof path: with the header service unreachable and no
+    /// break-glass setting, the answer is an error naming the setting, and
+    /// no explorer is asked. Run with the network denied (rule 5): at the
+    /// base the error is the explorer request's own.
+    #[tokio::test]
+    async fn hash_to_header_asks_no_explorer_when_the_header_service_fails() {
+        let services = Services::with_options(
+            Chain::Main,
+            ServicesOptions::mainnet().with_chaintracks_url("http://127.0.0.1:9"),
+        )
+        .unwrap();
+        let err = services
+            .hash_to_header(&"00".repeat(32))
+            .await
+            .expect_err("the header service is unreachable");
+        assert!(
+            err.to_string().contains("break-glass"),
+            "refused before any explorer is asked, naming the setting: {err}"
+        );
+    }
+
     /// Build a FallbackChainTracker pointing at a mockito server.
     fn build_mock_chaintracks(server_url: &str) -> StdArc<FallbackChainTracker> {
         let primary = ChaintracksServiceClient::from_url(server_url);
