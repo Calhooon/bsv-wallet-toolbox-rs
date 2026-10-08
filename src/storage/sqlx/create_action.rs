@@ -3257,15 +3257,18 @@ pub(super) async fn compact_stored_beef(
             if let Ok(merkle_path) = MerklePath::from_binary(&merkle_path_bytes) {
                 // P0-1: a stored proof that was never checked is checked
                 // here, once, as in the walk; one the tracker refutes is
-                // demoted and the ancestor stays a raw leg.
-                if super::proof_root_checks::check_unchecked_stored_proof_on(
+                // demoted. Compaction attaches only what the ingest would
+                // store (P0-1c): with no tracker or a tracker fault the
+                // ancestor stays a raw leg (its own ancestors are still in
+                // the stored BEEF) and the row stays unchecked.
+                if !super::proof_root_checks::check_unchecked_stored_proof_on(
                     &mut *conn,
                     chain_tracker,
                     &txid,
                     &merkle_path,
                 )
                 .await?
-                    == super::proof_root_checks::ReadCheck::Demoted
+                .may_store()
                 {
                     continue;
                 }
@@ -7818,6 +7821,9 @@ mod tests {
         for (i, (raw, txid)) in chain.iter().enumerate() {
             if i == 5 {
                 seed_proven_chain_tx(&storage, txid, raw, 965_200).await;
+                // A proof the funnel stored, so checked: with no tracker,
+                // compaction attaches only a checked proof (P0-1c).
+                super::super::reorg_tests::mark_checked(&storage, txid, 965_200).await;
             } else {
                 // Every hop stored the whole ancestry it saw at build time.
                 let mut stored = Beef::new();

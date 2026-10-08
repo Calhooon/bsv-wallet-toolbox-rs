@@ -5097,16 +5097,19 @@ impl MonitorStorage for StorageSqlx {
                 for (txid, merkle_path_bytes) in &proof_rows {
                     if let Ok(merkle_path) = MerklePath::from_binary(merkle_path_bytes) {
                         // P0-1: a stored proof that was never checked is
-                        // checked here, once; a refuted one is demoted and
-                        // does not upgrade the stored BEEF.
-                        if super::proof_root_checks::check_unchecked_stored_proof_on(
+                        // checked here, once; a refuted one is demoted. The
+                        // rewritten BEEF is stored, so it takes only what
+                        // the ingest would store (P0-1c): with no tracker or
+                        // a tracker fault the proof is not merged and the
+                        // row stays unchecked for a later pass.
+                        if !super::proof_root_checks::check_unchecked_stored_proof_on(
                             &mut conn,
                             tracker.as_deref(),
                             txid,
                             &merkle_path,
                         )
                         .await?
-                            == super::proof_root_checks::ReadCheck::Demoted
+                        .may_store()
                         {
                             continue;
                         }

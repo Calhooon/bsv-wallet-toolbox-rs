@@ -399,7 +399,7 @@ async fn the_read_check_uses_the_storages_tracker_when_the_caller_passes_none() 
 /// and the monitor's) is a read that needs the proof: an unchecked stored
 /// proof is checked there once, as in the walk. Refuted: demoted and the
 /// ancestor stays a raw leg. Confirmed: attached and recorded. No tracker:
-/// attached as before, left unchecked.
+/// not attached, left unchecked (P0-1c).
 #[tokio::test]
 async fn compaction_checks_an_unchecked_proof_once() {
     let raw = hex::decode(COINBASE_HEX).unwrap();
@@ -450,11 +450,11 @@ async fn compaction_checks_an_unchecked_proof_once() {
         "and is demoted"
     );
 
-    // No tracker: attached as before, kept.
+    // No tracker: not attached (the ingest would refuse it), kept.
     let s = seeded(&raw).await;
     let mut beef = stored_beef();
     compact(&s, &mut beef, None).await;
-    assert!(attached(&beef));
+    assert!(!attached(&beef));
     assert!(proven_row(&s, COINBASE_TXID).await.is_some());
 
     // Confirmed: attached, and from then on a checked row (a refutation
@@ -537,7 +537,7 @@ fn unreached_filler() -> Vec<u8> {
     raw.push(0xfd);
     raw.extend_from_slice(&script_len.to_le_bytes());
     raw.push(0x6a); // OP_RETURN
-    raw.extend(std::iter::repeat(0u8).take(script_len as usize - 1));
+    raw.extend(vec![0u8; script_len as usize - 1]);
     raw.extend_from_slice(&0u32.to_le_bytes()); // locktime
     raw
 }

@@ -106,6 +106,17 @@ pub(crate) enum ReadCheck {
     Undecided,
 }
 
+impl ReadCheck {
+    /// May a store (compaction writing a proof into a BEEF it keeps or
+    /// sends) attach this proof? Only a root a tracker confirmed, now or
+    /// before: the ingest's own rule, which refuses with no tracker
+    /// (`TrackerUnavailable`) and on a tracker fault (`TrackerError`) as it
+    /// does on a refutation (P0-1c).
+    pub(crate) fn may_store(self) -> bool {
+        matches!(self, ReadCheck::AlreadyChecked | ReadCheck::Confirmed)
+    }
+}
+
 /// Check an unchecked stored proof once against `tracker`: on a
 /// confirmation record it, on a refutation demote the row (the transaction
 /// is unproven again, its bytes kept; see `demote_stale_proof_on`). A row

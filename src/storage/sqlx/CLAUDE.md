@@ -51,7 +51,7 @@ pub struct StorageSqlx {
 - `clear_chain_tracker()` - Remove the ChainTracker (from then on no proof is stored)
 - `get_chain_tracker()` - Internal: get current ChainTracker if set
 
-**Proof root checks (migration 005, `proof_root_checks.rs`):** every proof the store funnel writes is recorded as checked. A `proven_txs` row with no record (stored before 005, or merged by sync) is checked once when a BEEF read needs it (the walk, stored-BEEF compaction) and demoted when the tracker refutes it; a checked row is demoted only by the reorg and review tasks.
+**Proof root checks (migration 005, `proof_root_checks.rs`):** every proof the store funnel writes is recorded as checked. A `proven_txs` row with no record (stored before 005, or merged by sync) is checked once when a BEEF read needs it (the walk, stored-BEEF compaction) and demoted when the tracker refutes it; compaction attaches it only once a tracker confirmed it (no tracker or a tracker fault: not attached, as the ingest refuses); a checked row is demoted only by the reorg and review tasks.
 
 **Services methods:**
 - `set_services(services)` - Set WalletServices for blockchain operations (required before operations needing chain access)
