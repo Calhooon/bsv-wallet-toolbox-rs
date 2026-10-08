@@ -7703,6 +7703,71 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_input_beef_with_a_bump_carrying_its_txid_unflagged_is_linked_not_refused() {
+        // P0-1d (2026-10-08, the beta write soak): the template's BEEF came
+        // back as the next action's inputBEEF with its proven ancestor `b`
+        // unlinked (b's leaf in the one BUMP was a plain sibling hash) and
+        // was refused: "missing inputs [a]". The reference links a
+        // transaction to any BUMP whose level-0 leaf carries its txid and
+        // flags the leaf (ts-stack@edf6e03 packages/sdk/src/transaction/Beef.ts:1329-1341).
+        use super::super::sibling_bump_tests::{
+            leaf_flagged, path_flagging, siblings, soak_storage, HEIGHT,
+        };
+        let x = siblings();
+        let mut user = Beef::new();
+        user.merge_bump(path_flagging(&x.a.1, &x.b.1, &x.a.1));
+        user.merge_raw_tx(x.b.0.clone(), None);
+        user.merge_raw_tx(x.t.0.clone(), None);
+        assert!(
+            user.find_txid(&x.b.1).unwrap().bump_index().is_none(),
+            "precondition: the soak shape, b unlinked"
+        );
+        let user_bytes = user.to_binary();
+        let mut tracker = bsv_rs::transaction::MockChainTracker::new(1_000_000);
+        tracker.add_root(HEIGHT, x.root.clone());
+        let inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: x.t.1.clone(),
+            vout: 0,
+            satoshis: 1000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        // The soak wallet (holding a's and b's proofs) and a wallet that
+        // holds nothing: the BEEF alone carries the evidence.
+        let empty = StorageSqlx::in_memory().await.unwrap();
+        empty.migrate("test", "000000").await.unwrap();
+        empty.make_available().await.unwrap();
+        for (name, storage) in [("soak", soak_storage(&x).await), ("empty", empty)] {
+            let mut conn = storage.pool().acquire().await.unwrap();
+            let out = build_input_beef(
+                &mut conn,
+                Some(&tracker),
+                &inputs,
+                &[],
+                Some(&user_bytes),
+                &[],
+                false,
+                Some(&storage),
+            )
+            .await;
+            let bytes = match out {
+                Ok(Some(b)) => b,
+                other => panic!("{name}: the input BEEF is accepted, got {other:?}"),
+            };
+            let mut beef = Beef::from_binary(&bytes).unwrap();
+            assert!(
+                beef.find_txid(&x.b.1).unwrap().bump_index().is_some()
+                    && leaf_flagged(&beef, &x.b.1),
+                "{name}: b is linked and its leaf flagged"
+            );
+            assert!(beef.verify_valid(true).valid, "{name}: valid");
+        }
+    }
+
     /// Replay a real wallet's input BEEF build. Ignored unless `BEEF_CASE_DB`
     /// points at a wallet.db copy and `BEEF_CASE_ROOTS` lists the input txids
     /// (comma separated): `BEEF_CASE_DB=... BEEF_CASE_ROOTS=a,b cargo test
