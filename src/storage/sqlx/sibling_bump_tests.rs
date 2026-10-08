@@ -368,3 +368,53 @@ async fn replay_p0_1d_soak_walk() {
         assert!(linked && valid, "the next merge keeps the link ({name})");
     }
 }
+
+/// The monitor's compaction (`MonitorStorage::compact_input_beefs`) rewrites
+/// a completed request's stored input BEEF with the proofs it now holds, and
+/// stores the result: the link it writes must survive the next merge.
+#[tokio::test]
+async fn the_monitors_compaction_stores_the_leaf_flagged() {
+    use crate::storage::MonitorStorage;
+    use std::sync::Arc;
+    let x = siblings();
+    let s = soak_storage(&x).await;
+    super::reorg_tests::insert_req(&s, &x.t.1, &x.t.0, "completed", 0, None, Utc::now()).await;
+    let mut stored = Beef::new();
+    stored.merge_raw_tx(x.b.0.clone(), None);
+    stored.merge_raw_tx(super::proof_root_tests::unreached_filler(), None);
+    let stored_bytes = stored.to_binary();
+    assert!(
+        stored_bytes.len() > 1000,
+        "precondition: above the threshold"
+    );
+    sqlx::query("UPDATE proven_tx_reqs SET input_beef = ? WHERE txid = ?")
+        .bind(&stored_bytes)
+        .bind(&x.t.1)
+        .execute(s.pool())
+        .await
+        .unwrap();
+    s.set_chain_tracker(Arc::new(tracker_with(&[(HEIGHT, &x.root)])))
+        .await;
+
+    assert_eq!(MonitorStorage::compact_input_beefs(&s).await.unwrap(), 1);
+
+    let (after,): (Vec<u8>,) =
+        sqlx::query_as("SELECT input_beef FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&x.t.1)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+    let mut after = Beef::from_binary(&after).unwrap();
+    let next = as_next_input_beef(&mut after);
+    assert!(
+        next.find_txid(&x.b.1)
+            .and_then(|t| t.bump_index())
+            .is_some(),
+        "the stored link survives the next merge: {}",
+        describe_shape(&next)
+    );
+    assert!(
+        leaf_flagged(&after, &x.b.1),
+        "b's leaf is flagged in storage"
+    );
+}
