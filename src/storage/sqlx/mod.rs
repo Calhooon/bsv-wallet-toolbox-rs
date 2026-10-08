@@ -47,6 +47,8 @@ mod proof_root_checks;
 mod proof_root_tests;
 #[cfg(test)]
 mod reorg_tests;
+#[cfg(test)]
+mod sibling_bump_tests;
 mod storage_sqlx;
 mod sync;
 

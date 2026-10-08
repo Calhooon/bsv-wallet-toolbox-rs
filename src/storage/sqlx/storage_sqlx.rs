@@ -5250,7 +5250,13 @@ impl MonitorStorage for StorageSqlx {
                         {
                             continue;
                         }
-                        let bump_index = beef.merge_bump(merkle_path);
+                        // P0-1d: linked with its own leaf flagged, so the
+                        // stored link survives the next merge.
+                        let Some(bump_index) =
+                            super::create_action::merge_proof_for(&mut beef, merkle_path, txid)
+                        else {
+                            continue;
+                        };
                         if let Some(tx) = beef.find_txid_mut(txid) {
                             tx.set_bump_index(Some(bump_index));
                             upgraded += 1;
