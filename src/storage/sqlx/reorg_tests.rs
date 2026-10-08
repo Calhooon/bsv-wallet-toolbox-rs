@@ -25,7 +25,8 @@ use crate::AuthId;
 
 /// The block-1 coinbase: a real transaction (the walk parses it).
 pub(super) const COINBASE_HEX: &str = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000";
-pub(super) const COINBASE_TXID: &str = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
+pub(super) const COINBASE_TXID: &str =
+    "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
 
 pub(super) async fn storage() -> StorageSqlx {
     let s = StorageSqlx::in_memory().await.unwrap();
@@ -99,6 +100,15 @@ pub(super) async fn insert_proven(
     .fetch_one(s.pool())
     .await
     .unwrap()
+}
+
+/// Record that `txid`'s single-leaf proof at `height` was checked by a
+/// tracker: the row reads as one the funnel wrote (P0-1).
+pub(super) async fn mark_checked(s: &StorageSqlx, txid: &str, height: u32) {
+    let mut conn = s.pool().acquire().await.unwrap();
+    super::proof_root_checks::record_root_checked_on(&mut conn, txid, height, txid)
+        .await
+        .unwrap();
 }
 
 /// A request holding the transaction's raw bytes (the fleet's requests do).
@@ -194,7 +204,10 @@ pub(super) async fn proven_row(s: &StorageSqlx, txid: &str) -> Option<(i64, Stri
         .unwrap()
 }
 
-pub(super) async fn tx_state(s: &StorageSqlx, txid: &str) -> (String, Option<i64>, Option<Vec<u8>>) {
+pub(super) async fn tx_state(
+    s: &StorageSqlx,
+    txid: &str,
+) -> (String, Option<i64>, Option<Vec<u8>>) {
     sqlx::query_as("SELECT status, proven_tx_id, raw_tx FROM transactions WHERE txid = ?")
         .bind(txid)
         .fetch_one(s.pool())
@@ -202,7 +215,10 @@ pub(super) async fn tx_state(s: &StorageSqlx, txid: &str) -> (String, Option<i64
         .unwrap()
 }
 
-pub(super) async fn req_state(s: &StorageSqlx, txid: &str) -> Option<(String, i64, Option<i64>, Vec<u8>)> {
+pub(super) async fn req_state(
+    s: &StorageSqlx,
+    txid: &str,
+) -> Option<(String, i64, Option<i64>, Vec<u8>)> {
     sqlx::query_as(
         "SELECT status, attempts, proven_tx_id, raw_tx FROM proven_tx_reqs WHERE txid = ?",
     )
@@ -781,13 +797,15 @@ async fn demotion_is_one_transaction() {
 }
 
 // =============================================================================
-// The BEEF walk never mutates storage (F2)
+// The BEEF walk never mutates a CHECKED row (F2)
 // =============================================================================
 
 /// The reference's `skipInvalidProofs` shape: a stored bump the tracker
 /// DEFINITELY refutes is not attached, the raw-tx leg is walked one level
-/// deeper, and storage is untouched: the stale row is demoted only by the
-/// reorg or review task on positive network evidence.
+/// deeper, and a CHECKED row is untouched: the stale row is demoted only by
+/// the reorg or review task on positive network evidence. (A row that was
+/// never checked is checked once on read and demoted on the tracker's
+/// refutation alone: `proof_root_tests`.)
 #[tokio::test]
 async fn the_beef_walk_skips_a_refuted_stored_bump_and_demotes_nothing() {
     // Parent P: the coinbase, proven at height 1 with a root the tracker
@@ -815,6 +833,9 @@ async fn the_beef_walk_skips_a_refuted_stored_bump_and_demotes_nothing() {
         &single_leaf_bump(500, &child_txid),
     )
     .await;
+    // Both rows were stored through the funnel, checked at the time.
+    mark_checked(&s, COINBASE_TXID, 1).await;
+    mark_checked(&s, &child_txid, 500).await;
     let mut tracker = MockChainTracker::new(1000);
     tracker.add_root(1, COINBASE_TXID.to_string());
     // No root for 500: the stored bump for C is refuted.

@@ -40,6 +40,7 @@ mod locked_inputs;
 mod monitor_state;
 mod poisoned_chain;
 mod process_action;
+mod proof_root_checks;
 #[cfg(test)]
 mod proof_root_tests;
 #[cfg(test)]
@@ -66,6 +67,9 @@ pub use monitor_state::{
 pub use poisoned_chain::{
     chain_knowledge, utxo_verdict, ChainKnowledge, InternalizedPhantom, PoisonOutcome,
     PoisonReport, PoisonedTx, UtxoVerdict, DEFAULT_ABSENCE_MINUTES,
+};
+pub use proof_root_checks::{
+    MIGRATION_005_PROOF_ROOT_CHECKS_NAME, MIGRATION_005_PROOF_ROOT_CHECKS_SQL,
 };
 pub use storage_sqlx::{
     RetireOutcome, StorageSqlx, UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT,

@@ -50,6 +50,16 @@ mod monitor_integration {
         (Arc::new(storage), services)
     }
 
+    /// Helper: wire a chain tracker that knows exactly one `(height, root)`:
+    /// the block the test's mock serves. A storage with no tracker stores no
+    /// proof (P0-1), so every test that expects a stored proof names the
+    /// root its tracker confirms.
+    async fn wire_tracker(storage: &StorageSqlx, height: u32, root: &str) {
+        let mut tracker = bsv_rs::transaction::MockChainTracker::new(height + 10);
+        tracker.add_root(height, root.to_string());
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+    }
+
     /// Helper: create MonitorOptions with all 11 tasks disabled.
     fn all_tasks_disabled() -> MonitorOptions {
         let mut opts = MonitorOptions::default();
@@ -298,6 +308,7 @@ mod monitor_integration {
             .build();
 
         let (storage, services) = setup_storage_and_services(mock).await;
+        wire_tracker(&storage, height, &txid).await;
 
         // Insert a proven_tx_req with status 'unmined'.
         let now = chrono::Utc::now();
@@ -408,6 +419,7 @@ mod monitor_integration {
         bsv_wallet_toolbox_rs::MonitorStorage::set_max_acceptable_proof_height(&storage, u32::MAX)
             .await
             .expect("open the proof gate");
+        wire_tracker(&storage, height, &merkle_root).await;
         let storage = Arc::new(storage);
         let services = Arc::new(mock);
 
@@ -824,6 +836,7 @@ mod monitor_integration {
         let txid = "f".repeat(64);
         let (mock, merkle_root) = mined_with_bump(&txid, 852_001);
         let (storage, services) = setup_storage_and_services(mock).await;
+        wire_tracker(&storage, 852_001, &merkle_root).await;
         let identity_key = "02".to_string() + &"ef".repeat(32);
         let (user, _) = storage
             .find_or_insert_user(&identity_key)
@@ -870,8 +883,9 @@ mod monitor_integration {
     #[tokio::test]
     async fn run_once_adopts_an_orphan_unproven_tx_too() {
         let txid = "e".repeat(64);
-        let (mock, _) = mined_with_bump(&txid, 852_002);
+        let (mock, merkle_root) = mined_with_bump(&txid, 852_002);
         let (storage, services) = setup_storage_and_services(mock).await;
+        wire_tracker(&storage, 852_002, &merkle_root).await;
         let identity_key = "02".to_string() + &"ee".repeat(32);
         let (user, _) = storage
             .find_or_insert_user(&identity_key)

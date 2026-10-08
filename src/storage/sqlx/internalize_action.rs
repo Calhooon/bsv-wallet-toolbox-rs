@@ -1162,6 +1162,7 @@ async fn insert_proven_tx_from_bump(
         &ValidatedProofRow {
             txid,
             block_height: vb.height,
+            checked_root: &vb.merkle_root,
             block_hash: &vb.block_hash,
             merkle_root: &vb.merkle_root,
             merkle_path: &vb.merkle_path,

@@ -47,6 +47,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         super::monitor_state::MIGRATION_004_MONITOR_STATE_NAME,
         super::monitor_state::MIGRATION_004_MONITOR_STATE_SQL,
     ),
+    (
+        super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME,
+        super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_SQL,
+    ),
 ];
 
 /// Default maximum length for output scripts stored in the outputs table.
@@ -66,10 +70,9 @@ pub struct StorageSqlx {
     storage_identity_key: std::sync::RwLock<String>,
     /// Storage name (set during migration).
     storage_name: std::sync::RwLock<String>,
-    /// Optional ChainTracker for BEEF verification.
+    /// Optional ChainTracker for BEEF and proof verification.
     /// When set, create_action will verify BEEF merkle roots against the chain.
-    /// Note: Prefer using `services` for full functionality. This is kept for
-    /// backward compatibility and cases where only ChainTracker is needed.
+    /// When NOT set, no merkle proof is ever stored as proven (P0-1).
     chain_tracker: RwLock<Option<Arc<dyn ChainTracker>>>,
     /// Optional WalletServices for blockchain operations.
     /// When set, storage can perform BEEF verification, broadcast transactions,
@@ -124,10 +127,13 @@ impl StorageSqlx {
         })
     }
 
-    /// Set the ChainTracker for BEEF verification.
+    /// Set the ChainTracker for BEEF and proof verification.
     ///
     /// When set, `create_action` will verify BEEF merkle roots against the chain
-    /// before returning. This matches TypeScript/Go behavior.
+    /// before returning. This matches TypeScript/Go behavior. A storage with no
+    /// tracker stores no merkle proof: every ingest answers
+    /// [`ProofIngestOutcome::TrackerUnavailable`] and the transaction stays
+    /// unproven (P0-1). Wire one before the first proof can arrive.
     ///
     /// # Arguments
     /// * `tracker` - The chain tracker to use for verification
@@ -142,7 +148,8 @@ impl StorageSqlx {
         *ct = Some(tracker);
     }
 
-    /// Clear the ChainTracker (disable BEEF verification).
+    /// Clear the ChainTracker (disable BEEF verification; from then on no
+    /// merkle proof is stored).
     pub async fn clear_chain_tracker(&self) {
         let mut ct = self.chain_tracker.write().await;
         *ct = None;
@@ -1980,6 +1987,7 @@ impl WalletStorageWriter for StorageSqlx {
             self.ensure_broadcast_schema().await?;
             self.ensure_locked_inputs_schema().await?;
             super::monitor_state::ensure_monitor_state_schema(self.pool()).await?;
+            super::proof_root_checks::ensure_proof_root_checks_schema(self.pool()).await?;
             let mut cached = lock_write(&self.settings)?;
             *cached = Some(settings.clone());
             Ok(settings)
@@ -2607,9 +2615,12 @@ impl StorageSqlx {
     /// Steps:
     /// 1. Parse the BUMP binary and compute its merkle root for `txid`.
     /// 2. Validate the root against the storage's ChainTracker at
-    ///    `block_height` (skipped with a debug log if no tracker is wired).
+    ///    `block_height`. With no tracker wired nothing is stored and the
+    ///    outcome is [`ProofIngestOutcome::TrackerUnavailable`]: a storage
+    ///    that cannot check a root never calls a coin proven.
     /// 3. `INSERT OR IGNORE INTO proven_txs` (raw_tx sourced from existing
-    ///    transactions / proven_tx_reqs rows).
+    ///    transactions / proven_tx_reqs rows), and record that this row's
+    ///    root was checked.
     /// 4. Mark the proven_tx_req and transaction `completed`.
     ///
     /// Invalid or unverifiable proofs are NEVER stored; the outcome tells the
@@ -2673,25 +2684,30 @@ impl StorageSqlx {
 
         // Layer 1: Validate the merkle proof before storing. Bad proofs
         // (e.g. from provider rate limiting) are rejected instead of stored
-        // permanently.
-        if let Some(tracker) = self.get_chain_tracker().await {
-            match tracker
-                .is_valid_root_for_height(&computed_root, block_height)
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Ok(ProofIngestOutcome::InvalidMerkleRoot { computed_root });
-                }
-                Err(e) => {
-                    return Ok(ProofIngestOutcome::TrackerError(e.to_string()));
-                }
-            }
-        } else {
-            tracing::debug!(
-                "ingest_merkle_proof: no ChainTracker available, skipping merkle root verification for txid {}",
-                txid
+        // permanently. No tracker, no proof (P0-1): the reference cannot
+        // reach a store without one, its `getChainTracker` throws when none
+        // is configured (ts-stack@fb1b2da
+        // packages/wallet/wallet-toolbox/src/services/Services.ts:267-275).
+        let Some(tracker) = self.get_chain_tracker().await else {
+            tracing::error!(
+                txid = %txid,
+                block_height,
+                marker = "proof_refused_no_chain_tracker",
+                "ingest_merkle_proof: no ChainTracker is wired, so the merkle root cannot be checked against the active chain; the proof was NOT stored and the transaction stays unproven"
             );
+            return Ok(ProofIngestOutcome::TrackerUnavailable);
+        };
+        match tracker
+            .is_valid_root_for_height(&computed_root, block_height)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(ProofIngestOutcome::InvalidMerkleRoot { computed_root });
+            }
+            Err(e) => {
+                return Ok(ProofIngestOutcome::TrackerError(e.to_string()));
+            }
         }
 
         let merkle_root = header_merkle_root
@@ -2710,6 +2726,7 @@ impl StorageSqlx {
             &ValidatedProofRow {
                 txid,
                 block_height,
+                checked_root: &computed_root,
                 block_hash,
                 merkle_root: &merkle_root,
                 merkle_path: merkle_path_bytes,
@@ -3207,10 +3224,17 @@ pub(crate) fn bump_leaf_index(bump: &MerklePath, txid: &str) -> i64 {
 /// (the webhook, the SSE stream, the relay drain, the polling fetch), the
 /// BEEF walk's own fetch in `create_action.rs`, and `internalize_action`'s
 /// BUMP. Callers keep their own request/transaction completion; the funnel
-/// owns the gate, the anchor comparison, the bytes and the `mined` memory.
+/// owns the gate, the anchor comparison, the bytes, the `mined` memory and
+/// the root-check record. Every caller builds one only after its
+/// ChainTracker answered `Ok(true)` for `checked_root` at `block_height`;
+/// a caller with no tracker never reaches the funnel (P0-1).
 pub(crate) struct ValidatedProofRow<'a> {
     pub txid: &'a str,
     pub block_height: u32,
+    /// The root `merkle_path` computes for `txid`, which the caller's
+    /// ChainTracker confirmed at `block_height`. Recorded in
+    /// `proof_root_checks`, so the stored row reads as checked.
+    pub checked_root: &'a str,
     /// Empty when the caller had no header in hand (an internalize whose
     /// header could not be read); the review task backfills it once the
     /// row's root is canonical, and a later proof with a known hash fills
@@ -3377,6 +3401,17 @@ pub(crate) async fn store_validated_proof_on(
             }
         }
     };
+    // The row now holds (or already held) a proof whose root the caller's
+    // tracker confirmed. An Unchanged row keeps its stored path: when that
+    // path computes a different root the record does not match it and the
+    // row still reads as unchecked.
+    super::proof_root_checks::record_root_checked_on(
+        &mut *conn,
+        p.txid,
+        p.block_height,
+        p.checked_root,
+    )
+    .await?;
     // Mined: every provider has it. Remember it for reduced sends; never a
     // reason to fail the store.
     if let Err(e) = super::broadcast_seen::record_broadcast_status_on(
@@ -3411,9 +3446,11 @@ pub(crate) async fn store_validated_proof_on(
 ///    downgrade), so reduced sends carry the transaction again.
 /// 4. the `proven_txs` row is deleted.
 ///
-/// Returns whether a proof row existed. The BEEF walk never calls this: a
-/// refuted stored bump is skipped there and demoted only by the reorg or
-/// review task on positive evidence.
+/// Returns whether a proof row existed. The BEEF walk calls this only for a
+/// row that was never checked (no `proof_root_checks` record) and that the
+/// tracker refutes (`check_unchecked_stored_proof_on`); a checked row's
+/// refuted bump is skipped there and demoted only by the reorg or review
+/// task on positive evidence.
 pub(super) async fn demote_stale_proof_on(
     conn: &mut sqlx::SqliteConnection,
     txid: &str,
@@ -3462,11 +3499,12 @@ pub(super) async fn demote_stale_proof_on(
     .await?;
     // 3. the mined memory: the one sanctioned downgrade.
     let forgotten = super::broadcast_seen::forget_mined_on(&mut *conn, txid).await?;
-    // 4. the proof row.
+    // 4. the proof row, and its root-check record.
     sqlx::query("DELETE FROM proven_txs WHERE proven_tx_id = ?")
         .bind(proven_tx_id)
         .execute(&mut *conn)
         .await?;
+    super::proof_root_checks::forget_root_check_on(&mut *conn, txid).await?;
     tracing::warn!(
         txid = %txid,
         proven_tx_id,
@@ -3792,6 +3830,12 @@ impl MonitorStorage for StorageSqlx {
                         );
                         continue;
                     }
+                    ProofIngestOutcome::TrackerUnavailable => {
+                        // P0-1: nothing can be stored without a tracker, so
+                        // a fetch would be refused too. No attempt; the
+                        // ingest logged the refusal at error level.
+                        continue;
+                    }
                     not_ingested => {
                         tracing::warn!(
                             txid = %txid,
@@ -3856,9 +3900,15 @@ impl MonitorStorage for StorageSqlx {
                                 );
                                 continue;
                             }
+                            ProofIngestOutcome::TrackerUnavailable => {
+                                // P0-1: the proof is not the fault, the
+                                // missing tracker is. No attempt counted.
+                                continue;
+                            }
                             not_ingested => {
                                 match &not_ingested {
-                                    ProofIngestOutcome::DeferredAboveProcessedHeight { .. } => {
+                                    ProofIngestOutcome::DeferredAboveProcessedHeight { .. }
+                                    | ProofIngestOutcome::TrackerUnavailable => {
                                         unreachable!()
                                     }
                                     ProofIngestOutcome::InvalidMerkleRoot { computed_root } => {
@@ -4139,9 +4189,11 @@ impl MonitorStorage for StorageSqlx {
                         if let Some(ref input_beef) = req.input_beef {
                             match Beef::from_binary(input_beef) {
                                 Ok(mut fallback_beef) => {
+                                    let tracker = self.get_chain_tracker().await;
                                     if let Err(e2) = super::create_action::compact_stored_beef(
                                         &mut conn,
                                         &mut fallback_beef,
+                                        tracker.as_deref(),
                                     )
                                     .await
                                     {
@@ -5040,8 +5092,24 @@ impl MonitorStorage for StorageSqlx {
                     })
                     .collect();
 
+                let mut conn = self.pool().acquire().await?;
+                let tracker = self.get_chain_tracker().await;
                 for (txid, merkle_path_bytes) in &proof_rows {
                     if let Ok(merkle_path) = MerklePath::from_binary(merkle_path_bytes) {
+                        // P0-1: a stored proof that was never checked is
+                        // checked here, once; a refuted one is demoted and
+                        // does not upgrade the stored BEEF.
+                        if super::proof_root_checks::check_unchecked_stored_proof_on(
+                            &mut conn,
+                            tracker.as_deref(),
+                            txid,
+                            &merkle_path,
+                        )
+                        .await?
+                            == super::proof_root_checks::ReadCheck::Demoted
+                        {
+                            continue;
+                        }
                         let bump_index = beef.merge_bump(merkle_path);
                         if let Some(tx) = beef.find_txid_mut(txid) {
                             tx.set_bump_index(Some(bump_index));
@@ -6033,7 +6101,7 @@ mod tests {
             .migrate("test-storage", "0".repeat(64).as_str())
             .await
             .unwrap();
-        assert_eq!(version, "004_monitor_state");
+        assert_eq!(version, "005_proof_root_checks");
 
         // Make available
         let settings = storage.make_available().await.unwrap();

@@ -202,8 +202,9 @@ where
                             );
                         }
                         Ok(Some(outcome)) => {
-                            // Rejected (bad root / unparseable) or tracker
-                            // deferral — never latch, fall back to fetch.
+                            // Rejected (bad root / unparseable), a tracker
+                            // fault or no tracker at all — never latch, fall
+                            // back to fetch.
                             tracing::warn!(
                                 txid = %txid,
                                 outcome = ?outcome,

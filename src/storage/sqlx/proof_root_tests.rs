@@ -18,7 +18,7 @@ use super::reorg_tests::{
 use super::StorageSqlx;
 use crate::services::mock::{MockResponse, MockWalletServices};
 use crate::services::{BlockHeader, GetMerklePathResult, WalletServices};
-use crate::storage::traits::WalletStorageProvider;
+use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
 use crate::storage::ProofIngestOutcome;
 
 /// A tracker that knows the given `(height, root)` pairs and nothing else.
@@ -34,7 +34,9 @@ fn tracker_with(roots: &[(u32, &str)]) -> MockChainTracker {
 /// with a tracker that confirms it, then drop the tracker again. The row is
 /// one the wallet checked.
 async fn ingest_checked(s: &StorageSqlx, txid: &str, raw: &[u8], height: u32) {
-    insert_req(s, txid, raw, "unmined", 0, None, Utc::now()).await;
+    if req_state(s, txid).await.is_none() {
+        insert_req(s, txid, raw, "unmined", 0, None, Utc::now()).await;
+    }
     s.set_chain_tracker(Arc::new(tracker_with(&[(height, txid)])))
         .await;
     let out = s
@@ -222,7 +224,10 @@ async fn with_a_tracker_an_active_root_is_stored_and_an_inactive_one_refused() {
         )
         .await
         .unwrap();
-    assert!(matches!(out, ProofIngestOutcome::Ingested(_)), "got {out:?}");
+    assert!(
+        matches!(out, ProofIngestOutcome::Ingested(_)),
+        "got {out:?}"
+    );
     assert_eq!(proven_row(&s, txid).await.unwrap().0, 100);
     assert_eq!(req_state(&s, txid).await.unwrap().0, "completed");
 }
@@ -262,7 +267,10 @@ async fn an_unchecked_stored_proof_is_demoted_on_read_when_its_root_is_not_activ
     let beef = walk(&s, &child_txid, Some(&tracker)).await;
 
     let child = beef.find_txid(&child_txid).expect("the child rides");
-    assert!(child.bump_index().is_none(), "the refuted bump is not attached");
+    assert!(
+        child.bump_index().is_none(),
+        "the refuted bump is not attached"
+    );
     assert!(
         beef.find_txid(COINBASE_TXID)
             .and_then(|t| t.bump_index())
@@ -386,49 +394,132 @@ async fn the_read_check_uses_the_storages_tracker_when_the_caller_passes_none() 
     assert!(proven_row(&s, COINBASE_TXID).await.is_none());
 }
 
-/// Compaction of a stored input BEEF upgrades an ancestor with its stored
-/// proof only when that proof was checked; an unchecked one is left for
-/// the walk to check, and the ancestor stays a raw leg.
+/// Compaction of a stored input BEEF (the walk's, the broadcast fallback's
+/// and the monitor's) is a read that needs the proof: an unchecked stored
+/// proof is checked there once, as in the walk. Refuted: demoted and the
+/// ancestor stays a raw leg. Confirmed: attached and recorded. No tracker:
+/// attached as before, left unchecked.
 #[tokio::test]
-async fn compaction_attaches_only_checked_proofs() {
+async fn compaction_checks_an_unchecked_proof_once() {
     let raw = hex::decode(COINBASE_HEX).unwrap();
     let stored_beef = || {
         let mut b = Beef::new();
         b.merge_raw_tx(raw.clone(), None);
         b
     };
-
-    let s = storage().await;
-    insert_proven(
-        &s,
-        COINBASE_TXID,
-        500,
-        &"o".repeat(64),
-        &raw,
-        &single_leaf_bump(500, COINBASE_TXID),
-    )
-    .await;
-    let mut beef = stored_beef();
-    let mut conn = s.pool().acquire().await.unwrap();
-    compact_stored_beef(&mut conn, &mut beef).await.unwrap();
-    drop(conn);
-    assert!(
-        beef.find_txid(COINBASE_TXID)
+    let attached = |b: &Beef| {
+        b.find_txid(COINBASE_TXID)
             .and_then(|t| t.bump_index())
-            .is_none(),
-        "an unchecked stored proof is not attached by compaction"
+            .is_some()
+    };
+    async fn seeded(raw: &[u8]) -> StorageSqlx {
+        let s = storage().await;
+        insert_proven(
+            &s,
+            COINBASE_TXID,
+            500,
+            &"o".repeat(64),
+            raw,
+            &single_leaf_bump(500, COINBASE_TXID),
+        )
+        .await;
+        s
+    }
+    async fn compact(s: &StorageSqlx, beef: &mut Beef, tracker: Option<&MockChainTracker>) {
+        let mut conn = s.pool().acquire().await.unwrap();
+        compact_stored_beef(
+            &mut conn,
+            beef,
+            tracker.map(|t| t as &dyn bsv_rs::transaction::ChainTracker),
+        )
+        .await
+        .unwrap();
+    }
+
+    // Refuted: not attached, demoted.
+    let s = seeded(&raw).await;
+    let mut beef = stored_beef();
+    compact(&s, &mut beef, Some(&tracker_with(&[]))).await;
+    assert!(
+        !attached(&beef),
+        "a refuted unchecked proof is not attached"
+    );
+    assert!(
+        proven_row(&s, COINBASE_TXID).await.is_none(),
+        "and is demoted"
     );
 
-    let s = storage().await;
-    open_gate(&s, 500).await;
-    ingest_checked(&s, COINBASE_TXID, &raw, 500).await;
+    // No tracker: attached as before, kept.
+    let s = seeded(&raw).await;
     let mut beef = stored_beef();
-    let mut conn = s.pool().acquire().await.unwrap();
-    compact_stored_beef(&mut conn, &mut beef).await.unwrap();
+    compact(&s, &mut beef, None).await;
+    assert!(attached(&beef));
+    assert!(proven_row(&s, COINBASE_TXID).await.is_some());
+
+    // Confirmed: attached, and from then on a checked row (a refutation
+    // later does not demote it).
+    let s = seeded(&raw).await;
+    let mut beef = stored_beef();
+    compact(&s, &mut beef, Some(&tracker_with(&[(500, COINBASE_TXID)]))).await;
+    assert!(attached(&beef));
+    let mut beef = stored_beef();
+    compact(&s, &mut beef, Some(&tracker_with(&[]))).await;
+    assert!(proven_row(&s, COINBASE_TXID).await.is_some());
+}
+
+/// A deployed wallet opened by `make_available()` alone (the way every CLI
+/// command opens one) gets migration 005 before its first proof store, and
+/// every proof row it held before reads as unchecked.
+#[tokio::test]
+async fn migration_005_applies_on_open_of_an_existing_004_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wallet.db");
+    let path = path.to_str().unwrap().to_string();
+    let raw = hex::decode(COINBASE_HEX).unwrap();
+    {
+        let s = StorageSqlx::open(&path).await.unwrap();
+        s.migrate("old-wallet", &"1".repeat(64)).await.unwrap();
+        sqlx::query("DROP TABLE proof_root_checks")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        // A proof the old code stored unchecked.
+        sqlx::query(
+            "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, 500, 0, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(COINBASE_TXID)
+        .bind("o".repeat(64))
+        .bind(COINBASE_TXID)
+        .bind(single_leaf_bump(500, COINBASE_TXID))
+        .bind(&raw)
+        .bind(Utc::now())
+        .bind(Utc::now())
+        .execute(s.pool())
+        .await
+        .unwrap();
+        s.pool().close().await;
+    }
+    let s = StorageSqlx::open(&path).await.unwrap();
+    s.make_available().await.unwrap();
+    let table: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'proof_root_checks'",
+    )
+    .fetch_optional(s.pool())
+    .await
+    .unwrap();
+    assert!(table.is_some(), "005 lands on open");
+
+    // The old row is unchecked: the first read with a refuting tracker
+    // demotes it.
+    walk(&s, COINBASE_TXID, Some(&tracker_with(&[]))).await;
+    assert!(proven_row(&s, COINBASE_TXID).await.is_none());
+
+    // And the funnel writes into the new table without error.
+    open_gate(&s, 600).await;
+    ingest_checked(&s, COINBASE_TXID, &raw, 600).await;
+    walk(&s, COINBASE_TXID, Some(&tracker_with(&[]))).await;
     assert!(
-        beef.find_txid(COINBASE_TXID)
-            .and_then(|t| t.bump_index())
-            .is_some(),
-        "a checked stored proof is attached"
+        proven_row(&s, COINBASE_TXID).await.is_some(),
+        "a funnel-written row is checked"
     );
 }

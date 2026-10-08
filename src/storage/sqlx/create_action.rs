@@ -2202,6 +2202,16 @@ async fn fetch_and_store_merkle_path(
     txid: &str,
 ) -> Option<Vec<u8>> {
     let storage = storage?;
+    // No tracker, no proof (P0-1): a path nobody can check is never stored,
+    // so there is nothing to ask the providers for.
+    let Some(tracker) = storage.get_chain_tracker().await else {
+        tracing::error!(
+            txid = %txid,
+            marker = "proof_refused_no_chain_tracker",
+            "beef walk: no ChainTracker is wired, so a fetched proof could not be checked; none is fetched or stored and the raw-tx leg is walked"
+        );
+        return None;
+    };
     let services = storage.get_services().ok()?;
 
     let result = match services.get_merkle_path(txid, false).await {
@@ -2230,26 +2240,23 @@ async fn fetch_and_store_merkle_path(
         }
     };
 
-    // Never store a proof the chain rejects. Matches ingest_merkle_proof:
-    // with no tracker wired, the proof is accepted as the provider gave it.
-    if let Some(tracker) = storage.get_chain_tracker().await {
-        match tracker
-            .is_valid_root_for_height(&computed_root, header.height)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                tracing::warn!(
-                    txid = %txid,
-                    height = header.height,
-                    "ChainTracker rejected the merkle root, proof discarded"
-                );
-                return None;
-            }
-            Err(e) => {
-                tracing::debug!(txid = %txid, error = %e, "ChainTracker error, proof not stored");
-                return None;
-            }
+    // Never store a proof the chain rejects. Matches ingest_merkle_proof.
+    match tracker
+        .is_valid_root_for_height(&computed_root, header.height)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                txid = %txid,
+                height = header.height,
+                "ChainTracker rejected the merkle root, proof discarded"
+            );
+            return None;
+        }
+        Err(e) => {
+            tracing::debug!(txid = %txid, error = %e, "ChainTracker error, proof not stored");
+            return None;
         }
     }
 
@@ -2258,6 +2265,7 @@ async fn fetch_and_store_merkle_path(
         &ValidatedProofRow {
             txid,
             block_height: header.height,
+            checked_root: &computed_root,
             block_hash: &header.hash,
             merkle_root: &header.merkle_root,
             merkle_path: &bytes,
@@ -2373,6 +2381,15 @@ pub(super) async fn beef_bfs_walk(
     chain_tracker: Option<&dyn ChainTracker>,
 ) -> Result<()> {
     let mut proof_fetch_budget = MAX_PROOF_FETCHES_PER_WALK;
+    // The tracker for the one-time check of a stored proof that was never
+    // checked (P0-1): the caller's, else the storage's own, so the broadcast
+    // rebuild and the BEEF-for-txids path (which pass none) check it too.
+    let storage_tracker = match (chain_tracker, storage) {
+        (None, Some(s)) => s.get_chain_tracker().await,
+        _ => None,
+    };
+    let read_check_tracker: Option<&dyn ChainTracker> =
+        chain_tracker.or(storage_tracker.as_deref());
 
     while let Some((txid, depth)) = pending_txids.first().cloned() {
         pending_txids.remove(0);
@@ -2463,7 +2480,7 @@ pub(super) async fn beef_bfs_walk(
 
         if !has_proof {
             if let Some(mut stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
-                compact_stored_beef(&mut *conn, &mut stored_beef).await?;
+                compact_stored_beef(&mut *conn, &mut stored_beef, read_check_tracker).await?;
 
                 // A stored input_beef is whatever the chain looked like when the
                 // transaction was built; ancestors proven since then make most of
@@ -2513,20 +2530,37 @@ pub(super) async fn beef_bfs_walk(
             let bump_index = if let Some(merkle_path_bytes) = &tx_data.merkle_path {
                 match MerklePath::from_binary(merkle_path_bytes) {
                     Ok(merkle_path) => {
+                        // P0-1: a stored proof that was never checked
+                        // against a tracker (written before migration 005,
+                        // or merged by sync) is checked once, here, and
+                        // demoted when the tracker refutes it; it carries
+                        // no evidence, so the refutation alone decides.
+                        let read_check = super::proof_root_checks::check_unchecked_stored_proof_on(
+                            &mut *conn,
+                            read_check_tracker,
+                            &txid,
+                            &merkle_path,
+                        )
+                        .await?;
                         // ts-stack `getBeefForTransaction` with
                         // `skipInvalidProofs` ("proof is currently invalid,
                         // recurse deeper via the rawTx path"): a STORED bump the
                         // chain tracker DEFINITELY refutes (a reorg moved the
                         // block) is not attached. The transaction rides as a
                         // raw-tx leg and its parents are walked one level
-                        // deeper. The walk never mutates storage: a tracker
-                        // fault keeps the bump (the final BEEF verification
-                        // decides, as before), and the stale row is demoted
-                        // only by the reorg or review task on positive network
-                        // evidence. Before this, every spend touching such a
-                        // row was refused with "Invalid merkle root" (loop 8,
-                        // 2026-09-07, 28 seats).
-                        if stored_bump_refuted(chain_tracker, &merkle_path, &txid).await {
+                        // deeper. A CHECKED row is never mutated here: a
+                        // tracker fault keeps the bump (the final BEEF
+                        // verification decides, as before), and the stale row
+                        // is demoted only by the reorg or review task on
+                        // positive network evidence. Before this, every spend
+                        // touching such a row was refused with "Invalid merkle
+                        // root" (loop 8, 2026-09-07, 28 seats).
+                        use super::proof_root_checks::ReadCheck;
+                        if read_check == ReadCheck::Demoted {
+                            None
+                        } else if read_check != ReadCheck::Confirmed
+                            && stored_bump_refuted(chain_tracker, &merkle_path, &txid).await
+                        {
                             tracing::warn!(
                                 txid = %txid,
                                 height = merkle_path.block_height,
@@ -3186,6 +3220,7 @@ async fn try_network_fallback(
 pub(super) async fn compact_stored_beef(
     conn: &mut SqliteConnection,
     beef: &mut Beef,
+    chain_tracker: Option<&dyn ChainTracker>,
 ) -> Result<()> {
     // Collect unproven txids in the BEEF
     let unproven_txids: Vec<String> = beef
@@ -3220,6 +3255,20 @@ pub(super) async fn compact_stored_beef(
             let merkle_path_bytes: Vec<u8> = row.get("merkle_path");
 
             if let Ok(merkle_path) = MerklePath::from_binary(&merkle_path_bytes) {
+                // P0-1: a stored proof that was never checked is checked
+                // here, once, as in the walk; one the tracker refutes is
+                // demoted and the ancestor stays a raw leg.
+                if super::proof_root_checks::check_unchecked_stored_proof_on(
+                    &mut *conn,
+                    chain_tracker,
+                    &txid,
+                    &merkle_path,
+                )
+                .await?
+                    == super::proof_root_checks::ReadCheck::Demoted
+                {
+                    continue;
+                }
                 let bump_index = beef.merge_bump(merkle_path);
                 if let Some(tx) = beef.find_txid_mut(&txid) {
                     tx.set_bump_index(Some(bump_index));
@@ -5344,6 +5393,19 @@ mod tests {
         .fetch_one(storage.pool())
         .await
         .unwrap();
+        // The seat's tracker confirmed that root while the orphan was the
+        // tip: a CHECKED row (P0-1), which only the reorg tooling demotes.
+        {
+            let mut conn = storage.pool().acquire().await.unwrap();
+            super::super::proof_root_checks::record_root_checked_on(
+                &mut conn,
+                FUNDING_TXID,
+                HEIGHT,
+                FUNDING_TXID,
+            )
+            .await
+            .unwrap();
+        }
         sqlx::query(
             "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, description, txid, version, lock_time, proven_tx_id, created_at, updated_at) VALUES (?, 'completed', 'ref-m19-429', 1, 1000, 'stake', ?, 1, 0, ?, ?, ?)",
         )
@@ -7919,6 +7981,13 @@ mod tests {
             }))
             .build();
         storage.set_services(std::sync::Arc::new(services));
+        // A fetched proof is stored only after the storage's tracker
+        // confirms its root (P0-1): this one knows the served block.
+        let mut tracker = bsv_rs::transaction::MockChainTracker::new(965_400);
+        tracker.add_root(965_300, chain[1].1.clone());
+        storage
+            .set_chain_tracker(std::sync::Arc::new(tracker))
+            .await;
 
         let inputs = vec![ExtendedInput {
             vin: 0,
