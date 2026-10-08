@@ -3185,12 +3185,6 @@ impl StorageSqlx {
 pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
 pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;
 
-/// How old a broadcast-memory seen/mined row may be and still keep a req
-/// from the attempt backstop. The same 2 hours as the freshness window on
-/// memory evidence against a broadcaster's refusal (Calgooon/zanaadu-v2#357):
-/// past it only a live read counts.
-const BACKSTOP_MEMORY_EVIDENCE_MAX_AGE_SECS: i64 = 2 * 60 * 60;
-
 /// Private helpers for the attempt backstop of
 /// `MonitorStorage::synchronize_transaction_statuses`.
 impl StorageSqlx {
@@ -3200,29 +3194,6 @@ impl StorageSqlx {
         } else {
             PROOF_ATTEMPTS_LIMIT_TEST
         }
-    }
-
-    /// A broadcast-memory row, no older than the freshness window, that says
-    /// a broadcaster or the network holds `txid` (seen or mined). A bare
-    /// acceptance is not evidence, and an unreadable memory says nothing.
-    async fn fresh_memory_evidence(&self, txid: &str) -> Option<String> {
-        let records = match self
-            .broadcast_records(None, std::slice::from_ref(&txid.to_string()))
-            .await
-        {
-            Ok(records) => records,
-            Err(e) => {
-                tracing::debug!(txid = %txid, error = %e, "broadcast memory unreadable: no memory evidence");
-                return None;
-            }
-        };
-        let fresh_after =
-            chrono::Utc::now() - chrono::Duration::seconds(BACKSTOP_MEMORY_EVIDENCE_MAX_AGE_SECS);
-        records.into_iter().find_map(|r| {
-            let status = r.ladder_status()?;
-            (r.seen_at >= fresh_after && status.is_network_evidence())
-                .then(|| format!("{} {}", r.provider, status.as_str()))
-        })
     }
 }
 
@@ -3827,6 +3798,21 @@ impl MonitorStorage for StorageSqlx {
             return Ok(Vec::new());
         }
 
+        // One attempt per processed header: the reference counts only the
+        // header-triggered run (`countsAsAttempt = checkNow`,
+        // TaskCheckForProofs.ts:49), so its 144 is about a day of blocks. A
+        // pass at a gate already counted (an Arcade MINED word, the 2-hour
+        // fallback, a `tick`, a nosend proof) asks and writes off but counts
+        // nothing.
+        let counts_as_attempt = {
+            let mut conn = self.pool().acquire().await?;
+            let counted = super::monitor_state::read_proof_attempt_height_on(&mut conn).await?;
+            if proof_gate > counted {
+                super::monitor_state::write_proof_attempt_height_on(&mut conn, proof_gate).await?;
+            }
+            proof_gate > counted
+        };
+
         let mut results = Vec::new();
 
         // =====================================================================
@@ -3869,7 +3855,17 @@ impl MonitorStorage for StorageSqlx {
             }
             let now = chrono::Utc::now();
             if i64::from(req.attempts) > attempts_limit && !held_txids.contains(&req.txid) {
-                if let Some(evidence) = self.fresh_memory_evidence(&req.txid).await {
+                // #357's hold rule, no refusing provider: a fresh seen/mined
+                // memory row, or a broadcaster's own status read (the status
+                // sources were asked this pass; `retire_undeliverable_tx`
+                // asks them once more).
+                let evidence = match self.memory_holds(&req.txid, None, false).await {
+                    Some(e) => Some(e),
+                    None => {
+                        Self::network_holds(services.as_ref(), &req.txid, None, false, false).await
+                    }
+                };
+                if let Some(evidence) = evidence {
                     tracing::info!(
                         txid = %req.txid,
                         attempts = req.attempts,
@@ -3917,7 +3913,7 @@ impl MonitorStorage for StorageSqlx {
                     continue;
                 }
             }
-            if confirmed_txids.contains(&req.txid) {
+            if confirmed_txids.contains(&req.txid) || !counts_as_attempt {
                 continue;
             }
             sqlx::query(
@@ -4102,7 +4098,7 @@ impl MonitorStorage for StorageSqlx {
                                 continue;
                             }
                         }
-                    } else {
+                    } else if counts_as_attempt {
                         // No proof yet: an attempt. The status sources
                         // call this transaction mined, so a source holds it
                         // and the count alone never writes it off (#368).

@@ -177,6 +177,7 @@ async fn a_never_held_never_mined_req_fails_past_the_limit_and_releases_its_inpu
     nobody_holds(&s, &b.txid);
 
     for pass in 1..=(LIMIT + 1) {
+        open_gate(&s, 1000 + pass as u32).await;
         let out = s.synchronize_transaction_statuses().await.unwrap();
         assert!(out.is_empty(), "pass {pass} writes nothing off");
         assert_eq!(
@@ -287,6 +288,7 @@ async fn the_357_incident_shape_stays_unproven_past_the_limit_and_proves() {
     nobody_holds(&s, &b.txid);
 
     for pass in 1..=3 {
+        open_gate(&s, 1000 + pass as u32).await;
         assert!(s
             .synchronize_transaction_statuses()
             .await
@@ -342,6 +344,7 @@ async fn a_req_the_status_sources_hold_is_not_failed_past_the_limit() {
     WalletStorageProvider::set_services(&s, Arc::new(mock));
 
     for pass in 1..=5 {
+        open_gate(&s, 1000 + pass as u32).await;
         assert!(s
             .synchronize_transaction_statuses()
             .await
@@ -526,4 +529,22 @@ async fn the_canary_watches_a_backstopped_req_hourly_and_recovers_it() {
         output_state(&s, b.input).await,
         (false, Some(b.transaction_id))
     );
+}
+
+/// One attempt per processed header, as the reference counts only the
+/// header-triggered run: a second pass at the same gate (an Arcade MINED
+/// word, the fallback timer, a `tick`) asks but counts nothing.
+#[tokio::test]
+async fn a_second_pass_at_the_same_header_counts_nothing() {
+    let s = storage().await;
+    let b = seed_broadcast(&s, "ab", 0).await;
+    nobody_holds(&s, &b.txid);
+
+    s.synchronize_transaction_statuses().await.unwrap();
+    s.synchronize_transaction_statuses().await.unwrap();
+    assert_eq!(attempts_of(&s, &b.txid).await, ("unmined".to_string(), 1));
+
+    open_gate(&s, 1001).await;
+    s.synchronize_transaction_statuses().await.unwrap();
+    assert_eq!(attempts_of(&s, &b.txid).await, ("unmined".to_string(), 2));
 }
