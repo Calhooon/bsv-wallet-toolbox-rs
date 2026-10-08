@@ -63,8 +63,12 @@ pub const ARCADE_STATUS_CONCURRENCY: usize = 8;
 /// Live Arcade V2 mainnet endpoint (verified 2026-07-10).
 pub const ARCADE_V2_MAINNET: &str = "https://arcade-v2-us-1.bsvblockchain.tech";
 
-/// Arcade transaction statuses, in lifecycle order.
+/// Arcade transaction statuses, in lifecycle order (arcade@1ae1208
+/// `models/transaction.go:89-114`, the whole enumeration). Arcade has no
+/// ORPHAN status and no `MINED_IN_STALE_BLOCK`; those are ARC's.
 pub mod statuses {
+    /// The status is unknown (declared; no writer at arcade@1ae1208).
+    pub const UNKNOWN: &str = "UNKNOWN";
     /// Accepted by Arcade, queued for propagation.
     pub const RECEIVED: &str = "RECEIVED";
     /// Sent to the Teranode network.
@@ -75,10 +79,19 @@ pub mod statuses {
     pub const SEEN_ON_NETWORK: &str = "SEEN_ON_NETWORK";
     /// Seen by multiple nodes (erratic timing — async upgrade only).
     pub const SEEN_MULTIPLE_NODES: &str = "SEEN_MULTIPLE_NODES";
+    /// No network verdict after the fast path's attempts; parked for a
+    /// durable rebroadcast (retryable).
+    pub const PENDING_RETRY: &str = "PENDING_RETRY";
+    /// In a block; Arcade is building the BUMP from its STUMP (declared; no
+    /// writer at arcade@1ae1208).
+    pub const STUMP_PROCESSING: &str = "STUMP_PROCESSING";
     /// Mined into a block. The webhook payload for this status carries
     /// `blockHash`, `blockHeight` and `merklePath`.
     pub const MINED: &str = "MINED";
-    /// Fatal: rejected (also how double-spends/mempool orphans surface).
+    /// Mined and past Arcade's depth; the push carries the path as for MINED.
+    pub const IMMUTABLE: &str = "IMMUTABLE";
+    /// Fatal: rejected. The ARC code rides in the body's `status`: 466 a
+    /// conflict, 476 non-final and retryable.
     pub const REJECTED: &str = "REJECTED";
     /// Fatal: double spend attempted.
     pub const DOUBLE_SPEND_ATTEMPTED: &str = "DOUBLE_SPEND_ATTEMPTED";
@@ -87,13 +100,14 @@ pub mod statuses {
 /// Rank an Arcade status within the lifecycle (higher = further along).
 /// Fatal statuses rank 0 — compare with [`is_fatal_status`] first.
 pub fn arcade_status_rank(status: &str) -> u8 {
-    match status {
+    match status.trim().to_ascii_uppercase().as_str() {
         statuses::RECEIVED => 1,
         statuses::SENT_TO_NETWORK => 2,
         statuses::ACCEPTED_BY_NETWORK => 3,
         statuses::SEEN_ON_NETWORK => 4,
         statuses::SEEN_MULTIPLE_NODES => 5,
         statuses::MINED => 6,
+        statuses::IMMUTABLE => 7,
         _ => 0,
     }
 }
@@ -101,10 +115,98 @@ pub fn arcade_status_rank(status: &str) -> u8 {
 /// Whether an Arcade status is terminal-fatal (do not build on this tx).
 pub fn is_fatal_status(status: &str) -> bool {
     matches!(
-        status,
-        statuses::REJECTED | statuses::DOUBLE_SPEND_ATTEMPTED
+        arcade_verdict(status),
+        ArcadeVerdict::Rejected | ArcadeVerdict::Conflict
     )
 }
+
+/// What one Arcade status word says, the ONE judgment every surface of this
+/// client applies (the submit answer, the status document, the SSE frame and
+/// the webhook body).
+///
+/// The rule (bsv-stack-lean P0-2b): REJECTED, DOUBLE_SPEND_ATTEMPTED (a
+/// conflict) and any word containing ORPHAN fail; every other word Arcade
+/// defines is accepted as the hint it is; a word Arcade does not define, an
+/// empty word or none is an invalid response. Letter case is ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArcadeVerdict {
+    /// Arcade holds it, the network may not yet: `RECEIVED`,
+    /// `SENT_TO_NETWORK`, `ACCEPTED_BY_NETWORK`.
+    Pending,
+    /// Arcade holds it with no network verdict: `UNKNOWN`, `PENDING_RETRY`.
+    Parked,
+    /// The network holds it: `SEEN_ON_NETWORK`, `SEEN_MULTIPLE_NODES`.
+    Seen,
+    /// In a block, the proof not built yet: `STUMP_PROCESSING`.
+    InBlock,
+    /// Mined, the proof is the body's path: `MINED`, `IMMUTABLE`.
+    Mined,
+    /// `REJECTED`.
+    Rejected,
+    /// `DOUBLE_SPEND_ATTEMPTED`.
+    Conflict,
+    /// Any word containing `ORPHAN` (none is Arcade's; ARC's
+    /// `SEEN_IN_ORPHAN_MEMPOOL`): the parents are missing from the view.
+    Orphan,
+    /// A word Arcade does not define, or none: an invalid response, never a
+    /// success and never a verdict on the transaction.
+    Invalid,
+}
+
+/// Judge one Arcade status word; see [`ArcadeVerdict`].
+pub fn arcade_verdict(tx_status: &str) -> ArcadeVerdict {
+    let word = tx_status.trim().to_ascii_uppercase();
+    if word.contains("ORPHAN") {
+        return ArcadeVerdict::Orphan;
+    }
+    match word.as_str() {
+        statuses::RECEIVED | statuses::SENT_TO_NETWORK | statuses::ACCEPTED_BY_NETWORK => {
+            ArcadeVerdict::Pending
+        }
+        statuses::UNKNOWN | statuses::PENDING_RETRY => ArcadeVerdict::Parked,
+        statuses::SEEN_ON_NETWORK | statuses::SEEN_MULTIPLE_NODES => ArcadeVerdict::Seen,
+        statuses::STUMP_PROCESSING => ArcadeVerdict::InBlock,
+        statuses::MINED | statuses::IMMUTABLE => ArcadeVerdict::Mined,
+        statuses::REJECTED => ArcadeVerdict::Rejected,
+        statuses::DOUBLE_SPEND_ATTEMPTED => ArcadeVerdict::Conflict,
+        _ => ArcadeVerdict::Invalid,
+    }
+}
+
+/// Arcade's reorg-correction markers in `extraInfo` (arcade@1ae1208
+/// `models/transaction.go:319-332`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArcadeReorgMarker {
+    /// `reorg_reanchor` on a MINED: re-anchored to the active block at its
+    /// height; the body carries the new path.
+    Reanchor,
+    /// `reorg_unmined` on a SEEN_ON_NETWORK: reverted out of an orphaned
+    /// block.
+    Unmined,
+}
+
+/// Read a reorg marker from `extraInfo`. Either marker is a HINT that
+/// schedules a re-ask, never a status change by itself: only a path checked
+/// against our own headers moves a proof.
+pub fn arcade_reorg_marker(extra_info: Option<&str>) -> Option<ArcadeReorgMarker> {
+    match extra_info.map(str::trim) {
+        Some("reorg_reanchor") => Some(ArcadeReorgMarker::Reanchor),
+        Some("reorg_unmined") => Some(ArcadeReorgMarker::Unmined),
+        _ => None,
+    }
+}
+
+/// The ARC code Arcade puts in a body's `status` for a non-final
+/// transaction: nothing persisted, retryable once the lock time passes
+/// (arcade@1ae1208 `errors/errors.go:54-60`, `services/api_server/
+/// handlers.go:899-925`; a peer's non-final line, `services/propagation/
+/// propagator.go:1891-1896, 1926-1928`).
+pub const ARCADE_CODE_NON_FINAL: u16 = 476;
+
+/// The ARC code Arcade puts on a REJECTED row whose input a competing or
+/// confirmed transaction owns (arcade@1ae1208 `services/propagation/
+/// propagator.go:1897-1903, 1929-1934`).
+pub const ARCADE_CODE_CONFLICT: u16 = 466;
 
 /// Configuration for the Arcade V2 provider.
 #[derive(Debug, Clone, Default)]
@@ -449,6 +551,25 @@ impl Arcade {
                     notes: vec![make_note(&self.name, "postBeefFatalStatus")],
                 });
             }
+            Ok(SubmitOutcome::Orphan { tx_status }) => {
+                // The parents are missing from Arcade's view: a failure, not a
+                // verdict on the bytes; `classify_broadcast_results` keeps it
+                // transient (orphan mempool).
+                result.status = "error".to_string();
+                result.notes.push(make_note(&self.name, "postBeefOrphan"));
+                result.txid_results.push(PostTxResultForTxid {
+                    txid: subject_txid.clone(),
+                    status: "error".to_string(),
+                    double_spend: false,
+                    orphan_mempool: true,
+                    competing_txs: None,
+                    data: Some(tx_status),
+                    service_error: false,
+                    block_hash: None,
+                    block_height: None,
+                    notes: vec![make_note(&self.name, "postBeefOrphan")],
+                });
+            }
             Ok(SubmitOutcome::Rejected { code, detail }) => {
                 // HTTP-level rejection of the submission (465 fee too low, 4xx
                 // validation): DEFINITIVE, the same bytes can never be accepted.
@@ -564,18 +685,10 @@ impl Arcade {
                     extra_info = ?data.extra_info,
                     "Arcade /tx response"
                 );
-                // Resubmission of a known tx returns its CURRENT status —
-                // including fatal ones.
-                if is_fatal_status(&data.tx_status) {
-                    Ok(SubmitOutcome::Fatal {
-                        double_spend: data.tx_status == statuses::DOUBLE_SPEND_ATTEMPTED,
-                        tx_status: data.tx_status,
-                    })
-                } else {
-                    Ok(SubmitOutcome::Accepted {
-                        note: format!("postTxEf:{}", data.tx_status),
-                    })
-                }
+                // Resubmission of a known tx returns its CURRENT status,
+                // fatal ones included (handlers.go:956-972): the word decides,
+                // never the 2xx.
+                Ok(submit_outcome_for_word(data.tx_status))
             }
             Ok(resp) => {
                 let status = resp.status();
@@ -700,7 +813,7 @@ impl Arcade {
             }
         };
 
-        if info.tx_status != statuses::MINED {
+        if arcade_verdict(&info.tx_status) != ArcadeVerdict::Mined {
             return Ok(self.no_merkle_path("getMerklePathNotMined", None));
         }
 
@@ -869,6 +982,11 @@ enum SubmitOutcome {
         tx_status: String,
         double_spend: bool,
     },
+    /// A word containing ORPHAN in a 2xx body: the parents are missing from
+    /// the view. A failure, transient (the parents can still arrive).
+    Orphan {
+        tx_status: String,
+    },
     /// An HTTP rejection of the submission itself (465 fee too low, 4xx
     /// validation — see `arc::status_codes::is_rejection`). Definitive.
     Rejected {
@@ -881,10 +999,60 @@ enum SubmitOutcome {
     },
 }
 
+/// Map the word of a 2xx submit answer to an outcome ([`arcade_verdict`]).
+fn submit_outcome_for_word(tx_status: String) -> SubmitOutcome {
+    match arcade_verdict(&tx_status) {
+        ArcadeVerdict::Pending
+        | ArcadeVerdict::Parked
+        | ArcadeVerdict::Seen
+        | ArcadeVerdict::InBlock
+        | ArcadeVerdict::Mined => SubmitOutcome::Accepted {
+            note: format!("postTxEf:{}", tx_status),
+        },
+        ArcadeVerdict::Rejected => SubmitOutcome::Fatal {
+            tx_status,
+            double_spend: false,
+        },
+        ArcadeVerdict::Conflict => SubmitOutcome::Fatal {
+            tx_status,
+            double_spend: true,
+        },
+        ArcadeVerdict::Orphan => SubmitOutcome::Orphan { tx_status },
+        ArcadeVerdict::Invalid => SubmitOutcome::ServiceError {
+            detail: format!(
+                "Arcade answered 2xx with a status it does not define: {:?}",
+                tx_status
+            ),
+        },
+    }
+}
+
+/// The ARC code in an Arcade 400 body's `status` field, when there is one
+/// (`respondSubmitError`, arcade@1ae1208 `services/api_server/
+/// handlers.go:1036-1050`).
+fn body_arc_code(body: &str) -> Option<u16> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("status")?
+        .as_u64()
+        .and_then(|c| u16::try_from(c).ok())
+}
+
 /// Map a non-2xx submit response to a definitive rejection or a transient
-/// service error, by the same code table classic ARC uses.
+/// service error, by the same code table classic ARC uses. Arcade answers
+/// every intake refusal with HTTP 400 and puts the ARC code in the body:
+/// 476 (non-final) persists nothing and is retryable, so it is transient
+/// here; every other 400 is a verdict on the bytes.
 fn classify_http_error(prefix: &str, status: reqwest::StatusCode, body: String) -> SubmitOutcome {
     let code = status.as_u16();
+    if code == 400 && body_arc_code(&body) == Some(ARCADE_CODE_NON_FINAL) {
+        return SubmitOutcome::ServiceError {
+            detail: format!(
+                "{}: HTTP {} non-final (476, nothing persisted; resubmit after the lock time) - {}",
+                prefix, status, body
+            ),
+        };
+    }
     if crate::services::providers::arc::status_codes::is_rejection(code) {
         SubmitOutcome::Rejected {
             code,
@@ -1045,7 +1213,8 @@ fn reads_as_missing_parent(outcome: &Result<SubmitOutcome>) -> bool {
         Ok(SubmitOutcome::Fatal {
             tx_status,
             double_spend,
-        }) => !double_spend && tx_status == statuses::REJECTED,
+        }) => !double_spend && arcade_verdict(tx_status) == ArcadeVerdict::Rejected,
+        Ok(SubmitOutcome::Orphan { .. }) => true,
         _ => false,
     }
 }
@@ -1055,6 +1224,7 @@ fn describe_outcome(outcome: &Result<SubmitOutcome>) -> &'static str {
     match outcome {
         Ok(SubmitOutcome::Accepted { .. }) => "accepted",
         Ok(SubmitOutcome::Fatal { .. }) => "fatal",
+        Ok(SubmitOutcome::Orphan { .. }) => "orphan",
         Ok(SubmitOutcome::Rejected { .. }) => "rejected",
         Ok(SubmitOutcome::ServiceError { .. }) => "service_error",
         Err(_) => "error",
@@ -1167,10 +1337,34 @@ pub struct ArcadeStatusEvent {
     /// SPV-verify against their own headers before latching.
     #[serde(rename = "merklePath", default)]
     pub merkle_path: Option<String>,
+    /// `extraInfo`: the rejection line on a REJECTED frame, or a reorg
+    /// marker (`reorg_reanchor`, `reorg_unmined`; see
+    /// [`arcade_reorg_marker`]) (arcade@1ae1208 `services/sse/
+    /// manager.go:1127-1149`).
+    #[serde(rename = "extraInfo", default)]
+    pub extra_info: Option<String>,
+    /// `status`: the ARC code on a REJECTED frame (466 a conflict, 467
+    /// generic, 476 non-final and retryable). Absent on other frames.
+    #[serde(rename = "status", default, deserialize_with = "arc_code_or_none")]
+    pub status_code: Option<u16>,
+    /// `competingTxs`: the transactions that own the inputs of a conflict.
+    #[serde(rename = "competingTxs", default)]
+    pub competing_txs: Option<Vec<String>>,
     /// SSE event id (for `Last-Event-ID` resume). Not part of the JSON
     /// payload; populated from the SSE frame.
     #[serde(skip)]
     pub event_id: Option<String>,
+}
+
+/// Read `status` as an ARC code when it is a number in range; anything else
+/// (absent, a string, out of range) is no code.
+fn arc_code_or_none<'de, D>(deserializer: D) -> std::result::Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    Ok(v.and_then(|v| v.as_u64())
+        .and_then(|c| u16::try_from(c).ok()))
 }
 
 /// SSE client for `GET /events?callbackToken=<token>`.
@@ -1277,11 +1471,13 @@ impl ArcadeSseClient {
 // API response types
 // =============================================================================
 
-/// Response to `POST /tx`.
+/// Response to `POST /tx`. A missing `txStatus` reads as empty, which
+/// [`arcade_verdict`] judges an invalid response.
 #[derive(Debug, Deserialize)]
 struct ArcadeSubmitResponse {
+    #[serde(default)]
     txid: String,
-    #[serde(rename = "txStatus")]
+    #[serde(rename = "txStatus", default)]
     tx_status: String,
     #[serde(rename = "extraInfo", default)]
     extra_info: Option<String>,
@@ -1371,7 +1567,8 @@ pub(crate) fn status_proof(info: &ArcadeTxInfo) -> Option<(Vec<u8>, MerklePath)>
 /// Map one Arcade status document onto a [`TxStatusDetail`], carrying the
 /// proof when the document has one.
 pub(crate) fn status_detail(txid: &str, info: &ArcadeTxInfo) -> TxStatusDetail {
-    if info.tx_status == statuses::MINED {
+    let verdict = arcade_verdict(&info.tx_status);
+    if verdict == ArcadeVerdict::Mined {
         // Arcade reports MINED without a confirmation count. Depth 1 is the
         // honest floor: the transaction is in a block.
         let mut detail = TxStatusDetail::new(txid, "mined", Some(1));
@@ -1392,13 +1589,18 @@ pub(crate) fn status_detail(txid: &str, info: &ArcadeTxInfo) -> TxStatusDetail {
         }
         return detail;
     }
-    if is_fatal_status(&info.tx_status) || arcade_status_rank(&info.tx_status) == 0 {
-        // REJECTED / DOUBLE_SPEND_ATTEMPTED / anything unrecognised: no
-        // proof is coming, and the transaction is not in the mempool.
-        return TxStatusDetail::new(txid, "unknown", None);
+    match verdict {
+        // RECEIVED .. SEEN_MULTIPLE_NODES, and STUMP_PROCESSING (in a block,
+        // the proof not built): known, not yet proven.
+        ArcadeVerdict::Pending | ArcadeVerdict::Seen | ArcadeVerdict::InBlock => {
+            TxStatusDetail::new(txid, "known", Some(0))
+        }
+        // UNKNOWN / PENDING_RETRY (no network verdict), REJECTED /
+        // DOUBLE_SPEND_ATTEMPTED, an ORPHAN word, an undefined word: no proof
+        // is coming from here, and the transaction is not known to be in a
+        // mempool.
+        _ => TxStatusDetail::new(txid, "unknown", None),
     }
-    // RECEIVED .. SEEN_MULTIPLE_NODES: known to the network, not yet mined.
-    TxStatusDetail::new(txid, "known", Some(0))
 }
 
 fn make_note(provider: &str, what: &str) -> HashMap<String, serde_json::Value> {
@@ -1436,6 +1638,56 @@ mod tests {
         );
         assert_eq!(arcade_status_rank(statuses::REJECTED), 0);
         assert_eq!(arcade_status_rank("UNKNOWN_FUTURE_STATUS"), 0);
+    }
+
+    /// Every word Arcade defines (the vector's table, cited to
+    /// arcade@1ae1208 `models/transaction.go:89-114`) has the verdict of its
+    /// class, in any letter case; no defined word is an invalid answer.
+    #[test]
+    fn every_arcade_word_has_the_verdict_of_its_class() {
+        let v: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/vectors/arcade_status_verdicts.json"
+        ))
+        .unwrap();
+        let words = v["words"].as_array().unwrap();
+        assert_eq!(words.len(), 12, "Arcade defines twelve statuses");
+        for w in words {
+            let word = w["word"].as_str().unwrap();
+            let want = match w["class"].as_str().unwrap() {
+                "pending" if word == "UNKNOWN" || word == "PENDING_RETRY" => ArcadeVerdict::Parked,
+                "pending" => ArcadeVerdict::Pending,
+                "seen" if word == "STUMP_PROCESSING" => ArcadeVerdict::InBlock,
+                "seen" => ArcadeVerdict::Seen,
+                "mined" => ArcadeVerdict::Mined,
+                "rejected" => ArcadeVerdict::Rejected,
+                "conflict" => ArcadeVerdict::Conflict,
+                other => panic!("unexpected class {other}"),
+            };
+            assert_eq!(arcade_verdict(word), want, "{word}");
+            assert_eq!(
+                arcade_verdict(&word.to_ascii_lowercase()),
+                want,
+                "{word} lower"
+            );
+        }
+        assert_eq!(
+            arcade_verdict("SEEN_IN_ORPHAN_MEMPOOL"),
+            ArcadeVerdict::Orphan
+        );
+        assert_eq!(
+            arcade_verdict("MINED_IN_STALE_BLOCK"),
+            ArcadeVerdict::Invalid
+        );
+        assert_eq!(arcade_verdict(""), ArcadeVerdict::Invalid);
+        assert_eq!(
+            arcade_reorg_marker(Some("reorg_unmined")),
+            Some(ArcadeReorgMarker::Unmined)
+        );
+        assert_eq!(
+            arcade_reorg_marker(Some(" reorg_reanchor ")),
+            Some(ArcadeReorgMarker::Reanchor)
+        );
+        assert_eq!(arcade_reorg_marker(Some("UTXO_SPENT (70)")), None);
     }
 
     #[test]

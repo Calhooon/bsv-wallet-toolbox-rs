@@ -222,7 +222,11 @@ async fn every_arcade_status_document_maps_to_the_right_triage_word_and_proof() 
             }
         }
     }
-    report("Arcade::get_status_for_txids / get_merkle_path", mismatches, all.len());
+    report(
+        "Arcade::get_status_for_txids / get_merkle_path",
+        mismatches,
+        all.len(),
+    );
 }
 
 #[cfg(feature = "sqlite")]
@@ -257,7 +261,9 @@ mod push {
                 .unwrap();
             tracker.add_root(*height, root);
         }
-        storage.set_chain_tracker(std::sync::Arc::new(tracker)).await;
+        storage
+            .set_chain_tracker(std::sync::Arc::new(tracker))
+            .await;
     }
 
     async fn seed(storage: &StorageSqlx, txid: &str, req: &str, tx: &str) {
@@ -390,10 +396,9 @@ mod push {
         // schedules a re-ask.
         set_tracker(&storage, &[], b3 + 1).await;
         let trigger = AtomicBool::new(false);
-        let applied =
-            ArcadeEventsTask::apply_event(&storage, &event(&fill(&steps[1])), &trigger)
-                .await
-                .unwrap();
+        let applied = ArcadeEventsTask::apply_event(&storage, &event(&fill(&steps[1])), &trigger)
+            .await
+            .unwrap();
         assert!(!applied, "reorg_unmined changed a status by itself");
         assert!(
             trigger.load(Ordering::SeqCst),

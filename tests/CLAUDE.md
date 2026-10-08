@@ -32,6 +32,7 @@ Most integration tests require the `sqlite` feature (default). The `valid_create
 | `beef_edge_cases.rs` | 309 | 5 | none | BEEF format edge cases and serialization roundtrips |
 | `double_spend_tests.rs` | 309 | 5 | none | Double-spend detection data structures and status enums |
 | `error_path_tests.rs` | 250 | 5 | none | Error variant construction, Display, conversions |
+| `arcade_status_vector_tests.rs` | 424 | 5 | none/`sqlite` | Arcade's status words through every toolbox surface (`tests/vectors/arcade_status_verdicts.json`: 59 recorded bodies and the latch sequence) |
 
 ## Test Categories
 
