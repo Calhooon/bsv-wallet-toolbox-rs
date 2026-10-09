@@ -103,7 +103,7 @@ where
         self.last_height.load(Ordering::SeqCst)
     }
 
-    /// Get a clone of the Arc<AtomicBool> flag for sharing with CheckForProofsTask.
+    /// Get a clone of the `Arc<AtomicBool>` flag for sharing with CheckForProofsTask.
     /// TS pattern: Monitor.processNewBlockHeader sets TaskCheckForProofs.checkNow.
     pub fn new_header_received_flag(&self) -> Arc<AtomicBool> {
         self.new_header_received.clone()

@@ -403,7 +403,7 @@ impl StorageSqlx {
     /// (recorded as chain evidence), at a parent younger than the threshold
     /// (not yet indexed is not absent; the verdict was about the child),
     /// when the status service cannot answer (never climb on silence), or
-    /// after [`CLIMB_LIMIT`] steps. Returns `(root, climbed)`: the root and
+    /// after `CLIMB_LIMIT` steps. Returns `(root, climbed)`: the root and
     /// the transactions passed on the way up (`txid` first; empty when
     /// `txid` is the root). Read-only apart from the memory rows.
     pub async fn poisoned_root_of(
