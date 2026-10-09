@@ -103,6 +103,17 @@ pub enum Error {
     #[error("Validation error: {0}")]
     ValidationError(String),
 
+    /// A BEEF's bytes are invalid: the offset of the byte bsv-rs's streaming
+    /// reader names and the kind. Never a size or a count: a valid BEEF is
+    /// never refused for those.
+    #[error("Invalid BEEF at byte {offset}: {kind:?}")]
+    InvalidBeef {
+        /// The offset of the byte the refusal names.
+        offset: u64,
+        /// The kind, one of bsv-rs's nineteen.
+        kind: bsv_rs::transaction::Kind,
+    },
+
     /// A function argument is invalid or out of range.
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),

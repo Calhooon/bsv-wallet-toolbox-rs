@@ -3,11 +3,39 @@
 //! This module provides functions for verifying BEEF (Background Evaluation
 //! Extended Format) merkle proofs against a ChainTracker.
 
-use bsv_rs::transaction::{Beef, ChainTracker};
+use bsv_rs::transaction::{Beef, BeefStream, ChainTracker};
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
 use crate::storage::traits::BeefVerificationMode;
+
+/// Reads a stranger's BEEF through bsv-rs's streaming reader, one element at
+/// a time, and refuses it only for invalid bytes: [`Error::InvalidBeef`] with
+/// the offset of the byte and the kind (a bad varint, a cut field, a tree
+/// height over 64, a transaction with no input, trailing bytes, and the rest
+/// of the reader's nineteen). Nothing is refused for its size or its counts.
+///
+/// The frame and each element are checked; the graph (an input naming an
+/// earlier transaction) and the roots against the headers are not: those
+/// stay with the caller's own verification.
+pub fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
+    let mut stream = BeefStream::new(bytes);
+    loop {
+        match stream.next_element() {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(()),
+            Err(bsv_rs::transaction::beef_stream::StreamError::Refused(r)) => {
+                return Err(Error::InvalidBeef {
+                    offset: r.offset,
+                    kind: r.kind(),
+                })
+            }
+            Err(bsv_rs::transaction::beef_stream::StreamError::Io(e)) => {
+                return Err(Error::IoError(e))
+            }
+        }
+    }
+}
 
 /// Verifies BEEF merkle proofs against a ChainTracker.
 ///
