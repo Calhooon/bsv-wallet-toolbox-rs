@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.7.0] - 2026-10-09
+
+The 0.3 line of bsv-rs leaves the wallet: the crate depends on bsv-rs 0.4.1, whose streaming BEEF reader refuses a BEEF only for invalid bytes and never for its size or its counts. The wallet takes the same posture at its own doors: a valid BEEF is never refused, or cut short, for its size or its counts, anywhere in the crate; a refusal is for invalid bytes only, and names the byte and the kind.
+
+### Changed, breaking
+
+1. bsv-rs 0.4.1 (was 0.3.35). bsv-rs types are in this crate's public API (the re-exported `bsv_rs::wallet` arguments and results, `Error::SdkError(bsv_rs::Error)`, the `ChainTracker` and `Beef` parameters), so a caller moves its own bsv-rs to 0.4 with this release. The crate never named `BeefLimits` or `from_binary_with_limits`, so the limits' lost verdict moves nothing here.
+2. `Error` gains `InvalidBeef { offset, kind }` (`Error` is not `#[non_exhaustive]`; an exhaustive `match` needs the arm). `kind` is bsv-rs's `transaction::Kind`.
+3. A stranger's BEEF is read by bsv-rs's `BeefStream` before the in-memory parse, at `internalizeAction` (`tx`) and at `createAction` (`inputBEEF`), through the new `storage::sqlx::refuse_invalid_beef_bytes`. Invalid bytes are `Error::InvalidBeef` with the offset and the kind, where 0.6.0 gave a `ValidationError` with the parser's text and no offset. A transaction with no input is now refused at both doors (`NoInputs`, the node's rule): 0.6.0 internalized one when no chain tracker was set. The graph and the roots stay with each door's own verification.
+4. The ancestor walk that builds a BEEF (`createAction`'s input BEEF, the broadcast rebuild, `listOutputs` with entire transactions) reaches the proven anchor at any depth. 0.6.0 skipped every unproven ancestor past depth 12, after the reference's `maxRecursionDepth` (which throws there), and the BEEF it built then missed those ancestors.
+
+### Named, not routed around
+
+- The two doors receive the BEEF as one byte vector (the `WalletInterface` argument, and over JSON-RPC one request body), and the in-memory `Beef` holds it whole after the stream has read it: memory is linear in the BEEF, never a refusal.
+- A stored `input_beef` and a `raw_tx` are each one SQLite row, held whole when read; a sync chunk carries at least one row whole however large (`max_rough_size` pages, it never refuses).
+- `MAX_PROOF_FETCHES_PER_WALK` (8) bounds the merkle-path requests of one walk; past it an ancestor rides unproven and the walk goes on, so the BEEF stays valid, only larger.
+
+### Upgrading
+
+- Move the caller's bsv-rs to 0.4 (0.4.1 or later) together with this crate.
+- A `match` on `Error` adds `InvalidBeef`. A caller that read `ValidationError("Failed to parse AtomicBEEF: ...")` or `ValidationError("inputBEEF: invalid BEEF format: ...")` for bad bytes now reads `InvalidBeef`.
+- A BEEF with an input-less transaction, internalized by 0.6.0 without a chain tracker, is refused. A transaction with no input is invalid by the node's rule; whether any sender emits one is not known.
+- No stored data changes and nothing is migrated. Rollback: pin 0.6.0 (and bsv-rs 0.3.35).
+
+(bsv-stack-lean `docs/charters/beef-of-any-size.md`; `docs/p0/align-toolbox.md`.)
+
 ## [0.6.0] - 2026-10-09
 
 Rule 28, the second pass, from the owner's two rulings on 0.5.0's open questions: the wallet keeps no header store of its own, the header service is the one headers machine; and a positive unspent answer from an explorer is a hint and never a verdict, the wallet's shared storage is the verdict for its own devices' spends, and a stranger's spend of our output becomes a chain fact only by the spending transaction's merkle proof checked against our headers. No limit changed.
