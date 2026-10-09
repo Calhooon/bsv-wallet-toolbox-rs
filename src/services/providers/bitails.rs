@@ -17,14 +17,14 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::chaintracks::Chain;
+use crate::services::traits::{
+    sha256, validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult,
+    GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult,
+    PostTxResultForTxid, TxStatusDetail, UtxoDetail,
+};
 #[cfg(feature = "break-glass-script-history")]
 use crate::services::traits::{
     validate_script_hash, GetScriptHashHistoryResult, ScriptHistoryItem,
-};
-use crate::services::traits::{
-    validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult,
-    GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid,
-    TxStatusDetail, UtxoDetail,
 };
 use crate::{Error, Result};
 
@@ -462,8 +462,19 @@ impl Bitails {
     // =========================================================================
 
     /// Get block header by hash.
+    ///
+    /// Break-glass (Rule 28, T4): a header by hash, the block a TSC proof
+    /// names. The header service holds every header; this is asked only
+    /// under `break_glass_explorer_headers`, when the header service gave
+    /// none and nothing else we run holds it.
+    ///
+    /// The route is `block/{hash}`: the raw 80-byte header hex with the
+    /// height beside it (the shape of the header service's own Bitails
+    /// courier, rust-chaintracks@62cf619 `src/couriers.rs:165-205`). The
+    /// bytes must hash to the hash asked for, so the answer is bound to the
+    /// question; the height is Bitails' word.
     pub async fn get_block_header_by_hash(&self, hash: &str) -> Result<Option<BlockHeader>> {
-        let url = format!("{}block/{}/header/raw", self.base_url, hash);
+        let url = format!("{}block/{}", self.base_url, hash);
 
         let response = self
             .client
@@ -475,12 +486,12 @@ impl Bitails {
 
         match response.status() {
             StatusCode::OK => {
-                let hex_str = response
-                    .text()
+                let block: BitailsBlock = response
+                    .json()
                     .await
-                    .map_err(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
+                    .map_err(|e| Error::ServiceError(format!("Failed to parse block: {}", e)))?;
 
-                let header_bytes = hex::decode(hex_str.trim()).map_err(|e| {
+                let header_bytes = hex::decode(block.header.trim()).map_err(|e| {
                     Error::ValidationError(format!("Failed to decode header hex: {}", e))
                 })?;
 
@@ -492,7 +503,8 @@ impl Bitails {
                 }
 
                 // Parse 80-byte header
-                let header = parse_block_header(&header_bytes, hash)?;
+                let mut header = parse_block_header(&header_bytes, hash)?;
+                header.height = block.height;
                 Ok(Some(header))
             }
             StatusCode::NOT_FOUND => Ok(None),
@@ -778,6 +790,13 @@ struct BitailsHistoryItem {
     height: Option<u32>,
 }
 
+/// A block by hash: the raw 80-byte header hex and the height.
+#[derive(Debug, Deserialize)]
+struct BitailsBlock {
+    height: u32,
+    header: String,
+}
+
 /// The unspent set of a script hash. `unspent` is required: a body without
 /// it is a parse fault ("could not look"), never an empty set.
 #[derive(Debug, Deserialize)]
@@ -825,11 +844,23 @@ fn make_note(what: &str) -> HashMap<String, serde_json::Value> {
 }
 
 /// Parse 80-byte block header.
+/// Parse an 80-byte header, bound to the block hash it was asked for by:
+/// the double SHA-256 of the bytes, reversed, must be `hash`.
 fn parse_block_header(data: &[u8], hash: &str) -> Result<BlockHeader> {
     if data.len() != 80 {
         return Err(Error::ValidationError(format!(
             "Invalid header length: {}",
             data.len()
+        )));
+    }
+
+    let mut computed = sha256(&sha256(data));
+    computed.reverse();
+    let computed = hex::encode(computed);
+    if !computed.eq_ignore_ascii_case(hash) {
+        return Err(Error::ValidationError(format!(
+            "header bytes hash to {}, not the block hash asked for ({})",
+            computed, hash
         )));
     }
 
@@ -848,7 +879,7 @@ fn parse_block_header(data: &[u8], hash: &str) -> Result<BlockHeader> {
         bits,
         nonce,
         hash: hash.to_string(),
-        height: 0, // Height not available from raw header
+        height: 0, // Not in the 80 bytes; the caller sets it
     })
 }
 

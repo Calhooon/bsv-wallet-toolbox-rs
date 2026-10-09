@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, RwLock};
 
 use crate::chaintracks::Chain;
@@ -33,6 +34,10 @@ use crate::services::{
 };
 use crate::{Error, Result};
 use bsv_rs::transaction::ChainTracker;
+
+/// The explorers `hash_to_header` asks under break-glass (WhatsOnChain and
+/// Bitails), each the other's fallback.
+const EXPLORER_HEADER_SOURCES: usize = 2;
 
 /// How many explorers must each answer "not in the unspent set" before
 /// `get_utxo_status` returns that negative (Rule 28: a negative needs a
@@ -140,6 +145,9 @@ pub struct Services {
     /// The chain tracker over the Chaintracks header service (optional);
     /// an explorer behind it only under the break-glass setting.
     pub chaintracks: Option<StdArc<FallbackChainTracker>>,
+
+    /// The rotating start of the break-glass header-by-hash read.
+    hash_to_header_start: AtomicUsize,
 
     /// Post BEEF mode.
     pub post_beef_mode: PostBeefMode,
@@ -687,6 +695,7 @@ impl Services {
             get_script_hash_history_services: RwLock::new(script_hash_history_services),
             bsv_exchange_rate: RwLock::new(None),
             fiat_exchange_rates: RwLock::new(fiat_rates),
+            hash_to_header_start: AtomicUsize::new(0),
             post_beef_mode: PostBeefMode::default(),
             broadcast_memory: RwLock::new(None),
         })
@@ -1103,29 +1112,66 @@ impl WalletServices for Services {
             )));
         }
 
-        tracing::warn!(
-            hash = %hash,
-            marker = "break_glass_explorer_header",
-            error = %header_service_error,
-            "break-glass: the header service gave no header; asking WhatsOnChain"
-        );
-        if let Some(header) = self.whatsonchain.get_block_header_by_hash(hash).await? {
-            return Ok(header);
+        // Break-glass (Rule 28, T3 and T4): a header by hash. The header
+        // service holds every header and gave none; nothing else we run
+        // holds it. The two explorers are each other's fallback: the start
+        // rotates, a fault falls through to the other, "no such header"
+        // needs both to say so, and an answer counts only when its fields
+        // hash to the hash asked for.
+        let start = self.hash_to_header_start.fetch_add(1, Ordering::Relaxed);
+        let mut absent = 0usize;
+        let mut faults: Vec<String> = Vec::new();
+        for turn in 0..EXPLORER_HEADER_SOURCES {
+            let source = (start + turn) % EXPLORER_HEADER_SOURCES;
+            let name = if source == 0 {
+                "WhatsOnChain"
+            } else {
+                "Bitails"
+            };
+            tracing::warn!(
+                hash = %hash,
+                marker = "break_glass_explorer_header",
+                error = %header_service_error,
+                explorer = name,
+                "break-glass: the header service gave no header; asking an explorer"
+            );
+            let answer = if source == 0 {
+                self.whatsonchain.get_block_header_by_hash(hash).await
+            } else {
+                self.bitails.get_block_header_by_hash(hash).await
+            };
+            match answer {
+                Ok(Some(header)) => {
+                    let mut computed = sha256(&sha256(&header.to_binary()));
+                    computed.reverse();
+                    let computed = hex::encode(computed);
+                    if computed.eq_ignore_ascii_case(hash) {
+                        return Ok(header);
+                    }
+                    faults.push(format!(
+                        "{}: answered with a header that hashes to {}",
+                        name, computed
+                    ));
+                }
+                Ok(None) => absent += 1,
+                Err(e) => faults.push(format!("{}: {}", name, e)),
+            }
         }
 
-        tracing::warn!(
-            hash = %hash,
-            marker = "break_glass_explorer_header",
-            "break-glass: WhatsOnChain has no such header; asking Bitails"
-        );
-        if let Some(header) = self.bitails.get_block_header_by_hash(hash).await? {
-            return Ok(header);
+        if absent == EXPLORER_HEADER_SOURCES {
+            return Err(Error::NotFound {
+                entity: "BlockHeader".to_string(),
+                id: hash.to_string(),
+            });
         }
-
-        Err(Error::NotFound {
-            entity: "BlockHeader".to_string(),
-            id: hash.to_string(),
-        })
+        // Could not look: at least one explorer gave no usable answer, so
+        // "no such header" is not known.
+        Err(Error::ServiceError(format!(
+            "hash_to_header: could not look up {}: the header service: {}; {}",
+            hash,
+            header_service_error,
+            faults.join("; ")
+        )))
     }
 
     async fn get_raw_tx(&self, txid: &str, use_next: bool) -> Result<GetRawTxResult> {
