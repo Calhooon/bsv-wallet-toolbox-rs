@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::chaintracks::Chain;
 use crate::services::traits::{
     sha256, validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult,
     GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult,
@@ -26,6 +25,7 @@ use crate::services::traits::{
 use crate::services::traits::{
     validate_script_hash, GetScriptHashHistoryResult, ScriptHistoryItem,
 };
+use crate::services::Chain;
 use crate::{Error, Result};
 
 /// Bitails mainnet API URL.

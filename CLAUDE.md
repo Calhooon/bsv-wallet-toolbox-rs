@@ -42,11 +42,6 @@ src/
 │   └── client/             # Remote JSON-RPC impl (StorageClient)
 │       ├── storage_client.rs, auth.rs, json_rpc.rs
 │       └── mod.rs
-├── chaintracks/            # Block header tracking
-│   ├── chaintracks.rs      # Main orchestrator
-│   ├── traits.rs           # ChaintracksClient, ChaintracksManagement, storage/ingestor traits
-│   ├── types.rs            # BaseBlockHeader, LiveBlockHeader, etc.
-│   └── storage/            # Memory + SQLite backends
 ├── services/               # Blockchain service abstraction
 │   ├── services.rs         # Services orchestrator (WoC, ARC, Bitails, BHS)
 │   ├── traits.rs           # WalletServices trait
@@ -151,7 +146,7 @@ Shared: test vectors, entity field names (camelCase), API method signatures, sta
 | `thiserror` | 1.0 | Error derive |
 | `async-trait` | 0.1 | Async trait methods |
 | `ring` | 0.17 | PBKDF2 (CWI manager) |
-| `sha2` / `ripemd` / `hex` | various | Crypto helpers (Chaintracks) |
+| `sha2` / `ripemd` / `hex` | various | Crypto helpers |
 
 ## Workflow Tips
 

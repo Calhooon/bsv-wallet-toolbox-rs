@@ -531,7 +531,6 @@ Use `get_services_call_history(reset)` to retrieve and optionally reset counters
 
 - [../CLAUDE.md](../CLAUDE.md) - Parent module overview
 - [providers/CLAUDE.md](./providers/CLAUDE.md) - Provider implementation details
-- [../chaintracks/CLAUDE.md](../chaintracks/CLAUDE.md) - Block header tracking (provides `Chain` type)
 
 ## Broadcast Acceptance Memory (broadcast_memory.rs, 0.3.56)
 

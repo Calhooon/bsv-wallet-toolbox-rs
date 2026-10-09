@@ -4,13 +4,12 @@
 
 ## Overview
 
-Three standalone examples demonstrating configuration and initialization of the main subsystems: Services (blockchain providers), Chaintracks (block header tracking), and Monitor (background task scheduler). All examples are synchronous print-based demos (no async runtime required) that show builder patterns and default configurations.
+Two standalone examples demonstrating configuration and initialization of the main subsystems: Services (blockchain providers) and Monitor (background task scheduler). All examples are synchronous print-based demos (no async runtime required) that show builder patterns and default configurations.
 
 ## Running
 
 ```bash
 cargo run --example basic_wallet       # Services + ServicesOptions configuration
-cargo run --example chaintracks_demo   # Chaintracks block header options
 cargo run --example monitor_demo       # Monitor daemon task scheduling
 ```
 
@@ -19,7 +18,6 @@ cargo run --example monitor_demo       # Monitor daemon task scheduling
 | File | Lines | Purpose |
 |------|-------|---------|
 | `basic_wallet.rs` | 47 | Services creation for mainnet/testnet, `ServicesOptions` builder pattern |
-| `chaintracks_demo.rs` | 61 | `ChaintracksOptions` for mainnet/testnet, custom thresholds, readonly mode |
 | `monitor_demo.rs` | 95 | `MonitorOptions` defaults, all 11 `TaskConfig` intervals, custom/disabled tasks |
 
 ## basic_wallet.rs
@@ -32,16 +30,6 @@ Demonstrates the `Services` orchestrator and `ServicesOptions` builder:
 - `ServicesOptions::mainnet().with_woc_api_key().with_bitails_api_key().with_bhs()` - Full builder chain
 
 **Key imports:** `bsv_wallet_toolbox::{Chain, Services, ServicesOptions}`
-
-## chaintracks_demo.rs
-
-Demonstrates `ChaintracksOptions` configuration:
-
-- `ChaintracksOptions::default_mainnet()` / `default_testnet()` - Network defaults
-- Struct update syntax for customization: `ChaintracksOptions { readonly: true, live_height_threshold: 500, ..default_mainnet() }`
-- Inspectable fields: `chain`, `live_height_threshold`, `reorg_height_threshold`, `batch_insert_limit`, `bulk_migration_chunk_size`, `require_ingestors`, `readonly`
-
-**Key imports:** `bsv_wallet_toolbox::chaintracks::ChaintracksOptions`
 
 ## monitor_demo.rs
 
@@ -73,5 +61,4 @@ All three examples are declared as `[[example]]` entries in the root `Cargo.toml
 
 - [Root CLAUDE.md](../CLAUDE.md) - Project overview, build commands, architecture
 - [src/services/CLAUDE.md](../src/services/CLAUDE.md) - Services module details
-- [src/chaintracks/CLAUDE.md](../src/chaintracks/CLAUDE.md) - Chaintracks module details
 - [src/monitor/CLAUDE.md](../src/monitor/CLAUDE.md) - Monitor daemon details

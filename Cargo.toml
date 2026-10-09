@@ -56,7 +56,7 @@ tracing = "0.1"
 # Async traits
 async-trait = "0.1"
 
-# Cryptography (for Chaintracks)
+# Cryptography
 sha2 = "0.10"
 ripemd = "0.1"
 hex = "0.4"
@@ -91,7 +91,3 @@ path = "examples/basic_wallet.rs"
 [[example]]
 name = "monitor_demo"
 path = "examples/monitor_demo.rs"
-
-[[example]]
-name = "chaintracks_demo"
-path = "examples/chaintracks_demo.rs"

@@ -55,15 +55,14 @@ let raw_tx = services.get_raw_tx("txid...").await?;
 let result = services.post_beef(&beef, &txids).await?;
 ```
 
-### Chaintracks
+### Headers
 
-An embedded block header store (memory and SQLite storage, reorg handling).
-It is not a source of truth: the header service configured with
-`ServicesOptions::with_chaintracks_url` is, and it checks proof of work, the
-difficulty rule, the checkpoints and ancestry on every header. Since 0.5.0
-the crate ships no ingestor for the embedded store (the explorer and CDN
-ingestors are removed); `BulkIngestor` and `LiveIngestor` remain as traits
-for a host that feeds it from a header service it runs.
+The crate keeps no header store of its own. Every header question (the tip,
+a header by height or hash, a merkle root) is asked of the header service
+configured with `ServicesOptions::with_chaintracks_url`, which checks proof
+of work, the difficulty rule, the checkpoints and ancestry on every header.
+Without one the question is an error, never an explorer's word. The embedded
+store of 0.5.0 and earlier is removed in 0.6.0.
 
 ## Installation
 
@@ -151,7 +150,6 @@ cargo test --lib
 # Run specific module tests
 cargo test storage::sqlx
 cargo test services
-cargo test chaintracks
 
 # Run with output
 cargo test -- --nocapture
@@ -166,7 +164,6 @@ cargo test -- --nocapture
 | StorageSqlx | ✅ Complete | 36 |
 | StorageClient | ✅ Complete | 52 |
 | Services Layer | ✅ Complete | 36 |
-| Chaintracks | ✅ Complete | 102 |
 | **Wallet** | ✅ Complete | 78 |
 | **Monitor** | ✅ Complete | 25 |
 
