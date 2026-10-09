@@ -26,12 +26,18 @@ use crate::services::{
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
-        GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, WalletServices,
+        GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, UtxoVerdict,
+        WalletServices,
     },
     ServicesOptions,
 };
 use crate::{Error, Result};
 use bsv_rs::transaction::ChainTracker;
+
+/// How many explorers must each answer "not in the unspent set" before
+/// `get_utxo_status` returns that negative (Rule 28: a negative needs a
+/// second provider).
+pub const UTXO_NEGATIVE_PROVIDERS: usize = 2;
 
 /// Post BEEF mode for handling multiple broadcast services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -327,6 +333,18 @@ impl UtxoStatusService for WhatsOnChain {
 }
 
 #[async_trait]
+impl UtxoStatusService for Bitails {
+    async fn get_utxo_status(
+        &self,
+        output: &str,
+        format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> Result<GetUtxoStatusResult> {
+        self.get_utxo_status(output, format, outpoint).await
+    }
+}
+
+#[async_trait]
 impl StatusForTxidsService for WhatsOnChain {
     async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
         self.get_status_for_txids(txids).await
@@ -595,12 +613,16 @@ impl Services {
             StdArc::clone(&whatsonchain) as PostBeefProvider,
         );
 
-        // getUtxoStatus: WoC
+        // getUtxoStatus: WoC, Bitails. Rule 28 (T10), the irreducible case:
+        // headers and proofs prove inclusion, never that an output is
+        // unspent, so the explorers are asked, each the other's fallback
+        // (a rotating start, a negative only from both).
         let mut utxo_status_services = ServiceCollection::new("getUtxoStatus");
         utxo_status_services.add(
             "WhatsOnChain",
             StdArc::clone(&whatsonchain) as UtxoStatusProvider,
         );
+        utxo_status_services.add("Bitails", StdArc::clone(&bitails) as UtxoStatusProvider);
 
         // getStatusForTxids: Arcade (when configured) → WoC → Bitails
         //
@@ -1610,6 +1632,19 @@ impl WalletServices for Services {
         Ok(results)
     }
 
+    /// Break-glass (Rule 28, T10): is an output unspent. Headers and proofs
+    /// prove inclusion, never that an output is unspent, and our own
+    /// outputs table knows only the spends we made, so the explorers are
+    /// asked. The shape:
+    ///
+    /// * the start rotates, one explorer on from the last call's;
+    /// * a positive (the outpoint is in an explorer's unspent set) is
+    ///   returned from the first explorer that gives it;
+    /// * a negative is returned only when [`UTXO_NEGATIVE_PROVIDERS`]
+    ///   explorers both give it;
+    /// * anything else (a fault, an outage, one negative the other could
+    ///   not confirm) is `status: "error"` with `is_utxo: None`: "could
+    ///   not look", never "nothing there".
     async fn get_utxo_status(
         &self,
         output: &str,
@@ -1624,7 +1659,10 @@ impl WalletServices for Services {
             if use_next {
                 services.next();
             }
-            services.all_services_from_current()
+            let from_current = services.all_services_from_current();
+            // The rotating start: the next call begins one explorer on.
+            services.next();
+            from_current
         };
 
         if all_services.is_empty() {
@@ -1632,47 +1670,97 @@ impl WalletServices for Services {
         }
 
         let mut last_error = None;
+        // The explorers that answered "not in the unspent set".
+        let mut negatives: Vec<GetUtxoStatusResult> = Vec::new();
+        // The explorers still owed an answer (a fault is asked once more).
+        let mut pending: Vec<&(String, String, UtxoStatusProvider)> = all_services.iter().collect();
 
         // Retry loop for transient failures
-        for retry in 0..2 {
-            for (_service_name, provider_name, service) in &all_services {
+        'rounds: for retry in 0..2 {
+            let mut unanswered = Vec::new();
+            for entry in pending {
+                let (_service_name, provider_name, service) = entry;
                 let mut call = ServiceCall::new();
                 match service
                     .get_utxo_status(output, output_format, outpoint)
                     .await
                 {
-                    Ok(result) if result.status == "success" => {
+                    Ok(result) if result.status == "success" && result.is_utxo == Some(true) => {
                         call.mark_success(None);
                         lock_write(&self.get_utxo_status_services)?
                             .add_call_success(provider_name, call);
+                        if let Some(negative) = negatives.first() {
+                            tracing::warn!(
+                                output = %output,
+                                outpoint = ?outpoint,
+                                unspent_by = %provider_name,
+                                not_listed_by = %negative.name,
+                                "get_utxo_status: the explorers disagree; the positive stands (a negative needs both)"
+                            );
+                        }
                         return Ok(result);
+                    }
+                    Ok(result) if result.status == "success" && result.is_utxo == Some(false) => {
+                        call.mark_success(None);
+                        lock_write(&self.get_utxo_status_services)?
+                            .add_call_success(provider_name, call);
+                        negatives.push(result);
+                        if negatives.len() >= UTXO_NEGATIVE_PROVIDERS {
+                            break 'rounds;
+                        }
                     }
                     Ok(result) => {
                         call.mark_failure(result.error.clone());
                         lock_write(&self.get_utxo_status_services)?
                             .add_call_failure(provider_name, call);
-                        last_error = result.error.clone();
+                        last_error = Some(format!(
+                            "{}: {}",
+                            provider_name,
+                            result.error.as_deref().unwrap_or("no answer")
+                        ));
+                        unanswered.push(entry);
                     }
                     Err(e) => {
                         call.mark_error(&e.to_string(), "ERROR");
                         lock_write(&self.get_utxo_status_services)?
                             .add_call_error(provider_name, call);
-                        last_error = Some(e.to_string());
+                        last_error = Some(format!("{}: {}", provider_name, e));
+                        unanswered.push(entry);
                     }
                 }
             }
 
+            pending = unanswered;
+            if pending.is_empty() {
+                break;
+            }
             if retry < 1 {
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
             }
         }
 
+        if negatives.len() >= UTXO_NEGATIVE_PROVIDERS {
+            let names: Vec<String> = negatives.iter().map(|n| n.name.clone()).collect();
+            let mut result = negatives.swap_remove(0);
+            result.name = names.join("+");
+            return Ok(result);
+        }
+
+        // Could not look. One explorer's negative is named, never returned.
+        let error = match negatives.first() {
+            Some(negative) => Some(format!(
+                "could not look: {} does not list the output as unspent and no second explorer confirmed it ({})",
+                negative.name,
+                last_error.as_deref().unwrap_or("no other explorer answered")
+            )),
+            None => last_error,
+        };
         Ok(GetUtxoStatusResult {
             name: "Services".to_string(),
             status: "error".to_string(),
             is_utxo: None,
             details: Vec::new(),
-            error: last_error,
+            error,
         })
     }
 
@@ -1910,13 +1998,25 @@ impl WalletServices for Services {
         hex::encode(&hash)
     }
 
-    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool> {
+    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
         let hash = self.hash_output_script(locking_script);
         let outpoint = format!("{}.{}", txid, vout);
-        let result = self
+        match self
             .get_utxo_status(&hash, None, Some(&outpoint), false)
-            .await?;
-        Ok(result.is_utxo.unwrap_or(false))
+            .await
+        {
+            Ok(result) => {
+                let verdict = UtxoVerdict::from_status(&result);
+                if verdict == UtxoVerdict::Unknown {
+                    tracing::debug!(outpoint = %outpoint, error = ?result.error, "is_utxo: could not look");
+                }
+                verdict
+            }
+            Err(e) => {
+                tracing::debug!(outpoint = %outpoint, error = %e, "is_utxo: could not look");
+                UtxoVerdict::Unknown
+            }
+        }
     }
 
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool> {

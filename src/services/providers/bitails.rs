@@ -23,7 +23,8 @@ use crate::services::traits::{
 };
 use crate::services::traits::{
     validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult,
-    PostBeefResult, PostTxResultForTxid, TxStatusDetail,
+    GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid,
+    TxStatusDetail, UtxoDetail,
 };
 use crate::{Error, Result};
 
@@ -64,6 +65,12 @@ impl BitailsConfig {
         }
     }
 }
+
+/// The length at which an unspent list that does not hold the outpoint is
+/// treated as possibly truncated (a page of a longer set) and so as "could
+/// not look". A wallet's output scripts hold one or a few outputs; this is
+/// a guard on the negative, not a limit on anything.
+pub const BITAILS_UNSPENT_PAGE: usize = 100;
 
 /// Bitails service provider.
 pub struct Bitails {
@@ -492,6 +499,103 @@ impl Bitails {
     }
 
     // =========================================================================
+    // UTXO Status
+    // =========================================================================
+
+    /// Get UTXO status for a script hash.
+    ///
+    /// Break-glass (Rule 28, T10): is an output unspent. Headers and proofs
+    /// prove inclusion, never that an output is unspent, and our own
+    /// outputs table knows only the spends we made, so no header, proof or
+    /// index of ours answers it. This explorer is WhatsOnChain's second:
+    /// `Services::get_utxo_status` takes a negative only from both.
+    ///
+    /// Anything but a 200 carrying an `unspent` list is "could not look"
+    /// (`status: "error"`), never an empty set. A list of
+    /// [`BITAILS_UNSPENT_PAGE`] entries or more that does not hold the
+    /// outpoint may be one page of a longer set, so it is "could not look"
+    /// too.
+    ///
+    /// The route (`scripthash/{hash}/unspent`) and its field names are not
+    /// in the TypeScript reference, which asks WhatsOnChain alone. They are
+    /// exercised here against a local fixture only; until one read of the
+    /// live service confirms them, a mismatch shows as "could not look" and
+    /// no negative is ever confirmed, which is the safe side.
+    pub async fn get_utxo_status(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> Result<GetUtxoStatusResult> {
+        let could_not_look = |error: String| GetUtxoStatusResult {
+            name: "Bitails".to_string(),
+            status: "error".to_string(),
+            is_utxo: None,
+            details: Vec::new(),
+            error: Some(error),
+        };
+
+        // Convert output to script hash BE format
+        let script_hash = crate::services::traits::convert_script_hash(output, output_format)?;
+
+        let url = format!("{}scripthash/{}/unspent", self.base_url, script_hash);
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.get_headers())
+            .send()
+            .await
+            .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+        if response.status() != StatusCode::OK {
+            return Ok(could_not_look(format!("HTTP {}", response.status())));
+        }
+
+        let data: BitailsUnspentResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Failed to parse unspent set: {}", e)))?;
+
+        let details: Vec<UtxoDetail> = data
+            .unspent
+            .iter()
+            .map(|u| UtxoDetail {
+                txid: u.txid.clone(),
+                index: u.vout,
+                satoshis: u.satoshis,
+                height: u.blockheight,
+            })
+            .collect();
+
+        // Check if specific outpoint is a UTXO ("txid.vout")
+        let is_utxo = match outpoint.and_then(|o| o.split_once('.')) {
+            Some((op_txid, op_vout)) => {
+                let op_vout: u32 = op_vout.parse().unwrap_or(u32::MAX);
+                details
+                    .iter()
+                    .any(|d| d.txid == op_txid && d.index == op_vout)
+            }
+            None => !details.is_empty(),
+        };
+
+        if !is_utxo && details.len() >= BITAILS_UNSPENT_PAGE {
+            return Ok(could_not_look(format!(
+                "the unspent list holds {} entries and may be one page of more",
+                details.len()
+            )));
+        }
+
+        Ok(GetUtxoStatusResult {
+            name: "Bitails".to_string(),
+            status: "success".to_string(),
+            is_utxo: Some(is_utxo),
+            details,
+            error: None,
+        })
+    }
+
+    // =========================================================================
     // Script Hash History
     // =========================================================================
 
@@ -667,6 +771,21 @@ struct BitailsBroadcastError {
 struct BitailsHistoryItem {
     txid: String,
     height: Option<u32>,
+}
+
+/// The unspent set of a script hash. `unspent` is required: a body without
+/// it is a parse fault ("could not look"), never an empty set.
+#[derive(Debug, Deserialize)]
+struct BitailsUnspentResponse {
+    unspent: Vec<BitailsUnspentItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BitailsUnspentItem {
+    txid: String,
+    vout: u32,
+    satoshis: u64,
+    blockheight: Option<u32>,
 }
 
 #[allow(dead_code)]

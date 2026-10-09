@@ -237,16 +237,7 @@ pub async fn chain_knowledge(services: &dyn WalletServices, txid: &str) -> Chain
     }
 }
 
-/// The chain's answer for one outpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UtxoVerdict {
-    /// In the unspent set: safe to release.
-    Unspent,
-    /// Not in the unspent set (spent, or its source never existed).
-    Spent,
-    /// The lookup failed or was inconclusive (rate limit, outage).
-    Unknown,
-}
+pub use crate::services::traits::UtxoVerdict;
 
 /// Ask the UTXO service about `txid:vout` (one `get_utxo_status` by script
 /// hash, the same call `is_utxo` makes), keeping the three answers apart.
@@ -262,11 +253,7 @@ pub async fn utxo_verdict(
         .get_utxo_status(&hash, None, Some(&outpoint), false)
         .await
     {
-        Ok(result) if result.status == "success" => match result.is_utxo {
-            Some(true) => UtxoVerdict::Unspent,
-            Some(false) => UtxoVerdict::Spent,
-            None => UtxoVerdict::Unknown,
-        },
+        Ok(result) if result.status == "success" => UtxoVerdict::from_status(&result),
         Ok(result) => {
             tracing::debug!(outpoint = %outpoint, error = ?result.error, "utxo verdict: service answered with an error");
             UtxoVerdict::Unknown

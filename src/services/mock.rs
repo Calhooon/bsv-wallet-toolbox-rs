@@ -25,7 +25,8 @@ use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 use crate::services::traits::{
     sha256, BlockHeader, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,
     GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
-    GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, WalletServices,
+    GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, UtxoVerdict,
+    WalletServices,
 };
 use crate::{Error, Result};
 
@@ -812,7 +813,9 @@ impl WalletServices for MockWalletServices {
         self.broadcaster_statuses.clone()
     }
 
-    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool> {
+    /// The configured `is_utxo_response`: `true` is unspent, `false` is
+    /// spent, and an error is "could not look".
+    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
         let call_index = self.get_call_index("is_utxo");
         let response = self.is_utxo_response.lock().unwrap();
         let result = response.resolve(call_index);
@@ -821,11 +824,20 @@ impl WalletServices for MockWalletServices {
             format!("{}", vout),
             format!("script_len={}", locking_script.len()),
         ];
-        match &result {
-            Ok(_) => self.record_call("is_utxo", args, true),
-            Err(_) => self.record_call("is_utxo", args, false),
+        match result {
+            Ok(unspent) => {
+                self.record_call("is_utxo", args, true);
+                if unspent {
+                    UtxoVerdict::Unspent
+                } else {
+                    UtxoVerdict::Spent
+                }
+            }
+            Err(_) => {
+                self.record_call("is_utxo", args, false);
+                UtxoVerdict::Unknown
+            }
         }
-        result
     }
 
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool> {

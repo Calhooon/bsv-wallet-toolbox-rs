@@ -216,3 +216,227 @@ async fn the_bitails_status_read_asks_no_explorer_for_the_tip() {
     );
     tip.assert_async().await;
 }
+
+// =============================================================================
+// Item 5 (T10): an output's spend, the irreducible case
+// =============================================================================
+//
+// Headers and proofs prove inclusion, never that an output is unspent, so
+// the unspent set of a script is asked of the explorers. The shape: each is
+// the other's fallback, the start rotates, a negative needs both, and
+// "could not look" is never "spent".
+
+const UTXO_TXID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const UTXO_SCRIPT: &[u8] = &[0x76, 0xa9, 0x14, 0x01, 0x02, 0x88, 0xac];
+
+/// The script hash of `UTXO_SCRIPT` as the explorers' routes carry it.
+fn utxo_script_hash_be() -> String {
+    let mut hash = sha256(UTXO_SCRIPT);
+    hash.reverse();
+    hex::encode(hash)
+}
+
+/// What an explorer fixture says about the script's unspent set.
+#[derive(Clone, Copy)]
+enum Says {
+    /// The outpoint `UTXO_TXID:0` is in the unspent set.
+    Unspent,
+    /// The unspent set is empty.
+    NotListed,
+    /// HTTP 500.
+    Fault,
+}
+
+async fn woc_unspent(server: &mut mockito::ServerGuard, says: Says) -> mockito::Mock {
+    let path = format!("/script/{}/unspent/all", utxo_script_hash_be());
+    let mock = server.mock("GET", path.as_str());
+    let mock = match says {
+        Says::Unspent => mock.with_status(200).with_body(format!(
+            r#"{{"script":"{}","result":[{{"height":900000,"tx_pos":0,"tx_hash":"{}","value":1000}}]}}"#,
+            utxo_script_hash_be(),
+            UTXO_TXID
+        )),
+        Says::NotListed => mock.with_status(200).with_body(format!(
+            r#"{{"script":"{}","result":[]}}"#,
+            utxo_script_hash_be()
+        )),
+        Says::Fault => mock.with_status(500),
+    };
+    mock.create_async().await
+}
+
+async fn bitails_unspent(server: &mut mockito::ServerGuard, says: Says) -> mockito::Mock {
+    let path = format!("/scripthash/{}/unspent", utxo_script_hash_be());
+    let mock = server.mock("GET", path.as_str());
+    let mock = match says {
+        Says::Unspent => mock.with_status(200).with_body(format!(
+            r#"{{"scripthash":"{}","unspent":[{{"txid":"{}","vout":0,"satoshis":1000,"blockheight":900000}}]}}"#,
+            utxo_script_hash_be(),
+            UTXO_TXID
+        )),
+        Says::NotListed => mock.with_status(200).with_body(format!(
+            r#"{{"scripthash":"{}","unspent":[]}}"#,
+            utxo_script_hash_be()
+        )),
+        Says::Fault => mock.with_status(500),
+    };
+    mock.create_async().await
+}
+
+/// `Services` over two explorer fixtures that answer as given.
+async fn utxo_services(
+    woc_says: Says,
+    bitails_says: Says,
+) -> (
+    Services,
+    (mockito::ServerGuard, mockito::Mock),
+    (mockito::ServerGuard, mockito::Mock),
+) {
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let w = woc_unspent(&mut woc, woc_says).await;
+    let b = bitails_unspent(&mut bitails, bitails_says).await;
+    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+    (services, (woc, w), (bitails, b))
+}
+
+async fn utxo_status(services: &Services) -> GetUtxoStatusResult {
+    let hash = services.hash_output_script(UTXO_SCRIPT);
+    let outpoint = format!("{}.0", UTXO_TXID);
+    services
+        .get_utxo_status(&hash, None, Some(&outpoint), false)
+        .await
+        .unwrap()
+}
+
+/// T10: one explorer's "not in the unspent list" is not "spent" while the
+/// other could not look.
+#[tokio::test]
+async fn one_explorers_negative_is_not_spent_while_the_other_could_not_look() {
+    let (services, _woc, _bitails) = utxo_services(Says::NotListed, Says::Fault).await;
+    let result = utxo_status(&services).await;
+    assert_ne!(
+        result.is_utxo,
+        Some(false),
+        "a negative needs the second provider: {result:?}"
+    );
+    assert_eq!(result.status, "error", "could not look: {result:?}");
+}
+
+/// T10: the second explorer is asked after a negative, and its positive
+/// stands.
+#[tokio::test]
+async fn the_second_explorers_positive_stands_after_a_negative() {
+    let (services, _woc, _bitails) = utxo_services(Says::NotListed, Says::Unspent).await;
+    let result = utxo_status(&services).await;
+    assert_eq!(result.status, "success", "{result:?}");
+    assert_eq!(result.is_utxo, Some(true), "{result:?}");
+}
+
+/// T10: two explorers that both leave the outpoint out of the unspent set
+/// are the negative.
+#[tokio::test]
+async fn two_explorers_negatives_are_spent() {
+    let (services, _woc, _bitails) = utxo_services(Says::NotListed, Says::NotListed).await;
+    let result = utxo_status(&services).await;
+    assert_eq!(result.status, "success", "{result:?}");
+    assert_eq!(result.is_utxo, Some(false), "{result:?}");
+}
+
+/// T10: the start rotates. With both explorers listing the outpoint, each
+/// call ends at its first answer, and two calls reach one explorer each.
+#[tokio::test]
+async fn the_utxo_read_rotates_its_starting_explorer() {
+    let (services, (_woc, w), (_bitails, b)) = utxo_services(Says::Unspent, Says::Unspent).await;
+    assert_eq!(utxo_status(&services).await.is_utxo, Some(true));
+    assert_eq!(utxo_status(&services).await.is_utxo, Some(true));
+    w.expect(1).assert_async().await;
+    b.expect(1).assert_async().await;
+}
+
+/// T10: an outage is "could not look", never "spent" (`is_utxo` answered
+/// `false` for it, and four callers read that as spent).
+#[tokio::test]
+async fn an_outage_is_could_not_look_never_spent() {
+    let (services, _woc, _bitails) = utxo_services(Says::Fault, Says::Fault).await;
+    let answer = services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
+    assert_eq!(answer, UtxoVerdict::Unknown, "an outage read as {answer:?}");
+}
+
+/// T10: the three answers of `is_utxo`, one per row of what the two
+/// explorers say.
+#[tokio::test]
+async fn is_utxo_gives_the_three_answers() {
+    for (woc_says, bitails_says, expected) in [
+        (Says::Unspent, Says::Fault, UtxoVerdict::Unspent),
+        (Says::NotListed, Says::Unspent, UtxoVerdict::Unspent),
+        (Says::NotListed, Says::NotListed, UtxoVerdict::Spent),
+        (Says::NotListed, Says::Fault, UtxoVerdict::Unknown),
+        (Says::Fault, Says::NotListed, UtxoVerdict::Unknown),
+    ] {
+        let (services, _woc, _bitails) = utxo_services(woc_says, bitails_says).await;
+        assert_eq!(services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await, expected);
+    }
+}
+
+/// T10: a Bitails body that is not an unspent list, and a list long enough
+/// to be one page of more, are "could not look", never an empty set.
+#[tokio::test]
+async fn a_bitails_answer_that_is_not_a_whole_unspent_list_is_could_not_look() {
+    let hash = hex::encode(sha256(UTXO_SCRIPT));
+    let outpoint = format!("{}.0", UTXO_TXID);
+    let path = format!("/scripthash/{}/unspent", utxo_script_hash_be());
+
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", path.as_str())
+        .with_status(200)
+        .with_body(r#"{"scripthash":"00","result":[]}"#)
+        .create_async()
+        .await;
+    let provider = Bitails::with_base_url(Chain::Main, &server.url());
+    assert!(
+        provider
+            .get_utxo_status(&hash, None, Some(&outpoint))
+            .await
+            .is_err(),
+        "a body with no unspent list is a fault"
+    );
+
+    let mut server = mockito::Server::new_async().await;
+    let page: Vec<String> = (0..crate::services::providers::bitails::BITAILS_UNSPENT_PAGE)
+        .map(|i| {
+            format!(
+                r#"{{"txid":"{}","vout":{},"satoshis":1}}"#,
+                "22".repeat(32),
+                i
+            )
+        })
+        .collect();
+    let _m = server
+        .mock("GET", path.as_str())
+        .with_status(200)
+        .with_body(format!(r#"{{"unspent":[{}]}}"#, page.join(",")))
+        .create_async()
+        .await;
+    let provider = Bitails::with_base_url(Chain::Main, &server.url());
+    let result = provider
+        .get_utxo_status(&hash, None, Some(&outpoint))
+        .await
+        .unwrap();
+    assert_eq!(result.status, "error");
+    assert_eq!(result.is_utxo, None);
+
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", path.as_str())
+        .with_status(404)
+        .create_async()
+        .await;
+    let provider = Bitails::with_base_url(Chain::Main, &server.url());
+    let result = provider
+        .get_utxo_status(&hash, None, Some(&outpoint))
+        .await
+        .unwrap();
+    assert_eq!(result.status, "error", "a 404 is not an empty set");
+}
