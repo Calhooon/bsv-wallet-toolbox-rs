@@ -484,6 +484,21 @@ pub struct GetRawTxResult {
     /// Error if retrieval failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    /// With no bytes: `true` when at least one provider could not look (a
+    /// fault, an outage, bytes that did not hash to the txid), so the
+    /// transaction's absence is NOT known; `false` when every provider
+    /// asked answered "no such transaction". Always `false` with bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub could_not_look: bool,
+}
+
+impl GetRawTxResult {
+    /// Every provider asked answered "no such transaction". An explorer
+    /// outage is never this.
+    pub fn is_not_found(&self) -> bool {
+        self.raw_tx.is_none() && !self.could_not_look
+    }
 }
 
 mod serde_bytes_opt {

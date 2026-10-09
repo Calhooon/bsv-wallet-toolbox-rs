@@ -1174,6 +1174,15 @@ impl WalletServices for Services {
         )))
     }
 
+    /// Break-glass (Rule 28, T8 and T9): a transaction's bytes by txid. Our
+    /// own storage holds our own transactions; for a foreign ancestor the
+    /// sender's BEEF did not carry, nothing we hold has them, so the
+    /// explorers are asked as couriers, each the other's fallback. The
+    /// answer is self-verifying: the bytes must hash to the txid.
+    ///
+    /// With no bytes, "not found" (every explorer asked has no such
+    /// transaction) is kept apart from "could not look"
+    /// ([`GetRawTxResult::could_not_look`]).
     async fn get_raw_tx(&self, txid: &str, use_next: bool) -> Result<GetRawTxResult> {
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, RawTxProvider)> = {
@@ -1189,7 +1198,9 @@ impl WalletServices for Services {
             return Err(Error::NoServicesAvailable);
         }
 
-        let mut last_error = None;
+        // The providers that could not look, by name. A provider that
+        // answered "no such transaction" adds nothing here.
+        let mut faults: Vec<String> = Vec::new();
 
         for (_service_name, provider_name, service) in all_services {
             let mut call = ServiceCall::new();
@@ -1202,21 +1213,32 @@ impl WalletServices for Services {
                 Ok(result) => {
                     call.mark_failure(Some("not found".to_string()));
                     lock_write(&self.get_raw_tx_services)?.add_call_failure(&provider_name, call);
-                    last_error = result.error.clone();
+                    if result.could_not_look || result.error.is_some() {
+                        faults.push(format!(
+                            "{}: {}",
+                            provider_name,
+                            result.error.as_deref().unwrap_or("could not look")
+                        ));
+                    }
                 }
                 Err(e) => {
                     call.mark_error(&e.to_string(), "ERROR");
                     lock_write(&self.get_raw_tx_services)?.add_call_error(&provider_name, call);
-                    last_error = Some(e.to_string());
+                    faults.push(format!("{}: {}", provider_name, e));
                 }
             }
         }
 
+        // "Not found" is every provider answering "no such transaction".
+        // One that could not look makes the absence unknown, whichever
+        // order they were asked in.
+        let could_not_look = !faults.is_empty();
         Ok(GetRawTxResult {
             name: "Services".to_string(),
             txid: txid.to_string(),
             raw_tx: None,
-            error: last_error,
+            error: could_not_look.then(|| faults.join("; ")),
+            could_not_look,
         })
     }
 

@@ -263,6 +263,7 @@ fn test_get_raw_tx_result_serialization() {
         txid: "abc123".to_string(),
         raw_tx: Some(vec![0x01, 0x02, 0x03]),
         error: None,
+        could_not_look: false,
     };
 
     let json = serde_json::to_string(&result).unwrap();

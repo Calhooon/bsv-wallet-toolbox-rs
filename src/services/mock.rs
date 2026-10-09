@@ -340,6 +340,7 @@ impl Default for MockWalletServicesBuilder {
                 txid: String::new(),
                 raw_tx: Some(vec![0x01, 0x00, 0x00, 0x00, 0x00]),
                 error: None,
+                could_not_look: false,
             }),
             get_merkle_path_response: MockResponse::Success(GetMerklePathResult {
                 name: Some("MockProvider".to_string()),

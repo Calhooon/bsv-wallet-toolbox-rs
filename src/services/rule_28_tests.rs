@@ -674,3 +674,59 @@ async fn no_proof_is_fetched_from_an_explorer_without_a_header_service() {
     w.assert_async().await;
     b.assert_async().await;
 }
+
+// =============================================================================
+// Item 9 (T8, T9): a transaction's bytes, "not found" apart from "fault"
+// =============================================================================
+
+async fn raw_tx_fixture(
+    server: &mut mockito::ServerGuard,
+    txid: &str,
+    status: usize,
+) -> mockito::Mock {
+    server
+        .mock("GET", format!("/tx/{}/hex", txid).as_str())
+        .with_status(status)
+        .create_async()
+        .await
+}
+
+/// T8, T9: one explorer could not look and the other has no such
+/// transaction. That is not "not found": the fault is kept, whichever of
+/// the two it came from (a later 404 used to erase an earlier fault).
+#[tokio::test]
+async fn a_raw_tx_fault_is_not_erased_by_the_other_explorers_not_found() {
+    let txid = "ab".repeat(32);
+    for (woc_status, bitails_status) in [(500, 404), (404, 500)] {
+        let mut woc = mockito::Server::new_async().await;
+        let mut bitails = mockito::Server::new_async().await;
+        let _w = raw_tx_fixture(&mut woc, &txid, woc_status).await;
+        let _b = raw_tx_fixture(&mut bitails, &txid, bitails_status).await;
+        let services =
+            services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+        let result = services.get_raw_tx(&txid, false).await.unwrap();
+        assert!(result.raw_tx.is_none());
+        assert!(
+            result.error.is_some(),
+            "WoC {woc_status}, Bitails {bitails_status}: the fault is reported: {result:?}"
+        );
+        assert!(result.could_not_look, "{result:?}");
+        assert!(!result.is_not_found(), "{result:?}");
+    }
+}
+
+/// T8, T9: both explorers answering "no such transaction" is "not found",
+/// with no error.
+#[tokio::test]
+async fn a_raw_tx_both_explorers_lack_is_not_found() {
+    let txid = "ab".repeat(32);
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let _w = raw_tx_fixture(&mut woc, &txid, 404).await;
+    let _b = raw_tx_fixture(&mut bitails, &txid, 404).await;
+    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+    let result = services.get_raw_tx(&txid, false).await.unwrap();
+    assert!(result.raw_tx.is_none());
+    assert!(result.error.is_none(), "{result:?}");
+    assert!(result.is_not_found(), "{result:?}");
+}
