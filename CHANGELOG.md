@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.2] - 2026-10-09
+
+### Changed
+
+- The `bsv-rs` floor moves from `0.3.20` to `0.3.35`, the latest on crates.io. A consumer's lock can no longer hold this crate on a `bsv-rs` older than 0.3.35. No code changed and no limit changed.
+
 ## [0.4.1] - 2026-10-08
 
 ### Fixed
