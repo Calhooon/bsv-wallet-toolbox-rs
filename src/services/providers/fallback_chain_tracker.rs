@@ -8,13 +8,23 @@
 //! verify), never a verdict. Before P0-1c WhatsOnChain was asked whenever
 //! the header service failed or refuted, and its root was taken.
 //!
-//! Break-glass: [`FallbackChainTracker::with_break_glass_woc`] (from
+//! Break-glass: [`FallbackChainTracker::with_break_glass_explorers`] (from
 //! `ServicesOptions::break_glass_explorer_headers`, off by default) asks
-//! WhatsOnChain's block-by-height API only when the header service gave no
-//! answer, and logs every such call at warn level (marker
-//! `break_glass_explorer_header`). An explorer never overrules the header
-//! service's definite answer, break-glass or not.
-//! Positives are cached; nothing else is.
+//! two explorers, WhatsOnChain and Bitails, for the block at the height,
+//! only when the header service gave no answer, and logs every such call at
+//! warn level (marker `break_glass_explorer_header`). An explorer never
+//! overrules the header service's definite answer, break-glass or not.
+//!
+//! Rule 28 (T5): the question is the merkle root at a height; the header
+//! service holds it, and with the header service unreachable nothing else
+//! we run does, so this is the irreducible case and a break-glass read.
+//! One explorer's word is never a verified root: `true` needs both
+//! explorers naming the asked root, `false` needs both naming one other
+//! root, and anything else (one fault, a disagreement) is an error, unable
+//! to verify. Only a root both named, or the header service confirmed, is
+//! cached. No proof of work or difficulty rule is checked on an explorer's
+//! header here: two words agreeing is the whole of the check, which is why
+//! the setting is break-glass.
 
 use async_trait::async_trait;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
@@ -33,6 +43,38 @@ struct WocBlockByHeight {
     hash: Option<String>,
     height: Option<u32>,
     confirmations: Option<u32>,
+}
+
+/// Bitails block response (block-by-height endpoint): the raw 80-byte
+/// header hex in `header`. The shape is the header service's own Bitails
+/// courier's (rust-chaintracks@62cf619 `src/couriers.rs:165-200`).
+#[derive(Debug, Deserialize)]
+struct BitailsBlockByHeight {
+    hash: String,
+    height: u32,
+    header: String,
+}
+
+/// The merkle root an 80-byte header carries, in display order, once the
+/// bytes are bound to the block hash the explorer claimed for them (the
+/// double SHA-256 of the bytes, reversed).
+fn merkle_root_of_header(header: &[u8], claimed_hash: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    if header.len() != 80 {
+        return Err(format!("header is {} bytes, not 80", header.len()));
+    }
+    let mut hash = Sha256::digest(Sha256::digest(header)).to_vec();
+    hash.reverse();
+    let computed = hex::encode(hash);
+    if !computed.eq_ignore_ascii_case(claimed_hash) {
+        return Err(format!(
+            "claimed hash {} but the header bytes hash to {}",
+            claimed_hash, computed
+        ));
+    }
+    let mut root = header[36..68].to_vec();
+    root.reverse();
+    Ok(hex::encode(root))
 }
 
 /// Thread-safe in-memory cache for verified merkle roots.
@@ -75,12 +117,14 @@ impl RootCache {
 /// 2. Ask the header service. `Ok(true)`: cache and return true. `Ok(false)`:
 ///    return false.
 /// 3. The header service gave no answer: `Err(ChainTrackerError::NetworkError)`,
-///    unless break-glass is on, when WhatsOnChain is asked (logged at warn);
-///    when it answers, compare (cache a match); when it fails, `Err`.
+///    unless break-glass is on, when WhatsOnChain and Bitails are both asked
+///    (logged at warn): both name the asked root, true (cached); both name
+///    one other root, false; one fails or they disagree, `Err`.
 pub struct FallbackChainTracker {
     primary: ChaintracksServiceClient,
-    /// WhatsOnChain's API base, present only under break-glass.
-    break_glass_woc_base_url: Option<String>,
+    /// The API bases of WhatsOnChain and Bitails, present only under
+    /// break-glass.
+    break_glass_explorers: Option<(String, String)>,
     client: Client,
     cache: RootCache,
 }
@@ -98,32 +142,81 @@ impl FallbackChainTracker {
     }
 
     /// Break-glass: a tracker that asks WhatsOnChain at `woc_base_url` (e.g.
-    /// `https://api.whatsonchain.com/v1/bsv/main`) when the header service
-    /// gives no answer, logging every such call at warn level. Never the
-    /// default; never consulted against a definite answer.
-    pub fn with_break_glass_woc(
+    /// `https://api.whatsonchain.com/v1/bsv/main`) and Bitails at
+    /// `bitails_base_url` (e.g. `https://api.bitails.io/`) when the header
+    /// service gives no answer, logging every such call at warn level.
+    /// Never the default; never consulted against a definite answer; a
+    /// verdict only when the two explorers agree.
+    pub fn with_break_glass_explorers(
         primary: ChaintracksServiceClient,
         woc_base_url: impl Into<String>,
+        bitails_base_url: impl Into<String>,
     ) -> Self {
-        Self::build(primary, Some(woc_base_url.into()))
+        Self::build(
+            primary,
+            Some((
+                woc_base_url.into().trim_end_matches('/').to_string(),
+                bitails_base_url.into().trim_end_matches('/').to_string(),
+            )),
+        )
     }
 
-    fn build(primary: ChaintracksServiceClient, break_glass_woc_base_url: Option<String>) -> Self {
+    fn build(
+        primary: ChaintracksServiceClient,
+        break_glass_explorers: Option<(String, String)>,
+    ) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .unwrap_or_default();
         Self {
             primary,
-            break_glass_woc_base_url,
+            break_glass_explorers,
             client,
             cache: RootCache::new(1000),
         }
     }
 
     /// Is the break-glass explorer fallback on?
-    pub fn break_glass_woc(&self) -> bool {
-        self.break_glass_woc_base_url.is_some()
+    pub fn break_glass_explorers(&self) -> bool {
+        self.break_glass_explorers.is_some()
+    }
+
+    /// Break-glass: Bitails' block-by-height API. The header bytes are
+    /// bound to the block hash and the height Bitails claims for them
+    /// before their merkle root is read.
+    async fn bitails_root_for_height(
+        &self,
+        bitails_base_url: &str,
+        height: u32,
+    ) -> Result<String, String> {
+        let url = format!("{}/block/height/{}", bitails_base_url, height);
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Bitails fallback request error: {}", e))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("Bitails fallback HTTP {}", status));
+        }
+
+        let block: BitailsBlockByHeight = response
+            .json()
+            .await
+            .map_err(|e| format!("Bitails fallback parse error: {}", e))?;
+        if block.height != height {
+            return Err(format!(
+                "Bitails: asked for height {} and was answered for {}",
+                height, block.height
+            ));
+        }
+        let bytes = hex::decode(&block.header)
+            .map_err(|e| format!("Bitails header hex at height {}: {}", height, e))?;
+        merkle_root_of_header(&bytes, &block.hash)
+            .map_err(|e| format!("Bitails header at height {}: {}", height, e))
     }
 
     /// Break-glass: WhatsOnChain's block-by-height API.
@@ -184,40 +277,60 @@ impl ChainTracker for FallbackChainTracker {
 
         // 3. No answer. Without break-glass that is the answer: unable to
         // verify, never an explorer's verdict.
-        let Some(woc_base_url) = self.break_glass_woc_base_url.as_deref() else {
+        let Some((woc_base_url, bitails_base_url)) = self.break_glass_explorers.as_ref() else {
             return Err(ChainTrackerError::NetworkError(format!(
                 "header service gave no answer for height {}: {}",
                 height, primary_error
             )));
         };
+        // Break-glass (Rule 28, T5): the merkle root at a height. The
+        // header service holds it and is unreachable; nothing else we run
+        // does. One explorer's word is never a verified root, so both are
+        // asked and a verdict needs them to agree.
         tracing::warn!(
             height,
             marker = "break_glass_explorer_header",
             error = %primary_error,
-            "break-glass: the header service gave no answer; asking WhatsOnChain for the merkle root"
+            "break-glass: the header service gave no answer; asking WhatsOnChain and Bitails for the merkle root"
         );
-        match self.woc_root_for_height(woc_base_url, height).await {
-            Ok(woc_root) => {
-                let valid = woc_root.eq_ignore_ascii_case(root);
-                if valid {
-                    self.cache.insert(height, root.to_lowercase());
-                }
-                Ok(valid)
-            }
-            // Nobody answered: an outage is an error, never a verdict.
-            Err(woc_error) => {
-                tracing::warn!(
-                    "Both ChainTracks and WoC failed for height {}: chaintracks: {}; WoC: {}",
-                    height,
-                    primary_error,
-                    woc_error
-                );
-                Err(ChainTrackerError::NetworkError(format!(
-                    "both chaintracks and WoC failed for height {}: chaintracks: {}; WoC: {}",
-                    height, primary_error, woc_error
-                )))
-            }
+        let unable = |why: String| {
+            tracing::warn!(
+                height,
+                marker = "break_glass_explorer_header",
+                "break-glass: unable to verify the root at height {}: chaintracks: {}; {}",
+                height,
+                primary_error,
+                why
+            );
+            ChainTrackerError::NetworkError(format!(
+                "unable to verify the root at height {}: chaintracks: {}; {}",
+                height, primary_error, why
+            ))
+        };
+        let woc_root = self
+            .woc_root_for_height(woc_base_url, height)
+            .await
+            .map_err(|e| unable(format!("WoC: {}", e)))?;
+        let bitails_root = self
+            .bitails_root_for_height(bitails_base_url, height)
+            .await
+            .map_err(|e| {
+                unable(format!(
+                    "WoC named a root and no second explorer confirmed it: {}",
+                    e
+                ))
+            })?;
+        if !woc_root.eq_ignore_ascii_case(&bitails_root) {
+            return Err(unable(format!(
+                "the explorers disagree: WoC names {} and Bitails names {}",
+                woc_root, bitails_root
+            )));
         }
+        let valid = woc_root.eq_ignore_ascii_case(root);
+        if valid {
+            self.cache.insert(height, root.to_lowercase());
+        }
+        Ok(valid)
     }
 
     async fn current_height(&self) -> Result<u32, ChainTrackerError> {
@@ -241,9 +354,47 @@ mod tests {
         })
     }
 
-    /// A break-glass tracker: WhatsOnChain at `woc_url` behind the header service.
+    /// A break-glass tracker: WhatsOnChain at `woc_url` and Bitails at
+    /// `woc_url/bitails` (one fixture server, two bases) behind the header
+    /// service.
     fn make_tracker(ct_url: &str, woc_url: &str) -> FallbackChainTracker {
-        FallbackChainTracker::with_break_glass_woc(make_primary(ct_url), woc_url)
+        FallbackChainTracker::with_break_glass_explorers(
+            make_primary(ct_url),
+            woc_url,
+            format!("{}/bitails", woc_url),
+        )
+    }
+
+    /// An 80-byte header carrying `merkle_root` (display hex), and its hash.
+    fn header_with_root(merkle_root: &str) -> (String, String) {
+        use sha2::{Digest, Sha256};
+        let mut bytes = vec![0u8; 80];
+        bytes[0..4].copy_from_slice(&536870912u32.to_le_bytes());
+        let mut root = hex::decode(merkle_root).expect("a 64-hex root");
+        root.reverse();
+        bytes[36..68].copy_from_slice(&root);
+        let mut hash = Sha256::digest(Sha256::digest(&bytes)).to_vec();
+        hash.reverse();
+        (hex::encode(bytes), hex::encode(hash))
+    }
+
+    // Helper: mock Bitails /block/height/{height} endpoint (under /bitails).
+    async fn mock_bitails_header(
+        server: &mut mockito::ServerGuard,
+        height: u32,
+        merkle_root: &str,
+    ) -> mockito::Mock {
+        let (header, hash) = header_with_root(merkle_root);
+        server
+            .mock("GET", format!("/bitails/block/height/{}", height).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"hash":"{}","height":{},"header":"{}"}}"#,
+                hash, height, header
+            ))
+            .create_async()
+            .await
     }
 
     // Helper: mock ChainTracks /findHeaderHexForHeight endpoint.
@@ -337,6 +488,58 @@ mod tests {
             .await
     }
 
+    /// A 64-hex merkle root named by a tag.
+    fn r(tag: &str) -> String {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(tag.as_bytes()))
+    }
+
+    /// Rule 28 witness (T5): under break-glass, with the header service
+    /// giving no answer, one explorer naming the asked root is not a
+    /// verified root. It is not `true`, and it is not cached: when the
+    /// header service is back, its answer is the answer.
+    #[tokio::test]
+    async fn one_explorers_root_is_never_a_verified_root() {
+        let mut ct_server = mockito::Server::new_async().await;
+        let mut woc_server = mockito::Server::new_async().await;
+        let asked = r("the root one explorer names");
+
+        let ct_down = mock_ct_error(&mut ct_server, 700).await;
+        let _woc = mock_woc_header(&mut woc_server, 700, &asked).await;
+
+        let tracker = make_tracker(&ct_server.url(), &woc_server.url());
+        let alone = tracker.is_valid_root_for_height(&asked, 700).await;
+        assert!(
+            alone.is_err(),
+            "one explorer's word is unable to verify, never a verdict: {alone:?}"
+        );
+
+        // A Bitails header whose bytes do not hash to the hash it claims
+        // is no second word either.
+        let (header, _hash) = header_with_root(&asked);
+        let forged = woc_server
+            .mock("GET", "/bitails/block/height/700")
+            .with_status(200)
+            .with_body(format!(
+                r#"{{"hash":"{}","height":700,"header":"{}"}}"#,
+                "0".repeat(64),
+                header
+            ))
+            .create_async()
+            .await;
+        let unbound = tracker.is_valid_root_for_height(&asked, 700).await;
+        assert!(unbound.is_err(), "{unbound:?}");
+        forged.remove_async().await;
+
+        ct_down.remove_async().await;
+        let _ct_back = mock_ct_header(&mut ct_server, 700, &r("the header service's root")).await;
+        let back = tracker.is_valid_root_for_height(&asked, 700).await;
+        assert!(
+            matches!(back, Ok(false)),
+            "nothing was cached from the explorer: {back:?}"
+        );
+    }
+
     // =========================================================================
     // Test 1: Primary succeeds, root matches
     // =========================================================================
@@ -382,13 +585,14 @@ mod tests {
     async fn test_primary_fails_fallback_succeeds() {
         let mut ct_server = mockito::Server::new_async().await;
         let mut woc_server = mockito::Server::new_async().await;
-        let root = "abc123def456";
+        let root = r("abc123def456");
 
         let _ct = mock_ct_error(&mut ct_server, 943495).await;
-        let _woc = mock_woc_header(&mut woc_server, 943495, root).await;
+        let _woc = mock_woc_header(&mut woc_server, 943495, &root).await;
+        let _bitails = mock_bitails_header(&mut woc_server, 943495, &root).await;
 
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
-        let result = tracker.is_valid_root_for_height(root, 943495).await;
+        let result = tracker.is_valid_root_for_height(&root, 943495).await;
 
         assert!(result.unwrap());
     }
@@ -403,11 +607,15 @@ mod tests {
         let mut woc_server = mockito::Server::new_async().await;
 
         let _ct = mock_ct_error(&mut ct_server, 943495).await;
-        let _woc = mock_woc_header(&mut woc_server, 943495, "actual_root").await;
+        let _woc = mock_woc_header(&mut woc_server, 943495, &r("actual_root")).await;
+        let _bitails = mock_bitails_header(&mut woc_server, 943495, &r("actual_root")).await;
 
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
-        let result = tracker.is_valid_root_for_height("wrong_root", 943495).await;
+        let result = tracker
+            .is_valid_root_for_height(&r("wrong_root"), 943495)
+            .await;
 
+        // Two explorers naming one other root are the negative.
         assert!(!result.unwrap());
     }
 
@@ -440,8 +648,9 @@ mod tests {
 
     /// Under break-glass: (a) primary true; (b) primary definite false:
     /// false, WoC never asked; (c) primary definite false + WoC down: false;
-    /// (d) primary error + WoC answers: compare; (e) primary error + WoC
-    /// fails: Err.
+    /// (d) primary error + both explorers agree: compare; (d2) primary
+    /// error + the explorers disagree: Err; (e) primary error + WoC fails:
+    /// Err.
     #[tokio::test]
     async fn the_four_arms_of_the_fallback_tracker() {
         let mut ct_server = mockito::Server::new_async().await;
@@ -478,12 +687,26 @@ mod tests {
         let t = make_tracker(&ct_server.url(), &woc_server.url());
         assert!(!t.is_valid_root_for_height("wrong_d", 4).await.unwrap());
 
-        // (d) primary error, WoC answers: compare.
+        // (d) primary error, both explorers answer and agree: compare.
         let _d_ct = mock_ct_error(&mut ct_server, 5).await;
-        let _d_woc = mock_woc_header(&mut woc_server, 5, "root_e").await;
+        let _d_woc = mock_woc_header(&mut woc_server, 5, &r("root_e")).await;
+        let _d_bitails = mock_bitails_header(&mut woc_server, 5, &r("root_e")).await;
         let t = make_tracker(&ct_server.url(), &woc_server.url());
-        assert!(t.is_valid_root_for_height("root_e", 5).await.unwrap());
-        assert!(!t.is_valid_root_for_height("other_e", 5).await.unwrap());
+        assert!(t.is_valid_root_for_height(&r("root_e"), 5).await.unwrap());
+        assert!(!t.is_valid_root_for_height(&r("other_e"), 5).await.unwrap());
+
+        // (d2) primary error, the explorers disagree: Err, whichever of
+        // them names the asked root.
+        let _d2_ct = mock_ct_error(&mut ct_server, 7).await;
+        let _d2_woc = mock_woc_header(&mut woc_server, 7, &r("root_f")).await;
+        let _d2_bitails = mock_bitails_header(&mut woc_server, 7, &r("root_g")).await;
+        let t = make_tracker(&ct_server.url(), &woc_server.url());
+        for asked in [r("root_f"), r("root_g"), r("root_h")] {
+            assert!(matches!(
+                t.is_valid_root_for_height(&asked, 7).await,
+                Err(ChainTrackerError::NetworkError(_))
+            ));
+        }
 
         // (e) primary error, WoC error: Err.
         let _e_ct = mock_ct_error(&mut ct_server, 6).await;
@@ -534,7 +757,7 @@ mod tests {
     /// so the explorer mock (`_woc_url`) is never reachable from it.
     fn default_tracker(ct_url: &str, _woc_url: &str) -> FallbackChainTracker {
         let t = FallbackChainTracker::new(make_primary(ct_url));
-        assert!(!t.break_glass_woc());
+        assert!(!t.break_glass_explorers());
         t
     }
 
@@ -580,9 +803,9 @@ mod tests {
     async fn test_cache_stores_fallback_results() {
         let mut ct_server = mockito::Server::new_async().await;
         let mut woc_server = mockito::Server::new_async().await;
-        let root = "fallback_root";
+        let root = r("fallback_root");
 
-        // ChainTracks has a gap — WoC has the header
+        // ChainTracks has a gap; both explorers have the header
         let _ct = mock_ct_not_found(&mut ct_server, 943495).await;
         let _woc = woc_server
             .mock("GET", format!("/block/height/{}", 943495).as_str())
@@ -597,15 +820,16 @@ mod tests {
             .expect_at_most(1)
             .create_async()
             .await;
+        let _bitails = mock_bitails_header(&mut woc_server, 943495, &root).await;
 
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
 
-        // First call: CT fails, WoC succeeds, result cached
-        let r1 = tracker.is_valid_root_for_height(root, 943495).await;
+        // First call: CT fails, both explorers name the root, result cached
+        let r1 = tracker.is_valid_root_for_height(&root, 943495).await;
         assert!(r1.unwrap());
 
         // Second call: served from cache
-        let r2 = tracker.is_valid_root_for_height(root, 943495).await;
+        let r2 = tracker.is_valid_root_for_height(&root, 943495).await;
         assert!(r2.unwrap());
     }
 
@@ -617,14 +841,15 @@ mod tests {
     async fn test_primary_not_found_triggers_fallback() {
         let mut ct_server = mockito::Server::new_async().await;
         let mut woc_server = mockito::Server::new_async().await;
-        let root = "gap_root";
+        let root = r("gap_root");
 
         // ChainTracks sync gap: {"status":"success"} with no value
         let _ct = mock_ct_not_found(&mut ct_server, 943495).await;
-        let _woc = mock_woc_header(&mut woc_server, 943495, root).await;
+        let _woc = mock_woc_header(&mut woc_server, 943495, &root).await;
+        let _bitails = mock_bitails_header(&mut woc_server, 943495, &root).await;
 
         let tracker = make_tracker(&ct_server.url(), &woc_server.url());
-        let result = tracker.is_valid_root_for_height(root, 943495).await;
+        let result = tracker.is_valid_root_for_height(&root, 943495).await;
 
         assert!(result.unwrap());
     }

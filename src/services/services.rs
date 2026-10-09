@@ -533,9 +533,13 @@ impl Services {
             let tracker = if options.break_glass_explorer_headers {
                 tracing::warn!(
                     marker = "break_glass_explorer_header",
-                    "break-glass: the explorer header fallback is ON; WhatsOnChain is asked for merkle roots and headers whenever the header service gives no answer"
+                    "break-glass: the explorer header fallback is ON; WhatsOnChain and Bitails are asked for merkle roots and headers whenever the header service gives no answer"
                 );
-                FallbackChainTracker::with_break_glass_woc(primary, whatsonchain.base_url())
+                FallbackChainTracker::with_break_glass_explorers(
+                    primary,
+                    whatsonchain.base_url(),
+                    bitails.base_url(),
+                )
             } else {
                 FallbackChainTracker::new(primary)
             };
@@ -2824,7 +2828,7 @@ mod tests {
         )
         .unwrap();
         assert!(!ServicesOptions::default().break_glass_explorer_headers);
-        assert!(!s.chaintracks.as_ref().unwrap().break_glass_woc());
+        assert!(!s.chaintracks.as_ref().unwrap().break_glass_explorers());
 
         let s = Services::with_options(
             Chain::Test,
@@ -2833,7 +2837,7 @@ mod tests {
                 .with_break_glass_explorer_headers(true),
         )
         .unwrap();
-        assert!(s.chaintracks.as_ref().unwrap().break_glass_woc());
+        assert!(s.chaintracks.as_ref().unwrap().break_glass_explorers());
         assert!(s.whatsonchain.base_url().ends_with("/test"));
     }
 

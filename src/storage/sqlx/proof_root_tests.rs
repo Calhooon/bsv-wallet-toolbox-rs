@@ -671,7 +671,7 @@ async fn with_the_header_service_down_a_proof_is_refused_never_checked_against_a
     let primary = ChaintracksServiceClient::from_url("http://127.0.0.1:9");
     let tracker = FallbackChainTracker::new(primary);
     assert!(
-        !tracker.break_glass_woc(),
+        !tracker.break_glass_explorers(),
         "the explorer is unreachable from it"
     );
     s.set_chain_tracker(Arc::new(tracker)).await;
@@ -723,7 +723,7 @@ async fn the_services_tracker_with_its_header_service_down_refuses_the_proof() {
     )
     .unwrap();
     let tracker = services.chaintracks.clone().expect("a tracker");
-    assert!(!tracker.break_glass_woc());
+    assert!(!tracker.break_glass_explorers());
     s.set_chain_tracker(tracker).await;
 
     let out = s
@@ -744,8 +744,8 @@ async fn the_services_tracker_with_its_header_service_down_refuses_the_proof() {
 }
 
 /// Break-glass, set on purpose: with the header service down, WhatsOnChain
-/// is asked (once) and its answer decides; the call is the documented,
-/// logged exception, never the default.
+/// and Bitails are each asked (once) and their agreement decides; the call
+/// is the documented, logged exception, never the default.
 #[tokio::test]
 async fn break_glass_asks_the_explorer_only_when_the_header_service_is_down() {
     use crate::services::{ChaintracksServiceClient, FallbackChainTracker};
@@ -772,9 +772,32 @@ async fn break_glass_asks_the_explorer_only_when_the_header_service_is_down() {
         .expect(1)
         .create_async()
         .await;
-    let tracker = FallbackChainTracker::with_break_glass_woc(
+    // Bitails' block at the height: an 80-byte header carrying the root.
+    let mut header = vec![0u8; 80];
+    let mut root = hex::decode(txid).unwrap();
+    root.reverse();
+    header[36..68].copy_from_slice(&root);
+    let mut hash = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(Sha256::digest(&header)).to_vec()
+    };
+    hash.reverse();
+    let confirmed = woc
+        .mock("GET", "/bitails/block/height/100")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(format!(
+            r#"{{"hash":"{}","height":100,"header":"{}"}}"#,
+            hex::encode(hash),
+            hex::encode(header)
+        ))
+        .expect(1)
+        .create_async()
+        .await;
+    let tracker = FallbackChainTracker::with_break_glass_explorers(
         ChaintracksServiceClient::from_url("http://127.0.0.1:9"),
         woc.url(),
+        format!("{}/bitails", woc.url()),
     );
     s.set_chain_tracker(Arc::new(tracker)).await;
 
@@ -793,6 +816,7 @@ async fn break_glass_asks_the_explorer_only_when_the_header_service_is_down() {
         "got {out:?}"
     );
     asked.assert_async().await;
+    confirmed.assert_async().await;
 }
 
 /// A deployed wallet opened by `make_available()` alone (the way every CLI

@@ -112,6 +112,11 @@ impl Bitails {
         bitails
     }
 
+    /// The API base for this provider's chain (with its trailing slash).
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Get HTTP headers.
     fn get_headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();

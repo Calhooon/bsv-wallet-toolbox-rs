@@ -122,8 +122,9 @@ pub struct ServicesOptions {
 
     /// Break-glass: let the proof path ask explorers for block headers when
     /// the header service gives no answer (the chain tracker asks
-    /// WhatsOnChain for a merkle root; `hash_to_header` asks WhatsOnChain,
-    /// then Bitails). Off by default: no explorer in the proof path (P0-1c,
+    /// WhatsOnChain and Bitails for a merkle root and takes it only when
+    /// they agree; `hash_to_header` asks the two, each the other's
+    /// fallback). Off by default: no explorer in the proof path (P0-1c,
     /// the owner's rule of 2026-09-15). Every such call is logged at warn
     /// level with the marker `break_glass_explorer_header`. An explorer never
     /// overrules the header service's definite answer.
