@@ -94,6 +94,15 @@ impl WhatsOnChain {
         &self.base_url
     }
 
+    /// The provider at another API base: a local fixture standing in for
+    /// the explorer, so a test can count the requests that reach it.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(chain: Chain, base_url: &str) -> Self {
+        let mut woc = Self::new(chain, WhatsOnChainConfig::default()).expect("client");
+        woc.base_url = base_url.trim_end_matches('/').to_string();
+        woc
+    }
+
     /// Get HTTP headers including optional API key.
     fn get_headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -749,25 +758,6 @@ impl WhatsOnChain {
         }
     }
 
-    /// Get chain info (including current height).
-    pub async fn get_chain_info(&self) -> Result<WocChainInfo> {
-        let url = format!("{}/chain/info", self.base_url);
-
-        let response = self.get_with_retry(&url).await?;
-
-        if !response.status().is_success() {
-            return Err(Error::ServiceError(format!(
-                "getChainInfo failed with status {}",
-                response.status()
-            )));
-        }
-
-        response
-            .json()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Failed to parse chain info: {}", e)))
-    }
-
     // =========================================================================
     // Exchange Rate
     // =========================================================================
@@ -931,20 +921,6 @@ impl WocBlockHeader {
             height: self.height,
         }
     }
-}
-
-/// Chain info response from WoC.
-#[derive(Debug, Deserialize)]
-pub struct WocChainInfo {
-    pub chain: String,
-    pub blocks: u32,
-    pub headers: u32,
-    pub bestblockhash: String,
-    pub difficulty: f64,
-    pub mediantime: u64,
-    pub verificationprogress: f64,
-    pub pruned: bool,
-    pub chainwork: String,
 }
 
 #[allow(dead_code)]

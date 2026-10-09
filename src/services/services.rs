@@ -954,26 +954,35 @@ impl WalletServices for Services {
     }
 
     async fn get_height(&self) -> Result<u32> {
-        // Try BHS first if configured
+        // Rule 28 (T1, T2): the tip height is the header service's tip
+        // header's height, the same source `get_chain_tip_header` reads, so
+        // the height and the tip hash never come from two places. No
+        // explorer is asked: a header service holds this answer, and with
+        // none reachable the answer is an error ("could not look"), never
+        // an explorer's number.
+        let mut last_error = "no header service configured".to_string();
+        if let Some(ref ct) = self.chaintracks {
+            match ct.primary().find_chain_tip_header().await {
+                Ok(header) => return Ok(header.height),
+                Err(e) => {
+                    tracing::debug!("Chaintracks tip height failed, trying BHS: {}", e);
+                    last_error = e.to_string();
+                }
+            }
+        }
         if let Some(ref bhs) = self.bhs {
             match bhs.current_height().await {
                 Ok(h) => return Ok(h),
-                Err(e) => tracing::debug!("BHS height failed, trying WoC: {}", e),
+                Err(e) => {
+                    tracing::debug!("BHS height failed: {}", e);
+                    last_error = e.to_string();
+                }
             }
         }
-        // Try WhatsOnChain
-        match self.whatsonchain.get_chain_info().await {
-            Ok(info) => return Ok(info.blocks),
-            Err(e) => tracing::debug!("WoC height failed, trying Bitails: {}", e),
-        }
-        // Try Bitails
-        match self.bitails.current_height().await {
-            Ok(h) => Ok(h),
-            Err(e) => Err(Error::ServiceError(format!(
-                "All height services failed. Last error: {}",
-                e
-            ))),
-        }
+        Err(Error::ServiceError(format!(
+            "get_height: no header service gave the tip height ({}); no explorer is asked (set chaintracks_url or bhs_url)",
+            last_error
+        )))
     }
 
     async fn get_chain_tip_header(&self) -> Result<BlockHeader> {
@@ -2128,6 +2137,10 @@ impl WalletServices for Services {
         Services::get_services_call_history(self, reset).unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+#[path = "rule_28_tests.rs"]
+mod rule_28_tests;
 
 #[cfg(test)]
 mod tests {

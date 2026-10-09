@@ -491,16 +491,6 @@ fn test_output_format_default() {
 
 #[tokio::test]
 #[ignore = "Requires network access"]
-async fn test_whatsonchain_get_chain_info() {
-    let woc = WhatsOnChain::new(Chain::Main, WhatsOnChainConfig::default()).unwrap();
-    let result = woc.get_chain_info().await;
-    assert!(result.is_ok());
-    let info = result.unwrap();
-    assert!(info.blocks > 0);
-}
-
-#[tokio::test]
-#[ignore = "Requires network access"]
 async fn test_whatsonchain_get_exchange_rate() {
     let woc = WhatsOnChain::new(Chain::Main, WhatsOnChainConfig::default()).unwrap();
     let result = woc.update_bsv_exchange_rate(15 * 60 * 1000).await;
@@ -509,16 +499,44 @@ async fn test_whatsonchain_get_exchange_rate() {
     assert!(rate > 0.0);
 }
 
+/// A local header service whose tip is at `height`: the one source of the
+/// tip height since 0.5.0 (Rule 28, T1 and T2: no explorer is asked).
+async fn header_service_with_tip(height: u32) -> mockito::ServerGuard {
+    let mut server = mockito::Server::new_async().await;
+    let body = serde_json::json!({
+        "status": "success",
+        "value": {
+            "version": 536870912u32,
+            "previousHash": "0".repeat(64),
+            "merkleRoot": "a".repeat(64),
+            "time": 1700000000u32,
+            "bits": 402917821u32,
+            "nonce": 7u32,
+            "height": height,
+            "hash": "b".repeat(64),
+        }
+    });
+    server
+        .mock("GET", "/findChainTipHeaderHex")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(body.to_string())
+        .create_async()
+        .await;
+    server
+}
+
 #[tokio::test]
-#[ignore = "Requires network access"]
 async fn test_services_get_height() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
-    let services = Services::mainnet().unwrap();
-    let result = services.get_height().await;
-    assert!(result.is_ok());
-    let height = result.unwrap();
-    assert!(height > 800000); // Should be well past 800k at this point
+    let header_service = header_service_with_tip(900_001).await;
+    let services = Services::with_options(
+        Chain::Main,
+        ServicesOptions::mainnet().with_chaintracks_url(header_service.url()),
+    )
+    .unwrap();
+    assert_eq!(services.get_height().await.unwrap(), 900_001);
 }
 
 // =============================================================================
@@ -810,11 +828,15 @@ async fn test_services_get_beef_nonexistent_tx() {
 }
 
 #[tokio::test]
-#[ignore = "Requires network access"]
 async fn test_services_n_lock_time_finality_integration() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
-    let services = Services::mainnet().unwrap();
+    let header_service = header_service_with_tip(900_001).await;
+    let services = Services::with_options(
+        Chain::Main,
+        ServicesOptions::mainnet().with_chaintracks_url(header_service.url()),
+    )
+    .unwrap();
 
     // Test zero locktime (always final)
     let result = services.n_lock_time_is_final(0).await;
@@ -938,7 +960,12 @@ async fn test_n_lock_time_is_final_for_tx_from_raw_locktime() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
     use bsv_wallet_toolbox_rs::services::{NLockTimeInput, Services};
 
-    let services = Services::mainnet().unwrap();
+    let header_service = header_service_with_tip(900_001).await;
+    let services = Services::with_options(
+        Chain::Main,
+        ServicesOptions::mainnet().with_chaintracks_url(header_service.url()),
+    )
+    .unwrap();
 
     // Past locktime (block height)
     let input = NLockTimeInput::from_lock_time(100);

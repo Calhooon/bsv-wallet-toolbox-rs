@@ -52,7 +52,6 @@ WhatsOnChain::new(Chain::Test, WhatsOnChainConfig::with_api_key("key"))?;
 | `get_script_hash_confirmed_history(hash)` | Get confirmed tx history only |
 | `get_script_hash_unconfirmed_history(hash)` | Get mempool tx history only |
 | `get_block_header_by_hash(hash)` | Get parsed block header |
-| `get_chain_info()` | Get chain state (height, best block, etc.) |
 | `update_bsv_exchange_rate(update_msecs)` | Get cached BSV/USD rate |
 
 **API Endpoints:**
@@ -146,7 +145,6 @@ Bitails::new(Chain::Test, BitailsConfig::with_api_key("key"))?;
 | `post_raws(raws)` | Broadcast multiple raw transactions (multi endpoint) |
 | `post_beef(beef, txids)` | Parse BEEF, extract raw txs, broadcast each individually |
 | `get_current_height()` | Get blockchain height from network/info |
-| `current_height()` | Alias for `get_current_height()` |
 | `get_block_header_by_hash(hash)` | Get and parse 80-byte raw header |
 | `get_header_by_height(height)` | Get block header by height (JSON) |
 | `get_latest_block()` | Get latest block hash and height |
