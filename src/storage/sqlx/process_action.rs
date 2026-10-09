@@ -973,7 +973,7 @@ async fn utxo_verified_input_ids(storage: &StorageSqlx, txid: &str) -> Vec<i64> 
                     txid = %txid,
                     source = %source_txid,
                     vout = vout,
-                    "is_utxo could not look — NOT restoring (an unknown never releases, and is not a spend)"
+                    "is_utxo could not look: NOT restoring (an unknown never releases, and is not a spend)"
                 );
             }
         }
