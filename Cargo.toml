@@ -76,11 +76,8 @@ ring = "0.17"
 # Zeroization of sensitive key material on drop
 zeroize = "1.8"
 
-# WebSocket support (for live ingestors)
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 futures = "0.3"
-url = "2"
 
 [dev-dependencies]
 tokio-test = "0.4"
