@@ -16,6 +16,12 @@ sqlite = ["sqlx/sqlite"]
 mysql = ["sqlx/mysql"]
 remote = []  # StorageClient for storage.babbage.systems
 full = ["sqlite", "mysql", "remote"]
+# Break-glass, off by default and not part of `full`: the script hash history
+# of WhatsOnChain and Bitails ("every transaction that touched this script").
+# It is a chain scan. A wallet learns of an output by being handed a BEEF, so
+# nothing in this crate calls it; it is for an operator looking for a payment
+# nobody handed over.
+break-glass-script-history = []
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits

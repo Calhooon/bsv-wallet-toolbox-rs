@@ -24,10 +24,11 @@ use crate::chaintracks::Chain;
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::traits::{
     validate_txid, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
-    GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
-    GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid, ScriptHistoryItem, TxStatusDetail,
-    UtxoDetail,
+    GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult,
+    PostTxResultForTxid, TxStatusDetail, UtxoDetail,
 };
+#[cfg(feature = "break-glass-script-history")]
+use crate::services::traits::{GetScriptHashHistoryResult, ScriptHistoryItem};
 use crate::{Error, Result};
 
 /// Base URL for WhatsOnChain mainnet API.
@@ -640,6 +641,11 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Get confirmed transaction history for a script hash.
+    ///
+    /// Break-glass (Rule 28, T13): a chain scan, every transaction that
+    /// touched a script. No header, proof or index of ours answers it and
+    /// no wallet path needs it; built only under `break-glass-script-history`.
+    #[cfg(feature = "break-glass-script-history")]
     pub async fn get_script_hash_confirmed_history(
         &self,
         hash: &str,
@@ -679,6 +685,11 @@ impl WhatsOnChain {
     }
 
     /// Get unconfirmed transaction history for a script hash.
+    ///
+    /// Break-glass (Rule 28, T13): a chain scan, every transaction that
+    /// touched a script. No header, proof or index of ours answers it and
+    /// no wallet path needs it; built only under `break-glass-script-history`.
+    #[cfg(feature = "break-glass-script-history")]
     pub async fn get_script_hash_unconfirmed_history(
         &self,
         hash: &str,
@@ -718,6 +729,11 @@ impl WhatsOnChain {
     }
 
     /// Get full transaction history (confirmed + unconfirmed) for a script hash.
+    ///
+    /// Break-glass (Rule 28, T13): a chain scan, every transaction that
+    /// touched a script. No header, proof or index of ours answers it and
+    /// no wallet path needs it; built only under `break-glass-script-history`.
+    #[cfg(feature = "break-glass-script-history")]
     pub async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
         let mut history = self.get_script_hash_confirmed_history(hash).await?;
         let unconfirmed = self.get_script_hash_unconfirmed_history(hash).await?;
@@ -864,6 +880,7 @@ struct WocTxStatus {
     error: Option<String>,
 }
 
+#[cfg(feature = "break-glass-script-history")]
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct WocScriptHistoryResponse {
@@ -874,6 +891,7 @@ struct WocScriptHistoryResponse {
     next_page_token: Option<String>,
 }
 
+#[cfg(feature = "break-glass-script-history")]
 #[derive(Debug, Deserialize)]
 struct WocScriptHistoryItem {
     tx_hash: String,

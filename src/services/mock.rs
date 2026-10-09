@@ -181,6 +181,7 @@ pub struct MockWalletServices {
     get_status_for_txids_response: Mutex<MockResponse<GetStatusForTxidsResult>>,
 
     /// Response for get_script_hash_history calls.
+    #[cfg_attr(not(feature = "break-glass-script-history"), allow(dead_code))]
     get_script_hash_history_response: Mutex<MockResponse<GetScriptHashHistoryResult>>,
 
     /// Response for is_utxo calls.
@@ -760,6 +761,7 @@ impl WalletServices for MockWalletServices {
         result
     }
 
+    #[cfg(feature = "break-glass-script-history")]
     async fn get_script_hash_history(
         &self,
         hash: &str,

@@ -141,7 +141,6 @@ trait WalletServices {
     async fn get_merkle_path(&self, txid: &str) -> Result<MerklePath>;
     async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult>;
     async fn get_utxo_status(&self, txid: &str, vout: u32) -> Result<UtxoStatus>;
-    async fn get_script_hash_history(&self, hash: &str) -> Result<Vec<ScriptHistoryEntry>>;
     async fn get_bsv_exchange_rate(&self) -> Result<f64>;
 }
 ```

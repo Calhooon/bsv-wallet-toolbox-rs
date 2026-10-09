@@ -14,6 +14,8 @@ use crate::services::broadcast_memory::{
     BROADCAST_STATUS_ACCEPTED, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2, PROVIDER_BITAILS,
     PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
 };
+#[cfg(feature = "break-glass-script-history")]
+use crate::services::traits::GetScriptHashHistoryResult;
 use crate::services::traits::{merkle_path_note, PostBeefDelivery, NOTE_REFUTED};
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
@@ -23,9 +25,8 @@ use crate::services::{
     },
     traits::{
         sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
-        GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
-        GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult,
-        ServicesCallHistory, WalletServices,
+        GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
+        GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, WalletServices,
     },
     ServicesOptions,
 };
@@ -118,7 +119,9 @@ pub struct Services {
     /// Service collection for getStatusForTxids.
     get_status_for_txids_services: RwLock<StatusForTxidsServiceCollection>,
 
-    /// Service collection for getScriptHashHistory.
+    /// Service collection for getScriptHashHistory: a chain scan, built only
+    /// under the break-glass feature (Rule 28, T13 and T14).
+    #[cfg(feature = "break-glass-script-history")]
     get_script_hash_history_services: RwLock<ScriptHashHistoryServiceCollection>,
 
     /// Cached BSV exchange rate.
@@ -147,6 +150,7 @@ type RawTxServiceCollection = ServiceCollection<RawTxProvider>;
 type PostBeefServiceCollection = ServiceCollection<PostBeefProvider>;
 type UtxoStatusServiceCollection = ServiceCollection<UtxoStatusProvider>;
 type StatusForTxidsServiceCollection = ServiceCollection<StatusForTxidsProvider>;
+#[cfg(feature = "break-glass-script-history")]
 type ScriptHashHistoryServiceCollection = ServiceCollection<ScriptHashHistoryProvider>;
 
 // Provider type aliases
@@ -155,6 +159,7 @@ type RawTxProvider = StdArc<dyn RawTxService + Send + Sync>;
 type PostBeefProvider = StdArc<dyn PostBeefService + Send + Sync>;
 type UtxoStatusProvider = StdArc<dyn UtxoStatusService + Send + Sync>;
 type StatusForTxidsProvider = StdArc<dyn StatusForTxidsService + Send + Sync>;
+#[cfg(feature = "break-glass-script-history")]
 type ScriptHashHistoryProvider = StdArc<dyn ScriptHashHistoryService + Send + Sync>;
 
 // Service traits for each method
@@ -213,6 +218,7 @@ trait StatusForTxidsService {
     }
 }
 
+#[cfg(feature = "break-glass-script-history")]
 #[async_trait]
 trait ScriptHashHistoryService {
     async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult>;
@@ -350,6 +356,7 @@ impl StatusForTxidsService for Arcade {
     }
 }
 
+#[cfg(feature = "break-glass-script-history")]
 #[async_trait]
 impl ScriptHashHistoryService for WhatsOnChain {
     async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
@@ -357,6 +364,7 @@ impl ScriptHashHistoryService for WhatsOnChain {
     }
 }
 
+#[cfg(feature = "break-glass-script-history")]
 #[async_trait]
 impl ScriptHashHistoryService for Bitails {
     async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
@@ -429,7 +437,23 @@ impl Services {
             timeout_secs: None,
         };
         let whatsonchain = StdArc::new(WhatsOnChain::new(chain, woc_config)?);
+        let bitails_config = BitailsConfig {
+            api_key: options.bitails_api_key.clone(),
+            timeout_secs: None,
+        };
+        let bitails = StdArc::new(Bitails::new(chain, bitails_config)?);
+        Self::with_explorers(chain, options, whatsonchain, bitails)
+    }
 
+    /// `with_options` over the two explorer providers given: every
+    /// collection and the break-glass tracker are built from these two, so
+    /// a test can stand local fixtures in their place.
+    fn with_explorers(
+        chain: Chain,
+        options: ServicesOptions,
+        whatsonchain: StdArc<WhatsOnChain>,
+        bitails: StdArc<Bitails>,
+    ) -> Result<Self> {
         // Arcade V2 mode (explicit flag — never inferred from the URL): the
         // configured arc_url IS the Arcade endpoint. Build the Arcade
         // broadcaster from it and point the classic TAAL ARC provider at its
@@ -468,12 +492,6 @@ impl Services {
         } else {
             None
         };
-
-        let bitails_config = BitailsConfig {
-            api_key: options.bitails_api_key.clone(),
-            timeout_secs: None,
-        };
-        let bitails = StdArc::new(Bitails::new(chain, bitails_config)?);
 
         // Create BHS provider if URL is configured
         let bhs = if let Some(ref bhs_url) = options.bhs_url {
@@ -603,16 +621,24 @@ impl Services {
         );
         status_for_txids_services.add("Bitails", StdArc::clone(&bitails) as StatusForTxidsProvider);
 
-        // getScriptHashHistory: WoC, Bitails
-        let mut script_hash_history_services = ServiceCollection::new("getScriptHashHistory");
-        script_hash_history_services.add(
-            "WhatsOnChain",
-            StdArc::clone(&whatsonchain) as ScriptHashHistoryProvider,
-        );
-        script_hash_history_services.add(
-            "Bitails",
-            StdArc::clone(&bitails) as ScriptHashHistoryProvider,
-        );
+        // getScriptHashHistory: WoC, Bitails. Rule 28 (T13, T14): every
+        // transaction that touched a script is a chain scan; no header,
+        // proof or index of ours answers it because a wallet never needs
+        // it (it is handed a BEEF). Built only under the cargo feature
+        // `break-glass-script-history`, a break-glass read.
+        #[cfg(feature = "break-glass-script-history")]
+        let script_hash_history_services = {
+            let mut collection = ServiceCollection::new("getScriptHashHistory");
+            collection.add(
+                "WhatsOnChain",
+                StdArc::clone(&whatsonchain) as ScriptHashHistoryProvider,
+            );
+            collection.add(
+                "Bitails",
+                StdArc::clone(&bitails) as ScriptHashHistoryProvider,
+            );
+            collection
+        };
 
         let fiat_rates = options.fiat_exchange_rates.clone();
 
@@ -631,6 +657,7 @@ impl Services {
             post_beef_services: RwLock::new(post_beef_services),
             get_utxo_status_services: RwLock::new(utxo_status_services),
             get_status_for_txids_services: RwLock::new(status_for_txids_services),
+            #[cfg(feature = "break-glass-script-history")]
             get_script_hash_history_services: RwLock::new(script_hash_history_services),
             bsv_exchange_rate: RwLock::new(None),
             fiat_exchange_rates: RwLock::new(fiat_rates),
@@ -824,9 +851,12 @@ impl Services {
             get_status_for_txids: Some(
                 lock_write(&self.get_status_for_txids_services)?.get_call_history(reset),
             ),
+            #[cfg(feature = "break-glass-script-history")]
             get_script_hash_history: Some(
                 lock_write(&self.get_script_hash_history_services)?.get_call_history(reset),
             ),
+            #[cfg(not(feature = "break-glass-script-history"))]
+            get_script_hash_history: None,
         })
     }
 
@@ -1784,6 +1814,7 @@ impl WalletServices for Services {
         })
     }
 
+    #[cfg(feature = "break-glass-script-history")]
     async fn get_script_hash_history(
         &self,
         hash: &str,
