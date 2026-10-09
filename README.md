@@ -57,19 +57,13 @@ let result = services.post_beef(&beef, &txids).await?;
 
 ### Chaintracks
 
-Block header tracking and chain state management:
-
-- **Bulk Ingestors** - Download historical headers from CDN or WhatsOnChain
-- **Live Ingestors** - Track new blocks via polling or WebSocket
-- **Memory Storage** - In-memory header storage with reorg handling
-
-```rust
-use bsv_wallet_toolbox::chaintracks::{Chaintracks, Chain};
-use bsv_wallet_toolbox::chaintracks::ingestors::BulkCdnIngestor;
-
-let ingestor = BulkCdnIngestor::new(Chain::Main);
-let headers = ingestor.get_headers(HeightRange::new(0, 1000)).await?;
-```
+An embedded block header store (memory and SQLite storage, reorg handling).
+It is not a source of truth: the header service configured with
+`ServicesOptions::with_chaintracks_url` is, and it checks proof of work, the
+difficulty rule, the checkpoints and ancestry on every header. Since 0.5.0
+the crate ships no ingestor for the embedded store (the explorer and CDN
+ingestors are removed); `BulkIngestor` and `LiveIngestor` remain as traits
+for a host that feeds it from a header service it runs.
 
 ## Installation
 

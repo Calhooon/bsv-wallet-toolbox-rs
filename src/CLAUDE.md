@@ -350,7 +350,7 @@ MonitorStorage          ← Extended operations for the monitor daemon
 ## Related Documentation
 
 - [storage/CLAUDE.md](./storage/CLAUDE.md) - Storage layer details, entity definitions, trait implementations
-- [chaintracks/CLAUDE.md](./chaintracks/CLAUDE.md) - Block header tracking system, storage backends, ingestors
+- [chaintracks/CLAUDE.md](./chaintracks/CLAUDE.md) - The embedded block header store and its storage backends (no ingestor since 0.5.0)
 - [services/CLAUDE.md](./services/CLAUDE.md) - External service providers, traits, and blockchain operations
 - [wallet/CLAUDE.md](./wallet/CLAUDE.md) - Wallet implementation, signing, and WalletInterface
 - [monitor/CLAUDE.md](./monitor/CLAUDE.md) - Transaction monitoring daemon and background tasks
