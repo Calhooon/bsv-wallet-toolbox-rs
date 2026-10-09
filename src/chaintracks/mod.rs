@@ -17,7 +17,7 @@
 //! this crate feeds the store now. [`BulkIngestor`] and [`LiveIngestor`]
 //! remain as the seam for a host that feeds it from a header service it
 //! runs (its `getHeaders` route and its event feed); such a host ports the
-//! header service's rules ahead of [`ChaintracksManagement::add_header`]
+//! header service's rules ahead of [`ChaintracksClient::add_header`]
 //! before it treats a stored header as verified.
 //!
 //! ## Architecture
