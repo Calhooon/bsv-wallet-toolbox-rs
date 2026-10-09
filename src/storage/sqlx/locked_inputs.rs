@@ -12,10 +12,13 @@
 //! input of a failed transaction that predates the table).
 //! [`StorageSqlx::recheck_locked_inputs`] re-examines the due rows with
 //! exponential backoff (1, 2, 4 ... 64 minutes) until the chain answers:
-//! unspent, and the coin goes back to coin selection; spent on chain by
-//! another transaction, and it is left locked, terminal; a source this
-//! wallet retired as a phantom, and the row is dropped (the coin never
-//! existed). Every verdict is logged.
+//! in an unspent set, and the coin goes back to coin selection; spent on
+//! chain by proof (the spending transaction's bytes name the outpoint and
+//! its merkle path meets the header service's header), and it is left
+//! locked, terminal; a source this wallet retired as a phantom, and the row
+//! is dropped (the coin never existed). Two explorers agreeing the coin is
+//! not unspent is a hint (`spent-hint`): never terminal, asked again.
+//! Every verdict is logged.
 
 use chrono::{DateTime, Utc};
 use sqlx::Row;
@@ -23,7 +26,7 @@ use sqlx::Row;
 use crate::error::{Error, Result};
 use crate::services::WalletServices;
 
-use super::poisoned_chain::{chain_knowledge, utxo_verdict, ChainKnowledge, UtxoVerdict};
+use super::poisoned_chain::{utxo_verdict, UtxoVerdict};
 use super::storage_sqlx::StorageSqlx;
 
 /// Migration `003_locked_input_checks` (additive, idempotent).
@@ -32,6 +35,29 @@ pub const MIGRATION_003_LOCKED_INPUT_CHECKS_SQL: &str =
 
 /// Name of migration 003, as `StorageSqlx::migrate` reports it.
 pub const MIGRATION_003_LOCKED_INPUT_CHECKS_NAME: &str = "003_locked_input_checks";
+
+/// `locked_input_checks.last_verdict` of a proven spend: the one terminal
+/// value. Written only when the spending transaction's bytes name the
+/// outpoint and its merkle path met the header service's header. The
+/// `spent` of 0.5.0 and earlier was two explorers' agreement, a hint: rows
+/// holding it are not terminal and are asked about again.
+pub const LOCKED_VERDICT_SPENT_PROVEN: &str = "spent-proven";
+
+/// `last_verdict` of the unproven tier: two explorers agree the outpoint is
+/// not in the unspent set, or a spender is named with no proof held.
+pub const LOCKED_VERDICT_SPENT_HINT: &str = "spent-hint";
+
+/// `last_verdict` of "could not look".
+pub const LOCKED_VERDICT_UNKNOWN: &str = "unknown";
+
+/// The `last_verdict` a kept-locked input is scheduled with.
+pub(crate) fn locked_verdict_label(verdict: UtxoVerdict) -> &'static str {
+    match verdict {
+        UtxoVerdict::Spent => LOCKED_VERDICT_SPENT_PROVEN,
+        UtxoVerdict::SpentHint => LOCKED_VERDICT_SPENT_HINT,
+        UtxoVerdict::Unspent | UtxoVerdict::Unknown => LOCKED_VERDICT_UNKNOWN,
+    }
+}
 
 /// The longest pause between two re-checks of one input (minutes).
 pub const LOCKED_INPUT_BACKOFF_CAP_MINUTES: i64 = 64;
@@ -51,8 +77,13 @@ pub enum LockedInputVerdict {
     /// Verifiably unspent: restored to coin selection (or, on a dry run,
     /// would be).
     Restored,
-    /// Spent on chain by another transaction: left locked, never re-checked.
+    /// Spent on chain, proven (the spender's bytes name the outpoint and
+    /// its merkle path meets the header service): left locked, never
+    /// re-checked.
     Spent,
+    /// Two explorers agree it is not in the unspent set, or a spender is
+    /// named without a proof: a hint, re-checked later with backoff.
+    SpentHint,
     /// The chain could not say: re-checked later with backoff.
     Unknown,
     /// The coin's source transaction is a phantom this wallet retired: the
@@ -80,7 +111,7 @@ pub struct LockedInputCheck {
     pub verdict: LockedInputVerdict,
     /// Re-checks so far (including this one).
     pub attempts: u32,
-    /// Minutes until the next re-check (`Unknown` only).
+    /// Minutes until the next re-check (`SpentHint` and `Unknown`).
     pub next_check_minutes: Option<i64>,
 }
 
@@ -97,8 +128,10 @@ pub struct LockedInputReport {
     pub restored: u32,
     /// Their value.
     pub restored_sats: i64,
-    /// Inputs found spent (terminal).
+    /// Inputs found spent by proof (terminal).
     pub spent: u32,
+    /// Inputs hinted spent, unproven (backoff).
+    pub spent_hints: u32,
     /// Inputs still undecided (backoff).
     pub unknown: u32,
     /// Rows dropped (released or phantom).
@@ -134,8 +167,8 @@ impl StorageSqlx {
         .await
     }
 
-    /// Remember that `output_id` stayed locked with `verdict` (`"unknown"`
-    /// or `"spent"`) so the reconcile passes re-check it: a new row starts
+    /// Remember that `output_id` stayed locked with `verdict` (one of the
+    /// `LOCKED_VERDICT_*` values) so the reconcile passes re-check it: a new row starts
     /// at one attempt and one minute; an existing row backs off. Logged,
     /// never failing (bookkeeping must not fail a retire).
     pub(crate) async fn schedule_locked_input_check(&self, output_id: i64, verdict: &str) {
@@ -209,10 +242,11 @@ impl StorageSqlx {
              JOIN outputs o ON o.output_id = c.output_id \
              JOIN transactions src ON src.transaction_id = o.transaction_id \
              LEFT JOIN transactions spender ON spender.transaction_id = o.spent_by \
-             WHERE (c.last_verdict IS NULL OR c.last_verdict <> 'spent') \
+             WHERE (c.last_verdict IS NULL OR c.last_verdict <> ?) \
                AND datetime(c.next_check_at) <= datetime('now') \
              ORDER BY datetime(c.next_check_at) ASC, c.output_id ASC LIMIT ?",
         )
+        .bind(LOCKED_VERDICT_SPENT_PROVEN)
         .bind(limit as i64)
         .fetch_all(self.pool())
         .await?;
@@ -239,8 +273,9 @@ impl StorageSqlx {
         self.ensure_locked_inputs_schema().await?;
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM locked_input_checks \
-             WHERE last_verdict IS NULL OR last_verdict <> 'spent'",
+             WHERE last_verdict IS NULL OR last_verdict <> ?",
         )
+        .bind(LOCKED_VERDICT_SPENT_PROVEN)
         .fetch_one(self.pool())
         .await?;
         Ok(count.max(0) as u32)
@@ -313,20 +348,6 @@ impl StorageSqlx {
             }
             let script = row.locking_script.as_deref().unwrap_or(&[]);
             let verdict = utxo_verdict(services, &source_txid, check.vout, script).await;
-            // "Spent" from the UTXO lookup means "not in the unspent set":
-            // only a chain-known source makes that a real spend.
-            let verdict = match verdict {
-                UtxoVerdict::Spent => {
-                    tokio::time::sleep(CHECK_PACE).await;
-                    match chain_knowledge(services, &source_txid).await {
-                        ChainKnowledge::Mined | ChainKnowledge::Known => UtxoVerdict::Spent,
-                        ChainKnowledge::Unknown | ChainKnowledge::Unavailable => {
-                            UtxoVerdict::Unknown
-                        }
-                    }
-                }
-                other => other,
-            };
             match verdict {
                 UtxoVerdict::Unspent => {
                     check.verdict = LockedInputVerdict::Restored;
@@ -358,10 +379,11 @@ impl StorageSqlx {
                     report.spent += 1;
                     if execute {
                         sqlx::query(
-                            "UPDATE locked_input_checks SET attempts = ?, last_verdict = 'spent', \
+                            "UPDATE locked_input_checks SET attempts = ?, last_verdict = ?, \
                              last_checked_at = CURRENT_TIMESTAMP WHERE output_id = ?",
                         )
                         .bind(check.attempts as i64)
+                        .bind(LOCKED_VERDICT_SPENT_PROVEN)
                         .bind(row.output_id)
                         .execute(self.pool())
                         .await?;
@@ -371,21 +393,31 @@ impl StorageSqlx {
                         outpoint = %format!("{}:{}", source_txid, row.vout),
                         satoshis = row.satoshis,
                         locked_by = %locked_by,
-                        "locked input: SPENT on chain by another transaction, left locked (terminal)"
+                        "locked input: SPENT on chain, proven (the spender's bytes name it and its merkle path meets our headers), left locked (terminal)"
                     );
                 }
-                UtxoVerdict::Unknown => {
+                undecided @ (UtxoVerdict::SpentHint | UtxoVerdict::Unknown) => {
+                    // A hint is never written as a spend: the input stays
+                    // locked and is asked about again on the cadence.
                     let minutes = locked_input_backoff_minutes(check.attempts);
-                    check.verdict = LockedInputVerdict::Unknown;
+                    let label = if undecided == UtxoVerdict::SpentHint {
+                        check.verdict = LockedInputVerdict::SpentHint;
+                        report.spent_hints += 1;
+                        LOCKED_VERDICT_SPENT_HINT
+                    } else {
+                        check.verdict = LockedInputVerdict::Unknown;
+                        report.unknown += 1;
+                        LOCKED_VERDICT_UNKNOWN
+                    };
                     check.next_check_minutes = Some(minutes);
-                    report.unknown += 1;
                     if execute {
                         sqlx::query(
-                            "UPDATE locked_input_checks SET attempts = ?, last_verdict = 'unknown', \
+                            "UPDATE locked_input_checks SET attempts = ?, last_verdict = ?, \
                              last_checked_at = CURRENT_TIMESTAMP, next_check_at = datetime('now', ?) \
                              WHERE output_id = ?",
                         )
                         .bind(check.attempts as i64)
+                        .bind(label)
                         .bind(format!("+{} minutes", minutes))
                         .bind(row.output_id)
                         .execute(self.pool())
@@ -396,8 +428,9 @@ impl StorageSqlx {
                         outpoint = %format!("{}:{}", source_txid, row.vout),
                         satoshis = row.satoshis,
                         attempts = check.attempts,
+                        verdict = label,
                         next_check_minutes = minutes,
-                        "locked input: the chain could not say, re-check scheduled with backoff"
+                        "locked input: no proof of a spend and not in an unspent set, re-check scheduled with backoff"
                     );
                 }
             }

@@ -108,7 +108,7 @@ pub trait WalletServices: Send + Sync {
     async fn get_bsv_exchange_rate(&self) -> Result<f64>;
     async fn get_fiat_exchange_rate(&self, currency: FiatCurrency, base: Option<FiatCurrency>) -> Result<f64>;
     fn hash_output_script(&self, script: &[u8]) -> String;
-    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict; // Unspent | Spent | Unknown (could not look)
+    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict; // Unspent | Spent (by proof only) | SpentHint (two explorers agree, unproven) | Unknown (could not look)
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool>;
     async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool>;
     async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult>;

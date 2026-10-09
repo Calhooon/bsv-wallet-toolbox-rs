@@ -965,7 +965,15 @@ async fn utxo_verified_input_ids(storage: &StorageSqlx, txid: &str) -> Vec<i64> 
                     txid = %txid,
                     source = %source_txid,
                     vout = vout,
-                    "Input consumed on-chain — NOT restoring (dead UTXO)"
+                    "Input spent on chain, proven: NOT restoring (dead UTXO)"
+                );
+            }
+            UtxoVerdict::SpentHint => {
+                tracing::info!(
+                    txid = %txid,
+                    source = %source_txid,
+                    vout = vout,
+                    "Input hinted spent (no proof held): NOT restoring (a hint never releases, and is not a spend)"
                 );
             }
             UtxoVerdict::Unknown => {

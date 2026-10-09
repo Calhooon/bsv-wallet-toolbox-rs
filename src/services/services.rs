@@ -1017,6 +1017,80 @@ impl Services {
     }
 }
 
+/// What we hold about a stranger's spend of one outpoint.
+enum SpendEvidence {
+    /// The spender's bytes name the outpoint and its merkle path met the
+    /// header service's header: a chain fact.
+    Proven,
+    /// The spender's bytes name the outpoint; no proof of it is held (not
+    /// mined yet, or no courier served a path the header service accepts).
+    Bound,
+    /// No spender named, or a name its own bytes do not bear out.
+    None,
+}
+
+impl Services {
+    /// Bind, then prove (Rule 28; bsv-stack-lean `NORTH-STAR.md`, the
+    /// ruling of 2026-10-09: a stranger's spend becomes a chain fact only
+    /// by the spending transaction's merkle proof checked against our
+    /// headers).
+    ///
+    /// 1. A provider names the spender: a word, and the provider a courier.
+    /// 2. The named transaction's bytes (bound to its txid by `get_raw_tx`)
+    ///    must have an input that is this outpoint: a fact about the bytes.
+    /// 3. `get_merkle_path` returns a path only after its root met the
+    ///    header service's header at that height: the chain's word.
+    ///
+    /// With no header service step 3 cannot be done, so step 1 is not
+    /// asked: nothing is fetched that could not be checked.
+    async fn spend_evidence(&self, txid: &str, vout: u32) -> SpendEvidence {
+        if self.chaintracks.is_none() {
+            return SpendEvidence::None;
+        }
+        let spender = match self.whatsonchain.get_spender(txid, vout).await {
+            Ok(Some(spender)) => spender,
+            Ok(None) => return SpendEvidence::None,
+            Err(e) => {
+                tracing::debug!(txid = %txid, vout, error = %e, "spend evidence: could not ask for a spender");
+                return SpendEvidence::None;
+            }
+        };
+        let raw_tx = match self.get_raw_tx(&spender, false).await {
+            Ok(GetRawTxResult {
+                raw_tx: Some(raw_tx),
+                ..
+            }) => raw_tx,
+            _ => {
+                tracing::debug!(txid = %txid, vout, spender = %spender, "spend evidence: the named spender's bytes are not held");
+                return SpendEvidence::None;
+            }
+        };
+        let names_the_outpoint = bsv_rs::transaction::Transaction::from_binary(&raw_tx)
+            .map(|tx| {
+                tx.inputs.iter().any(|input| {
+                    input.source_output_index == vout
+                        && input
+                            .get_source_txid()
+                            .is_ok_and(|source| source.eq_ignore_ascii_case(txid))
+                })
+            })
+            .unwrap_or(false);
+        if !names_the_outpoint {
+            tracing::warn!(
+                txid = %txid,
+                vout,
+                spender = %spender,
+                "spend evidence: the named spender's bytes do not spend the outpoint; the name is dropped"
+            );
+            return SpendEvidence::None;
+        }
+        match self.get_merkle_path(&spender, false).await {
+            Ok(found) if found.merkle_path.is_some() => SpendEvidence::Proven,
+            _ => SpendEvidence::Bound,
+        }
+    }
+}
+
 #[async_trait]
 impl WalletServices for Services {
     async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker> {
@@ -2108,10 +2182,16 @@ impl WalletServices for Services {
         hex::encode(&hash)
     }
 
+    /// The stranger's spend (Rule 28, the irreducible case). An outpoint in
+    /// an explorer's unspent set is `Unspent`. Otherwise the spend is asked
+    /// for as a proof: `Spent` only when the spending transaction's own
+    /// bytes name the outpoint and its merkle path meets the header
+    /// service's header. Two explorers agreeing "not unspent", or a bound
+    /// spender with no proof held, is `SpentHint`; anything else `Unknown`.
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
         let hash = self.hash_output_script(locking_script);
         let outpoint = format!("{}.{}", txid, vout);
-        match self
+        let unspent_set = match self
             .get_utxo_status(&hash, None, Some(&outpoint), false)
             .await
         {
@@ -2126,6 +2206,14 @@ impl WalletServices for Services {
                 tracing::debug!(outpoint = %outpoint, error = %e, "is_utxo: could not look");
                 UtxoVerdict::Unknown
             }
+        };
+        if unspent_set == UtxoVerdict::Unspent {
+            return unspent_set;
+        }
+        match self.spend_evidence(txid, vout).await {
+            SpendEvidence::Proven => UtxoVerdict::Spent,
+            SpendEvidence::Bound => UtxoVerdict::SpentHint,
+            SpendEvidence::None => unspent_set,
         }
     }
 

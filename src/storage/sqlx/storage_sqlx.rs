@@ -13,6 +13,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use super::locked_inputs::locked_verdict_label;
 use crate::error::{Error, Result};
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{UtxoVerdict, WalletServices};
@@ -3104,7 +3105,8 @@ impl StorageSqlx {
                 restored += 1;
             } else {
                 kept += 1;
-                self.schedule_locked_input_check(output_id, "unknown").await;
+                self.schedule_locked_input_check(output_id, locked_verdict_label(verdict))
+                    .await;
                 tracing::info!(
                     "send_waiting: input {}:{} not verifiably unspent — NOT restoring",
                     source_txid,
@@ -4767,17 +4769,22 @@ impl MonitorStorage for StorageSqlx {
                             }
                             UtxoVerdict::Spent => {
                                 tracing::info!(
-                                    "abort_abandoned: input {}:{} not a UTXO: NOT restoring",
+                                    "abort_abandoned: input {}:{} spent on chain, proven: NOT restoring",
                                     source_txid,
                                     vout
                                 );
                             }
-                            UtxoVerdict::Unknown => {
-                                // "Could not look" is not "spent": the input
-                                // stays locked and is asked about again.
-                                self.schedule_locked_input_check(output_id, "unknown").await;
+                            undecided @ (UtxoVerdict::SpentHint | UtxoVerdict::Unknown) => {
+                                // A hint and "could not look" are not
+                                // "spent": the input stays locked and is
+                                // asked about again.
+                                self.schedule_locked_input_check(
+                                    output_id,
+                                    locked_verdict_label(undecided),
+                                )
+                                .await;
                                 tracing::warn!(
-                                    "abort_abandoned: input {}:{} could not be looked up: stays LOCKED, re-check scheduled",
+                                    "abort_abandoned: input {}:{} has no proof of a spend and is in no unspent set: stays LOCKED, re-check scheduled",
                                     source_txid,
                                     vout
                                 );
@@ -6240,9 +6247,9 @@ impl StorageSqlx {
                     .await?;
                     restored += 1;
                 }
-                UtxoVerdict::Spent => {
+                UtxoVerdict::Spent | UtxoVerdict::SpentHint => {
                     tracing::debug!(
-                        "un_fail: output {}:{} is not a UTXO on chain, skipping",
+                        "un_fail: output {}:{} is in no unspent set, skipping",
                         txid,
                         vout
                     );

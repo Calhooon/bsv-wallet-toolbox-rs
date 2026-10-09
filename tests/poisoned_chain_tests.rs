@@ -775,8 +775,10 @@ async fn a_spent_locked_input_is_left_locked_and_never_rechecked_again() {
         .await
         .unwrap();
 
-    // Not in the unspent set, and the source is on chain: spent for real.
+    // A proven spend: the spender's bytes name the outpoint and its merkle
+    // path meets the header service (the mock stands for holding both).
     let spent = MockWalletServices::builder()
+        .spends_are_proven(true)
         .get_utxo_status_response(MockResponse::Success(GetUtxoStatusResult {
             name: "MockProvider".to_string(),
             status: "success".to_string(),
@@ -819,6 +821,112 @@ async fn a_spent_locked_input_is_left_locked_and_never_rechecked_again() {
     assert_eq!(again.due, 0);
 }
 
+/// Rule 28, the second pass: two explorers agreeing the outpoint is not in
+/// the unspent set, with its source on chain, is a hint. It is never
+/// written as the terminal `spent`: the input stays locked and stays on the
+/// re-check cadence until a proof says so (0.5.0 wrote it off here).
+#[tokio::test]
+async fn two_explorers_agreeing_never_writes_a_locked_input_off() {
+    let s = seed("unproven").await;
+    let limited = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Error(
+            MockErrorKind::ServiceError,
+            "429".to_string(),
+        ))
+        .build();
+    s.storage
+        .retire_poisoned_chain(&limited, R, "invalid", true)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
+        .execute(s.storage.pool())
+        .await
+        .unwrap();
+
+    let agreed = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Success(GetUtxoStatusResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            is_utxo: Some(false),
+            details: vec![],
+            error: None,
+        }))
+        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: vec![TxStatusDetail {
+                txid: P.to_string(),
+                status: "mined".to_string(),
+                depth: Some(10),
+                ..Default::default()
+            }],
+        }))
+        .build();
+    let report = s
+        .storage
+        .recheck_locked_inputs(&agreed, 20, true)
+        .await
+        .unwrap();
+    assert_eq!(report.spent, 0, "a hint counted as a spend");
+    assert_eq!(report.spent_hints, 1);
+    assert_eq!(report.checks[0].verdict, LockedInputVerdict::SpentHint);
+    assert_eq!(
+        locked_verdict(&s.storage, s.ids.p0).await.as_deref(),
+        Some("spent-hint")
+    );
+    assert_ne!(
+        locked_verdict(&s.storage, s.ids.p0).await.as_deref(),
+        Some("spent"),
+        "a hint written as the terminal verdict"
+    );
+    assert_eq!(
+        output_state(&s.storage, s.ids.p0).await.0,
+        0,
+        "stays locked"
+    );
+    assert_eq!(
+        s.storage.locked_inputs_pending().await.unwrap(),
+        1,
+        "stays on the cadence"
+    );
+}
+
+/// A `spent` row written by 0.5.0 or earlier rests on two explorers'
+/// agreement, not a proof. It is not terminal any more: it is due, and it
+/// is decided again by what the services hold now.
+#[tokio::test]
+async fn a_spent_row_of_an_older_release_is_asked_again() {
+    let s = seed("unproven").await;
+    let limited = MockWalletServices::builder()
+        .get_utxo_status_response(MockResponse::Error(
+            MockErrorKind::ServiceError,
+            "429".to_string(),
+        ))
+        .build();
+    s.storage
+        .retire_poisoned_chain(&limited, R, "invalid", true)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE locked_input_checks SET last_verdict = 'spent', \
+         next_check_at = datetime('now', '-1 minute')",
+    )
+    .execute(s.storage.pool())
+    .await
+    .unwrap();
+    assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 1);
+
+    // The default mock lists the outpoint in an unspent set.
+    let report = s
+        .storage
+        .recheck_locked_inputs(&MockWalletServices::new(), 20, true)
+        .await
+        .unwrap();
+    assert_eq!((report.due, report.restored), (1, 1));
+    assert_eq!(output_state(&s.storage, s.ids.p0).await, (1, None));
+}
+
 #[tokio::test]
 async fn an_undecided_recheck_backs_off_and_an_unknown_source_is_not_a_spend() {
     let s = seed("unproven").await;
@@ -857,8 +965,8 @@ async fn an_undecided_recheck_backs_off_and_an_unknown_source_is_not_a_spend() {
     assert!((90..=150).contains(&wait), "two minutes: {}s", wait);
     assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 1);
 
-    // Not in the unspent set but the source is unknown to the chain: not a
-    // spend, keep re-checking.
+    // Not in the unspent set by the explorers' word, no proof of a spend:
+    // a hint, not a spend, keep re-checking.
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
         .execute(s.storage.pool())
         .await
@@ -877,7 +985,12 @@ async fn an_undecided_recheck_backs_off_and_an_unknown_source_is_not_a_spend() {
         .recheck_locked_inputs(&unknown_source, 20, true)
         .await
         .unwrap();
-    assert_eq!(report.checks[0].verdict, LockedInputVerdict::Unknown);
+    assert_eq!(report.checks[0].verdict, LockedInputVerdict::SpentHint);
+    assert_eq!(report.spent_hints, 1);
+    assert_eq!(
+        locked_verdict(&s.storage, s.ids.p0).await.as_deref(),
+        Some("spent-hint")
+    );
     assert_eq!(report.checks[0].attempts, 3);
     assert_eq!(report.checks[0].next_check_minutes, Some(4));
     assert_eq!(output_state(&s.storage, s.ids.p0).await.0, 0);
@@ -894,8 +1007,8 @@ async fn adoption_finds_locked_inputs_of_failed_transactions_that_predate_the_ta
         .unwrap();
     assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 0);
 
-    // P:0 unspent (restored); R:0 not in the unspent set and R unknown to
-    // the chain (kept, backoff).
+    // P:0 unspent (restored); R:0 not in the unspent set, no proof of a
+    // spend (kept, backoff).
     let services = MockWalletServices::builder()
         .get_utxo_status_response(MockResponse::Sequence(vec![
             MockResponse::Success(GetUtxoStatusResult {
@@ -921,7 +1034,7 @@ async fn adoption_finds_locked_inputs_of_failed_transactions_that_predate_the_ta
         .unwrap();
     assert_eq!(report.adopted, 2, "P:0 and R:0");
     assert_eq!(report.due, 2);
-    assert_eq!((report.restored, report.unknown), (1, 1));
+    assert_eq!((report.restored, report.spent_hints), (1, 1));
     assert_eq!(output_state(&s.storage, s.ids.p0).await, (1, None));
     assert_eq!(output_state(&s.storage, s.ids.r0).await.0, 0);
 
@@ -1046,11 +1159,10 @@ async fn a_parent_younger_than_the_absence_threshold_stops_the_climb() {
 }
 
 #[tokio::test]
-async fn a_spent_verdict_is_terminal_only_when_the_source_is_on_chain() {
-    // CH is retired alone (X is young). The UTXO oracle says X:0 is not in
-    // the unspent set, but the chain index does not know X: "not unspent"
-    // is not "spent" for a coin whose source the index has not seen. The
-    // coin is kept and re-checked, not written off.
+async fn a_spent_verdict_is_terminal_only_by_proof() {
+    // CH is retired alone (X is young). The explorers say X:0 is not in the
+    // unspent set: "not unspent" is a hint, whether or not the chain index
+    // knows X. The coin is kept and re-checked, not written off.
     let (storage, ids) = seed_climb("unproven").await;
     let not_in_the_unspent_set = MockResponse::Success(GetUtxoStatusResult {
         name: "MockProvider".to_string(),
@@ -1078,13 +1190,30 @@ async fn a_spent_verdict_is_terminal_only_when_the_source_is_on_chain() {
     assert_eq!(output_state(&storage, ids.x0).await.0, 0, "kept locked");
     assert_eq!(
         locked_verdict(&storage, ids.x0).await.as_deref(),
-        Some("unknown"),
+        Some("spent-hint"),
         "re-checked with backoff, not terminal"
     );
 
-    // The same answer with X known to the chain is a real spend: terminal.
+    // The same answer with X known to the chain is still a hint.
     let (storage, ids) = seed_climb("unproven").await;
     let source_known = MockWalletServices::builder()
+        .get_utxo_status_response(not_in_the_unspent_set.clone())
+        .get_status_for_txids_response(known_as_mined(&[G, X]))
+        .build();
+    storage
+        .retire_poisoned_chain_from(&source_known, CH, "invalid", true, DEFAULT_ABSENCE_MINUTES)
+        .await
+        .unwrap();
+    assert_eq!(
+        locked_verdict(&storage, ids.x0).await.as_deref(),
+        Some("spent-hint"),
+        "two words and a known source are not a proof"
+    );
+
+    // A proven spend (the spender's bytes and its merkle path) is terminal.
+    let (storage, ids) = seed_climb("unproven").await;
+    let source_known = MockWalletServices::builder()
+        .spends_are_proven(true)
         .get_utxo_status_response(not_in_the_unspent_set)
         .get_status_for_txids_response(known_as_mined(&[G, X]))
         .build();
@@ -1097,6 +1226,6 @@ async fn a_spent_verdict_is_terminal_only_when_the_source_is_on_chain() {
     assert_eq!(output_state(&storage, ids.x0).await.0, 0);
     assert_eq!(
         locked_verdict(&storage, ids.x0).await.as_deref(),
-        Some("spent")
+        Some("spent-proven")
     );
 }

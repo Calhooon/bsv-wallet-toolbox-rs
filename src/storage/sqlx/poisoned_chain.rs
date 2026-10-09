@@ -51,6 +51,7 @@ use crate::services::broadcast_memory::{
 };
 use crate::services::WalletServices;
 
+use super::locked_inputs::locked_verdict_label;
 use super::storage_sqlx::StorageSqlx;
 
 /// Transaction statuses a poisoned descendant may be in to be retired.
@@ -239,30 +240,15 @@ pub async fn chain_knowledge(services: &dyn WalletServices, txid: &str) -> Chain
 
 pub use crate::services::traits::UtxoVerdict;
 
-/// Ask the UTXO service about `txid:vout` (one `get_utxo_status` by script
-/// hash, the same call `is_utxo` makes), keeping the three answers apart.
+/// Ask the services about `txid:vout`: [`WalletServices::is_utxo`], whose
+/// `Spent` is a proof and whose `SpentHint` is two explorers' agreement.
 pub async fn utxo_verdict(
     services: &dyn WalletServices,
     txid: &str,
     vout: u32,
     locking_script: &[u8],
 ) -> UtxoVerdict {
-    let hash = services.hash_output_script(locking_script);
-    let outpoint = format!("{}.{}", txid, vout);
-    match services
-        .get_utxo_status(&hash, None, Some(&outpoint), false)
-        .await
-    {
-        Ok(result) if result.status == "success" => UtxoVerdict::from_status(&result),
-        Ok(result) => {
-            tracing::debug!(outpoint = %outpoint, error = ?result.error, "utxo verdict: service answered with an error");
-            UtxoVerdict::Unknown
-        }
-        Err(e) => {
-            tracing::debug!(outpoint = %outpoint, error = %e, "utxo verdict: lookup failed");
-            UtxoVerdict::Unknown
-        }
-    }
+    services.is_utxo(txid, vout, locking_script).await
 }
 
 impl StorageSqlx {
@@ -700,7 +686,7 @@ impl StorageSqlx {
         // only when the coin came from OUTSIDE the poisoned set.
         let inputs = sqlx::query(
             "SELECT o.output_id, o.transaction_id AS parent_id, t.txid AS source_txid, \
-                    t.status AS source_status, o.vout, o.locking_script, o.satoshis \
+                    o.vout, o.locking_script, o.satoshis \
              FROM outputs o JOIN transactions t ON o.transaction_id = t.transaction_id \
              WHERE o.spent_by = ?",
         )
@@ -712,7 +698,6 @@ impl StorageSqlx {
             let parent_id: i64 = input.get("parent_id");
             let source_txid: Option<String> = input.get("source_txid");
             let source_txid = source_txid.unwrap_or_default();
-            let source_status: String = input.get("source_status");
             let vout: i64 = input.get("vout");
             let satoshis: i64 = input.get("satoshis");
             if poisoned_ids.contains(&parent_id) || source_txid == root_txid {
@@ -727,20 +712,7 @@ impl StorageSqlx {
             let locking_script: Option<Vec<u8>> = input.get("locking_script");
             let script = locking_script.as_deref().unwrap_or(&[]);
             let verdict = match services {
-                Some(services) => {
-                    match utxo_verdict(services, &source_txid, vout as u32, script).await {
-                        UtxoVerdict::Spent if source_status != "completed" => {
-                            tokio::time::sleep(CLIMB_PACE).await;
-                            match chain_knowledge(services, &source_txid).await {
-                                ChainKnowledge::Mined | ChainKnowledge::Known => UtxoVerdict::Spent,
-                                ChainKnowledge::Unknown | ChainKnowledge::Unavailable => {
-                                    UtxoVerdict::Unknown
-                                }
-                            }
-                        }
-                        other => other,
-                    }
-                }
+                Some(services) => utxo_verdict(services, &source_txid, vout as u32, script).await,
                 None => UtxoVerdict::Unknown,
             };
             match verdict {
@@ -764,13 +736,11 @@ impl StorageSqlx {
                         "poisoned chain: outside input verifiably unspent, restored to coin selection"
                     );
                 }
-                verdict @ (UtxoVerdict::Spent | UtxoVerdict::Unknown) => {
+                verdict @ (UtxoVerdict::Spent | UtxoVerdict::SpentHint | UtxoVerdict::Unknown) => {
                     report.kept += 1;
-                    let label = if verdict == UtxoVerdict::Spent {
-                        "spent"
-                    } else {
-                        "unknown"
-                    };
+                    // Only a proven spend is written as terminal; a hint
+                    // and an unknown are asked again on the cadence.
+                    let label = locked_verdict_label(verdict);
                     tracing::info!(
                         txid = %tx.txid,
                         source = %source_txid,
