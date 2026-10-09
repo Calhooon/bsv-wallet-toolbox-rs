@@ -11,7 +11,8 @@
 //! schedule it; [`StorageSqlx::adopt_locked_inputs`] picks up any locked
 //! input of a failed transaction that predates the table).
 //! [`StorageSqlx::recheck_locked_inputs`] re-examines the due rows with
-//! exponential backoff (1, 2, 4 ... 64 minutes) until the chain answers:
+//! the backoff of `crate::services::cadence` (the one place the cadence of
+//! this check is named) until the chain answers:
 //! in an unspent set, and the coin goes back to coin selection; spent on
 //! chain by proof (the spending transaction's bytes name the outpoint and
 //! its merkle path meets the header service's header), and it is left
@@ -59,17 +60,15 @@ pub(crate) fn locked_verdict_label(verdict: UtxoVerdict) -> &'static str {
     }
 }
 
-/// The longest pause between two re-checks of one input (minutes).
-pub const LOCKED_INPUT_BACKOFF_CAP_MINUTES: i64 = 64;
-
-/// Pause between two chain lookups of one pass (WhatsOnChain's public rate).
-const CHECK_PACE: std::time::Duration = std::time::Duration::from_millis(350);
-
-/// Minutes until the next re-check after `attempts` inconclusive ones:
-/// 1, 2, 4, 8, 16, 32, then [`LOCKED_INPUT_BACKOFF_CAP_MINUTES`].
-pub fn locked_input_backoff_minutes(attempts: u32) -> i64 {
-    (1i64 << attempts.saturating_sub(1).min(6)).min(LOCKED_INPUT_BACKOFF_CAP_MINUTES)
-}
+// The cadence of the re-check (how often per outpoint, how fast within a
+// pass, when it ends) is named in one place, `crate::services::cadence`,
+// in Rule 28's words. The two names below are the ones this module has
+// exported since 0.3.59; their numbers are defined there.
+use crate::services::cadence::STRANGER_SPEND_LOOKUP_PACE;
+pub use crate::services::cadence::{
+    stranger_spend_recheck_minutes as locked_input_backoff_minutes,
+    STRANGER_SPEND_RECHECK_CAP_MINUTES as LOCKED_INPUT_BACKOFF_CAP_MINUTES,
+};
 
 /// What one re-check decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,7 +343,7 @@ impl StorageSqlx {
             }
 
             if index > 0 {
-                tokio::time::sleep(CHECK_PACE).await;
+                tokio::time::sleep(STRANGER_SPEND_LOOKUP_PACE).await;
             }
             let script = row.locking_script.as_deref().unwrap_or(&[]);
             let verdict = utxo_verdict(services, &source_txid, check.vout, script).await;
