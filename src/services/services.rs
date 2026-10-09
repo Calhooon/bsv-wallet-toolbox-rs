@@ -1220,7 +1220,34 @@ impl WalletServices for Services {
         })
     }
 
+    /// Break-glass where it reaches an explorer (Rule 28, T6 and T7): a
+    /// transaction's inclusion proof. For a transaction we received, the
+    /// BEEF's own BUMP is the proof; for one we broadcast through Arcade,
+    /// the BUMP in Arcade's MINED document is. An explorer is asked only
+    /// as the courier of a proof nobody pushed to us (a transaction
+    /// broadcast before Arcade was wired, an ancestor received without its
+    /// proof), each explorer the other's fallback, and its proof is
+    /// believed only for its root, checked against the header service.
+    ///
+    /// So with no header service configured no proof is fetched and none
+    /// is returned: the answer is `merkle_path: None` with a fault note
+    /// ("could not look"), never an unchecked proof and never "not mined".
     async fn get_merkle_path(&self, txid: &str, use_next: bool) -> Result<GetMerklePathResult> {
+        if self.chaintracks.is_none() {
+            let error = "no header service configured (chaintracks_url): a merkle proof cannot be checked, so none is fetched or returned";
+            return Ok(GetMerklePathResult {
+                name: Some("Services".to_string()),
+                merkle_path: None,
+                header: None,
+                error: Some(error.to_string()),
+                notes: vec![merkle_path_note(
+                    "Services",
+                    "getMerklePathTrackerError",
+                    Some(error),
+                )],
+            });
+        }
+
         // Get owned copies of services to avoid holding lock across await
         let all_services: Vec<(String, String, MerklePathProvider)> = {
             let mut services = lock_write(&self.get_merkle_path_services)?;
@@ -3087,15 +3114,16 @@ mod tests {
         );
     }
 
+    /// Rule 28 witness (T6, T7): with no header service a served proof
+    /// cannot be checked, so none is returned. Until 0.5.0 the root check
+    /// was skipped silently here and the provider's proof came back
+    /// unchecked (this test asserted that, as backwards compatibility).
     #[tokio::test]
-    async fn test_get_merkle_path_no_chaintracks_skips_validation() {
-        // Without ChainTracker, any proof should pass through unvalidated
-        // (backwards compatibility).
+    async fn test_get_merkle_path_no_chaintracks_returns_no_proof() {
         let txid = "a".repeat(64);
         let height = 850_000u32;
 
-        // Build a BUMP for a different txid — normally invalid, but without
-        // ChainTracker it should still be returned.
+        // A BUMP for a different txid: nothing checks it without a tracker.
         let other_txid = "c".repeat(64);
         let (bump_hex, _) = build_valid_bump(&other_txid, height);
 
@@ -3116,16 +3144,28 @@ mod tests {
             notes: vec![],
         };
 
-        // No chaintracks_url — validation should be skipped.
+        // No chaintracks_url.
         let services = build_test_services(vec![("Provider", response)], None);
 
         let result = services.get_merkle_path(&txid, false).await.unwrap();
 
         assert_eq!(
-            result.merkle_path,
-            Some(bump_hex),
-            "Without ChainTracker, proof should pass through without validation"
+            result.merkle_path, None,
+            "without a header service no proof is returned"
         );
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("header service")),
+            "the error names what is missing: {:?}",
+            result.error
+        );
+        // A fault, never "not mined": nothing is demoted on it.
+        assert!(matches!(
+            result.provider_verdicts().as_slice(),
+            [crate::services::traits::ProviderVerdict::Fault { .. }]
+        ));
     }
 
     #[tokio::test]
