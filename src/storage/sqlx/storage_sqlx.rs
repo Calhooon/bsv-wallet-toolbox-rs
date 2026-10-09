@@ -3006,7 +3006,7 @@ impl StorageSqlx {
     /// 1. the tx is NOT alive per the status service
     ///    (`reconcile_tx_status_via_services`: known/mined ⇒
     ///    [`RetireOutcome::Alive`], promoted, nothing touched), AND
-    /// 2. that input is hinted unspent by `services.is_utxo` — an error or
+    /// 2. that input is hinted unspent by `services.is_utxo`: an error or
     ///    `false` keeps it locked (`spent_by` intact, `spendable = 0`). An
     ///    unknown must never release money; a locked coin is recoverable by
     ///    an operator, a double-spent one is not.
