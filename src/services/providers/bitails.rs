@@ -97,6 +97,15 @@ impl Bitails {
         })
     }
 
+    /// The provider at another API base: a local fixture standing in for
+    /// the explorer, so a test can count the requests that reach it.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(chain: Chain, base_url: &str) -> Self {
+        let mut bitails = Self::new(chain, BitailsConfig::default()).expect("client");
+        bitails.base_url = format!("{}/", base_url.trim_end_matches('/'));
+        bitails
+    }
+
     /// Get HTTP headers.
     fn get_headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -677,35 +686,6 @@ impl Bitails {
     // =========================================================================
     // Additional Height / Header Methods
     // =========================================================================
-
-    /// Get current blockchain height.
-    ///
-    /// Uses the chain info endpoint to retrieve the current block count.
-    pub async fn current_height(&self) -> Result<u32> {
-        let url = format!("{}network/info", self.base_url);
-
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.get_headers())
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Bitails chain_info: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(Error::ServiceError(format!(
-                "Bitails chain_info: HTTP {}",
-                response.status()
-            )));
-        }
-
-        let data: BitailsNetworkInfo = response
-            .json()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Bitails parse: {}", e)))?;
-
-        Ok(data.blocks)
-    }
 
     /// Get block header by height.
     pub async fn get_header_by_height(&self, height: u32) -> Result<BlockHeader> {

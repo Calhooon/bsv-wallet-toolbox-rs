@@ -358,7 +358,7 @@ The `Services` constructor sets up provider priority for each operation:
 | `get_script_hash_history` | WhatsOnChain -> Bitails |
 | `get_height` | BHS (if configured) -> WhatsOnChain -> Bitails (not via ServiceCollection) |
 
-Note: `get_height` uses direct failover (not ServiceCollection-based) trying BHS first, then WhatsOnChain's `get_chain_info()`, then Bitails' `current_height()`.
+Note: `get_height` asks the header service only (Rule 28): the Chaintracks tip header's height, then BHS, then an error. No explorer is asked.
 
 Note: when Arcade is configured (`ServicesOptions::with_arcade`), a wallet's
 own broadcaster is also its proof and status source. Arcade's `GET /tx/{txid}`
