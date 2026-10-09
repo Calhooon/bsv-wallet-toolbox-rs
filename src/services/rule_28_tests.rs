@@ -4,7 +4,7 @@
 //! that reach it. Nothing here touches the network.
 
 use super::*;
-use crate::services::traits::WalletServices;
+use crate::services::traits::{BlockHeader, WalletServices};
 
 /// `Services` with both explorers pointed at local fixtures, in every
 /// collection and in the break-glass tracker.
@@ -439,4 +439,196 @@ async fn a_bitails_answer_that_is_not_a_whole_unspent_list_is_could_not_look() {
         .await
         .unwrap();
     assert_eq!(result.status, "error", "a 404 is not an empty set");
+}
+
+// =============================================================================
+// Item 7 (T3, T4): a header by hash under break-glass
+// =============================================================================
+//
+// The header service holds every header; with it unreachable nothing else
+// we run does, so under `break_glass_explorer_headers` the explorers are
+// asked, each the other's fallback.
+
+/// A header (its 80 bytes as hex, its fields and its hash) at `height`.
+fn a_header(height: u32, nonce: u32) -> (String, BlockHeader) {
+    let mut header = BlockHeader {
+        version: 536870912,
+        previous_hash: "11".repeat(32),
+        merkle_root: "22".repeat(32),
+        time: 1700000000,
+        bits: 402917821,
+        nonce,
+        hash: String::new(),
+        height,
+    };
+    let bytes = header.to_binary();
+    let mut hash = sha256(&sha256(&bytes));
+    hash.reverse();
+    header.hash = hex::encode(hash);
+    (hex::encode(bytes), header)
+}
+
+fn woc_header_json(header: &BlockHeader) -> String {
+    serde_json::json!({
+        "hash": header.hash,
+        "height": header.height,
+        "version": header.version,
+        "merkleroot": header.merkle_root,
+        "time": header.time,
+        "nonce": header.nonce,
+        "bits": format!("{:08x}", header.bits),
+        "previousblockhash": header.previous_hash,
+    })
+    .to_string()
+}
+
+fn bitails_block_json(header: &BlockHeader, bytes_hex: &str) -> String {
+    serde_json::json!({
+        "hash": header.hash,
+        "height": header.height,
+        "header": bytes_hex,
+    })
+    .to_string()
+}
+
+/// `Services` under break-glass with an unreachable header service.
+fn break_glass_services(woc_url: &str, bitails_url: &str) -> Services {
+    services_with_explorers(
+        ServicesOptions::mainnet()
+            .with_chaintracks_url("http://127.0.0.1:9")
+            .with_break_glass_explorer_headers(true),
+        woc_url,
+        bitails_url,
+    )
+}
+
+/// T3, T4: a WhatsOnChain fault falls through to Bitails (it returned
+/// through `?` and Bitails was never asked).
+#[tokio::test]
+async fn a_whatsonchain_fault_falls_through_to_bitails_for_a_header() {
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let (bytes, header) = a_header(900_000, 1);
+    let _w = woc
+        .mock("GET", format!("/block/{}/header", header.hash).as_str())
+        .with_status(500)
+        .create_async()
+        .await;
+    let _b = bitails
+        .mock("GET", format!("/block/{}", header.hash).as_str())
+        .with_status(200)
+        .with_body(bitails_block_json(&header, &bytes))
+        .create_async()
+        .await;
+
+    let services = break_glass_services(&woc.url(), &bitails.url());
+    let got = services
+        .hash_to_header(&header.hash)
+        .await
+        .expect("Bitails answers when WhatsOnChain faults");
+    assert_eq!(got.hash, header.hash);
+    assert_eq!(got.height, 900_000);
+    assert_eq!(got.merkle_root, header.merkle_root);
+}
+
+/// T3, T4: the start rotates. With both explorers holding the header, two
+/// reads reach one explorer each.
+#[tokio::test]
+async fn the_header_read_rotates_its_starting_explorer() {
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let (bytes, header) = a_header(900_000, 2);
+    let w = woc
+        .mock("GET", format!("/block/{}/header", header.hash).as_str())
+        .with_status(200)
+        .with_body(woc_header_json(&header))
+        .expect(1)
+        .create_async()
+        .await;
+    let b = bitails
+        .mock("GET", format!("/block/{}", header.hash).as_str())
+        .with_status(200)
+        .with_body(bitails_block_json(&header, &bytes))
+        .expect(1)
+        .create_async()
+        .await;
+
+    let services = break_glass_services(&woc.url(), &bitails.url());
+    for _ in 0..2 {
+        let got = services.hash_to_header(&header.hash).await.unwrap();
+        assert_eq!(got.height, 900_000);
+    }
+    w.assert_async().await;
+    b.assert_async().await;
+}
+
+/// T3, T4: "no such header" needs both explorers; one saying so while the
+/// other could not look is an error, and a header that does not hash to
+/// the hash asked for is no answer.
+#[tokio::test]
+async fn a_missing_header_needs_both_explorers_and_the_answer_is_bound_to_the_hash() {
+    let (_bytes, header) = a_header(900_000, 3);
+    let (other_bytes, other) = a_header(900_000, 4);
+    let woc_path = format!("/block/{}/header", header.hash);
+    let bitails_path = format!("/block/{}", header.hash);
+
+    // Both say there is no such header: NotFound.
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let _w = woc
+        .mock("GET", woc_path.as_str())
+        .with_status(404)
+        .create_async()
+        .await;
+    let _b = bitails
+        .mock("GET", bitails_path.as_str())
+        .with_status(404)
+        .create_async()
+        .await;
+    let services = break_glass_services(&woc.url(), &bitails.url());
+    for _ in 0..2 {
+        let err = services.hash_to_header(&header.hash).await.unwrap_err();
+        assert!(matches!(err, Error::NotFound { .. }), "{err}");
+    }
+
+    // One says so, the other could not look: not NotFound, on either start.
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let _w = woc
+        .mock("GET", woc_path.as_str())
+        .with_status(404)
+        .create_async()
+        .await;
+    let _b = bitails
+        .mock("GET", bitails_path.as_str())
+        .with_status(500)
+        .create_async()
+        .await;
+    let services = break_glass_services(&woc.url(), &bitails.url());
+    for _ in 0..2 {
+        let err = services.hash_to_header(&header.hash).await.unwrap_err();
+        assert!(!matches!(err, Error::NotFound { .. }), "{err}");
+    }
+
+    // Each explorer answers with another block's header: no answer.
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let _w = woc
+        .mock("GET", woc_path.as_str())
+        .with_status(200)
+        .with_body(woc_header_json(&other))
+        .create_async()
+        .await;
+    let _b = bitails
+        .mock("GET", bitails_path.as_str())
+        .with_status(200)
+        .with_body(bitails_block_json(&other, &other_bytes))
+        .create_async()
+        .await;
+    let services = break_glass_services(&woc.url(), &bitails.url());
+    let answer = services.hash_to_header(&header.hash).await;
+    assert!(
+        answer.is_err(),
+        "another block's header was taken: {answer:?}"
+    );
 }

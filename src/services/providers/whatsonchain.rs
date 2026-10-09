@@ -759,6 +759,12 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Get block header by hash.
+    ///
+    /// Break-glass (Rule 28, T3): a header by hash, the block a TSC proof
+    /// names. The header service holds every header; this is asked only
+    /// under `break_glass_explorer_headers`, when the header service gave
+    /// none and nothing else we run holds it. `Services::hash_to_header`
+    /// binds the fields to the hash asked for before it takes them.
     pub async fn get_block_header_by_hash(&self, hash: &str) -> Result<Option<BlockHeader>> {
         let url = format!("{}/block/{}/header", self.base_url, hash);
 
