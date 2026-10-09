@@ -868,7 +868,7 @@ impl WalletServices for MockWalletServices {
         };
         self.record_call("is_utxo", args, unspent.is_some());
         match unspent {
-            Some(true) => UtxoVerdict::Unspent,
+            Some(true) => UtxoVerdict::UnspentHint,
             Some(false) if self.spends_are_proven => UtxoVerdict::Spent,
             Some(false) => UtxoVerdict::SpentHint,
             None => UtxoVerdict::Unknown,

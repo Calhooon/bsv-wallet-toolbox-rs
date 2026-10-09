@@ -149,7 +149,7 @@ pub struct PoisonReport {
     pub chain: Vec<PoisonedTx>,
     /// Transactions turned `failed`.
     pub failed: u32,
-    /// Outside inputs verified unspent and released.
+    /// Outside inputs in an explorer's unspent set (a hint) and released.
     pub restored: u32,
     /// Satoshis of the released inputs.
     pub restored_sats: i64,
@@ -716,7 +716,7 @@ impl StorageSqlx {
                 None => UtxoVerdict::Unknown,
             };
             match verdict {
-                UtxoVerdict::Unspent => {
+                UtxoVerdict::UnspentHint => {
                     sqlx::query(
                         "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? \
                          WHERE output_id = ? AND spent_by = ?",
@@ -733,7 +733,7 @@ impl StorageSqlx {
                         source = %source_txid,
                         vout,
                         satoshis,
-                        "poisoned chain: outside input verifiably unspent, restored to coin selection"
+                        "poisoned chain: outside input in an explorer's unspent set (a hint), restored to coin selection"
                     );
                 }
                 verdict @ (UtxoVerdict::Spent | UtxoVerdict::SpentHint | UtxoVerdict::Unknown) => {
@@ -747,7 +747,7 @@ impl StorageSqlx {
                         vout,
                         satoshis,
                         verdict = label,
-                        "poisoned chain: outside input not verifiably unspent, stays LOCKED and is re-checked later"
+                        "poisoned chain: outside input in no unspent set, stays LOCKED and is re-checked later"
                     );
                     self.schedule_locked_input_check(output_id, label).await;
                 }
