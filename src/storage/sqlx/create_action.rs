@@ -2816,6 +2816,9 @@ async fn build_input_beef(
     // This contains proofs for external inputs not in our storage
     if let Some(input_beef_bytes) = user_input_beef {
         if !input_beef_bytes.is_empty() {
+            // The caller's bytes: refused only as invalid bytes, at their
+            // offset, by kind; never for a size or a count.
+            super::beef_verification::refuse_invalid_beef_bytes(input_beef_bytes)?;
             match Beef::from_binary(input_beef_bytes) {
                 Ok(user_beef) => {
                     // P0-1d: a proven transaction the BEEF carries as a
@@ -4924,18 +4927,77 @@ mod tests {
         )
         .await;
 
-        // Should return error for invalid BEEF
-        assert!(result.is_err());
+        // The streaming reader names the byte: the version word 0x03020100
+        // is neither BEEF version, at offset 0.
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("inputBEEF"),
-            "Error should mention inputBEEF"
+            matches!(
+                err,
+                Error::InvalidBeef {
+                    offset: 0,
+                    kind: bsv_rs::transaction::Kind::BadVersion
+                }
+            ),
+            "{err}"
         );
     }
 
     // =============================================================================
     // Tests for BEEF Verification against ChainTracker (Gap #4)
     // =============================================================================
+
+    /// The caller's inputBEEF is a stranger's bytes: a transaction with no
+    /// input in it is refused as invalid bytes, at its offset, by kind.
+    #[tokio::test]
+    async fn test_build_input_beef_refuses_a_transaction_with_no_input_at_its_offset() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        // Version 1, no input, one OP_TRUE output, lock time 0.
+        let mut raw = 1u32.to_le_bytes().to_vec();
+        raw.push(0);
+        raw.push(1);
+        raw.extend_from_slice(&1_000u64.to_le_bytes());
+        raw.extend_from_slice(&[1, 0x51]);
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        let mut beef = Beef::new();
+        beef.merge_raw_tx(raw, None);
+        let bytes = beef.to_binary();
+
+        let extended_inputs = vec![ExtendedInput {
+            vin: 0,
+            txid: "44".repeat(32),
+            vout: 0,
+            satoshis: 1000,
+            locking_script: vec![],
+            unlocking_script_length: 107,
+            input_description: None,
+            output: None,
+        }];
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let err = build_input_beef(
+            &mut conn,
+            None,
+            &extended_inputs,
+            &[],
+            Some(&bytes),
+            &[],
+            false,
+            None,
+        )
+        .await
+        .expect_err("a transaction with no input is invalid bytes");
+        // The version (4), the two counts (1 + 1), the format byte (1).
+        assert_eq!(err.to_string(), "Invalid BEEF at byte 7: NoInputs");
+        assert!(matches!(
+            err,
+            Error::InvalidBeef {
+                offset: 7,
+                kind: bsv_rs::transaction::Kind::NoInputs
+            }
+        ));
+    }
 
     #[tokio::test]
     async fn test_build_input_beef_with_valid_chain_tracker() {
@@ -7812,7 +7874,10 @@ mod tests {
         assert_eq!(kept.len(), HOPS, "every unproven ancestor is carried");
         assert!(kept.contains(&chain[0].1), "down to the proven anchor");
         assert_eq!(beef.bumps.len(), 1);
-        assert!(beef.verify_valid(true).valid, "valid to the in-memory check");
+        assert!(
+            beef.verify_valid(true).valid,
+            "valid to the in-memory check"
+        );
 
         let mut tracker = MockChainTracker::new(HEIGHT + 1);
         tracker.add_root(HEIGHT, chain[0].1.clone());

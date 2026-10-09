@@ -55,7 +55,9 @@ mod sync;
 pub use crate::storage::broadcast::{
     classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome,
 };
-pub use beef_verification::{verify_beef_merkle_proofs, verify_txid_merkle_proof};
+pub use beef_verification::{
+    refuse_invalid_beef_bytes, verify_beef_merkle_proofs, verify_txid_merkle_proof,
+};
 pub use broadcast_seen::{
     SqlxBroadcastMemory, MIGRATION_002_BROADCAST_SEEN_NAME, MIGRATION_002_BROADCAST_SEEN_SQL,
 };

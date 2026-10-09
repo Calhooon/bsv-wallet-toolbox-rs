@@ -78,7 +78,11 @@ pub async fn internalize_action_internal(
     user_id: i64,
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
-    // Step 1: Parse and validate the AtomicBEEF
+    // Step 1: Read the AtomicBEEF through the streaming reader first: a
+    // refusal is for invalid bytes only, with the offset and the kind, and
+    // never for a size or a count. The bytes arrive whole (the argument is a
+    // byte vector), so the in-memory parse below holds them whole as well.
+    super::beef_verification::refuse_invalid_beef_bytes(&args.tx)?;
     let mut beef = Beef::from_binary(&args.tx)
         .map_err(|e| Error::ValidationError(format!("Failed to parse AtomicBEEF: {}", e)))?;
 
@@ -1819,6 +1823,155 @@ mod tests {
         assert!(!result.is_merge);
         assert_eq!(result.txid, txid);
         assert_eq!(result.satoshis, 0);
+    }
+
+    // =========================================================================
+    // The door's refusals name invalid bytes (bsv-rs 0.4.1's streaming reader)
+    //
+    // A refusal is for invalid bytes only, with the offset of the byte and the
+    // kind; a valid BEEF is never refused for its size or its counts.
+    // =========================================================================
+
+    /// One output, OP_TRUE, and the inputs given: the raw bytes and the txid.
+    fn raw_tx_spending(inputs: &[(&str, u32)], satoshis: u64) -> (Vec<u8>, String) {
+        let mut raw: Vec<u8> = Vec::new();
+        raw.extend_from_slice(&1u32.to_le_bytes());
+        raw.push(inputs.len() as u8);
+        for (txid, vout) in inputs {
+            let mut prev = hex::decode(txid).unwrap();
+            prev.reverse();
+            raw.extend_from_slice(&prev);
+            raw.extend_from_slice(&vout.to_le_bytes());
+            raw.push(0);
+            raw.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
+        }
+        raw.push(1);
+        raw.extend_from_slice(&satoshis.to_le_bytes());
+        raw.push(1);
+        raw.push(0x51);
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        let mut h = bsv_rs::primitives::hash::sha256d(&raw);
+        h.reverse();
+        (raw, hex::encode(h))
+    }
+
+    fn insert_output_zero() -> Vec<InternalizeOutput> {
+        vec![InternalizeOutput {
+            output_index: 0,
+            protocol: BASKET_INSERTION_PROTOCOL.to_string(),
+            payment_remittance: None,
+            insertion_remittance: Some(BasketInsertion {
+                basket: "door-witness".to_string(),
+                custom_instructions: None,
+                tags: None,
+            }),
+        }]
+    }
+
+    #[tokio::test]
+    async fn a_transaction_with_no_input_is_refused_at_its_offset() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+
+        let (raw, txid) = raw_tx_spending(&[], 1_000);
+        let mut beef = Beef::new();
+        beef.merge_raw_tx(raw, None);
+        let bytes = beef.to_binary_atomic(&txid).unwrap();
+
+        let err = internalize_action_internal(
+            &storage,
+            user_id,
+            InternalizeActionArgs {
+                tx: bytes,
+                outputs: insert_output_zero(),
+                description: "a transaction with no input".to_string(),
+                labels: None,
+                seek_permission: None,
+            },
+        )
+        .await
+        .expect_err("a transaction with no input is invalid bytes");
+        // The Atomic prefix (36), the version (4), the two counts (1 + 1),
+        // the format byte (1): the raw transaction's leading byte is 43.
+        assert_eq!(err.to_string(), "Invalid BEEF at byte 43: NoInputs");
+        assert!(matches!(
+            err,
+            Error::InvalidBeef {
+                offset: 43,
+                kind: bsv_rs::transaction::Kind::NoInputs
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_cut_beef_is_refused_at_the_field_that_ran_out() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+
+        let (mut bytes, _txid, _sats) = create_test_atomic_beef();
+        let full = bytes.len();
+        bytes.pop();
+
+        let err = internalize_action_internal(
+            &storage,
+            user_id,
+            InternalizeActionArgs {
+                tx: bytes,
+                outputs: insert_output_zero(),
+                description: "a cut BEEF".to_string(),
+                labels: None,
+                seek_permission: None,
+            },
+        )
+        .await
+        .expect_err("a cut BEEF is invalid bytes");
+        // The last field is the lock time, four bytes from the end.
+        assert_eq!(
+            err.to_string(),
+            format!("Invalid BEEF at byte {}: Truncated", full - 4)
+        );
+        assert!(matches!(
+            err,
+            Error::InvalidBeef { offset, kind: bsv_rs::transaction::Kind::Truncated }
+                if offset == (full - 4) as u64
+        ));
+    }
+
+    /// No former bound: an Atomic BEEF of 1,001 transactions (an anchor its
+    /// BUMP proves and 1,000 unproven links) is read and internalized. Over
+    /// the reference's depth of 12 and the middleware's former 128.
+    #[tokio::test]
+    async fn a_deep_valid_beef_is_internalized() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+
+        let (anchor, anchor_txid) = raw_tx_spending(&[(&"00".repeat(32), 0xffff_ffff)], 50_000);
+        let mut beef = Beef::new();
+        let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&anchor_txid, 900_000));
+        beef.merge_raw_tx(anchor, Some(bump));
+        let mut parent = anchor_txid;
+        for i in 0..1_000u64 {
+            let (raw, txid) = raw_tx_spending(&[(&parent, 0)], 49_000 - i);
+            beef.merge_raw_tx(raw, None);
+            parent = txid;
+        }
+        let bytes = beef.to_binary_atomic(&parent).unwrap();
+
+        let result = internalize_action_internal(
+            &storage,
+            user_id,
+            InternalizeActionArgs {
+                tx: bytes,
+                outputs: insert_output_zero(),
+                description: "a deep valid BEEF".to_string(),
+                labels: None,
+                seek_permission: None,
+            },
+        )
+        .await
+        .expect("a valid BEEF is never refused for its counts");
+        assert!(result.base.accepted);
+        assert_eq!(result.txid, parent);
     }
 
     #[tokio::test]
