@@ -47,7 +47,7 @@ struct WocBlockByHeight {
 
 /// Bitails block response (block-by-height endpoint): the raw 80-byte
 /// header hex in `header`. The shape is the header service's own Bitails
-/// courier's (rust-chaintracks@62cf619 `src/couriers.rs:165-200`).
+/// courier's (rust-chaintracks@62cf619 `src/couriers.rs:143-205`).
 #[derive(Debug, Deserialize)]
 struct BitailsBlockByHeight {
     hash: String,

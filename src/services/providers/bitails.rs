@@ -491,7 +491,7 @@ impl Bitails {
     ///
     /// The route is `block/{hash}`: the raw 80-byte header hex with the
     /// height beside it (the shape of the header service's own Bitails
-    /// courier, rust-chaintracks@62cf619 `src/couriers.rs:165-205`). The
+    /// courier, rust-chaintracks@62cf619 `src/couriers.rs:143-205`). The
     /// bytes must hash to the hash asked for, so the answer is bound to the
     /// question; the height is Bitails' word.
     pub async fn get_block_header_by_hash(&self, hash: &str) -> Result<Option<BlockHeader>> {
