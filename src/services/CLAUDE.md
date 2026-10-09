@@ -70,7 +70,7 @@ pub struct Services {
 - `post_beef(beef, txids)` - Broadcast BEEF-format transaction
 - `get_utxo_status(output, format, outpoint, use_next)` - Check if output is unspent
 - `get_status_for_txids(txids, use_next)` - Check confirmation status of transactions
-- `get_script_hash_history(hash, use_next)` - Get transaction history for script
+- `get_script_hash_history(hash, use_next)` - Get transaction history for script (feature `break-glass-script-history`, off by default: a chain scan)
 - `get_bsv_exchange_rate()` - Get cached USD/BSV rate (via WhatsOnChain)
 - `get_fiat_exchange_rate(currency, base)` - Get fiat exchange rate (auto-refreshes from API)
 - `get_height()` - Get current blockchain height (BHS -> WoC -> Bitails failover)
@@ -103,6 +103,7 @@ pub trait WalletServices: Send + Sync {
     async fn get_utxo_status(&self, output: &str, format: Option<GetUtxoStatusOutputFormat>,
                              outpoint: Option<&str>, use_next: bool) -> Result<GetUtxoStatusResult>;
     async fn get_status_for_txids(&self, txids: &[String], use_next: bool) -> Result<GetStatusForTxidsResult>;
+    #[cfg(feature = "break-glass-script-history")]
     async fn get_script_hash_history(&self, hash: &str, use_next: bool) -> Result<GetScriptHashHistoryResult>;
     async fn get_bsv_exchange_rate(&self) -> Result<f64>;
     async fn get_fiat_exchange_rate(&self, currency: FiatCurrency, base: Option<FiatCurrency>) -> Result<f64>;
@@ -355,8 +356,8 @@ The `Services` constructor sets up provider priority for each operation:
 | `post_beef` | ArcadeV2 (opt-in, first) -> TAAL ARC -> GorillaPool ARC -> Bitails -> WhatsOnChain; with a `BroadcastMemory` attached, the last accepting provider is tried first (never ahead of Arcade unless it is Arcade) |
 | `get_utxo_status` | WhatsOnChain |
 | `get_status_for_txids` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails; each provider after the first is asked about every txid no earlier provider placed as `mined` (`unknown` is a gap, not a verdict, and a broadcaster's `known` is its word, not the chain's: a chain index's `mined`/`known`/`unknown` replaces it; Arcade's `known` stands only when no chain index answered) |
-| `get_script_hash_history` | WhatsOnChain -> Bitails |
-| `get_height` | BHS (if configured) -> WhatsOnChain -> Bitails (not via ServiceCollection) |
+| `get_script_hash_history` | WhatsOnChain -> Bitails (feature `break-glass-script-history`, off by default: a chain scan) |
+| `get_height` | Chaintracks tip header -> BHS -> error; no explorer (not via ServiceCollection) |
 
 Note: `get_height` asks the header service only (Rule 28): the Chaintracks tip header's height, then BHS, then an error. No explorer is asked.
 

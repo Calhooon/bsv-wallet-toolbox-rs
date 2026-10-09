@@ -18,10 +18,13 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 use crate::chaintracks::Chain;
+#[cfg(feature = "break-glass-script-history")]
 use crate::services::traits::{
-    validate_script_hash, validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult,
-    GetScriptHashHistoryResult, GetStatusForTxidsResult, PostBeefResult, PostTxResultForTxid,
-    ScriptHistoryItem, TxStatusDetail,
+    validate_script_hash, GetScriptHashHistoryResult, ScriptHistoryItem,
+};
+use crate::services::traits::{
+    validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult,
+    PostBeefResult, PostTxResultForTxid, TxStatusDetail,
 };
 use crate::{Error, Result};
 
@@ -551,6 +554,11 @@ impl Bitails {
     // =========================================================================
 
     /// Get transaction history for a script hash.
+    ///
+    /// Break-glass (Rule 28, T14): a chain scan, every transaction that
+    /// touched a script. No header, proof or index of ours answers it and
+    /// no wallet path needs it; built only under `break-glass-script-history`.
+    #[cfg(feature = "break-glass-script-history")]
     pub async fn get_script_hash_history(&self, hash: &str) -> Result<GetScriptHashHistoryResult> {
         validate_script_hash(hash)?;
 
@@ -760,6 +768,7 @@ struct BitailsBlockInfo {
     time: Option<u64>,
 }
 
+#[cfg(feature = "break-glass-script-history")]
 #[derive(Debug, Deserialize)]
 struct BitailsHistoryItem {
     txid: String,

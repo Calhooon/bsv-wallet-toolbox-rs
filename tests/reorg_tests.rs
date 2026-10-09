@@ -15,10 +15,12 @@ mod reorg {
     use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
     use bsv_wallet_toolbox_rs::monitor::tasks::{DeactivatedHeader, MonitorTask, ReorgTask};
     use bsv_wallet_toolbox_rs::services::traits::GetBeefResult;
+    #[cfg(feature = "break-glass-script-history")]
+    use bsv_wallet_toolbox_rs::services::GetScriptHashHistoryResult;
     use bsv_wallet_toolbox_rs::services::{
-        BlockHeader, FiatCurrency, GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult,
-        GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput,
-        PostBeefResult, WalletServices,
+        BlockHeader, FiatCurrency, GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult,
+        GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult,
+        WalletServices,
     };
     use bsv_wallet_toolbox_rs::storage::entities::ProvenTxReqStatus;
     use bsv_wallet_toolbox_rs::storage::FindProvenTxReqsArgs;
@@ -241,6 +243,7 @@ mod reorg {
             })
         }
 
+        #[cfg(feature = "break-glass-script-history")]
         async fn get_script_hash_history(
             &self,
             _hash: &str,

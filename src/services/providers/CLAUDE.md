@@ -48,7 +48,7 @@ WhatsOnChain::new(Chain::Test, WhatsOnChainConfig::with_api_key("key"))?;
 | `post_beef(beef, txids)` | Parse BEEF, extract raw txs, broadcast sequentially with 1s delay |
 | `get_utxo_status(output, format, outpoint)` | Check UTXO status for script hash |
 | `get_status_for_txids(txids)` | Batch query transaction statuses (POST) |
-| `get_script_hash_history(hash)` | Get confirmed + unconfirmed tx history |
+| `get_script_hash_history(hash)` | Get confirmed + unconfirmed tx history (feature `break-glass-script-history`, off by default: a chain scan) |
 | `get_script_hash_confirmed_history(hash)` | Get confirmed tx history only |
 | `get_script_hash_unconfirmed_history(hash)` | Get mempool tx history only |
 | `get_block_header_by_hash(hash)` | Get parsed block header |
@@ -148,7 +148,7 @@ Bitails::new(Chain::Test, BitailsConfig::with_api_key("key"))?;
 | `get_block_header_by_hash(hash)` | Get and parse 80-byte raw header |
 | `get_header_by_height(height)` | Get block header by height (JSON) |
 | `get_latest_block()` | Get latest block hash and height |
-| `get_script_hash_history(hash)` | Get transaction history for script hash |
+| `get_script_hash_history(hash)` | Get transaction history for script hash (feature `break-glass-script-history`, off by default: a chain scan) |
 | `get_status_for_txids(txids)` | Get tx statuses with depth (queries each via `get_tx_info`) |
 | `is_valid_root_for_height(root, height)` | Validate merkle root for a block height |
 

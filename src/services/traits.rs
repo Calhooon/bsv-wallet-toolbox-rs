@@ -101,7 +101,8 @@ pub struct ServicesCallHistory {
     pub get_utxo_status: Option<ServiceCallHistory>,
     /// Call history for getStatusForTxids service.
     pub get_status_for_txids: Option<ServiceCallHistory>,
-    /// Call history for getScriptHashHistory service.
+    /// Call history for getScriptHashHistory service. `None` unless the
+    /// crate is built with the feature `break-glass-script-history`.
     pub get_script_hash_history: Option<ServiceCallHistory>,
 }
 
@@ -205,14 +206,30 @@ pub trait WalletServices: Send + Sync {
 
     /// Get transaction history for a script hash.
     ///
+    /// Break-glass: this is a chain scan ("every transaction that touched
+    /// this script"), asked of a third-party explorer. A wallet learns of
+    /// an output by being handed a BEEF, so nothing in this crate calls it.
+    /// It exists only under the cargo feature `break-glass-script-history`
+    /// (off by default); the default body answers "error" so an
+    /// implementation that has no scan need not write one.
+    ///
     /// # Arguments
     /// * `hash` - Script hash to get history for
     /// * `use_next` - If true, skip to next service before starting service requests cycle
+    #[cfg(feature = "break-glass-script-history")]
     async fn get_script_hash_history(
         &self,
         hash: &str,
         use_next: bool,
-    ) -> Result<GetScriptHashHistoryResult>;
+    ) -> Result<GetScriptHashHistoryResult> {
+        let _ = (hash, use_next);
+        Ok(GetScriptHashHistoryResult {
+            name: "WalletServices".to_string(),
+            status: "error".to_string(),
+            error: Some("no script hash history provider".to_string()),
+            history: Vec::new(),
+        })
+    }
 
     /// Get BSV/USD exchange rate.
     async fn get_bsv_exchange_rate(&self) -> Result<f64>;

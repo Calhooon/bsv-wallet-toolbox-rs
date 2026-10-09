@@ -6,12 +6,16 @@
 use super::*;
 use crate::services::traits::WalletServices;
 
-/// `Services` with both explorers pointed at local fixtures.
+/// `Services` with both explorers pointed at local fixtures, in every
+/// collection and in the break-glass tracker.
 fn services_with_explorers(options: ServicesOptions, woc_url: &str, bitails_url: &str) -> Services {
-    let mut services = Services::with_options(Chain::Main, options).unwrap();
-    services.whatsonchain = StdArc::new(WhatsOnChain::with_base_url(Chain::Main, woc_url));
-    services.bitails = StdArc::new(Bitails::with_base_url(Chain::Main, bitails_url));
-    services
+    Services::with_explorers(
+        Chain::Main,
+        options,
+        StdArc::new(WhatsOnChain::with_base_url(Chain::Main, woc_url)),
+        StdArc::new(Bitails::with_base_url(Chain::Main, bitails_url)),
+    )
+    .unwrap()
 }
 
 /// A header service's frame around a header at `height`.
@@ -104,4 +108,67 @@ async fn get_height_without_a_header_service_is_an_error_not_an_explorers_word()
     );
     w.assert_async().await;
     b.assert_async().await;
+}
+
+// =============================================================================
+// Item 2 (T13, T14): the script hash history is a chain scan
+// =============================================================================
+
+/// T13, T14: a default build wires no script hash history provider. A wallet
+/// learns of an output by being handed a BEEF; every transaction that ever
+/// touched a script is a chain scan, and it exists only under the cargo
+/// feature `break-glass-script-history`.
+#[cfg(not(feature = "break-glass-script-history"))]
+#[test]
+fn a_default_build_wires_no_script_hash_history_scan() {
+    let services = Services::mainnet().unwrap();
+    let history = services.get_services_call_history(false).unwrap();
+    assert!(
+        history.get_script_hash_history.is_none(),
+        "no scan provider is wired without the break-glass feature"
+    );
+}
+
+/// The break-glass scan still answers when it is built in, from the first
+/// explorer that can.
+#[cfg(feature = "break-glass-script-history")]
+#[tokio::test]
+async fn the_break_glass_scan_answers_when_built_in() {
+    let mut woc = mockito::Server::new_async().await;
+    let bitails = mockito::Server::new_async().await;
+    let hash_le = format!("{}{}", "00".repeat(31), "01");
+    let hash_be = format!("01{}", "00".repeat(31));
+    let _confirmed = woc
+        .mock(
+            "GET",
+            format!("/script/{}/confirmed/history", hash_be).as_str(),
+        )
+        .with_status(200)
+        .with_body(format!(
+            r#"{{"result":[{{"tx_hash":"{}","height":900000}}]}}"#,
+            "ab".repeat(32)
+        ))
+        .create_async()
+        .await;
+    let _unconfirmed = woc
+        .mock(
+            "GET",
+            format!("/script/{}/unconfirmed/history", hash_be).as_str(),
+        )
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+    let result = services
+        .get_script_hash_history(&hash_le, false)
+        .await
+        .unwrap();
+    assert_eq!(result.status, "success");
+    assert_eq!(result.history.len(), 1);
+    assert!(services
+        .get_services_call_history(false)
+        .unwrap()
+        .get_script_hash_history
+        .is_some());
 }
