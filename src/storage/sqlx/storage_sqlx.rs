@@ -2973,7 +2973,7 @@ impl StorageSqlx {
     }
 }
 
-/// Outcome of [`StorageSqlx::retire_undeliverable_tx`].
+/// Outcome of `StorageSqlx::retire_undeliverable_tx`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetireOutcome {
     /// The status service says the tx is known/mined after all — promoted to
@@ -3141,7 +3141,7 @@ impl StorageSqlx {
     /// wallet's asynchronous presence verification coming back definitively
     /// absent; a broadcaster's out-of-band fatal verdict).
     ///
-    /// Same path, same guarantees as [`Self::retire_undeliverable_tx`]: the tx
+    /// Same path, same guarantees as `Self::retire_undeliverable_tx`: the tx
     /// is alive-checked first (known/mined ⇒ promoted, nothing released), then
     /// each input is released ONLY on its own `services.is_utxo` verification,
     /// the tx's own outputs go unspendable and the tx is `failed` with its req
