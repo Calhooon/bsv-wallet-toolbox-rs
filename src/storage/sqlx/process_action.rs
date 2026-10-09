@@ -951,12 +951,12 @@ async fn utxo_verified_input_ids(storage: &StorageSqlx, txid: &str) -> Vec<i64> 
         let script = locking_script.as_deref().unwrap_or(&[]);
 
         match services.is_utxo(&source_txid, vout as u32, script).await {
-            UtxoVerdict::Unspent => {
+            UtxoVerdict::UnspentHint => {
                 tracing::debug!(
                     txid = %txid,
                     source = %source_txid,
                     vout = vout,
-                    "UTXO verified — safe to restore"
+                    "Input in an explorer's unspent set (a hint): restoring"
                 );
                 verified.push(output_id);
             }

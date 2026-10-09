@@ -2981,8 +2981,8 @@ pub enum RetireOutcome {
     /// `unmined`/`unproven`, nothing released.
     Alive,
     /// Retired: req → the given terminal status, tx → `failed`, its own
-    /// outputs unspendable; `restored` inputs were VERIFIED unspent on chain
-    /// and released, `kept` were not verifiable and stay locked.
+    /// outputs unspendable; `restored` inputs were in an explorer's unspent
+    /// set (a hint) and released, `kept` were not and stay locked.
     Retired { restored: u32, kept: u32 },
 }
 
@@ -3006,7 +3006,7 @@ impl StorageSqlx {
     /// 1. the tx is NOT alive per the status service
     ///    (`reconcile_tx_status_via_services`: known/mined ⇒
     ///    [`RetireOutcome::Alive`], promoted, nothing touched), AND
-    /// 2. that input is VERIFIED unspent by `services.is_utxo` — an error or
+    /// 2. that input is hinted unspent by `services.is_utxo` — an error or
     ///    `false` keeps it locked (`spent_by` intact, `spendable = 0`). An
     ///    unknown must never release money; a locked coin is recoverable by
     ///    an operator, a double-spent one is not.
@@ -3093,7 +3093,7 @@ impl StorageSqlx {
                     source_txid, vout
                 );
             }
-            let unspent = verdict.is_unspent();
+            let unspent = verdict.is_unspent_hint();
             if unspent {
                 sqlx::query(
                     "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
@@ -3108,7 +3108,7 @@ impl StorageSqlx {
                 self.schedule_locked_input_check(output_id, locked_verdict_label(verdict))
                     .await;
                 tracing::info!(
-                    "send_waiting: input {}:{} not verifiably unspent — NOT restoring",
+                    "send_waiting: input {}:{} in no unspent set: NOT restoring",
                     source_txid,
                     vout
                 );
@@ -4757,7 +4757,7 @@ impl MonitorStorage for StorageSqlx {
                         let script = locking_script.as_deref().unwrap_or(&[]);
 
                         match svc.is_utxo(&source_txid, vout as u32, script).await {
-                            UtxoVerdict::Unspent => {
+                            UtxoVerdict::UnspentHint => {
                                 sqlx::query(
                                     "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
                                 )
@@ -6237,7 +6237,7 @@ impl StorageSqlx {
             let locking_script: Option<Vec<u8>> = row.get("locking_script");
             let script = locking_script.as_deref().unwrap_or(&[]);
             match services.is_utxo(txid, vout as u32, script).await {
-                UtxoVerdict::Unspent => {
+                UtxoVerdict::UnspentHint => {
                     sqlx::query(
                         "UPDATE outputs SET spendable = 1, updated_at = ? WHERE output_id = ?",
                     )

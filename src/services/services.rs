@@ -2183,7 +2183,7 @@ impl WalletServices for Services {
     }
 
     /// The stranger's spend (Rule 28, the irreducible case). An outpoint in
-    /// an explorer's unspent set is `Unspent`. Otherwise the spend is asked
+    /// an explorer's unspent set is `UnspentHint`. Otherwise the spend is asked
     /// for as a proof: `Spent` only when the spending transaction's own
     /// bytes name the outpoint and its merkle path meets the header
     /// service's header. Two explorers agreeing "not unspent", or a bound
@@ -2207,7 +2207,7 @@ impl WalletServices for Services {
                 UtxoVerdict::Unknown
             }
         };
-        if unspent_set == UtxoVerdict::Unspent {
+        if unspent_set == UtxoVerdict::UnspentHint {
             return unspent_set;
         }
         match self.spend_evidence(txid, vout).await {

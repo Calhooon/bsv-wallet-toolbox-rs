@@ -254,8 +254,9 @@ pub trait WalletServices: Send + Sync {
     /// Hash an output script to the format expected by getUtxoStatus.
     fn hash_output_script(&self, script: &[u8]) -> String;
 
-    /// Whether an output is unspent on chain, as a [`UtxoVerdict`]: in an
-    /// unspent set, spent by proof, hinted spent, or could not look.
+    /// What is known of an output's spend, as a [`UtxoVerdict`]: hinted
+    /// unspent (in a provider's unspent set), spent by proof, hinted spent,
+    /// or could not look.
     ///
     /// `Spent` is written only by the spending transaction's bytes naming
     /// the outpoint and its merkle path checked against the header
@@ -962,18 +963,24 @@ pub struct GetUtxoStatusResult {
 /// Headers and proofs prove inclusion, never that an output is unspent, and
 /// our own storage knows only the spends our own devices made, so a
 /// stranger's spend of our output is the irreducible case of Rule 28. It
-/// has one chain fact and two tiers of hint:
+/// has one chain fact, and everything else is a hint:
 ///
 /// - `Spent` is a fact, written only by proof: the spending transaction's
 ///   own bytes name the outpoint, and its merkle path meets the header
 ///   service's header. A provider that names the spender is its courier.
+/// - `UnspentHint` is one provider listing the outpoint in an unspent set.
 /// - `SpentHint` is unproven: two explorers agreeing the outpoint is not in
 ///   the unspent set, or a named spender whose proof is not held yet.
 /// - one explorer's negative, a fault or an outage is `Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UtxoVerdict {
-    /// In the unspent set: safe to release.
-    Unspent,
+    /// A provider lists the outpoint in an unspent set. A hint, from any
+    /// provider and from any number of them: no header or proof says an
+    /// output is unspent, so this is never a chain fact. For our own
+    /// devices' spends our own storage is the verdict; this answers only
+    /// "no stranger's spend is known". A locked input may be released on
+    /// it, because a wrong hint costs one refused broadcast and no coin.
+    UnspentHint,
     /// Spent on chain, proven: the spender's bytes name the outpoint and
     /// its merkle path meets the header service's header.
     Spent,
@@ -996,16 +1003,17 @@ impl UtxoVerdict {
             return UtxoVerdict::Unknown;
         }
         match result.is_utxo {
-            Some(true) => UtxoVerdict::Unspent,
+            Some(true) => UtxoVerdict::UnspentHint,
             Some(false) => UtxoVerdict::SpentHint,
             None => UtxoVerdict::Unknown,
         }
     }
 
-    /// Whether the output is in an unspent set. `Spent`, `SpentHint` and
-    /// `Unknown` are all `false`: an unknown never releases.
-    pub fn is_unspent(&self) -> bool {
-        matches!(self, UtxoVerdict::Unspent)
+    /// Whether a provider lists the output in an unspent set (a hint).
+    /// `Spent`, `SpentHint` and `Unknown` are all `false`: an unknown never
+    /// releases.
+    pub fn is_unspent_hint(&self) -> bool {
+        matches!(self, UtxoVerdict::UnspentHint)
     }
 }
 

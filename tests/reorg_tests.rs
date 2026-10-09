@@ -280,7 +280,7 @@ mod reorg {
             _vout: u32,
             _locking_script: &[u8],
         ) -> bsv_wallet_toolbox_rs::services::UtxoVerdict {
-            bsv_wallet_toolbox_rs::services::UtxoVerdict::Unspent
+            bsv_wallet_toolbox_rs::services::UtxoVerdict::UnspentHint
         }
 
         async fn n_lock_time_is_final(

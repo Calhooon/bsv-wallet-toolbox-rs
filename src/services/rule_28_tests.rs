@@ -369,8 +369,8 @@ async fn an_outage_is_could_not_look_never_spent() {
 #[tokio::test]
 async fn is_utxo_gives_the_three_answers() {
     for (woc_says, bitails_says, expected) in [
-        (Says::Unspent, Says::Fault, UtxoVerdict::Unspent),
-        (Says::NotListed, Says::Unspent, UtxoVerdict::Unspent),
+        (Says::Unspent, Says::Fault, UtxoVerdict::UnspentHint),
+        (Says::NotListed, Says::Unspent, UtxoVerdict::UnspentHint),
         (Says::NotListed, Says::NotListed, UtxoVerdict::SpentHint),
         (Says::NotListed, Says::Fault, UtxoVerdict::Unknown),
         (Says::Fault, Says::NotListed, UtxoVerdict::Unknown),
@@ -1040,7 +1040,7 @@ async fn an_outpoint_in_an_unspent_set_asks_for_no_spender() {
     );
     assert_eq!(
         services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await,
-        UtxoVerdict::Unspent
+        UtxoVerdict::UnspentHint
     );
     spent_route.assert_async().await;
 }

@@ -55,7 +55,7 @@ pub(crate) fn locked_verdict_label(verdict: UtxoVerdict) -> &'static str {
     match verdict {
         UtxoVerdict::Spent => LOCKED_VERDICT_SPENT_PROVEN,
         UtxoVerdict::SpentHint => LOCKED_VERDICT_SPENT_HINT,
-        UtxoVerdict::Unspent | UtxoVerdict::Unknown => LOCKED_VERDICT_UNKNOWN,
+        UtxoVerdict::UnspentHint | UtxoVerdict::Unknown => LOCKED_VERDICT_UNKNOWN,
     }
 }
 
@@ -74,7 +74,7 @@ pub fn locked_input_backoff_minutes(attempts: u32) -> i64 {
 /// What one re-check decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockedInputVerdict {
-    /// Verifiably unspent: restored to coin selection (or, on a dry run,
+    /// In an explorer's unspent set (a hint): restored to coin selection (or, on a dry run,
     /// would be).
     Restored,
     /// Spent on chain, proven (the spender's bytes name the outpoint and
@@ -349,7 +349,7 @@ impl StorageSqlx {
             let script = row.locking_script.as_deref().unwrap_or(&[]);
             let verdict = utxo_verdict(services, &source_txid, check.vout, script).await;
             match verdict {
-                UtxoVerdict::Unspent => {
+                UtxoVerdict::UnspentHint => {
                     check.verdict = LockedInputVerdict::Restored;
                     report.restored += 1;
                     report.restored_sats += row.satoshis.max(0);
@@ -371,7 +371,7 @@ impl StorageSqlx {
                         locked_by = %locked_by,
                         attempts = check.attempts,
                         executed = execute,
-                        "locked input: verifiably UNSPENT on chain, restored to coin selection"
+                        "locked input: in an explorer's unspent set (a hint), restored to coin selection"
                     );
                 }
                 UtxoVerdict::Spent => {
