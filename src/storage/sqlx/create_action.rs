@@ -1939,10 +1939,6 @@ pub(super) async fn allocate_change_input(
 // BEEF Construction
 // =============================================================================
 
-/// Maximum recursion depth for ancestor fetching to prevent infinite loops.
-/// Matches the TypeScript reference implementation (maxRecursionDepth = 12).
-pub(super) const MAX_BEEF_RECURSION_DEPTH: usize = 12;
-
 /// Data for a transaction to include in BEEF.
 pub(super) struct BeefTxData {
     pub(super) raw_tx: Vec<u8>,
@@ -2403,7 +2399,13 @@ async fn fetch_and_store_merkle_path(
 /// - Individual tx+proof lookups (`get_tx_with_proof`)
 /// - Network fallback (`try_network_fallback`) when local lookup fails
 ///
-/// For unproven transactions, recurses into their inputs up to `MAX_BEEF_RECURSION_DEPTH`.
+/// For unproven transactions, recurses into their inputs until each line of
+/// ancestry reaches a proven transaction, at any depth: a valid BEEF is never
+/// refused, or cut short, for its counts. The reference stops at 12 and
+/// throws (ts-stack@edf6e03 StorageProvider.ts:199,
+/// getBeefForTransaction.ts:156-157); this walk does not. It ends because each
+/// txid is walked once (`processed_txids`) and an ancestor is older than its
+/// descendant, so the walk is linear in the transactions it carries.
 /// Direct inputs (depth 0) that cannot be found cause an error; deeper ancestors just warn.
 ///
 /// This is the shared core used by both `build_input_beef` (create_action) and
@@ -2456,16 +2458,6 @@ pub(super) async fn beef_bfs_walk(
 
     while let Some((txid, depth)) = pending_txids.first().cloned() {
         pending_txids.remove(0);
-
-        if depth >= MAX_BEEF_RECURSION_DEPTH {
-            // Exceeded max chain depth — skip this ancestor.
-            // Matches TS which throws; we log and continue to produce a partial BEEF.
-            eprintln!(
-                "Warning: BEEF recursion depth {} exceeded limit {} for txid {}",
-                depth, MAX_BEEF_RECURSION_DEPTH, txid
-            );
-            continue;
-        }
 
         if processed_txids.contains(&txid) {
             continue;
@@ -7775,6 +7767,58 @@ mod tests {
         assert_eq!(kept.len(), 3, "the unproven middle hop is carried whole");
         assert!(kept.contains(&chain[1].1));
         assert_eq!(beef.bumps.len(), 1, "the walk still reaches the proof");
+    }
+
+    /// A valid BEEF is never refused for its counts (the no-limits posture):
+    /// a chain of unproven ancestors of any depth is walked to its proven
+    /// anchor, and the BEEF the walk builds is valid to bsv-rs's in-memory
+    /// check and to its streaming reader. The reference stops at depth 12 and
+    /// throws (ts-stack@edf6e03 StorageProvider.ts:199,
+    /// getBeefForTransaction.ts:156-157); before this the walk skipped every
+    /// ancestor past 12 and the BEEF missed them.
+    #[tokio::test]
+    async fn test_walk_reaches_the_proven_anchor_at_any_depth() {
+        use bsv_rs::transaction::{verify_stream_structure, MockChainTracker};
+
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test", "000000").await.unwrap();
+        storage.make_available().await.unwrap();
+
+        const HOPS: usize = 1_000;
+        const HEIGHT: u32 = 965_300;
+        let chain = synth_chain(HOPS);
+        seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, HEIGHT).await;
+        for (raw, txid) in &chain[1..] {
+            seed_unproven_tx(&storage, txid, raw, None).await;
+        }
+
+        let subject = chain[HOPS - 1].1.clone();
+        let mut beef = Beef::new();
+        let mut pending = vec![(subject.clone(), 0usize)];
+        let mut processed = HashSet::new();
+        let mut conn = storage.pool().acquire().await.unwrap();
+        beef_bfs_walk(
+            &mut conn,
+            &mut beef,
+            &mut pending,
+            &mut processed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let kept = beef_txids(&beef);
+        assert_eq!(kept.len(), HOPS, "every unproven ancestor is carried");
+        assert!(kept.contains(&chain[0].1), "down to the proven anchor");
+        assert_eq!(beef.bumps.len(), 1);
+        assert!(beef.verify_valid(true).valid, "valid to the in-memory check");
+
+        let mut tracker = MockChainTracker::new(HEIGHT + 1);
+        tracker.add_root(HEIGHT, chain[0].1.clone());
+        let bytes = beef.to_binary();
+        let verdict = verify_stream_structure(&bytes[..], &tracker, None).unwrap();
+        assert!(verdict.is_valid(), "valid to the stream: {verdict:?}");
     }
 
     #[tokio::test]
