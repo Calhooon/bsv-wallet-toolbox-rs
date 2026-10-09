@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.6.0] - 2026-10-09
+
+Rule 28, the second pass, from the owner's two rulings on 0.5.0's open questions: the wallet keeps no header store of its own, the header service is the one headers machine; and a positive unspent answer from an explorer is a hint and never a verdict, the wallet's shared storage is the verdict for its own devices' spends, and a stranger's spend of our output becomes a chain fact only by the spending transaction's merkle proof checked against our headers. No limit changed.
+
+### Removed, breaking
+
+1. The embedded header store is deleted: the `chaintracks` module (`Chaintracks`, `ChaintracksOptions`, `ChaintracksClient`, `ChaintracksManagement`, `ChaintracksInfo`, `ChaintracksStorage` and its memory and SQLite backends, `BulkIngestor`, `LiveIngestor`, `BaseBlockHeader`, `LiveBlockHeader`, `HeightRange`, `InsertHeaderResult`), its root re-exports and the `chaintracks_demo` example. Nothing in the crate built the store, and it checked no proof of work, difficulty rule, checkpoint or ancestry. Every header question goes to the header service (`chaintracks_url`, then `bhs_url`) and is an error without one. `Chain` is now defined in `services` (`bsv_wallet_toolbox_rs::Chain` and `services::Chain` are unchanged paths; `chaintracks::Chain` is gone).
+
+### Changed, breaking
+
+2. A stranger's spend is `Spent` only by proof. `WalletServices::is_utxo` answers `UtxoVerdict::Spent` only when a provider names the spending transaction, that transaction's own bytes have an input that is the outpoint, and `get_merkle_path` returns its path (which it does only after the root met the header service's header). Two explorers agreeing the outpoint is not in the unspent set, which was `Spent` in 0.5.0, is the new `UtxoVerdict::SpentHint`; so is a named spender whose bytes name the outpoint with no proof held. With no header service no spender is asked for and nothing is `Spent`. `UtxoVerdict::from_status` maps an explorer's negative to `SpentHint`. New: `WhatsOnChain::get_spender` (the `tx/{txid}/{vout}/spent` route, the explorer as the courier of a name that is then checked).
+3. Storage writes a spend only from a proof. The terminal value of `locked_input_checks.last_verdict` is `spent-proven` (`LOCKED_VERDICT_SPENT_PROVEN`), written only for `Spent`. A hint is `spent-hint` and stays on the re-check backoff. `LockedInputVerdict` gains `SpentHint` and `LockedInputReport` gains `spent_hints`. The chain-knowledge read that made a two-explorer negative terminal is removed from `recheck_locked_inputs` and the poisoned-chain retire (one status request fewer per negative). `utxo_verdict` delegates to `is_utxo`.
+4. "Unspent" from any provider is a hint, and the type says so: `UtxoVerdict::Unspent` is renamed `UtxoVerdict::UnspentHint`, `is_unspent()` is `is_unspent_hint()`. Behavior is unchanged: one provider's positive gives the answer and a locked input of a failed transaction is released on it.
+5. `MockWalletServices::is_utxo` answers a negative as `SpentHint`; `MockWalletServicesBuilder::spends_are_proven(true)` makes it `Spent`. With no `is_utxo_response` configured the mock derives the answer from `get_utxo_status_response`.
+
+### Changed
+
+6. The cadence of the stranger's-spend check is named in one place, `services::cadence`, in the rule's words: which outpoints are asked about, how often per outpoint (`stranger_spend_recheck_minutes`: 1 minute doubling to 64), when it ends, the pace within a pass (`STRANGER_SPEND_LOOKUP_PACE`), and who starts a pass. No number changed. `locked_input_backoff_minutes` and `LOCKED_INPUT_BACKOFF_CAP_MINUTES` stay exported, defined there.
+
+### Upgrading
+
+- A caller of the `chaintracks` module points at a header service (`ServicesOptions::with_chaintracks_url`); there is no replacement in this crate.
+- A `match` on `UtxoVerdict` renames `Unspent` to `UnspentHint` and adds a `SpentHint` arm. Treat `SpentHint` as "keep locked, ask again"; it is not a spend.
+- A `WalletServices` implementation returns `Spent` from `is_utxo` only when it holds the proof described above.
+- A reader of `LockedInputReport` adds `spent_hints`; a reader of `locked_input_checks.last_verdict` reads `spent-proven` as the terminal value.
+- Stored data, no migration: a `locked_input_checks` row whose `last_verdict` is `spent` (written by 0.5.0 or earlier on two explorers' agreement) is no longer terminal. It is due at once and is decided again: released on an unspent hint, terminal on a proof, otherwise back on the backoff (at most one lookup per row per 64 minutes). Rolling back to 0.5.0 reads `spent-proven` and `spent-hint` as non-terminal and re-checks them; nothing is unreadable.
+
+### Not verified against a live service
+
+- The WhatsOnChain `tx/{txid}/{vout}/spent` route and its `txid` field were exercised against a local fixture only (the shape is the one bsv-wallet-cli reads). If the live shape differs no spender is ever named, no spend is ever `Spent`, and a spent locked input stays locked on the 64-minute backoff; nothing is released on it.
+- The Bitails unspent route of 0.5.0 stays unverified, as recorded there.
+
+(bsv-stack-lean `NORTH-STAR.md`, Rulings, 2026-10-09; `docs/p0/rule-28-toolbox-2.md`.)
+
 ## [0.5.0] - 2026-10-09
 
 Rule 28: a third-party chain explorer is a break-glass read. The primary truth of the chain is headers and merkle proofs (the header service, a BEEF's own BUMPs, our own storage). Every explorer request in the crate was judged by one test, what header, proof or own-index answer we already hold for the question: where one exists the request is removed; where none can exist the request stays, named at the site, with the explorers as each other's fallback (a rotating start, a negative only from a second provider, "could not look" never "nothing there"). The numbering is the fix list's. No limit changed.
