@@ -31,6 +31,7 @@
 //! ```
 
 pub mod broadcast_memory;
+pub mod cadence;
 pub mod collection;
 pub mod mock;
 pub mod providers;

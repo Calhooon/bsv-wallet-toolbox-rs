@@ -986,8 +986,7 @@ async fn utxo_verified_input_ids(storage: &StorageSqlx, txid: &str) -> Vec<i64> 
             }
         }
 
-        // Rate limit: ~3 req/sec to avoid WoC throttling
-        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        tokio::time::sleep(crate::services::cadence::STRANGER_SPEND_LOOKUP_PACE).await;
     }
 
     tracing::info!(
