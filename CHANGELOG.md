@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.5.0] - 2026-10-09
+
+Rule 28: a third-party chain explorer is a break-glass read. The primary truth of the chain is headers and merkle proofs (the header service, a BEEF's own BUMPs, our own storage). Every explorer request in the crate was judged by one test, what header, proof or own-index answer we already hold for the question: where one exists the request is removed; where none can exist the request stays, named at the site, with the explorers as each other's fallback (a rotating start, a negative only from a second provider, "could not look" never "nothing there"). The numbering is the fix list's. No limit changed.
+
+### Removed, breaking (the deletions)
+
+1. `get_height` asks no explorer. The tip height is the header service's tip header's height (`chaintracks_url`), then the Block Header Service (`bhs_url`), then an error. With neither configured `get_height`, and so a block-height `n_lock_time_is_final`, is an error instead of WhatsOnChain's or Bitails' number. `WhatsOnChain::get_chain_info`, `WocChainInfo` and `Bitails::current_height` are removed.
+2. The script hash history is a chain scan and is no longer built by default. `WalletServices::get_script_hash_history`, the `Services` provider collection, `WhatsOnChain::get_script_hash_history` (and its confirmed and unconfirmed halves) and `Bitails::get_script_hash_history` exist only under the new cargo feature `break-glass-script-history` (off by default, not part of `full`). Under the feature the trait method has a default body. `ServicesCallHistory::get_script_hash_history` is `None` without the feature. The result types stay.
+3. The Bitails tip, header and root reads are removed: `Bitails::get_current_height`, `get_latest_block`, `get_header_by_height`, `is_valid_root_for_height`. `Bitails::get_status_for_txids` no longer reads the tip to count confirmations: a transaction Bitails places in a block is reported `mined` at `depth` 1, and a tip outage can no longer fail the status read.
+4. The embedded header store's four explorer ingestors are removed: `BulkCdnIngestor`, `BulkWocIngestor`, `LivePollingIngestor`, `LiveWebSocketIngestor`, their option and wire types, and the `chaintracks::ingestor` module. They stored headers from WhatsOnChain and a CDN with no proof of work, difficulty, checkpoint or ancestry check. The store, its storage backends and the `BulkIngestor` and `LiveIngestor` traits stay; the store has no source in this crate and is documented as not a source of truth. The dependencies `tokio-tungstenite` and `url` go with the ingestors.
+
+### Changed, breaking (the fallback shape of what stays)
+
+5. An output's spend is asked of two explorers. `get_utxo_status` gains Bitails as a second provider, rotates its starting provider per call, returns a positive from the first provider that gives it, returns a negative only when both give it, and answers `status: "error"` with `is_utxo: None` for anything else. `WalletServices::is_utxo` returns `UtxoVerdict` (`Unspent`, `Spent`, `Unknown`) instead of `Result<bool>`: an outage is `Unknown`, where it was `false` or an error that four callers read as spent. `UtxoVerdict` now lives in `services` (its `storage` re-exports stay) and gains `from_status` and `is_unspent`. `abort_abandoned` schedules the locked-input re-check when it could not look.
+6. A break-glass merkle root needs both explorers. Under `break_glass_explorer_headers`, with the header service giving no answer, `FallbackChainTracker` asks WhatsOnChain and Bitails: `true` when both name the asked root (the only explorer answer that is cached), `false` when both name one other root, an error otherwise. `with_break_glass_woc` and `break_glass_woc` are replaced by `with_break_glass_explorers` and `break_glass_explorers`.
+7. The break-glass header by hash (`hash_to_header`) rotates its starting explorer, falls through to the other on a fault, answers `NotFound` only when both have no such header, and takes an answer only when its fields hash to the hash asked for. Bitails is read at `block/{hash}`, which carries the height; before, its header came back at height 0.
+8. `get_merkle_path` fetches and returns no proof when no header service is configured. Before, the root check was skipped and the provider's proof was returned unchecked. The answer is `merkle_path: None` with a fault note, never "not mined".
+9. `GetRawTxResult` gains `could_not_look` (and `is_not_found()`). With no bytes, "not found" is every explorer answering "no such transaction"; one that could not look makes the absence unknown. Before, a fault followed by a 404 came back with no error.
+
+### Changed
+
+10. Every remaining explorer request carries its reason at the site: the question, why no header, proof or own index answers it, and that it is a break-glass read. The broadcasts (a write) and the two price reads (not a chain question) are named as outside the rule's test.
+
+### Upgrading
+
+- Configure a header service (`ServicesOptions::with_chaintracks_url`). Without one, `get_height` is an error and `get_merkle_path` returns no proof.
+- A `WalletServices` implementation changes `is_utxo` to return `UtxoVerdict`, and drops `get_script_hash_history` unless it builds with `break-glass-script-history`.
+- A literal `GetRawTxResult { .. }` adds `could_not_look: false`.
+- A caller of `FallbackChainTracker::with_break_glass_woc` passes the Bitails API base as well.
+- A host that fed the embedded header store from the removed ingestors points at a header service instead.
+- No stored data changes and there is no migration.
+
+### Not verified against a live service
+
+- The Bitails unspent route (`scripthash/{hash}/unspent`) and its field names are not in the TypeScript reference, which asks WhatsOnChain alone, and were exercised against a local fixture only. If the live shape differs, Bitails answers "could not look", no negative is confirmed, and locked inputs stay locked and are asked about again; nothing is released on it.
+
+(bsv-stack-lean Rule 28, `docs/p0/rule-28-explorer-calls.md` section 1.)
+
 ## [0.4.2] - 2026-10-09
 
 ### Changed

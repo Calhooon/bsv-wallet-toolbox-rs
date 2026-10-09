@@ -3088,7 +3088,7 @@ impl StorageSqlx {
             let verdict = services.is_utxo(&source_txid, vout as u32, script).await;
             if verdict == UtxoVerdict::Unknown {
                 tracing::warn!(
-                    "send_waiting: is_utxo({}:{}) could not look — input stays LOCKED (an unknown never releases)",
+                    "send_waiting: is_utxo({}:{}) could not look: input stays LOCKED (an unknown never releases)",
                     source_txid, vout
                 );
             }
@@ -4767,7 +4767,7 @@ impl MonitorStorage for StorageSqlx {
                             }
                             UtxoVerdict::Spent => {
                                 tracing::info!(
-                                    "abort_abandoned: input {}:{} not a UTXO — NOT restoring",
+                                    "abort_abandoned: input {}:{} not a UTXO: NOT restoring",
                                     source_txid,
                                     vout
                                 );
@@ -4777,7 +4777,7 @@ impl MonitorStorage for StorageSqlx {
                                 // stays locked and is asked about again.
                                 self.schedule_locked_input_check(output_id, "unknown").await;
                                 tracing::warn!(
-                                    "abort_abandoned: input {}:{} could not be looked up — stays LOCKED, re-check scheduled",
+                                    "abort_abandoned: input {}:{} could not be looked up: stays LOCKED, re-check scheduled",
                                     source_txid,
                                     vout
                                 );
