@@ -172,3 +172,47 @@ async fn the_break_glass_scan_answers_when_built_in() {
         .get_script_hash_history
         .is_some());
 }
+
+// =============================================================================
+// Item 3 (T15): no explorer tip, header or root beside the proof path
+// =============================================================================
+
+/// T15: Bitails is asked whether it holds a transaction, and nothing about
+/// the tip. Its status answer read `network/info` to turn a block height
+/// into a confirmation count; the header service holds the tip, and the
+/// answer that matters ("in a block") is in the transaction's own record.
+#[tokio::test]
+async fn the_bitails_status_read_asks_no_explorer_for_the_tip() {
+    let mut bitails = mockito::Server::new_async().await;
+    let txid = "ab".repeat(32);
+    let tip = bitails
+        .mock("GET", "/network/info")
+        .with_status(200)
+        .with_body(r#"{"blocks":900010}"#)
+        .expect(0)
+        .create_async()
+        .await;
+    let _tx = bitails
+        .mock("GET", format!("/tx/{}", txid).as_str())
+        .with_status(200)
+        .with_body(format!(
+            r#"{{"txid":"{}","blockHash":"{}","blockHeight":900000}}"#,
+            txid,
+            "cd".repeat(32)
+        ))
+        .create_async()
+        .await;
+
+    let provider = Bitails::with_base_url(Chain::Main, &bitails.url());
+    let result = provider
+        .get_status_for_txids(std::slice::from_ref(&txid))
+        .await
+        .unwrap();
+    assert_eq!(result.results[0].status, "mined");
+    assert_eq!(
+        result.results[0].depth,
+        Some(1),
+        "in a block by its own record: at least one deep, no tip read"
+    );
+    tip.assert_async().await;
+}

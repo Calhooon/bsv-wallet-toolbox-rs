@@ -144,13 +144,9 @@ Bitails::new(Chain::Test, BitailsConfig::with_api_key("key"))?;
 | `broadcast(raw_tx)` | Broadcast single raw transaction (via `post_raws`) |
 | `post_raws(raws)` | Broadcast multiple raw transactions (multi endpoint) |
 | `post_beef(beef, txids)` | Parse BEEF, extract raw txs, broadcast each individually |
-| `get_current_height()` | Get blockchain height from network/info |
 | `get_block_header_by_hash(hash)` | Get and parse 80-byte raw header |
-| `get_header_by_height(height)` | Get block header by height (JSON) |
-| `get_latest_block()` | Get latest block hash and height |
 | `get_script_hash_history(hash)` | Get transaction history for script hash (feature `break-glass-script-history`, off by default: a chain scan) |
-| `get_status_for_txids(txids)` | Get tx statuses with depth (queries each via `get_tx_info`) |
-| `is_valid_root_for_height(root, height)` | Validate merkle root for a block height |
+| `get_status_for_txids(txids)` | Get tx statuses (queries each via `get_tx_info`; depth 1 for a tx in a block, no tip read) |
 
 **API Endpoints:**
 - Mainnet: `https://api.bitails.io/`
@@ -165,7 +161,6 @@ Bitails::new(Chain::Test, BitailsConfig::with_api_key("key"))?;
 | "ECONNRESET" | `ECONNRESET` | Connection reset |
 
 **Internal Features:**
-- `root_cache: RwLock<HashMap<u32, String>>` - Caches merkle roots by block height
 - `parse_block_header()` - Parses 80-byte raw headers into `BlockHeader` structs
 
 ---

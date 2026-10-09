@@ -14,7 +14,6 @@
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::RwLock;
 use std::time::Duration;
 
 use crate::chaintracks::Chain;
@@ -73,8 +72,6 @@ pub struct Bitails {
     #[allow(dead_code)]
     chain: Chain,
     api_key: Option<String>,
-    #[allow(dead_code)]
-    root_cache: RwLock<HashMap<u32, String>>,
 }
 
 impl Bitails {
@@ -96,7 +93,6 @@ impl Bitails {
             base_url,
             chain,
             api_key: config.api_key,
-            root_cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -453,33 +449,6 @@ impl Bitails {
     // Block Headers
     // =========================================================================
 
-    /// Get current chain height.
-    pub async fn get_current_height(&self) -> Result<u32> {
-        let url = format!("{}network/info", self.base_url);
-
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.get_headers())
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(Error::ServiceError(format!(
-                "getCurrentHeight failed with status {}",
-                response.status()
-            )));
-        }
-
-        let data: BitailsNetworkInfo = response
-            .json()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Failed to parse network info: {}", e)))?;
-
-        Ok(data.blocks)
-    }
-
     /// Get block header by hash.
     pub async fn get_block_header_by_hash(&self, hash: &str) -> Result<Option<BlockHeader>> {
         let url = format!("{}block/{}/header/raw", self.base_url, hash);
@@ -520,33 +489,6 @@ impl Bitails {
                 status
             ))),
         }
-    }
-
-    /// Get latest block info.
-    pub async fn get_latest_block(&self) -> Result<(String, u32)> {
-        let url = format!("{}block/latest", self.base_url);
-
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.get_headers())
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(Error::ServiceError(format!(
-                "getLatestBlock failed with status {}",
-                response.status()
-            )));
-        }
-
-        let data: BitailsBlockInfo = response
-            .json()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Failed to parse block info: {}", e)))?;
-
-        Ok((data.hash, data.height))
     }
 
     // =========================================================================
@@ -618,21 +560,24 @@ impl Bitails {
     // =========================================================================
 
     /// Get status for multiple transaction IDs.
+    ///
+    /// Break-glass (Rule 28, T12): is a transaction mined, known to the
+    /// mempool, or unknown. "Mined" is a proof we hold or a broadcaster
+    /// pushes; "known to the mempool" and "unknown" have no header or proof
+    /// answer, so the explorers are asked, each the other's fallback.
+    ///
+    /// The tip is not read here (T15): the header service holds it. A
+    /// transaction this index places in a block is reported at depth 1, "in
+    /// a block by this index's word"; the proof, checked against the header
+    /// service's root, is what says mined.
     pub async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
-        let tip_height = self.get_current_height().await?;
-
         let mut results = Vec::new();
 
         for txid in txids {
             match self.get_tx_info(txid).await? {
                 Some(info) => {
-                    let (status, depth) = if let Some(height) = info.block_height {
-                        let depth = if tip_height >= height {
-                            (tip_height - height) + 1
-                        } else {
-                            0
-                        };
-                        ("mined".to_string(), Some(depth))
+                    let (status, depth) = if info.block_height.is_some() {
+                        ("mined".to_string(), Some(1))
                     } else {
                         ("known".to_string(), Some(0))
                     };
@@ -690,41 +635,6 @@ impl Bitails {
             ))),
         }
     }
-
-    // =========================================================================
-    // Additional Height / Header Methods
-    // =========================================================================
-
-    /// Get block header by height.
-    pub async fn get_header_by_height(&self, height: u32) -> Result<BlockHeader> {
-        let url = format!("{}block/header/{}", self.base_url, height);
-
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.get_headers())
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Bitails header: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(Error::ServiceError(format!(
-                "Bitails header: HTTP {}",
-                response.status()
-            )));
-        }
-
-        response
-            .json::<BlockHeader>()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Bitails header parse: {}", e)))
-    }
-
-    /// Validate merkle root for height (lookup header and compare).
-    pub async fn is_valid_root_for_height(&self, root: &str, height: u32) -> Result<bool> {
-        let header = self.get_header_by_height(height).await?;
-        Ok(header.merkle_root == root)
-    }
 }
 
 // =============================================================================
@@ -750,22 +660,6 @@ pub struct BitailsBroadcastResult {
 struct BitailsBroadcastError {
     code: String,
     message: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct BitailsNetworkInfo {
-    blocks: u32,
-    headers: Option<u32>,
-    bestblockhash: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct BitailsBlockInfo {
-    hash: String,
-    height: u32,
-    time: Option<u64>,
 }
 
 #[cfg(feature = "break-glass-script-history")]
