@@ -200,6 +200,14 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Get merkle path proof for a transaction.
+    ///
+    /// Break-glass (Rule 28, T6): a transaction's inclusion proof. For a
+    /// transaction we received, the BEEF's own BUMP is the proof; for one
+    /// we broadcast through Arcade, the BUMP in Arcade's MINED document
+    /// is. This explorer is asked only as the courier of a proof nobody
+    /// pushed to us; `Services::get_merkle_path` checks its root against
+    /// the header service before it is returned, and asks no explorer when
+    /// no header service is configured.
     pub async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
         let url = format!("{}/tx/{}/proof/tsc", self.base_url, txid);
 
@@ -287,6 +295,10 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Post a raw transaction.
+    ///
+    /// A broadcast is a write, not a read: Rule 28's test (what header,
+    /// proof or index answers the question) does not apply. This explorer
+    /// is a last rung of `postBeef`, behind Arcade and the ARC broadcasters.
     pub async fn post_raw_tx(&self, raw_tx_hex: &str) -> Result<PostTxResultForTxid> {
         let url = format!("{}/tx/raw", self.base_url);
 
@@ -408,6 +420,10 @@ impl WhatsOnChain {
     }
 
     /// Post BEEF transaction (extracts raw txs and broadcasts sequentially).
+    ///
+    /// A broadcast is a write, not a read: Rule 28's test (what header,
+    /// proof or index answers the question) does not apply. This explorer
+    /// is a last rung of `postBeef`, behind Arcade and the ARC broadcasters.
     pub async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult> {
         use bsv_rs::transaction::Beef;
 
@@ -572,6 +588,15 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Get status for multiple transaction IDs.
+    ///
+    /// Break-glass (Rule 28, T11): is a transaction mined, known to the
+    /// mempool, or unknown. "Mined" is a proof we hold or a broadcaster
+    /// pushes; "known to the mempool" and "unknown" have no header or proof
+    /// answer, so the explorers are asked, each the other's fallback
+    /// (`Services::get_status_for_txids` asks a later provider about
+    /// everything not yet `mined`, and `unknown` is a gap, never a
+    /// verdict).
+    ///
     ///
     /// Chunks requests at 20 txids per HTTP call to match the Go reference
     /// implementation (`slices.Chunk(txIDs, 20)`) and stay within WoC API limits.
@@ -801,6 +826,8 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Update and return BSV exchange rate.
+    ///
+    /// Not a chain question (a price), so Rule 28's test does not apply.
     pub async fn update_bsv_exchange_rate(&self, update_msecs: u64) -> Result<f64> {
         // Check cached rate
         {
