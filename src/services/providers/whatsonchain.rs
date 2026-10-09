@@ -486,6 +486,13 @@ impl WhatsOnChain {
     // =========================================================================
 
     /// Get UTXO status for a script hash.
+    ///
+    /// Break-glass (Rule 28, T10): is an output unspent. Headers and proofs
+    /// prove inclusion, never that an output is unspent, and our own
+    /// outputs table knows only the spends we made, so no header, proof or
+    /// index of ours answers it. One explorer's "not in the unspent list"
+    /// is not "spent": `Services::get_utxo_status` takes a negative only
+    /// from this explorer and Bitails both.
     pub async fn get_utxo_status(
         &self,
         output: &str,

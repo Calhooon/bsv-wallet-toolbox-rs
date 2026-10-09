@@ -254,8 +254,13 @@ pub trait WalletServices: Send + Sync {
     /// Hash an output script to the format expected by getUtxoStatus.
     fn hash_output_script(&self, script: &[u8]) -> String;
 
-    /// Check if a specific output is a UTXO.
-    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool>;
+    /// Whether an output is unspent on chain, as one of three answers:
+    /// unspent, spent, or could not look ([`UtxoVerdict::Unknown`]).
+    ///
+    /// Until 0.5.0 this returned `Result<bool>`, and an outage came back as
+    /// `false` or as an error callers folded to `false`, which read as
+    /// "spent". It now has no error path: every fault is `Unknown`.
+    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict;
 
     /// Check if nLockTime is final (raw nLockTime value).
     ///
@@ -932,6 +937,45 @@ pub struct GetUtxoStatusResult {
     /// Error if check failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// The chain's answer for one outpoint, with "could not look" kept apart
+/// from "spent".
+///
+/// Headers and proofs prove inclusion, never that an output is unspent, so
+/// this answer comes from explorers (Rule 28, T10): a break-glass read.
+/// `Spent` is two explorers agreeing the outpoint is not in the unspent
+/// set; one explorer's negative, a fault or an outage is `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UtxoVerdict {
+    /// In the unspent set: safe to release.
+    Unspent,
+    /// Not in the unspent set (spent, or its source never existed).
+    Spent,
+    /// The lookup failed or was inconclusive (rate limit, outage, one
+    /// explorer's negative the other could not confirm). Never "spent".
+    Unknown,
+}
+
+impl UtxoVerdict {
+    /// The verdict a `get_utxo_status` answer carries: only a `success`
+    /// with a definite `is_utxo` is an answer; anything else is `Unknown`.
+    pub fn from_status(result: &GetUtxoStatusResult) -> Self {
+        if result.status != "success" {
+            return UtxoVerdict::Unknown;
+        }
+        match result.is_utxo {
+            Some(true) => UtxoVerdict::Unspent,
+            Some(false) => UtxoVerdict::Spent,
+            None => UtxoVerdict::Unknown,
+        }
+    }
+
+    /// Whether the output is verifiably unspent. `Spent` and `Unknown` are
+    /// both `false`: an unknown never releases.
+    pub fn is_unspent(&self) -> bool {
+        matches!(self, UtxoVerdict::Unspent)
+    }
 }
 
 /// Details about a UTXO.

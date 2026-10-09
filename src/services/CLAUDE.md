@@ -108,7 +108,7 @@ pub trait WalletServices: Send + Sync {
     async fn get_bsv_exchange_rate(&self) -> Result<f64>;
     async fn get_fiat_exchange_rate(&self, currency: FiatCurrency, base: Option<FiatCurrency>) -> Result<f64>;
     fn hash_output_script(&self, script: &[u8]) -> String;
-    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> Result<bool>;
+    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict; // Unspent | Spent | Unknown (could not look)
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool>;
     async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool>;
     async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult>;
@@ -354,7 +354,7 @@ The `Services` constructor sets up provider priority for each operation:
 | `get_merkle_path` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails |
 | `get_raw_tx` | WhatsOnChain -> Bitails |
 | `post_beef` | ArcadeV2 (opt-in, first) -> TAAL ARC -> GorillaPool ARC -> Bitails -> WhatsOnChain; with a `BroadcastMemory` attached, the last accepting provider is tried first (never ahead of Arcade unless it is Arcade) |
-| `get_utxo_status` | WhatsOnChain |
+| `get_utxo_status` | WhatsOnChain <-> Bitails, a rotating start; a positive from the first that gives it, a negative only from both, anything else `status: "error"` (could not look) |
 | `get_status_for_txids` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails; each provider after the first is asked about every txid no earlier provider placed as `mined` (`unknown` is a gap, not a verdict, and a broadcaster's `known` is its word, not the chain's: a chain index's `mined`/`known`/`unknown` replaces it; Arcade's `known` stands only when no chain index answered) |
 | `get_script_hash_history` | WhatsOnChain -> Bitails (feature `break-glass-script-history`, off by default: a chain scan) |
 | `get_height` | Chaintracks tip header -> BHS -> error; no explorer (not via ServiceCollection) |

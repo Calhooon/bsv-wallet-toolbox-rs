@@ -18,6 +18,7 @@
 //! preventing partial updates that would leave the database in an inconsistent state.
 
 use crate::error::{Error, Result};
+use crate::services::UtxoVerdict;
 use crate::storage::entities::TransactionStatus;
 use crate::storage::traits::{
     SendWithResult, StorageProcessActionArgs, StorageProcessActionResults, WalletStorageReader,
@@ -950,7 +951,7 @@ async fn utxo_verified_input_ids(storage: &StorageSqlx, txid: &str) -> Vec<i64> 
         let script = locking_script.as_deref().unwrap_or(&[]);
 
         match services.is_utxo(&source_txid, vout as u32, script).await {
-            Ok(true) => {
+            UtxoVerdict::Unspent => {
                 tracing::debug!(
                     txid = %txid,
                     source = %source_txid,
@@ -959,7 +960,7 @@ async fn utxo_verified_input_ids(storage: &StorageSqlx, txid: &str) -> Vec<i64> 
                 );
                 verified.push(output_id);
             }
-            Ok(false) => {
+            UtxoVerdict::Spent => {
                 tracing::info!(
                     txid = %txid,
                     source = %source_txid,
@@ -967,13 +968,12 @@ async fn utxo_verified_input_ids(storage: &StorageSqlx, txid: &str) -> Vec<i64> 
                     "Input consumed on-chain — NOT restoring (dead UTXO)"
                 );
             }
-            Err(e) => {
+            UtxoVerdict::Unknown => {
                 tracing::warn!(
                     txid = %txid,
                     source = %source_txid,
                     vout = vout,
-                    error = %e,
-                    "is_utxo check failed — NOT restoring (fail-safe)"
+                    "is_utxo could not look — NOT restoring (an unknown never releases, and is not a spend)"
                 );
             }
         }

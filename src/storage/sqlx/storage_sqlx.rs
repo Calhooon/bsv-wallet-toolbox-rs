@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
 use crate::lock_utils::{lock_read, lock_write};
-use crate::services::WalletServices;
+use crate::services::{UtxoVerdict, WalletServices};
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
@@ -3085,16 +3085,14 @@ impl StorageSqlx {
             let vout: i32 = input_row.get("vout");
             let locking_script: Option<Vec<u8>> = input_row.get("locking_script");
             let script = locking_script.as_deref().unwrap_or(&[]);
-            let unspent = match services.is_utxo(&source_txid, vout as u32, script).await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        "send_waiting: is_utxo({}:{}) failed ({}) — input stays LOCKED (an unknown never releases)",
-                        source_txid, vout, e
-                    );
-                    false
-                }
-            };
+            let verdict = services.is_utxo(&source_txid, vout as u32, script).await;
+            if verdict == UtxoVerdict::Unknown {
+                tracing::warn!(
+                    "send_waiting: is_utxo({}:{}) could not look — input stays LOCKED (an unknown never releases)",
+                    source_txid, vout
+                );
+            }
+            let unspent = verdict.is_unspent();
             if unspent {
                 sqlx::query(
                     "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
@@ -4756,26 +4754,34 @@ impl MonitorStorage for StorageSqlx {
                         let locking_script: Option<Vec<u8>> = input_row.get("locking_script");
                         let script = locking_script.as_deref().unwrap_or(&[]);
 
-                        let is_utxo = svc
-                            .is_utxo(&source_txid, vout as u32, script)
-                            .await
-                            .unwrap_or(false);
-
-                        if is_utxo {
-                            sqlx::query(
-                                "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
-                            )
-                            .bind(now)
-                            .bind(output_id)
-                            .execute(self.pool())
-                            .await?;
-                            restored += 1;
-                        } else {
-                            tracing::info!(
-                                "abort_abandoned: input {}:{} not a UTXO — NOT restoring",
-                                source_txid,
-                                vout
-                            );
+                        match svc.is_utxo(&source_txid, vout as u32, script).await {
+                            UtxoVerdict::Unspent => {
+                                sqlx::query(
+                                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
+                                )
+                                .bind(now)
+                                .bind(output_id)
+                                .execute(self.pool())
+                                .await?;
+                                restored += 1;
+                            }
+                            UtxoVerdict::Spent => {
+                                tracing::info!(
+                                    "abort_abandoned: input {}:{} not a UTXO — NOT restoring",
+                                    source_txid,
+                                    vout
+                                );
+                            }
+                            UtxoVerdict::Unknown => {
+                                // "Could not look" is not "spent": the input
+                                // stays locked and is asked about again.
+                                self.schedule_locked_input_check(output_id, "unknown").await;
+                                tracing::warn!(
+                                    "abort_abandoned: input {}:{} could not be looked up — stays LOCKED, re-check scheduled",
+                                    source_txid,
+                                    vout
+                                );
+                            }
                         }
 
                         // Rate limit: ~3 req/sec
@@ -6223,23 +6229,31 @@ impl StorageSqlx {
             let vout: i32 = row.get("vout");
             let locking_script: Option<Vec<u8>> = row.get("locking_script");
             let script = locking_script.as_deref().unwrap_or(&[]);
-            let is_utxo = services
-                .is_utxo(txid, vout as u32, script)
-                .await
-                .unwrap_or(false);
-            if is_utxo {
-                sqlx::query("UPDATE outputs SET spendable = 1, updated_at = ? WHERE output_id = ?")
+            match services.is_utxo(txid, vout as u32, script).await {
+                UtxoVerdict::Unspent => {
+                    sqlx::query(
+                        "UPDATE outputs SET spendable = 1, updated_at = ? WHERE output_id = ?",
+                    )
                     .bind(now)
                     .bind(output_id)
                     .execute(self.pool())
                     .await?;
-                restored += 1;
-            } else {
-                tracing::debug!(
-                    "un_fail: output {}:{} is not a UTXO on chain, skipping",
-                    txid,
-                    vout
-                );
+                    restored += 1;
+                }
+                UtxoVerdict::Spent => {
+                    tracing::debug!(
+                        "un_fail: output {}:{} is not a UTXO on chain, skipping",
+                        txid,
+                        vout
+                    );
+                }
+                UtxoVerdict::Unknown => {
+                    tracing::warn!(
+                        "un_fail: output {}:{} could not be looked up (not a spend); left unspendable",
+                        txid,
+                        vout
+                    );
+                }
             }
         }
 
