@@ -203,6 +203,7 @@ mod reorg {
                 name: "mock".to_string(),
                 txid: String::new(),
                 error: None,
+                could_not_look: false,
             })
         }
 

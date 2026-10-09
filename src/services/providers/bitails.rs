@@ -136,6 +136,13 @@ impl Bitails {
     // =========================================================================
 
     /// Get raw transaction by txid.
+    ///
+    /// Break-glass (Rule 28, T9): a transaction's bytes. Our own storage
+    /// holds our own transactions; for a foreign ancestor the sender's BEEF
+    /// did not carry, no header, proof or index of ours has them. The
+    /// answer is self-verifying: the bytes are bound to the txid before
+    /// they are returned. A 404 is "no such transaction"; every other
+    /// failure is an error ("could not look").
     pub async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
         let url = format!("{}tx/{}/hex", self.base_url, txid);
 
@@ -165,6 +172,7 @@ impl Bitails {
                     txid: txid.to_string(),
                     raw_tx: Some(raw_tx),
                     error: None,
+                    could_not_look: false,
                 })
             }
             StatusCode::NOT_FOUND => Ok(GetRawTxResult {
@@ -172,6 +180,7 @@ impl Bitails {
                 txid: txid.to_string(),
                 raw_tx: None,
                 error: None,
+                could_not_look: false,
             }),
             status => Err(Error::ServiceError(format!(
                 "Bitails getRawTx failed with status {}",

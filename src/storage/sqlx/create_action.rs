@@ -3265,8 +3265,14 @@ async fn try_network_fallback(
                 }));
             }
 
-            if let Some(ref error) = result.error {
-                tracing::debug!(txid = %txid, error = %error, "Network fetch returned error");
+            if result.could_not_look {
+                tracing::warn!(
+                    txid = %txid,
+                    error = ?result.error,
+                    "Network fallback could not look (not a 'no such transaction')"
+                );
+            } else {
+                tracing::debug!(txid = %txid, "Network fallback: no explorer has the transaction");
             }
         }
         Err(e) => {
@@ -6356,6 +6362,7 @@ mod tests {
                 txid: missing_txid.clone(),
                 raw_tx: Some(missing_raw_tx.clone()),
                 error: None,
+                could_not_look: false,
             }))
             .build();
         storage.set_services(Arc::new(mock_services));
