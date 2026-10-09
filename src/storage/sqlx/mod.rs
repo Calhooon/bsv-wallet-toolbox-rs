@@ -61,7 +61,8 @@ pub use broadcast_seen::{
 };
 pub use locked_inputs::{
     locked_input_backoff_minutes, LockedInputCheck, LockedInputReport, LockedInputVerdict,
-    LOCKED_INPUT_BACKOFF_CAP_MINUTES, MIGRATION_003_LOCKED_INPUT_CHECKS_NAME,
+    LOCKED_INPUT_BACKOFF_CAP_MINUTES, LOCKED_VERDICT_SPENT_HINT, LOCKED_VERDICT_SPENT_PROVEN,
+    LOCKED_VERDICT_UNKNOWN, MIGRATION_003_LOCKED_INPUT_CHECKS_NAME,
     MIGRATION_003_LOCKED_INPUT_CHECKS_SQL,
 };
 pub use monitor_state::{

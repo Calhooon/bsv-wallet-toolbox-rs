@@ -254,12 +254,14 @@ pub trait WalletServices: Send + Sync {
     /// Hash an output script to the format expected by getUtxoStatus.
     fn hash_output_script(&self, script: &[u8]) -> String;
 
-    /// Whether an output is unspent on chain, as one of three answers:
-    /// unspent, spent, or could not look ([`UtxoVerdict::Unknown`]).
+    /// Whether an output is unspent on chain, as a [`UtxoVerdict`]: in an
+    /// unspent set, spent by proof, hinted spent, or could not look.
     ///
-    /// Until 0.5.0 this returned `Result<bool>`, and an outage came back as
-    /// `false` or as an error callers folded to `false`, which read as
-    /// "spent". It now has no error path: every fault is `Unknown`.
+    /// `Spent` is written only by the spending transaction's bytes naming
+    /// the outpoint and its merkle path checked against the header
+    /// service; without a header service nothing is `Spent`. Two
+    /// explorers' agreement is `SpentHint`. There is no error path: every
+    /// fault is `Unknown`.
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict;
 
     /// Check if nLockTime is final (raw nLockTime value).
@@ -957,16 +959,28 @@ pub struct GetUtxoStatusResult {
 /// The chain's answer for one outpoint, with "could not look" kept apart
 /// from "spent".
 ///
-/// Headers and proofs prove inclusion, never that an output is unspent, so
-/// this answer comes from explorers (Rule 28, T10): a break-glass read.
-/// `Spent` is two explorers agreeing the outpoint is not in the unspent
-/// set; one explorer's negative, a fault or an outage is `Unknown`.
+/// Headers and proofs prove inclusion, never that an output is unspent, and
+/// our own storage knows only the spends our own devices made, so a
+/// stranger's spend of our output is the irreducible case of Rule 28. It
+/// has one chain fact and two tiers of hint:
+///
+/// - `Spent` is a fact, written only by proof: the spending transaction's
+///   own bytes name the outpoint, and its merkle path meets the header
+///   service's header. A provider that names the spender is its courier.
+/// - `SpentHint` is unproven: two explorers agreeing the outpoint is not in
+///   the unspent set, or a named spender whose proof is not held yet.
+/// - one explorer's negative, a fault or an outage is `Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UtxoVerdict {
     /// In the unspent set: safe to release.
     Unspent,
-    /// Not in the unspent set (spent, or its source never existed).
+    /// Spent on chain, proven: the spender's bytes name the outpoint and
+    /// its merkle path meets the header service's header.
     Spent,
+    /// Unproven: two explorers agree it is not in the unspent set (spent,
+    /// or its source never existed), or a spender is named and no proof of
+    /// it is held. Never written as a spend; asked again on the cadence.
+    SpentHint,
     /// The lookup failed or was inconclusive (rate limit, outage, one
     /// explorer's negative the other could not confirm). Never "spent".
     Unknown,
@@ -975,19 +989,21 @@ pub enum UtxoVerdict {
 impl UtxoVerdict {
     /// The verdict a `get_utxo_status` answer carries: only a `success`
     /// with a definite `is_utxo` is an answer; anything else is `Unknown`.
+    /// An explorer's negative is never more than `SpentHint`: `Spent` comes
+    /// only from [`WalletServices::is_utxo`], by proof.
     pub fn from_status(result: &GetUtxoStatusResult) -> Self {
         if result.status != "success" {
             return UtxoVerdict::Unknown;
         }
         match result.is_utxo {
             Some(true) => UtxoVerdict::Unspent,
-            Some(false) => UtxoVerdict::Spent,
+            Some(false) => UtxoVerdict::SpentHint,
             None => UtxoVerdict::Unknown,
         }
     }
 
-    /// Whether the output is verifiably unspent. `Spent` and `Unknown` are
-    /// both `false`: an unknown never releases.
+    /// Whether the output is in an unspent set. `Spent`, `SpentHint` and
+    /// `Unknown` are all `false`: an unknown never releases.
     pub fn is_unspent(&self) -> bool {
         matches!(self, UtxoVerdict::Unspent)
     }

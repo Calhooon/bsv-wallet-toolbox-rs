@@ -583,6 +583,46 @@ impl WhatsOnChain {
         })
     }
 
+    /// The transaction an explorer names as the spender of `txid:vout`.
+    ///
+    /// Break-glass (Rule 28, the stranger's spend): who spent an output of
+    /// ours. No header or proof says an output is spent by someone else,
+    /// and our own storage knows only our own devices' spends. This is the
+    /// one explorer route we hold that names a spender (the route and its
+    /// `txid` field as bsv-wallet-cli reads them at `9235de5`,
+    /// `src/commands/cleanup_abandoned.rs:267-276`). The name is a word and
+    /// this explorer only its courier: `Services::is_utxo` believes it
+    /// after the named transaction's own bytes name the outpoint and its
+    /// merkle path meets the header service's header. A 404 is "no spender
+    /// known" (also what an output that never existed answers); every
+    /// other failure is an error ("could not look").
+    pub async fn get_spender(&self, txid: &str, vout: u32) -> Result<Option<String>> {
+        let url = format!("{}/tx/{}/{}/spent", self.base_url, txid, vout);
+
+        let response = self.get_with_retry(&url).await?;
+
+        match response.status() {
+            StatusCode::OK => {
+                let body: serde_json::Value = response.json().await.map_err(|e| {
+                    Error::ServiceError(format!("Failed to parse spent response: {}", e))
+                })?;
+                match body.get("txid").and_then(|t| t.as_str()) {
+                    Some(spender) if spender.len() == 64 && hex::decode(spender).is_ok() => {
+                        Ok(Some(spender.to_ascii_lowercase()))
+                    }
+                    _ => Err(Error::ServiceError(
+                        "WoC spent answer names no txid".to_string(),
+                    )),
+                }
+            }
+            StatusCode::NOT_FOUND => Ok(None),
+            status => Err(Error::ServiceError(format!(
+                "WoC spent failed with status {}",
+                status
+            ))),
+        }
+    }
+
     // =========================================================================
     // Transaction Status
     // =========================================================================

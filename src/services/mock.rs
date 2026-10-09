@@ -185,8 +185,11 @@ pub struct MockWalletServices {
     #[cfg_attr(not(feature = "break-glass-script-history"), allow(dead_code))]
     get_script_hash_history_response: Mutex<MockResponse<GetScriptHashHistoryResult>>,
 
-    /// Response for is_utxo calls.
-    is_utxo_response: Mutex<MockResponse<bool>>,
+    /// Response for is_utxo calls; `None` derives it from
+    /// `get_utxo_status_response`.
+    is_utxo_response: Mutex<Option<MockResponse<bool>>>,
+    /// Whether a negative `is_utxo` answer stands for a proven spend.
+    spends_are_proven: bool,
 
     /// What `get_broadcaster_statuses` answers (empty by default: no
     /// broadcaster asked).
@@ -320,7 +323,8 @@ pub struct MockWalletServicesBuilder {
     get_utxo_status_response: MockResponse<GetUtxoStatusResult>,
     get_status_for_txids_response: MockResponse<GetStatusForTxidsResult>,
     get_script_hash_history_response: MockResponse<GetScriptHashHistoryResult>,
-    is_utxo_response: MockResponse<bool>,
+    is_utxo_response: Option<MockResponse<bool>>,
+    spends_are_proven: bool,
     broadcaster_statuses: Vec<(String, crate::services::BroadcastStatus)>,
 }
 
@@ -368,7 +372,8 @@ impl Default for MockWalletServicesBuilder {
                 error: None,
                 history: vec![],
             }),
-            is_utxo_response: MockResponse::Success(true),
+            is_utxo_response: None,
+            spends_are_proven: false,
             broadcaster_statuses: Vec::new(),
         }
     }
@@ -507,9 +512,18 @@ impl MockWalletServicesBuilder {
         self
     }
 
+    /// Whether a negative `is_utxo` answer is a proven spend
+    /// ([`UtxoVerdict::Spent`]): the mock then stands for services that
+    /// hold the spending transaction's bytes naming the outpoint and its
+    /// merkle path. Off by default: a negative is [`UtxoVerdict::SpentHint`].
+    pub fn spends_are_proven(mut self, proven: bool) -> Self {
+        self.spends_are_proven = proven;
+        self
+    }
+
     /// Set the response for is_utxo calls.
     pub fn is_utxo_response(mut self, response: MockResponse<bool>) -> Self {
-        self.is_utxo_response = response;
+        self.is_utxo_response = Some(response);
         self
     }
 
@@ -537,6 +551,7 @@ impl MockWalletServicesBuilder {
             get_status_for_txids_response: Mutex::new(self.get_status_for_txids_response),
             get_script_hash_history_response: Mutex::new(self.get_script_hash_history_response),
             is_utxo_response: Mutex::new(self.is_utxo_response),
+            spends_are_proven: self.spends_are_proven,
             broadcaster_statuses: self.broadcaster_statuses,
             call_history: Mutex::new(Vec::new()),
             call_counts: Mutex::new(HashMap::new()),
@@ -815,29 +830,48 @@ impl WalletServices for MockWalletServices {
     }
 
     /// The configured `is_utxo_response`: `true` is unspent, `false` is
-    /// spent, and an error is "could not look".
+    /// "not in the unspent set" and an error is "could not look". With no
+    /// `is_utxo_response` configured the answer is derived from
+    /// `get_utxo_status_response`, as `Services` derives it.
+    ///
+    /// A negative is [`UtxoVerdict::SpentHint`], the most an explorer's
+    /// word can be; it is [`UtxoVerdict::Spent`] only for a mock built with
+    /// `spends_are_proven(true)`, which stands for holding the spending
+    /// transaction's bytes and its merkle path.
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
-        let call_index = self.get_call_index("is_utxo");
-        let response = self.is_utxo_response.lock().unwrap();
-        let result = response.resolve(call_index);
         let args = vec![
             txid.to_string(),
             format!("{}", vout),
             format!("script_len={}", locking_script.len()),
         ];
-        match result {
-            Ok(unspent) => {
-                self.record_call("is_utxo", args, true);
-                if unspent {
-                    UtxoVerdict::Unspent
-                } else {
-                    UtxoVerdict::Spent
+        let configured = {
+            let response = self.is_utxo_response.lock().unwrap();
+            response.as_ref().map(|response| {
+                let call_index = self.get_call_index("is_utxo");
+                response.resolve(call_index)
+            })
+        };
+        let unspent = match configured {
+            Some(Ok(unspent)) => Some(unspent),
+            Some(Err(_)) => None,
+            None => {
+                let hash = self.hash_output_script(locking_script);
+                let outpoint = format!("{}.{}", txid, vout);
+                match self
+                    .get_utxo_status(&hash, None, Some(&outpoint), false)
+                    .await
+                {
+                    Ok(result) if result.status == "success" => result.is_utxo,
+                    _ => None,
                 }
             }
-            Err(_) => {
-                self.record_call("is_utxo", args, false);
-                UtxoVerdict::Unknown
-            }
+        };
+        self.record_call("is_utxo", args, unspent.is_some());
+        match unspent {
+            Some(true) => UtxoVerdict::Unspent,
+            Some(false) if self.spends_are_proven => UtxoVerdict::Spent,
+            Some(false) => UtxoVerdict::SpentHint,
+            None => UtxoVerdict::Unknown,
         }
     }
 

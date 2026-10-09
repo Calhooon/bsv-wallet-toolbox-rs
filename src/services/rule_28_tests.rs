@@ -363,14 +363,15 @@ async fn an_outage_is_could_not_look_never_spent() {
     assert_eq!(answer, UtxoVerdict::Unknown, "an outage read as {answer:?}");
 }
 
-/// T10: the three answers of `is_utxo`, one per row of what the two
-/// explorers say.
+/// T10: the answers of `is_utxo` from the explorers' unspent sets alone,
+/// one per row of what the two say. Their agreement on a negative is the
+/// hint tier, never `Spent` (the second pass).
 #[tokio::test]
 async fn is_utxo_gives_the_three_answers() {
     for (woc_says, bitails_says, expected) in [
         (Says::Unspent, Says::Fault, UtxoVerdict::Unspent),
         (Says::NotListed, Says::Unspent, UtxoVerdict::Unspent),
-        (Says::NotListed, Says::NotListed, UtxoVerdict::Spent),
+        (Says::NotListed, Says::NotListed, UtxoVerdict::SpentHint),
         (Says::NotListed, Says::Fault, UtxoVerdict::Unknown),
         (Says::Fault, Says::NotListed, UtxoVerdict::Unknown),
     ] {
@@ -729,4 +730,317 @@ async fn a_raw_tx_both_explorers_lack_is_not_found() {
     assert!(result.raw_tx.is_none());
     assert!(result.error.is_none(), "{result:?}");
     assert!(result.is_not_found(), "{result:?}");
+}
+
+// =============================================================================
+// The second pass (0.6.0): a stranger's spend is a chain fact only by proof
+// =============================================================================
+//
+// The owner's ruling of 2026-10-09 (bsv-stack-lean `NORTH-STAR.md`): a
+// stranger's spend of our output becomes a chain fact only by the spending
+// transaction's merkle proof checked against our headers. A provider's
+// "spent by X" is a word; X's own bytes naming the outpoint are a fact; X's
+// merkle path against the header service is the chain's word. Two
+// explorers agreeing the outpoint is not unspent is a hint.
+
+/// A transaction with one input, spending `source_txid:source_vout`: its
+/// txid and its bytes in hex.
+fn a_spender_of(source_txid: &str, source_vout: u32) -> (String, String) {
+    use bsv_rs::script::{LockingScript, UnlockingScript};
+    use bsv_rs::transaction::{Transaction, TransactionInput, TransactionOutput};
+    let mut tx = Transaction::new();
+    tx.version = 1;
+    tx.lock_time = 0;
+    let mut input = TransactionInput::new(source_txid.to_string(), source_vout);
+    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    tx.inputs.push(input);
+    tx.outputs.push(TransactionOutput {
+        satoshis: Some(900),
+        locking_script: LockingScript::from_hex("51").unwrap(),
+        change: false,
+    });
+    (tx.id(), tx.to_hex())
+}
+
+/// A proof courier that serves one fixed answer.
+struct FixedProof(GetMerklePathResult);
+
+#[async_trait]
+impl MerklePathService for FixedProof {
+    async fn get_merkle_path(&self, _txid: &str) -> Result<GetMerklePathResult> {
+        Ok(self.0.clone())
+    }
+}
+
+const SPEND_HEIGHT: u32 = 900_123;
+
+/// What the fixtures of one spend scenario say.
+struct SpendScene {
+    woc_unspent: Says,
+    bitails_unspent: Says,
+    /// The outpoint the named spender's bytes spend; `None`: WhatsOnChain
+    /// names no spender (404).
+    spender_spends: Option<(&'static str, u32)>,
+    /// A courier serves the spender's merkle path, and the header service
+    /// holds its root at its height.
+    proven: bool,
+    /// A header service is configured.
+    header_service: bool,
+}
+
+struct SpendFixtures {
+    services: Services,
+    spent_route: mockito::Mock,
+    _servers: Vec<mockito::ServerGuard>,
+    _mocks: Vec<mockito::Mock>,
+}
+
+async fn spend_scene(scene: SpendScene) -> SpendFixtures {
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let mut ct = mockito::Server::new_async().await;
+    let mut mocks = vec![
+        woc_unspent(&mut woc, scene.woc_unspent).await,
+        bitails_unspent(&mut bitails, scene.bitails_unspent).await,
+    ];
+
+    let spent_path = format!("/tx/{}/0/spent", UTXO_TXID);
+    let spent_route = woc.mock("GET", spent_path.as_str());
+    let mut proof = GetMerklePathResult {
+        name: Some("courier".to_string()),
+        merkle_path: None,
+        header: None,
+        error: None,
+        notes: vec![],
+    };
+    let spent_route = match scene.spender_spends {
+        Some((source_txid, source_vout)) => {
+            let (spender, spender_hex) = a_spender_of(source_txid, source_vout);
+            mocks.push(
+                woc.mock("GET", format!("/tx/{}/hex", spender).as_str())
+                    .with_status(200)
+                    .with_body(spender_hex)
+                    .create_async()
+                    .await,
+            );
+            if scene.proven {
+                let bump =
+                    bsv_rs::transaction::MerklePath::from_coinbase_txid(&spender, SPEND_HEIGHT);
+                let root = bump.compute_root(Some(&spender)).unwrap();
+                let header = BlockHeader {
+                    version: 1,
+                    previous_hash: "0".repeat(64),
+                    merkle_root: root.clone(),
+                    time: 1700000000,
+                    bits: 486604799,
+                    nonce: 12345,
+                    hash: "b".repeat(64),
+                    height: SPEND_HEIGHT,
+                };
+                mocks.push(
+                    ct.mock(
+                        "GET",
+                        format!("/findHeaderHexForHeight?height={}", SPEND_HEIGHT).as_str(),
+                    )
+                    .with_status(200)
+                    .with_body(
+                        serde_json::json!({
+                            "status": "success",
+                            "value": {
+                                "version": 1,
+                                "previousHash": "0".repeat(64),
+                                "merkleRoot": root,
+                                "time": 1700000000u32,
+                                "bits": 486604799u32,
+                                "nonce": 12345u32,
+                                "height": SPEND_HEIGHT,
+                                "hash": "b".repeat(64),
+                            }
+                        })
+                        .to_string(),
+                    )
+                    .create_async()
+                    .await,
+                );
+                proof.merkle_path = Some(bump.to_hex());
+                proof.header = Some(header);
+            }
+            spent_route
+                .with_status(200)
+                .with_body(format!(r#"{{"txid":"{}","vin":0}}"#, spender))
+        }
+        None => spent_route.with_status(404),
+    };
+    let spent_route = if scene.header_service {
+        spent_route
+    } else {
+        spent_route.expect(0)
+    };
+    let spent_route = spent_route.create_async().await;
+
+    let options = if scene.header_service {
+        ServicesOptions::mainnet().with_chaintracks_url(ct.url())
+    } else {
+        ServicesOptions::mainnet()
+    };
+    let mut services = services_with_explorers(options, &woc.url(), &bitails.url());
+    let mut couriers = ServiceCollection::new("getMerklePath");
+    let courier: MerklePathProvider = StdArc::new(FixedProof(proof));
+    couriers.add("courier", courier);
+    services.get_merkle_path_services = RwLock::new(couriers);
+
+    SpendFixtures {
+        services,
+        spent_route,
+        _servers: vec![woc, bitails, ct],
+        _mocks: mocks,
+    }
+}
+
+/// Two explorers agreeing the outpoint is not in the unspent set, with no
+/// spender named, is not a chain fact (0.5.0 answered `Spent` here).
+#[tokio::test]
+async fn two_explorers_agreeing_is_not_a_spend() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::NotListed,
+        bitails_unspent: Says::NotListed,
+        spender_spends: None,
+        proven: false,
+        header_service: true,
+    })
+    .await;
+    let answer = f.services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
+    assert_ne!(answer, UtxoVerdict::Spent, "two words read as a fact");
+    assert_eq!(answer, UtxoVerdict::SpentHint);
+    f.spent_route.assert_async().await;
+}
+
+/// A spender is named and its bytes name the outpoint, but no merkle path
+/// of it meets the header service: unproven, so not a chain fact.
+#[tokio::test]
+async fn a_named_spender_without_a_proof_is_not_a_spend() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::NotListed,
+        bitails_unspent: Says::NotListed,
+        spender_spends: Some((UTXO_TXID, 0)),
+        proven: false,
+        header_service: true,
+    })
+    .await;
+    let answer = f.services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
+    assert_ne!(
+        answer,
+        UtxoVerdict::Spent,
+        "an unproven spender read as a fact"
+    );
+    assert_eq!(answer, UtxoVerdict::SpentHint);
+}
+
+/// The named spender's bytes spend another outpoint. Its proof is real,
+/// and proves nothing about ours: the name was a word.
+#[tokio::test]
+async fn a_proven_transaction_that_does_not_name_the_outpoint_is_not_a_spend() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::NotListed,
+        bitails_unspent: Says::NotListed,
+        spender_spends: Some((UTXO_TXID, 1)),
+        proven: true,
+        header_service: true,
+    })
+    .await;
+    let answer = f.services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
+    assert_ne!(
+        answer,
+        UtxoVerdict::Spent,
+        "an unbound spender read as a fact"
+    );
+    assert_eq!(
+        answer,
+        UtxoVerdict::SpentHint,
+        "the explorers' agreement stands as a hint"
+    );
+}
+
+/// The spending transaction's bytes name the outpoint and its merkle path
+/// meets the header service's header: a chain fact, whatever the explorers'
+/// unspent sets say or fail to say (0.5.0 answered `Unknown` here).
+#[tokio::test]
+async fn the_spenders_bytes_and_its_proof_are_a_spend() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::Fault,
+        bitails_unspent: Says::Fault,
+        spender_spends: Some((UTXO_TXID, 0)),
+        proven: true,
+        header_service: true,
+    })
+    .await;
+    let answer = f.services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
+    assert_eq!(answer, UtxoVerdict::Spent);
+    f.spent_route.assert_async().await;
+}
+
+/// With no header service no proof can be checked, so no spender is asked
+/// for and nothing is `Spent`.
+#[tokio::test]
+async fn without_a_header_service_no_spend_is_a_fact_and_no_spender_is_asked() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::NotListed,
+        bitails_unspent: Says::NotListed,
+        spender_spends: Some((UTXO_TXID, 0)),
+        proven: true,
+        header_service: false,
+    })
+    .await;
+    let answer = f.services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
+    assert_ne!(
+        answer,
+        UtxoVerdict::Spent,
+        "a spend with no header to check it"
+    );
+    assert_eq!(answer, UtxoVerdict::SpentHint);
+    f.spent_route.assert_async().await;
+}
+
+/// A spender is named and its bytes name the outpoint while both unspent
+/// sets could not be read: the bound bytes are a hint on their own, and
+/// without a proof still no more than a hint.
+#[tokio::test]
+async fn a_bound_spender_is_a_hint_when_the_unspent_sets_could_not_be_read() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::Fault,
+        bitails_unspent: Says::Fault,
+        spender_spends: Some((UTXO_TXID, 0)),
+        proven: false,
+        header_service: true,
+    })
+    .await;
+    let answer = f.services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
+    assert_eq!(answer, UtxoVerdict::SpentHint);
+}
+
+/// An outpoint in an unspent set asks for no spender.
+#[tokio::test]
+async fn an_outpoint_in_an_unspent_set_asks_for_no_spender() {
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let ct = mockito::Server::new_async().await;
+    let _w = woc_unspent(&mut woc, Says::Unspent).await;
+    let _b = bitails_unspent(&mut bitails, Says::Unspent).await;
+    let spent_path = format!("/tx/{}/0/spent", UTXO_TXID);
+    let spent_route = woc
+        .mock("GET", spent_path.as_str())
+        .with_status(404)
+        .expect(0)
+        .create_async()
+        .await;
+    let services = services_with_explorers(
+        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        &woc.url(),
+        &bitails.url(),
+    );
+    assert_eq!(
+        services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await,
+        UtxoVerdict::Unspent
+    );
+    spent_route.assert_async().await;
 }
