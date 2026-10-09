@@ -194,6 +194,14 @@ impl Bitails {
     // =========================================================================
 
     /// Get merkle path proof for a transaction.
+    ///
+    /// Break-glass (Rule 28, T7): a transaction's inclusion proof. For a
+    /// transaction we received, the BEEF's own BUMP is the proof; for one
+    /// we broadcast through Arcade, the BUMP in Arcade's MINED document
+    /// is. This explorer is asked only as the courier of a proof nobody
+    /// pushed to us; `Services::get_merkle_path` checks its root against
+    /// the header service before it is returned, and asks no explorer when
+    /// no header service is configured.
     pub async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
         let url = format!("{}tx/{}/proof/tsc", self.base_url, txid);
 
@@ -243,6 +251,10 @@ impl Bitails {
     // =========================================================================
 
     /// Broadcast multiple raw transactions.
+    ///
+    /// A broadcast is a write, not a read: Rule 28's test (what header,
+    /// proof or index answers the question) does not apply. This explorer
+    /// is a last rung of `postBeef`, behind Arcade and the ARC broadcasters.
     pub async fn post_raws(&self, raws: &[String]) -> Result<Vec<BitailsBroadcastResult>> {
         let url = format!("{}tx/broadcast/multi", self.base_url);
 
@@ -739,6 +751,9 @@ impl Bitails {
     }
 
     /// Get transaction info.
+    ///
+    /// The request behind `get_status_for_txids` (Rule 28, T12; the
+    /// break-glass reason is written there).
     async fn get_tx_info(&self, txid: &str) -> Result<Option<BitailsTxInfo>> {
         let url = format!("{}tx/{}", self.base_url, txid);
 

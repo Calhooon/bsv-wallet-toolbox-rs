@@ -560,6 +560,10 @@ impl Services {
 
         // getMerklePath: Arcade (when configured) → WoC → Bitails
         //
+        // Rule 28 (T6, T7): the two explorers are break-glass couriers of
+        // a proof nobody pushed to us; the proof is believed for its root
+        // against the header service, never for who served it.
+        //
         // A wallet that broadcasts through Arcade already has a first-party
         // source for its own proofs: Arcade's MINED status document carries
         // the BUMP. Asking it first means the third-party indexers are only
@@ -578,7 +582,9 @@ impl Services {
         );
         merkle_path_services.add("Bitails", StdArc::clone(&bitails) as MerklePathProvider);
 
-        // getRawTx: WoC, Bitails
+        // getRawTx: WoC, Bitails. Rule 28 (T8, T9): break-glass couriers of
+        // a foreign ancestor's bytes no store of ours holds; the bytes are
+        // bound to the txid.
         let mut raw_tx_services = ServiceCollection::new("getRawTx");
         raw_tx_services.add(
             "WhatsOnChain",
@@ -637,6 +643,10 @@ impl Services {
         utxo_status_services.add("Bitails", StdArc::clone(&bitails) as UtxoStatusProvider);
 
         // getStatusForTxids: Arcade (when configured) → WoC → Bitails
+        //
+        // Rule 28 (T11, T12): "mined" is a proof; "known to the mempool"
+        // and "unknown" have no header or proof answer, so the two
+        // explorers stay as the break-glass read for those halves.
         //
         // Arcade's status document answers the triage AND carries the proof
         // for a mined transaction, so one call per txid does the work the
@@ -968,6 +978,7 @@ impl Services {
             .build()
             .map_err(|e| Error::NetworkError(format!("HTTP client error: {}", e)))?;
 
+        // Not a chain question (fiat rates), so Rule 28's test does not apply.
         let url = "https://open.er-api.com/v6/latest/USD";
         let response = client
             .get(url)

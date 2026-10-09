@@ -219,7 +219,9 @@ impl FallbackChainTracker {
             .map_err(|e| format!("Bitails header at height {}: {}", height, e))
     }
 
-    /// Break-glass: WhatsOnChain's block-by-height API.
+    /// Break-glass (Rule 28, T5): WhatsOnChain's block-by-height API, asked
+    /// for the merkle root at a height only when the header service, which
+    /// holds it, gave no answer. Its word alone is never a verified root.
     async fn woc_root_for_height(&self, woc_base_url: &str, height: u32) -> Result<String, String> {
         let url = format!("{}/block/height/{}", woc_base_url, height);
         let response = self
