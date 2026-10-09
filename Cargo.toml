@@ -25,7 +25,7 @@ break-glass-script-history = []
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits
-bsv-rs = { version = "0.3.35", features = ["full", "http"] }
+bsv-rs = { version = "0.4.1", features = ["full", "http"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
