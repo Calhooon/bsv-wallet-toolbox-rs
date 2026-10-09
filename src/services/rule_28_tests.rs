@@ -632,3 +632,45 @@ async fn a_missing_header_needs_both_explorers_and_the_answer_is_bound_to_the_ha
         "another block's header was taken: {answer:?}"
     );
 }
+
+// =============================================================================
+// Item 8 (T6, T7): no explorer's proof without a header service
+// =============================================================================
+
+/// T6, T7: a proof nobody pushed to us is fetched from an explorer as a
+/// courier and believed only for its root, checked against the header
+/// service. With no header service there is nothing to check it against,
+/// so the explorers are not asked and no proof is returned.
+#[tokio::test]
+async fn no_proof_is_fetched_from_an_explorer_without_a_header_service() {
+    let mut woc = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let txid = "ab".repeat(32);
+    let w = woc
+        .mock("GET", format!("/tx/{}/proof/tsc", txid).as_str())
+        .with_status(200)
+        .with_body("[]")
+        .expect(0)
+        .create_async()
+        .await;
+    let b = bitails
+        .mock("GET", format!("/tx/{}/proof/tsc", txid).as_str())
+        .with_status(404)
+        .expect(0)
+        .create_async()
+        .await;
+
+    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+    let result = services.get_merkle_path(&txid, false).await.unwrap();
+    assert_eq!(result.merkle_path, None);
+    assert!(
+        result
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("header service")),
+        "{:?}",
+        result.error
+    );
+    w.assert_async().await;
+    b.assert_async().await;
+}
