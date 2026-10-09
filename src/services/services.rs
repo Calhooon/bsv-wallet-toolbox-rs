@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, RwLock};
 
-use crate::chaintracks::Chain;
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::broadcast_memory::{
     apply_sticky_provider_order, unproven_ancestors_in_beef, BroadcastMemory, BroadcastStatus,
@@ -18,6 +17,7 @@ use crate::services::broadcast_memory::{
 #[cfg(feature = "break-glass-script-history")]
 use crate::services::traits::GetScriptHashHistoryResult;
 use crate::services::traits::{merkle_path_note, PostBeefDelivery, NOTE_REFUTED};
+use crate::services::Chain;
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{

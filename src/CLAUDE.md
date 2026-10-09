@@ -3,7 +3,7 @@
 
 ## Overview
 
-This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the TypeScript `@bsv/wallet-toolbox`. It provides wallet storage backends, blockchain header tracking, and services that implement the `WalletInterface` trait from `bsv-sdk`. The library supports multiple storage backends (SQLite, MySQL, remote) and includes the Chaintracks system for block header management.
+This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the TypeScript `@bsv/wallet-toolbox`. It provides wallet storage backends, and services that implement the `WalletInterface` trait from `bsv-sdk`. The library supports multiple storage backends (SQLite, MySQL, remote) and asks every header question of the header service (`chaintracks_url`); it keeps no header store of its own.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 ├───────────────┴──────────────────────┴──────────┴───────────────┤
 │  Storage: StorageSqlx (SQLite/MySQL) | StorageClient (Remote)   │
 ├─────────────────────────────────────────────────────────────────┤
-│  Chaintracks: Block header tracking with bulk/live storage      │
+│  Headers: the header service (chaintracks_url), no local store  │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -41,7 +41,6 @@ This is the main source directory for `bsv-wallet-toolbox`, a Rust port of the T
 | Module | Purpose |
 |--------|---------|
 | `storage/` | Wallet storage layer with traits and implementations (SQLite, MySQL, remote) |
-| `chaintracks/` | Block header tracking system with two-tier bulk/live storage |
 | `services/` | External service providers (WhatsOnChain, ARC, Bitails, BHS) for blockchain operations |
 | `wallet/` | Full `Wallet` implementation with `WalletSigner` for transaction signing |
 | `monitor/` | Transaction monitoring daemon with background tasks for syncing and reprocessing |
@@ -89,23 +88,6 @@ pub use storage::StorageSqlx;  // Local database storage
 
 #[cfg(feature = "remote")]
 pub use storage::StorageClient; // Remote storage via JSON-RPC
-```
-
-### Chaintracks Types
-
-```rust
-pub use chaintracks::{
-    Chaintracks,          // Main orchestrator
-    ChaintracksClient,    // Read-only client trait
-    ChaintracksInfo,      // System status information
-    ChaintracksManagement,// Management trait (destroy, validate, export)
-    ChaintracksOptions,   // Configuration options
-    ChaintracksStorage,   // Storage trait for headers
-    BaseBlockHeader,      // Header without height (as from network)
-    LiveBlockHeader,      // Header with chain tracking fields
-    HeightRange,          // Range of block heights
-    InsertHeaderResult,   // Result of header insertion
-};
 ```
 
 ### Services Types
@@ -290,19 +272,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Block Header Tracking with Chaintracks
-
-```rust
-use bsv_wallet_toolbox::chaintracks::{Chaintracks, ChaintracksOptions};
-
-let options = ChaintracksOptions::default_mainnet();
-let chaintracks = Chaintracks::new(options).await?;
-chaintracks.make_available().await?;
-
-let tip = chaintracks.find_chain_tip_header().await?;
-println!("Chain tip: {} at height {}", tip.hash, tip.height);
-```
-
 ### Using Services for Blockchain Operations
 
 ```rust
@@ -350,7 +319,6 @@ MonitorStorage          ← Extended operations for the monitor daemon
 ## Related Documentation
 
 - [storage/CLAUDE.md](./storage/CLAUDE.md) - Storage layer details, entity definitions, trait implementations
-- [chaintracks/CLAUDE.md](./chaintracks/CLAUDE.md) - The embedded block header store and its storage backends (no ingestor since 0.5.0)
 - [services/CLAUDE.md](./services/CLAUDE.md) - External service providers, traits, and blockchain operations
 - [wallet/CLAUDE.md](./wallet/CLAUDE.md) - Wallet implementation, signing, and WalletInterface
 - [monitor/CLAUDE.md](./monitor/CLAUDE.md) - Transaction monitoring daemon and background tasks
@@ -368,4 +336,4 @@ All storage operations require an `AuthId` containing the user's identity public
 
 ### Async Runtime
 
-All storage and chaintracks operations are async and require a Tokio runtime. The library uses `async_trait` for async trait methods.
+All storage operations are async and require a Tokio runtime. The library uses `async_trait` for async trait methods.

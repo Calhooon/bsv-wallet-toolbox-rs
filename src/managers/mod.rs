@@ -174,7 +174,7 @@ pub struct SetupWalletOptions {
     /// Optional storage path for database persistence.
     pub storage_path: Option<String>,
     /// The blockchain network to use.
-    pub chain: crate::chaintracks::Chain,
+    pub chain: crate::services::Chain,
 }
 
 /// Create a wallet with standard configuration.
@@ -298,7 +298,7 @@ mod tests {
         let options = SetupWalletOptions {
             root_key: Some(vec![0x42; 32]),
             storage_path: Some("/tmp/test.db".to_string()),
-            chain: crate::chaintracks::Chain::Main,
+            chain: crate::services::Chain::Main,
         };
         assert!(options.root_key.is_some());
         assert_eq!(options.storage_path, Some("/tmp/test.db".to_string()));
@@ -309,7 +309,7 @@ mod tests {
         let options = SetupWalletOptions {
             root_key: None,
             storage_path: None,
-            chain: crate::chaintracks::Chain::Test,
+            chain: crate::services::Chain::Test,
         };
         let result = setup_wallet(options).await;
         assert!(result.is_ok());

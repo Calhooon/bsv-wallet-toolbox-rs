@@ -48,8 +48,25 @@ pub use broadcast_memory::{
     PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
 };
 
-// Re-export Chain from chaintracks for convenience
-pub use crate::chaintracks::Chain;
+/// Network chain identifier.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Chain {
+    #[default]
+    Main,
+    Test,
+}
+
+impl Chain {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Chain::Main => "main",
+            Chain::Test => "test",
+        }
+    }
+}
 
 // Re-export main types
 pub use traits::{

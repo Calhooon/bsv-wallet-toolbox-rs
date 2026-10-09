@@ -477,5 +477,4 @@ let purge_result = storage.purge_data(PurgeParams {
 
 - `sqlx/CLAUDE.md` - SQLx storage implementation details
 - `client/CLAUDE.md` - Remote storage client details
-- `../chaintracks/CLAUDE.md` - Chain tracking for proofs
 - `../monitor/CLAUDE.md` - Monitor daemon using MonitorStorage trait

@@ -322,4 +322,3 @@ pub use whatsonchain::{WhatsOnChain, WhatsOnChainConfig};
 - `../collection.rs` - `ServiceCollection<S>` for composing providers with failover
 - `../services.rs` - `Services` orchestrator wiring providers together
 - `../mod.rs` - Service module organization
-- `../../chaintracks/` - Chain and block header tracking

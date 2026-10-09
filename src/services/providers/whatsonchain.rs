@@ -20,7 +20,6 @@ use std::sync::RwLock;
 use std::time::Duration;
 use tokio::time::sleep;
 
-use crate::chaintracks::Chain;
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::traits::{
     validate_txid, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
@@ -29,6 +28,7 @@ use crate::services::traits::{
 };
 #[cfg(feature = "break-glass-script-history")]
 use crate::services::traits::{GetScriptHashHistoryResult, ScriptHistoryItem};
+use crate::services::Chain;
 use crate::{Error, Result};
 
 /// Base URL for WhatsOnChain mainnet API.

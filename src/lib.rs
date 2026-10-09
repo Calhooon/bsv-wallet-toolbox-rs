@@ -63,7 +63,6 @@
 //! }
 //! ```
 
-pub mod chaintracks;
 pub mod error;
 pub mod lock_utils;
 pub mod managers;
@@ -103,12 +102,6 @@ pub use bsv_rs::wallet::{
     InternalizeActionArgs, InternalizeActionResult, ListActionsArgs, ListActionsResult,
     ListCertificatesArgs, ListCertificatesResult, ListOutputsArgs, ListOutputsResult,
     RelinquishCertificateArgs, RelinquishOutputArgs, WalletInterface,
-};
-
-// Re-export Chaintracks types
-pub use chaintracks::{
-    BaseBlockHeader, Chaintracks, ChaintracksClient, ChaintracksInfo, ChaintracksManagement,
-    ChaintracksOptions, ChaintracksStorage, HeightRange, InsertHeaderResult, LiveBlockHeader,
 };
 
 // Re-export Services types
