@@ -45,8 +45,13 @@ pub mod status_codes {
     /// opposed to a transient fault of the service or of our access to it.
     ///
     /// Definitive (re-submitting the same bytes can never succeed):
-    /// * `400` bad request / `422` unprocessable — the submission itself was
-    ///   rejected at validation;
+    /// * `400` from Arcade, which answers every intake refusal with 400 and
+    ///   a validator failure on a parsed transaction among them
+    ///   (arcade@1ae1208 `services/api_server/handlers.go:891-896`), and
+    ///   `422` unprocessable. Classic ARC's 400 is NOT read here: at
+    ///   arc@e7efc5b it is a request ARC could not read, never a verdict on
+    ///   a parsed transaction, and [`Arc`] reads it as a request fault
+    ///   (`is_request_fault`);
     /// * `460..=469` — ARC's transaction-level rejections: not extended format,
     ///   unlocking scripts, inputs, malformed, outputs, fees (465), conflicts,
     ///   BEEF validation, merkle roots;
@@ -57,6 +62,15 @@ pub mod status_codes {
     /// generic error, ambiguous), `413` (this provider's size limit), `5xx`.
     pub fn is_rejection(code: u16) -> bool {
         matches!(code, 400 | 422 | 460..=469 | 471..=473)
+    }
+
+    /// Whether a classic ARC status is a request ARC could not read (`400`
+    /// at arc@e7efc5b: `internal/api/handler/default.go:304-309, 393-401,
+    /// 631-634`; `pkg/api/status.go:15, 54-57`): a fault of the poster,
+    /// transient for the transaction. Arcade's 400 is not read by this
+    /// (see [`is_rejection`]).
+    pub fn is_request_fault(code: u16) -> bool {
+        code == 400
     }
 
     /// ARC's `469 Merkle Roots validation failed` whose body says the
@@ -434,9 +448,11 @@ impl Arc {
     }
 
     /// Map a non-2xx ARC status and body to a per-txid result: a definitive
-    /// rejection for the codes in [`status_codes::is_rejection`], a transient
-    /// `service_error` for everything else, including a `469` whose body says
-    /// the provider's own BEEF verification timed out
+    /// rejection for the codes in [`status_codes::is_rejection`] other than
+    /// `400`, a transient `service_error` for everything else, including
+    /// ARC's `400`, a request it could not read
+    /// ([`status_codes::is_request_fault`]), and a `469` whose body says the
+    /// provider's own BEEF verification timed out
     /// ([`status_codes::is_transient_beef_validation_timeout`]).
     fn classify_arc_http_error(&self, txid: String, code: u16, body: &str) -> PostTxResultForTxid {
         let status = StatusCode::from_u16(code)
@@ -489,6 +505,39 @@ impl Arc {
                 block_hash: None,
                 block_height: None,
                 notes: vec![make_note(&self.name, "postRawTxVerificationTimeout")],
+            };
+        }
+
+        // ARC's 400 is a request it could not read: a content type, a hex
+        // error, a callback option, a body its intake does not parse
+        // (arc@e7efc5b `internal/api/handler/default.go:304-309, 393-401,
+        // 631-634`; an AtomicBEEF is one, bsv-stack-lean #63 F2). It is a
+        // fault of the poster, never a verdict on the transaction (those
+        // are 460 to 475): transient, so the post is retried in the other
+        // form ARC reads and the answer stays a hint that schedules a
+        // re-ask, never the transaction's rejection.
+        if status_codes::is_request_fault(code) {
+            tracing::warn!(
+                name = %self.name,
+                txid = %txid,
+                code,
+                body = %body,
+                "ARC could not read the request (400): a fault of the request, not a rejection"
+            );
+            return PostTxResultForTxid {
+                txid,
+                status: "error".to_string(),
+                double_spend: false,
+                orphan_mempool: false,
+                competing_txs: None,
+                data: Some(format!(
+                    "ARC could not read the request (HTTP {}), not a verdict on the transaction - {}",
+                    code, body
+                )),
+                service_error: true,
+                block_hash: None,
+                block_height: None,
+                notes: vec![make_note(&self.name, NOTE_REQUEST_FAULT)],
             };
         }
 
@@ -727,8 +776,11 @@ impl Arc {
     /// A reduced send that is refused for what reads as a missing parent (an
     /// orphan-mempool verdict, a 4xx whose text matches
     /// [`missing_parent_hint`], an ancestor rejected inside the batch, or a
-    /// batch endpoint this ARC does not serve) is retried ONCE with the full
-    /// BEEF, and the fallback is logged. An EF child is never sent to a
+    /// batch endpoint this ARC does not serve), or that ARC could not read
+    /// (a 400, [`status_codes::is_request_fault`]), is retried ONCE with the
+    /// full BEEF, and the fallback is logged. The full BEEF is the plain
+    /// BEEF as bytes, re-posted once as JSON hex when ARC cannot read the
+    /// bytes either (`post_full_beef`). An EF child is never sent to a
     /// provider whose seen set does not cover its unproven parents.
     ///
     /// Logs the ARC round trip at info (the time a caller waits on
@@ -853,10 +905,22 @@ impl Arc {
                                                 .notes
                                                 .push(make_note(&self.name, "postBeefAsEF"));
                                             delivery.bytes_sent += ef_hex.len() / 2;
-                                            (
-                                                self.post_raw_tx(&ef_hex, Some(txids)).await?,
-                                                vec![subject.clone()],
-                                            )
+                                            let r = self.post_raw_tx(&ef_hex, Some(txids)).await?;
+                                            if is_request_fault_result(&r) {
+                                                // ARC could not read the EF:
+                                                // the plain BEEF, its other form.
+                                                tracing::warn!(name = %self.name, "ARC could not read the EF (400); posting the full BEEF");
+                                                result
+                                                    .notes
+                                                    .push(make_note(&self.name, "postBeefFull"));
+                                                (
+                                                    self.post_full_beef(beef, txids, delivery)
+                                                        .await?,
+                                                    vec![subject.clone()],
+                                                )
+                                            } else {
+                                                (r, vec![subject.clone()])
+                                            }
                                         }
                                         Err(e) => {
                                             tracing::warn!(name = %self.name, error = %e, "EF serialization failed — falling back to BEEF");
@@ -1050,7 +1114,25 @@ impl Arc {
         let body = plain_beef(beef);
         delivery.bytes_sent += body.len();
         let subject = txids.last().cloned().unwrap_or_default();
-        self.post_tx_bytes(body, subject).await
+        let r = self.post_tx_bytes(body, subject).await?;
+        if !is_request_fault_result(&r) {
+            return Ok(r);
+        }
+        // ARC could not read the bytes: the same plain BEEF once more in the
+        // reference's form, `{"rawTx": hex}` as JSON. A second 400 is the
+        // answer: a request fault, transient, for the re-ask.
+        tracing::warn!(
+            name = %self.name,
+            txid = %r.txid,
+            "ARC could not read the plain BEEF as bytes (400); re-posting it once as JSON hex"
+        );
+        delivery.bytes_sent += body.len();
+        let mut retried = self.post_raw_tx(&hex::encode(body), Some(txids)).await?;
+        retried.notes.splice(0..0, r.notes);
+        retried
+            .notes
+            .push(make_note(&self.name, "postBeefRetryJson"));
+        Ok(retried)
     }
 
     /// The reduced send (see [`Arc::post_beef_seen`]): the subject alone as
@@ -1112,6 +1194,7 @@ impl Arc {
                 delivery.bytes_sent += ef.len();
                 let r = self.post_raw_tx(&hex::encode(ef), Some(txids)).await?;
                 let refused = r.orphan_mempool
+                    || is_request_fault_result(&r)
                     || (!r.is_success() && missing_parent_hint(r.data.as_deref().unwrap_or("")));
                 let accepted = if r.is_success() {
                     vec![subject.clone()]
@@ -1149,6 +1232,7 @@ impl Arc {
                 let endpoint_unsupported = matches!(post.http_code, Some(404 | 405 | 415 | 501));
                 let refused = subject_result.orphan_mempool
                     || endpoint_unsupported
+                    || is_request_fault_result(&subject_result)
                     || post.items.iter().any(|r| {
                         !r.is_success()
                             && (missing_parent_hint(r.data.as_deref().unwrap_or(""))
@@ -1425,6 +1509,17 @@ fn make_note(provider: &str, what: &str) -> HashMap<String, serde_json::Value> {
         serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
     );
     note
+}
+
+/// The note on a result for ARC's 400 (`status_codes::is_request_fault`).
+const NOTE_REQUEST_FAULT: &str = "postRawTxRequestFault";
+
+/// Whether a result is ARC's reading of a request it could not read.
+fn is_request_fault_result(r: &PostTxResultForTxid) -> bool {
+    r.service_error
+        && r.notes
+            .iter()
+            .any(|n| n.get("what").and_then(|v| v.as_str()) == Some(NOTE_REQUEST_FAULT))
 }
 
 /// The BEEF inside an AtomicBEEF: the bytes after the BRC-95 prefix (the
