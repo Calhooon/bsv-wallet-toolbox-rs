@@ -24,9 +24,6 @@ const LOCK_HEX: &str = "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac";
 /// Hex prefix of an EF-encoded version-1 transaction (BRC-30 marker).
 const EF_HEX_PREFIX: &str = "010000000000000000ef";
 
-/// Hex prefix of a V1 BEEF.
-const BEEF_HEX_PREFIX: &str = "0100beef";
-
 fn synthetic_tx(source_txid: Option<String>, source_vout: u32, satoshis: u64) -> Transaction {
     Transaction::with_params(
         1,
@@ -481,10 +478,9 @@ mod arc_reduced {
         let mut server = mockito::Server::new_async().await;
         let beef_mock = server
             .mock("POST", "/v1/tx")
-            .match_body(mockito::Matcher::Regex(format!(
-                r#""rawTx":"{}"#,
-                BEEF_HEX_PREFIX
-            )))
+            // The plain BEEF itself, as bytes.
+            .match_header("content-type", "application/octet-stream")
+            .match_body(c.beef.clone())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "ANNOUNCED_TO_NETWORK"))
@@ -520,10 +516,9 @@ mod arc_reduced {
         // And the plain post_beef API is exactly that path.
         let beef_mock2 = server
             .mock("POST", "/v1/tx")
-            .match_body(mockito::Matcher::Regex(format!(
-                r#""rawTx":"{}"#,
-                BEEF_HEX_PREFIX
-            )))
+            // The plain BEEF itself, as bytes.
+            .match_header("content-type", "application/octet-stream")
+            .match_body(c.beef.clone())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "SEEN_ON_NETWORK"))
@@ -558,10 +553,9 @@ mod arc_reduced {
             .await;
         let beef_mock = server
             .mock("POST", "/v1/tx")
-            .match_body(mockito::Matcher::Regex(format!(
-                r#""rawTx":"{}"#,
-                BEEF_HEX_PREFIX
-            )))
+            // The plain BEEF itself, as bytes.
+            .match_header("content-type", "application/octet-stream")
+            .match_body(c.beef.clone())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "SEEN_ON_NETWORK"))
@@ -606,10 +600,9 @@ mod arc_reduced {
             .await;
         let beef_mock = server
             .mock("POST", "/v1/tx")
-            .match_body(mockito::Matcher::Regex(format!(
-                r#""rawTx":"{}"#,
-                BEEF_HEX_PREFIX
-            )))
+            // The plain BEEF itself, as bytes.
+            .match_header("content-type", "application/octet-stream")
+            .match_body(c.beef.clone())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "SEEN_ON_NETWORK"))
@@ -646,10 +639,9 @@ mod arc_reduced {
             .await;
         let beef_mock = server
             .mock("POST", "/v1/tx")
-            .match_body(mockito::Matcher::Regex(format!(
-                r#""rawTx":"{}"#,
-                BEEF_HEX_PREFIX
-            )))
+            // The plain BEEF itself, as bytes.
+            .match_header("content-type", "application/octet-stream")
+            .match_body(c.beef.clone())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "SEEN_ON_NETWORK"))
@@ -683,10 +675,9 @@ mod arc_reduced {
             .await;
         let beef_mock = server
             .mock("POST", "/v1/tx")
-            .match_body(mockito::Matcher::Regex(format!(
-                r#""rawTx":"{}"#,
-                BEEF_HEX_PREFIX
-            )))
+            // The plain BEEF itself, as bytes.
+            .match_header("content-type", "application/octet-stream")
+            .match_body(c.beef.clone())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "SEEN_ON_NETWORK"))
@@ -781,10 +772,9 @@ mod services_memory {
         let mut gp = mockito::Server::new_async().await;
         let taal_mock = taal
             .mock("POST", "/v1/tx")
-            .match_body(mockito::Matcher::Regex(format!(
-                r#""rawTx":"{}"#,
-                BEEF_HEX_PREFIX
-            )))
+            // The plain BEEF itself, as bytes.
+            .match_header("content-type", "application/octet-stream")
+            .match_body(c.beef.clone())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "SEEN_ON_NETWORK"))
@@ -826,10 +816,9 @@ mod services_memory {
         // instance holds nothing but acceptances, which never skip)...
         let gp_full = gp
             .mock("POST", "/v1/tx")
-            .match_body(mockito::Matcher::Regex(format!(
-                r#""rawTx":"{}"#,
-                BEEF_HEX_PREFIX
-            )))
+            // The plain BEEF itself, as bytes.
+            .match_header("content-type", "application/octet-stream")
+            .match_body(c.beef.clone())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(arc_response(&c.subject, "SEEN_ON_NETWORK"))

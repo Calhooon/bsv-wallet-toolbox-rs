@@ -313,6 +313,41 @@ impl Arc {
             .send()
             .await;
 
+        self.read_submit_response(response, txid, raw_tx_hex.len() / 2)
+            .await
+    }
+
+    /// Post bytes ARC tells apart by their own leading bytes (a BEEF, EF or a
+    /// raw transaction) as `application/octet-stream` to `/v1/tx`, the third
+    /// of the content types ARC's intake reads (arc@e7efc5b
+    /// `internal/api/handler/parsers.go:20-61`).
+    async fn post_tx_bytes(&self, bytes: &[u8], txid: String) -> Result<PostTxResultForTxid> {
+        let url = format!("{}/v1/tx", self.url);
+        let mut headers = self.get_headers();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/octet-stream"),
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .timeout(Duration::from_secs(30))
+            .body(bytes.to_vec())
+            .send()
+            .await;
+
+        self.read_submit_response(response, txid, bytes.len()).await
+    }
+
+    /// The answer to one `POST /v1/tx`, whatever the body's form.
+    async fn read_submit_response(
+        &self,
+        response: std::result::Result<reqwest::Response, reqwest::Error>,
+        txid: String,
+        bytes_sent: usize,
+    ) -> Result<PostTxResultForTxid> {
         match response {
             Ok(resp) if resp.status().is_success() => {
                 let data: ArcResponse = resp.json().await.map_err(|e| {
@@ -325,7 +360,7 @@ impl Arc {
                     txid = %data.txid,
                     extra_info = ?data.extra_info,
                     competing_txs = ?data.competing_txs,
-                    hex_len = raw_tx_hex.len(),
+                    bytes_sent,
                     "ARC response"
                 );
 
@@ -897,7 +932,8 @@ impl Arc {
                     }
                 }
                 Err(_) => {
-                    // Can't parse BEEF — send as-is
+                    // Can't parse BEEF: send its bytes, the AtomicBEEF prefix
+                    // stripped when it carries one (`post_full_beef`).
                     (
                         self.post_full_beef(beef, txids, delivery).await?,
                         vec![subject.clone()],
@@ -993,16 +1029,28 @@ impl Arc {
         Ok(result)
     }
 
-    /// The full package: the whole BEEF, hex-encoded, to `/v1/tx`.
+    /// The full package: the plain BEEF, as bytes, to `/v1/tx`.
+    ///
+    /// Never the bytes as handed in: ARC tells a BEEF by its bytes 2 and 3
+    /// (`BE EF`) and has no case for the BRC-95 AtomicBEEF prefix, so an
+    /// AtomicBEEF goes to its raw-transaction parse and is refused 400
+    /// before any validation (arc@e7efc5b `internal/validator/
+    /// helpers.go:36-58`, `internal/api/handler/default.go:405-414,
+    /// 601-640`; bsv-stack-lean #63, finding F2). The prefix is stripped
+    /// ([`plain_beef`]) and the BEEF goes as `application/octet-stream`; the
+    /// reference posts the same BEEF without the prefix (ts-stack@edf6e03
+    /// `packages/wallet/wallet-toolbox/src/services/providers/
+    /// ARC.ts:320-340`).
     async fn post_full_beef(
         &self,
         beef: &[u8],
         txids: &[String],
         delivery: &mut PostBeefDelivery,
     ) -> Result<PostTxResultForTxid> {
-        delivery.bytes_sent += beef.len();
-        let beef_hex = hex::encode(beef);
-        self.post_raw_tx(&beef_hex, Some(txids)).await
+        let body = plain_beef(beef);
+        delivery.bytes_sent += body.len();
+        let subject = txids.last().cloned().unwrap_or_default();
+        self.post_tx_bytes(body, subject).await
     }
 
     /// The reduced send (see [`Arc::post_beef_seen`]): the subject alone as
@@ -1377,6 +1425,21 @@ fn make_note(provider: &str, what: &str) -> HashMap<String, serde_json::Value> {
         serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
     );
     note
+}
+
+/// The BEEF inside an AtomicBEEF: the bytes after the BRC-95 prefix (the
+/// four bytes `01010101` and the subject's 32-byte txid) when a BEEF version
+/// (bytes 2 and 3 `BE EF`) follows it; any other bytes as they are.
+pub(crate) fn plain_beef(beef: &[u8]) -> &[u8] {
+    const ATOMIC_PREFIX_LEN: usize = 36;
+    if beef.len() >= ATOMIC_PREFIX_LEN + 4
+        && beef[..4] == [0x01, 0x01, 0x01, 0x01]
+        && beef[ATOMIC_PREFIX_LEN + 2..ATOMIC_PREFIX_LEN + 4] == [0xBE, 0xEF]
+    {
+        &beef[ATOMIC_PREFIX_LEN..]
+    } else {
+        beef
+    }
 }
 
 fn compute_txid_from_hex(hex_str: &str) -> String {
