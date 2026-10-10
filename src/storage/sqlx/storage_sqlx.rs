@@ -3300,6 +3300,59 @@ impl StorageSqlx {
             .await?;
         Ok(())
     }
+
+    /// The immediate post of `createAction`, `signAction` or
+    /// `internalizeAction` drew no accepting word (a refusal, a double-spend
+    /// word, a transient word, or no broadcaster reached): the same hint as
+    /// [`Self::record_send_waiting_hint`]. The request is left `unsent` with
+    /// `attempts` counted, the word (`outcome`, `words`) recorded on its
+    /// history, the next re-ask on the cadence, and a competitor the word
+    /// names queued for a proof ask. The transaction's word, its inputs and
+    /// its outputs do not move (bsv-stack-lean #66). A request already past
+    /// the post (`unmined`, `completed`, a host's retire) is not touched.
+    pub(super) async fn record_immediate_broadcast_hint(
+        &self,
+        txid: &str,
+        outcome: &str,
+        words: serde_json::Value,
+        competitors: &[String],
+    ) -> Result<()> {
+        let row: Option<(i64, i64, String)> = sqlx::query_as(
+            "SELECT proven_tx_req_id, attempts, history FROM proven_tx_reqs \
+             WHERE txid = ? AND status IN ('unsent', 'sending', 'unprocessed')",
+        )
+        .bind(txid)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some((proven_tx_req_id, attempts, history)) = row else {
+            return Ok(());
+        };
+        let attempts = attempts.saturating_add(1);
+        let now = chrono::Utc::now();
+        let next = crate::services::cadence::send_waiting_reask_minutes(
+            u32::try_from(attempts).unwrap_or(u32::MAX),
+        );
+        let history = append_req_history_note(
+            &history,
+            serde_json::json!({
+                "when": now.to_rfc3339(),
+                "what": "immediateBroadcastHint",
+                "outcome": outcome,
+                "attempts": attempts,
+                "words": words,
+                "nextReaskMinutes": next,
+            }),
+        );
+        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+            .bind(attempts)
+            .bind(history)
+            .bind(now)
+            .bind(proven_tx_req_id)
+            .execute(self.pool())
+            .await?;
+        self.queue_competitors(txid, competitors).await?;
+        Ok(())
+    }
 }
 
 /// The key of a request's history that holds the competitors queued for a

@@ -1592,17 +1592,17 @@ where
                                     );
                                 }
                                 BroadcastOutcome::DoubleSpend { details, .. } => {
-                                    tracing::error!(
+                                    tracing::warn!(
                                         txid = %txid,
                                         errors = ?details,
-                                        "Broadcast detected double spend"
+                                        "Broadcast drew a double-spend word: a hint, re-asked via SendWaitingTask"
                                     );
                                 }
                                 BroadcastOutcome::InvalidTx { details } => {
-                                    tracing::error!(
+                                    tracing::warn!(
                                         txid = %txid,
                                         errors = ?details,
-                                        "Broadcast rejected — transaction invalid"
+                                        "Broadcast drew a refusal: a hint, re-asked via SendWaitingTask"
                                     );
                                 }
                                 BroadcastOutcome::OrphanMempool { details } => {
@@ -1624,10 +1624,26 @@ where
                         }
                     }
                 } else {
+                    // The wallet's own fault, before any post: nothing reached a
+                    // broadcaster, so the action is aborted (its inputs released)
+                    // and the caller gets the error.
                     tracing::warn!(txid = %txid, "No BEEF available for broadcast");
-                    BroadcastOutcome::InvalidTx {
-                        details: vec!["No BEEF available for broadcast".to_string()],
+                    if let Err(abort_err) = self
+                        .storage
+                        .abort_action(
+                            &auth,
+                            bsv_rs::wallet::AbortActionArgs {
+                                reference: storage_result.reference.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        tracing::error!(txid = %txid, error = %abort_err, "Failed to abort transaction after a broadcast it could not build");
                     }
+                    return Err(bsv_rs::Error::WalletError(format!(
+                        "No BEEF available for broadcast of txid {}. Transaction aborted and inputs released.",
+                        txid
+                    )));
                 };
 
                 // Update transaction status based on classified broadcast outcome
@@ -1644,21 +1660,10 @@ where
                     &broadcast_outcome,
                 );
 
-                // On permanent failure, return an error with details
-                // On service error or orphan mempool (transient), the tx stays in 'sending' for retry — not an error
-                match &broadcast_outcome {
-                    BroadcastOutcome::DoubleSpend { .. } | BroadcastOutcome::InvalidTx { .. } => {
-                        return Err(bsv_rs::Error::WalletError(
-                            broadcast_outcome
-                                .error_message(&txid)
-                                .unwrap_or_else(|| format!(
-                                    "Transaction broadcast failed for txid {}. Transaction marked as failed and inputs restored.",
-                                    txid
-                                )),
-                        ));
-                    }
-                    _ => {} // Success, ServiceError, or OrphanMempool — continue
-                }
+                // A broadcaster's word is never an error to the caller
+                // (bsv-stack-lean #66): every outcome but a success leaves the
+                // transaction 'sending' and the result carries the txid with
+                // that status; the monitor re-asks on the cadence.
             }
 
             // Convert txid string to [u8; 32]
@@ -2017,51 +2022,73 @@ where
 
                         let beef_bytes = broadcast_beef.to_binary();
                         let txid_strings = vec![txid.clone()];
-                        match self.services.post_beef(&beef_bytes, &txid_strings).await {
-                            Ok(results) => {
-                                let outcome = classify_broadcast_results(&results);
-                                match &outcome {
-                                    BroadcastOutcome::Success => {
-                                        tracing::info!(txid = %txid, "Transaction broadcast successfully (sign_action)");
+                        Ok(
+                            match self.services.post_beef(&beef_bytes, &txid_strings).await {
+                                Ok(results) => {
+                                    let outcome = classify_broadcast_results(&results);
+                                    match &outcome {
+                                        BroadcastOutcome::Success => {
+                                            tracing::info!(txid = %txid, "Transaction broadcast successfully (sign_action)");
+                                        }
+                                        BroadcastOutcome::ServiceError { details } => {
+                                            tracing::warn!(
+                                                txid = %txid,
+                                                errors = ?details,
+                                                "Broadcast returned service errors: will retry (sign_action)"
+                                            );
+                                        }
+                                        BroadcastOutcome::DoubleSpend { details, .. } => {
+                                            tracing::warn!(txid = %txid, errors = ?details, "Double-spend word: a hint, re-asked (sign_action)");
+                                        }
+                                        BroadcastOutcome::InvalidTx { details } => {
+                                            tracing::warn!(txid = %txid, errors = ?details, "Refusal: a hint, re-asked (sign_action)");
+                                        }
+                                        BroadcastOutcome::OrphanMempool { details } => {
+                                            tracing::warn!(txid = %txid, errors = ?details, "Orphan mempool (parent not propagated): will retry (sign_action)");
+                                        }
                                     }
-                                    BroadcastOutcome::ServiceError { details } => {
-                                        tracing::warn!(
-                                            txid = %txid,
-                                            errors = ?details,
-                                            "Broadcast returned service errors — will retry (sign_action)"
-                                        );
-                                    }
-                                    BroadcastOutcome::DoubleSpend { details, .. } => {
-                                        tracing::error!(txid = %txid, errors = ?details, "Double spend detected (sign_action)");
-                                    }
-                                    BroadcastOutcome::InvalidTx { details } => {
-                                        tracing::error!(txid = %txid, errors = ?details, "Transaction rejected (sign_action)");
-                                    }
-                                    BroadcastOutcome::OrphanMempool { details } => {
-                                        tracing::warn!(txid = %txid, errors = ?details, "Orphan mempool (parent not propagated) — will retry (sign_action)");
+                                    outcome
+                                }
+                                Err(e) => {
+                                    tracing::warn!(txid = %txid, error = %e, "Broadcast service error: will retry (sign_action)");
+                                    BroadcastOutcome::ServiceError {
+                                        details: vec![e.to_string()],
                                     }
                                 }
-                                outcome
-                            }
-                            Err(e) => {
-                                tracing::warn!(txid = %txid, error = %e, "Broadcast service error — will retry (sign_action)");
-                                BroadcastOutcome::ServiceError {
-                                    details: vec![e.to_string()],
-                                }
-                            }
-                        }
+                            },
+                        )
                     }
                     Err(e) => {
                         tracing::error!(txid = %txid, error = %e, "Failed to parse input BEEF (sign_action)");
-                        BroadcastOutcome::InvalidTx {
-                            details: vec![format!("Failed to parse input BEEF: {}", e)],
-                        }
+                        Err(format!("Failed to parse input BEEF: {}", e))
                     }
                 }
             } else {
                 tracing::warn!(txid = %txid, "No input_beef available for broadcast (sign_action)");
-                BroadcastOutcome::InvalidTx {
-                    details: vec!["No input_beef available for broadcast".to_string()],
+                Err("No input_beef available for broadcast".to_string())
+            };
+            let broadcast_outcome = match broadcast_outcome {
+                Ok(outcome) => outcome,
+                Err(fault) => {
+                    // The wallet's own fault, before any post: nothing reached
+                    // a broadcaster, so the action is aborted (its inputs
+                    // released) and the caller gets the error.
+                    if let Err(abort_err) = self
+                        .storage
+                        .abort_action(
+                            &auth,
+                            bsv_rs::wallet::AbortActionArgs {
+                                reference: reference.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        tracing::error!(txid = %txid, error = %abort_err, "Failed to abort transaction after a broadcast it could not build (sign_action)");
+                    }
+                    return Err(bsv_rs::Error::WalletError(format!(
+                        "{} for txid {}. Transaction aborted and inputs released.",
+                        fault, txid
+                    )));
                 }
             };
 
@@ -2079,20 +2106,10 @@ where
                 &broadcast_outcome,
             );
 
-            // On permanent failure, return an error with details
-            match &broadcast_outcome {
-                BroadcastOutcome::DoubleSpend { .. } | BroadcastOutcome::InvalidTx { .. } => {
-                    return Err(bsv_rs::Error::WalletError(
-                        broadcast_outcome
-                            .error_message(&txid)
-                            .unwrap_or_else(|| format!(
-                                "Transaction broadcast failed for txid {}. Transaction marked as failed and inputs restored.",
-                                txid
-                            )),
-                    ));
-                }
-                _ => {} // Success, ServiceError, or OrphanMempool — continue
-            }
+            // A broadcaster's word is never an error to the caller
+            // (bsv-stack-lean #66): every outcome but a success leaves the
+            // transaction 'sending' and the result carries the txid with that
+            // status; the monitor re-asks on the cadence.
         }
 
         // Remove from pending transactions cache on success

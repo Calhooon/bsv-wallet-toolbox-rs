@@ -10,21 +10,24 @@ use bsv_rs::transaction::Beef;
 /// Classified result of a broadcast attempt.
 ///
 /// Matches the classification pattern used by the TS and Go reference
-/// wallet-toolbox implementations. Transient failures (ServiceError) keep
-/// inputs locked for background retry; permanent failures (DoubleSpend,
-/// InvalidTx) restore inputs immediately.
+/// wallet-toolbox implementations. Since 0.7.4 every outcome but `Success` is
+/// a broadcaster's word and a hint (bsv-stack-lean #66): the transaction
+/// stays `sending` with its inputs locked and is re-asked on the cadence;
+/// none of them fails it or releases its inputs.
 #[derive(Debug, Clone)]
 pub enum BroadcastOutcome {
     /// At least one provider accepted the transaction.
     Success,
     /// All providers returned service/network errors (transient — will retry).
     ServiceError { details: Vec<String> },
-    /// A provider reported a double-spend (permanent).
+    /// A provider reported a double-spend (a hint; its named competitor is
+    /// queued for a proof ask).
     DoubleSpend {
         competing_txs: Vec<String>,
         details: Vec<String>,
     },
-    /// A provider definitively rejected the transaction (permanent).
+    /// A provider refused the transaction (a 465 and every other
+    /// `is_rejection` code, Arcade REJECTED): a hint, never a verdict.
     InvalidTx { details: Vec<String> },
     /// A provider reported orphan mempool (parent tx not yet propagated).
     /// This is a propagation issue, NOT a double-spend. The miner has the
@@ -111,19 +114,21 @@ pub fn is_definitive_rejection(tr: &PostTxResultForTxid) -> bool {
 /// Priority order (matching TS/Go reference implementations):
 /// 1. Any success → Success
 /// 2. Any double-spend that NAMES a competing tx (and is not orphan mempool)
-///    → DoubleSpend (permanent)
+///    → DoubleSpend
 /// 3. Any definitive rejection ([`is_definitive_rejection`]: ARC/Arcade 4xx
 ///    rejection codes such as 465 fee-too-low, Arcade `REJECTED` /
-///    `DOUBLE_SPEND_ATTEMPTED`) → permanent. A rejection flagged `double_spend`
-///    (Arcade `DOUBLE_SPEND_ATTEMPTED`, competitor unnamed) → DoubleSpend, so
-///    its inputs are released only after per-input chain verification; every
-///    other definitive rejection → InvalidTx.
+///    `DOUBLE_SPEND_ATTEMPTED`): a rejection flagged `double_spend` (Arcade
+///    `DOUBLE_SPEND_ATTEMPTED`, competitor unnamed), or one whose results
+///    name a competing tx (so the competitor is carried), → DoubleSpend;
+///    every other definitive rejection → InvalidTx.
 /// 4. Any orphan mempool → OrphanMempool (transient, parent not propagated)
 /// 5. Otherwise → ServiceError (transient, will retry)
 ///
-/// A definitive rejection is NEVER a transient retry: `create_action` fails
-/// the transaction, releases its inputs and returns the error to the caller,
-/// instead of returning a phantom txid that `SendWaitingTask` re-submits.
+/// The classes name the broadcaster's word and nothing more: since 0.7.4
+/// `create_action`, `sign_action` and `internalize_action` treat every class
+/// but `Success` as a hint (bsv-stack-lean #66). The transaction stays
+/// `sending`, the caller gets its txid, and `SendWaitingTask` re-asks on the
+/// cadence until a proof, a competitor's checked proof or the host's retire.
 pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcome {
     // Collect all per-txid results across providers
     let all_txid_results: Vec<&PostTxResultForTxid> =
@@ -177,16 +182,16 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
     }
 
     // 3. Any definitive rejection? (ARC/Arcade 4xx rejection codes, Arcade fatal
-    // statuses.) Permanent: never a transient retry. An unnamed double-spend
-    // verdict stays a DoubleSpend so its inputs are released only after
-    // per-input chain verification, never blindly.
+    // statuses.) An unnamed double-spend word stays a DoubleSpend.
     let rejections: Vec<&PostTxResultForTxid> = all_txid_results
         .iter()
         .copied()
         .filter(|tr| is_definitive_rejection(tr))
         .collect();
     if !rejections.is_empty() {
-        if rejections.iter().any(|tr| tr.double_spend) {
+        // A refusal that names a competitor carries it (a hint whose
+        // competitor is queued for a proof ask, bsv-stack-lean #66).
+        if rejections.iter().any(|tr| tr.double_spend) || !competing_txs.is_empty() {
             return BroadcastOutcome::DoubleSpend {
                 competing_txs,
                 details,
