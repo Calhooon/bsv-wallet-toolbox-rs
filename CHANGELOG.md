@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.2] - 2026-10-10
+
+The ARC provider posts a BEEF in a form ARC reads, and reads ARC's 400 as a request ARC could not read, never as the transaction's rejection (bsv-stack-lean #63, finding F2 of its reading of the broadcast body at the pins).
+
+### Fixed
+
+1. `Arc::post_beef` on the full-BEEF path (an unproven ancestor this ARC has not seen, or an EF that could not be built) posted the bytes as handed in, hex, as `{"rawTx": hex}`. `internalizeAction` hands it the caller's AtomicBEEF, and ARC tells a BEEF by its bytes 2 and 3 and has no case for the BRC-95 prefix: at arc@e7efc5b the AtomicBEEF goes to the raw-transaction parse and is refused 400 before any validation (`internal/validator/helpers.go:36-58`, `internal/api/handler/default.go:405-414, 601-640`). The provider now strips the prefix and posts the plain BEEF as `application/octet-stream` to `/v1/tx` (`parsers.go:20-61`); the reference posts the BEEF without the prefix (ts-stack@edf6e03 wallet-toolbox `src/services/providers/ARC.ts:320-340`). Every other path is unchanged: EF when every ancestor is proven, the reduced send of 0.3.56, `/v1/txs` for a batch.
+2. Classic ARC's 400 was read as a definitive rejection, so `send_waiting` retired the transaction on it. At arc@e7efc5b a 400 is a request ARC could not read (a content type, a hex error, a callback option, a body its intake does not parse: `default.go:304-309, 393-401, 631-634`), never a verdict on a parsed transaction. It is now a request fault: transient (`service_error`, note `postRawTxRequestFault`), a hint that schedules the re-ask, never the transaction's rejection. The post is retried in the other form ARC reads: the plain BEEF as bytes is re-posted once as the reference's `{"rawTx": hex}` (note `postBeefRetryJson`), and an EF or a reduced send ARC cannot read falls back to the full BEEF. `status_codes::is_request_fault` is new. `status_codes::is_rejection` still lists 400 for Arcade, whose 400 can carry a validator verdict (arcade@1ae1208 `services/api_server/handlers.go:891-896`); the Arcade provider is unchanged.
+3. The witnesses: `tests/arc_broadcast_body_tests.rs`, against the six rows of the broadcast-body replay (`tests/vectors/broadcast_body/`, three AtomicBEEFs and the same three BEEFs) and a mock ARC that reads a body as its intake at e7efc5b does. At 0.7.1 two AtomicBEEF rows were refused 400 and ARC's 400 retired the transaction through `send_waiting`; at 0.7.2 every row is read and the transaction's word is unchanged. Ten tests that matched the old hex body now match the bytes and the type.
+
+### Upgrading
+
+- Nothing stored changes and nothing is migrated. No public item changed; one was added (`status_codes::is_request_fault`). An ARC behind a proxy that refuses `application/octet-stream` with a 400 gets the JSON form on the re-post. Rollback: pin 0.7.1.
+
 ## [0.7.1] - 2026-10-10
 
 The crate depends on bsv-rs 0.4.3 (was 0.4.1). bsv-rs 0.4.3 reads a raw transaction with no output as invalid bytes, as one with no input has been since 0.4.1 (bsv-stack-lean #59; the node's rule, bsv-script-lean@87f0461 `lean/BsvScript/TxRules.lean:85-86`). Through it the crate also takes bsv-rs 0.4.2's whole-path rules. `createAction` honours `trustSelf: 'known'` before it verifies the caller's `inputBEEF`, as the reference does.
