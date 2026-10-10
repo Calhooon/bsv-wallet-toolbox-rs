@@ -1230,13 +1230,14 @@ pub trait MonitorStorage: WalletStorageProvider {
         self.mark_transaction_seen_on_network(txid).await
     }
 
-    /// Mark a broadcast transaction as fatally rejected by the broadcaster.
+    /// Mark a broadcast transaction as rejected: the proven_tx_req to
+    /// `doubleSpend` / `invalid` so it is never re-broadcast, the
+    /// transaction `failed`; deeper reconciliation (input restoration, UTXO
+    /// verification) stays with the existing review / cleanup machinery.
     ///
-    /// Called by push-status paths on terminal-fatal statuses (`REJECTED`,
-    /// `DOUBLE_SPEND_ATTEMPTED`). Sets the proven_tx_req to `doubleSpend` /
-    /// `invalid` so it is never re-broadcast; deeper reconciliation (input
-    /// restoration, UTXO verification) stays with the existing review /
-    /// cleanup machinery.
+    /// A host's explicit act. Since 0.7.4 no path of this crate calls it on
+    /// a broadcaster's word, which is a hint (bsv-stack-lean #66;
+    /// [`MonitorStorage::mark_transaction_rejected_by`]).
     ///
     /// Returns `true` if any record was updated.
     ///
@@ -1251,16 +1252,20 @@ pub trait MonitorStorage: WalletStorageProvider {
         Ok(false)
     }
 
-    /// [`MonitorStorage::mark_transaction_rejected`] for a refusal by ONE
-    /// named broadcaster (`provider`, a broadcast-memory provider name).
+    /// A refusal by ONE named broadcaster (`provider`, a broadcast-memory
+    /// provider name): Arcade's pushed `REJECTED` or
+    /// `DOUBLE_SPEND_ATTEMPTED`.
     ///
-    /// The refusal is final only when no other broadcaster accepted the
-    /// transaction and the network does not hold it
-    /// (Calgooon/zanaadu-v2#357: Arcade said REJECTED 460 "missing input
-    /// source data" for a post GorillaPool ARC had accepted, and the wallet
-    /// failed a transaction that was MINED a block later). Backends that
-    /// can weigh the other sources override this; the default applies the
-    /// refusal as before.
+    /// A broadcaster's word is a hint (bsv-stack-lean #66; its tracker
+    /// charter, section 2): `StorageSqlx` records the refusing broadcaster
+    /// and the word on the request and writes no word for the
+    /// transaction; a competitor the word names is queued with
+    /// [`MonitorStorage::queue_competitor_proof_asks`], and only that
+    /// competitor's proof, checked against our headers, writes the
+    /// double-spend word. Until 0.7.4 the refusal was final when no other
+    /// source held the transaction (Calgooon/zanaadu-v2#357). The default
+    /// applies [`MonitorStorage::mark_transaction_rejected`] for a backend
+    /// that does not override it.
     async fn mark_transaction_rejected_by(
         &self,
         txid: &str,
@@ -1269,6 +1274,19 @@ pub trait MonitorStorage: WalletStorageProvider {
     ) -> Result<bool> {
         let _ = provider;
         self.mark_transaction_rejected(txid, double_spend).await
+    }
+
+    /// Queue `competitors`, the transactions a broadcaster's word names as
+    /// spending the inputs of `txid`, for a proof ask on the proof path
+    /// (`synchronize_transaction_statuses`). A competitor's bytes that spend
+    /// one of our inputs, with a proof checked against our headers, are the
+    /// one evidence that writes the double-spend word for `txid`
+    /// (bsv-stack-lean #66).
+    ///
+    /// The default implementation queues nothing.
+    async fn queue_competitor_proof_asks(&self, txid: &str, competitors: &[String]) -> Result<()> {
+        let _ = (txid, competitors);
+        Ok(())
     }
 
     /// Ingest a push-delivered merkle proof (Arcade ≥ v0.10.1 enriches MINED

@@ -25,15 +25,15 @@
 //!   inline ingest does not conclude `Ingested`, fall back to the pre-v0.10.1
 //!   behavior: raise the shared CheckForProofs trigger flag so the proof is
 //!   fetched immediately through the services stack.
-//! - `REJECTED` / `DOUBLE_SPEND_ATTEMPTED` — mark the proven_tx_req
-//!   `invalid` / `doubleSpend` so it is never re-broadcast, unless another
-//!   source holds the transaction (another broadcaster accepted it, or the
-//!   network has it): then Arcade's refusal is its own view and nothing is
-//!   applied (`MonitorStorage::mark_transaction_rejected_by`,
-//!   Calgooon/zanaadu-v2#357). A REJECTED whose
-//!   ARC code is 466 (or that names competing txs) is a conflict
-//!   (`doubleSpend`); one whose code is 476 (non-final, retryable) is not
-//!   applied.
+//! - `REJECTED` / `DOUBLE_SPEND_ATTEMPTED`: a hint (bsv-stack-lean #66):
+//!   Arcade's refusal is recorded and writes no word
+//!   (`MonitorStorage::mark_transaction_rejected_by`); the competitors the
+//!   frame names are queued for a proof ask
+//!   (`MonitorStorage::queue_competitor_proof_asks`), and a competitor's
+//!   proof checked against our headers is the one evidence that writes
+//!   `doubleSpend`. A REJECTED whose code is 476 (non-final, retryable) is
+//!   not recorded. Until 0.7.4 a refusal no other source contradicted marked
+//!   the request `invalid` / `doubleSpend` (Calgooon/zanaadu-v2#357).
 //! - Anything else (`RECEIVED` .. `ACCEPTED_BY_NETWORK`, `UNKNOWN`,
 //!   `PENDING_RETRY`, an ORPHAN word, a word Arcade does not define):
 //!   nothing is applied; an undefined word is logged.
@@ -280,40 +280,32 @@ where
                 tracing::info!(txid = %txid, "Arcade MINED event — triggering immediate proof fetch");
                 Ok(updated)
             }
-            ArcadeVerdict::Rejected => match ev.status_code {
-                // A peer's non-final verdict: retryable, never a verdict on
-                // the bytes; the transaction stays for the resubmit.
-                Some(ARCADE_CODE_NON_FINAL) => {
-                    tracing::info!(
-                        txid = %txid,
-                        extra_info = ?ev.extra_info,
-                        "Arcade REJECTED 476 (non-final, retryable): not applied"
-                    );
-                    Ok(false)
-                }
-                // The input is owned by a competing or confirmed transaction:
-                // a conflict, so the inputs are never blind-released.
-                Some(ARCADE_CODE_CONFLICT) => {
+            // A peer's non-final verdict: retryable, never a verdict on the
+            // bytes; the transaction stays for the resubmit.
+            ArcadeVerdict::Rejected if ev.status_code == Some(ARCADE_CODE_NON_FINAL) => {
+                tracing::info!(
+                    txid = %txid,
+                    extra_info = ?ev.extra_info,
+                    "Arcade REJECTED 476 (non-final, retryable): not applied"
+                );
+                Ok(false)
+            }
+            // Every other refusal, a conflict (466, competing txs, a
+            // DOUBLE_SPEND_ATTEMPTED) or not, is a hint (bsv-stack-lean
+            // #66): the storage records it and writes no word, and a
+            // competitor it names is queued for a proof ask, whose proof
+            // checked against our headers alone writes `doubleSpend`.
+            verdict @ (ArcadeVerdict::Rejected | ArcadeVerdict::Conflict) => {
+                if let Some(competitors) = ev.competing_txs.as_deref() {
                     storage
-                        .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, true)
-                        .await
+                        .queue_competitor_proof_asks(txid, competitors)
+                        .await?;
                 }
-                _ if ev.competing_txs.as_ref().is_some_and(|c| !c.is_empty()) => {
-                    storage
-                        .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, true)
-                        .await
-                }
-                // Arcade's word only: final when no other source holds it
-                // (`mark_transaction_rejected_by`, Calgooon/zanaadu-v2#357).
-                _ => {
-                    storage
-                        .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, false)
-                        .await
-                }
-            },
-            ArcadeVerdict::Conflict => {
+                let conflict = matches!(verdict, ArcadeVerdict::Conflict)
+                    || ev.status_code == Some(ARCADE_CODE_CONFLICT)
+                    || ev.competing_txs.as_ref().is_some_and(|c| !c.is_empty());
                 storage
-                    .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, true)
+                    .mark_transaction_rejected_by(txid, PROVIDER_ARCADE_V2, conflict)
                     .await
             }
             // RECEIVED / SENT_TO_NETWORK / ACCEPTED_BY_NETWORK, UNKNOWN /
