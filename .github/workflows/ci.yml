@@ -107,8 +107,9 @@ jobs:
 
   # The vector-backed tests as one named check: the Arcade status vector
   # (tests/vectors/arcade_status_verdicts.json) through its three surfaces and
-  # the push, the same vector's word table in the library, and the cross-SDK
-  # vectors of test_vectors/.
+  # the push, the same vector's word table in the library, the six rows of the
+  # broadcast-body replay (tests/vectors/broadcast_body/) through the ARC
+  # provider, and the cross-SDK vectors of test_vectors/.
   vectors:
     name: vectors
     runs-on: ubuntu-latest
@@ -135,9 +136,12 @@ jobs:
         run: |
           test -s tests/vectors/arcade_status_verdicts.json
           test -s test_vectors/keys/brc29.json
+          for r in example_atomic_payment example small_chain_atomic_true small_chain_true lone_atomic lone; do
+            test -s "tests/vectors/broadcast_body/$r.bin"
+          done
 
-      - name: Run the Arcade status vector and the cross-SDK vectors
-        run: cargo test --features sqlite --test arcade_status_vector_tests --test test_vectors --verbose
+      - name: Run the Arcade status vector, the broadcast-body rows and the cross-SDK vectors
+        run: cargo test --features sqlite --test arcade_status_vector_tests --test arc_broadcast_body_tests --test test_vectors --verbose
 
       # A filter that matches nothing passes; the grep refuses a renamed test.
       - name: Run the vector's word table in the library
