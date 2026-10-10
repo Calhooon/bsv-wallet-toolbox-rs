@@ -50,7 +50,7 @@ pub mod status_codes {
     ///   (arcade@1ae1208 `services/api_server/handlers.go:891-896`), and
     ///   `422` unprocessable. Classic ARC's 400 is NOT read here: at
     ///   arc@e7efc5b it is a request ARC could not read, never a verdict on
-    ///   a parsed transaction, and [`Arc`] reads it as a request fault
+    ///   a parsed transaction, and [`Arc`](super::Arc) reads it as a request fault
     ///   (`is_request_fault`);
     /// * `460..=469` — ARC's transaction-level rejections: not extended format,
     ///   unlocking scripts, inputs, malformed, outputs, fees (465), conflicts,
