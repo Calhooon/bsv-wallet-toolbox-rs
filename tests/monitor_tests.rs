@@ -1294,7 +1294,9 @@ mod monitor_integration {
 
     /// RED→GREEN: the invalid/exhausted arm blindly restored every input. An
     /// input the chain oracle reports SPENT (a competitor took it) must stay
-    /// locked even though the tx itself is retired.
+    /// locked even though the tx itself is retired. Since 0.7.4 the 466 is a
+    /// hint (bsv-stack-lean #66) and the retire is the host's explicit act,
+    /// `retire_undeliverable_txid`; the release rule is the same.
     #[tokio::test]
     async fn invalid_after_retries_keeps_inputs_the_chain_says_are_spent() {
         use bsv_wallet_toolbox_rs::services::mock::MockResponse;
@@ -1314,7 +1316,17 @@ mod monitor_integration {
         storage0.set_services(services.clone() as Arc<dyn WalletServices>);
         let storage = Arc::new(storage0);
 
-        run_send_waiting(storage.clone(), services).await;
+        run_send_waiting(storage.clone(), services.clone()).await;
+        assert_eq!(
+            tx_and_req(&storage, &child).await.0,
+            "sending",
+            "the 466 is a hint: no word"
+        );
+        storage
+            .retire_undeliverable_txid(&*services, &child, "invalid")
+            .await
+            .expect("retire")
+            .expect("a req");
 
         let (t, r, _) = tx_and_req(&storage, &child).await;
         assert_eq!(t, "failed");
@@ -1332,7 +1344,8 @@ mod monitor_integration {
     }
 
     /// The honest release still works: an input the chain oracle verifies
-    /// UNSPENT is returned to coin selection when the tx is retired.
+    /// UNSPENT is returned to coin selection when the host retires the tx
+    /// after the 466 hint.
     #[tokio::test]
     async fn invalid_after_retries_restores_only_verified_unspent_inputs() {
         use bsv_wallet_toolbox_rs::services::mock::MockResponse;
@@ -1351,7 +1364,17 @@ mod monitor_integration {
         storage0.set_services(services.clone() as Arc<dyn WalletServices>);
         let storage = Arc::new(storage0);
 
-        run_send_waiting(storage.clone(), services).await;
+        run_send_waiting(storage.clone(), services.clone()).await;
+        assert_eq!(
+            tx_and_req(&storage, &child).await.0,
+            "sending",
+            "the 466 is a hint: no word"
+        );
+        storage
+            .retire_undeliverable_txid(&*services, &child, "invalid")
+            .await
+            .expect("retire")
+            .expect("a req");
 
         let (t, r, _) = tx_and_req(&storage, &child).await;
         assert_eq!((t.as_str(), r.as_str()), ("failed", "invalid"));

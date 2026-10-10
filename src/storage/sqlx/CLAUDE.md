@@ -138,8 +138,8 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 ### MonitorStorage Methods
 | Method | Description |
 |--------|-------------|
-| `synchronize_transaction_statuses()` | FIRST adopt proof-less transactions that have no req (`adopt_unproven_transactions`: link from an existing `proven_txs` row, else create an `unmined` req — bounded per pass), THEN query unmined/unknown/callback/sending/unconfirmed proven_tx_reqs, call `services.get_merkle_path()`, update proven_txs/proven_tx_reqs/transactions on proof found; every pass that finds no proof is an attempt; past the reference's limit (144 mainnet, 10 otherwise) the count writes no word and the req is asked again every pass (bsv-stack-lean #66; the reference writes it off, zanaadu-v2#368) |
-| `send_waiting_transactions()` | Query unsent/sending proven_tx_reqs older than min age, build BEEF from raw_tx + input_beef, broadcast via `services.post_beef()`, handle double-spend detection |
+| `synchronize_transaction_statuses()` | FIRST adopt proof-less transactions that have no req (`adopt_unproven_transactions`: link from an existing `proven_txs` row, else create an `unmined` req, bounded per pass), THEN query unmined/unknown/callback/sending/unconfirmed proven_tx_reqs, call `services.get_merkle_path()`, update proven_txs/proven_tx_reqs/transactions on proof found; every pass that finds no proof is an attempt; past the reference's limit (144 mainnet, 10 otherwise) the count writes no word and the req is asked again every pass (bsv-stack-lean #66; the reference writes it off, zanaadu-v2#368) |
+| `send_waiting_transactions()` | Query unsent/sending proven_tx_reqs older than min age, build BEEF from raw_tx + input_beef, broadcast via `services.post_beef()`; every word short of an acceptance is a hint recorded on the request and re-asked on the cadence, a named competitor queued for a proof ask (bsv-stack-lean #65, #66) |
 | `abort_abandoned()` | Query unsigned/unprocessed outgoing transactions older than timeout, abort each via `abort_action` |
 | `un_fail()` | Query unfail proven_tx_reqs, check chain for merkle path via services, restore to unmined/unproven if found, mark invalid if not |
 | `review_status()` | Monitor-level status review (no AuthId required) |
@@ -481,7 +481,7 @@ Settings are loaded once via `make_available()` and cached in an `RwLock`. The `
 ### MonitorStorage Integration
 All MonitorStorage methods are fully implemented:
 - `synchronize_transaction_statuses` - queries chain via services, updates proof records
-- `send_waiting_transactions` - broadcasts via `services.post_beef()`, handles double-spend
+- `send_waiting_transactions` - broadcasts via `services.post_beef()`; a refusal or a double-spend word is a hint (bsv-stack-lean #66)
 - `abort_abandoned` - queries and aborts stale unsigned/unprocessed transactions
 - `un_fail` - checks chain via services, restores or invalidates failed transactions
 - `try_acquire_task_lock` / `release_task_lock` - multi-instance coordination

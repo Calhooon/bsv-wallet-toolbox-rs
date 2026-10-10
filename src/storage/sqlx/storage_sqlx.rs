@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use super::locked_inputs::locked_verdict_label;
 use crate::error::{Error, Result};
 use crate::lock_utils::{lock_read, lock_write};
-use crate::services::{UtxoVerdict, WalletServices};
+use crate::services::{GetRawTxResult, UtxoVerdict, WalletServices};
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
@@ -3022,17 +3022,10 @@ impl StorageSqlx {
         req_status: &str,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<RetireOutcome> {
-        if super::process_action::reconcile_tx_status_via_services(services, txid).await {
-            sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
-                .bind(now)
-                .bind(proven_tx_req_id)
-                .execute(self.pool())
-                .await?;
-            sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ? AND status IN ('sending', 'unproven')")
-                .bind(now)
-                .bind(txid)
-                .execute(self.pool())
-                .await?;
+        if self
+            .promote_if_alive(services, txid, proven_tx_req_id, now)
+            .await?
+        {
             return Ok(RetireOutcome::Alive);
         }
 
@@ -3136,6 +3129,31 @@ impl StorageSqlx {
         })
     }
 
+    /// If a status source holds `txid` (known or mined), promote it: the
+    /// request `unmined`, the transaction `unproven`. Returns whether it did.
+    async fn promote_if_alive(
+        &self,
+        services: &dyn WalletServices,
+        txid: &str,
+        proven_tx_req_id: i64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        if !super::process_action::reconcile_tx_status_via_services(services, txid).await {
+            return Ok(false);
+        }
+        sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
+            .bind(now)
+            .bind(proven_tx_req_id)
+            .execute(self.pool())
+            .await?;
+        sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ? AND status IN ('sending', 'unproven')")
+            .bind(now)
+            .bind(txid)
+            .execute(self.pool())
+            .await?;
+        Ok(true)
+    }
+
     /// THE RELEASE RULE, addressed by txid — for a caller that learned AFTER the
     /// broadcast that the transaction never reached the network (a serving
     /// wallet's asynchronous presence verification coming back definitively
@@ -3214,6 +3232,7 @@ fn post_beef_words(results: &[crate::services::PostBeefResult]) -> serde_json::V
                         "serviceError": tr.service_error,
                         "orphanMempool": tr.orphan_mempool,
                         "doubleSpend": tr.double_spend,
+                        "competingTxs": tr.competing_txs,
                     })).collect::<Vec<_>>(),
                 })
             })
@@ -3283,440 +3302,279 @@ impl StorageSqlx {
     }
 }
 
-/// Private helpers for the attempt backstop of
-/// `MonitorStorage::synchronize_transaction_statuses`.
-impl StorageSqlx {
-    fn proof_attempts_limit(&self) -> i64 {
-        if self.get_settings().chain.starts_with("main") {
-            PROOF_ATTEMPTS_LIMIT_MAIN
-        } else {
-            PROOF_ATTEMPTS_LIMIT_TEST
-        }
-    }
-}
+/// The key of a request's history that holds the competitors queued for a
+/// proof ask (bsv-stack-lean #66).
+const COMPETITORS_QUEUED: &str = "competitorsQueued";
 
-/// M19 R1: is a freshly validated proof the SAME anchor as the stored one?
-///
-/// A stored row written by `internalize_action` before 0.3.65 carries an
-/// empty `block_hash` (the validated bump had none), so the comparison falls
-/// back to height + merkle root there; with both hashes known, the hash and
-/// the height decide (the root is implied by the hash).
-pub(crate) fn same_proof_anchor(
-    stored_hash: &str,
-    stored_height: i64,
-    stored_root: &str,
-    new_hash: &str,
-    new_height: u32,
-    new_root: &str,
-) -> bool {
-    if stored_height != new_height as i64 {
-        return false;
-    }
-    if !stored_hash.is_empty() && !new_hash.is_empty() {
-        return stored_hash.eq_ignore_ascii_case(new_hash);
-    }
-    stored_root.eq_ignore_ascii_case(new_root)
-}
+/// A request with competitors queued: its id, txid, attempts, history and
+/// the raw bytes of our transaction.
+type QueuedCompetitorRow = (i64, String, i64, String, Option<Vec<u8>>);
 
-/// The level-0 leaf offset of `txid` inside `bump` (the `proven_txs.idx`
-/// column); 0 when the leaf cannot be found (a proof whose root computed
-/// for `txid` always contains it, so this is only a defensive default).
-pub(crate) fn bump_leaf_index(bump: &MerklePath, txid: &str) -> i64 {
-    bump.path
-        .first()
-        .and_then(|level| {
-            level.iter().find(|leaf| {
-                leaf.hash
-                    .as_deref()
-                    .is_some_and(|h| h.eq_ignore_ascii_case(txid))
+/// The competitors queued on a request's history.
+fn queued_competitors(history: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(history)
+        .ok()
+        .and_then(|h| {
+            h.get(COMPETITORS_QUEUED)?.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|c| c.as_str().map(str::to_string))
+                    .collect()
             })
         })
-        .map(|leaf| leaf.offset as i64)
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
-/// A merkle proof the chain tracker has VALIDATED for its block: the input
-/// of the ONE proof-store funnel, [`store_validated_proof_on`]. Every path
-/// that writes a `proven_txs` row goes through it: `ingest_merkle_proof`
-/// (the webhook, the SSE stream, the relay drain, the polling fetch), the
-/// BEEF walk's own fetch in `create_action.rs`, and `internalize_action`'s
-/// BUMP. Callers keep their own request/transaction completion; the funnel
-/// owns the gate, the anchor comparison, the bytes, the `mined` memory and
-/// the root-check record. Every caller builds one only after its
-/// ChainTracker answered `Ok(true)` for `checked_root` at `block_height`;
-/// a caller with no tracker never reaches the funnel (P0-1).
-pub(crate) struct ValidatedProofRow<'a> {
-    pub txid: &'a str,
-    pub block_height: u32,
-    /// The root `merkle_path` computes for `txid`, which the caller's
-    /// ChainTracker confirmed at `block_height`. Recorded in
-    /// `proof_root_checks`, so the stored row reads as checked.
-    pub checked_root: &'a str,
-    /// Empty when the caller had no header in hand (an internalize whose
-    /// header could not be read); the review task backfills it once the
-    /// row's root is canonical, and a later proof with a known hash fills
-    /// it too.
-    pub block_hash: &'a str,
-    pub merkle_root: &'a str,
-    pub merkle_path: &'a [u8],
-    /// The transaction's level-0 leaf offset.
-    pub idx: i64,
-    /// The raw bytes when the caller holds them; otherwise sourced from the
-    /// `transactions` / `proven_tx_reqs` rows.
-    pub raw_tx: Option<&'a [u8]>,
+/// Is `competitor`'s proof, as `get_merkle_path` served it, for the root our
+/// header names at its height? A proof for a block the header gate has not
+/// let through yet is not checked (as `ingest_merkle_proof` defers it).
+async fn competitor_proof_meets_our_header(
+    tracker: &dyn bsv_rs::transaction::ChainTracker,
+    competitor: &str,
+    merkle_path_hex: &str,
+    gate: u32,
+) -> bool {
+    let Ok(bytes) = hex::decode(merkle_path_hex) else {
+        return false;
+    };
+    let Ok(bump) = MerklePath::from_binary(&bytes) else {
+        return false;
+    };
+    let Ok(root) = bump.compute_root(Some(competitor)) else {
+        return false;
+    };
+    bump.block_height <= gate
+        && matches!(
+            tracker
+                .is_valid_root_for_height(&root, bump.block_height)
+                .await,
+            Ok(true)
+        )
 }
 
-/// What [`store_validated_proof_on`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StoreProofOutcome {
-    /// A row was written: new, or the stored anchor was replaced by this
-    /// proof's block (`replaced`).
-    Stored { proven_tx_id: i64, replaced: bool },
-    /// The stored anchor already matched this proof (an empty stored block
-    /// hash may have been filled).
-    Unchanged { proven_tx_id: i64 },
-    /// Above the proof LAG gate: nothing written, no attempt counted.
-    Deferred {
-        block_height: u32,
-        processed_height: u32,
-    },
-    /// The transaction's raw bytes are nowhere in storage: nothing written.
-    NoRawTx,
-}
-
-/// THE proof-store funnel, on an open connection (inside the caller's
-/// transaction): the gate read on this same connection (one point read of
-/// the one-row `monitor_state` table), replace-on-differ, the no-raw guard,
-/// the empty-hash backfill, and the `mined` broadcast memory.
-pub(crate) async fn store_validated_proof_on(
-    conn: &mut sqlx::SqliteConnection,
-    p: &ValidatedProofRow<'_>,
-) -> Result<StoreProofOutcome> {
-    let gate = super::monitor_state::read_proof_gate_on(&mut *conn).await?;
-    if p.block_height > gate {
-        tracing::debug!(
-            txid = %p.txid,
-            block_height = p.block_height,
-            processed_height = gate,
-            marker = "proof_deferred_above_processed_height",
-            "store_validated_proof: deferred until the header has aged one cycle"
-        );
-        return Ok(StoreProofOutcome::Deferred {
-            block_height: p.block_height,
-            processed_height: gate,
-        });
-    }
-    let now = chrono::Utc::now();
-    let existing: Option<(i64, String, i64, String)> = sqlx::query_as(
-        "SELECT proven_tx_id, block_hash, height, merkle_root FROM proven_txs WHERE txid = ?",
-    )
-    .bind(p.txid)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let outcome = match existing {
-        Some((proven_tx_id, stored_hash, stored_height, stored_root))
-            if same_proof_anchor(
-                &stored_hash,
-                stored_height,
-                &stored_root,
-                p.block_hash,
-                p.block_height,
-                p.merkle_root,
-            ) =>
-        {
-            if stored_hash.is_empty() && !p.block_hash.is_empty() {
-                sqlx::query(
-                    "UPDATE proven_txs SET block_hash = ?, updated_at = ? WHERE proven_tx_id = ?",
-                )
-                .bind(p.block_hash)
-                .bind(now)
-                .bind(proven_tx_id)
-                .execute(&mut *conn)
+/// The competitor's word for our transaction: the proof path's evidence.
+impl StorageSqlx {
+    /// Append `note` to the history of `txid`'s request (if it has one).
+    async fn note_on_req_history(&self, txid: &str, note: serde_json::Value) -> Result<()> {
+        let row: Option<(i64, String)> =
+            sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
+                .bind(txid)
+                .fetch_optional(self.pool())
                 .await?;
-                tracing::info!(
-                    txid = %p.txid,
-                    block_height = p.block_height,
-                    block_hash = %p.block_hash,
-                    marker = "proof_block_hash_backfilled",
-                    "store_validated_proof: the stored anchor had no block hash; filled from this proof"
-                );
-            } else {
-                tracing::debug!(
-                    txid = %p.txid,
-                    block_height = p.block_height,
-                    "store_validated_proof: the stored anchor already matches; nothing to write"
-                );
-            }
-            StoreProofOutcome::Unchanged { proven_tx_id }
+        if let Some((proven_tx_req_id, history)) = row {
+            sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
+                .bind(append_req_history_note(&history, note))
+                .bind(proven_tx_req_id)
+                .execute(self.pool())
+                .await?;
         }
-        Some((proven_tx_id, stored_hash, stored_height, stored_root)) => {
-            tracing::info!(
-                txid = %p.txid,
-                stored_height,
-                stored_block_hash = %stored_hash,
-                stored_merkle_root = %stored_root,
-                block_height = p.block_height,
-                block_hash = %p.block_hash,
-                merkle_root = %p.merkle_root,
-                marker = "proof_replaced",
-                "store_validated_proof: a validated proof for a different block replaces the stored anchor (reorg re-anchor)"
+        Ok(())
+    }
+
+    /// Queue `competitors` (well-formed txids other than `txid`) on the
+    /// history of `txid`'s request for a proof ask. Returns how many are
+    /// queued now.
+    async fn queue_competitors(&self, txid: &str, competitors: &[String]) -> Result<usize> {
+        let fresh: Vec<String> = competitors
+            .iter()
+            .map(|c| c.trim().to_ascii_lowercase())
+            .filter(|c| c.len() == 64 && c.chars().all(|ch| ch.is_ascii_hexdigit()))
+            .filter(|c| !c.eq_ignore_ascii_case(txid))
+            .collect();
+        if fresh.is_empty() {
+            return Ok(0);
+        }
+        let row: Option<(i64, String)> =
+            sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
+                .bind(txid)
+                .fetch_optional(self.pool())
+                .await?;
+        let Some((proven_tx_req_id, history)) = row else {
+            return Ok(0);
+        };
+        let mut object = match serde_json::from_str::<serde_json::Value>(&history) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ if history.trim().is_empty() => serde_json::Map::new(),
+            _ => {
+                let mut map = serde_json::Map::new();
+                map.insert(
+                    "previous".to_string(),
+                    serde_json::Value::from(history.as_str()),
+                );
+                map
+            }
+        };
+        let mut queued = queued_competitors(&history);
+        for c in fresh {
+            if !queued.contains(&c) {
+                queued.push(c);
+            }
+        }
+        object.insert(
+            COMPETITORS_QUEUED.to_string(),
+            serde_json::Value::from(queued.clone()),
+        );
+        sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
+            .bind(serde_json::Value::Object(object).to_string())
+            .bind(proven_tx_req_id)
+            .execute(self.pool())
+            .await?;
+        tracing::info!(
+            txid = %txid,
+            competitors = ?queued,
+            marker = "competitor_proof_ask_queued",
+            "a broadcaster's word named a competitor: queued for a proof ask"
+        );
+        Ok(queued.len())
+    }
+
+    /// Does `competitor` spend one of the inputs of `our_raw_tx`, by its own
+    /// bytes, and is it mined, by its proof checked against our headers?
+    ///
+    /// The existing proof path's two asks (`get_raw_tx`, `get_merkle_path`,
+    /// the sources the proof pass asks) and the check of
+    /// `ingest_merkle_proof` (the root at the proof's height, from our
+    /// tracker), bound as Rule 28's `is_utxo` binds a named spender: the
+    /// name is the broadcaster's word, the bytes and the proof the evidence.
+    /// No spender is looked up. No tracker, no check, and nothing asked.
+    async fn competitor_is_proven(
+        &self,
+        services: &dyn WalletServices,
+        our_raw_tx: &[u8],
+        competitor: &str,
+        gate: u32,
+    ) -> bool {
+        let Some(tracker) = self.get_chain_tracker().await else {
+            return false;
+        };
+        let Ok(ours) = bsv_rs::transaction::Transaction::from_binary(our_raw_tx) else {
+            return false;
+        };
+        let raw = match services.get_raw_tx(competitor, false).await {
+            Ok(GetRawTxResult {
+                raw_tx: Some(raw), ..
+            }) => raw,
+            _ => return false,
+        };
+        let Ok(theirs) = bsv_rs::transaction::Transaction::from_binary(&raw) else {
+            return false;
+        };
+        if !theirs.id().eq_ignore_ascii_case(competitor) {
+            tracing::warn!(
+                competitor = %competitor,
+                "competitor proof ask: the bytes served are not the competitor's; dropped"
             );
-            sqlx::query(
-                "UPDATE proven_txs SET height = ?, idx = ?, block_hash = ?, merkle_root = ?, merkle_path = ?, updated_at = ? WHERE proven_tx_id = ?",
-            )
-            .bind(p.block_height as i64)
-            .bind(p.idx)
-            .bind(p.block_hash)
-            .bind(p.merkle_root)
-            .bind(p.merkle_path)
-            .bind(now)
-            .bind(proven_tx_id)
-            .execute(&mut *conn)
-            .await?;
-            StoreProofOutcome::Stored {
-                proven_tx_id,
-                replaced: true,
-            }
+            return false;
         }
-        None => {
-            sqlx::query(
-                r#"
-                INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?,
-                    COALESCE(
-                        ?,
-                        (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
-                        (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
-                    ),
-                    ?, ?)
-                "#,
-            )
-            .bind(p.txid)
-            .bind(p.block_height as i64)
-            .bind(p.idx)
-            .bind(p.block_hash)
-            .bind(p.merkle_root)
-            .bind(p.merkle_path)
-            .bind(p.raw_tx)
-            .bind(p.txid)
-            .bind(p.txid)
-            .bind(now)
-            .bind(now)
-            .execute(&mut *conn)
-            .await?;
-            let inserted: Option<(i64,)> =
-                sqlx::query_as("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
-                    .bind(p.txid)
-                    .fetch_optional(&mut *conn)
+        let spends_ours = theirs.inputs.iter().any(|theirs_in| {
+            ours.inputs.iter().any(|ours_in| {
+                theirs_in.source_output_index == ours_in.source_output_index
+                    && matches!(
+                        (theirs_in.get_source_txid(), ours_in.get_source_txid()),
+                        (Ok(a), Ok(b)) if a.eq_ignore_ascii_case(&b)
+                    )
+            })
+        });
+        if !spends_ours {
+            tracing::warn!(
+                competitor = %competitor,
+                "competitor proof ask: the competitor's bytes spend none of our inputs; no evidence"
+            );
+            return false;
+        }
+        let merkle_path = match services.get_merkle_path(competitor, false).await {
+            Ok(found) => match found.merkle_path {
+                Some(path) => path,
+                None => return false,
+            },
+            Err(_) => return false,
+        };
+        competitor_proof_meets_our_header(&*tracker, competitor, &merkle_path, gate).await
+    }
+
+    /// The proof path's first step (bsv-stack-lean #66): every request with
+    /// a queued competitor and no word yet asks for that competitor's bytes
+    /// and proof. A competitor proven to spend one of our inputs writes the
+    /// double-spend word through the release rule (`retire_undeliverable_tx`
+    /// with `doubleSpend`); anything less writes nothing and the competitor
+    /// stays queued for the next pass.
+    async fn ask_queued_competitor_proofs(&self) -> Result<Vec<TxSynchronizedStatus>> {
+        let rows: Vec<QueuedCompetitorRow> = sqlx::query_as(
+            "SELECT r.proven_tx_req_id, r.txid, r.attempts, r.history, COALESCE(r.raw_tx, t.raw_tx) \
+             FROM proven_tx_reqs r LEFT JOIN transactions t ON t.txid = r.txid \
+             WHERE r.status IN ('unsent', 'sending', 'unmined', 'unknown', 'callback', 'unconfirmed') \
+               AND r.history LIKE '%\"competitorsQueued\"%'",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Ok(services) = self.get_services() else {
+            return Ok(Vec::new());
+        };
+        let gate = self.max_acceptable_proof_height().await?;
+        if gate == 0 {
+            return Ok(Vec::new());
+        }
+        let mut results = Vec::new();
+        for (proven_tx_req_id, txid, attempts, history, raw_tx) in rows {
+            let Some(raw_tx) = raw_tx else {
+                continue;
+            };
+            for competitor in queued_competitors(&history) {
+                if !self
+                    .competitor_is_proven(services.as_ref(), &raw_tx, &competitor, gate)
+                    .await
+                {
+                    tracing::info!(
+                        txid = %txid,
+                        competitor = %competitor,
+                        marker = "competitor_not_proven",
+                        "competitor proof ask: no checked proof of a conflicting spend; no word, asked again next pass"
+                    );
+                    continue;
+                }
+                let outcome = self
+                    .retire_undeliverable_tx(
+                        services.as_ref(),
+                        &txid,
+                        proven_tx_req_id,
+                        attempts,
+                        "doubleSpend",
+                        chrono::Utc::now(),
+                    )
                     .await?;
-            match inserted {
-                Some((proven_tx_id,)) => StoreProofOutcome::Stored {
-                    proven_tx_id,
-                    replaced: false,
-                },
-                None => return Ok(StoreProofOutcome::NoRawTx),
+                if let RetireOutcome::Retired { restored, kept } = outcome {
+                    tracing::warn!(
+                        txid = %txid,
+                        competitor = %competitor,
+                        restored,
+                        kept,
+                        marker = "competitor_proven",
+                        "a competitor's proof met our header and its bytes spend our input: doubleSpend"
+                    );
+                    results.push(TxSynchronizedStatus {
+                        txid: txid.clone(),
+                        status: ProvenTxReqStatus::DoubleSpend,
+                        block_height: None,
+                        block_hash: None,
+                        merkle_root: None,
+                        merkle_path: None,
+                    });
+                }
+                break;
             }
         }
-    };
-    // The row now holds (or already held) a proof whose root the caller's
-    // tracker confirmed. An Unchanged row keeps its stored path: when that
-    // path computes a different root the record does not match it and the
-    // row still reads as unchecked.
-    super::proof_root_checks::record_root_checked_on(
-        &mut *conn,
-        p.txid,
-        p.block_height,
-        p.checked_root,
-    )
-    .await?;
-    // Mined: every provider has it. Remember it for reduced sends; never a
-    // reason to fail the store.
-    if let Err(e) = super::broadcast_seen::record_broadcast_status_on(
-        conn,
-        p.txid,
-        crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
-        crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
-    )
-    .await
-    {
-        tracing::debug!(txid = %p.txid, error = %e, "broadcast_seen: mined record skipped");
-    }
-    Ok(outcome)
-}
-
-/// Demote one stored proof on an open connection: REVERT TO THE PRE-PROOF
-/// STATE with the bytes preserved, inside the caller's transaction, in this
-/// order (steps 1 and 2 clear the foreign keys the delete in step 4 needs
-/// cleared):
-///
-/// 1. `proven_tx_reqs`: the row goes back to `unmined`, attempts 0, no proof
-///    link; when the completed row had been purged, a new `unmined` row is
-///    inserted with the raw bytes taken from the proof row, so the bytes
-///    survive even after the 30-day purge cleared `transactions.raw_tx`.
-/// 2. `transactions`: every row linked to the proof (and a `completed` row
-///    for the txid left without a link) goes back to `unproven`, its
-///    `raw_tx` restored from the proof row when the purge had cleared it.
-///    `unproven` is in every spendable set (coin selection, `list_outputs`,
-///    `list_actions`, the adoption pass), so the coins stay visible.
-/// 3. `broadcast_seen`: the terminal `mined` rows are forgotten
-///    ([`super::broadcast_seen::forget_mined_on`], the one sanctioned
-///    downgrade), so reduced sends carry the transaction again.
-/// 4. the `proven_txs` row is deleted.
-///
-/// Returns whether a proof row existed. The BEEF walk calls this only for a
-/// row that was never checked (no `proof_root_checks` record) and that the
-/// tracker refutes (`check_unchecked_stored_proof_on`); a checked row's
-/// refuted bump is skipped there and demoted only by the reorg or review
-/// task on positive evidence.
-pub(super) async fn demote_stale_proof_on(
-    conn: &mut sqlx::SqliteConnection,
-    txid: &str,
-) -> Result<bool> {
-    let now = chrono::Utc::now();
-    let existing: Option<(i64, Vec<u8>)> =
-        sqlx::query_as("SELECT proven_tx_id, raw_tx FROM proven_txs WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some((proven_tx_id, raw_tx)) = existing else {
-        return Ok(false);
-    };
-    // 1. the request: back to unmined with its bytes.
-    let updated = sqlx::query(
-        "UPDATE proven_tx_reqs SET status = 'unmined', attempts = 0, proven_tx_id = NULL, raw_tx = COALESCE(raw_tx, ?), updated_at = ? WHERE txid = ?",
-    )
-    .bind(&raw_tx)
-    .bind(now)
-    .bind(txid)
-    .execute(&mut *conn)
-    .await?
-    .rows_affected();
-    if updated == 0 {
-        sqlx::query(
-            "INSERT INTO proven_tx_reqs (txid, status, attempts, notified, history, notify, raw_tx, input_beef, created_at, updated_at) \
-             VALUES (?, 'unmined', 0, 0, '{}', '{}', ?, NULL, ?, ?)",
-        )
-        .bind(txid)
-        .bind(&raw_tx)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *conn)
-        .await?;
-    }
-    // 2. the transactions: back to unproven, bytes restored.
-    sqlx::query(
-        "UPDATE transactions SET status = 'unproven', proven_tx_id = NULL, raw_tx = COALESCE(raw_tx, ?), updated_at = ? \
-         WHERE proven_tx_id = ? OR (txid = ? AND status = 'completed' AND proven_tx_id IS NULL)",
-    )
-    .bind(&raw_tx)
-    .bind(now)
-    .bind(proven_tx_id)
-    .bind(txid)
-    .execute(&mut *conn)
-    .await?;
-    // 3. the mined memory: the one sanctioned downgrade.
-    let forgotten = super::broadcast_seen::forget_mined_on(&mut *conn, txid).await?;
-    // 4. the proof row, and its root-check record.
-    sqlx::query("DELETE FROM proven_txs WHERE proven_tx_id = ?")
-        .bind(proven_tx_id)
-        .execute(&mut *conn)
-        .await?;
-    super::proof_root_checks::forget_root_check_on(&mut *conn, txid).await?;
-    tracing::warn!(
-        txid = %txid,
-        proven_tx_id,
-        request_recreated = updated == 0,
-        mined_rows_forgotten = forgotten,
-        marker = "stale_proof_demoted",
-        "demote_stale_proof: the stored proof is gone; the transaction is unproven again with its bytes in the request and will be re-proved"
-    );
-    Ok(true)
-}
-
-fn anchor_from_row(row: (String, i64, String, String)) -> ProvenTxAnchor {
-    ProvenTxAnchor {
-        txid: row.0,
-        height: row.1.max(0) as u32,
-        block_hash: row.2,
-        merkle_root: row.3,
+        Ok(results)
     }
 }
 
-#[async_trait]
-impl MonitorStorage for StorageSqlx {
-    async fn max_acceptable_proof_height(&self) -> Result<u32> {
-        let mut conn = self.pool().acquire().await?;
-        super::monitor_state::read_proof_gate_on(&mut conn).await
-    }
-
-    async fn set_max_acceptable_proof_height(&self, height: u32) -> Result<()> {
-        let mut conn = self.pool().acquire().await?;
-        super::monitor_state::write_proof_gate_on(&mut conn, height).await
-    }
-
-    async fn load_header_tracker_state(&self) -> Result<Option<HeaderTrackerState>> {
-        let mut conn = self.pool().acquire().await?;
-        super::monitor_state::read_header_tracker_on(&mut conn).await
-    }
-
-    async fn save_header_tracker_state(&self, state: &HeaderTrackerState) -> Result<()> {
-        let mut conn = self.pool().acquire().await?;
-        super::monitor_state::write_header_tracker_on(&mut conn, state).await
-    }
-
-    async fn set_proven_tx_block_hash_if_empty(
-        &self,
-        txid: &str,
-        block_hash: &str,
-    ) -> Result<bool> {
-        if block_hash.is_empty() {
-            return Ok(false);
-        }
-        let done = sqlx::query(
-            "UPDATE proven_txs SET block_hash = ?, updated_at = ? WHERE txid = ? AND block_hash = ''",
-        )
-        .bind(block_hash)
-        .bind(chrono::Utc::now())
-        .bind(txid)
-        .execute(self.pool())
-        .await?;
-        Ok(done.rows_affected() > 0)
-    }
-
-    async fn find_proven_txs_by_block_hash(&self, block_hash: &str) -> Result<Vec<ProvenTxAnchor>> {
-        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
-            "SELECT txid, height, block_hash, merkle_root FROM proven_txs WHERE lower(block_hash) = lower(?) ORDER BY height ASC, proven_tx_id ASC",
-        )
-        .bind(block_hash)
-        .fetch_all(self.pool())
-        .await?;
-        Ok(rows.into_iter().map(anchor_from_row).collect())
-    }
-
-    async fn find_proven_txs_in_heights(
-        &self,
-        min_height: u32,
-        max_height: u32,
-    ) -> Result<Vec<ProvenTxAnchor>> {
-        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
-            "SELECT txid, height, block_hash, merkle_root FROM proven_txs WHERE height >= ? AND height <= ? ORDER BY height ASC, proven_tx_id ASC",
-        )
-        .bind(min_height as i64)
-        .bind(max_height as i64)
-        .fetch_all(self.pool())
-        .await?;
-        Ok(rows.into_iter().map(anchor_from_row).collect())
-    }
-
-    async fn demote_stale_proof(&self, txid: &str) -> Result<bool> {
-        // One transaction: either every step of the revert lands or none.
-        let mut tx = self.pool().begin().await?;
-        let existed = demote_stale_proof_on(&mut tx, txid).await?;
-        tx.commit().await?;
-        Ok(existed)
-    }
-
-    async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
+/// The proof pass over this wallet's own requests.
+impl StorageSqlx {
+    /// `MonitorStorage::synchronize_transaction_statuses` for the requests
+    /// of this wallet's own transactions: the triage, the attempt count and
+    /// the proof fetch.
+    async fn synchronize_own_reqs(&self) -> Result<Vec<TxSynchronizedStatus>> {
         // Receive-proof gap (2026-08-29): a proof-less transaction with NO
         // req is invisible to the walk below. Repair first (bounded,
         // idempotent), so this very pass can triage what it adopted. A
@@ -4282,6 +4140,449 @@ impl MonitorStorage for StorageSqlx {
 
         Ok(results)
     }
+}
+
+/// Private helpers for the attempt backstop of
+/// `MonitorStorage::synchronize_transaction_statuses`.
+impl StorageSqlx {
+    fn proof_attempts_limit(&self) -> i64 {
+        if self.get_settings().chain.starts_with("main") {
+            PROOF_ATTEMPTS_LIMIT_MAIN
+        } else {
+            PROOF_ATTEMPTS_LIMIT_TEST
+        }
+    }
+}
+
+/// M19 R1: is a freshly validated proof the SAME anchor as the stored one?
+///
+/// A stored row written by `internalize_action` before 0.3.65 carries an
+/// empty `block_hash` (the validated bump had none), so the comparison falls
+/// back to height + merkle root there; with both hashes known, the hash and
+/// the height decide (the root is implied by the hash).
+pub(crate) fn same_proof_anchor(
+    stored_hash: &str,
+    stored_height: i64,
+    stored_root: &str,
+    new_hash: &str,
+    new_height: u32,
+    new_root: &str,
+) -> bool {
+    if stored_height != new_height as i64 {
+        return false;
+    }
+    if !stored_hash.is_empty() && !new_hash.is_empty() {
+        return stored_hash.eq_ignore_ascii_case(new_hash);
+    }
+    stored_root.eq_ignore_ascii_case(new_root)
+}
+
+/// The level-0 leaf offset of `txid` inside `bump` (the `proven_txs.idx`
+/// column); 0 when the leaf cannot be found (a proof whose root computed
+/// for `txid` always contains it, so this is only a defensive default).
+pub(crate) fn bump_leaf_index(bump: &MerklePath, txid: &str) -> i64 {
+    bump.path
+        .first()
+        .and_then(|level| {
+            level.iter().find(|leaf| {
+                leaf.hash
+                    .as_deref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(txid))
+            })
+        })
+        .map(|leaf| leaf.offset as i64)
+        .unwrap_or(0)
+}
+
+/// A merkle proof the chain tracker has VALIDATED for its block: the input
+/// of the ONE proof-store funnel, [`store_validated_proof_on`]. Every path
+/// that writes a `proven_txs` row goes through it: `ingest_merkle_proof`
+/// (the webhook, the SSE stream, the relay drain, the polling fetch), the
+/// BEEF walk's own fetch in `create_action.rs`, and `internalize_action`'s
+/// BUMP. Callers keep their own request/transaction completion; the funnel
+/// owns the gate, the anchor comparison, the bytes, the `mined` memory and
+/// the root-check record. Every caller builds one only after its
+/// ChainTracker answered `Ok(true)` for `checked_root` at `block_height`;
+/// a caller with no tracker never reaches the funnel (P0-1).
+pub(crate) struct ValidatedProofRow<'a> {
+    pub txid: &'a str,
+    pub block_height: u32,
+    /// The root `merkle_path` computes for `txid`, which the caller's
+    /// ChainTracker confirmed at `block_height`. Recorded in
+    /// `proof_root_checks`, so the stored row reads as checked.
+    pub checked_root: &'a str,
+    /// Empty when the caller had no header in hand (an internalize whose
+    /// header could not be read); the review task backfills it once the
+    /// row's root is canonical, and a later proof with a known hash fills
+    /// it too.
+    pub block_hash: &'a str,
+    pub merkle_root: &'a str,
+    pub merkle_path: &'a [u8],
+    /// The transaction's level-0 leaf offset.
+    pub idx: i64,
+    /// The raw bytes when the caller holds them; otherwise sourced from the
+    /// `transactions` / `proven_tx_reqs` rows.
+    pub raw_tx: Option<&'a [u8]>,
+}
+
+/// What [`store_validated_proof_on`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StoreProofOutcome {
+    /// A row was written: new, or the stored anchor was replaced by this
+    /// proof's block (`replaced`).
+    Stored { proven_tx_id: i64, replaced: bool },
+    /// The stored anchor already matched this proof (an empty stored block
+    /// hash may have been filled).
+    Unchanged { proven_tx_id: i64 },
+    /// Above the proof LAG gate: nothing written, no attempt counted.
+    Deferred {
+        block_height: u32,
+        processed_height: u32,
+    },
+    /// The transaction's raw bytes are nowhere in storage: nothing written.
+    NoRawTx,
+}
+
+/// THE proof-store funnel, on an open connection (inside the caller's
+/// transaction): the gate read on this same connection (one point read of
+/// the one-row `monitor_state` table), replace-on-differ, the no-raw guard,
+/// the empty-hash backfill, and the `mined` broadcast memory.
+pub(crate) async fn store_validated_proof_on(
+    conn: &mut sqlx::SqliteConnection,
+    p: &ValidatedProofRow<'_>,
+) -> Result<StoreProofOutcome> {
+    let gate = super::monitor_state::read_proof_gate_on(&mut *conn).await?;
+    if p.block_height > gate {
+        tracing::debug!(
+            txid = %p.txid,
+            block_height = p.block_height,
+            processed_height = gate,
+            marker = "proof_deferred_above_processed_height",
+            "store_validated_proof: deferred until the header has aged one cycle"
+        );
+        return Ok(StoreProofOutcome::Deferred {
+            block_height: p.block_height,
+            processed_height: gate,
+        });
+    }
+    let now = chrono::Utc::now();
+    let existing: Option<(i64, String, i64, String)> = sqlx::query_as(
+        "SELECT proven_tx_id, block_hash, height, merkle_root FROM proven_txs WHERE txid = ?",
+    )
+    .bind(p.txid)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let outcome = match existing {
+        Some((proven_tx_id, stored_hash, stored_height, stored_root))
+            if same_proof_anchor(
+                &stored_hash,
+                stored_height,
+                &stored_root,
+                p.block_hash,
+                p.block_height,
+                p.merkle_root,
+            ) =>
+        {
+            if stored_hash.is_empty() && !p.block_hash.is_empty() {
+                sqlx::query(
+                    "UPDATE proven_txs SET block_hash = ?, updated_at = ? WHERE proven_tx_id = ?",
+                )
+                .bind(p.block_hash)
+                .bind(now)
+                .bind(proven_tx_id)
+                .execute(&mut *conn)
+                .await?;
+                tracing::info!(
+                    txid = %p.txid,
+                    block_height = p.block_height,
+                    block_hash = %p.block_hash,
+                    marker = "proof_block_hash_backfilled",
+                    "store_validated_proof: the stored anchor had no block hash; filled from this proof"
+                );
+            } else {
+                tracing::debug!(
+                    txid = %p.txid,
+                    block_height = p.block_height,
+                    "store_validated_proof: the stored anchor already matches; nothing to write"
+                );
+            }
+            StoreProofOutcome::Unchanged { proven_tx_id }
+        }
+        Some((proven_tx_id, stored_hash, stored_height, stored_root)) => {
+            tracing::info!(
+                txid = %p.txid,
+                stored_height,
+                stored_block_hash = %stored_hash,
+                stored_merkle_root = %stored_root,
+                block_height = p.block_height,
+                block_hash = %p.block_hash,
+                merkle_root = %p.merkle_root,
+                marker = "proof_replaced",
+                "store_validated_proof: a validated proof for a different block replaces the stored anchor (reorg re-anchor)"
+            );
+            sqlx::query(
+                "UPDATE proven_txs SET height = ?, idx = ?, block_hash = ?, merkle_root = ?, merkle_path = ?, updated_at = ? WHERE proven_tx_id = ?",
+            )
+            .bind(p.block_height as i64)
+            .bind(p.idx)
+            .bind(p.block_hash)
+            .bind(p.merkle_root)
+            .bind(p.merkle_path)
+            .bind(now)
+            .bind(proven_tx_id)
+            .execute(&mut *conn)
+            .await?;
+            StoreProofOutcome::Stored {
+                proven_tx_id,
+                replaced: true,
+            }
+        }
+        None => {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?,
+                    COALESCE(
+                        ?,
+                        (SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1),
+                        (SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1)
+                    ),
+                    ?, ?)
+                "#,
+            )
+            .bind(p.txid)
+            .bind(p.block_height as i64)
+            .bind(p.idx)
+            .bind(p.block_hash)
+            .bind(p.merkle_root)
+            .bind(p.merkle_path)
+            .bind(p.raw_tx)
+            .bind(p.txid)
+            .bind(p.txid)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *conn)
+            .await?;
+            let inserted: Option<(i64,)> =
+                sqlx::query_as("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+                    .bind(p.txid)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            match inserted {
+                Some((proven_tx_id,)) => StoreProofOutcome::Stored {
+                    proven_tx_id,
+                    replaced: false,
+                },
+                None => return Ok(StoreProofOutcome::NoRawTx),
+            }
+        }
+    };
+    // The row now holds (or already held) a proof whose root the caller's
+    // tracker confirmed. An Unchanged row keeps its stored path: when that
+    // path computes a different root the record does not match it and the
+    // row still reads as unchecked.
+    super::proof_root_checks::record_root_checked_on(
+        &mut *conn,
+        p.txid,
+        p.block_height,
+        p.checked_root,
+    )
+    .await?;
+    // Mined: every provider has it. Remember it for reduced sends; never a
+    // reason to fail the store.
+    if let Err(e) = super::broadcast_seen::record_broadcast_status_on(
+        conn,
+        p.txid,
+        crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
+        crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
+    )
+    .await
+    {
+        tracing::debug!(txid = %p.txid, error = %e, "broadcast_seen: mined record skipped");
+    }
+    Ok(outcome)
+}
+
+/// Demote one stored proof on an open connection: REVERT TO THE PRE-PROOF
+/// STATE with the bytes preserved, inside the caller's transaction, in this
+/// order (steps 1 and 2 clear the foreign keys the delete in step 4 needs
+/// cleared):
+///
+/// 1. `proven_tx_reqs`: the row goes back to `unmined`, attempts 0, no proof
+///    link; when the completed row had been purged, a new `unmined` row is
+///    inserted with the raw bytes taken from the proof row, so the bytes
+///    survive even after the 30-day purge cleared `transactions.raw_tx`.
+/// 2. `transactions`: every row linked to the proof (and a `completed` row
+///    for the txid left without a link) goes back to `unproven`, its
+///    `raw_tx` restored from the proof row when the purge had cleared it.
+///    `unproven` is in every spendable set (coin selection, `list_outputs`,
+///    `list_actions`, the adoption pass), so the coins stay visible.
+/// 3. `broadcast_seen`: the terminal `mined` rows are forgotten
+///    ([`super::broadcast_seen::forget_mined_on`], the one sanctioned
+///    downgrade), so reduced sends carry the transaction again.
+/// 4. the `proven_txs` row is deleted.
+///
+/// Returns whether a proof row existed. The BEEF walk calls this only for a
+/// row that was never checked (no `proof_root_checks` record) and that the
+/// tracker refutes (`check_unchecked_stored_proof_on`); a checked row's
+/// refuted bump is skipped there and demoted only by the reorg or review
+/// task on positive evidence.
+pub(super) async fn demote_stale_proof_on(
+    conn: &mut sqlx::SqliteConnection,
+    txid: &str,
+) -> Result<bool> {
+    let now = chrono::Utc::now();
+    let existing: Option<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT proven_tx_id, raw_tx FROM proven_txs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((proven_tx_id, raw_tx)) = existing else {
+        return Ok(false);
+    };
+    // 1. the request: back to unmined with its bytes.
+    let updated = sqlx::query(
+        "UPDATE proven_tx_reqs SET status = 'unmined', attempts = 0, proven_tx_id = NULL, raw_tx = COALESCE(raw_tx, ?), updated_at = ? WHERE txid = ?",
+    )
+    .bind(&raw_tx)
+    .bind(now)
+    .bind(txid)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    if updated == 0 {
+        sqlx::query(
+            "INSERT INTO proven_tx_reqs (txid, status, attempts, notified, history, notify, raw_tx, input_beef, created_at, updated_at) \
+             VALUES (?, 'unmined', 0, 0, '{}', '{}', ?, NULL, ?, ?)",
+        )
+        .bind(txid)
+        .bind(&raw_tx)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *conn)
+        .await?;
+    }
+    // 2. the transactions: back to unproven, bytes restored.
+    sqlx::query(
+        "UPDATE transactions SET status = 'unproven', proven_tx_id = NULL, raw_tx = COALESCE(raw_tx, ?), updated_at = ? \
+         WHERE proven_tx_id = ? OR (txid = ? AND status = 'completed' AND proven_tx_id IS NULL)",
+    )
+    .bind(&raw_tx)
+    .bind(now)
+    .bind(proven_tx_id)
+    .bind(txid)
+    .execute(&mut *conn)
+    .await?;
+    // 3. the mined memory: the one sanctioned downgrade.
+    let forgotten = super::broadcast_seen::forget_mined_on(&mut *conn, txid).await?;
+    // 4. the proof row, and its root-check record.
+    sqlx::query("DELETE FROM proven_txs WHERE proven_tx_id = ?")
+        .bind(proven_tx_id)
+        .execute(&mut *conn)
+        .await?;
+    super::proof_root_checks::forget_root_check_on(&mut *conn, txid).await?;
+    tracing::warn!(
+        txid = %txid,
+        proven_tx_id,
+        request_recreated = updated == 0,
+        mined_rows_forgotten = forgotten,
+        marker = "stale_proof_demoted",
+        "demote_stale_proof: the stored proof is gone; the transaction is unproven again with its bytes in the request and will be re-proved"
+    );
+    Ok(true)
+}
+
+fn anchor_from_row(row: (String, i64, String, String)) -> ProvenTxAnchor {
+    ProvenTxAnchor {
+        txid: row.0,
+        height: row.1.max(0) as u32,
+        block_hash: row.2,
+        merkle_root: row.3,
+    }
+}
+
+#[async_trait]
+impl MonitorStorage for StorageSqlx {
+    async fn max_acceptable_proof_height(&self) -> Result<u32> {
+        let mut conn = self.pool().acquire().await?;
+        super::monitor_state::read_proof_gate_on(&mut conn).await
+    }
+
+    async fn set_max_acceptable_proof_height(&self, height: u32) -> Result<()> {
+        let mut conn = self.pool().acquire().await?;
+        super::monitor_state::write_proof_gate_on(&mut conn, height).await
+    }
+
+    async fn load_header_tracker_state(&self) -> Result<Option<HeaderTrackerState>> {
+        let mut conn = self.pool().acquire().await?;
+        super::monitor_state::read_header_tracker_on(&mut conn).await
+    }
+
+    async fn save_header_tracker_state(&self, state: &HeaderTrackerState) -> Result<()> {
+        let mut conn = self.pool().acquire().await?;
+        super::monitor_state::write_header_tracker_on(&mut conn, state).await
+    }
+
+    async fn set_proven_tx_block_hash_if_empty(
+        &self,
+        txid: &str,
+        block_hash: &str,
+    ) -> Result<bool> {
+        if block_hash.is_empty() {
+            return Ok(false);
+        }
+        let done = sqlx::query(
+            "UPDATE proven_txs SET block_hash = ?, updated_at = ? WHERE txid = ? AND block_hash = ''",
+        )
+        .bind(block_hash)
+        .bind(chrono::Utc::now())
+        .bind(txid)
+        .execute(self.pool())
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn find_proven_txs_by_block_hash(&self, block_hash: &str) -> Result<Vec<ProvenTxAnchor>> {
+        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT txid, height, block_hash, merkle_root FROM proven_txs WHERE lower(block_hash) = lower(?) ORDER BY height ASC, proven_tx_id ASC",
+        )
+        .bind(block_hash)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.into_iter().map(anchor_from_row).collect())
+    }
+
+    async fn find_proven_txs_in_heights(
+        &self,
+        min_height: u32,
+        max_height: u32,
+    ) -> Result<Vec<ProvenTxAnchor>> {
+        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT txid, height, block_hash, merkle_root FROM proven_txs WHERE height >= ? AND height <= ? ORDER BY height ASC, proven_tx_id ASC",
+        )
+        .bind(min_height as i64)
+        .bind(max_height as i64)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.into_iter().map(anchor_from_row).collect())
+    }
+
+    async fn demote_stale_proof(&self, txid: &str) -> Result<bool> {
+        // One transaction: either every step of the revert lands or none.
+        let mut tx = self.pool().begin().await?;
+        let existed = demote_stale_proof_on(&mut tx, txid).await?;
+        tx.commit().await?;
+        Ok(existed)
+    }
+
+    async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {
+        // A competitor a broadcaster's word named is asked for first: its
+        // checked proof is the one evidence for the double-spend word
+        // (bsv-stack-lean #66). Then this wallet's own requests.
+        let mut results = self.ask_queued_competitor_proofs().await?;
+        results.extend(self.synchronize_own_reqs().await?);
+        Ok(results)
+    }
 
     async fn send_waiting_transactions(
         &self,
@@ -4489,8 +4790,7 @@ impl MonitorStorage for StorageSqlx {
                         // Check for definitive rejection (invalid tx, not just service error):
                         // ARC/Arcade 4xx rejection codes and Arcade's fatal statuses
                         // (`is_definitive_rejection`), plus the historical "46x"/"invalid"
-                        // status sniff. Routed to `retire_undeliverable_tx` below, which
-                        // alive-checks first and releases inputs only per-input verified.
+                        // status sniff. A hint since 0.7.4 (bsv-stack-lean #66).
                         let is_invalid = results_vec.iter().any(|r| {
                             r.txid_results.iter().any(|tr| {
                                 crate::storage::broadcast::is_definitive_rejection(tr)
@@ -4564,70 +4864,57 @@ impl MonitorStorage for StorageSqlx {
                             continue;
                         }
 
-                        if is_double_spend {
-                            // Double-spend: THE RELEASE RULE — alive-check first, then
-                            // every input released only on its own chain verification
-                            // (`retire_undeliverable_tx`, shared with the invalid and
-                            // transport arms since 2026-08-29).
-                            match self
-                                .retire_undeliverable_tx(
-                                    &*services,
-                                    &req.txid,
-                                    req.proven_tx_req_id,
-                                    attempts as i64,
-                                    "doubleSpend",
-                                    now,
-                                )
+                        if is_double_spend || is_invalid {
+                            // A definitive word (a 465 and every other
+                            // `is_rejection` code, Arcade's REJECTED, a
+                            // double spend named or not): a hint
+                            // (bsv-stack-lean #66). The status sources are
+                            // read once, as before; a transaction they hold
+                            // is promoted. Otherwise the word is recorded,
+                            // the re-ask scheduled on the cadence and a
+                            // named competitor queued for a proof ask; the
+                            // transaction, its inputs and its change keep
+                            // their word. Until 0.7.4 this took the release
+                            // rule to `failed`.
+                            if self
+                                .promote_if_alive(&*services, &req.txid, req.proven_tx_req_id, now)
                                 .await?
                             {
-                                RetireOutcome::Alive => {
-                                    tracing::info!(
-                                        "send_waiting: tx {} reported as double-spend but found alive on chain — treating as success",
-                                        req.txid
-                                    );
-                                    send_with_results.push(SendWithResult {
-                                        txid: req.txid.clone(),
-                                        status: "unproven".to_string(),
-                                    });
-                                    continue;
-                                }
-                                RetireOutcome::Retired { restored, kept } => {
-                                    tracing::info!(
-                                        "send_waiting: tx {} double-spend confirmed — {} input(s) restored (UTXO-verified), {} kept locked",
-                                        req.txid, restored, kept
-                                    );
-                                }
+                                tracing::info!(
+                                    "send_waiting: tx {} drew a definitive word but a status source holds it: treating as success",
+                                    req.txid
+                                );
+                                send_with_results.push(SendWithResult {
+                                    txid: req.txid.clone(),
+                                    status: "unproven".to_string(),
+                                });
+                                continue;
                             }
-                        } else if is_invalid {
-                            match self
-                                .retire_undeliverable_tx(
-                                    &*services,
-                                    &req.txid,
-                                    req.proven_tx_req_id,
-                                    attempts as i64,
-                                    "invalid",
-                                    now,
-                                )
-                                .await?
-                            {
-                                RetireOutcome::Alive => {
-                                    tracing::info!(
-                                        "send_waiting: tx {} reported invalid/undeliverable but found alive on chain — treating as success",
-                                        req.txid
-                                    );
-                                    send_with_results.push(SendWithResult {
-                                        txid: req.txid.clone(),
-                                        status: "unproven".to_string(),
-                                    });
-                                    continue;
-                                }
-                                RetireOutcome::Retired { restored, kept } => {
-                                    tracing::info!(
-                                        "send_waiting: tx {} failed after {} attempts — {} input(s) restored (UTXO-verified), {} kept locked, change outputs marked non-spendable",
-                                        req.txid, attempts, restored, kept
-                                    );
-                                }
-                            }
+                            self.record_send_waiting_hint(
+                                req,
+                                attempts,
+                                post_beef_words(&results_vec),
+                                now,
+                            )
+                            .await?;
+                            let competitors: Vec<String> = results_vec
+                                .iter()
+                                .flat_map(|r| r.txid_results.iter())
+                                .filter_map(|tr| tr.competing_txs.clone())
+                                .flatten()
+                                .collect();
+                            self.queue_competitors(&req.txid, &competitors).await?;
+                            tracing::warn!(
+                                "send_waiting: tx {} drew a definitive word (double_spend={}, attempt {}): a hint; stays announced, re-asked on the cadence",
+                                req.txid,
+                                is_double_spend,
+                                attempts
+                            );
+                            send_with_results.push(SendWithResult {
+                                txid: req.txid.clone(),
+                                status: "sending".to_string(),
+                            });
+                            continue;
                         } else {
                             // A transient word (a 5xx, a 429, ARC's 400 for a
                             // request it could not read): a hint. Recorded, the
@@ -4651,11 +4938,6 @@ impl MonitorStorage for StorageSqlx {
                             });
                             continue;
                         }
-
-                        send_with_results.push(SendWithResult {
-                            txid: req.txid.clone(),
-                            status: "failed".to_string(),
-                        });
                     }
                 }
                 Err(e) => {
@@ -5458,50 +5740,43 @@ impl MonitorStorage for StorageSqlx {
         provider: &str,
         double_spend: bool,
     ) -> Result<bool> {
-        // Nothing the refusal could fail: no source is asked.
-        let open: Option<(i64,)> = sqlx::query_as(
-            "SELECT 1 FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven') LIMIT 1",
+        // A broadcaster's word is a hint (bsv-stack-lean #66; its tracker
+        // charter, section 2): `rejected` is the node's rules run locally
+        // and `conflicted` a mined competitor's checked proof, neither of
+        // which this word is. The refusing broadcaster is remembered (it
+        // never skips this txid as an ancestor again), the word goes on the
+        // request's history, and the transaction keeps its word: the re-ask
+        // and the proof task decide. A competitor the word names is queued
+        // by `queue_competitor_proof_asks`. Until 0.7.4 the refusal was
+        // final when no other source held the transaction (#357).
+        self.record_broadcast_status_quiet(
+            txid,
+            provider,
+            crate::services::broadcast_memory::BROADCAST_STATUS_REJECTED,
         )
-        .bind(txid)
-        .fetch_optional(self.pool())
+        .await;
+        self.note_on_req_history(
+            txid,
+            serde_json::json!({
+                "when": chrono::Utc::now().to_rfc3339(),
+                "what": "broadcasterRefusalHint",
+                "provider": provider,
+                "doubleSpend": double_spend,
+            }),
+        )
         .await?;
-        if open.is_none() {
-            return self.mark_transaction_rejected(txid, double_spend).await;
-        }
+        tracing::warn!(
+            txid = %txid,
+            provider = %provider,
+            double_spend = double_spend,
+            marker = "broadcaster_refusal_hint",
+            "a broadcaster refused the transaction: a hint, no word written; the re-ask and the proof task decide"
+        );
+        Ok(false)
+    }
 
-        // THE FINAL-VERSUS-TRANSIENT RULE (Calgooon/zanaadu-v2#357): one
-        // broadcaster's refusal is final only when no other broadcaster
-        // accepted the transaction and the network does not hold it.
-        // Otherwise the refusal is that broadcaster's view (Arcade's 460
-        // "missing input source data" for a 1.9 MB post GorillaPool ARC
-        // accepted and a miner mined): the transaction stays as it is and
-        // the proof task proves it.
-        let mut evidence = self.memory_holds(txid, Some(provider), !double_spend).await;
-        if evidence.is_none() {
-            if let Ok(services) = self.get_services() {
-                evidence =
-                    Self::network_holds(services.as_ref(), txid, Some(provider), true, false).await;
-            }
-        }
-        if let Some(evidence) = evidence {
-            // The refusing broadcaster lacks it: it never skips this txid
-            // as an ancestor again. Every other row stays.
-            self.record_broadcast_status_quiet(
-                txid,
-                provider,
-                crate::services::broadcast_memory::BROADCAST_STATUS_REJECTED,
-            )
-            .await;
-            tracing::warn!(
-                txid = %txid,
-                provider = %provider,
-                double_spend = double_spend,
-                evidence = %evidence,
-                "broadcaster refused a transaction another source holds: not final, left for the proof task"
-            );
-            return Ok(false);
-        }
-        self.mark_transaction_rejected(txid, double_spend).await
+    async fn queue_competitor_proof_asks(&self, txid: &str, competitors: &[String]) -> Result<()> {
+        self.queue_competitors(txid, competitors).await.map(|_| ())
     }
 
     async fn ingest_push_proof(
@@ -8406,13 +8681,12 @@ mod tests {
             assert_eq!(output_state(&storage, change).await, (true, None));
         }
 
-        /// A true rejection: every broadcaster refuses or never heard of it,
-        /// the status sources do not know it, the refusing broadcaster's own
-        /// acceptance is no evidence. Final: failed, req invalid, change
-        /// dead; and the canary, asking every source again an hour later,
-        /// finds nothing and keeps watching.
+        /// Every broadcaster refuses or never heard of it and the status
+        /// sources do not know it: still hints (bsv-stack-lean #66). No
+        /// word, the change counted; the re-ask and the proof task decide.
+        /// Until 0.7.4 this was final: failed, req invalid, change dead.
         #[tokio::test]
-        async fn refusal_is_final_when_every_source_refuses() {
+        async fn a_refusal_from_every_source_is_still_a_hint() {
             let storage = create_storage().await;
             let (txid, change) = seed_broadcast(&storage, "a3").await;
             storage
@@ -8438,28 +8712,18 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(applied);
-            assert_eq!(tx_status(&storage, &txid).await, "failed");
-            assert_eq!(req_state(&storage, &txid).await.0, "invalid");
-            assert_eq!(output_state(&storage, change).await, (false, None));
-
-            // An hour on, the canary asks every source: still nobody.
-            sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
-                .bind(chrono::Utc::now() - chrono::Duration::hours(2))
-                .bind(&txid)
-                .execute(storage.pool())
-                .await
-                .unwrap();
-            MonitorStorage::un_fail(&storage).await.unwrap();
-            assert_eq!(req_state(&storage, &txid).await, ("invalid".into(), 1));
-            assert_eq!(tx_status(&storage, &txid).await, "failed");
+            assert!(!applied);
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
+            assert_eq!(req_state(&storage, &txid).await.0, "unmined");
+            assert_eq!(output_state(&storage, change).await, (true, None));
         }
 
-        /// A conflict verdict (466, a competitor): another broadcaster's bare
-        /// acceptance does not overrule it (each can hold one side of a
-        /// double spend); only the network's word would.
+        /// A conflict verdict (466, a competitor) is a hint like any other
+        /// broadcaster's word (bsv-stack-lean #66): no word is written, the
+        /// refusing broadcaster is remembered. Until 0.7.4 it was final
+        /// unless the network held the transaction.
         #[tokio::test]
-        async fn conflict_is_not_overruled_by_a_bare_acceptance() {
+        async fn a_conflict_word_is_a_hint() {
             let storage = create_storage().await;
             let (txid, _) = seed_broadcast(&storage, "a4").await;
             storage
@@ -8472,9 +8736,17 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(applied);
-            assert_eq!(tx_status(&storage, &txid).await, "failed");
-            assert_eq!(req_state(&storage, &txid).await.0, "doubleSpend");
+            assert!(!applied);
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
+            assert_eq!(req_state(&storage, &txid).await.0, "unmined");
+            assert_eq!(
+                storage
+                    .broadcast_status_of(&txid, PROVIDER_ARCADE_V2)
+                    .await
+                    .unwrap()
+                    .map(|r| r.status),
+                Some(crate::services::broadcast_memory::BROADCAST_STATUS_REJECTED.to_string())
+            );
         }
 
         /// The canary asks EVERY source, not only the one that refused: the
@@ -8551,12 +8823,12 @@ mod tests {
                 .build()
         }
 
-        /// LENS (corrected): GorillaPool SEEN six hours ago, evicted from
-        /// every mempool since. Past the memory window the live read
-        /// decides: nobody holds it, so Arcade's REJECTED is final and the
-        /// change is no longer counted (inputs go to the release rule).
+        /// LENS: GorillaPool SEEN six hours ago, evicted from every mempool
+        /// since, then Arcade's REJECTED: a hint, no word, the change still
+        /// counted (bsv-stack-lean #66). Until 0.7.4 the REJECTED was final
+        /// here and the change written off.
         #[tokio::test]
-        async fn lens_stale_seen_does_not_overrule_rejected() {
+        async fn lens_stale_seen_then_rejected_writes_no_word() {
             let storage = create_storage().await;
             let (txid, change) = seed_broadcast(&storage, "b1").await;
             storage
@@ -8567,13 +8839,13 @@ mod tests {
             WalletStorageProvider::set_services(&storage, Arc::new(evicted_everywhere(&txid)));
             let trigger = AtomicBool::new(false);
             assert!(
-                ArcadeEventsTask::apply_status_event(&storage, &txid, "REJECTED", &trigger)
+                !ArcadeEventsTask::apply_status_event(&storage, &txid, "REJECTED", &trigger)
                     .await
                     .unwrap()
             );
-            assert_eq!(tx_status(&storage, &txid).await, "failed");
-            assert_eq!(req_state(&storage, &txid).await.0, "invalid");
-            assert_eq!(output_state(&storage, change).await, (false, None));
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
+            assert_eq!(req_state(&storage, &txid).await.0, "unmined");
+            assert_eq!(output_state(&storage, change).await, (true, None));
         }
 
         /// LENS (corrected): a fresh SEEN still overrules (the incident).
@@ -8595,10 +8867,11 @@ mod tests {
         }
 
         /// LENS: every live source down (no broadcaster answers, status
-        /// sources error), no memory row: the refusal is final (fail closed
-        /// to `failed`, as the reference does unconditionally).
+        /// sources error), no memory row: the refusal is still a hint
+        /// (bsv-stack-lean #66). Until 0.7.4 it was final, failing closed
+        /// to `failed` as the reference does unconditionally.
         #[tokio::test]
-        async fn lens_sources_down_refusal_is_final() {
+        async fn lens_sources_down_refusal_is_a_hint() {
             let storage = create_storage().await;
             let (txid, _) = seed_broadcast(&storage, "b3").await;
             let mock = MockWalletServicesBuilder::default()
@@ -8612,8 +8885,8 @@ mod tests {
                 .mark_transaction_rejected_by(&txid, PROVIDER_ARCADE_V2, false)
                 .await
                 .unwrap();
-            assert!(applied);
-            assert_eq!(tx_status(&storage, &txid).await, "failed");
+            assert!(!applied);
+            assert_eq!(tx_status(&storage, &txid).await, "unproven");
         }
 
         /// LENS: the incident with SEEN (not ACCEPTED) from GorillaPool, then

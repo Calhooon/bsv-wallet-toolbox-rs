@@ -27,10 +27,12 @@ const DEFAULT_MIN_AGE_SECS: u64 = 30;
 /// 3. Builds BEEF for each group
 /// 4. Calls services.post_beef() to broadcast
 /// 5. On success: updates status to 'unmined'
-/// 6. On double-spend: marks transaction as 'failed'
-/// 7. On a transient word or a fault: records it on the request and re-asks
-///    on the cadence (`services::cadence::send_waiting_reask_minutes`),
-///    never retiring the transaction for a count of them (bsv-stack-lean #65)
+/// 6. On any other word (a transient word, a fault, a 465 or any other
+///    definitive rejection, a double spend): records it on the request and
+///    re-asks on the cadence (`services::cadence::send_waiting_reask_minutes`),
+///    never retiring the transaction for a word or a count of them
+///    (bsv-stack-lean #65 and #66); a competitor the word names is queued
+///    for a proof ask, and its checked proof alone writes `doubleSpend`
 ///
 /// Uses a local TryLock (Go pattern) to skip if a previous run is still in progress.
 pub struct SendWaitingTask<S, V>
