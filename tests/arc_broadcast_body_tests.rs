@@ -309,6 +309,39 @@ async fn the_full_beef_goes_plain_as_octet_stream() {
     }
 }
 
+/// #65 (bsv-stack-lean), the doc of `Arc::post_beef`: a BEEF V2 is posted as
+/// written, never lowered to V1 (the pinned ARC parses V2: bsv-stack-lean
+/// `docs/p0/beef-v2-to-arc.md`, #64). Until 0.7.3 the doc said a V2 "will be
+/// converted automatically"; the code never did, and this pins what it does.
+#[tokio::test]
+async fn a_beef_v2_is_posted_as_written() {
+    let plain = row("small_chain_true");
+    let subject = subject_of(plain);
+    let mut v2 = Beef::from_binary(plain).expect("the row parses");
+    v2.version = 0xEFBE_0002;
+    let v2 = v2.to_binary();
+    assert_eq!(
+        hex::encode(&v2[..4]),
+        "0200beef",
+        "the witness is a V2 BEEF"
+    );
+    let mut server = mockito::Server::new_async().await;
+    let log = mock_arc(&mut server, &subject).await;
+    let arc = ArcProvider::new(server.url(), Some(ArcConfig::default()), Some("arcPin")).unwrap();
+    let result = arc
+        .post_beef(&v2, std::slice::from_ref(&subject))
+        .await
+        .unwrap();
+    assert!(result.is_success(), "{:?}", result);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1, "one request, got {:?}", seen);
+    assert_eq!(
+        seen[0].decoded.as_deref().ok(),
+        Some(v2.as_slice()),
+        "the V2 BEEF, byte for byte"
+    );
+}
+
 // =============================================================================
 // ARC's 400: a request it could not read, never a verdict on the transaction
 // =============================================================================
