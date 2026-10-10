@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.3] - 2026-10-10
+
+A broadcaster's word is a hint that schedules a re-ask and writes no word (bsv-stack-lean #65; the tracker's rule, bsv-stack-lean `docs/charters/tracker.md` section 2). No number of transient words, 400s or faults retires a transaction the wallet handed to the broadcasters; the one retire is the host's explicit act, `StorageSqlx::retire_undeliverable_txid`.
+
+### Fixed
+
+1. `send_waiting_transactions` retired a transaction once its attempts passed six, whatever the words were (ARC's 400 for a request it could not read, a 5xx, a 429, a transport fault): the alive check, its inputs released on an `is_utxo` hint, its change written off, the transaction `failed`. Now a transient word, an orphan-mempool hold or a fault leaves the request `unsent` with every provider's word recorded on its history (`{"notes": [{"what": "sendWaitingHint", ...}]}`, the newest 32 kept), the transaction `sending`, its inputs locked, and the next re-ask waits for `services::cadence::send_waiting_reask_minutes`: 1, 2, 4, 8, 16, 32 minutes, then every 64, never ending. A pass posts only the requests that are due. The reference counts a service error and keeps the request sending (ts-stack@edf6e03 wallet-toolbox `src/storage/methods/attemptToPostReqsToNetwork.ts:213-215`). A definitive rejection (465 and the other `is_rejection` codes, Arcade's fatal words) and a double spend keep their release-rule path; the status sniff of that path no longer reads a service error as "invalid".
+2. `abort_abandoned` (the `fail_abandoned` task, every five minutes with a five-minute timeout by default) failed every `sending` transaction past the timeout, with the same release of its inputs and write-off of its change: a retire by age of the transactions item 1 keeps announced. It now ages out only `unsigned` and `unprocessed`, as its trait doc said and as the reference does (`src/monitor/tasks/TaskFailAbandoned.ts:41`; `src/storage/StorageProvider.ts:712` lists `sending` as unabortable). The change of a `sending` transaction stays out of coin selection, as before.
+3. `Arc::post_beef`'s doc said a V2 BEEF "will be converted automatically" to V1. The code never converted a version and need not: the pinned ARC (e7efc5b) parses V2 (bsv-stack-lean #64). The doc now says the BEEF is posted as written.
+4. The witnesses: `seven_transient_words_keep_the_transaction_announced_with_a_scheduled_reask` and `fail_abandoned_never_retires_an_announced_transaction` (`tests/monitor_tests.rs`), red at 0.7.2 (`failed`) and green here; `a_beef_v2_is_posted_as_written` (`tests/arc_broadcast_body_tests.rs`) pins what `post_beef` does. Two tests that pinned the old retires now say the opposite: `transport_dead_after_retries_retires_nothing`, `test_abort_abandoned_leaves_sending_status`.
+
+### Upgrading
+
+- Nothing stored is migrated. A host that relied on the toolbox retiring an undeliverable transaction by itself (after seven attempts, or five minutes in `sending`) now retires it by its own explicit act, `StorageSqlx::retire_undeliverable_txid` (the alive check first, each input released only on its own chain verification), or leaves it to be re-asked. A request's `history` column now carries the notes above. One public item added: `services::cadence::send_waiting_reask_minutes` and its two constants. Rollback: pin 0.7.2.
+
 ## [0.7.2] - 2026-10-10
 
 The ARC provider posts a BEEF in a form ARC reads, and reads ARC's 400 as a request ARC could not read, never as the transaction's rejection (bsv-stack-lean #63, finding F2 of its reading of the broadcast body at the pins).
