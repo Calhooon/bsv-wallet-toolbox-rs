@@ -1252,6 +1252,7 @@ where
         }
 
         let auth = self.auth();
+        let args = with_trust_self_default(args, self.options.trust_self.as_deref());
 
         // Call storage to create the action
         let storage_result = self
@@ -2844,6 +2845,23 @@ fn validate_originator(originator: &str) -> Result<()> {
 }
 
 /// Computes the txid (double SHA256, reversed) from raw transaction bytes.
+/// The wallet's `trustSelf` is the default for a createAction that names
+/// none (ts-stack@edf6e03 wallet-toolbox `src/Wallet.ts:1150-1151`,
+/// `args.options ??= {}; args.options.trustSelf ||= this.trustSelf`): storage
+/// then resolves the caller's txid-only entries it holds before verifying.
+fn with_trust_self_default(
+    mut args: CreateActionArgs,
+    trust_self: Option<&str>,
+) -> CreateActionArgs {
+    if trust_self == Some("known") {
+        let options = args.options.get_or_insert_with(Default::default);
+        if options.trust_self.is_none() {
+            options.trust_self = Some(bsv_rs::wallet::TrustSelf::Known);
+        }
+    }
+    args
+}
+
 fn compute_txid(raw_tx: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
@@ -3487,6 +3505,25 @@ mod tests {
         assert!(options.include_all_source_transactions);
         assert!(!options.auto_known_txids);
         assert_eq!(options.trust_self, Some("known".to_string()));
+    }
+
+    #[test]
+    fn test_trust_self_default_reaches_create_action_args() {
+        let args = CreateActionArgs {
+            description: "trust self default".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: None,
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+        let known = Some(bsv_rs::wallet::TrustSelf::Known);
+        let with = with_trust_self_default(args.clone(), Some("known"));
+        assert_eq!(with.options.unwrap().trust_self, known);
+        let without = with_trust_self_default(args, None);
+        assert!(without.options.is_none());
     }
 
     #[test]
