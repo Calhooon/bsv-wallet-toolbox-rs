@@ -180,8 +180,9 @@ async fn test_post_beef_v1_proven_only_sent_as_beef() {
             r#"{{"txid": "{}", "txStatus": "SEEN_ON_NETWORK", "extraInfo": ""}}"#,
             txid
         ))
-        // BEEF hex should start with "0100beef" (V1 magic)
-        .match_body(mockito::Matcher::Regex("0100beef".to_string()))
+        // The plain BEEF itself, as bytes (V1 magic `0100beef`), not hex.
+        .match_header("content-type", "application/octet-stream")
+        .match_body(beef_v1_bytes.clone())
         .create_async()
         .await;
 
@@ -526,14 +527,13 @@ async fn test_post_beef_acceptance_statuses_are_success() {
 
 #[tokio::test]
 async fn test_post_beef_ef_fallback_on_unparseable() {
-    // If the BEEF bytes can't be parsed, they should be sent unchanged as hex.
-    // The postBeefAsEF note should NOT be present.
+    // If the BEEF bytes can't be parsed, they should be sent unchanged, as
+    // bytes. The postBeefAsEF note should NOT be present.
     let garbage_bytes = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
     let txid = "aa".repeat(32);
 
     let mut server = mockito::Server::new_async().await;
 
-    let expected_hex = hex::encode(&garbage_bytes);
     let mock = server
         .mock("POST", "/v1/tx")
         .with_status(200)
@@ -542,7 +542,8 @@ async fn test_post_beef_ef_fallback_on_unparseable() {
             r#"{{"txid": "{}", "txStatus": "STORED", "extraInfo": ""}}"#,
             txid
         ))
-        .match_body(mockito::Matcher::Regex(expected_hex))
+        .match_header("content-type", "application/octet-stream")
+        .match_body(garbage_bytes.clone())
         .create_async()
         .await;
 
@@ -608,7 +609,8 @@ async fn test_post_beef_v2_with_txid_only_sent_as_is() {
             txid
         ))
         // The BEEF should remain V2 since there's no new tx to extract EF from
-        .match_body(mockito::Matcher::Regex("0200beef".to_string()))
+        .match_header("content-type", "application/octet-stream")
+        .match_body(beef_bytes.clone())
         .create_async()
         .await;
 
