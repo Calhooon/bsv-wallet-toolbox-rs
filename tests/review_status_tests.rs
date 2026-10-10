@@ -178,7 +178,8 @@ mod review_status {
     /// spendable, causing the wallet to re-spend them endlessly.
     ///
     /// Inputs from failed txs are now only restored via UTXO-verified rollback paths
-    /// in update_transaction_status_after_broadcast, send_waiting, and abort_abandoned.
+    /// in update_transaction_status_after_broadcast and the release rule
+    /// (`retire_undeliverable_tx`); abort_abandoned no longer ages out `sending` (0.7.3).
     async fn test_review_status_releases_outputs_from_failed_tx() {
         let (storage, auth) = setup_storage().await;
         let user_id = auth.user_id.unwrap();
@@ -385,15 +386,17 @@ mod review_status {
     }
 
     // =========================================================================
-    // Test: abort_abandoned includes 'sending' transactions
+    // Test: abort_abandoned leaves 'sending' transactions to the chain
     // =========================================================================
 
     #[tokio::test]
-    /// Test that abort_abandoned handles stale 'sending' transactions with UTXO verification.
-    ///
-    /// With mock services providing is_utxo=true, inputs should be restored.
-    /// Change outputs should be marked non-spendable (phantom prevention).
-    async fn test_abort_abandoned_includes_sending_status() {
+    /// Until 0.7.3 abort_abandoned failed a stale 'sending' transaction,
+    /// released its inputs on an `is_utxo` hint and wrote off its change. A
+    /// 'sending' transaction was handed to the broadcasters and may mine; it
+    /// is re-asked on the cadence and retired only by the host's explicit act
+    /// (bsv-stack-lean #65). Its change stays out of coin selection while it
+    /// is 'sending' (`test_sending_tx_change_outputs_excluded_from_utxo_selection`).
+    async fn test_abort_abandoned_leaves_sending_status() {
         use bsv_wallet_toolbox_rs::WalletStorageProvider;
 
         let (storage, auth) = setup_storage().await;
@@ -458,38 +461,39 @@ mod review_status {
             .await
             .unwrap();
 
-        // Transaction should now be failed
+        // The transaction is still 'sending'
         let row: (String,) = sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
             .bind(&txid)
             .fetch_one(storage.pool())
             .await
             .unwrap();
         assert_eq!(
-            row.0, "failed",
-            "Stale sending transaction should be marked 'failed'"
+            row.0, "sending",
+            "a stale sending transaction is not aged out"
         );
 
-        // Change output should be non-spendable (phantom prevention)
+        // Its change is untouched
         let row: (bool,) =
             sqlx::query_as("SELECT spendable FROM outputs WHERE txid = ? AND vout = 1")
                 .bind(&txid)
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        assert!(
-            !row.0,
-            "Change output from failed sending tx should be non-spendable"
-        );
+        assert!(row.0, "the change row is not rewritten");
 
-        // Input UTXO should be restored (mock is_utxo returns true)
+        // Its input stays locked by it
         let row: (bool, Option<i64>) =
             sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE txid = ? AND vout = 0")
                 .bind(&source_txid)
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        assert!(row.0, "Input UTXO should be restored to spendable");
-        assert!(row.1.is_none(), "Input UTXO spent_by should be NULL");
+        assert!(!row.0, "the input is not released");
+        assert_eq!(
+            row.1,
+            Some(tx_id),
+            "the input stays locked by the sending tx"
+        );
     }
 
     // =========================================================================

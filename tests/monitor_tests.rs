@@ -1551,4 +1551,52 @@ mod monitor_integration {
         assert_eq!(mock.call_count("post_beef"), 1, "the scheduled re-ask runs");
         assert_eq!(tx_and_req(&storage, &child).await.0, "sending");
     }
+
+    /// RED at 0.7.2: `abort_abandoned` (the `fail_abandoned` task, every five
+    /// minutes with a five-minute timeout by default) failed every `sending`
+    /// transaction older than the timeout, an announced one included: its
+    /// change written off, its inputs released on a hint. GREEN: as its own
+    /// doc and the reference say (ts-stack@edf6e03 wallet-toolbox
+    /// src/monitor/tasks/TaskFailAbandoned.ts:41), it ages out only
+    /// `unsigned` and `unprocessed`; an announced transaction waits for the
+    /// chain or the host's explicit act (bsv-stack-lean #65).
+    #[tokio::test]
+    async fn fail_abandoned_never_retires_an_announced_transaction() {
+        use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+        use bsv_wallet_toolbox_rs::MonitorStorage as _;
+        let storage = StorageSqlx::in_memory().await.expect("in_memory");
+        let storage_key = "02".to_string() + &"ab".repeat(32);
+        storage.migrate("t", &storage_key).await.expect("migrate");
+        storage.make_available().await.expect("avail");
+        let (child, child_id, parent_out, child_out) =
+            seed_parent_child(&storage, "unsent", 7).await;
+        let mock = Arc::new(
+            MockWalletServices::builder()
+                .is_utxo_response(MockResponse::Success(true))
+                .build(),
+        );
+        storage.set_services(mock as Arc<dyn WalletServices>);
+
+        storage
+            .abort_abandoned(Duration::from_secs(5 * 60))
+            .await
+            .expect("abort_abandoned");
+
+        let (t, r, a) = tx_and_req(&storage, &child).await;
+        assert_eq!(
+            (t.as_str(), r.as_str(), a),
+            ("sending", "unsent", 7),
+            "an announced transaction is not aged out"
+        );
+        assert_eq!(
+            output_lock(&storage, parent_out).await,
+            (0, Some(child_id)),
+            "its input stays locked"
+        );
+        assert_eq!(
+            output_lock(&storage, child_out).await.0,
+            1,
+            "its change is not written off"
+        );
+    }
 }
