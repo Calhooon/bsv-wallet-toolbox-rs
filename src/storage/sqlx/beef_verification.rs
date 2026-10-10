@@ -473,27 +473,45 @@ mod tests {
         );
     }
 
-    /// Test 5: BEEF where some txs have proofs and some don't (partial proof).
-    /// The unproven tx is a txid-only entry, so it is valid with allow_txid_only.
+    /// Test 5: BEEF with one proven tx and one txid-only entry (partial proof).
+    /// Since bsv-rs 0.4.2 a txid-only entry is read on its own, whatever
+    /// `allow_txid_only` says: valid when a BUMP of this BEEF carries its txid
+    /// at level 0, `StubNotProven` otherwise (the streaming reader's rule).
     #[tokio::test]
     async fn test_partial_beef() {
         let height = 800_000u32;
         let (mut beef, _proven_txid, merkle_root) = build_single_proven_beef(height);
 
-        // Add a txid-only entry (no proof needed, represents a known tx)
+        // A txid-only entry no BUMP of this BEEF proves
         let known_txid = "bb".repeat(32);
         beef.merge_txid_only(known_txid.clone());
 
-        // The BEEF has one proven tx and one txid-only tx
-        // verify_valid(true) should be fine since we allow txid_only
-        let mut tracker = MockChainTracker::new(height + 1);
+        let mut tracker = MockChainTracker::new(height + 2);
         tracker.add_root(height, merkle_root);
 
+        assert_eq!(
+            beef.verify_structure().err(),
+            Some(bsv_rs::transaction::Kind::StubNotProven)
+        );
         let known = HashSet::new();
         let result =
             verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
                 .await;
+        assert!(
+            result.is_err(),
+            "an unproven txid-only entry is refused, got: {:?}",
+            result
+        );
 
+        // The same entry proven by a BUMP of this BEEF is valid
+        let stub_bump = MerklePath::from_coinbase_txid(&known_txid, height + 1);
+        let stub_root = stub_bump.compute_root(Some(&known_txid)).unwrap();
+        beef.merge_bump(stub_bump);
+        tracker.add_root(height + 1, stub_root);
+
+        let result =
+            verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
+                .await;
         assert!(
             result.is_ok(),
             "Expected Ok for partial BEEF, got: {:?}",
@@ -988,10 +1006,9 @@ mod tests {
         let mut beef = Beef::new();
         let bump_idx = beef.merge_bump(bump);
 
-        // We need to add the tx's input too since it's not proven
-        // The input txid is c997a5e5... which we add as txid-only
-        let input_txid = "0437cd7f8525ceed2324359c2d0ba26006d92d856a9c20fa0241106ee5a597c9";
-        beef.merge_txid_only(input_txid.to_string());
+        // The tx is proven by its own BUMP, so its input's source need not
+        // ride in the BEEF. A txid-only entry for it (c997a5e5...) would be
+        // one no BUMP of this BEEF proves: `StubNotProven` since bsv-rs 0.4.2.
         beef.merge_transaction(tx);
 
         // Set bump_index on the real tx
