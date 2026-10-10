@@ -4778,143 +4778,19 @@ impl MonitorStorage for StorageSqlx {
             }
         }
 
-        // Handle stale 'sending' transactions separately.
-        // These can't go through abort_action (it rejects 'sending' status),
-        // so we do direct DB cleanup: mark change outputs non-spendable,
-        // restore input UTXOs (with UTXO verification), and transition to 'failed'.
-        //
-        // Because these transactions may have been broadcast and double-spent,
-        // we verify each input via is_utxo() before restoring. This prevents
-        // the feedback loop where dead UTXOs are re-marked as spendable.
-        let sending_rows: Vec<(i64, String)> = sqlx::query_as(
-            r#"
-            SELECT transaction_id, txid
-            FROM transactions
-            WHERE status = 'sending'
-              AND is_outgoing = 1
-              AND created_at < ?
-            "#,
-        )
-        .bind(cutoff)
-        .fetch_all(self.pool())
-        .await?;
-
-        if !sending_rows.is_empty() {
-            let now = Utc::now();
+        // A `sending` transaction is not aged out here. It was handed to the
+        // broadcasters, so a broadcaster may hold it and it may mine; its
+        // words are hints that `send_waiting_transactions` records and
+        // re-asks on the cadence, and the one retire is the host's explicit
+        // act (`StorageSqlx::retire_undeliverable_txid`). Until 0.7.3 this
+        // sweep failed every `sending` row past the timeout, released its
+        // inputs on a hint and wrote off its change (bsv-stack-lean #65;
+        // the reference ages out only `unprocessed` and `unsigned`,
+        // wallet-toolbox src/monitor/tasks/TaskFailAbandoned.ts:41).
+        if !rows.is_empty() {
             tracing::info!(
-                "abort_abandoned: cleaning up {} stale 'sending' transactions",
-                sending_rows.len()
-            );
-
-            // Get services for UTXO verification (best-effort)
-            let services = self.get_services().ok();
-
-            for (transaction_id, txid) in &sending_rows {
-                // Mark change outputs non-spendable (phantom UTXO prevention)
-                sqlx::query(
-                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
-                )
-                .bind(now)
-                .bind(transaction_id)
-                .execute(self.pool())
-                .await?;
-
-                // UTXO-verified restore of input UTXOs.
-                // These transactions were in 'sending' and may have been broadcast,
-                // so we verify each input is still unspent before restoring.
-                if let Some(ref svc) = services {
-                    let input_rows = sqlx::query(
-                        r#"
-                        SELECT o.output_id, t.txid AS source_txid, o.vout, o.locking_script
-                        FROM outputs o
-                        JOIN transactions t ON o.transaction_id = t.transaction_id
-                        WHERE o.spent_by = ?
-                        "#,
-                    )
-                    .bind(transaction_id)
-                    .fetch_all(self.pool())
-                    .await?;
-
-                    let mut restored = 0u32;
-                    for input_row in &input_rows {
-                        let output_id: i64 = input_row.get("output_id");
-                        let source_txid: String = input_row.get("source_txid");
-                        let vout: i32 = input_row.get("vout");
-                        let locking_script: Option<Vec<u8>> = input_row.get("locking_script");
-                        let script = locking_script.as_deref().unwrap_or(&[]);
-
-                        match svc.is_utxo(&source_txid, vout as u32, script).await {
-                            UtxoVerdict::UnspentHint => {
-                                sqlx::query(
-                                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
-                                )
-                                .bind(now)
-                                .bind(output_id)
-                                .execute(self.pool())
-                                .await?;
-                                restored += 1;
-                            }
-                            UtxoVerdict::Spent => {
-                                tracing::info!(
-                                    "abort_abandoned: input {}:{} spent on chain, proven: NOT restoring",
-                                    source_txid,
-                                    vout
-                                );
-                            }
-                            undecided @ (UtxoVerdict::SpentHint | UtxoVerdict::Unknown) => {
-                                // A hint and "could not look" are not
-                                // "spent": the input stays locked and is
-                                // asked about again.
-                                self.schedule_locked_input_check(
-                                    output_id,
-                                    locked_verdict_label(undecided),
-                                )
-                                .await;
-                                tracing::warn!(
-                                    "abort_abandoned: input {}:{} has no proof of a spend and is in no unspent set: stays LOCKED, re-check scheduled",
-                                    source_txid,
-                                    vout
-                                );
-                            }
-                        }
-
-                        tokio::time::sleep(crate::services::cadence::STRANGER_SPEND_LOOKUP_PACE)
-                            .await;
-                    }
-
-                    tracing::info!(
-                        "abort_abandoned: tx {} — {}/{} inputs restored (UTXO-verified)",
-                        txid,
-                        restored,
-                        input_rows.len()
-                    );
-                } else {
-                    // No services available — fail-safe: do NOT restore inputs.
-                    // They'll be picked up on the next run when services are available.
-                    tracing::warn!(
-                        "abort_abandoned: tx {} — services unavailable, inputs stay locked",
-                        txid
-                    );
-                }
-
-                // Mark transaction as failed
-                sqlx::query(
-                    "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-                )
-                .bind(now)
-                .bind(transaction_id)
-                .execute(self.pool())
-                .await?;
-            }
-        }
-
-        let total = rows.len() + sending_rows.len();
-        if total > 0 {
-            tracing::info!(
-                "abort_abandoned: processed {} abandoned transactions ({} aborted, {} stale sending cleaned)",
-                total,
-                rows.len(),
-                sending_rows.len()
+                "abort_abandoned: processed {} abandoned transactions",
+                rows.len()
             );
         }
 
