@@ -763,6 +763,7 @@ pub async fn create_action_internal(
         .and_then(|o| o.known_txids.as_ref())
         .map(|txids| txids.iter().map(hex::encode).collect())
         .unwrap_or_default();
+    let trust_self = options.and_then(|o| o.trust_self) == Some(bsv_rs::wallet::TrustSelf::Known);
 
     // Build input BEEF containing all input transactions with their merkle proofs
     // Verify BEEF against ChainTracker if provided (matches TypeScript/Go behavior)
@@ -774,6 +775,7 @@ pub async fn create_action_internal(
         args.input_beef.as_deref(),
         &known_txids,
         return_txid_only,
+        trust_self,
         Some(storage),
     )
     .await?;
@@ -2117,27 +2119,10 @@ pub(super) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String
     )
 }
 
-/// Prunes a BEEF down to the transactions the given roots actually need.
-///
-/// A transaction that carries a BUMP is self-proving: its merkle path
-/// establishes it is in a block, so none of its ancestors belong in the BEEF.
-/// This walks the dependency graph from `roots` and stops at every proven
-/// transaction, keeping the artifact to one root transaction plus only its
-/// recursive proof dependencies, which is what the TypeScript builder emits.
-///
-/// Unused BUMPs are dropped with the transactions that referenced them and the
-/// surviving bump indices are rediscovered on merge, so the result always
-/// serializes with consistent indices.
-///
-/// Roots that are absent from `beef` are ignored. If that leaves nothing to
-/// keep, `beef` is left untouched: pruning must never empty a BEEF.
-pub(super) fn prune_beef_to_roots(beef: &mut Beef, roots: &[String]) {
-    if beef.txs.is_empty() || roots.is_empty() {
-        return;
-    }
-
-    // `BeefTx::txid()` re-hashes the raw bytes on every call, so index once.
-    let txids: Vec<String> = beef.txs.iter().map(|tx| tx.txid()).collect();
+/// The indices of `beef.txs` the `roots` reach: each root, and the parents of
+/// every unproven transaction reached, stopping at a proven or a txid-only
+/// entry. `txids` is `beef.txs`' txids, in order.
+fn needed_by_roots(beef: &Beef, txids: &[String], roots: &[String]) -> HashSet<usize> {
     let mut index: std::collections::HashMap<&str, usize> =
         std::collections::HashMap::with_capacity(txids.len());
     for (i, t) in txids.iter().enumerate() {
@@ -2173,6 +2158,32 @@ pub(super) fn prune_beef_to_roots(beef: &mut Beef, roots: &[String]) {
             }
         }
     }
+
+    needed
+}
+
+/// Prunes a BEEF down to the transactions the given roots actually need.
+///
+/// A transaction that carries a BUMP is self-proving: its merkle path
+/// establishes it is in a block, so none of its ancestors belong in the BEEF.
+/// This walks the dependency graph from `roots` and stops at every proven
+/// transaction, keeping the artifact to one root transaction plus only its
+/// recursive proof dependencies, which is what the TypeScript builder emits.
+///
+/// Unused BUMPs are dropped with the transactions that referenced them and the
+/// surviving bump indices are rediscovered on merge, so the result always
+/// serializes with consistent indices.
+///
+/// Roots that are absent from `beef` are ignored. If that leaves nothing to
+/// keep, `beef` is left untouched: pruning must never empty a BEEF.
+pub(super) fn prune_beef_to_roots(beef: &mut Beef, roots: &[String]) {
+    if beef.txs.is_empty() || roots.is_empty() {
+        return;
+    }
+
+    // `BeefTx::txid()` re-hashes the raw bytes on every call, so index once.
+    let txids: Vec<String> = beef.txs.iter().map(|tx| tx.txid()).collect();
+    let needed = needed_by_roots(beef, &txids, roots);
 
     if needed.is_empty() || needed.len() == beef.txs.len() {
         return;
@@ -2739,6 +2750,75 @@ pub(super) async fn rebuild_beef_for_broadcast(
     Ok(beef)
 }
 
+/// `trustSelf: 'known'`: a txid-only entry of the caller's `inputBEEF` that
+/// names a transaction this wallet's storage holds is the wallet's own
+/// evidence, so storage answers for it before `verify_valid` (ts-stack@edf6e03
+/// wallet-toolbox `src/storage/methods/createAction.ts:876`, `906-911`,
+/// `923-963`; the bytes and the proof from storage, `996-1002`). bsv-rs 0.4.2
+/// reads a txid-only entry as valid only when the BEEF proves it; that is the
+/// rule for a stranger's BEEF at a door, not for the wallet's known inputs.
+///
+/// Returns the caller's BEEF without the entries storage will answer for, and
+/// their txids for the ancestor walk, which supplies each one's bytes and,
+/// where storage holds it, its proof (or, for an unproven one, its stored
+/// ancestry). An entry a BUMP of the caller's BEEF proves is kept as it came.
+/// An entry no input reaches is dropped, as the reference's `beefForTxids`
+/// drops it (`createAction.ts:893-896`). An entry an input reaches that
+/// storage does not know is refused (`createAction.ts:934-937` for an
+/// ancestor, `996-1000` for an input).
+async fn resolve_known_txid_only_entries(
+    conn: &mut SqliteConnection,
+    user_beef: Beef,
+    roots: &[String],
+) -> Result<(Beef, Vec<String>)> {
+    // Decided before any await: no borrow of a `BeefTx` (not `Sync`) may
+    // live across one.
+    let (kept, from_storage) = split_txid_only_entries(&user_beef, roots);
+    for txid in &from_storage {
+        if get_tx_with_proof(&mut *conn, txid).await?.is_none() {
+            return Err(Error::ValidationError(format!(
+                "inputBEEF: the txid-only entry {} is not known to this wallet: \
+                 trustSelf 'known' vouches only for a transaction the wallet's \
+                 storage holds; the BEEF must carry its bytes and its proof",
+                txid
+            )));
+        }
+    }
+    Ok((kept, from_storage))
+}
+
+/// The caller's BEEF without the txid-only entries storage must answer for,
+/// and their txids (`resolve_known_txid_only_entries`).
+fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<String>) {
+    if !user_beef.txs.iter().any(|tx| tx.is_txid_only()) {
+        return (user_beef.clone(), Vec::new());
+    }
+
+    let txids: Vec<String> = user_beef.txs.iter().map(|tx| tx.txid()).collect();
+    let needed = needed_by_roots(user_beef, &txids, roots);
+
+    let mut kept = Beef::with_version(user_beef.version);
+    for bump in &user_beef.bumps {
+        kept.merge_bump(bump.clone());
+    }
+    let mut from_storage = Vec::new();
+    for (i, tx) in user_beef.txs.iter().enumerate() {
+        if tx.is_txid_only() {
+            let txid = &txids[i];
+            if user_beef.bumps.iter().any(|b| b.contains(txid)) {
+                kept.merge_txid_only(txid.clone());
+            } else if needed.contains(&i) {
+                from_storage.push(txid.clone());
+            }
+        } else if let Some(raw) = tx.raw_tx() {
+            kept.merge_raw_tx(raw.to_vec(), None);
+        } else if let Some(t) = tx.tx() {
+            kept.merge_transaction(t.clone());
+        }
+    }
+    (kept, from_storage)
+}
+
 /// Builds input BEEF containing all input transactions with their merkle proofs.
 ///
 /// Collects unique input txids from both user-provided inputs and allocated change inputs,
@@ -2759,6 +2839,8 @@ pub(super) async fn rebuild_beef_for_broadcast(
 /// * `user_input_beef` - Optional user-provided BEEF with proofs for external inputs
 /// * `known_txids` - TXIDs the recipient already has (will be trimmed to txid-only)
 /// * `return_txid_only` - If true, skip BEEF construction entirely
+/// * `trust_self` - `trustSelf: 'known'`: the caller's txid-only entries are
+///   resolved from storage (`resolve_known_txid_only_entries`)
 /// * `storage` - Optional storage backend for network fallback when local lookup fails
 ///
 /// # Returns
@@ -2777,6 +2859,7 @@ async fn build_input_beef(
     user_input_beef: Option<&[u8]>,
     known_txids: &[String],
     return_txid_only: bool,
+    trust_self: bool,
     storage: Option<&StorageSqlx>,
 ) -> Result<Option<Vec<u8>>> {
     // Gap #3: If return_txid_only, skip BEEF construction entirely
@@ -2820,7 +2903,21 @@ async fn build_input_beef(
             // offset, by kind; never for a size or a count.
             super::beef_verification::refuse_invalid_beef_bytes(input_beef_bytes)?;
             match Beef::from_binary(input_beef_bytes) {
-                Ok(user_beef) => {
+                Ok(mut user_beef) => {
+                    if trust_self {
+                        let roots: Vec<String> =
+                            pending_txids.iter().map(|(t, _)| t.clone()).collect();
+                        let (kept, from_storage) =
+                            resolve_known_txid_only_entries(&mut *conn, user_beef, &roots).await?;
+                        user_beef = kept;
+                        // The walk supplies each from storage; a root is
+                        // already queued at depth 0.
+                        for txid in from_storage {
+                            if !pending_txids.iter().any(|(t, _)| t == &txid) {
+                                pending_txids.push((txid, 1));
+                            }
+                        }
+                    }
                     // P0-1d: a proven transaction the BEEF carries as a
                     // sibling hash is linked here; the walk never revisits
                     // a txid the caller's BEEF supplied.
@@ -4277,7 +4374,8 @@ mod tests {
             None,  // user_input_beef
             &[],   // known_txids
             false, // return_txid_only
-            None,  // storage - no network fallback
+            false,
+            None, // storage - no network fallback
         )
         .await
         .unwrap();
@@ -4326,7 +4424,8 @@ mod tests {
             None,  // user_input_beef
             &[],   // known_txids
             false, // return_txid_only
-            None,  // storage - no network fallback
+            false,
+            None, // storage - no network fallback
         )
         .await
         .unwrap();
@@ -4391,6 +4490,7 @@ mod tests {
             &change_inputs,
             None,
             &[],
+            false,
             false,
             None,
         )
@@ -4463,6 +4563,7 @@ mod tests {
             &change_inputs,
             None,
             &[],
+            false,
             false,
             None,
         )
@@ -4724,6 +4825,7 @@ mod tests {
             None,
             &[],
             false,
+            false,
             None,
         )
         .await
@@ -4770,6 +4872,7 @@ mod tests {
             None,
             &[],
             true, // return_txid_only = true
+            false,
             None,
         )
         .await
@@ -4815,6 +4918,7 @@ mod tests {
             &change_inputs,
             None,
             &[txid.to_string()], // This txid is known to recipient
+            false,
             false,
             None,
         )
@@ -4875,6 +4979,7 @@ mod tests {
             Some(&user_beef_bytes), // User provides BEEF for external input
             &[],
             false,
+            false,
             None,
         )
         .await
@@ -4922,6 +5027,7 @@ mod tests {
             &change_inputs,
             Some(&invalid_beef),
             &[],
+            false,
             false,
             None,
         )
@@ -4983,6 +5089,7 @@ mod tests {
             &[],
             Some(&bytes),
             &[],
+            false,
             false,
             None,
         )
@@ -5059,6 +5166,7 @@ mod tests {
             None,
             &[],
             false,
+            false,
             None,
         )
         .await
@@ -5119,6 +5227,7 @@ mod tests {
             None,
             &[],
             false,
+            false,
             None,
         )
         .await;
@@ -5166,6 +5275,7 @@ mod tests {
             &change_inputs,
             None,
             &[],
+            false,
             false,
             None,
         )
@@ -6037,6 +6147,7 @@ mod tests {
             None,
             &[],
             false,
+            false,
             None,
         )
         .await
@@ -6095,6 +6206,7 @@ mod tests {
             &change_inputs,
             None,
             &[],
+            false,
             false,
             None,
         )
@@ -6236,6 +6348,7 @@ mod tests {
             &change_inputs,
             None,
             &[],
+            false,
             false,
             None,
         )
@@ -6442,6 +6555,7 @@ mod tests {
             &change_inputs,
             None,
             &[],
+            false,
             false,
             Some(&storage),
         )
@@ -8045,6 +8159,7 @@ mod tests {
                 Some(&user_bytes),
                 &[],
                 false,
+                false,
                 Some(&storage),
             )
             .await;
@@ -8135,10 +8250,11 @@ mod tests {
         }];
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let untrimmed = build_input_beef(&mut conn, None, &inputs, &[], None, &[], false, None)
-            .await
-            .unwrap()
-            .expect("a BEEF is produced");
+        let untrimmed =
+            build_input_beef(&mut conn, None, &inputs, &[], None, &[], false, false, None)
+                .await
+                .unwrap()
+                .expect("a BEEF is produced");
 
         let trimmed = build_input_beef(
             &mut conn,
@@ -8147,6 +8263,7 @@ mod tests {
             &[],
             None,
             &[chain[0].1.clone()],
+            false,
             false,
             None,
         )
@@ -8210,7 +8327,7 @@ mod tests {
         }];
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let bytes = build_input_beef(&mut conn, None, &inputs, &[], None, &[], false, None)
+        let bytes = build_input_beef(&mut conn, None, &inputs, &[], None, &[], false, false, None)
             .await
             .unwrap()
             .expect("a BEEF is produced");
@@ -8280,6 +8397,7 @@ mod tests {
             &[],
             None,
             &[],
+            false,
             false,
             Some(&storage),
         )
@@ -8380,6 +8498,7 @@ mod tests {
             &[],
             None,
             &[],
+            false,
             false,
             Some(&storage),
         )
@@ -8573,5 +8692,295 @@ mod tests {
             &roots,
             walk_ms + prune_ms,
         );
+    }
+
+    // =========================================================================
+    // trustSelf 'known': a caller's txid-only entry the wallet's own storage
+    // holds is resolved from storage before `verify_valid`
+    // (ts-stack@edf6e03 wallet-toolbox src/storage/methods/createAction.ts:876,
+    // 906-911, 923-963, 996-1002; Wallet.ts:1151)
+    // =========================================================================
+
+    mod trust_self_known {
+        use super::*;
+        use bsv_rs::script::{LockingScript, UnlockingScript};
+        use bsv_rs::transaction::{
+            AlwaysValidChainTracker, Transaction, TransactionInput, TransactionOutput,
+        };
+        use bsv_rs::wallet::{CreateActionInput, Outpoint, TrustSelf};
+
+        const LOCK: &str = "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac";
+
+        /// A one-input, one-output transaction spending `parent:0` (or a
+        /// coinbase-shaped outpoint when `parent` is `None`), unique by `tag`.
+        fn tx_spending(parent: Option<&str>, tag: u8, satoshis: u64) -> Transaction {
+            Transaction::with_params(
+                1,
+                vec![TransactionInput {
+                    source_transaction: None,
+                    source_txid: Some(
+                        parent.map_or_else(|| format!("{:02x}", tag).repeat(32), str::to_string),
+                    ),
+                    source_output_index: if parent.is_some() { 0 } else { 0xffff_ffff },
+                    unlocking_script: Some(
+                        UnlockingScript::from_hex(&format!("01{:02x}", tag)).unwrap(),
+                    ),
+                    unlocking_script_template: None,
+                    sequence: 0xffff_ffff,
+                }],
+                vec![TransactionOutput {
+                    satoshis: Some(satoshis),
+                    locking_script: LockingScript::from_hex(LOCK).unwrap(),
+                    change: false,
+                }],
+                0,
+            )
+        }
+
+        /// A one-leaf BUMP proving `txid` at `height`.
+        fn bump_for(txid: &str, height: u32) -> MerklePath {
+            MerklePath {
+                block_height: height,
+                path: vec![vec![bsv_rs::transaction::MerklePathLeaf {
+                    offset: 0,
+                    hash: Some(txid.to_string()),
+                    txid: true,
+                    duplicate: false,
+                }]],
+            }
+        }
+
+        async fn setup() -> (StorageSqlx, i64) {
+            let storage = StorageSqlx::in_memory().await.unwrap();
+            storage.migrate("trust-self", "02test_key").await.unwrap();
+            storage.make_available().await.unwrap();
+            let (user, _) = storage
+                .find_or_insert_user("02trust_self_user")
+                .await
+                .unwrap();
+            (storage, user.user_id)
+        }
+
+        /// The wallet's own record of `tx`: its bytes, its output 0 (the
+        /// user's, spendable, not change) and, when `proven`, its proof.
+        async fn seed_known(storage: &StorageSqlx, user_id: i64, tx: &Transaction, proven: bool) {
+            let txid = tx.id();
+            let raw = tx.to_binary();
+            if proven {
+                seed_proven_tx(storage, &txid, &raw, &bump_for(&txid, 900).to_binary()).await;
+            }
+            let now = Utc::now();
+            let row = sqlx::query(
+                r#"
+                INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
+                VALUES (?, 'completed', ?, 0, ?, 1, 0, 'known to the wallet', ?, ?, ?, ?)
+                "#,
+            )
+            .bind(user_id)
+            .bind(format!("ref-{}", &txid[..8]))
+            .bind(tx.outputs[0].satoshis.unwrap() as i64)
+            .bind(&txid)
+            .bind(&raw)
+            .bind(now)
+            .bind(now)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+            sqlx::query(
+                r#"
+                INSERT INTO outputs (user_id, transaction_id, basket_id, vout, satoshis, locking_script,
+                                     txid, type, spendable, change, provided_by, purpose,
+                                     output_description, created_at, updated_at)
+                VALUES (?, ?, NULL, 0, ?, ?, ?, 'custom', 1, 0, 'you', '', 'known output', ?, ?)
+                "#,
+            )
+            .bind(user_id)
+            .bind(row.last_insert_rowid())
+            .bind(tx.outputs[0].satoshis.unwrap() as i64)
+            .bind(hex::decode(LOCK).unwrap())
+            .bind(&txid)
+            .bind(now)
+            .bind(now)
+            .execute(storage.pool())
+            .await
+            .unwrap();
+        }
+
+        fn input(txid: &str) -> CreateActionInput {
+            CreateActionInput {
+                outpoint: Outpoint::from_string(&format!("{}.0", txid)).unwrap(),
+                input_description: "an input".to_string(),
+                unlocking_script: None,
+                unlocking_script_length: Some(107),
+                sequence_number: None,
+            }
+        }
+
+        fn args(inputs: Vec<CreateActionInput>, beef: Vec<u8>) -> bsv_rs::wallet::CreateActionArgs {
+            bsv_rs::wallet::CreateActionArgs {
+                description: "trust self known".to_string(),
+                input_beef: Some(beef),
+                inputs: Some(inputs),
+                outputs: Some(vec![CreateActionOutput {
+                    locking_script: hex::decode(LOCK).unwrap(),
+                    satoshis: 1_000,
+                    output_description: "an output".to_string(),
+                    basket: None,
+                    custom_instructions: None,
+                    tags: None,
+                }]),
+                lock_time: None,
+                version: None,
+                labels: None,
+                options: Some(CreateActionOptions {
+                    trust_self: Some(TrustSelf::Known),
+                    ..Default::default()
+                }),
+            }
+        }
+
+        /// The caller's BEEF: `proven` with its own BUMP, then a txid-only
+        /// entry for each of `txid_only`.
+        fn caller_beef(proven: &Transaction, txid_only: &[String]) -> Vec<u8> {
+            let mut beef = Beef::new();
+            let bi = beef.merge_bump(bump_for(&proven.id(), 800));
+            beef.merge_raw_tx(proven.to_binary(), Some(bi));
+            for t in txid_only {
+                beef.merge_txid_only(t.clone());
+            }
+            beef.to_binary()
+        }
+
+        /// The witness: the caller's `inputBEEF` carries one BUMP-proven
+        /// transaction and one txid-only entry for a transaction the wallet
+        /// holds with its proof, both direct inputs, under a chain tracker.
+        /// 0.7.0 on bsv-rs 0.4.1 built it; 0.7.1 at 4cd8ee7 refused it
+        /// (`StubNotProven` at `verify_valid`). Storage's proof replaces the
+        /// entry: the BEEF built carries no txid-only entry.
+        #[tokio::test]
+        async fn a_known_proven_txid_only_input_is_resolved_from_storage() {
+            let (storage, user_id) = setup().await;
+            let external = tx_spending(None, 0xaa, 5_000);
+            let known = tx_spending(None, 0xcc, 5_000);
+            seed_known(&storage, user_id, &known, true).await;
+
+            let tracker = AlwaysValidChainTracker::new(100_000);
+            let result = create_action_internal(
+                &storage,
+                Some(&tracker),
+                user_id,
+                args(
+                    vec![input(&external.id()), input(&known.id())],
+                    caller_beef(&external, &[known.id()]),
+                ),
+            )
+            .await
+            .expect("a txid-only entry the wallet holds is honoured under trustSelf known");
+
+            let mut beef = Beef::from_binary(&result.input_beef.unwrap()).unwrap();
+            assert!(
+                beef.txs.iter().all(|t| !t.is_txid_only()),
+                "no txid-only entry rides"
+            );
+            assert!(
+                beef.find_txid(&known.id()).unwrap().bump_index().is_some(),
+                "storage's proof rides"
+            );
+            assert!(beef.verify_valid(false).valid);
+        }
+
+        /// Storage holds the bytes but no proof: the bytes ride, and the walk
+        /// carries the transaction's proven parent from storage.
+        #[tokio::test]
+        async fn a_known_unproven_txid_only_input_rides_with_its_stored_ancestry() {
+            let (storage, user_id) = setup().await;
+            let external = tx_spending(None, 0xaa, 5_000);
+            let grandparent = tx_spending(None, 0xdd, 9_000);
+            seed_known(&storage, user_id, &grandparent, true).await;
+            let known = tx_spending(Some(&grandparent.id()), 0xcc, 5_000);
+            seed_known(&storage, user_id, &known, false).await;
+
+            let tracker = AlwaysValidChainTracker::new(100_000);
+            let result = create_action_internal(
+                &storage,
+                Some(&tracker),
+                user_id,
+                args(
+                    vec![input(&external.id()), input(&known.id())],
+                    caller_beef(&external, &[known.id()]),
+                ),
+            )
+            .await
+            .expect("the wallet's own unproven transaction is resolved with its ancestry");
+
+            let mut beef = Beef::from_binary(&result.input_beef.unwrap()).unwrap();
+            assert!(beef.txs.iter().all(|t| !t.is_txid_only()));
+            assert!(beef.find_txid(&known.id()).unwrap().raw_tx().is_some());
+            assert!(beef
+                .find_txid(&grandparent.id())
+                .unwrap()
+                .bump_index()
+                .is_some());
+            assert!(beef.verify_valid(false).valid);
+        }
+
+        /// Without trustSelf the same shape is refused as before: the BEEF
+        /// must prove every txid-only entry it carries.
+        #[tokio::test]
+        async fn without_trust_self_the_shape_is_refused() {
+            let (storage, user_id) = setup().await;
+            let external = tx_spending(None, 0xaa, 5_000);
+            let known = tx_spending(None, 0xcc, 5_000);
+            seed_known(&storage, user_id, &known, true).await;
+
+            let mut a = args(
+                vec![input(&external.id()), input(&known.id())],
+                caller_beef(&external, &[known.id()]),
+            );
+            a.options = None;
+            let tracker = AlwaysValidChainTracker::new(100_000);
+            let err = create_action_internal(&storage, Some(&tracker), user_id, a)
+                .await
+                .expect_err("no trustSelf, no vouching");
+            assert!(
+                err.to_string().contains("BEEF structure is invalid"),
+                "{err}"
+            );
+        }
+
+        /// trustSelf vouches only for what storage holds: a txid-only
+        /// ancestor storage does not know is refused, and the reason says so.
+        #[tokio::test]
+        async fn an_unknown_txid_only_entry_is_refused() {
+            let (storage, user_id) = setup().await;
+            let external = tx_spending(None, 0xaa, 5_000);
+            let stranger = tx_spending(None, 0xee, 9_000);
+            let unproven = tx_spending(Some(&stranger.id()), 0xbb, 5_000);
+
+            let mut beef = Beef::from_binary(&caller_beef(&external, &[stranger.id()])).unwrap();
+            beef.merge_raw_tx(unproven.to_binary(), None);
+
+            let tracker = AlwaysValidChainTracker::new(100_000);
+            let err = create_action_internal(
+                &storage,
+                Some(&tracker),
+                user_id,
+                args(
+                    vec![input(&external.id()), input(&unproven.id())],
+                    beef.to_binary(),
+                ),
+            )
+            .await
+            .expect_err("an entry storage does not know is not vouched for");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&stranger.id()),
+                "the refusal names the entry: {msg}"
+            );
+            assert!(
+                msg.contains("not known to this wallet"),
+                "the reason: {msg}"
+            );
+        }
     }
 }
