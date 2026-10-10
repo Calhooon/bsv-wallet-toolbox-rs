@@ -1,9 +1,10 @@
 //! The attempt backstop (Calgooon/zanaadu-v2#368): a status pass that finds
 //! no proof is an attempt for EVERY req the proof task checks, as in the
 //! reference (wallet-toolbox src/monitor/tasks/TaskCheckForProofs.ts:154-165,
-//! 235; `unprovenAttemptsLimitMain: 144`, src/monitor/Monitor.ts:106), and
-//! past the limit a req no source holds is written off through the release
-//! rule. A req a source still holds is never written off by the count alone.
+//! 235; `unprovenAttemptsLimitMain: 144`, src/monitor/Monitor.ts:106). The
+//! reference writes a req off past the limit; here, since 0.7.4
+//! (bsv-stack-lean #66), no count writes a word: past the limit the req is
+//! asked again every pass, held or not.
 
 use std::sync::Arc;
 
@@ -167,19 +168,19 @@ fn the_limits_are_the_references() {
 }
 
 /// The #368 shape replayed from attempts 0: no broadcaster refused it, no
-/// source holds it, it is never mined. Every pass counts; the pass that
-/// finds `attempts > 144` fails it and its inputs go to the release rule.
-/// Before the fix: `unmined`, attempts 0, change spendable, forever.
+/// source holds it, it is never mined. Every pass counts, past the limit as
+/// before it, and no pass writes a word (bsv-stack-lean #66). Before #368:
+/// `unmined`, attempts 0, forever; from #368 to 0.7.3: `failed` at 145.
 #[tokio::test]
-async fn a_never_held_never_mined_req_fails_past_the_limit_and_releases_its_inputs() {
+async fn a_never_held_never_mined_req_is_counted_past_the_limit_and_never_written_off() {
     let s = storage().await;
     let b = seed_broadcast(&s, "a1", 0).await;
     nobody_holds(&s, &b.txid);
 
-    for pass in 1..=(LIMIT + 1) {
+    for pass in 1..=(LIMIT + 3) {
         open_gate(&s, 1000 + pass as u32).await;
         let out = s.synchronize_transaction_statuses().await.unwrap();
-        assert!(out.is_empty(), "pass {pass} writes nothing off");
+        assert!(out.is_empty(), "pass {pass} writes nothing");
         assert_eq!(
             attempts_of(&s, &b.txid).await,
             ("unmined".to_string(), pass),
@@ -188,23 +189,10 @@ async fn a_never_held_never_mined_req_fails_past_the_limit_and_releases_its_inpu
     }
     assert_eq!(tx_state(&s, &b.txid).await.0, "unproven");
     assert_eq!(output_state(&s, b.change).await, (true, None));
-
-    let out = s.synchronize_transaction_statuses().await.unwrap();
-
-    assert_eq!(out.len(), 1);
-    assert_eq!(out[0].txid, b.txid);
-    assert_eq!(out[0].status, ProvenTxReqStatus::Invalid);
-    assert_eq!(attempts_of(&s, &b.txid).await, ("invalid".to_string(), 0));
-    assert_eq!(tx_state(&s, &b.txid).await.0, "failed");
-    assert_eq!(
-        output_state(&s, b.change).await,
-        (false, None),
-        "its change never funds anything"
-    );
     assert_eq!(
         output_state(&s, b.input).await,
-        (true, None),
-        "the coin it locked is released (is_utxo said unspent)"
+        (false, Some(b.transaction_id)),
+        "the coin stays locked by the announced transaction"
     );
     assert_eq!(
         s.broadcast_status_of(&b.txid, PROVIDER_ARCADE_V2)
@@ -214,42 +202,10 @@ async fn a_never_held_never_mined_req_fails_past_the_limit_and_releases_its_inpu
         None,
         "no broadcaster row is invented"
     );
-
-    // Written off once: the next pass has nothing to do with it.
-    assert!(s
-        .synchronize_transaction_statuses()
-        .await
-        .unwrap()
-        .is_empty());
-    assert_eq!(attempts_of(&s, &b.txid).await, ("invalid".to_string(), 0));
 }
 
-/// The release rule, not a blind release: an input the chain does not vouch
-/// for stays locked when the backstop fails the transaction.
-#[tokio::test]
-async fn the_backstop_keeps_an_unverified_input_locked() {
-    let s = storage().await;
-    let b = seed_broadcast(&s, "a2", LIMIT + 1).await;
-    let mock = MockWalletServicesBuilder::default()
-        .get_status_for_txids_response(status(TxStatusDetail::new(&b.txid, "unknown", None)))
-        .is_utxo_response(MockResponse::Error(
-            MockErrorKind::ServiceError,
-            "utxo source down".to_string(),
-        ))
-        .build();
-    WalletStorageProvider::set_services(&s, Arc::new(mock));
-
-    s.synchronize_transaction_statuses().await.unwrap();
-
-    assert_eq!(tx_state(&s, &b.txid).await.0, "failed");
-    assert_eq!(
-        output_state(&s, b.input).await,
-        (false, Some(b.transaction_id))
-    );
-}
-
-/// The limit is "greater than", as in the reference: at exactly 144 the req
-/// is checked once more.
+/// The limit is "greater than", as in the reference; at it and past it the
+/// req is checked again, and no pass writes a word.
 #[tokio::test]
 async fn at_exactly_the_limit_the_req_is_checked_once_more() {
     let s = storage().await;
@@ -267,8 +223,17 @@ async fn at_exactly_the_limit_the_req_is_checked_once_more() {
     );
     assert_eq!(tx_state(&s, &b.txid).await.0, "unproven");
 
-    assert_eq!(s.synchronize_transaction_statuses().await.unwrap().len(), 1);
-    assert_eq!(tx_state(&s, &b.txid).await.0, "failed");
+    open_gate(&s, 1001).await;
+    assert!(s
+        .synchronize_transaction_statuses()
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        attempts_of(&s, &b.txid).await,
+        ("unmined".to_string(), LIMIT + 2)
+    );
+    assert_eq!(tx_state(&s, &b.txid).await.0, "unproven");
 }
 
 /// The #357 incident shape, seen from the backstop: Arcade REJECTED, another
@@ -386,7 +351,7 @@ async fn a_mined_req_with_no_proof_yet_is_not_failed_past_the_limit() {
 }
 
 /// The freshness window: a SEEN older than 2 hours no longer holds the req
-/// (the window of #357's memory evidence); only a live word would.
+/// (the window of #357's memory evidence). Held or not, no word.
 #[tokio::test]
 async fn a_stale_seen_does_not_hold_the_req() {
     let s = storage().await;
@@ -402,15 +367,25 @@ async fn a_stale_seen_does_not_hold_the_req() {
         .unwrap();
     nobody_holds(&s, &b.txid);
 
-    assert_eq!(s.synchronize_transaction_statuses().await.unwrap().len(), 1);
+    assert!(s
+        .synchronize_transaction_statuses()
+        .await
+        .unwrap()
+        .is_empty());
 
-    assert_eq!(attempts_of(&s, &b.txid).await, ("invalid".to_string(), 0));
-    assert_eq!(tx_state(&s, &b.txid).await.0, "failed");
-    assert_eq!(output_state(&s, b.input).await, (true, None));
+    assert_eq!(
+        attempts_of(&s, &b.txid).await,
+        ("unmined".to_string(), LIMIT + 2)
+    );
+    assert_eq!(tx_state(&s, &b.txid).await.0, "unproven");
+    assert_eq!(
+        output_state(&s, b.input).await,
+        (false, Some(b.transaction_id))
+    );
 }
 
-/// The release rule asks the status sources once more before it writes
-/// anything: a transaction they hold by then is promoted, not failed.
+/// The hold check asks the status sources once more past the limit; what
+/// they answer is logged and nothing is written.
 #[tokio::test]
 async fn a_live_word_at_the_last_moment_keeps_it() {
     let s = storage().await;
@@ -488,17 +463,30 @@ async fn a_silent_source_a_closed_gate_and_a_sending_req_count_nothing() {
     assert_eq!(tx_state(&s, &b.txid).await.0, "unproven");
 }
 
-/// The canary's view of a backstopped req: `invalid` with attempts 0 on a
-/// `failed` transaction, so it is on the canary's HOURLY schedule (a req
-/// left at 145 would have been asked once a day). No word: re-stamped and
-/// watched. The network's word: recovered, the input locked again, a whole
-/// attempt budget back.
+/// The canary's view of a req an earlier release's backstop wrote off (the
+/// state 0.7.3 left in a database: `invalid` with attempts 0 on a `failed`
+/// transaction, its input released, its change unspendable): on the
+/// canary's HOURLY schedule. No word: re-stamped and watched. The network's
+/// word: recovered, the input locked again, a whole attempt budget back.
 #[tokio::test]
-async fn the_canary_watches_a_backstopped_req_hourly_and_recovers_it() {
+async fn the_canary_watches_a_req_an_earlier_backstop_wrote_off_and_recovers_it() {
     let s = storage().await;
     let b = seed_broadcast(&s, "aa", LIMIT + 1).await;
     nobody_holds(&s, &b.txid);
-    assert_eq!(s.synchronize_transaction_statuses().await.unwrap().len(), 1);
+    for sql in [
+        "UPDATE proven_tx_reqs SET status = 'invalid', attempts = 0, updated_at = CURRENT_TIMESTAMP",
+        "UPDATE transactions SET status = 'failed' WHERE status = 'unproven'",
+        "UPDATE outputs SET spendable = 0 WHERE spent_by IS NULL",
+        "UPDATE outputs SET spendable = 1, spent_by = NULL WHERE spent_by IS NOT NULL",
+    ] {
+        sqlx::query(sql).execute(s.pool()).await.unwrap();
+    }
+    sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
+        .bind(Utc::now())
+        .bind(&b.txid)
+        .execute(s.pool())
+        .await
+        .unwrap();
     assert_eq!(attempts_of(&s, &b.txid).await, ("invalid".to_string(), 0));
     assert_eq!(output_state(&s, b.input).await, (true, None));
 
@@ -547,4 +535,53 @@ async fn a_second_pass_at_the_same_header_counts_nothing() {
     open_gate(&s, 1001).await;
     s.synchronize_transaction_statuses().await.unwrap();
     assert_eq!(attempts_of(&s, &b.txid).await, ("unmined".to_string(), 2));
+}
+
+/// bsv-stack-lean #66: a count of proof attempts never writes a word (the
+/// tracker's charter there, section 10: "never an age-out word"). RED at
+/// 0.7.3 (`8deedaf`): the pass that found `attempts > 144` (10 off mainnet)
+/// with no source holding the transaction wrote the req `invalid` and the
+/// transaction `failed`. GREEN: no word; the req stays in the proof set and
+/// the next header's pass asks for it again, without end.
+#[tokio::test]
+async fn the_145th_proof_attempt_with_no_source_holding_it_writes_no_word_and_is_asked_again() {
+    past_the_count_keeps_its_word("mainnet", LIMIT).await;
+}
+
+/// The same off mainnet, at the 11th attempt.
+#[tokio::test]
+async fn the_11th_proof_attempt_off_mainnet_with_no_source_holding_it_writes_no_word() {
+    past_the_count_keeps_its_word("test", PROOF_ATTEMPTS_LIMIT_TEST).await;
+}
+
+async fn past_the_count_keeps_its_word(chain: &str, limit: i64) {
+    let s = storage().await;
+    sqlx::query("UPDATE settings SET chain = ?")
+        .bind(chain)
+        .execute(s.pool())
+        .await
+        .unwrap();
+    crate::storage::traits::WalletStorageWriter::make_available(&s)
+        .await
+        .unwrap();
+    let b = seed_broadcast(&s, "b1", limit + 1).await;
+    nobody_holds(&s, &b.txid);
+
+    for pass in 1..=3 {
+        open_gate(&s, 1000 + pass as u32).await;
+        let out = s.synchronize_transaction_statuses().await.unwrap();
+        assert!(out.is_empty(), "{chain} pass {pass}: no word: {out:?}");
+        assert_eq!(
+            attempts_of(&s, &b.txid).await,
+            ("unmined".to_string(), limit + 1 + pass),
+            "{chain} pass {pass}: still in the proof set, asked again"
+        );
+        assert_eq!(tx_state(&s, &b.txid).await.0, "unproven", "{chain}");
+        assert_eq!(output_state(&s, b.change).await, (true, None), "{chain}");
+        assert_eq!(
+            output_state(&s, b.input).await,
+            (false, Some(b.transaction_id)),
+            "{chain}"
+        );
+    }
 }

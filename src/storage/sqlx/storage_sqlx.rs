@@ -3179,9 +3179,11 @@ impl StorageSqlx {
 }
 
 /// The reference's `unprovenAttemptsLimitMain` / `unprovenAttemptsLimitTest`
-/// (wallet-toolbox src/monitor/Monitor.ts:105-106): a req is written off
-/// once `attempts` is GREATER than the limit
-/// (src/monitor/tasks/TaskCheckForProofs.ts:158).
+/// (wallet-toolbox src/monitor/Monitor.ts:105-106). The reference writes a
+/// req off once `attempts` is GREATER than the limit
+/// (src/monitor/tasks/TaskCheckForProofs.ts:158); here, since 0.7.4
+/// (bsv-stack-lean #66), past the limit is only a log line: a count is no
+/// evidence and writes no word.
 pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
 pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;
 
@@ -3898,8 +3900,7 @@ impl MonitorStorage for StorageSqlx {
         // header-triggered run (`countsAsAttempt = checkNow`,
         // TaskCheckForProofs.ts:49), so its 144 is about a day of blocks. A
         // pass at a gate already counted (an Arcade MINED word, the 2-hour
-        // fallback, a `tick`, a nosend proof) asks and writes off but counts
-        // nothing.
+        // fallback, a `tick`, a nosend proof) asks but counts nothing.
         let counts_as_attempt = {
             let mut conn = self.pool().acquire().await?;
             let counted = super::monitor_state::read_proof_attempt_height_on(&mut conn).await?;
@@ -3923,13 +3924,15 @@ impl MonitorStorage for StorageSqlx {
         //
         // Here: a status pass that does not call the req mined is an attempt
         // (the mined ones are counted by the fetch loop below). Past the
-        // limit the req is written off through THE RELEASE RULE
-        // (`retire_undeliverable_tx`: one more live status read, then each
-        // input released only on its own `is_utxo`), UNLESS a source still
-        // holds the transaction: this pass's status answer says known or
-        // mined, or the broadcast memory has a seen/mined row inside the
-        // freshness window. A held req is never written off by the count
-        // alone; it keeps counting and the chain decides.
+        // limit nothing is written (bsv-stack-lean #66: a count is never
+        // evidence, and the tracker's charter there, section 10, allows no
+        // age-out word): the req stays in the proof set, every header's pass
+        // asks for it again without end, and the hold checks below only say
+        // in the log whether a source still holds it. Until 0.7.4 the count
+        // wrote the req `invalid` and the transaction `failed` through the
+        // release rule when no source held it. A transaction ends without a
+        // proof only by the host's explicit act
+        // (`StorageSqlx::retire_undeliverable_txid`).
         //
         // A `sending` req is not counted: `send_waiting_transactions` owns
         // its attempts (the re-broadcast budget) until it leaves `sending`.
@@ -3944,69 +3947,35 @@ impl MonitorStorage for StorageSqlx {
         .await?
         .into_iter()
         .collect();
-        let mut written_off: std::collections::HashSet<String> = std::collections::HashSet::new();
         for req in &reqs {
             if sending_ids.contains(&req.proven_tx_req_id) {
                 continue;
             }
             let now = chrono::Utc::now();
             if i64::from(req.attempts) > attempts_limit && !held_txids.contains(&req.txid) {
-                // #357's hold rule, no refusing provider: a fresh seen/mined
-                // memory row, or a broadcaster's own status read (the status
-                // sources were asked this pass; `retire_undeliverable_tx`
-                // asks them once more).
+                // #357's hold checks, no refusing provider: a fresh seen/mined
+                // memory row, or a broadcaster's own status read. They decide
+                // nothing now; they say which case the log line is.
                 let evidence = match self.memory_holds(&req.txid, None, false).await {
                     Some(e) => Some(e),
                     None => {
                         Self::network_holds(services.as_ref(), &req.txid, None, false, false).await
                     }
                 };
-                if let Some(evidence) = evidence {
-                    tracing::info!(
+                match evidence {
+                    Some(evidence) => tracing::info!(
                         txid = %req.txid,
                         attempts = req.attempts,
                         evidence = %evidence,
                         marker = "proof_backstop_held",
-                        "synchronize_transaction_statuses: past the attempt limit but a source holds it; not written off"
-                    );
-                } else {
-                    // attempts restarts at 0: on an `invalid` req the column
-                    // is the unfail canary's own counter (hourly for its
-                    // first 24 checks), and a recovered req gets a whole
-                    // budget back.
-                    match self
-                        .retire_undeliverable_tx(
-                            services.as_ref(),
-                            &req.txid,
-                            req.proven_tx_req_id,
-                            0,
-                            "invalid",
-                            now,
-                        )
-                        .await?
-                    {
-                        RetireOutcome::Alive => {}
-                        RetireOutcome::Retired { restored, kept } => {
-                            tracing::warn!(
-                                txid = %req.txid,
-                                attempts = req.attempts,
-                                restored,
-                                kept,
-                                marker = "proof_backstop_written_off",
-                                "synchronize_transaction_statuses: no proof and no source holds it past the attempt limit; req invalid, transaction failed"
-                            );
-                            written_off.insert(req.txid.clone());
-                            results.push(TxSynchronizedStatus {
-                                txid: req.txid.clone(),
-                                status: ProvenTxReqStatus::Invalid,
-                                block_height: None,
-                                block_hash: None,
-                                merkle_root: None,
-                                merkle_path: None,
-                            });
-                        }
-                    }
-                    continue;
+                        "synchronize_transaction_statuses: past the attempt count and a source holds it; no word, asked again next pass"
+                    ),
+                    None => tracing::warn!(
+                        txid = %req.txid,
+                        attempts = req.attempts,
+                        marker = "proof_backstop_past_count",
+                        "synchronize_transaction_statuses: past the attempt count and no source holds it; a count is no evidence, so no word, asked again next pass"
+                    ),
                 }
             }
             if confirmed_txids.contains(&req.txid) || !counts_as_attempt {
@@ -4195,9 +4164,8 @@ impl MonitorStorage for StorageSqlx {
                             }
                         }
                     } else if counts_as_attempt {
-                        // No proof yet: an attempt. The status sources
-                        // call this transaction mined, so a source holds it
-                        // and the count alone never writes it off (#368).
+                        // No proof yet: an attempt. No count writes a word
+                        // (#368; bsv-stack-lean #66).
                         sqlx::query(
                             "UPDATE proven_tx_reqs SET attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?"
                         )
