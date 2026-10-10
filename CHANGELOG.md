@@ -2,18 +2,20 @@
 
 ## [0.7.1] - 2026-10-10
 
-The crate depends on bsv-rs 0.4.3 (was 0.4.1). bsv-rs 0.4.3 reads a raw transaction with no output as invalid bytes, as one with no input has been since 0.4.1 (bsv-stack-lean #59; the node's rule, bsv-script-lean@87f0461 `lean/BsvScript/TxRules.lean:85-86`). Through it the crate also takes bsv-rs 0.4.2's whole-path rules. No source line of the library changed.
+The crate depends on bsv-rs 0.4.3 (was 0.4.1). bsv-rs 0.4.3 reads a raw transaction with no output as invalid bytes, as one with no input has been since 0.4.1 (bsv-stack-lean #59; the node's rule, bsv-script-lean@87f0461 `lean/BsvScript/TxRules.lean:85-86`). Through it the crate also takes bsv-rs 0.4.2's whole-path rules. `createAction` honours `trustSelf: 'known'` before it verifies the caller's `inputBEEF`, as the reference does.
 
 ### Changed
 
 1. bsv-rs 0.4.3. A caller resolving 0.7.0 fresh already got 0.4.3 by the caret; this release makes it the floor.
 2. A BEEF carrying a transaction with no output is refused wherever the crate reads or verifies one: `Error::InvalidBeef { kind: NoOutputs, .. }` at `internalizeAction` (`tx`) and `createAction` (`inputBEEF`), and "BEEF structure is invalid" from `verify_valid`. `transaction::Kind` gains `NoOutputs`, so an exhaustive `match` on the `kind` of `Error::InvalidBeef` needs the arm.
-3. A txid-only entry is read on its own (bsv-rs 0.4.2): valid when a BUMP of the same BEEF proves its txid, refused as `StubNotProven` otherwise, whatever `allow_txid_only` says. The crate calls `verify_valid(true)` in three places: `verify_beef_merkle_proofs` at `internalizeAction`, `validate_stored_beef` on a stored `input_beef`, and the built `inputBEEF` under a chain tracker. When the BEEF also carries a BUMP, an unproven txid-only entry was accepted at all three. Now internalize refuses it, a stored `input_beef` is discarded and the transactions are looked up again, and `createAction` refuses it. The reference refuses every txid-only entry at internalize, so this moves the crate toward it there.
-4. Two `beef_verification` tests re-read for item 3; no fixture carries a transaction with no output into a BEEF.
+3. A txid-only entry is read on its own (bsv-rs 0.4.2): valid when a BUMP of the same BEEF proves its txid, refused as `StubNotProven` otherwise, whatever `allow_txid_only` says. The crate calls `verify_valid(true)` in three places: `verify_beef_merkle_proofs` at `internalizeAction`, `validate_stored_beef` on a stored `input_beef`, and the built `inputBEEF` under a chain tracker. When the BEEF also carries a BUMP, an unproven txid-only entry was accepted at all three. Now internalize refuses it and a stored `input_beef` is discarded and the transactions are looked up again; `createAction` refuses it unless the caller sets `trustSelf: 'known'` (item 4). The reference refuses every txid-only entry at internalize, so this moves the crate toward it there.
+4. `createAction` with `trustSelf: 'known'`: every txid-only entry of the caller's `inputBEEF` that an input reaches and no BUMP of that BEEF proves is resolved from the wallet's own storage before `verify_valid`: its bytes and, where storage holds it, its proof, or else its stored ancestry. The BEEF verified carries no unproven txid-only entry. The wallet honours an entry its storage holds; it refuses one storage does not know, as `ValidationError` naming the txid ("not known to this wallet"); it drops one no input reaches. Without `trustSelf` such an entry is read as in item 3. The reference: ts-stack@edf6e03 wallet-toolbox `src/storage/methods/createAction.ts:876`, `893-896`, `906-911`, `923-963`, `996-1002`. 0.7.0 on bsv-rs 0.4.1 accepted the entry unread.
+5. `Wallet::create_action` passes the wallet's own `trustSelf` (`WalletOptions.trust_self`, `"known"` by default) when the caller names none, as the reference's `Wallet.ts:1150-1151` does; before this release the option was never passed to storage.
+6. Two `beef_verification` tests re-read for item 3; no fixture carries a transaction with no output into a BEEF. Four `createAction` tests witness item 4 (`trust_self_known`), one `Wallet` test item 5.
 
 ### Upgrading
 
-- Nothing stored changes and nothing is migrated. Rollback: pin 0.7.0 and bsv-rs `=0.4.1`.
+- Nothing stored changes and nothing is migrated. No public item changed. A caller of `Wallet::create_action` that wants a txid-only entry refused rather than resolved from storage builds the wallet with `WalletOptions { trust_self: None, .. }`. Rollback: pin 0.7.0 and bsv-rs `=0.4.1`.
 
 ## [0.7.0] - 2026-10-09
 
