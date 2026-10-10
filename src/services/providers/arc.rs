@@ -749,8 +749,10 @@ impl Arc {
 
     /// Post BEEF transaction.
     ///
-    /// ARC accepts BEEF v1 format. If the beef is v2 and can be downgraded,
-    /// it will be converted automatically.
+    /// The BEEF is posted as written, V1 or V2: no version is converted
+    /// (the pinned ARC, e7efc5b, parses both; bsv-stack-lean #64 and #65).
+    /// An AtomicBEEF's BRC-95 prefix is stripped and the plain BEEF goes as
+    /// bytes ([`Arc::post_beef_seen`] says when a reduced send goes instead).
     ///
     /// The full package every time (no seen set); see [`Arc::post_beef_seen`]
     /// for the reduced send a broadcast memory enables.
