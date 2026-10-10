@@ -28,7 +28,9 @@ const DEFAULT_MIN_AGE_SECS: u64 = 30;
 /// 4. Calls services.post_beef() to broadcast
 /// 5. On success: updates status to 'unmined'
 /// 6. On double-spend: marks transaction as 'failed'
-/// 7. On error: logs and retries next cycle
+/// 7. On a transient word or a fault: records it on the request and re-asks
+///    on the cadence (`services::cadence::send_waiting_reask_minutes`),
+///    never retiring the transaction for a count of them (bsv-stack-lean #65)
 ///
 /// Uses a local TryLock (Go pattern) to skip if a previous run is still in progress.
 pub struct SendWaitingTask<S, V>

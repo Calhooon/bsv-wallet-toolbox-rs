@@ -1,4 +1,6 @@
-//! The cadence of the stranger's-spend check, named in one place.
+//! The toolbox's cadences, named in one place: the stranger's-spend check
+//! and the re-ask of a transaction no broadcaster has accepted yet (below,
+//! [`send_waiting_reask_minutes`]).
 //!
 //! Rule 28 (bsv-stack-lean `NORTH-STAR.md`, Rulings, 2026-10-09): a
 //! third-party chain explorer is break-glass; the primary truth of the
@@ -64,4 +66,45 @@ pub const STRANGER_SPEND_LOOKUP_PACE: Duration = Duration::from_millis(350);
 pub fn stranger_spend_recheck_minutes(attempts: u32) -> i64 {
     (STRANGER_SPEND_RECHECK_FIRST_MINUTES << attempts.saturating_sub(1).min(6))
         .min(STRANGER_SPEND_RECHECK_CAP_MINUTES)
+}
+
+/// Minutes until the first re-ask of a transaction whose broadcast drew no
+/// accepting word (bsv-stack-lean #65).
+///
+/// The tracker's rule (bsv-stack-lean `docs/charters/tracker.md` section 2):
+/// every broadcaster word is a hint that schedules a re-ask and writes no
+/// word. A transient word (a 5xx, a 429, a timeout, ARC's 400 for a request
+/// it could not read, an orphan-mempool hold) or a transport fault is
+/// recorded on the request's history and the transaction is asked about
+/// again on this cadence, for as long as it takes. No count of such words
+/// retires it: the one retire is the host's explicit act
+/// (`StorageSqlx::retire_undeliverable_txid`). A pass of
+/// `send_waiting_transactions` posts only the requests due by
+/// [`send_waiting_reask_minutes`], so starting passes more often asks
+/// nothing more.
+pub const SEND_WAITING_REASK_FIRST_MINUTES: i64 = 1;
+
+/// The longest pause between two re-asks of one transaction (minutes).
+pub const SEND_WAITING_REASK_CAP_MINUTES: i64 = 64;
+
+/// Minutes from a request's last attempt until its next re-ask, after
+/// `attempts` attempts: none before the first, then 1, 2, 4, 8, 16, 32,
+/// then [`SEND_WAITING_REASK_CAP_MINUTES`] for every one after.
+pub fn send_waiting_reask_minutes(attempts: u32) -> i64 {
+    if attempts == 0 {
+        return 0;
+    }
+    (SEND_WAITING_REASK_FIRST_MINUTES << (attempts - 1).min(6)).min(SEND_WAITING_REASK_CAP_MINUTES)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_send_waiting_reask_doubles_to_its_cap_and_never_ends() {
+        let minutes: Vec<i64> = (0..10).map(send_waiting_reask_minutes).collect();
+        assert_eq!(minutes, vec![0, 1, 2, 4, 8, 16, 32, 64, 64, 64]);
+        assert_eq!(send_waiting_reask_minutes(u32::MAX), 64);
+    }
 }
