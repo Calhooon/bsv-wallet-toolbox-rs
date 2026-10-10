@@ -595,9 +595,13 @@ pub trait WalletStorageWriter: WalletStorageReader {
     /// It updates the transaction and proven_tx_req statuses based on the classified outcome.
     ///
     /// - Success: tx→'unproven', req→'unmined'
-    /// - ServiceError (transient): tx stays 'sending', req→'sending', inputs stay locked for retry
-    /// - DoubleSpend (permanent): tx→'failed', req→'doubleSpend', inputs restored
-    /// - InvalidTx (permanent): tx→'failed', req→'invalid', inputs restored
+    /// - Every other outcome (ServiceError, OrphanMempool, InvalidTx, DoubleSpend): a
+    ///   broadcaster's word is a hint (bsv-stack-lean #66). The tx stays 'sending' with its
+    ///   inputs locked and its change kept, the req is left 'unsent' for the re-ask on the
+    ///   send-waiting cadence with the word on its history, and a competitor the word names
+    ///   is queued for a proof ask. A status source holding the tx promotes it as a success.
+    ///   No word is written: a proof, a competitor's checked proof or the host's explicit
+    ///   retire ends it.
     ///
     /// # Arguments
     /// * `txid` - The transaction ID

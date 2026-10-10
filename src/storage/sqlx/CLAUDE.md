@@ -247,9 +247,10 @@ pub async fn process_action_internal(
 |-----------|-------------------|-------------------|
 | is_no_send && !is_send_with | nosend | nosend |
 | is_delayed | sending | unsent |
-| immediate (SendWithResult) | sending | unprocessed |
+| immediate (SendWithResult) | sending | unsent |
 | already sent | unproven | (existing) |
-| broadcast failure | failed | failed |
+| immediate post accepted | unproven | unmined |
+| immediate post refused, a double-spend word, or a fault (a hint, bsv-stack-lean #66) | sending | unsent (the word on its history, the re-ask on the cadence) |
 
 Note: Immediate broadcast uses `"sending"` status (not `"unproven"`). The wallet layer calls `update_transaction_status_after_broadcast()` AFTER broadcast to finalize status.
 

@@ -443,10 +443,12 @@ async fn transient_broadcast_fault_leaves_the_result_sending() {
 }
 
 #[tokio::test]
-async fn definitive_rejection_fails_the_action_and_releases_its_inputs() {
-    // ARC 465 fee-too-low on the immediate broadcast: create_action must return
-    // an error, mark the tx failed and give the inputs back — never a phantom
-    // txid with the inputs locked behind a retry loop.
+async fn definitive_rejection_is_a_hint_that_keeps_the_action_sending() {
+    // ARC 465 fee-too-low on the immediate broadcast: a broadcaster's word is a
+    // hint (bsv-stack-lean #66). create_action returns the txid with
+    // `sending`, writes no `failed`, and keeps both inputs locked for the
+    // monitor's re-ask. Until 0.7.4 it returned an error, failed the tx and
+    // released the inputs.
     let seeded = seed(1).await;
     let mock = MockWalletServices::builder()
         .post_beef_response(MockResponse::Success(vec![PostBeefResult {
@@ -472,56 +474,49 @@ async fn definitive_rejection_fails_the_action_and_releases_its_inputs() {
         .await
         .expect("wallet");
 
-    let err = wallet
+    let result = wallet
         .create_action(
             v3_publish_args(&seeded.parent_txid, unlock_with_sighash(0xc3)),
             "test.local",
         )
         .await
-        .expect_err("a definitive rejection is an error, not a phantom txid");
-    let msg = err.to_string();
-    assert!(msg.contains("Transaction broadcast failed"), "{}", msg);
-    assert!(msg.contains("465"), "{}", msg);
+        .expect("a broadcaster's refusal is not an error to the caller");
+    let swr = result.send_with_results.expect("sendWithResults");
+    assert!(
+        matches!(swr[0].status, SendWithResultStatus::Sending),
+        "a refused broadcast stays 'sending', got {:?}",
+        swr[0].status
+    );
+    let txid = hex::encode(result.txid.unwrap());
 
     let storage = wallet.storage();
+    assert_eq!(tx_status(storage, &txid).await, "sending");
     let failed: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE status = 'failed'")
             .fetch_one(storage.pool())
             .await
             .unwrap();
-    assert_eq!(failed, 1, "the rejected tx is marked failed");
-    let (sending, unproven): (i64, i64) = sqlx::query_as(
-        "SELECT SUM(status = 'sending'), SUM(status = 'unproven') FROM transactions",
-    )
-    .fetch_one(storage.pool())
-    .await
-    .unwrap();
-    assert_eq!((sending, unproven), (0, 0), "nothing is left in flight");
+    assert_eq!(failed, 0, "no failed word");
 
-    // Both inputs (covenant + funding) are back: spendable, not spent_by anyone.
-    let rows: Vec<(i64, i64, Option<i64>)> = sqlx::query_as(
-        "SELECT vout, spendable, spent_by FROM outputs WHERE txid = ? ORDER BY vout",
+    // Both inputs (covenant + funding) stay locked by the transaction.
+    let rows: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT o.vout, o.spendable, s.txid FROM outputs o \
+         LEFT JOIN transactions s ON s.transaction_id = o.spent_by \
+         WHERE o.txid = ? ORDER BY o.vout",
     )
     .bind(&seeded.parent_txid)
     .fetch_all(storage.pool())
     .await
     .unwrap();
-    assert_eq!(rows, vec![(0, 1, None), (1, 1, None)]);
+    assert_eq!(
+        rows,
+        vec![(0, 0, Some(txid.clone())), (1, 0, Some(txid.clone()))]
+    );
 
-    // The failed tx's own outputs (the change) can never fund anything.
-    let phantom_spendable: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM outputs o JOIN transactions t ON t.transaction_id = o.transaction_id \
-         WHERE t.status = 'failed' AND o.spendable = 1",
-    )
-    .fetch_one(storage.pool())
-    .await
-    .unwrap();
-    assert_eq!(phantom_spendable, 0);
-    let req_status: String = sqlx::query_scalar(
-        "SELECT status FROM proven_tx_reqs ORDER BY proven_tx_req_id DESC LIMIT 1",
-    )
-    .fetch_one(storage.pool())
-    .await
-    .unwrap();
-    assert_eq!(req_status, "invalid");
+    let req_status: String = sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+        .bind(&txid)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    assert_eq!(req_status, "unsent", "left for the monitor's re-ask");
 }

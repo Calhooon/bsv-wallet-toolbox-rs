@@ -623,8 +623,7 @@ pub async fn internalize_action_internal(
     // consumed coin spendable=1 / spent_by NULL, so coin selection
     // (create_action.rs allocate_change_input) kept re-picking a
     // provably-spent coin — the live incident Calgooon/btc-relay-rs#16.
-    let spent_input_transitions =
-        mark_user_inputs_spent(&mut tx, user_id, transaction_id, &input_outpoints).await?;
+    mark_user_inputs_spent(&mut tx, user_id, transaction_id, &input_outpoints).await?;
 
     // Step 10: Create a proven_tx_req unless the tx is already PROVEN.
     // Store the complete BEEF in proven_tx_reqs so it can be used when building
@@ -668,7 +667,7 @@ pub async fn internalize_action_internal(
     // Committing the state import first is crash-safe: if we die before the
     // broadcast, the req is 'unsent' and SendWaiting remains the backstop.
     if new_req_created {
-        broadcast_new_internalized_req(storage, &txid, &args.tx, &spent_input_transitions).await?;
+        broadcast_new_internalized_req(storage, &txid, &args.tx).await?;
     }
 
     Ok(StorageInternalizeActionResult {
@@ -1395,6 +1394,11 @@ async fn mark_user_inputs_spent(
 /// time (e.g. already spent by a competing transaction) are not in the list,
 /// so a competing `spent_by` is never clobbered. An empty list is a no-op;
 /// applying the same list twice is harmless (the restore is idempotent).
+///
+/// Since 0.7.4 no broadcaster's word reaches this: a refusal of the
+/// internalize's post is a hint and the coins stay spent by the transaction
+/// (bsv-stack-lean #66). Kept with its tests as the transitions' inverse.
+#[cfg_attr(not(test), allow(dead_code))]
 async fn restore_inputs_to_spendable(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     transitions: &[SpentInputTransition],
@@ -1432,34 +1436,38 @@ async fn restore_inputs_to_spendable(
 /// Synchronously broadcast a newly internalized (proof-less, non-merge)
 /// transaction.
 ///
-/// TS parity: wallet-toolbox storage/methods/internalizeAction.ts:598-623
-/// (newInternalize → shareReqsWithWorld, rollback on failure at :612-622).
+/// TS reference (ts-stack@edf6e03): wallet-toolbox
+/// src/storage/methods/internalizeAction.ts:700-720 (newInternalize →
+/// shareReqsWithWorld; the reference restores the spent inputs and throws
+/// WERR_REVIEW_ACTIONS on any non-success, which this crate no longer does
+/// since 0.7.4, bsv-stack-lean #66).
 /// Posts the already-validated AtomicBEEF as-is — TS: "Skip looking up txids
 /// and building an aggregate beef, just this one txid and the already
 /// validated atomic beef."
 ///
-/// Outcome classes (classification mirrors `send_waiting_transactions` in
-/// storage_sqlx.rs):
+/// Outcome classes (as in `send_waiting_transactions` in storage_sqlx.rs):
 ///
-/// - SUCCESS — accepted OR "already known / seen on network". The payer
+/// - SUCCESS: accepted OR "already known / seen on network". The payer
 ///   usually broadcast this tx already, so a duplicate-submission ack is the
 ///   normal case (providers report it with status "success"). The req is
-///   advanced 'unsent' → 'unmined'; the transaction stays 'unproven' and
+///   advanced 'unsent' -> 'unmined'; the transaction stays 'unproven' and
 ///   CheckForProofs owns it from here.
-/// - HARD REJECT — double-spend or definitively invalid (46x), confirmed
-///   dead by chain reconciliation: `mark_internalized_tx_failed` (tx →
-///   'failed', outputs unspendable, req → 'invalid') and the internalize
-///   returns an error, so no phantom spendable outputs are left behind.
-/// - TRANSIENT — network/service error, orphan-mempool, or no services
-///   configured: the internalize still succeeds and the req stays 'unsent';
-///   the SendWaiting monitor task remains the retry backstop (degrades to
-///   the previous deferred behavior instead of breaking offline
-///   internalize).
+/// - EVERY OTHER WORD (a 465 and every other refusal, a double-spend word
+///   named or not, an orphan-mempool hold, a transient word, no broadcaster
+///   reached): a hint (bsv-stack-lean #66). A refusal is first checked
+///   against the status sources (a tx they hold is a success). Otherwise the
+///   internalize succeeds, the word is recorded on the req's history, the
+///   req stays 'unsent' for the re-ask on the send-waiting cadence, and a
+///   competitor the word names is queued for a proof ask. The transaction,
+///   its outputs and the coins it spends keep their words. Until 0.7.4 a
+///   refusal marked the tx 'failed', its outputs unspendable and its req
+///   'invalid', and returned an error.
+/// - No services configured: the internalize succeeds and the req stays
+///   'unsent' for SendWaiting.
 async fn broadcast_new_internalized_req(
     storage: &StorageSqlx,
     txid: &str,
     atomic_beef: &[u8],
-    spent_input_transitions: &[SpentInputTransition],
 ) -> Result<()> {
     let services = match storage.get_services() {
         Ok(s) => s,
@@ -1476,6 +1484,14 @@ async fn broadcast_new_internalized_req(
     let results_vec = match services.post_beef(atomic_beef, &txids).await {
         Ok(r) => r,
         Err(e) => {
+            storage
+                .record_immediate_broadcast_hint(
+                    txid,
+                    "serviceError",
+                    serde_json::json!([{ "error": e.to_string() }]),
+                    &[],
+                )
+                .await?;
             tracing::warn!(
                 txid = %txid,
                 error = %e,
@@ -1492,60 +1508,68 @@ async fn broadcast_new_internalized_req(
         let is_orphan_mempool = results_vec
             .iter()
             .any(|r| r.txid_results.iter().any(|tr| tr.orphan_mempool));
-
         let is_double_spend = results_vec.iter().any(|r| {
             r.txid_results
                 .iter()
                 .any(|tr| tr.double_spend && !tr.orphan_mempool)
         });
-
         let is_invalid = results_vec.iter().any(|r| {
             r.txid_results.iter().any(|tr| {
-                !tr.orphan_mempool && (tr.status.contains("46") || tr.status.contains("invalid"))
+                crate::storage::broadcast::is_definitive_rejection(tr)
+                    || (!tr.orphan_mempool
+                        && !tr.service_error
+                        && (tr.status.contains("46") || tr.status.contains("invalid")))
             })
         });
-
-        if is_orphan_mempool && !is_double_spend {
-            // Parent not yet propagated — not a rejection of this tx.
-            tracing::warn!(
-                txid = %txid,
-                "internalize: orphan mempool — req stays 'unsent', send_waiting will retry"
-            );
-            return Ok(());
-        }
-
-        if is_double_spend || is_invalid {
-            // Reconcile against the chain before condemning (same as the
-            // send_waiting path): the payer may have already broadcast this
-            // tx, making the rejection stale.
-            let reconciled =
-                super::process_action::reconcile_tx_status_via_services(&*services, txid).await;
-
-            if !reconciled {
-                // Hard reject confirmed — roll back the internalize so no
-                // spendable outputs are left behind (TS :612-622 semantics).
-                mark_internalized_tx_failed(storage, txid).await?;
-                // The tx never made it to the network, so the coins its
-                // inputs consumed are still live — restore exactly the
-                // transitions Step 9b applied (TS parity:
-                // internalizeAction.ts:626-636 → restoreInputsToSpendable
-                // :120-128). Transition-scoped: competing spent_by claims
-                // were skipped at mark time and are never touched here.
-                restore_inputs_to_spendable(storage.pool(), spent_input_transitions).await?;
-                return Err(Error::BroadcastFailed(format!(
-                    "internalized tx {} rejected by network (double_spend={}, invalid={})",
-                    txid, is_double_spend, is_invalid
-                )));
-            }
-            // Reported dead but alive on chain — fall through to success.
+        let refusal = is_double_spend || is_invalid;
+        let word = if is_double_spend {
+            "doubleSpend"
+        } else if is_invalid {
+            "invalidTx"
+        } else if is_orphan_mempool {
+            "orphanMempool"
         } else {
-            // Service-level error with no definitive verdict — transient.
+            "serviceError"
+        };
+
+        // A refusal: the payer may have already broadcast this tx; a status
+        // source that holds it makes it a success.
+        let alive = refusal
+            && super::process_action::reconcile_tx_status_via_services(&*services, txid).await;
+
+        if !alive {
+            let competitors: Vec<String> = results_vec
+                .iter()
+                .flat_map(|r| r.txid_results.iter())
+                .filter_map(|tr| tr.competing_txs.clone())
+                .flatten()
+                .collect();
+            let words = serde_json::Value::from(
+                results_vec
+                    .iter()
+                    .flat_map(|r| {
+                        r.txid_results.iter().map(move |tr| {
+                            format!(
+                                "{}: {} [{}]",
+                                r.name,
+                                tr.status,
+                                tr.data.as_deref().unwrap_or("")
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            storage
+                .record_immediate_broadcast_hint(txid, word, words, &competitors)
+                .await?;
             tracing::warn!(
                 txid = %txid,
-                "internalize: broadcast not accepted (service error) — req stays 'unsent', send_waiting will retry"
+                outcome = word,
+                "internalize: broadcast drew no accepting word: a hint; req stays 'unsent', send_waiting will re-ask"
             );
             return Ok(());
         }
+        // Refused but held by a status source: fall through to success.
     }
 
     // Success (accepted, already known, or reconciled-alive): advance the
@@ -2623,46 +2647,36 @@ mod tests {
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
     }
 
-    /// New-path internalize + confirmed double-spend rejection (chain
-    /// reconciliation also fails to find the tx alive): the internalize
-    /// errors and leaves no spendable outputs behind (TS rollback parity,
-    /// internalizeAction.ts:612-622).
+    /// New-path internalize + a double-spend word no status source
+    /// contradicts: a hint (bsv-stack-lean #66). The internalize succeeds,
+    /// the req stays 'unsent' for the re-ask with the word on its history,
+    /// and the tx and its outputs keep their words. Until 0.7.4 it errored
+    /// and wrote the tx 'failed', its outputs unspendable.
     #[tokio::test]
-    async fn test_new_internalize_double_spend_hard_reject_rolls_back() {
+    async fn test_new_internalize_double_spend_word_is_a_hint() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
         let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
 
-        // Default get_status_for_txids mock returns no results, so the
-        // reconcile step finds the tx dead and the rejection stands.
+        // Default get_status_for_txids mock returns no results: no status
+        // source holds the tx.
         let mock = MockWalletServicesBuilder::default()
             .post_beef_double_spend(&txid, "competing_txid")
             .build();
         WalletStorageProvider::set_services(&storage, Arc::new(mock));
 
         let args = wallet_payment_args(beef_bytes, "double spend");
-        let result = internalize_action_internal(&storage, user_id, args).await;
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
 
-        assert!(result.is_err(), "hard reject must fail the internalize");
-        assert_eq!(
-            req_status(&storage, &txid).await.as_deref(),
-            Some("invalid")
-        );
+        assert!(result.base.accepted);
+        assert_eq!(req_status(&storage, &txid).await.as_deref(), Some("unsent"));
         assert_eq!(
             tx_status(&storage, user_id, &txid).await.as_deref(),
-            Some("failed")
+            Some("unproven")
         );
-        assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
-
-        let spendable_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM outputs WHERE user_id = ? AND txid = ? AND spendable = 1",
-        )
-        .bind(user_id)
-        .bind(&txid)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
-        assert_eq!(spendable_count, 0, "no spendable outputs may remain");
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
     }
 
     /// Merge into a pre-existing 'nosend' tx without proof: tx is promoted
@@ -3501,12 +3515,13 @@ mod tests {
         assert_eq!(desc, None);
     }
 
-    /// Incident regression (broadcast hard-fail): when the internalized tx is
-    /// definitively rejected by the network, the internalize errors and the
-    /// consumed coin RETURNS to selectable (restore path), while the failed
-    /// tx's own outputs stay unspendable.
+    /// A refusal of the internalized tx's post (until 0.7.4 the internalize
+    /// errored, restored the consumed coin and wrote the outputs off): a
+    /// hint (bsv-stack-lean #66). The consumed coin stays spent by the tx,
+    /// whose outputs keep their words, until a proof, a competitor's checked
+    /// proof or the host's retire.
     #[tokio::test]
-    async fn test_internalize_broadcast_hard_fail_restores_consumed_coin() {
+    async fn test_internalize_broadcast_refusal_keeps_the_consumed_coin_spent() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
         let coin_txid = "44".repeat(32);
@@ -3515,28 +3530,32 @@ mod tests {
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
 
         let (beef_bytes, txid, _satoshis) = create_test_atomic_beef_spending(&coin_txid, 0);
-        // Default get_status_for_txids mock returns no results, so the
-        // reconcile step finds the tx dead and the rejection stands.
+        // Default get_status_for_txids mock returns no results: no status
+        // source holds the tx.
         let mock = MockWalletServicesBuilder::default()
             .post_beef_double_spend(&txid, "competing_txid")
             .build();
         WalletStorageProvider::set_services(&storage, Arc::new(mock));
 
-        let args = wallet_payment_args(beef_bytes, "hard-fail spend of wallet change");
-        let result = internalize_action_internal(&storage, user_id, args).await;
-        assert!(result.is_err(), "hard reject must fail the internalize");
+        let args = wallet_payment_args(beef_bytes, "refused spend of wallet change");
+        let result = internalize_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+        assert!(result.base.accepted);
 
-        // The consumed coin is restored to selectable.
+        let internalized_tx_id: i64 = sqlx::query_scalar(
+            "SELECT transaction_id FROM transactions WHERE user_id = ? AND txid = ?",
+        )
+        .bind(user_id)
+        .bind(&txid)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
         let (spendable, spent_by, _) = output_state(&storage, coin_output_id).await;
-        assert!(spendable, "consumed coin must be restored");
-        assert_eq!(spent_by, None);
-        assert_eq!(
-            count_selectable_coins(&storage, user_id).await,
-            1,
-            "restored coin is selectable again"
-        );
+        assert!(!spendable, "the consumed coin stays spent");
+        assert_eq!(spent_by, Some(internalized_tx_id));
+        assert_eq!(req_status(&storage, &txid).await.as_deref(), Some("unsent"));
 
-        // The failed internalized tx leaves no spendable outputs behind.
         let spendable_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM outputs WHERE user_id = ? AND txid = ? AND spendable = 1",
         )
@@ -3545,6 +3564,6 @@ mod tests {
         .fetch_one(storage.pool())
         .await
         .unwrap();
-        assert_eq!(spendable_count, 0);
+        assert_eq!(spendable_count, 1, "the tx's output is not written off");
     }
 }
