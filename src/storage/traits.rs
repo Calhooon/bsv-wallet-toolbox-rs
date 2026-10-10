@@ -1041,6 +1041,16 @@ pub trait MonitorStorage: WalletStorageProvider {
     /// 3. For each batch, builds BEEF and broadcasts via services
     /// 4. On success: updates status to unmined
     /// 5. On double-spend: marks as failed
+    /// 6. On a transient word or a fault (a 5xx, a 429, ARC's 400 for a
+    ///    request it could not read, an orphan-mempool hold, a transport
+    ///    error): the request stays unsent with the words recorded on its
+    ///    history, and the next re-ask waits for
+    ///    [`crate::services::cadence::send_waiting_reask_minutes`]. No count
+    ///    of them retires the transaction; the one retire is the host's
+    ///    explicit act (`StorageSqlx::retire_undeliverable_txid`;
+    ///    bsv-stack-lean #65)
+    ///
+    /// Only requests due by the cadence are posted.
     ///
     /// # Arguments
     ///

@@ -3185,6 +3185,102 @@ impl StorageSqlx {
 pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
 pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;
 
+/// How many notes a request's history keeps, the newest.
+const REQ_HISTORY_NOTES_KEPT: usize = 32;
+
+/// Is `req` due for a re-ask by `send_waiting_transactions` at `now`?
+/// (`services::cadence::send_waiting_reask_minutes`; bsv-stack-lean #65.)
+fn send_waiting_reask_due(req: &TableProvenTxReq, now: chrono::DateTime<chrono::Utc>) -> bool {
+    let attempts = u32::try_from(req.attempts).unwrap_or(0);
+    let pause = crate::services::cadence::send_waiting_reask_minutes(attempts);
+    req.updated_at + chrono::Duration::minutes(pause) <= now
+}
+
+/// Each provider's word on one post, as a history note records it.
+fn post_beef_words(results: &[crate::services::PostBeefResult]) -> serde_json::Value {
+    serde_json::Value::Array(
+        results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "provider": r.name,
+                    "status": r.status,
+                    "error": r.error,
+                    "txids": r.txid_results.iter().map(|tr| serde_json::json!({
+                        "status": tr.status,
+                        "data": tr.data,
+                        "serviceError": tr.service_error,
+                        "orphanMempool": tr.orphan_mempool,
+                        "doubleSpend": tr.double_spend,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// `history` (a request's `{"notes": [...]}`) with `note` appended and only
+/// the newest [`REQ_HISTORY_NOTES_KEPT`] notes kept. A history that is not
+/// a JSON object is kept whole under `previous`.
+fn append_req_history_note(history: &str, note: serde_json::Value) -> String {
+    let mut object = match serde_json::from_str::<serde_json::Value>(history) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ if history.trim().is_empty() => serde_json::Map::new(),
+        _ => {
+            let mut map = serde_json::Map::new();
+            map.insert("previous".to_string(), serde_json::Value::from(history));
+            map
+        }
+    };
+    let mut notes = match object.remove("notes") {
+        Some(serde_json::Value::Array(notes)) => notes,
+        _ => Vec::new(),
+    };
+    notes.push(note);
+    let excess = notes.len().saturating_sub(REQ_HISTORY_NOTES_KEPT);
+    notes.drain(..excess);
+    object.insert("notes".to_string(), serde_json::Value::Array(notes));
+    serde_json::Value::Object(object).to_string()
+}
+
+/// Private helpers of `MonitorStorage::send_waiting_transactions`.
+impl StorageSqlx {
+    /// A post drew no accepting word, or never reached a broadcaster: the
+    /// request stays `unsent`, `attempts` paces the next re-ask on the
+    /// cadence and nothing else, and the words are recorded on its history.
+    /// The transaction's word, its inputs and its outputs do not move
+    /// (bsv-stack-lean #65; `docs/charters/tracker.md` section 2 there).
+    async fn record_send_waiting_hint(
+        &self,
+        req: &TableProvenTxReq,
+        attempts: i32,
+        words: serde_json::Value,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let next = crate::services::cadence::send_waiting_reask_minutes(
+            u32::try_from(attempts).unwrap_or(0),
+        );
+        let history = append_req_history_note(
+            &req.history,
+            serde_json::json!({
+                "when": now.to_rfc3339(),
+                "what": "sendWaitingHint",
+                "attempts": attempts,
+                "words": words,
+                "nextReaskMinutes": next,
+            }),
+        );
+        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+            .bind(i64::from(attempts))
+            .bind(history)
+            .bind(now)
+            .bind(req.proven_tx_req_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+}
+
 /// Private helpers for the attempt backstop of
 /// `MonitorStorage::synchronize_transaction_statuses`.
 impl StorageSqlx {
@@ -4242,6 +4338,16 @@ impl MonitorStorage for StorageSqlx {
             - chrono::Duration::from_std(min_transaction_age).unwrap_or_default();
         let reqs: Vec<_> = reqs.into_iter().filter(|r| r.created_at < cutoff).collect();
 
+        // The re-ask cadence (`services::cadence::send_waiting_reask_minutes`,
+        // bsv-stack-lean #65): a request is posted again only once the pause
+        // since its last attempt has passed. A transient word or a fault
+        // schedules the next re-ask; no count of them retires anything.
+        let now = chrono::Utc::now();
+        let reqs: Vec<_> = reqs
+            .into_iter()
+            .filter(|r| send_waiting_reask_due(r, now))
+            .collect();
+
         if reqs.is_empty() {
             return Ok(None);
         }
@@ -4254,7 +4360,6 @@ impl MonitorStorage for StorageSqlx {
         );
 
         let mut send_with_results = Vec::new();
-        let now = chrono::Utc::now();
 
         for req in &reqs {
             // Get raw_tx for this proven_tx_req
@@ -4422,6 +4527,7 @@ impl MonitorStorage for StorageSqlx {
                             r.txid_results.iter().any(|tr| {
                                 crate::storage::broadcast::is_definitive_rejection(tr)
                                     || (!tr.orphan_mempool
+                                        && !tr.service_error
                                         && (tr.status.contains("46")
                                             || tr.status.contains("invalid")))
                             })
@@ -4471,24 +4577,18 @@ impl MonitorStorage for StorageSqlx {
                             // (the parent may land any time) and abandonment belongs to a
                             // corroborated, multi-source reconcile — never to a retry
                             // counter.
-                            sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-                                .bind(attempts as i64)
-                                .bind(now)
-                                .bind(req.proven_tx_req_id)
-                                .execute(self.pool())
-                                .await?;
-                            if attempts > 6 {
-                                tracing::warn!(
-                                    "send_waiting: tx {} still held in a broadcaster's orphan pool after {} attempts — NOT failing, inputs stay locked; a corroborated reconcile owns abandonment",
-                                    req.txid, attempts
-                                );
-                            } else {
-                                tracing::warn!(
-                                    "send_waiting: tx {} orphan mempool (attempt {}) — will retry",
-                                    req.txid,
-                                    attempts
-                                );
-                            }
+                            self.record_send_waiting_hint(
+                                req,
+                                attempts,
+                                post_beef_words(&results_vec),
+                                now,
+                            )
+                            .await?;
+                            tracing::warn!(
+                                "send_waiting: tx {} orphan mempool (attempt {}): stays announced, inputs locked, re-asked on the cadence",
+                                req.txid,
+                                attempts
+                            );
                             send_with_results.push(SendWithResult {
                                 txid: req.txid.clone(),
                                 status: "sending".to_string(),
@@ -4530,7 +4630,7 @@ impl MonitorStorage for StorageSqlx {
                                     );
                                 }
                             }
-                        } else if is_invalid || attempts > 6 {
+                        } else if is_invalid {
                             match self
                                 .retire_undeliverable_tx(
                                     &*services,
@@ -4561,12 +4661,27 @@ impl MonitorStorage for StorageSqlx {
                                 }
                             }
                         } else {
-                            sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-                                .bind(attempts as i64)
-                                .bind(now)
-                                .bind(req.proven_tx_req_id)
-                                .execute(self.pool())
-                                .await?;
+                            // A transient word (a 5xx, a 429, ARC's 400 for a
+                            // request it could not read): a hint. Recorded, the
+                            // re-ask scheduled, and nothing else moves however
+                            // many there have been (bsv-stack-lean #65).
+                            self.record_send_waiting_hint(
+                                req,
+                                attempts,
+                                post_beef_words(&results_vec),
+                                now,
+                            )
+                            .await?;
+                            tracing::warn!(
+                                "send_waiting: tx {} drew no accepting word (attempt {}): stays announced, re-asked on the cadence",
+                                req.txid,
+                                attempts
+                            );
+                            send_with_results.push(SendWithResult {
+                                txid: req.txid.clone(),
+                                status: "sending".to_string(),
+                            });
+                            continue;
                         }
 
                         send_with_results.push(SendWithResult {
@@ -4584,48 +4699,20 @@ impl MonitorStorage for StorageSqlx {
                         e
                     );
 
-                    if attempts > 6 {
-                        match self
-                            .retire_undeliverable_tx(
-                                &*services,
-                                &req.txid,
-                                req.proven_tx_req_id,
-                                attempts as i64,
-                                "invalid",
-                                now,
-                            )
-                            .await?
-                        {
-                            RetireOutcome::Alive => {
-                                tracing::info!(
-                                    "send_waiting: tx {} unreachable by transport but found alive on chain — treating as success",
-                                    req.txid
-                                );
-                                send_with_results.push(SendWithResult {
-                                    txid: req.txid.clone(),
-                                    status: "unproven".to_string(),
-                                });
-                                continue;
-                            }
-                            RetireOutcome::Retired { restored, kept } => {
-                                tracing::info!(
-                                    "send_waiting: tx {} abandoned after {} transport errors — {} input(s) restored (UTXO-verified), {} kept locked",
-                                    req.txid, attempts, restored, kept
-                                );
-                            }
-                        }
-                    } else {
-                        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-                            .bind(attempts as i64)
-                            .bind(now)
-                            .bind(req.proven_tx_req_id)
-                            .execute(self.pool())
-                            .await?;
-                    }
+                    // A fault reaching the broadcasters is no word about the
+                    // transaction: recorded, the re-ask scheduled, never a
+                    // retire however many there have been (bsv-stack-lean #65).
+                    self.record_send_waiting_hint(
+                        req,
+                        attempts,
+                        serde_json::json!([{ "error": e.to_string() }]),
+                        now,
+                    )
+                    .await?;
 
                     send_with_results.push(SendWithResult {
                         txid: req.txid.clone(),
-                        status: "failed".to_string(),
+                        status: "sending".to_string(),
                     });
                 }
             }

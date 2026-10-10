@@ -1189,7 +1189,8 @@ mod monitor_integration {
         .bind(&child_raw)
         .bind(&input_beef)
         .bind(old)
-        .bind(old)
+        // The last attempt is past any re-ask pause of the cadence.
+        .bind(chrono::Utc::now() - chrono::Duration::days(2))
         .execute(storage.pool())
         .await
         .expect("child req");
@@ -1361,11 +1362,12 @@ mod monitor_integration {
         );
     }
 
-    /// RED→GREEN: the transport-error arm failed the tx after 6 errors with
-    /// no alive check and a blind restore. A tx the status service reports
-    /// MINED is promoted, and nothing is released.
+    /// The transport-error arm failed the tx after 6 errors with no alive
+    /// check and a blind restore; 0.4 made it alive-check first. Since #65
+    /// (bsv-stack-lean) a seventh fault retires nothing at all: the status
+    /// service's word is not asked, the tx stays announced, its input locked.
     #[tokio::test]
-    async fn transport_dead_after_retries_checks_alive_before_failing() {
+    async fn transport_dead_after_retries_retires_nothing() {
         use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse};
         use bsv_wallet_toolbox_rs::services::TxStatusDetail;
         use bsv_wallet_toolbox_rs::GetStatusForTxidsResult;
@@ -1397,16 +1399,156 @@ mod monitor_integration {
 
         run_send_waiting(storage.clone(), services).await;
 
-        let (t, r, _) = tx_and_req(&storage, &child).await;
+        let (t, r, a) = tx_and_req(&storage, &child).await;
         assert_eq!(
-            (t.as_str(), r.as_str()),
-            ("unproven", "unmined"),
-            "alive ⇒ promoted"
+            (t.as_str(), r.as_str(), a),
+            ("sending", "unsent", 7),
+            "a fault is no word: the tx stays announced"
         );
         assert_eq!(
             output_lock(&storage, parent_out).await,
             (0, Some(child_id)),
-            "nothing released for a tx that is alive"
+            "nothing released"
         );
+    }
+
+    // =========================================================================
+    // #65 (bsv-stack-lean): a broadcaster's word is a hint that schedules a
+    // re-ask and writes no word (`docs/charters/tracker.md` section 2). No
+    // number of transient words, 400s or faults retires a transaction; the one
+    // retire is the host's explicit act (`StorageSqlx::retire_undeliverable_txid`).
+    // =========================================================================
+
+    /// One pass's transient word: ARC's 400 (a request it could not read, a
+    /// request fault since 0.7.2), a transport fault, or a 503.
+    fn transient_word(pass: usize, txid: &str) -> MockWalletServices {
+        use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse};
+        use bsv_wallet_toolbox_rs::services::PostTxResultForTxid;
+        let builder = MockWalletServices::builder().is_utxo_response(MockResponse::Success(true));
+        match pass % 3 {
+            0 => builder.post_beef_response(MockResponse::Success(vec![
+                bsv_wallet_toolbox_rs::PostBeefResult {
+                    name: "ARC".to_string(),
+                    status: "error".to_string(),
+                    txid_results: vec![PostTxResultForTxid {
+                        txid: txid.to_string(),
+                        status: "error".to_string(),
+                        double_spend: false,
+                        competing_txs: None,
+                        data: Some("400".to_string()),
+                        orphan_mempool: false,
+                        service_error: true,
+                        block_hash: None,
+                        block_height: None,
+                        notes: vec![],
+                    }],
+                    error: Some("400 postRawTxRequestFault".to_string()),
+                    notes: vec![],
+                },
+            ])),
+            1 => builder.post_beef_response(MockResponse::Error(
+                MockErrorKind::BroadcastFailed,
+                "every broadcaster unreachable".to_string(),
+            )),
+            _ => builder.post_beef_service_unavailable(),
+        }
+        .build()
+    }
+
+    /// RED at 0.7.2 (`6a893ca`): the seventh transient word retired the
+    /// transaction (alive check, inputs released, `failed`). GREEN: it stays
+    /// announced, its inputs locked, every word recorded on the req, and the
+    /// next re-ask waits for the cadence.
+    #[tokio::test]
+    async fn seven_transient_words_keep_the_transaction_announced_with_a_scheduled_reask() {
+        use bsv_wallet_toolbox_rs::MonitorStorage as _;
+        let storage = StorageSqlx::in_memory().await.expect("in_memory");
+        let storage_key = "02".to_string() + &"ab".repeat(32);
+        storage.migrate("t", &storage_key).await.expect("migrate");
+        storage.make_available().await.expect("avail");
+        let (child, child_id, parent_out, child_out) =
+            seed_parent_child(&storage, "unsent", 0).await;
+        let long_ago = chrono::Utc::now() - chrono::Duration::days(2);
+
+        for pass in 0..7 {
+            let mock = Arc::new(transient_word(pass, &child));
+            storage.set_services(mock.clone() as Arc<dyn WalletServices>);
+            storage
+                .send_waiting_transactions(Duration::ZERO)
+                .await
+                .expect("send_waiting");
+            assert_eq!(mock.call_count("post_beef"), 1, "pass {pass} asked again");
+            // The clock moves past any cadence before the next pass.
+            sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
+                .bind(long_ago)
+                .bind(&child)
+                .execute(storage.pool())
+                .await
+                .expect("age the req");
+        }
+
+        let (t, r, a) = tx_and_req(&storage, &child).await;
+        assert_eq!(
+            (t.as_str(), r.as_str(), a),
+            ("sending", "unsent", 7),
+            "seven transient words retire nothing"
+        );
+        assert_eq!(
+            output_lock(&storage, parent_out).await,
+            (0, Some(child_id)),
+            "the input stays locked by the announced transaction"
+        );
+        assert_eq!(
+            output_lock(&storage, child_out).await.0,
+            1,
+            "its own change is not written off"
+        );
+        let history: String =
+            sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+                .bind(&child)
+                .fetch_one(storage.pool())
+                .await
+                .expect("history");
+        let history: serde_json::Value = serde_json::from_str(&history).expect("history json");
+        let notes = history["notes"].as_array().expect("notes");
+        assert_eq!(
+            notes
+                .iter()
+                .filter(|n| n["what"] == "sendWaitingHint")
+                .count(),
+            7,
+            "every word is recorded: {history}"
+        );
+
+        // A pass inside the cadence asks nothing; a pass after it asks again.
+        sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
+            .bind(chrono::Utc::now())
+            .bind(&child)
+            .execute(storage.pool())
+            .await
+            .expect("fresh");
+        let mock = Arc::new(transient_word(0, &child));
+        storage.set_services(mock.clone() as Arc<dyn WalletServices>);
+        storage
+            .send_waiting_transactions(Duration::ZERO)
+            .await
+            .expect("send_waiting");
+        assert_eq!(
+            mock.call_count("post_beef"),
+            0,
+            "the re-ask waits for the cadence"
+        );
+        sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
+            .bind(long_ago)
+            .bind(&child)
+            .execute(storage.pool())
+            .await
+            .expect("age the req");
+        storage
+            .send_waiting_transactions(Duration::ZERO)
+            .await
+            .expect("send_waiting");
+        assert_eq!(mock.call_count("post_beef"), 1, "the scheduled re-ask runs");
+        assert_eq!(tx_and_req(&storage, &child).await.0, "sending");
     }
 }
