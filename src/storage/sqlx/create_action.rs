@@ -1960,11 +1960,6 @@ async fn validate_stored_beef(
     tracker: &dyn ChainTracker,
     txid: &str,
 ) -> bool {
-    if stored_beef.bumps.is_empty() {
-        // No bumps to verify — stored BEEF is just unproven txs, safe to merge
-        return true;
-    }
-
     let validation = stored_beef.verify_valid(true);
     if !validation.valid {
         tracing::warn!(
@@ -2567,7 +2562,7 @@ pub(super) async fn beef_bfs_walk(
                 let stored_beef_valid = if let Some(tracker) = chain_tracker {
                     validate_stored_beef(&mut stored_beef, tracker, &txid).await
                 } else {
-                    true
+                    stored_beef.verify_valid(true).valid
                 };
 
                 if stored_beef_valid {
@@ -2577,6 +2572,9 @@ pub(super) async fn beef_bfs_walk(
                         processed_txids.insert(beef_tx.txid());
                     }
 
+                    // Only a structurally complete stored graph can end the
+                    // walk. An unsourced stored body is discarded above and
+                    // its raw subject takes the recursive input path below.
                     if beef.find_txid(&txid).is_some() {
                         continue;
                     }
@@ -2957,48 +2955,39 @@ async fn build_input_beef(
     // unproven transaction.
     prune_beef_to_roots(&mut beef, &root_txids);
 
-    // Verify BEEF against ChainTracker before trimming known_txids
-    // This matches TypeScript/Go behavior: verify after building, before returning
-    if let Some(tracker) = chain_tracker {
-        let beef_bytes = beef.to_binary();
-        // Only verify if BEEF has content beyond the header (4 bytes)
-        // AND there are merkle proofs (bumps) to verify
-        if beef_bytes.len() > 4 && !beef.bumps.is_empty() {
-            // Verify BEEF structure is valid (allow txid-only entries)
-            let validation = beef.verify_valid(true);
-            if !validation.valid {
-                return Err(Error::ValidationError(format!(
-                    "inputBEEF: BEEF structure is invalid: {}",
-                    describe_invalid_beef(&mut beef, &root_txids)
-                )));
-            }
+    // Validate every assembly before trimming known txids, including bodies
+    // without BUMPs and calls with no tracker. Missing ancestry is an error.
+    let validation = beef.verify_valid(true);
+    if !validation.valid {
+        return Err(Error::ValidationError(format!(
+            "inputBEEF: BEEF structure is invalid: {}",
+            describe_invalid_beef(&mut beef, &root_txids)
+        )));
+    }
 
-            // Verify each merkle root against the ChainTracker
-            for (height, root) in &validation.roots {
-                match tracker.is_valid_root_for_height(root, *height).await {
-                    Ok(true) => {
-                        // Root is valid, continue
-                    }
-                    Ok(false) => {
-                        return Err(Error::ValidationError(format!(
-                            "inputBEEF: invalid merkle root {} at height {}",
-                            root, height
-                        )));
-                    }
-                    Err(e) => {
-                        // ChainTracker error (network, block not found, etc.)
-                        // Match Go/TypeScript behavior: treat as validation failure
-                        return Err(Error::ValidationError(format!(
-                            "inputBEEF: failed to verify merkle root at height {}: {}",
-                            height, e
-                        )));
-                    }
+    if let Some(tracker) = chain_tracker {
+        // Verify each merkle root against the ChainTracker
+        for (height, root) in &validation.roots {
+            match tracker.is_valid_root_for_height(root, *height).await {
+                Ok(true) => {
+                    // Root is valid, continue
+                }
+                Ok(false) => {
+                    return Err(Error::ValidationError(format!(
+                        "inputBEEF: invalid merkle root {} at height {}",
+                        root, height
+                    )));
+                }
+                Err(e) => {
+                    // ChainTracker error (network, block not found, etc.)
+                    // Match Go/TypeScript behavior: treat as validation failure
+                    return Err(Error::ValidationError(format!(
+                        "inputBEEF: failed to verify merkle root at height {}: {}",
+                        height, e
+                    )));
                 }
             }
         }
-        // Note: If BEEF has no bumps (only unproven transactions), we skip verification
-        // since there are no merkle roots to verify against the chain.
-        // This is consistent with TypeScript/Go which only verify when there are proofs.
     }
 
     // Gap #2: Trim known_txids to txid-only format
@@ -4288,8 +4277,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a fake completed transaction with raw_tx so BEEF construction can find it
+        // Seed matching transaction bytes and a valid proof for the funding parent.
         let raw_tx = seed_raw_tx();
+        let txid = txid_of(&raw_tx);
+        seed_proven_chain_tx(storage, &txid, &raw_tx, 100_000).await;
         let tx_result = sqlx::query(
             r#"
             INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
@@ -4298,7 +4289,7 @@ mod tests {
         )
         .bind(user_id)
         .bind(satoshis)
-        .bind("0000000000000000000000000000000000000000000000000000000000000001")
+        .bind(&txid)
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
@@ -4327,7 +4318,7 @@ mod tests {
         .bind(basket.basket_id)
         .bind(satoshis)
         .bind(&locking_script)
-        .bind("0000000000000000000000000000000000000000000000000000000000000001")
+        .bind(&txid)
         .bind(now)
         .bind(now)
         .execute(storage.pool())
@@ -4395,9 +4386,8 @@ mod tests {
             "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
         ).unwrap();
 
-        // Sample merkle path (BRC-74 format) - minimal valid structure
-        // Format: block_height (4 bytes) + tree_height (1 byte) + leaf_count (varint) + leaf_flags + leaf_hashes
-        let merkle_path = hex::decode("a086010001020002").unwrap();
+        // A real single-leaf proof for the funding transaction.
+        let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary();
 
         let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
 
@@ -4450,10 +4440,10 @@ mod tests {
 
         // Create a transaction with raw_tx but no proof
         let now = Utc::now();
-        let txid = "1111111111111111111111111111111111111111111111111111111111111111";
-        let raw_tx = hex::decode(
-            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
-        ).unwrap();
+        let chain = synth_chain(2);
+        seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, 100_000).await;
+        let raw_tx = chain[1].0.clone();
+        let txid = chain[1].1.as_str();
 
         sqlx::query(
             r#"
@@ -4513,11 +4503,14 @@ mod tests {
         let (user, _) = storage.find_or_insert_user("02abcd").await.unwrap();
 
         let now = Utc::now();
-        let txid = "2222222222222222222222222222222222222222222222222222222222222222";
+
         let raw_tx = hex::decode(
             "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
         ).unwrap();
 
+        let txid_owned = txid_of(&raw_tx);
+        let txid = txid_owned.as_str();
+        seed_proven_chain_tx(&storage, txid, &raw_tx, 100_000).await;
         sqlx::query(
             r#"
             INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
@@ -4761,15 +4754,17 @@ mod tests {
         // The unproven_tx's input txid points to proven_tx
 
         // First, create the proven ancestor transaction (txid1)
-        let txid1 = "1111111111111111111111111111111111111111111111111111111111111111";
+
         let raw_tx1 = hex::decode(
             "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
         ).unwrap();
-        let merkle_path1 = hex::decode("a086010001020002").unwrap();
+        let txid1_owned = txid_of(&raw_tx1);
+        let txid1 = txid1_owned.as_str();
+        let merkle_path1 = synth_bump(100_000, txid1).to_binary();
         seed_proven_tx(&storage, txid1, &raw_tx1, &merkle_path1).await;
 
         // Create an unproven transaction (txid2) that spends from txid1
-        let txid2 = "2222222222222222222222222222222222222222222222222222222222222222";
+
         // Build a raw tx that has txid1 as its input
         let mut raw_tx2 = vec![];
         raw_tx2.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version
@@ -4787,6 +4782,8 @@ mod tests {
         raw_tx2.push(0x00); // empty script
         raw_tx2.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // locktime
 
+        let txid2_owned = txid_of(&raw_tx2);
+        let txid2 = txid2_owned.as_str();
         let now = Utc::now();
         sqlx::query(
             r#"
@@ -4892,7 +4889,7 @@ mod tests {
         let raw_tx = hex::decode(
             "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
         ).unwrap();
-        let merkle_path = hex::decode("a086010001020002").unwrap();
+        let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary();
         let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
 
         seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
@@ -4953,7 +4950,8 @@ mod tests {
 
         // Build user's BEEF
         let mut user_beef = Beef::new();
-        user_beef.merge_raw_tx(user_raw_tx, None);
+        let idx = user_beef.merge_bump(synth_bump(100_000, user_txid));
+        user_beef.merge_raw_tx(user_raw_tx, Some(idx));
         let user_beef_bytes = user_beef.to_binary();
 
         // Input references the tx from user BEEF (not in storage)
@@ -5121,10 +5119,10 @@ mod tests {
 
         // Create an unproven transaction (no merkle path needed)
         let now = Utc::now();
-        let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
-        let raw_tx = hex::decode(
-            "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
-        ).unwrap();
+        let chain = synth_chain(2);
+        seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, 100_000).await;
+        let raw_tx = chain[1].0.clone();
+        let txid = chain[1].1.as_str();
 
         sqlx::query(
             r#"
@@ -5153,7 +5151,7 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        // Use AlwaysValidChainTracker - BEEF with unproven txs has no roots to verify
+        // Use AlwaysValidChainTracker with an unproven child and proven parent
         // This tests that the verification code path completes successfully
         let tracker = AlwaysValidChainTracker::new(100000);
 
@@ -5179,15 +5177,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_input_beef_skips_verification_when_no_bumps() {
+    async fn test_build_input_beef_refuses_unsourced_body_when_proof_is_malformed() {
         use bsv_rs::transaction::MockChainTracker;
 
-        // Test that BEEF verification is SKIPPED when there are no bumps (merkle proofs)
-        // This is because there are no merkle roots to verify against the chain.
-        //
-        // When the merkle path in storage is malformed (cannot be parsed), the BEEF is built
-        // without a bump, and verification is skipped. This is correct behavior - we can't
-        // verify what we don't have.
+        // An unreadable proof leaves an unsourced transaction, which must
+        // fail structural validation even though no BUMP could be attached.
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage.migrate("test", "000000").await.unwrap();
         storage.make_available().await.unwrap();
@@ -5213,9 +5207,6 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        // Use MockChainTracker with NO valid roots
-        // But since the merkle path can't be parsed, no bump is added to BEEF,
-        // so verification will be skipped entirely
         let tracker = MockChainTracker::new(100000);
 
         let mut conn = storage.pool().acquire().await.unwrap();
@@ -5232,15 +5223,12 @@ mod tests {
         )
         .await;
 
-        // Should succeed because there are no bumps to verify
-        // The malformed merkle path means no bump was added to BEEF
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_some()); // BEEF is built, just without a proof
+        assert!(matches!(result, Err(Error::ValidationError(_))));
     }
 
     #[tokio::test]
-    async fn test_build_input_beef_no_verification_without_tracker() {
-        // Test that BEEF is built successfully without verification when no tracker is provided
+    async fn test_build_input_beef_valid_structure_without_tracker() {
+        // Structure is checked without a tracker; header roots need a tracker.
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage.migrate("test", "000000").await.unwrap();
         storage.make_available().await.unwrap();
@@ -5249,7 +5237,7 @@ mod tests {
         let raw_tx = hex::decode(
             "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
         ).unwrap();
-        let merkle_path = hex::decode("a086010001020002").unwrap();
+        let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary();
         let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
 
         seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
@@ -5266,7 +5254,7 @@ mod tests {
         }];
         let change_inputs: Vec<AllocatedChangeInput> = vec![];
 
-        // With chain_tracker = None, verification is skipped
+        // Without a tracker only the root lookup is skipped.
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
@@ -5282,7 +5270,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Should return Some BEEF data (no verification attempted)
+        // The valid structure still returns BEEF without a root lookup.
         assert!(result.is_some());
         let beef_bytes = result.unwrap();
         assert!(beef_bytes.len() > 4);
@@ -6086,7 +6074,7 @@ mod tests {
         )
         .unwrap();
         let parent_txid = compute_txid(&parent_raw_tx);
-        let parent_merkle_path = hex::decode("a086010001020002").unwrap();
+        let parent_merkle_path = synth_bump(100_000, &parent_txid).to_binary();
         seed_proven_tx(&storage, &parent_txid, &parent_raw_tx, &parent_merkle_path).await;
 
         // 2. Create an unconfirmed child tx that spends from parent
@@ -6229,10 +6217,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_beef_warns_on_missing_deep_ancestor() {
+    async fn test_build_beef_refuses_missing_deep_ancestor() {
         // Build BEEF where a depth-2 ancestor is missing.
-        // Should succeed (with warning logged) — the BEEF may be incomplete but
-        // we don't hard-error on missing deep ancestors.
+        // The walk may log the missing ancestor, but final validation must
+        // refuse the incomplete assembly.
         use sha2::{Digest, Sha256};
 
         let storage = StorageSqlx::in_memory().await.unwrap();
@@ -6354,21 +6342,9 @@ mod tests {
         )
         .await;
 
-        // Should succeed (missing deep ancestor is a warning, not an error)
         assert!(
-            result.is_ok(),
-            "Missing deep ancestor should be a warning, not an error: {:?}",
-            result
-        );
-        let beef_bytes = result.unwrap();
-        assert!(beef_bytes.is_some(), "BEEF should still be produced");
-
-        // Verify the BEEF contains what it could find (at least 2 txs: child + parent)
-        let beef = Beef::from_binary(&beef_bytes.unwrap()).unwrap();
-        assert!(
-            beef.txs.len() >= 2,
-            "BEEF must contain at least the child and parent txs, got {}",
-            beef.txs.len()
+            matches!(result, Err(Error::ValidationError(ref e)) if e.contains("structure is invalid")),
+            "missing ancestry must never produce a tx answer: {result:?}"
         );
     }
 
@@ -6509,16 +6485,10 @@ mod tests {
             hex::encode(v)
         };
 
-        // The raw tx that the mock will return (a coinbase tx)
-        let missing_raw_tx = hex::decode(
-            "01000000010000000000000000000000000000000000000000000000000000000000000000\
-             ffffffff0704ffff001d0104ffffffff\
-             0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66\
-             fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf23\
-             42c858eeac00000000",
-        )
-        .unwrap();
-
+        // The mock returns an unproven child of a locally proven parent.
+        let chain = synth_chain(2);
+        seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, 100_000).await;
+        let missing_raw_tx = chain[1].0.clone();
         // Compute the real txid from the raw bytes
         let missing_txid = compute_txid(&missing_raw_tx);
 
@@ -7197,8 +7167,15 @@ mod tests {
         tag: &str,
     ) -> String {
         let now = Utc::now();
-        let txid = format!("{:0>64}", tag);
-        let raw_tx = seed_raw_tx();
+        let mut tx = bsv_rs::transaction::Transaction::from_binary(&seed_raw_tx()).unwrap();
+        tx.lock_time = u32::from_str_radix(tag, 16).unwrap();
+        tx.outputs[0].satoshis = Some(satoshis as u64);
+        tx.outputs[0].locking_script =
+            bsv_rs::script::LockingScript::from_binary(locking_script).unwrap();
+        tx.invalidate_caches();
+        let raw_tx = tx.to_binary();
+        let txid = tx.id();
+        seed_proven_chain_tx(storage, &txid, &raw_tx, 100_001 + tx.lock_time).await;
         let tx_result = sqlx::query(
             r#"
             INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
@@ -7426,7 +7403,7 @@ mod tests {
             "SELECT txid, spent_by, spendable FROM outputs WHERE txid IN (?, ?) ORDER BY txid",
         )
         .bind(&head_txid)
-        .bind("0000000000000000000000000000000000000000000000000000000000000001")
+        .bind(txid_of(&seed_raw_tx()))
         .fetch_all(storage.pool())
         .await
         .unwrap();

@@ -1336,11 +1336,16 @@ mod tests {
              42c858eeac00000000",
         )
         .unwrap();
+        let txid = compute_txid(&raw_tx);
+        let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(&txid, 100_000);
+        sqlx::query("INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, 100000, 0, ?, ?, ?, ?, ?, ?)")
+            .bind(&txid).bind("aa".repeat(32)).bind(&txid).bind(bump.to_binary())
+            .bind(&raw_tx).bind(now).bind(now).execute(storage.pool()).await.unwrap();
         let tx_result = sqlx::query(
             "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?, ?)",
         )
         .bind(user_id).bind(satoshis)
-        .bind("0000000000000000000000000000000000000000000000000000000000000001")
+        .bind(&txid)
         .bind(&raw_tx)
         .bind(now).bind(now)
         .execute(storage.pool()).await.unwrap();
@@ -1353,7 +1358,7 @@ mod tests {
             "INSERT INTO outputs (user_id, transaction_id, basket_id, vout, satoshis, locking_script, txid, type, spendable, change, derivation_prefix, derivation_suffix, provided_by, purpose, output_description, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?, 'P2PKH', 1, 1, 'prefix123', 'suffix456', 'storage', 'change', 'seeded change', ?, ?)",
         )
         .bind(user_id).bind(transaction_id).bind(basket.basket_id).bind(satoshis).bind(&locking_script)
-        .bind("0000000000000000000000000000000000000000000000000000000000000001")
+        .bind(&txid)
         .bind(now).bind(now)
         .execute(storage.pool()).await.unwrap();
     }
@@ -2076,7 +2081,7 @@ mod tests {
             "{outcome}: the word is on the history: {history}"
         );
         let input = sqlx::query(
-            "SELECT spendable, spent_by FROM outputs WHERE txid = '0000000000000000000000000000000000000000000000000000000000000001'",
+            "SELECT spendable, spent_by FROM outputs WHERE txid = '0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098'",
         )
         .fetch_one(storage.pool())
         .await
