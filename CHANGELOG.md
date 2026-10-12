@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- bsv-rs 0.4.5: the lone leaf at offset 0 only; the LOCAL work bound; no behavior change under the defaults.
+
 ## [0.7.4] - 2026-10-10
 
 No count and no broadcaster word writes `failed` or `invalid`, in the monitor's paths and on the immediate post of `createAction`, `signAction` and `internalizeAction` (bsv-stack-lean #66, the two items #65 left open and the immediate paths; the tracker's rule, bsv-stack-lean `docs/charters/tracker.md` sections 2 and 10: every broadcaster word is a hint that schedules a re-ask, never an age-out word, and `conflicted` is a mined competitor's proof checked against our headers). A `sending` transaction ends with a proof, with a competitor's checked proof, or by the host's explicit retire, `StorageSqlx::retire_undeliverable_txid`, the only way it ends without a proof.
