@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.6] - 2026-10-12
+
+- Run the structural BEEF rule before the no-BUMP return in proof verification. Strict internalization refuses an unmined one-transaction stub before storing `input_beef`, matching [the reference's AtomicBEEF check](https://github.com/bsv-blockchain/ts-stack/blob/edf6e03/packages/wallet/wallet-toolbox/src/signer/methods/internalizeAction.ts#L113-L115).
+- Validate stored BEEF structure with or without BUMPs. A body with unsourced inputs falls back to the recursive walk, carrying locally held proven parents; only a valid stored graph can end that walk. Match [the reference's missing-ancestor refusal](https://github.com/bsv-blockchain/ts-stack/blob/edf6e03/packages/wallet/wallet-toolbox/src/storage/methods/getBeefForTransaction.ts#L456-L474).
+- Validate the final `build_input_beef` graph for every assembly, including bodies without BUMPs or a tracker. An invalid assembly returns an error instead of transaction data.
+- Add synthetic regression pins for refusal without storage, recovery of the proven parent, and strict internalization of the wallet's own assembly, with controls for stored structure, final invalid assemblies and the tracker-less local walk. See [toolbox #23](https://github.com/Calhooon/bsv-wallet-toolbox-rs/issues/23).
+- Pin `bsv-rs` to `=0.5.0`, retaining its streaming mining, lone-leaf and work-budget checks. No API or database migration; previously accepted incomplete bodies now fail validation and require complete ancestry.
+
 ## [Unreleased]
 
 ## [0.7.5] - 2026-10-12

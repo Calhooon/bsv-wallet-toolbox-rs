@@ -13,7 +13,7 @@ use crate::storage::traits::BeefVerificationMode;
 /// a time, and refuses it only for invalid bytes: [`Error::InvalidBeef`] with
 /// the offset of the byte and the kind (a bad varint, a cut field, a tree
 /// height over 64, a transaction with no input, trailing bytes, and the rest
-/// of the reader's nineteen). Nothing is refused for its size or its counts.
+/// of the reader's twenty-four). Nothing is refused for its size or its counts.
 ///
 /// The frame and each element are checked; the graph (an input naming an
 /// earlier transaction) and the roots against the headers are not: those
@@ -78,11 +78,6 @@ pub async fn verify_beef_merkle_proofs(
         return Ok(true);
     }
 
-    // If BEEF has no merkle proofs (bumps), nothing to verify
-    if beef.bumps.is_empty() {
-        return Ok(false);
-    }
-
     // Validate BEEF structure first and extract roots
     // This must be done synchronously before any await points due to RefCell in Beef
     let roots: HashMap<u32, String> = {
@@ -94,6 +89,12 @@ pub async fn verify_beef_merkle_proofs(
         }
         validation.roots
     };
+
+    // No roots still requires a valid graph. Preserve the no-proof result
+    // only after the structural check has succeeded.
+    if beef.bumps.is_empty() {
+        return Ok(false);
+    }
 
     // Verify each merkle root against the chain
     for (height, root) in &roots {
@@ -421,17 +422,14 @@ mod tests {
         let mut beef = Beef::new();
         beef.merge_transaction(tx);
 
-        // This BEEF has no BUMPs, so no proofs. The tx has a dangling input reference.
-        // verify_beef_merkle_proofs returns Ok(false) because bumps is empty.
+        // A missing input is invalid even when there are no BUMPs.
         let tracker = AlwaysValidChainTracker;
         let known = HashSet::new();
         let result =
             verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
                 .await;
 
-        // No BUMPs => returns Ok(false)
-        assert!(result.is_ok());
-        assert!(!result.unwrap());
+        assert!(matches!(result, Err(Error::ValidationError(_))));
 
         // Now add a bogus BUMP that doesn't match this tx
         let fake_txid = "aa".repeat(32);
@@ -451,7 +449,7 @@ mod tests {
         );
     }
 
-    /// Test 4: BEEF with no BUMPs should fail verification (returns false).
+    /// An unproven coinbase with no sourced inputs is structurally invalid.
     #[tokio::test]
     async fn test_beef_empty_bumps() {
         let raw_tx = MINIMAL_TX_BYTES.to_vec();
@@ -465,12 +463,7 @@ mod tests {
             verify_beef_merkle_proofs(&mut beef, &tracker, BeefVerificationMode::Strict, &known)
                 .await;
 
-        // No BUMPs => returns Ok(false) indicating nothing to verify
-        assert!(result.is_ok());
-        assert!(
-            !result.unwrap(),
-            "BEEF with no BUMPs should return false (no proofs)"
-        );
+        assert!(matches!(result, Err(Error::ValidationError(_))));
     }
 
     /// Test 5: BEEF with one proven tx and one txid-only entry (partial proof).

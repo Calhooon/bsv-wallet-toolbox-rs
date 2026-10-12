@@ -130,6 +130,10 @@ async fn seed(covenant_sats: u64) -> Seeded {
     let parent_txid = parent.id();
     let raw = parent.to_binary();
     let now = chrono::Utc::now();
+    let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(&parent_txid, 100_000);
+    sqlx::query("INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, 100000, 0, ?, ?, ?, ?, ?, ?)")
+        .bind(&parent_txid).bind("aa".repeat(32)).bind(&parent_txid).bind(bump.to_binary())
+        .bind(parent.to_binary()).bind(now).bind(now).execute(storage.pool()).await.expect("proven funding parent");
 
     let tx_row = sqlx::query(
         r#"

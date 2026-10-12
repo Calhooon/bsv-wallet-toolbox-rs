@@ -107,9 +107,8 @@ pub async fn internalize_action_internal(
         )
         .await?;
         // Note: verify_beef_merkle_proofs returns Err on invalid proofs,
-        // Ok(false) if no proofs to verify (empty BEEF), Ok(true) if valid.
-        // Both Ok cases are acceptable for internalize_action since unproven
-        // transactions are tracked separately.
+        // Ok(false) for a valid structure with no roots, Ok(true) with roots.
+        // A missing ancestor is refused even when there are no proofs.
     }
 
     // Find the target transaction
