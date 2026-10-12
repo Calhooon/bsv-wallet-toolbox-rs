@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-12
+
+bsv-rs 0.4.5 (the lone leaf at offset 0 only; the LOCAL work bound inside one input's script); no behavior change under the defaults. The L2 re-pin of bsv-stack-lean item 2. The known-ancestor witnesses of #69 (a declared known ancestor is txid-only in the result BEEF, ts-stack #660 parity) landed before this release.
+
 ### Changed
 
 - bsv-rs 0.4.5: the lone leaf at offset 0 only; the LOCAL work bound; no behavior change under the defaults.
