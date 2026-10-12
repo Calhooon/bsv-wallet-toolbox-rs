@@ -2,6 +2,7 @@
 
 ## [0.7.6] - 2026-10-12
 
+- Check incoming AtomicBEEF structure with or without a configured chain tracker; an incomplete stub is refused before storage in either case.
 - Run the structural BEEF rule before the no-BUMP return in proof verification. Strict internalization refuses an unmined one-transaction stub before storing `input_beef`, matching [the reference's AtomicBEEF check](https://github.com/bsv-blockchain/ts-stack/blob/edf6e03/packages/wallet/wallet-toolbox/src/signer/methods/internalizeAction.ts#L113-L115).
 - Validate stored BEEF structure with or without BUMPs. A body with unsourced inputs falls back to the recursive walk, carrying locally held proven parents; only a valid stored graph can end that walk. Match [the reference's missing-ancestor refusal](https://github.com/bsv-blockchain/ts-stack/blob/edf6e03/packages/wallet/wallet-toolbox/src/storage/methods/getBeefForTransaction.ts#L456-L474).
 - Validate the final `build_input_beef` graph for every assembly, including bodies without BUMPs or a tracker. An invalid assembly returns an error instead of transaction data.

@@ -528,12 +528,22 @@ async fn sign_action_answered_465_is_a_hint_not_an_error() {
     assert_eq!(queued(storage, &txid).await, vec![competitor]);
 }
 
-/// An AtomicBEEF of one transaction paying 10,000 sats to an unrelated
-/// P2PKH, spending an outpoint the storage does not know.
+/// An unmined transaction paying 10,000 sats to an unrelated P2PKH,
+/// carrying its full funding parent and the parent's single-leaf proof.
 fn incoming_atomic_beef() -> (Vec<u8>, String) {
+    let mut parent = Transaction::new();
+    let mut parent_input = TransactionInput::new("11".repeat(32), 0);
+    parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    parent.inputs.push(parent_input);
+    parent.outputs.push(TransactionOutput {
+        satoshis: Some(20_000),
+        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        change: false,
+    });
+    let parent_txid = parent.id();
     let mut tx = Transaction::new();
     tx.version = 1;
-    let mut input = TransactionInput::new("11".repeat(32), 0);
+    let mut input = TransactionInput::new(parent_txid.clone(), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
     tx.inputs.push(input);
     tx.outputs.push(TransactionOutput {
@@ -543,6 +553,11 @@ fn incoming_atomic_beef() -> (Vec<u8>, String) {
     });
     let txid = tx.id();
     let mut beef = Beef::new();
+    let bump_index = beef.merge_bump(bsv_rs::transaction::MerklePath::from_coinbase_txid(
+        &parent_txid,
+        100_001,
+    ));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump_index));
     beef.merge_transaction(tx);
     (beef.to_binary_atomic(&txid).unwrap(), txid)
 }

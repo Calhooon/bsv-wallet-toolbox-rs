@@ -7785,31 +7785,35 @@ mod tests {
     #[tokio::test]
     async fn l2_23_pin_i_internalize_refuses_stub_without_storing() {
         use bsv_rs::transaction::MockChainTracker;
-        let s = l2_23_storage().await;
-        let (user, _) = s.find_or_insert_user("02abcd").await.unwrap();
-        s.set_chain_tracker(std::sync::Arc::new(MockChainTracker::new(101)))
+        for tracker in [true, false] {
+            let s = l2_23_storage().await;
+            let (user, _) = s.find_or_insert_user("02abcd").await.unwrap();
+            if tracker {
+                s.set_chain_tracker(std::sync::Arc::new(MockChainTracker::new(101)))
+                    .await;
+            }
+            let chain = synth_chain(2);
+            let mut stub = Beef::new();
+            stub.merge_raw_tx(chain[1].0.clone(), None);
+            let result = super::super::internalize_action::internalize_action_internal(
+                &s,
+                user.user_id,
+                l2_23_args(stub.to_binary_atomic(&chain[1].1).unwrap()),
+            )
             .await;
-        let chain = synth_chain(2);
-        let mut stub = Beef::new();
-        stub.merge_raw_tx(chain[1].0.clone(), None);
-        let result = super::super::internalize_action::internalize_action_internal(
-            &s,
-            user.user_id,
-            l2_23_args(stub.to_binary_atomic(&chain[1].1).unwrap()),
-        )
-        .await;
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM transactions WHERE txid = ? AND input_beef IS NOT NULL",
-        )
-        .bind(&chain[1].1)
-        .fetch_one(s.pool())
-        .await
-        .unwrap();
-        assert_eq!(count, 0, "invalid input_beef must never be stored");
-        assert!(
-            matches!(result, Err(Error::ValidationError(ref e)) if e.contains("structure is invalid")),
-            "got {result:?}"
-        );
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM transactions WHERE txid = ? AND input_beef IS NOT NULL",
+            )
+            .bind(&chain[1].1)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+            assert_eq!(count, 0, "invalid input_beef must never be stored");
+            assert!(
+                matches!(result, Err(Error::ValidationError(ref e)) if e.contains("structure is invalid")),
+                "got {result:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -7833,9 +7837,6 @@ mod tests {
         t.add_root(100, chain[0].1.clone());
         s.set_chain_tracker(std::sync::Arc::new(t)).await;
         let mut beef = Beef::from_binary(&bytes).unwrap();
-        // A subsequent proof delivery forces the old strict path to check the
-        // graph too. It supplies the anchor's BUMP, never its missing raw bytes.
-        beef.merge_bump(synth_bump(100, &chain[0].1));
         let result = super::super::internalize_action::internalize_action_internal(
             &s,
             user.user_id,
@@ -7847,6 +7848,11 @@ mod tests {
             "strict internalize must accept our assembly: {result:?}"
         );
         assert!(result.unwrap().base.accepted);
+        assert_eq!(
+            beef.bumps.len(),
+            1,
+            "unmodified assembly must carry its anchor proof"
+        );
     }
 
     #[tokio::test]
@@ -7861,26 +7867,29 @@ mod tests {
     #[tokio::test]
     async fn l2_23_final_bumpless_invalid_assembly_is_an_error() {
         use bsv_rs::transaction::MockChainTracker;
-        let s = l2_23_storage().await;
-        let chain = synth_chain(2);
-        seed_unproven_tx(&s, &chain[1].1, &chain[1].0, None).await;
-        let mut conn = s.pool().acquire().await.unwrap();
-        let result = build_input_beef(
-            &mut conn,
-            Some(&MockChainTracker::new(101)),
-            &[l2_23_input(&chain[1].1)],
-            &[],
-            None,
-            &[],
-            false,
-            false,
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(Error::ValidationError(ref e)) if e.contains("structure is invalid")),
-            "invalid assembly returned: {result:?}"
-        );
+        for tracker in [true, false] {
+            let s = l2_23_storage().await;
+            let chain = synth_chain(2);
+            seed_unproven_tx(&s, &chain[1].1, &chain[1].0, None).await;
+            let t = MockChainTracker::new(101);
+            let mut conn = s.pool().acquire().await.unwrap();
+            let result = build_input_beef(
+                &mut conn,
+                if tracker { Some(&t) } else { None },
+                &[l2_23_input(&chain[1].1)],
+                &[],
+                None,
+                &[],
+                false,
+                false,
+                None,
+            )
+            .await;
+            assert!(
+                matches!(result, Err(Error::ValidationError(ref e)) if e.contains("structure is invalid")),
+                "invalid assembly returned: {result:?}"
+            );
+        }
     }
 
     #[tokio::test]

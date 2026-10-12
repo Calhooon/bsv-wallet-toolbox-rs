@@ -91,8 +91,15 @@ pub async fn internalize_action_internal(
         Error::ValidationError("BEEF is not AtomicBEEF (missing atomic_txid)".to_string())
     })?;
 
-    // Step 1b: Verify BEEF merkle proofs if chain_tracker is set
-    // This ensures incoming transactions have valid proofs before internalizing
+    // Step 1b: Check structure even when no chain tracker is configured.
+    // An incomplete ancestry must never be stored as input_beef.
+    if !beef.verify_valid(true).valid {
+        return Err(Error::ValidationError(
+            "BEEF structure is invalid".to_string(),
+        ));
+    }
+
+    // With a tracker, also verify the incoming merkle roots before internalizing.
     if let Some(chain_tracker) = storage.get_chain_tracker().await {
         // Get known txids for TrustKnown mode (transactions already in wallet)
         let known_txids = get_known_txids(storage, user_id).await?;
@@ -1701,10 +1708,18 @@ mod tests {
 
     /// Helper to create a simple test transaction and AtomicBEEF.
     fn create_test_atomic_beef() -> (Vec<u8>, String, u64) {
-        create_test_atomic_beef_spending(
-            "0000000000000000000000000000000000000000000000000000000000000000",
-            0,
-        )
+        create_test_atomic_beef_spending(&test_parent().1, 0)
+    }
+
+    /// Locally generated funding parent with a matching raw body and txid.
+    fn test_parent() -> (Vec<u8>, String) {
+        raw_tx_spending(&[(&"11".repeat(32), 0)], 20_000)
+    }
+
+    fn merge_test_parent(beef: &mut Beef) {
+        let (raw, txid) = test_parent();
+        let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&txid, PROVEN_HEIGHT));
+        beef.merge_raw_tx(raw, Some(bump));
     }
 
     /// Variant of `create_test_atomic_beef` whose single input spends the
@@ -1740,6 +1755,9 @@ mod tests {
 
         // Create BEEF with this transaction
         let mut beef = Beef::new();
+        // The unmined subject spends a full parent anchored by a synthetic
+        // single-leaf proof. The subject itself has no BUMP.
+        merge_test_parent(&mut beef);
         beef.merge_transaction(tx);
 
         // Use to_binary_atomic to create AtomicBEEF format with embedded txid
@@ -2244,10 +2262,7 @@ mod tests {
         tx.version = 1;
         tx.lock_time = 0;
 
-        let mut input = TransactionInput::new(
-            "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            0,
-        );
+        let mut input = TransactionInput::new(test_parent().1, 0);
         input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
         tx.inputs.push(input);
 
@@ -2272,6 +2287,9 @@ mod tests {
         let txid = tx.id();
 
         let mut beef = Beef::new();
+        // The unmined subject spends a full parent anchored by a synthetic
+        // single-leaf proof. The subject itself has no BUMP.
+        merge_test_parent(&mut beef);
         beef.merge_transaction(tx);
         // Use to_binary_atomic to create AtomicBEEF format
         let beef_bytes = beef.to_binary_atomic(&txid).unwrap();
@@ -3056,29 +3074,26 @@ mod tests {
         assert_unproven_is_reachable(&storage).await;
     }
 
-    /// The no-BUMP path is unchanged: 'unproven' tx + 'unsent' req that the
-    /// broadcast path owns. Guards against the fix over-reaching.
+    /// A no-BUMP stub has missing ancestry and must be refused without writes.
     #[tokio::test]
-    async fn test_new_internalize_without_bump_still_creates_unsent_req() {
+    async fn test_new_internalize_without_bump_refuses_stub_without_req() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
-        let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
-
-        let args = wallet_payment_args(beef_bytes, "no proof at all");
-        internalize_action_internal(&storage, user_id, args)
-            .await
-            .ok();
-
-        assert_eq!(
-            tx_status(&storage, user_id, &txid).await.as_deref(),
-            Some("unproven")
+        let (bytes, txid, _) = create_test_atomic_beef();
+        let beef = Beef::from_binary(&bytes).unwrap();
+        let mut stub = Beef::new();
+        stub.merge_raw_tx(
+            beef.find_txid(&txid).unwrap().tx().unwrap().to_binary(),
+            None,
         );
-        assert!(proven_tx_row(&storage, &txid).await.is_none());
+        let args = wallet_payment_args(stub.to_binary_atomic(&txid).unwrap(), "missing ancestry");
+        let result = internalize_action_internal(&storage, user_id, args).await;
         assert!(
-            req_status(&storage, &txid).await.is_some(),
-            "a tx with no proof must always have a req"
+            matches!(result, Err(Error::ValidationError(ref e)) if e.contains("structure is invalid"))
         );
-        assert_unproven_is_reachable(&storage).await;
+        assert_eq!(tx_status(&storage, user_id, &txid).await, None);
+        assert_eq!(req_status(&storage, &txid).await, None);
+        assert!(proven_tx_row(&storage, &txid).await.is_none());
     }
 
     /// `extract_bump_claim` returns `None` for a BEEF with no BUMP, and the
@@ -3094,7 +3109,17 @@ mod tests {
         assert_eq!(claim.merkle_path, bump.to_binary());
 
         let (plain_bytes, plain_txid, _s) = create_test_atomic_beef();
-        let plain = Beef::from_binary(&plain_bytes).unwrap();
+        let complete = Beef::from_binary(&plain_bytes).unwrap();
+        let mut plain = Beef::new();
+        plain.merge_raw_tx(
+            complete
+                .find_txid(&plain_txid)
+                .unwrap()
+                .tx()
+                .unwrap()
+                .to_binary(),
+            None,
+        );
         assert!(extract_bump_claim(&plain, &plain_txid).is_none());
     }
 
@@ -3459,7 +3484,7 @@ mod tests {
     async fn test_internalize_spending_wallet_utxo_marks_it_spent() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
-        let coin_txid = "44".repeat(32);
+        let coin_txid = test_parent().1;
         let (_coin_tx_id, coin_output_id) =
             seed_change_coin(&storage, user_id, &coin_txid, 0, 20000).await;
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
@@ -3523,7 +3548,7 @@ mod tests {
     async fn test_internalize_broadcast_refusal_keeps_the_consumed_coin_spent() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
-        let coin_txid = "44".repeat(32);
+        let coin_txid = test_parent().1;
         let (_coin_tx_id, coin_output_id) =
             seed_change_coin(&storage, user_id, &coin_txid, 0, 20000).await;
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
