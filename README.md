@@ -1,204 +1,63 @@
 # Rust Wallet Toolbox
 
-> Rust implementation of the BSV wallet toolbox, providing storage and services for BSV wallets
+Storage, signing, services and monitoring for BSV wallets. **0.7.5** uses
+**bsv-rs =0.4.5**, the Rust SDK published by this project. The toolbox implements
+wallet operations over local SQLite or a remote JSON-RPC storage service.
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![Tests](https://img.shields.io/badge/tests-547%20passing-brightgreen)]()
-[![License](https://img.shields.io/badge/license-MIT-blue)]()
-
-## Overview
-
-This crate provides the infrastructure layer for BSV wallets, ported from the TypeScript [@bsv/wallet-toolbox](https://github.com/bsv-blockchain/wallet-toolbox) and Go [go-wallet-toolbox](https://github.com/bsv-blockchain/go-wallet-toolbox) implementations.
-
-It builds on top of [bsv-sdk](https://github.com/bsv-blockchain/bsv-sdk-rust) which provides:
-- Cryptographic primitives (ECDSA, SHA256, AES-256-GCM)
-- BRC-42 key derivation
-- Transaction building and signing
-- BEEF/MerklePath SPV proofs
-- WalletInterface trait (28 methods)
-
-## Features
-
-### Storage Layer
-
-Multiple storage backends for wallet state persistence:
-
-- **StorageSqlx** - Local SQLite database with full CRUD operations
-- **StorageClient** - Remote storage via JSON-RPC to `storage.babbage.systems`
-
-```rust
-use bsv_wallet_toolbox::storage::{StorageSqlx, WalletStorageProvider};
-
-// Local SQLite storage
-let storage = StorageSqlx::open("wallet.db").await?;
-storage.migrate("my-wallet", &identity_key).await?;
-let settings = storage.make_available().await?;
-
-// Create a transaction
-let result = storage.create_action(&auth, args).await?;
-```
-
-### Services Layer
-
-Blockchain service integration with automatic failover:
-
-- **WhatsOnChain** - UTXO queries, Merkle paths, broadcasting
-- **ARC** - Transaction broadcasting (TAAL, GorillaPool)
-- **Bitails** - Alternative blockchain data provider
-
-```rust
-use bsv_wallet_toolbox::services::{Services, WalletServices};
-
-let services = Services::mainnet();
-let height = services.get_height().await?;
-let raw_tx = services.get_raw_tx("txid...").await?;
-let result = services.post_beef(&beef, &txids).await?;
-```
-
-### Headers
-
-The crate keeps no header store of its own. Every header question (the tip,
-a header by height or hash, a merkle root) is asked of the header service
-configured with `ServicesOptions::with_chaintracks_url`, which checks proof
-of work, the difficulty rule, the checkpoints and ancestry on every header.
-Without one the question is an error, never an explorer's word. The embedded
-store of 0.5.0 and earlier is removed in 0.6.0.
-
-## Installation
-
-Add to your `Cargo.toml`:
+## Install and architecture
 
 ```toml
 [dependencies]
-bsv-wallet-toolbox-rs = "0.1"
+bsv-wallet-toolbox-rs = { version = "=0.7.5", features = ["sqlite"] }
 ```
 
-## Database Schema
+[Cargo.toml](Cargo.toml) declares features and dependencies. The Rust library
+name is `bsv_wallet_toolbox_rs`. [src](src) contains the wallet, signer, storage,
+services and monitor; [tests](tests) contains integration witnesses.
+`StorageSqlx` supplies SQLite storage and `StorageClient` connects to a remote
+wallet storage service. The wallet uses the SDK's keys, transaction and BEEF
+types; it does not maintain an independent header store.
 
-The storage layer uses 18 tables matching the TypeScript/Go implementations:
+## The local tracker rule
 
-| Table | Purpose |
-|-------|---------|
-| `users` | User identity tracking |
-| `settings` | Storage configuration |
-| `transactions` | Transaction records |
-| `outputs` | UTXOs and spent outputs |
-| `output_baskets` | Output organization |
-| `output_tags` / `output_tags_map` | Output labeling |
-| `tx_labels` / `tx_labels_map` | Transaction labeling |
-| `proven_txs` | Merkle-proven transactions |
-| `proven_tx_reqs` | Pending proof requests |
-| `certificates` / `certificate_fields` | Identity certificates |
-| `sync_states` | Multi-storage sync state |
-| `commissions` | Fee tracking |
-| `monitor_events` | System events |
+A broadcaster's refusal, a mempool conflict and a retry count are hints, not
+proof that a transaction is invalid. On the immediate post and in the monitor,
+a refusal records the hint and schedules another check without releasing the
+transaction's inputs or writing off change. Named competitors are queued for
+proof checks. A caller can still receive errors for its own bad arguments,
+signing, storage or funding failures. Explicit host retirement is a separate
+act, not a conclusion derived from a broadcaster's word.
 
-## API Reference
+The witnesses include [tests/immediate_broadcast_hint_tests.rs](tests/immediate_broadcast_hint_tests.rs)
+and [tests/monitor_tests.rs](tests/monitor_tests.rs). Header and merkle-proof
+checks determine chain evidence; stored broadcaster acceptance is not mining.
 
-### Storage Traits
+## Known ancestors
 
-```rust
-// Read operations
-trait WalletStorageReader {
-    fn is_available(&self) -> bool;
-    fn get_settings(&self) -> &TableSettings;
-    async fn find_outputs(&self, auth: &AuthId, args: FindOutputsArgs) -> Result<Vec<TableOutput>>;
-    async fn list_actions(&self, auth: &AuthId, args: ListActionsArgs) -> Result<ListActionsResult>;
-    async fn list_outputs(&self, auth: &AuthId, args: ListOutputsArgs) -> Result<ListOutputsResult>;
-    // ...
-}
+When a caller declares a known ancestor, the result BEEF represents that
+ancestor by txid only. This applies to createAction and signAction and is the
+known-ancestor rule exercised for ts-stack issue 660 parity. It does not turn
+an unknown, unproven input into trusted ancestry: input validation and the
+wallet's own known-transaction resolution remain separate obligations.
+[tests/known_ancestor_tests.rs](tests/known_ancestor_tests.rs) records both paths.
 
-// Write operations
-trait WalletStorageWriter: WalletStorageReader {
-    async fn make_available(&self) -> Result<TableSettings>;
-    async fn migrate(&self, name: &str, key: &str) -> Result<String>;
-    async fn create_action(&self, auth: &AuthId, args: CreateActionArgs) -> Result<StorageCreateActionResult>;
-    // ...
-}
+## Build and gate
 
-// Sync operations
-trait WalletStorageSync: WalletStorageWriter {
-    async fn get_sync_chunk(&self, args: RequestSyncChunkArgs) -> Result<SyncChunk>;
-    async fn process_sync_chunk(&self, args: RequestSyncChunkArgs, chunk: SyncChunk) -> Result<ProcessSyncChunkResult>;
-    // ...
-}
+```sh
+cargo build --features sqlite
+cargo test --features sqlite --test known_ancestor_tests --test immediate_broadcast_hint_tests
+cargo fmt --all -- --check
 ```
 
-### Services Trait
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs SQLite unit, integration
+and doc tests, formatting, clippy and named vectors on PR heads and main pushes;
+it also builds documentation and collects coverage. The vector job checks
+broadcast-body, status-word and cross-SDK fixtures. Static test-count badges
+are not a gate result.
 
-```rust
-trait WalletServices {
-    async fn get_height(&self) -> Result<u32>;
-    async fn get_header_for_height(&self, height: u32) -> Result<BlockHeader>;
-    async fn get_raw_tx(&self, txid: &str) -> Result<Vec<u8>>;
-    async fn get_merkle_path(&self, txid: &str) -> Result<MerklePath>;
-    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<PostBeefResult>;
-    async fn get_utxo_status(&self, txid: &str, vout: u32) -> Result<UtxoStatus>;
-    async fn get_bsv_exchange_rate(&self) -> Result<f64>;
-}
-```
+## Records and releases
 
-## Testing
-
-```bash
-# Run all tests
-cargo test
-
-# Run library tests only (faster)
-cargo test --lib
-
-# Run specific module tests
-cargo test storage::sqlx
-cargo test services
-
-# Run with output
-cargo test -- --nocapture
-```
-
-## Project Status
-
-| Component | Status | Tests |
-|-----------|--------|-------|
-| Storage Traits | ✅ Complete | - |
-| Entity Definitions | ✅ Complete | - |
-| StorageSqlx | ✅ Complete | 36 |
-| StorageClient | ✅ Complete | 52 |
-| Services Layer | ✅ Complete | 36 |
-| **Wallet** | ✅ Complete | 78 |
-| **Monitor** | ✅ Complete | 25 |
-
-**Total: 547 tests passing**
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         rust-wallet-toolbox                              │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Wallet (implements WalletInterface with full storage/services)          │
-├───────────────┬──────────────────────┬───────────────┬──────────────────┤
-│  WalletSigner │ WalletStorageManager │   Services    │     Monitor      │
-├───────────────┴──────────────────────┴───────────────┴──────────────────┤
-│  Storage Providers: StorageSqlx (SQLite) | StorageClient (Remote)        │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            bsv-sdk (rust)                                │
-│  primitives | script | transaction | wallet (ProtoWallet, KeyDeriver)    │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-## Related Projects
-
-- [bsv-sdk](https://github.com/bsv-blockchain/bsv-sdk-rust) - Core BSV SDK for Rust
-- [@bsv/wallet-toolbox](https://github.com/bsv-blockchain/wallet-toolbox) - TypeScript implementation
-- [go-wallet-toolbox](https://github.com/bsv-blockchain/go-wallet-toolbox) - Go implementation
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions welcome! Please read the [PLAN.md](PLAN.md) for the migration roadmap and [HANDOFF.md](HANDOFF.md) for current session status.
+[RELEASING.md](RELEASING.md) defines the machine gate and trusted publishing
+from release tags. [CHANGELOG.md](CHANGELOG.md) holds changes and migration
+notes; [docs/REORG-DIVERGENCES.md](docs/REORG-DIVERGENCES.md) records the reorg
+comparison. Licensed under MIT, as declared in [Cargo.toml](Cargo.toml).
