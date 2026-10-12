@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.7.7] - 2026-10-12
+
+- Declare `bsv-rs = "0.5.0"` by caret in the published libraries. The update loop can deliver compatible SDK patches to consumers without another library release; deployables keep their exact pins and committed locks.
+
 ## [0.7.6] - 2026-10-12
 
 - Check incoming AtomicBEEF structure with or without a configured chain tracker; an incomplete stub is refused before storage in either case.
