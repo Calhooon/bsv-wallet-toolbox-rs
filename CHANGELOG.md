@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0] - 2026-10-15
+
+bsv-rs 0.6.0 is the home of the six hand-rolled primitives, and the stack's `deny.toml` is adopted. The crate keeps no hash and no varint of its own. bsv-rs types sit in this crate's public API (the `bsv_rs::wallet` re-exports, `WalletSigner::new`, `BlockHeader::from_transaction`), and caret `0.6.0` starts a new cargo compatibility line, so this is a minor.
+
+### Changed
+
+- Declare `bsv-rs = "0.6.0"` by caret. The six sites now call bsv-rs: `wallet::signer` `read_varint` (now `bsv_rs::primitives::from_var_int`), `double_sha256` (`sha256d`), `hash160` (`hash160`) and `write_varint` (`to_var_int`); `wallet::wallet` `write_varint` (`to_var_int`); `services::traits` `double_sha256` (`sha256d`). The copies are deleted.
+- Remove the public `services::traits::sha256` and `services::traits::double_sha256`; callers use `bsv_rs::primitives::{sha256, sha256d}`. `txid_from_raw_tx`, `validate_txid` and `convert_script_hash` are unchanged.
+- Move the remaining direct hashes onto bsv-rs: the txid helpers of `wallet` and `process_action`, the BRC-31 body hash of the storage client, the header hash checks, the address checksum and the tests. `sha2` and `ripemd` are no longer direct dependencies.
+- The signer's transaction parser reads the node's canonical varint (bsv-rs 0.6.0 `Reader::read_var_int`, bitcoin-sv `serialize.h:315-340` at 6504a3af). A count or script length in a wider encoding than its value needs is refused, and a short varint is now a `SdkError` where it was a `TransactionError`.
+
+### Added
+
+- `deny.toml`, the stack's template byte for byte (bsv-stack-lean `template/deny.toml`). `cargo deny check` refuses one crate the toolbox still needs: `sha2` under `sqlx-core` and `sqlx-macros-core`, because sqlx 0.8.6 always enables `sqlx-core`'s `migrate` feature. The file is not edited locally; the wrapper is the template's ruling.
+
 ## [0.7.7] - 2026-10-12
 
 - Declare `bsv-rs = "0.5.0"` by caret in the published libraries. The update loop can deliver compatible SDK patches to consumers without another library release; deployables keep their exact pins and committed locks.
