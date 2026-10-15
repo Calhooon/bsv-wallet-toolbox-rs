@@ -463,7 +463,7 @@ fn a_header(height: u32, nonce: u32) -> (String, BlockHeader) {
         height,
     };
     let bytes = header.to_binary();
-    let mut hash = sha256(&sha256(&bytes));
+    let mut hash = sha256d(&bytes);
     hash.reverse();
     header.hash = hex::encode(hash);
     (hex::encode(bytes), header)

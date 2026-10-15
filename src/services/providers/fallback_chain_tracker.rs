@@ -59,11 +59,10 @@ struct BitailsBlockByHeight {
 /// bytes are bound to the block hash the explorer claimed for them (the
 /// double SHA-256 of the bytes, reversed).
 fn merkle_root_of_header(header: &[u8], claimed_hash: &str) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
     if header.len() != 80 {
         return Err(format!("header is {} bytes, not 80", header.len()));
     }
-    let mut hash = Sha256::digest(Sha256::digest(header)).to_vec();
+    let mut hash = bsv_rs::primitives::sha256d(header).to_vec();
     hash.reverse();
     let computed = hex::encode(hash);
     if !computed.eq_ignore_ascii_case(claimed_hash) {
@@ -369,13 +368,12 @@ mod tests {
 
     /// An 80-byte header carrying `merkle_root` (display hex), and its hash.
     fn header_with_root(merkle_root: &str) -> (String, String) {
-        use sha2::{Digest, Sha256};
         let mut bytes = vec![0u8; 80];
         bytes[0..4].copy_from_slice(&536870912u32.to_le_bytes());
         let mut root = hex::decode(merkle_root).expect("a 64-hex root");
         root.reverse();
         bytes[36..68].copy_from_slice(&root);
-        let mut hash = Sha256::digest(Sha256::digest(&bytes)).to_vec();
+        let mut hash = bsv_rs::primitives::sha256d(&bytes).to_vec();
         hash.reverse();
         (hex::encode(bytes), hex::encode(hash))
     }
@@ -492,8 +490,7 @@ mod tests {
 
     /// A 64-hex merkle root named by a tag.
     fn r(tag: &str) -> String {
-        use sha2::{Digest, Sha256};
-        hex::encode(Sha256::digest(tag.as_bytes()))
+        hex::encode(bsv_rs::primitives::sha256(tag.as_bytes()))
     }
 
     /// Rule 28 witness (T5): under break-glass, with the header service

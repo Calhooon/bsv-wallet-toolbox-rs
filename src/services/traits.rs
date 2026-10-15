@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::{Error, Result};
+use bsv_rs::primitives::{sha256, sha256d};
 use bsv_rs::transaction::{ChainTracker, Transaction};
 
 use super::collection::ServiceCallHistory;
@@ -1281,22 +1282,9 @@ impl FiatExchangeRates {
 // Helper Functions
 // =============================================================================
 
-/// Compute SHA256 hash of data.
-pub fn sha256(data: &[u8]) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().to_vec()
-}
-
-/// Compute double SHA256 hash (as used in Bitcoin).
-pub fn double_sha256(data: &[u8]) -> Vec<u8> {
-    sha256(&sha256(data))
-}
-
 /// Compute double SHA256 and return as big-endian hex (txid format).
 pub fn txid_from_raw_tx(raw_tx: &[u8]) -> String {
-    let hash = double_sha256(raw_tx);
+    let hash = sha256d(raw_tx);
     // Reverse to get big-endian (txid format)
     let reversed: Vec<u8> = hash.into_iter().rev().collect();
     hex::encode(reversed)

@@ -777,10 +777,7 @@ async fn break_glass_asks_the_explorer_only_when_the_header_service_is_down() {
     let mut root = hex::decode(txid).unwrap();
     root.reverse();
     header[36..68].copy_from_slice(&root);
-    let mut hash = {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(Sha256::digest(&header)).to_vec()
-    };
+    let mut hash = { bsv_rs::primitives::sha256d(&header).to_vec() };
     hash.reverse();
     let confirmed = woc
         .mock("GET", "/bitails/block/height/100")

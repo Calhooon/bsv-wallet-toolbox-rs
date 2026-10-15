@@ -531,7 +531,6 @@ Internal helper functions in `wallet.rs`:
 | `validate_originator(originator: &str)` | Validates originator string (non-empty, max 253 chars) |
 | `compute_txid(raw_tx: &[u8])` | Computes txid (double SHA256, reversed) from raw transaction |
 | `build_unsigned_transaction(result, key_deriver)` | Builds unsigned transaction bytes from storage result; optionally derives P2PKH locking scripts for change outputs via BRC-29 |
-| `write_varint(output: &mut Vec<u8>, value: u64)` | Writes a Bitcoin varint to output buffer |
 | `build_wallet_certificate_from_args(args)` | Builds WalletCertificate from acquisition args |
 | `create_keyring_for_verifier(...)` | Creates verifier-specific keyring for selective field disclosure (BRC-52/53) |
 | `address_to_p2pkh_script(address: &str)` | Decodes Base58Check BSV address to P2PKH locking script bytes (used by `sweep_to_address`) |
@@ -554,18 +553,14 @@ The `prove_certificate` method implements BRC-52/53 selective attribute disclosu
 
 ## Signer Helper Functions (signer.rs)
 
-Internal helper functions in `signer.rs`:
+Internal helper functions in `signer.rs` (the varint, sha256d and hash160 are bsv-rs's: `bsv_rs::primitives::{from_var_int, to_var_int, sha256d, hash160}`):
 
 | Function | Purpose |
 |----------|---------|
 | `compute_sighash(tx_data, input_index, locking_script, satoshis)` | Computes BIP-143 sighash for input |
 | `parse_transaction(tx_data)` | Parses transaction into (version, inputs, outputs, locktime) |
-| `read_varint(data)` | Reads a Bitcoin varint, returns (value, bytes_read) |
-| `double_sha256(data)` | Computes double SHA256 hash |
-| `hash160(data)` | Computes HASH160 (RIPEMD160(SHA256(data))) for P2PKH pubkey hashes |
 | `build_unlocking_script(locking_script, signature, pubkey)` | Builds P2PKH/P2PK unlocking script |
 | `insert_unlocking_script(tx_data, input_index, unlocking_script)` | Inserts unlocking script into transaction |
-| `write_varint(output, value)` | Writes a Bitcoin varint to output buffer |
 
 ## Certificate Issuance Protocol (certificate_issuance.rs)
 

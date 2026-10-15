@@ -6047,7 +6047,7 @@ mod tests {
     async fn test_build_beef_includes_unconfirmed_parent() {
         // Create a chain: confirmed parent (with merkle proof) -> unconfirmed child -> grandchild
         // Build BEEF for the grandchild and verify it includes both the child (raw) and parent (with proof)
-        use sha2::{Digest, Sha256};
+        use bsv_rs::primitives::sha256d;
 
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage.migrate("test", "000000").await.unwrap();
@@ -6057,9 +6057,7 @@ mod tests {
 
         // Helper to compute txid from raw bytes
         let compute_txid = |raw: &[u8]| -> String {
-            let h1 = Sha256::digest(raw);
-            let h2 = Sha256::digest(h1);
-            let mut v = h2.to_vec();
+            let mut v = sha256d(raw).to_vec();
             v.reverse();
             hex::encode(v)
         };
@@ -6221,7 +6219,7 @@ mod tests {
         // Build BEEF where a depth-2 ancestor is missing.
         // The walk may log the missing ancestor, but final validation must
         // refuse the incomplete assembly.
-        use sha2::{Digest, Sha256};
+        use bsv_rs::primitives::sha256d;
 
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage.migrate("test", "000000").await.unwrap();
@@ -6230,9 +6228,7 @@ mod tests {
         let (user, _) = storage.find_or_insert_user("02abcd").await.unwrap();
 
         let compute_txid = |raw: &[u8]| -> String {
-            let h1 = Sha256::digest(raw);
-            let h2 = Sha256::digest(h1);
-            let mut v = h2.to_vec();
+            let mut v = sha256d(raw).to_vec();
             v.reverse();
             hex::encode(v)
         };
@@ -6353,7 +6349,7 @@ mod tests {
         // Verify that after create_action + process_action, the raw_tx is stored
         // on the transactions table (not NULL).
         use crate::storage::traits::{AuthId, StorageProcessActionArgs, WalletStorageWriter};
-        use sha2::{Digest, Sha256};
+        use bsv_rs::primitives::sha256d;
 
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage.migrate("test-wallet", "02test_key").await.unwrap();
@@ -6412,9 +6408,7 @@ mod tests {
         raw_tx.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // locktime
 
         // Compute txid from the raw_tx
-        let hash1 = Sha256::digest(&raw_tx);
-        let hash2 = Sha256::digest(hash1);
-        let mut txid_bytes = hash2.to_vec();
+        let mut txid_bytes = sha256d(&raw_tx).to_vec();
         txid_bytes.reverse();
         let txid = hex::encode(&txid_bytes);
 
@@ -6470,7 +6464,7 @@ mod tests {
         // Verify the mock service was called and the BEEF is complete.
         use crate::services::mock::{MockResponse, MockWalletServices};
         use crate::services::traits::GetRawTxResult;
-        use sha2::{Digest, Sha256};
+        use bsv_rs::primitives::sha256d;
         use std::sync::Arc;
 
         let storage = StorageSqlx::in_memory().await.unwrap();
@@ -6478,9 +6472,7 @@ mod tests {
         storage.make_available().await.unwrap();
 
         let compute_txid = |raw: &[u8]| -> String {
-            let h1 = Sha256::digest(raw);
-            let h2 = Sha256::digest(h1);
-            let mut v = h2.to_vec();
+            let mut v = sha256d(raw).to_vec();
             v.reverse();
             hex::encode(v)
         };
