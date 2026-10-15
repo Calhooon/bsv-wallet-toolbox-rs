@@ -447,9 +447,9 @@ Dedicated block header lookup service:
 
 ## Helper Functions (traits.rs)
 
+The hashes are bsv-rs's (`bsv_rs::primitives::{sha256, sha256d}`); the crate keeps no copy.
+
 ```rust
-pub fn sha256(data: &[u8]) -> Vec<u8>;
-pub fn double_sha256(data: &[u8]) -> Vec<u8>;
 pub fn txid_from_raw_tx(raw_tx: &[u8]) -> String;
 pub fn validate_txid(raw_tx: &[u8], expected: &str) -> Result<()>;
 pub fn validate_script_hash(hash: &str) -> Result<()>;

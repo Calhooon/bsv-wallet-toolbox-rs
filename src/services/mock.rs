@@ -20,10 +20,11 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use bsv_rs::primitives::sha256;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 
 use crate::services::traits::{
-    sha256, BlockHeader, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,
+    BlockHeader, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,
     GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
     GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, UtxoVerdict,
     WalletServices,
@@ -818,7 +819,7 @@ impl WalletServices for MockWalletServices {
 
     fn hash_output_script(&self, script: &[u8]) -> String {
         let hash = sha256(script);
-        hex::encode(&hash)
+        hex::encode(hash)
     }
 
     async fn get_broadcaster_statuses(

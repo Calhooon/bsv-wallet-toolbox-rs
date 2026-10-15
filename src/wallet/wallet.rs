@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::primitives::PublicKey;
+use bsv_rs::primitives::{sha256d, to_var_int};
 use bsv_rs::wallet::KeyDeriverApi;
 use bsv_rs::wallet::{
     interface::{
@@ -2880,11 +2881,7 @@ fn with_trust_self_default(
 }
 
 fn compute_txid(raw_tx: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-
-    let hash1 = Sha256::digest(raw_tx);
-    let hash2 = Sha256::digest(hash1);
-    let mut reversed = hash2.to_vec();
+    let mut reversed = sha256d(raw_tx).to_vec();
     reversed.reverse();
     hex::encode(reversed)
 }
@@ -2957,7 +2954,7 @@ fn build_unsigned_transaction(
     sorted_inputs.sort_by_key(|i| i.vin);
 
     // Input count
-    write_varint(&mut tx, sorted_inputs.len() as u64);
+    tx.extend_from_slice(&to_var_int(sorted_inputs.len() as u64));
 
     // Inputs
     for input in &sorted_inputs {
@@ -2995,7 +2992,7 @@ fn build_unsigned_transaction(
     sorted_outputs.sort_by_key(|o| o.vout);
 
     // Output count
-    write_varint(&mut tx, sorted_outputs.len() as u64);
+    tx.extend_from_slice(&to_var_int(sorted_outputs.len() as u64));
 
     // Outputs
     for output in &sorted_outputs {
@@ -3094,7 +3091,7 @@ fn build_unsigned_transaction(
             )));
         };
 
-        write_varint(&mut tx, script.len() as u64);
+        tx.extend_from_slice(&to_var_int(script.len() as u64));
         tx.extend_from_slice(&script);
     }
 
@@ -3112,22 +3109,6 @@ fn build_unsigned_transaction(
     tx.extend_from_slice(&result.lock_time.to_le_bytes());
 
     Ok(tx)
-}
-
-/// Writes a varint to the output buffer.
-fn write_varint(output: &mut Vec<u8>, value: u64) {
-    if value < 0xfd {
-        output.push(value as u8);
-    } else if value <= 0xffff {
-        output.push(0xfd);
-        output.extend_from_slice(&(value as u16).to_le_bytes());
-    } else if value <= 0xffffffff {
-        output.push(0xfe);
-        output.extend_from_slice(&(value as u32).to_le_bytes());
-    } else {
-        output.push(0xff);
-        output.extend_from_slice(&value.to_le_bytes());
-    }
 }
 
 /// Builds a WalletCertificate from AcquireCertificateArgs.
@@ -3270,8 +3251,6 @@ fn create_keyring_for_verifier(
 
 /// Decodes a Base58Check BSV address into a P2PKH locking script.
 fn address_to_p2pkh_script(address: &str) -> Result<Vec<u8>> {
-    use sha2::{Digest, Sha256};
-
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
     let mut result = [0u8; 25];
@@ -3310,9 +3289,7 @@ fn address_to_p2pkh_script(address: &str) -> Result<Vec<u8>> {
 
     let payload = &decoded[..21];
     let checksum = &decoded[21..25];
-    let hash1 = Sha256::digest(payload);
-    let hash2 = Sha256::digest(hash1);
-    if &hash2[..4] != checksum {
+    if &sha256d(payload)[..4] != checksum {
         return Err(Error::ValidationError(
             "Invalid address checksum".to_string(),
         ));
@@ -3545,19 +3522,22 @@ mod tests {
 
     #[test]
     fn test_write_varint() {
+        // Amended (bsv-rs 0.6.0 migration): the local writer is gone; the same
+        // rows now run against `bsv_rs::primitives::to_var_int`, which the
+        // transaction builder above calls.
         let mut buf = Vec::new();
 
         // Single byte
-        write_varint(&mut buf, 0);
+        buf.extend_from_slice(&to_var_int(0));
         assert_eq!(buf, vec![0x00]);
 
         buf.clear();
-        write_varint(&mut buf, 252);
+        buf.extend_from_slice(&to_var_int(252));
         assert_eq!(buf, vec![0xfc]);
 
         // Two bytes
         buf.clear();
-        write_varint(&mut buf, 253);
+        buf.extend_from_slice(&to_var_int(253));
         assert_eq!(buf, vec![0xfd, 0xfd, 0x00]);
     }
 

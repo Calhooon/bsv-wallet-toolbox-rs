@@ -16,17 +16,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::services::traits::{
-    sha256, validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult,
-    GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult,
-    PostTxResultForTxid, TxStatusDetail, UtxoDetail,
-};
 #[cfg(feature = "break-glass-script-history")]
 use crate::services::traits::{
     validate_script_hash, GetScriptHashHistoryResult, ScriptHistoryItem,
 };
+use crate::services::traits::{
+    validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult,
+    GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid,
+    TxStatusDetail, UtxoDetail,
+};
 use crate::services::Chain;
 use crate::{Error, Result};
+use bsv_rs::primitives::sha256d;
 
 /// Bitails mainnet API URL.
 pub const BITAILS_MAINNET_URL: &str = "https://api.bitails.io/";
@@ -878,7 +879,7 @@ fn parse_block_header(data: &[u8], hash: &str) -> Result<BlockHeader> {
         )));
     }
 
-    let mut computed = sha256(&sha256(data));
+    let mut computed = sha256d(data);
     computed.reverse();
     let computed = hex::encode(computed);
     if !computed.eq_ignore_ascii_case(hash) {

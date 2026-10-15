@@ -146,7 +146,7 @@ Shared: test vectors, entity field names (camelCase), API method signatures, sta
 | `thiserror` | 1.0 | Error derive |
 | `async-trait` | 0.1 | Async trait methods |
 | `ring` | 0.17 | PBKDF2 (CWI manager) |
-| `sha2` / `ripemd` / `hex` | various | Crypto helpers |
+| `hex` | various | Hex encoding (hashing is bsv-rs's) |
 
 ## Workflow Tips
 

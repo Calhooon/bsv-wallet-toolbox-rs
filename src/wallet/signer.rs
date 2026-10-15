@@ -3,7 +3,7 @@
 //! This module provides the `WalletSigner` struct for signing transaction inputs
 //! using derived keys from the wallet's ProtoWallet.
 
-use bsv_rs::primitives::PrivateKey;
+use bsv_rs::primitives::{from_var_int, hash160, sha256d, to_var_int, PrivateKey};
 use bsv_rs::wallet::{Counterparty, KeyDeriverApi, ProtoWallet};
 use serde::{Deserialize, Serialize};
 
@@ -440,23 +440,23 @@ fn compute_sighash(
         prevouts_data.extend_from_slice(&input.txid);
         prevouts_data.extend_from_slice(&input.vout.to_le_bytes());
     }
-    let hash_prevouts = double_sha256(&prevouts_data);
+    let hash_prevouts = sha256d(&prevouts_data);
 
     // Compute hashSequence (double SHA256 of all sequences)
     let mut sequence_data = Vec::new();
     for input in &inputs {
         sequence_data.extend_from_slice(&input.sequence.to_le_bytes());
     }
-    let hash_sequence = double_sha256(&sequence_data);
+    let hash_sequence = sha256d(&sequence_data);
 
     // Compute hashOutputs (double SHA256 of all outputs)
     let mut outputs_data = Vec::new();
     for output in &outputs {
         outputs_data.extend_from_slice(&output.satoshis.to_le_bytes());
-        write_varint(&mut outputs_data, output.script.len() as u64);
+        outputs_data.extend_from_slice(&to_var_int(output.script.len() as u64));
         outputs_data.extend_from_slice(&output.script);
     }
-    let hash_outputs = double_sha256(&outputs_data);
+    let hash_outputs = sha256d(&outputs_data);
 
     // Build the preimage for sighash
     let mut preimage = Vec::new();
@@ -476,7 +476,7 @@ fn compute_sighash(
     preimage.extend_from_slice(&input.vout.to_le_bytes());
 
     // scriptCode (the locking script being spent)
-    write_varint(&mut preimage, locking_script.len() as u64);
+    preimage.extend_from_slice(&to_var_int(locking_script.len() as u64));
     preimage.extend_from_slice(locking_script);
 
     // value (satoshis)
@@ -495,7 +495,7 @@ fn compute_sighash(
     preimage.extend_from_slice(&0x41u32.to_le_bytes());
 
     // Double SHA256 the preimage
-    Ok(double_sha256(&preimage))
+    Ok(sha256d(&preimage))
 }
 
 /// Parses a transaction into its components.
@@ -515,7 +515,7 @@ fn parse_transaction(tx_data: &[u8]) -> Result<(u32, Vec<TxInput>, Vec<TxOutput>
     offset += 4;
 
     // Input count
-    let (input_count, bytes_read) = read_varint(&tx_data[offset..])?;
+    let (input_count, bytes_read) = from_var_int(&tx_data[offset..])?;
     offset += bytes_read;
 
     // Inputs
@@ -546,7 +546,7 @@ fn parse_transaction(tx_data: &[u8]) -> Result<(u32, Vec<TxInput>, Vec<TxOutput>
         offset += 4;
 
         // Script length and script
-        let (script_len, bytes_read) = read_varint(&tx_data[offset..])?;
+        let (script_len, bytes_read) = from_var_int(&tx_data[offset..])?;
         offset += bytes_read;
 
         if offset + script_len as usize > tx_data.len() {
@@ -580,7 +580,7 @@ fn parse_transaction(tx_data: &[u8]) -> Result<(u32, Vec<TxInput>, Vec<TxOutput>
     }
 
     // Output count
-    let (output_count, bytes_read) = read_varint(&tx_data[offset..])?;
+    let (output_count, bytes_read) = from_var_int(&tx_data[offset..])?;
     offset += bytes_read;
 
     // Outputs
@@ -605,7 +605,7 @@ fn parse_transaction(tx_data: &[u8]) -> Result<(u32, Vec<TxInput>, Vec<TxOutput>
         offset += 8;
 
         // Script length and script
-        let (script_len, bytes_read) = read_varint(&tx_data[offset..])?;
+        let (script_len, bytes_read) = from_var_int(&tx_data[offset..])?;
         offset += bytes_read;
 
         if offset + script_len as usize > tx_data.len() {
@@ -647,64 +647,6 @@ struct TxInput {
 struct TxOutput {
     satoshis: u64,
     script: Vec<u8>,
-}
-
-/// Reads a varint from data and returns (value, bytes_read).
-fn read_varint(data: &[u8]) -> Result<(u64, usize)> {
-    if data.is_empty() {
-        return Err(Error::TransactionError("Empty varint".to_string()));
-    }
-
-    let first = data[0];
-    if first < 0xfd {
-        Ok((first as u64, 1))
-    } else if first == 0xfd {
-        if data.len() < 3 {
-            return Err(Error::TransactionError("Truncated varint".to_string()));
-        }
-        let val = u16::from_le_bytes([data[1], data[2]]) as u64;
-        Ok((val, 3))
-    } else if first == 0xfe {
-        if data.len() < 5 {
-            return Err(Error::TransactionError("Truncated varint".to_string()));
-        }
-        let val = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as u64;
-        Ok((val, 5))
-    } else {
-        if data.len() < 9 {
-            return Err(Error::TransactionError("Truncated varint".to_string()));
-        }
-        let val = u64::from_le_bytes([
-            data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
-        ]);
-        Ok((val, 9))
-    }
-}
-
-/// Computes double SHA256.
-fn double_sha256(data: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-
-    let hash1 = Sha256::digest(data);
-    let hash2 = Sha256::digest(hash1);
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&hash2);
-    result
-}
-
-/// Computes HASH160 (RIPEMD160(SHA256(data))).
-///
-/// Used to derive the public key hash for P2PKH locking scripts.
-fn hash160(data: &[u8]) -> [u8; 20] {
-    use sha2::{Digest, Sha256};
-
-    let sha256_hash = Sha256::digest(data);
-
-    use ripemd::Ripemd160;
-    let ripemd_hash = <Ripemd160 as ripemd::Digest>::digest(sha256_hash);
-    let mut result = [0u8; 20];
-    result.copy_from_slice(&ripemd_hash);
-    result
 }
 
 /// Validates that the derived public key's hash160 matches the P2PKH locking script.
@@ -815,7 +757,7 @@ fn insert_unlocking_script(
     result.extend_from_slice(&version.to_le_bytes());
 
     // Input count
-    write_varint(&mut result, inputs.len() as u64);
+    result.extend_from_slice(&to_var_int(inputs.len() as u64));
 
     // Inputs
     for (i, input) in inputs.iter().enumerate() {
@@ -833,7 +775,7 @@ fn insert_unlocking_script(
         };
 
         // Write varint for script length
-        write_varint(&mut result, script.len() as u64);
+        result.extend_from_slice(&to_var_int(script.len() as u64));
         result.extend_from_slice(script);
 
         // Sequence
@@ -841,7 +783,7 @@ fn insert_unlocking_script(
     }
 
     // Output count
-    write_varint(&mut result, outputs.len() as u64);
+    result.extend_from_slice(&to_var_int(outputs.len() as u64));
 
     // Outputs
     for output in &outputs {
@@ -849,7 +791,7 @@ fn insert_unlocking_script(
         result.extend_from_slice(&output.satoshis.to_le_bytes());
 
         // Script
-        write_varint(&mut result, output.script.len() as u64);
+        result.extend_from_slice(&to_var_int(output.script.len() as u64));
         result.extend_from_slice(&output.script);
     }
 
@@ -872,11 +814,11 @@ pub fn set_input_sequence(tx_data: &[u8], input_index: u32, sequence: u32) -> Re
     }
     let mut result = Vec::with_capacity(tx_data.len());
     result.extend_from_slice(&version.to_le_bytes());
-    write_varint(&mut result, inputs.len() as u64);
+    result.extend_from_slice(&to_var_int(inputs.len() as u64));
     for (i, input) in inputs.iter().enumerate() {
         result.extend_from_slice(&input.txid);
         result.extend_from_slice(&input.vout.to_le_bytes());
-        write_varint(&mut result, input.script.len() as u64);
+        result.extend_from_slice(&to_var_int(input.script.len() as u64));
         result.extend_from_slice(&input.script);
         let seq = if i == input_index as usize {
             sequence
@@ -885,30 +827,14 @@ pub fn set_input_sequence(tx_data: &[u8], input_index: u32, sequence: u32) -> Re
         };
         result.extend_from_slice(&seq.to_le_bytes());
     }
-    write_varint(&mut result, outputs.len() as u64);
+    result.extend_from_slice(&to_var_int(outputs.len() as u64));
     for output in &outputs {
         result.extend_from_slice(&output.satoshis.to_le_bytes());
-        write_varint(&mut result, output.script.len() as u64);
+        result.extend_from_slice(&to_var_int(output.script.len() as u64));
         result.extend_from_slice(&output.script);
     }
     result.extend_from_slice(&locktime.to_le_bytes());
     Ok(result)
-}
-
-/// Writes a varint to the output buffer.
-fn write_varint(output: &mut Vec<u8>, value: u64) {
-    if value < 0xfd {
-        output.push(value as u8);
-    } else if value <= 0xffff {
-        output.push(0xfd);
-        output.extend_from_slice(&(value as u16).to_le_bytes());
-    } else if value <= 0xffffffff {
-        output.push(0xfe);
-        output.extend_from_slice(&(value as u32).to_le_bytes());
-    } else {
-        output.push(0xff);
-        output.extend_from_slice(&value.to_le_bytes());
-    }
 }
 
 // =============================================================================
@@ -920,54 +846,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_read_varint() {
+    fn test_from_var_int() {
+        // Amended (bsv-rs 0.6.0 migration): the local reader is gone; the same
+        // rows now run against `bsv_rs::primitives::from_var_int`, which the
+        // transaction parser above calls. One row is added: 0.6.0 reads the
+        // node's canonical CompactSize, so 252 in three bytes is refused
+        // (bitcoin-sv@6504a3af src/serialize.h:315-340), where the local
+        // reader accepted it.
         // Single byte
-        assert_eq!(read_varint(&[0x00]).unwrap(), (0, 1));
-        assert_eq!(read_varint(&[0xfc]).unwrap(), (252, 1));
+        assert_eq!(from_var_int(&[0x00]).unwrap(), (0, 1));
+        assert_eq!(from_var_int(&[0xfc]).unwrap(), (252, 1));
 
         // Two bytes
-        assert_eq!(read_varint(&[0xfd, 0xfd, 0x00]).unwrap(), (253, 3));
-        assert_eq!(read_varint(&[0xfd, 0xff, 0xff]).unwrap(), (65535, 3));
+        assert_eq!(from_var_int(&[0xfd, 0xfd, 0x00]).unwrap(), (253, 3));
+        assert_eq!(from_var_int(&[0xfd, 0xff, 0xff]).unwrap(), (65535, 3));
 
         // Four bytes
         assert_eq!(
-            read_varint(&[0xfe, 0x00, 0x00, 0x01, 0x00]).unwrap(),
+            from_var_int(&[0xfe, 0x00, 0x00, 0x01, 0x00]).unwrap(),
             (65536, 5)
         );
 
         // Eight bytes
         assert_eq!(
-            read_varint(&[0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]).unwrap(),
+            from_var_int(&[0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]).unwrap(),
             (4294967296, 9)
         );
+
+        // Non-canonical: refused
+        assert!(from_var_int(&[0xfd, 0xfc, 0x00]).is_err());
+        // Truncated: refused
+        assert!(from_var_int(&[]).is_err());
+        assert!(from_var_int(&[0xfd, 0xfd]).is_err());
     }
 
     #[test]
     fn test_write_varint() {
+        // Amended (bsv-rs 0.6.0 migration): the local writer is gone; the same
+        // rows now run against `bsv_rs::primitives::to_var_int`, which the
+        // serializers above call.
         let mut buf = Vec::new();
 
         // Single byte
-        write_varint(&mut buf, 0);
+        buf.extend_from_slice(&to_var_int(0));
         assert_eq!(buf, vec![0x00]);
 
         buf.clear();
-        write_varint(&mut buf, 252);
+        buf.extend_from_slice(&to_var_int(252));
         assert_eq!(buf, vec![0xfc]);
 
         // Two bytes
         buf.clear();
-        write_varint(&mut buf, 253);
+        buf.extend_from_slice(&to_var_int(253));
         assert_eq!(buf, vec![0xfd, 0xfd, 0x00]);
 
         buf.clear();
-        write_varint(&mut buf, 65535);
+        buf.extend_from_slice(&to_var_int(65535));
         assert_eq!(buf, vec![0xfd, 0xff, 0xff]);
     }
 
     #[test]
     fn test_double_sha256() {
+        // Amended (bsv-rs 0.6.0 migration): the local copy is gone; the same
+        // vector now runs against `bsv_rs::primitives::sha256d`, its home.
         // Test vector: empty string
-        let result = double_sha256(&[]);
+        let result = sha256d(&[]);
         let expected =
             hex::decode("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456")
                 .unwrap();
@@ -1052,6 +995,8 @@ mod tests {
 
     #[test]
     fn test_hash160() {
+        // Amended (bsv-rs 0.6.0 migration): the local copy is gone; the same
+        // vector now runs against `bsv_rs::primitives::hash160`, its home.
         // Test with a known value - empty input
         let result = hash160(&[]);
         // SHA256 of empty = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

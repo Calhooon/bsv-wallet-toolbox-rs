@@ -25,13 +25,13 @@
 //! to ensure the response came from the authentic server.
 
 use crate::error::{Error, Result};
+use bsv_rs::primitives::sha256;
 use bsv_rs::primitives::{from_hex, to_hex, PublicKey};
 use bsv_rs::wallet::{
     Counterparty, CreateHmacArgs, CreateSignatureArgs, GetPublicKeyArgs, Protocol, SecurityLevel,
     VerifySignatureArgs, WalletInterface,
 };
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// BRC-31 authentication protocol version.
@@ -275,7 +275,7 @@ pub fn create_signing_data(
     data.extend_from_slice(path.as_bytes());
 
     // SHA256 of body
-    let body_hash = Sha256::digest(body);
+    let body_hash = sha256(body);
     data.extend_from_slice(&body_hash);
 
     // Timestamp as string

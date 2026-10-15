@@ -24,8 +24,8 @@ use crate::storage::entities::TransactionStatus;
 use crate::storage::traits::{
     SendWithResult, StorageProcessActionArgs, StorageProcessActionResults, WalletStorageReader,
 };
+use bsv_rs::primitives::sha256d;
 use chrono::Utc;
-use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection};
 
 use super::StorageSqlx;
@@ -124,9 +124,7 @@ fn validate_process_action_args(args: &StorageProcessActionArgs) -> Result<()> {
 }
 
 fn compute_txid(raw_tx: &[u8]) -> String {
-    let hash1 = Sha256::digest(raw_tx);
-    let hash2 = Sha256::digest(hash1);
-    let mut reversed = hash2.to_vec();
+    let mut reversed = sha256d(raw_tx).to_vec();
     reversed.reverse();
     hex::encode(reversed)
 }

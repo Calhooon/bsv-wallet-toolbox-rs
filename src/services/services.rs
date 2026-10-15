@@ -25,7 +25,7 @@ use crate::services::{
         ChaintracksServiceClient, FallbackChainTracker, WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
-        sha256, BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
+        BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
         GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, UtxoVerdict,
         WalletServices,
@@ -33,6 +33,7 @@ use crate::services::{
     ServicesOptions,
 };
 use crate::{Error, Result};
+use bsv_rs::primitives::{sha256, sha256d};
 use bsv_rs::transaction::ChainTracker;
 
 /// The explorers `hash_to_header` asks under break-glass (WhatsOnChain and
@@ -1227,7 +1228,7 @@ impl WalletServices for Services {
             };
             match answer {
                 Ok(Some(header)) => {
-                    let mut computed = sha256(&sha256(&header.to_binary()));
+                    let mut computed = sha256d(&header.to_binary());
                     computed.reverse();
                     let computed = hex::encode(computed);
                     if computed.eq_ignore_ascii_case(hash) {
@@ -2179,7 +2180,7 @@ impl WalletServices for Services {
     fn hash_output_script(&self, script: &[u8]) -> String {
         let hash = sha256(script);
         // Return LE hex (default format for getUtxoStatus)
-        hex::encode(&hash)
+        hex::encode(hash)
     }
 
     /// The stranger's spend (Rule 28, the irreducible case). An outpoint in
