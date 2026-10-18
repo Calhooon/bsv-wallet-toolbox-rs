@@ -1,9 +1,9 @@
 # Rust Wallet Toolbox
 
 Storage, signing, services and monitoring for BSV wallets. The release of record
-is the tag **v0.8.0**, published on crates.io as **0.8.0** (the same version);
+is the tag **v0.9.0**, published on crates.io as **0.9.0** (the same version);
 the repository's Releases page carries a Release per tag. It declares
-**bsv-rs 0.6.0** by caret, the Rust SDK published by this project. The toolbox
+**bsv-rs 0.7.0** by caret, the Rust SDK published by this project. The toolbox
 implements wallet operations over local SQLite storage or a remote
 JSON-RPC storage service.
 
@@ -11,7 +11,7 @@ JSON-RPC storage service.
 
 ```toml
 [dependencies]
-bsv-wallet-toolbox-rs = { version = "0.8.0", features = ["sqlite"] }
+bsv-wallet-toolbox-rs = { version = "0.9.0", features = ["sqlite"] }
 ```
 
 [Cargo.toml](Cargo.toml) declares features and dependencies: `sqlite`
