@@ -6,7 +6,7 @@ updates:
     directory: /
     schedule:
       interval: cron
-      cronjob: "0 6,18 * * *"
+      cronjob: "0 18 * * *"
       timezone: Etc/UTC
     allow:
       - dependency-name: bsv-rs
@@ -33,7 +33,7 @@ updates:
         - bsv-worker-build-info
         - bsv-wallet-toolbox-rs
         - bsv-tracker
-    versioning-strategy: increase
+    versioning-strategy: auto
     open-pull-requests-limit: 5
     commit-message:
       prefix: deps(stack)
