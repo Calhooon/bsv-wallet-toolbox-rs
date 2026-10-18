@@ -16,7 +16,7 @@ bsv-wallet-toolbox-rs = { version = "0.8.0", features = ["sqlite"] }
 
 [Cargo.toml](Cargo.toml) declares features and dependencies: `sqlite`
 (default), `mysql` (it enables sqlx's MySQL driver; `StorageSqlx` is SQLite
-only, MySQL storage is planned), `remote` (`StorageClient`), `full` (the
+only, no MySQL storage exists), `remote` (`StorageClient`), `full` (the
 three), and `break-glass-script-history`, off by default and not part of
 `full`. The Rust library name is `bsv_wallet_toolbox_rs`. [src](src) contains
 the wallet, signer, storage, services, monitor and managers; [tests](tests)
