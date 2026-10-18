@@ -1032,4 +1032,50 @@ mod tests {
         assert!(differing > 0 && differing <= 4, "{differing} bytes differ");
         assert!(set_input_sequence(&tx, 2, 1).is_err(), "out of range input");
     }
+
+    #[test]
+    fn the_digest_the_toolbox_signs_with_is_the_nodes_for_a_p2pkh_all_forkid_spend() {
+        // The bsv-rs 0.7.0 migration (0.9.0): bsv-rs's default signing digest
+        // moved to the node's dispatch and scriptCode; this signer computes
+        // its own BIP143 digest (ALL|FORKID over the locking script), so it is
+        // pinned here against a row the node accepts. The vector is
+        // bsv-script-lean v1.1.1 `corpus/signer/p2pkh.jsonl` row
+        // `signer-p2pkh-00001` (ALL|FORKID, post-Chronicle, throwaway regtest
+        // key, synthetic outpoint); the digest and txid are the control column
+        // of its record `docs/records/20261017-020326-s3-147-signer-column-
+        // bsv-rs-s3.json`, judged valid by bitcoin-sv v1.2.3 `verifyscript`
+        // under the block and the relay words.
+        let unsigned = hex::decode(
+            "02000000011c6bc78a8a550405d5c1aa696da005e5a32fc2be2a3c5dc4220f17e751929cb4\
+             0100000000ffffffff01942f2a00000000001976a914e4300371dca95f736069d5c61743587b\
+             ddbf10da88ac00000000",
+        )
+        .unwrap();
+        let lock = hex::decode("76a914995eb547f6d64595a8c91b325daa5519123a715088ac").unwrap();
+        let satoshis = 2_767_692;
+
+        let digest = compute_sighash(&unsigned, 0, &lock, satoshis).unwrap();
+        assert_eq!(
+            hex::encode(digest),
+            "737019101a2340f7f56047d03ff616c4b858c6829c3fa25adac60bac72a906b3"
+        );
+
+        // Signed and assembled as `sign_transaction` does, the spend is the
+        // record's transaction (RFC 6979 signatures, so byte for byte).
+        let key = PrivateKey::from_hex(
+            "c3ab537583ef5b0072450344dd3d0d973010c5da49c525289af0e4d98dab3fe5",
+        )
+        .unwrap();
+        let pubkey = key.public_key().to_compressed();
+        validate_p2pkh_pubkey_match(&hash160(&pubkey), &lock).unwrap();
+        let signature = key.sign(&digest).unwrap();
+        let unlock = build_unlocking_script(&lock, &signature.to_der(), &pubkey).unwrap();
+        let signed = insert_unlocking_script(&unsigned, 0, &unlock).unwrap();
+        let mut txid = sha256d(&signed);
+        txid.reverse();
+        assert_eq!(
+            hex::encode(txid),
+            "e418f32d280c6e1cc6f62d881a8db88469c3599e0eeb5d2711d6601c55c97a96"
+        );
+    }
 }

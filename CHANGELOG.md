@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0] - 2026-10-18
+
+bsv-rs 0.7.0, whose default signing digest is the node's (the dispatch on FORKID and CHRONICLE, the SINGLE sentinel, an explicit scriptCode). caret `0.7.0` starts a new cargo compatibility line and bsv-rs types sit in this crate's public API, so this is a minor. No source change was needed: the crate builds no `SigningContext` and calls no bsv-rs signing template.
+
+### Changed
+
+- Declare `bsv-rs = "0.7.0"` by caret.
+
+### Added
+
+- `wallet::signer` computes its own BIP143 digest (ALL|FORKID over the locking script), so 0.7.0's change does not reach it. The test `the_digest_the_toolbox_signs_with_is_the_nodes_for_a_p2pkh_all_forkid_spend` pins that digest against bsv-script-lean v1.1.1 `corpus/signer/p2pkh.jsonl` row `signer-p2pkh-00001`: the digest `737019101a2340f7f56047d03ff616c4b858c6829c3fa25adac60bac72a906b3` and, signed and assembled as `sign_transaction` does, the txid `e418f32d280c6e1cc6f62d881a8db88469c3599e0eeb5d2711d6601c55c97a96`. Both are the control column of the row's record (`docs/records/20261017-020326-s3-147-signer-column-bsv-rs-s3.json`), which bitcoin-sv v1.2.3 `verifyscript` judged valid under the block and relay words. The record was cited, not re-run here.
+
 ## [0.8.0] - 2026-10-15
 
 bsv-rs 0.6.0 is the home of the six hand-rolled primitives, and the stack's `deny.toml` is adopted. The crate keeps no hash and no varint of its own. bsv-rs types sit in this crate's public API (the `bsv_rs::wallet` re-exports, `WalletSigner::new`, `BlockHeader::from_transaction`), and caret `0.6.0` starts a new cargo compatibility line, so this is a minor.
