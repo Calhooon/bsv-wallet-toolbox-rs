@@ -13,14 +13,21 @@
 //! heights by merkle root as the backup; `reproveProven` UPDATES a row in
 //! place from a validated provider proof and retains it otherwise.
 //!
-//! Ours conforms to that shape. The stated divergences (see
-//! `docs/REORG-DIVERGENCES.md`): a stored proof is DEMOTED (reverted to the
-//! pre-proof state, bytes preserved) when the chain POSITIVELY refutes it
-//! (the tracker answers a definite false for the stored root, at least two
-//! providers answer cleanly "not mined", and no provider serves a path),
-//! because a retained stale proof refuses every spend that touches it; the
+//! Ours keeps that shape under the stack's reorg rule (rulings 5 and 7 of
+//! 2026-10-20; the stated divergences are in `docs/REORG-DIVERGENCES.md`). A
+//! stored proof is stale when, and only when, its root is not the active
+//! header's root at its height in the wallet's own headers. On a deactivated
+//! header the monitor rechecks the proofs it touches with one local header
+//! read per height and re-proves only those whose root moved, a few a pass
+//! ([`REPROVES_PER_PASS`]); a reorg that keeps the root moves nothing. A proof
+//! whose root moved and has no replacement now is demoted: the action is
+//! `unproven` again ("confirming"), its inputs stay allocated to it, its
+//! outputs stay spendable as an unproven creator's are, nothing is released
+//! and nothing is failed. The courier is then asked once for the transaction
+//! ([`reask_lost_proof`]) and told once only when no broadcaster knows it.
+//! This crate does not host bsv-tracker, so the rule is written here. The
 //! deactivated headers come from a ring of recently observed tips compared
-//! with the header service, because our chaintracks pushes no reorg event;
+//! with the header service, because our chaintracks pushes no reorg event,
 //! and the audit is a fresh 12-height window every 10 minutes.
 //!
 //! Why it exists: 2026-09-07 22:39:32Z a 34 MB block at 965771 was orphaned
@@ -34,7 +41,8 @@ use std::sync::Arc;
 use bsv_rs::primitives::sha256d;
 use bsv_rs::transaction::MerklePath;
 
-use crate::services::WalletServices;
+use crate::services::{BroadcastStatus, WalletServices};
+use crate::storage::broadcast::BroadcastOutcome;
 use crate::storage::{HeaderTrackerState, MonitorStorage, ProofIngestOutcome, ProvenTxAnchor};
 
 /// A block header the chain deactivated (the hash a stored proof may still
@@ -283,29 +291,157 @@ pub fn stale_anchors_by_root<'a>(
         .collect()
 }
 
-/// The fewest providers that must answer cleanly "not mined" before a
-/// stored proof the tracker refutes may be demoted.
-pub const DEMOTION_WITNESSES: usize = 2;
+/// How many stored proofs whose root moved one pass re-proves (ruling 5 of
+/// 2026-10-20: a few a pass, never every row at or above the fork). The rest
+/// wait for the next pass of the same header.
+pub const REPROVES_PER_PASS: usize = 4;
+
+/// What the local header read says of one stored proof (ruling 5: a stored
+/// proof is stale when, and only when, its root is not the active header's
+/// root at its height in the wallet's own headers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootRead {
+    /// The active header at the proof's height carries the stored root:
+    /// nothing moves, whatever block hash the proof cites.
+    Kept,
+    /// The active header at the proof's height carries another root: the
+    /// proof is stale.
+    Moved,
+    /// No header could be read at that height: an unknown never reads as
+    /// stale.
+    Unknown,
+}
+
+/// Read one stored anchor against the active root at its height (`None`
+/// when the header could not be read).
+pub fn read_root(anchor: &ProvenTxAnchor, active_root: Option<&str>) -> RootRead {
+    match active_root {
+        Some(root) if root.eq_ignore_ascii_case(&anchor.merkle_root) => RootRead::Kept,
+        Some(_) => RootRead::Moved,
+        None => RootRead::Unknown,
+    }
+}
+
+/// The active root at `height` in the wallet's own headers (one header
+/// read), or `None` when the header service cannot answer.
+pub async fn active_root_at<V>(services: &V, height: u32) -> Option<String>
+where
+    V: WalletServices + ?Sized,
+{
+    let bytes = services.get_header_for_height(height).await.ok()?;
+    merkle_root_of_header(&bytes)
+}
+
+/// What the courier's status read decided for a transaction whose proof was
+/// just lost (ruling 7d of 2026-10-20: the re-announce is evidence-driven).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CourierWord {
+    /// A broadcaster holds the transaction (accepted, seen or mined): the
+    /// matter ends, nothing is announced.
+    Known,
+    /// Every broadcaster that answered refused it: the refusal is written,
+    /// nothing is announced.
+    Refused(Vec<String>),
+    /// Every broadcaster that answered does not know it: one announce.
+    Unknown,
+    /// No broadcaster answered: nothing is announced; the proof pass's
+    /// status read goes on asking.
+    NoAnswer,
+}
+
+/// Decide from the broadcasters' status answers (pure). A broadcaster that
+/// knows the transaction outranks one that refuses it, and a refusal
+/// outranks one that does not know it.
+pub fn courier_word(statuses: &[(String, BroadcastStatus)]) -> CourierWord {
+    if statuses.is_empty() {
+        return CourierWord::NoAnswer;
+    }
+    if statuses.iter().any(|(_, s)| {
+        matches!(
+            s,
+            BroadcastStatus::Accepted | BroadcastStatus::Seen | BroadcastStatus::Mined
+        )
+    }) {
+        return CourierWord::Known;
+    }
+    let refusing: Vec<String> = statuses
+        .iter()
+        .filter(|(_, s)| *s == BroadcastStatus::Rejected)
+        .map(|(p, _)| p.clone())
+        .collect();
+    if !refusing.is_empty() {
+        return CourierWord::Refused(refusing);
+    }
+    CourierWord::Unknown
+}
+
+/// What the re-ask of a lost proof did (ruling 7d). It runs once per stale
+/// episode: right after the demotion that starts the episode, never again
+/// for the same proof row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LostProofReask {
+    /// A broadcaster knows the transaction: no announce.
+    Known,
+    /// One announce, which a broadcaster took.
+    Announced,
+    /// A broadcaster refused it, at the status read or at the one announce:
+    /// the refusal is written on the request's history and a competitor it
+    /// names is queued for the proof ask. No status moves: the action is
+    /// failed only on a competitor's checked proof.
+    Refused,
+    /// No broadcaster answered the status read: nothing announced.
+    NoAnswer,
+    /// The one announce could not be built or posted; it is not retried
+    /// (the proof pass's status read goes on).
+    AnnounceFailed(String),
+}
+
+/// The re-ask of a lost proof: the status read at the broadcasters, then at
+/// most one announce, only when no broadcaster knows the transaction.
+pub async fn reask_lost_proof<S, V>(storage: &S, services: &V, txid: &str) -> LostProofReask
+where
+    S: MonitorStorage + ?Sized,
+    V: WalletServices + ?Sized,
+{
+    let statuses = services.get_broadcaster_statuses(txid).await;
+    match courier_word(&statuses) {
+        CourierWord::Known => LostProofReask::Known,
+        CourierWord::NoAnswer => LostProofReask::NoAnswer,
+        CourierWord::Refused(refusing) => {
+            let verdict = format!("status read: refused by {}", refusing.join(", "));
+            if let Err(e) = storage.note_lost_proof_refusal(txid, &verdict).await {
+                tracing::warn!(txid = %txid, error = %e, "lost proof: the refusal could not be written");
+            }
+            LostProofReask::Refused
+        }
+        CourierWord::Unknown => match storage.announce_lost_proof(txid).await {
+            Ok(outcome) if outcome.is_success() => LostProofReask::Announced,
+            Ok(BroadcastOutcome::OrphanMempool { .. }) => LostProofReask::Announced,
+            Ok(BroadcastOutcome::ServiceError { details }) => {
+                LostProofReask::AnnounceFailed(details.join("; "))
+            }
+            Ok(_) => LostProofReask::Refused,
+            Err(e) => LostProofReask::AnnounceFailed(e.to_string()),
+        },
+    }
+}
 
 /// What `reprove_anchor` did to one stored proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReproveOutcome {
-    /// A validated proof for the canonical block replaced the stored one
+    /// A validated proof for the active block replaced the stored one
     /// (stored through the ingest funnel).
     Replaced { height: u32, block_hash: String },
-    /// Retained, retry later: the providers still name the stored block, the
-    /// tracker refutes the provider's path, or the tracker still confirms
-    /// the stored root.
+    /// The active header at the proof's height still carries the stored
+    /// root: nothing moves (a reorg that keeps the root changes nothing).
     Unchanged,
-    /// The replacement's block is above the proof LAG gate; retry once the
-    /// header has aged.
-    Deferred { height: u32 },
-    /// Positive evidence: the tracker refutes the stored root, at least
-    /// [`DEMOTION_WITNESSES`] providers answered cleanly "not mined", and no
-    /// provider served a path. The proof was demoted (the transaction is
-    /// unproven again, its bytes kept, re-proved later).
-    Demoted,
-    /// Anything else (a network fault, a tracker fault, too few witnesses):
+    /// The stored root is gone from the wallet's headers and no replacement
+    /// could be stored now: the proof was demoted (the transaction is
+    /// `unproven` again, its bytes kept, its inputs still allocated to it,
+    /// its outputs spendable as an unproven creator's are), and the courier
+    /// was re-asked once.
+    Demoted { reask: LostProofReask },
+    /// The header could not be read, or the demotion could not be written:
     /// retained, retry later.
     TransientError(String),
 }
@@ -320,13 +456,88 @@ fn same_anchor(anchor: &ProvenTxAnchor, height: u32, block_hash: &str, merkle_ro
     anchor.merkle_root.eq_ignore_ascii_case(merkle_root)
 }
 
-/// Re-prove one stored anchor against the chain: ask the providers for the
-/// transaction's current merkle path (validated against the chain tracker
-/// by the services layer), replace the stored proof through the ingest
-/// funnel when it names a different block, retain it when the providers
-/// still name the stored block or fault, and demote it ONLY on positive
-/// evidence (see [`ReproveOutcome::Demoted`]). The reference's
-/// `reproveProven`, plus the stated demotion.
+/// Ask the providers once for the transaction's current path and store it
+/// through the ingest funnel when it names another block. The stored
+/// height and block hash when a replacement was stored now.
+async fn store_replacement<S, V>(
+    storage: &S,
+    services: &V,
+    anchor: &ProvenTxAnchor,
+) -> Option<(u32, String)>
+where
+    S: MonitorStorage + ?Sized,
+    V: WalletServices + ?Sized,
+{
+    let result = match services.get_merkle_path(&anchor.txid, false).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(txid = %anchor.txid, error = %e, "reprove: no replacement path");
+            return None;
+        }
+    };
+    let (Some(path_hex), Some(header)) = (&result.merkle_path, &result.header) else {
+        return None;
+    };
+    let bytes = hex::decode(path_hex).ok()?;
+    // The bump's own height is the authority on the height it proves.
+    let height = MerklePath::from_binary(&bytes)
+        .map(|mp| mp.block_height)
+        .unwrap_or(header.height);
+    if same_anchor(anchor, height, &header.hash, &header.merkle_root) {
+        // The providers still name the block our headers no longer carry.
+        return None;
+    }
+    match storage
+        .ingest_push_proof(&anchor.txid, &bytes, height, &header.hash)
+        .await
+    {
+        Ok(Some(ProofIngestOutcome::Ingested(_))) => {
+            Some((height, header.hash.to_ascii_lowercase()))
+        }
+        other => {
+            tracing::debug!(
+                txid = %anchor.txid,
+                outcome = ?other.map(|o| o.map(|o| format!("{o:?}"))),
+                "reprove: the replacement was not stored now; the proof pass will take it"
+            );
+            None
+        }
+    }
+}
+
+/// Settle one stored anchor whose root the local header read found gone
+/// (ruling 5): store a replacement when a provider serves one for the
+/// active block, else demote the proof (rulings 7a and 7b: the action back
+/// at `unproven`, nothing released, nothing failed) and re-ask the courier
+/// once (7d). The header read alone decides the proof is stale; no
+/// provider's word is needed to demote it.
+pub async fn reprove_moved_anchor<S, V>(
+    storage: &S,
+    services: &V,
+    anchor: &ProvenTxAnchor,
+) -> ReproveOutcome
+where
+    S: MonitorStorage + ?Sized,
+    V: WalletServices + ?Sized,
+{
+    if let Some((height, block_hash)) = store_replacement(storage, services, anchor).await {
+        return ReproveOutcome::Replaced { height, block_hash };
+    }
+    match storage.demote_stale_proof(&anchor.txid).await {
+        Ok(true) => {
+            let reask = reask_lost_proof(storage, services, &anchor.txid).await;
+            ReproveOutcome::Demoted { reask }
+        }
+        // Another pass or process already demoted it: the episode is theirs.
+        Ok(false) => ReproveOutcome::Unchanged,
+        Err(e) => ReproveOutcome::TransientError(e.to_string()),
+    }
+}
+
+/// Re-prove one stored anchor: one local header read at its height (ruling
+/// 5), nothing more when the active header still carries its root, and
+/// [`reprove_moved_anchor`] when it does not. The CLI's `reproof` verb and
+/// the monitor's tasks share it.
 pub async fn reprove_anchor<S, V>(
     storage: &S,
     services: &V,
@@ -336,93 +547,14 @@ where
     S: MonitorStorage + ?Sized,
     V: WalletServices + ?Sized,
 {
-    let result = match services.get_merkle_path(&anchor.txid, false).await {
-        Ok(r) => r,
-        Err(e) => return ReproveOutcome::TransientError(e.to_string()),
-    };
-    if let (Some(path_hex), Some(header)) = (&result.merkle_path, &result.header) {
-        let bytes = match hex::decode(path_hex) {
-            Ok(b) => b,
-            Err(e) => {
-                return ReproveOutcome::TransientError(format!("provider path is not hex: {e}"))
-            }
-        };
-        // The bump's own height is the authority on the height it proves.
-        let height = MerklePath::from_binary(&bytes)
-            .map(|mp| mp.block_height)
-            .unwrap_or(header.height);
-        if same_anchor(anchor, height, &header.hash, &header.merkle_root) {
-            // The providers still name the stored block: retained, retried.
-            return ReproveOutcome::Unchanged;
-        }
-        return match storage
-            .ingest_push_proof(&anchor.txid, &bytes, height, &header.hash)
-            .await
-        {
-            Ok(Some(ProofIngestOutcome::Ingested(_))) => ReproveOutcome::Replaced {
-                height,
-                block_hash: header.hash.to_ascii_lowercase(),
-            },
-            Ok(Some(ProofIngestOutcome::DeferredAboveProcessedHeight { block_height, .. })) => {
-                ReproveOutcome::Deferred {
-                    height: block_height,
-                }
-            }
-            // The storage's tracker refutes the provider's path: retained.
-            Ok(Some(ProofIngestOutcome::InvalidMerkleRoot { .. })) => ReproveOutcome::Unchanged,
-            Ok(Some(ProofIngestOutcome::TrackerError(e)))
-            | Ok(Some(ProofIngestOutcome::InvalidProof(e))) => ReproveOutcome::TransientError(e),
-            // The storage cannot check a replacement: retained, retried.
-            Ok(Some(ProofIngestOutcome::TrackerUnavailable)) => ReproveOutcome::TransientError(
-                "storage has no chain tracker to check the replacement proof".to_string(),
-            ),
-            Ok(None) => {
-                ReproveOutcome::TransientError("storage does not ingest proofs".to_string())
-            }
-            Err(e) => ReproveOutcome::TransientError(e.to_string()),
-        };
-    }
-
-    // No provider served a path. Demote only on positive evidence: the
-    // tracker must DEFINITELY refute the stored root (a fault is never a
-    // verdict), and at least DEMOTION_WITNESSES providers must have answered
-    // cleanly "not mined"; a provider whose path the tracker refuted means
-    // "unchanged, retry".
-    let tracker = match services.get_chain_tracker().await {
-        Ok(t) => t,
-        Err(e) => {
-            return ReproveOutcome::TransientError(format!(
-                "no chain tracker to refute the stored proof: {e}"
-            ))
-        }
-    };
-    match tracker
-        .is_valid_root_for_height(&anchor.merkle_root, anchor.height)
-        .await
-    {
-        Ok(false) => {}
-        Ok(true) => return ReproveOutcome::Unchanged,
-        Err(e) => return ReproveOutcome::TransientError(format!("chain tracker: {e}")),
-    }
-    let refuted = result.refuted_witnesses();
-    if !refuted.is_empty() {
-        return ReproveOutcome::Unchanged;
-    }
-    let witnesses = result.not_mined_witnesses();
-    let faults = result.faults();
-    if witnesses.len() >= DEMOTION_WITNESSES {
-        match storage.demote_stale_proof(&anchor.txid).await {
-            Ok(_) => ReproveOutcome::Demoted,
-            Err(e) => ReproveOutcome::TransientError(e.to_string()),
-        }
-    } else {
-        ReproveOutcome::TransientError(format!(
-            "no positive evidence to demote: {} not-mined witness(es) {:?}, {} fault(s) {:?}",
-            witnesses.len(),
-            witnesses,
-            faults.len(),
-            faults
-        ))
+    let active = active_root_at(services, anchor.height).await;
+    match read_root(anchor, active.as_deref()) {
+        RootRead::Kept => ReproveOutcome::Unchanged,
+        RootRead::Unknown => ReproveOutcome::TransientError(format!(
+            "no header readable at height {}",
+            anchor.height
+        )),
+        RootRead::Moved => reprove_moved_anchor(storage, services, anchor).await,
     }
 }
 
@@ -431,8 +563,11 @@ where
 pub struct ReproveTally {
     pub replaced: u32,
     pub unchanged: u32,
-    pub deferred: u32,
     pub demoted: u32,
+    /// Stale anchors left for the next pass ([`REPROVES_PER_PASS`]).
+    pub postponed: u32,
+    /// Demotions after which the one announce was made (ruling 7d).
+    pub announced: u32,
     pub errors: Vec<String>,
 }
 
@@ -446,34 +581,60 @@ impl ReproveTally {
                     height,
                     block_hash = %block_hash,
                     marker = "reorg_proof_replaced",
-                    "reprove: the stored proof was replaced by the canonical block's"
+                    "reprove: the stored proof was replaced by the active block's"
                 );
             }
             ReproveOutcome::Unchanged => self.unchanged += 1,
-            ReproveOutcome::Deferred { .. } => self.deferred += 1,
-            ReproveOutcome::Demoted => {
+            ReproveOutcome::Demoted { reask } => {
                 self.demoted += 1;
-                tracing::warn!(
+                if *reask == LostProofReask::Announced {
+                    self.announced += 1;
+                }
+                tracing::info!(
                     txid = %txid,
+                    reask = ?reask,
                     marker = "reorg_proof_demoted",
-                    "reprove: the chain positively refutes the stored proof; demoted, the transaction is unproven again and will be re-proved"
+                    "reprove: the stored root is gone from our headers; the transaction is unproven again (confirming), its inputs kept, and will be re-proved"
                 );
             }
             ReproveOutcome::TransientError(e) => self.errors.push(format!("{txid}: {e}")),
         }
     }
 
-    /// Whether anything in the pass asks for another try (the reference
-    /// retries on `unchanged` or `unavailable`).
+    /// Whether anything in the pass asks for another try: a stale anchor
+    /// left for the next pass, or a fault. A kept root never asks again.
     pub fn wants_retry(&self) -> bool {
-        self.unchanged > 0 || self.deferred > 0 || !self.errors.is_empty()
+        self.postponed > 0 || !self.errors.is_empty()
     }
 }
 
-/// Re-prove every stored anchor citing the deactivated block `block_hash` at
-/// `height`, plus every hash-less anchor at that height whose root is not
-/// the canonical root there (rows written without a header in hand). The
-/// reorg task's unit of work for one deactivated header.
+/// Settle the anchors whose roots the local header read found gone, at most
+/// [`REPROVES_PER_PASS`] of them; the rest are counted as postponed.
+pub async fn reprove_moved_anchors<S, V>(
+    storage: &S,
+    services: &V,
+    moved: &[ProvenTxAnchor],
+    tally: &mut ReproveTally,
+) where
+    S: MonitorStorage + ?Sized,
+    V: WalletServices + ?Sized,
+{
+    for (i, anchor) in moved.iter().enumerate() {
+        if i >= REPROVES_PER_PASS {
+            tally.postponed += 1;
+            continue;
+        }
+        let outcome = reprove_moved_anchor(storage, services, anchor).await;
+        tally.record(&anchor.txid, &outcome);
+    }
+}
+
+/// Recheck every stored anchor citing the deactivated block `block_hash` at
+/// `height`, plus every hash-less anchor at that height, against the active
+/// root there (one local header read for the height). An anchor whose root
+/// the active header still carries moves nothing; one whose root moved is
+/// settled by [`reprove_moved_anchor`], a few a pass. The reorg task's unit
+/// of work for one deactivated header.
 pub async fn reprove_block_hash<S, V>(
     storage: &S,
     services: &V,
@@ -494,30 +655,39 @@ where
             return tally;
         }
     };
-    if let Ok(bytes) = services.get_header_for_height(height).await {
-        if let Some(canonical_root) = merkle_root_of_header(&bytes) {
-            match storage.find_proven_txs_in_heights(height, height).await {
-                Ok(at_height) => {
-                    for a in at_height {
-                        let already = anchors.iter().any(|x| x.txid == a.txid);
-                        if !already
-                            && a.block_hash.is_empty()
-                            && !canonical_root.eq_ignore_ascii_case(&a.merkle_root)
-                        {
-                            anchors.push(a);
-                        }
-                    }
+    match storage.find_proven_txs_in_heights(height, height).await {
+        Ok(at_height) => {
+            for a in at_height {
+                if a.block_hash.is_empty() && !anchors.iter().any(|x| x.txid == a.txid) {
+                    anchors.push(a);
                 }
-                Err(e) => tally
-                    .errors
-                    .push(format!("find_proven_txs_in_heights: {e}")),
             }
         }
+        Err(e) => tally
+            .errors
+            .push(format!("find_proven_txs_in_heights: {e}")),
     }
-    for anchor in &anchors {
-        let outcome = reprove_anchor(storage, services, anchor).await;
-        tally.record(&anchor.txid, &outcome);
+    let mut active: HashMap<u32, Option<String>> = HashMap::new();
+    let mut moved = Vec::new();
+    for anchor in anchors {
+        let root = match active.get(&anchor.height) {
+            Some(root) => root.clone(),
+            None => {
+                let root = active_root_at(services, anchor.height).await;
+                active.insert(anchor.height, root.clone());
+                root
+            }
+        };
+        match read_root(&anchor, root.as_deref()) {
+            RootRead::Kept => tally.record(&anchor.txid, &ReproveOutcome::Unchanged),
+            RootRead::Unknown => tally.errors.push(format!(
+                "{}: no header readable at height {}",
+                anchor.txid, anchor.height
+            )),
+            RootRead::Moved => moved.push(anchor),
+        }
     }
+    reprove_moved_anchors(storage, services, &moved, &mut tally).await;
     tally
 }
 
@@ -715,17 +885,70 @@ mod tests {
             },
         );
         assert!(!t.wants_retry(), "a replacement never requeues");
-        t.record("d", &ReproveOutcome::Demoted);
+        t.record(
+            "d",
+            &ReproveOutcome::Demoted {
+                reask: LostProofReask::Announced,
+            },
+        );
         assert!(!t.wants_retry(), "a demotion never requeues");
+        // Ruling 5: a root the active header still carries moves nothing and
+        // is never asked again.
         t.record("b", &ReproveOutcome::Unchanged);
-        assert!(t.wants_retry());
-        let mut u = ReproveTally::default();
-        u.record("c", &ReproveOutcome::Deferred { height: 2 });
-        assert!(u.wants_retry());
+        assert!(!t.wants_retry());
+        let u = ReproveTally {
+            postponed: 1,
+            ..Default::default()
+        };
+        assert!(u.wants_retry(), "a stale proof left for the next pass");
         let mut v = ReproveTally::default();
         v.record("e", &ReproveOutcome::TransientError("boom".into()));
         assert!(v.wants_retry());
         assert_eq!(v.errors, vec!["e: boom".to_string()]);
-        assert_eq!((t.replaced, t.unchanged, t.demoted), (1, 1, 1));
+        assert_eq!(
+            (t.replaced, t.unchanged, t.demoted, t.announced),
+            (1, 1, 1, 1)
+        );
+    }
+
+    /// Ruling 5 (2026-10-20): stale when, and only when, the stored root is
+    /// not the active root at its height; an unreadable header is never
+    /// stale.
+    #[test]
+    fn ruling_5_the_root_read_decides_stale_and_an_unknown_never_does() {
+        let a = anchor("t", 7, "old-hash", "AB");
+        assert_eq!(read_root(&a, Some("ab")), RootRead::Kept);
+        assert_eq!(read_root(&a, Some("cd")), RootRead::Moved);
+        assert_eq!(read_root(&a, None), RootRead::Unknown);
+    }
+
+    /// Ruling 7d (2026-10-20), draft step 4: a broadcaster that knows the
+    /// transaction ends the matter, a refusal is written and never answered
+    /// with an announce, only "nobody knows it" is announced, and no answer
+    /// announces nothing.
+    #[test]
+    fn ruling_7d_step_4_the_courier_word_announces_only_on_unknown() {
+        let p = |s: BroadcastStatus| ("ARC".to_string(), s);
+        assert_eq!(courier_word(&[]), CourierWord::NoAnswer);
+        assert_eq!(
+            courier_word(&[p(BroadcastStatus::Seen)]),
+            CourierWord::Known
+        );
+        assert_eq!(
+            courier_word(&[p(BroadcastStatus::Unknown), p(BroadcastStatus::Accepted)]),
+            CourierWord::Known
+        );
+        assert_eq!(
+            courier_word(&[p(BroadcastStatus::Unknown)]),
+            CourierWord::Unknown
+        );
+        assert_eq!(
+            courier_word(&[p(BroadcastStatus::Unknown), p(BroadcastStatus::Rejected)]),
+            CourierWord::Refused(vec!["ARC".to_string()])
+        );
+        assert_eq!(
+            courier_word(&[p(BroadcastStatus::Rejected), p(BroadcastStatus::Mined)]),
+            CourierWord::Known
+        );
     }
 }

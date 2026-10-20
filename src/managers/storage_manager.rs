@@ -1312,6 +1312,21 @@ impl MonitorStorage for WalletStorageManager {
             .await
     }
 
+    async fn announce_lost_proof(&self, txid: &str) -> Result<crate::storage::BroadcastOutcome> {
+        let txid = txid.to_string();
+        self.run_as_writer(|active| async move { active.announce_lost_proof(&txid).await })
+            .await
+    }
+
+    async fn note_lost_proof_refusal(&self, txid: &str, verdict: &str) -> Result<()> {
+        let txid = txid.to_string();
+        let verdict = verdict.to_string();
+        self.run_as_writer(
+            |active| async move { active.note_lost_proof_refusal(&txid, &verdict).await },
+        )
+        .await
+    }
+
     async fn set_proven_tx_block_hash_if_empty(
         &self,
         txid: &str,

@@ -23,5 +23,8 @@ pub mod tasks;
 
 pub use config::{ArcadeMonitorConfig, MonitorOptions, TaskConfig, TransactionStatusUpdate};
 pub use daemon::{Monitor, MonitorHealth, TaskHealth};
-pub use reorg_ops::{reprove_anchor, HeaderTracker, ReproveOutcome, ReproveTally};
+pub use reorg_ops::{
+    reask_lost_proof, reprove_anchor, reprove_moved_anchor, CourierWord, HeaderTracker,
+    LostProofReask, ReproveOutcome, ReproveTally, RootRead, REPROVES_PER_PASS,
+};
 pub use tasks::{ArcadeEventsTask, MonitorTask, TaskResult};

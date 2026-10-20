@@ -4478,8 +4478,10 @@ pub(crate) async fn store_validated_proof_on(
 /// Returns whether a proof row existed. The BEEF walk calls this only for a
 /// row that was never checked (no `proof_root_checks` record) and that the
 /// tracker refutes (`check_unchecked_stored_proof_on`); a checked row's
-/// refuted bump is skipped there and demoted only by the reorg or review
-/// task on positive evidence.
+/// refuted bump is skipped there and demoted by the reorg or review task
+/// when the local header read finds its root gone (ruling 5 of 2026-10-20).
+/// No input is released and no status is failed: the action is `unproven`
+/// ("confirming") until its transaction is proven again.
 pub(super) async fn demote_stale_proof_on(
     conn: &mut sqlx::SqliteConnection,
     txid: &str,
@@ -4626,6 +4628,81 @@ impl MonitorStorage for StorageSqlx {
         let existed = demote_stale_proof_on(&mut tx, txid).await?;
         tx.commit().await?;
         Ok(existed)
+    }
+
+    async fn announce_lost_proof(&self, txid: &str) -> Result<crate::storage::BroadcastOutcome> {
+        use crate::storage::{classify_broadcast_results, BroadcastOutcome};
+        let services = self.get_services()?;
+        let raw: Option<(Vec<u8>,)> = sqlx::query_as(
+            "SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND raw_tx IS NOT NULL \
+             UNION ALL SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1",
+        )
+        .bind(txid)
+        .bind(txid)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some((raw_tx,)) = raw else {
+            return Err(Error::NotFound {
+                entity: "transaction bytes".to_string(),
+                id: txid.to_string(),
+            });
+        };
+        let input_txids = parse_input_txids(&raw_tx)?;
+        let mut beef = {
+            let mut conn = self.pool().acquire().await?;
+            rebuild_beef_for_broadcast(&mut conn, &input_txids, Some(self)).await?
+        };
+        beef.merge_raw_tx(raw_tx, None);
+        let results = services
+            .post_beef(&beef.to_binary(), &[txid.to_string()])
+            .await?;
+        let outcome = classify_broadcast_results(&results);
+        let word = match &outcome {
+            BroadcastOutcome::Success => "accepted",
+            BroadcastOutcome::OrphanMempool { .. } => "orphanMempool",
+            BroadcastOutcome::ServiceError { .. } => "serviceError",
+            BroadcastOutcome::DoubleSpend { .. } => "doubleSpend",
+            BroadcastOutcome::InvalidTx { .. } => "rejected",
+        };
+        if let BroadcastOutcome::DoubleSpend { competing_txs, .. } = &outcome {
+            self.queue_competitors(txid, competing_txs).await?;
+        }
+        self.note_on_req_history(
+            txid,
+            serde_json::json!({
+                "when": chrono::Utc::now().to_rfc3339(),
+                "what": "lostProofAnnounce",
+                "word": word,
+                "detail": outcome.error_message(txid),
+            }),
+        )
+        .await?;
+        tracing::info!(
+            txid = %txid,
+            word,
+            marker = "lost_proof_announced",
+            "lost proof: no broadcaster knew the transaction; announced once"
+        );
+        Ok(outcome)
+    }
+
+    async fn note_lost_proof_refusal(&self, txid: &str, verdict: &str) -> Result<()> {
+        self.note_on_req_history(
+            txid,
+            serde_json::json!({
+                "when": chrono::Utc::now().to_rfc3339(),
+                "what": "lostProofRefusal",
+                "verdict": verdict,
+            }),
+        )
+        .await?;
+        tracing::warn!(
+            txid = %txid,
+            verdict,
+            marker = "lost_proof_refused",
+            "lost proof: a broadcaster refuses the transaction; written, no status moves, a competitor's checked proof decides"
+        );
+        Ok(())
     }
 
     async fn synchronize_transaction_statuses(&self) -> Result<Vec<TxSynchronizedStatus>> {

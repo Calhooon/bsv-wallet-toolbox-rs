@@ -2559,7 +2559,10 @@ pub(super) async fn beef_bfs_walk(
                 }
                 prune_beef_to_roots(&mut stored_beef, &stored_roots);
 
-                let stored_beef_valid = if let Some(tracker) = chain_tracker {
+                // Every root a stored BEEF carries is read against the
+                // wallet's headers of the moment, whoever called the walk
+                // (ruling 7c): the caller's tracker, else the storage's own.
+                let stored_beef_valid = if let Some(tracker) = read_check_tracker {
                     validate_stored_beef(&mut stored_beef, tracker, &txid).await
                 } else {
                     stored_beef.verify_valid(true).valid
@@ -2606,24 +2609,27 @@ pub(super) async fn beef_bfs_walk(
                             &merkle_path,
                         )
                         .await?;
-                        // ts-stack `getBeefForTransaction` with
-                        // `skipInvalidProofs` ("proof is currently invalid,
-                        // recurse deeper via the rawTx path"): a STORED bump the
-                        // chain tracker DEFINITELY refutes (a reorg moved the
-                        // block) is not attached. The transaction rides as a
-                        // raw-tx leg and its parents are walked one level
-                        // deeper. A CHECKED row is never mutated here: a
-                        // tracker fault keeps the bump (the final BEEF
-                        // verification decides, as before), and the stale row
-                        // is demoted only by the reorg or review task on
-                        // positive network evidence. Before this, every spend
-                        // touching such a row was refused with "Invalid merkle
-                        // root" (loop 8, 2026-09-07, 28 seats).
+                        // The stack's ruling 7c (2026-10-20): a stored bump
+                        // enters the BEEF only when the wallet's headers of
+                        // the moment carry its root, read for every walk
+                        // through the caller's tracker or else the storage's
+                        // own, never merged as stored. A bump whose root the
+                        // headers DEFINITELY refuse (a reorg moved the block)
+                        // is not attached: the transaction rides as raw
+                        // bytes (BRC-62) and its parents are walked one level
+                        // deeper, to ancestors whose roots the headers carry.
+                        // The reference merges a stored bump unchecked unless
+                        // its caller passes a `chainTracker`
+                        // (ts-stack@edf6e03 getBeefForTransaction.ts:103-105,
+                        // 270-272). A CHECKED row is never mutated here, and
+                        // a tracker fault keeps the bump (the final BEEF
+                        // verification decides); the stale row is demoted by
+                        // the reorg or review task on the local header read.
                         use super::proof_root_checks::ReadCheck;
                         if read_check == ReadCheck::Demoted {
                             None
                         } else if read_check != ReadCheck::Confirmed
-                            && stored_bump_refuted(chain_tracker, &merkle_path, &txid).await
+                            && stored_bump_refuted(read_check_tracker, &merkle_path, &txid).await
                         {
                             tracing::warn!(
                                 txid = %txid,
@@ -2739,7 +2745,7 @@ pub(super) async fn rebuild_beef_for_broadcast(
         &mut pending_txids,
         &mut processed_txids,
         storage,
-        None, // No chain_tracker for broadcast rebuilds — validated at creation time
+        None, // the walk reads every stored root through the storage's own tracker
     )
     .await?;
 

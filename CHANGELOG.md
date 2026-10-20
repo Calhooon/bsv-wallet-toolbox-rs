@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.10.0] - 2026-10-20
+
+The reorg below the user (bsv-stack-lean rulings 5 and 7 of 2026-10-20; the draft `corpus/scenarios/2026-10-20-reorg-below-the-user.md`). A minor: public monitor types change (`ReproveOutcome`, `ReproveTally`, `DEMOTION_WITNESSES` removed), `MonitorStorage` gains two methods, and an observable status changes (an action whose proof's root moved reads `unproven` on the local header read alone). This crate does not host bsv-tracker; the rule is written in its own reorg path.
+
+### Changed
+
+- Ruling 5: a stored proof is stale when, and only when, its root is not the active header's root at its height in the wallet's own headers. `reprove_block_hash` and `reprove_anchor` read the header at the proof's height before anything else; a kept root moves nothing and is not retried, and only proofs whose root moved are re-proved, `REPROVES_PER_PASS` (4) a pass, the rest on the next try. The review task does the same. Before, every proof citing a deactivated hash was fetched from the providers, and demotion needed the tracker's refutation and two "not mined" witnesses. Tests: `ruling_5_step_3_a_reorg_that_keeps_the_root_moves_nothing`, `ruling_5_the_root_read_decides_stale_and_an_unknown_never_does`.
+- Rulings 7a and 7b: a proof whose root moved and has no replacement now is demoted: the action is `unproven` ("confirming"), its inputs stay allocated to it, its change stays spendable as an unproven creator's is, nothing is released and nothing is failed; only a competitor's checked proof fails it. Tests: `rulings_5_7a_7b_7d_steps_3_to_5_a_lost_root_keeps_the_coin_and_the_action_confirming`, `rulings_7a_7b_step_8_only_a_competitors_checked_proof_fails_the_action`.
+- Ruling 7c: the BEEF walk reads every stored path, and every root of a stored BEEF, against the wallet's headers through the caller's tracker or else the storage's own, for every caller, the broadcast rebuild included. A refused path is not attached; the ancestor rides as raw bytes and the walk continues. Before, a checked stored path was merged unchecked when the caller passed no tracker. Tests: `ruling_7c_step_6_the_beef_carries_the_stale_ancestor_as_bytes` (red before this change), `ruling_7c_control_a_kept_root_merges_the_stored_path`.
+
+### Added
+
+- Ruling 7d: after a demotion the courier is asked once (`reask_lost_proof`, the broadcasters' status read). A broadcaster that knows the transaction ends the matter; only when none knows it is it announced, once (`MonitorStorage::announce_lost_proof`); a refusal is written on the request's history (`MonitorStorage::note_lost_proof_refusal`) and a competitor a double-spend word names is queued for the proof ask. No status moves on a courier's word. Tests: `ruling_7d_step_4_the_courier_word_announces_only_on_unknown`, `ruling_7d_step_4i_a_broadcaster_that_knows_it_is_not_told_again`, `ruling_7d_step_4_a_refusal_is_written_and_never_announced`.
+- `RootRead`, `read_root`, `active_root_at`, `CourierWord`, `courier_word`, `LostProofReask`, `reprove_moved_anchor`, `reprove_moved_anchors`, `REPROVES_PER_PASS` in `monitor::reorg_ops`.
+
+### Removed
+
+- `ReproveOutcome::Deferred`, `ReproveTally::deferred` and `DEMOTION_WITNESSES`: a replacement above the proof gate no longer holds a stale proof in place; the proof is demoted and the proof pass stores the replacement when its header has aged.
+
 ## [0.9.0] - 2026-10-18
 
 bsv-rs 0.7.0, whose default signing digest is the node's (the dispatch on FORKID and CHRONICLE, the SINGLE sentinel, an explicit scriptCode). caret `0.7.0` starts a new cargo compatibility line and bsv-rs types sit in this crate's public API, so this is a minor. No source change was needed: the crate builds no `SigningContext` and calls no bsv-rs signing template.
