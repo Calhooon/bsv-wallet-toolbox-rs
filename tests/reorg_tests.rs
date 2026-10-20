@@ -1037,8 +1037,24 @@ mod reorg_m19 {
         );
     }
 
+    /// The active header at `height` carries `root` (the wallet's own
+    /// headers, as `get_header_for_height` answers them).
+    fn active(services: &super::reorg::MockServices, height: u32, root: &str) {
+        services.set_header(height, header(height, CANONICAL, root).to_binary());
+    }
+
+    /// The header at `height` cannot be read (not 80 bytes).
+    fn unreadable(services: &super::reorg::MockServices, height: u32) {
+        services.set_header(height, vec![0u8; 79]);
+    }
+
+    /// Ruling 5 (2026-10-20): the providers still name the deactivated
+    /// block and the active header at its height still carries the stored
+    /// root. Nothing moves, nothing is fetched, and the header is not asked
+    /// again. (Until 0.10.0 the providers' word was asked before any header and an
+    /// "unchanged" answer was retried.)
     #[tokio::test]
-    async fn a_proof_the_providers_still_anchor_to_the_same_block_is_retained_and_retried() {
+    async fn a_proof_whose_root_the_active_header_still_carries_moves_nothing() {
         let (storage, auth) = setup().await;
         seed_proven(
             &storage,
@@ -1054,6 +1070,7 @@ mod reorg_m19 {
         let services = Arc::new(super::reorg::MockServices::with_proof(proof_answer(
             965771, ORPHAN,
         )));
+        active(&services, 965771, COINBASE_TXID);
         let task = ReorgTask::new(storage.clone(), services.clone());
         task.queue_deactivated_header(ORPHAN.to_string(), 965771)
             .await;
@@ -1062,13 +1079,17 @@ mod reorg_m19 {
         let (proven, tx_status, _) = state(&storage, COINBASE_TXID).await;
         assert_eq!(proven, Some((965771, ORPHAN.to_string())));
         assert_eq!(tx_status, "completed");
-        assert_eq!(task.pending_count().await, 1, "unchanged is retried");
+        assert_eq!(services.get_call_count(), 0, "no proof fetch");
+        assert_eq!(task.pending_count().await, 0, "a kept root is final");
     }
 
-    /// F4: every provider ERRORED (a 429, a timeout). The stored proof is
-    /// retained and the header retried; nothing is demoted on a fault.
+    /// Rulings 5, 7a and 7b (2026-10-20): every provider ERRORED (a 429, a
+    /// timeout) but the active header no longer carries the stored root.
+    /// The header read decides: the proof is demoted, the transaction is
+    /// `unproven` (still spendable), the request `unmined`, and the header
+    /// is final. (Until 0.10.0 a provider fault held the stale proof.)
     #[tokio::test]
-    async fn a_provider_error_never_demotes() {
+    async fn a_provider_error_does_not_hold_a_proof_whose_root_moved() {
         let (storage, auth) = setup().await;
         seed_proven(
             &storage,
@@ -1078,7 +1099,6 @@ mod reorg_m19 {
             ORPHAN,
         )
         .await;
-        // The tracker does NOT know the stored root: a refutation on its own.
         let services = Arc::new(
             super::reorg::MockServices::with_proof(no_path_answer(vec![
                 ("WoC", "getMerklePathBadStatus", Some("HTTP 429")),
@@ -1087,29 +1107,27 @@ mod reorg_m19 {
             ]))
             .with_tracker(tracker_with_roots(&[])),
         );
+        active(&services, 965771, &"c".repeat(64));
         let task = ReorgTask::new(storage.clone(), services.clone());
         task.queue_deactivated_header(ORPHAN.to_string(), 965771)
             .await;
         let result = task.run_now().await.unwrap();
-        assert_eq!(result.items_processed, 0);
-        assert_eq!(
-            result.errors.len(),
-            1,
-            "a transient, named: {:?}",
-            result.errors
-        );
+        assert_eq!(result.items_processed, 1, "demoted: {:?}", result.errors);
         let (proven, tx_status, req_status) = state(&storage, COINBASE_TXID).await;
-        assert_eq!(proven, Some((965771, ORPHAN.to_string())), "retained");
+        assert!(proven.is_none(), "the stale proof is gone");
         assert_eq!(
             (tx_status.as_str(), req_status.as_str()),
-            ("completed", "completed")
+            ("unproven", "unmined"),
+            "confirming, re-proved later"
         );
-        assert_eq!(task.pending_count().await, 1, "retried");
+        assert_eq!(task.pending_count().await, 0, "a demotion never requeues");
     }
 
-    /// F4: one clean "not mined" is not positive evidence; two are.
+    /// Ruling 5 (2026-10-20): no provider witness is needed; one clean "not
+    /// mined" and a fault are enough when the header read finds the root
+    /// gone. (Until 0.10.0 two clean negatives were required.)
     #[tokio::test]
-    async fn one_clean_negative_is_not_enough_two_are() {
+    async fn the_header_read_alone_demotes_no_provider_witness_needed() {
         let (storage, auth) = setup().await;
         seed_proven(
             &storage,
@@ -1126,28 +1144,8 @@ mod reorg_m19 {
             ]))
             .with_tracker(tracker_with_roots(&[])),
         );
+        active(&one, 965771, &"c".repeat(64));
         let task = ReorgTask::new(storage.clone(), one);
-        task.queue_deactivated_header(ORPHAN.to_string(), 965771)
-            .await;
-        let result = task.run_now().await.unwrap();
-        assert_eq!(result.items_processed, 0);
-        let (proven, tx_status, _) = state(&storage, COINBASE_TXID).await;
-        assert_eq!(
-            proven,
-            Some((965771, ORPHAN.to_string())),
-            "one witness: retained"
-        );
-        assert_eq!(tx_status, "completed");
-        assert_eq!(task.pending_count().await, 1);
-
-        let two = Arc::new(
-            super::reorg::MockServices::with_proof(no_path_answer(vec![
-                ("WoC", "getMerklePathNotFound", None),
-                ("Arcade", "getMerklePathNotMined", None),
-            ]))
-            .with_tracker(tracker_with_roots(&[])),
-        );
-        let task = ReorgTask::new(storage.clone(), two);
         task.queue_deactivated_header(ORPHAN.to_string(), 965771)
             .await;
         let result = task.run_now().await.unwrap();
@@ -1159,11 +1157,11 @@ mod reorg_m19 {
         assert_eq!(task.pending_count().await, 0, "a demotion never requeues");
     }
 
-    /// F7: a provider still naming the deactivated block is "unchanged":
-    /// retained and retried, never demoted, even with the tracker refuting
-    /// the stored root and other providers answering cleanly.
+    /// Ruling 5 (2026-10-20): a provider still naming the deactivated block
+    /// does not hold a proof whose root the active header no longer
+    /// carries. (Until 0.10.0 it was "unchanged", retained and retried.)
     #[tokio::test]
-    async fn a_path_the_tracker_refutes_is_unchanged_not_demoted() {
+    async fn a_provider_still_naming_the_old_block_does_not_hold_the_stale_proof() {
         let (storage, auth) = setup().await;
         seed_proven(
             &storage,
@@ -1173,35 +1171,28 @@ mod reorg_m19 {
             ORPHAN,
         )
         .await;
-        let services = Arc::new(
-            super::reorg::MockServices::with_proof(no_path_answer(vec![
-                ("WoC", "getMerklePathSuccess", None),
-                ("WoC", "getMerklePathInvalidRoot", Some("refuted")),
-                ("Bitails", "getMerklePathNotFound", None),
-                ("Arcade", "getMerklePathNotMined", None),
-            ]))
-            .with_tracker(tracker_with_roots(&[])),
-        );
+        storage
+            .set_chain_tracker(Arc::new(tracker_with_roots(&[965771])))
+            .await;
+        let services = Arc::new(super::reorg::MockServices::with_proof(proof_answer(
+            965771, ORPHAN,
+        )));
+        active(&services, 965771, &"c".repeat(64));
         let task = ReorgTask::new(storage.clone(), services);
         task.queue_deactivated_header(ORPHAN.to_string(), 965771)
             .await;
         let result = task.run_now().await.unwrap();
-        assert_eq!(result.items_processed, 0);
-        assert!(
-            result.errors.is_empty(),
-            "unchanged is not an error: {:?}",
-            result.errors
-        );
+        assert_eq!(result.items_processed, 1, "demoted: {:?}", result.errors);
         let (proven, tx_status, _) = state(&storage, COINBASE_TXID).await;
-        assert_eq!(proven, Some((965771, ORPHAN.to_string())), "retained");
-        assert_eq!(tx_status, "completed");
-        assert_eq!(task.pending_count().await, 1, "retried");
+        assert!(proven.is_none());
+        assert_eq!(tx_status, "unproven");
+        assert_eq!(task.pending_count().await, 0);
     }
 
-    /// A tracker that still confirms the stored root is "unchanged" whatever
-    /// the providers say: the stored proof IS the canonical one.
+    /// The active header carries the stored root: "unchanged" whatever the
+    /// providers say. The stored proof IS the active one.
     #[tokio::test]
-    async fn a_stored_root_the_tracker_still_confirms_is_unchanged() {
+    async fn a_stored_root_the_active_header_carries_is_unchanged() {
         let (storage, auth) = setup().await;
         seed_proven(
             &storage,
@@ -1218,6 +1209,7 @@ mod reorg_m19 {
             ]))
             .with_tracker(tracker_with_roots(&[965771])),
         );
+        active(&services, 965771, COINBASE_TXID);
         let task = ReorgTask::new(storage.clone(), services);
         task.queue_deactivated_header(ORPHAN.to_string(), 965771)
             .await;
@@ -1227,9 +1219,9 @@ mod reorg_m19 {
         assert_eq!(proven, Some((965771, ORPHAN.to_string())));
     }
 
-    /// A tracker outage is never a verdict: retained, retried.
+    /// A header that cannot be read is never a verdict: retained, retried.
     #[tokio::test]
-    async fn no_tracker_never_demotes() {
+    async fn an_unreadable_header_never_demotes() {
         let (storage, auth) = setup().await;
         seed_proven(
             &storage,
@@ -1245,6 +1237,7 @@ mod reorg_m19 {
                 ("Arcade", "getMerklePathNotMined", None),
             ],
         )));
+        unreadable(&services, 965771);
         let task = ReorgTask::new(storage.clone(), services);
         task.queue_deactivated_header(ORPHAN.to_string(), 965771)
             .await;
@@ -1253,13 +1246,15 @@ mod reorg_m19 {
         assert_eq!(result.errors.len(), 1);
         let (proven, _, _) = state(&storage, COINBASE_TXID).await;
         assert_eq!(proven, Some((965771, ORPHAN.to_string())), "retained");
+        assert_eq!(task.pending_count().await, 1, "retried");
     }
 
-    /// F14: requeue and starvation. Faults retry the header three times in
-    /// all, then it is dropped and the original retained (the reference's
-    /// "maximum retries exceeded").
+    /// F14: requeue and starvation. An unreadable header retries the
+    /// deactivated header three times in all, then it is dropped with the
+    /// proof as it was (the reference's "maximum retries exceeded"); no
+    /// proof is fetched on an unknown.
     #[tokio::test]
-    async fn a_faulting_header_is_processed_three_times_then_dropped_with_the_original_retained() {
+    async fn an_unreadable_header_is_processed_three_times_then_dropped() {
         let (storage, auth) = setup().await;
         seed_proven(
             &storage,
@@ -1277,6 +1272,7 @@ mod reorg_m19 {
             )]))
             .with_tracker(tracker_with_roots(&[])),
         );
+        unreadable(&services, 965771);
         let task = ReorgTask::new(storage.clone(), services.clone());
         task.queue_deactivated_header(ORPHAN.to_string(), 965771)
             .await;
@@ -1286,18 +1282,18 @@ mod reorg_m19 {
         assert_eq!(task.pending_count().await, 1, "try 2 of 3: requeued");
         task.run_now().await.unwrap();
         assert_eq!(task.pending_count().await, 0, "try 3 of 3: dropped");
-        assert_eq!(services.get_call_count(), 3);
+        assert_eq!(services.get_call_count(), 0, "no fetch on an unknown");
         let (proven, tx_status, _) = state(&storage, COINBASE_TXID).await;
         assert_eq!(
             proven,
             Some((965771, ORPHAN.to_string())),
-            "the original is retained"
+            "the proof is as it was"
         );
         assert_eq!(tx_status, "completed");
         // Nothing runs on an empty queue.
         let result = task.run_now().await.unwrap();
         assert_eq!(result.items_processed, 0);
-        assert_eq!(services.get_call_count(), 3);
+        assert_eq!(services.get_call_count(), 0);
     }
 
     /// F10: a hash-less stored row at the deactivated height whose root is

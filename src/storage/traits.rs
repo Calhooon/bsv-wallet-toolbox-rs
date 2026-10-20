@@ -986,22 +986,48 @@ pub trait MonitorStorage: WalletStorageProvider {
         ))
     }
 
-    /// Demote a stored proof the chain positively refutes: REVERT TO THE
-    /// PRE-PROOF STATE with the bytes preserved, in one transaction. The
-    /// `proven_tx_reqs` row goes back to `unmined` (attempts 0, no proof
-    /// link; re-created with the proof row's raw bytes when the purge had
-    /// deleted it), every linked transaction goes back to `unproven` (still
-    /// spendable, still listed), the terminal `mined` broadcast memory is
-    /// forgotten, and the `proven_txs` row is deleted last. Nothing is lost,
-    /// only re-proved by `check_for_proofs`. Returns whether a row existed.
+    /// Demote a stored proof whose root is gone from the wallet's headers:
+    /// REVERT TO THE PRE-PROOF STATE with the bytes preserved, in one
+    /// transaction. The `proven_tx_reqs` row goes back to `unmined` (attempts
+    /// 0, no proof link; re-created with the proof row's raw bytes when the
+    /// purge had deleted it), every linked transaction goes back to
+    /// `unproven` (still spendable, still listed: "confirming"), the terminal
+    /// `mined` broadcast memory is forgotten, and the `proven_txs` row is
+    /// deleted last. No input is released and nothing is failed. Nothing is
+    /// lost, only re-proved by `check_for_proofs`. Returns whether a row
+    /// existed.
     ///
-    /// The reference never demotes (a stale proof is retained and retried);
-    /// ours demotes only on positive network evidence (see
-    /// `docs/REORG-DIVERGENCES.md`).
+    /// The reference never demotes (a stale proof is retained and retried,
+    /// and the transaction stays `completed`); ours demotes when the local
+    /// header read finds the stored root gone (the stack's ruling 5 of
+    /// 2026-10-20; `docs/REORG-DIVERGENCES.md`).
     async fn demote_stale_proof(&self, txid: &str) -> Result<bool> {
         let _ = txid;
         Err(Error::StorageError(
             "demote_stale_proof is not supported by this storage".to_string(),
+        ))
+    }
+
+    /// Announce, once, a transaction whose proof was lost and which no
+    /// broadcaster knows (the stack's ruling 7d of 2026-10-20). The BEEF is
+    /// rebuilt from storage as for a broadcast and posted one time. No
+    /// status moves on any answer: a refusal is written on the request's
+    /// history and a competitor a double-spend word names is queued for the
+    /// proof ask, so the action is failed only on that competitor's checked
+    /// proof. The caller makes the one call per stale episode.
+    async fn announce_lost_proof(&self, txid: &str) -> Result<crate::storage::BroadcastOutcome> {
+        let _ = txid;
+        Err(Error::StorageError(
+            "announce_lost_proof is not supported by this storage".to_string(),
+        ))
+    }
+
+    /// Write a broadcaster's refusal of a transaction whose proof was lost
+    /// on its request's history (ruling 7d). No status moves.
+    async fn note_lost_proof_refusal(&self, txid: &str, verdict: &str) -> Result<()> {
+        let _ = (txid, verdict);
+        Err(Error::StorageError(
+            "note_lost_proof_refusal is not supported by this storage".to_string(),
         ))
     }
 

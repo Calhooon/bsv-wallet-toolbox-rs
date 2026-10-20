@@ -68,9 +68,22 @@ the stack's dependency policy for `cargo deny check`, which the workflow does
 not run. Dependabot moves the stack's crates daily at 18:00Z under
 [.github/dependabot.yml](.github/dependabot.yml).
 
+## Reorgs
+
+A reorg is absorbed below the user and the app. A stored proof is stale when,
+and only when, its root is not the active header's root at its height in the
+wallet's own headers; the monitor rechecks the proofs a reorg touches with a
+local header read and re-proves only those whose root moved, a few a pass. A
+transaction whose proof was lost reads `unproven` ("confirming"): its inputs
+stay allocated to it, its outputs stay spendable as an unproven creator's are,
+and nothing is failed until a competitor's checked proof arrives. The courier
+is asked once for it and told once only when it does not know it. A BEEF never
+carries a stored path whose root the wallet's headers do not hold: that
+ancestor goes in as raw bytes and the walk continues to proven ancestors.
+
 ## Records and releases
 
 [RELEASING.md](RELEASING.md) defines the machine gate and trusted publishing
 from release tags. [CHANGELOG.md](CHANGELOG.md) holds changes and migration
-notes; [docs/REORG-DIVERGENCES.md](docs/REORG-DIVERGENCES.md) records the reorg
-comparison. Licensed under MIT, as declared in [Cargo.toml](Cargo.toml).
+notes; [docs/REORG-DIVERGENCES.md](docs/REORG-DIVERGENCES.md) records where the
+reorg rule above differs from the reference. Licensed under MIT, as declared in [Cargo.toml](Cargo.toml).

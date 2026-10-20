@@ -8,9 +8,10 @@
 //! hash). Every run it reads the stored anchors within the last
 //! `REVIEW_HEIGHTS` heights below the persisted proof gate, fetches the
 //! canonical header per distinct height, fills an EMPTY stored block hash
-//! whose root is canonical, and re-proves every anchor whose merkle root
-//! disagrees (`reprove_anchor`: replace on a validated provider proof,
-//! retain on faults, demote only on positive evidence). A height whose
+//! whose root is canonical, and settles the anchors whose root the active
+//! header no longer carries, a few a pass (`reprove_moved_anchors`: replace
+//! on a validated provider proof, else demote to `unproven` with the inputs
+//! kept, then one courier re-ask; ruling 5 of 2026-10-20). A height whose
 //! header cannot be read is skipped (an unknown never reads as stale).
 //!
 //! While the gate is CLOSED (0: no header processed yet) the audit runs
@@ -28,7 +29,7 @@ use std::time::Duration;
 
 use super::{MonitorTask, TaskResult};
 use crate::monitor::reorg_ops::{
-    block_hash_of_header, merkle_root_of_header, reprove_anchor, stale_anchors_by_root,
+    block_hash_of_header, merkle_root_of_header, reprove_moved_anchors, stale_anchors_by_root,
     ReproveTally,
 };
 use crate::services::WalletServices;
@@ -159,14 +160,18 @@ where
                 txid = %anchor.txid,
                 height = anchor.height,
                 stored_root = %anchor.merkle_root,
-                canonical_root = %canonical_roots.get(&anchor.height).cloned().unwrap_or_default(),
+                active_root = %canonical_roots.get(&anchor.height).cloned().unwrap_or_default(),
                 marker = "reorg_stale_proof_found",
-                "review: a stored proof disagrees with the canonical header"
+                "review: a stored proof's root is gone from the active header at its height"
             );
-            let outcome =
-                reprove_anchor(self.storage.as_ref(), self.services.as_ref(), anchor).await;
-            report.tally.record(&anchor.txid, &outcome);
         }
+        reprove_moved_anchors(
+            self.storage.as_ref(),
+            self.services.as_ref(),
+            &stale,
+            &mut report.tally,
+        )
+        .await;
         Ok(report)
     }
 }
@@ -216,7 +221,8 @@ where
                         hashes_backfilled = report.hashes_backfilled,
                         replaced = report.tally.replaced,
                         demoted = report.tally.demoted,
-                        deferred = report.tally.deferred,
+                        postponed = report.tally.postponed,
+                        announced = report.tally.announced,
                         unchanged = report.tally.unchanged,
                         errors = report.tally.errors.len(),
                         marker = "reorg_review_pass",

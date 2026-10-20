@@ -48,6 +48,8 @@ mod proof_root_checks;
 #[cfg(test)]
 mod proof_root_tests;
 #[cfg(test)]
+mod reorg_below_the_user_tests;
+#[cfg(test)]
 mod reorg_tests;
 #[cfg(test)]
 mod sibling_bump_tests;

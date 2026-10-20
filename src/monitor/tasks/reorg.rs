@@ -9,15 +9,17 @@
 //! operation there is rarely any work here because the proof LAG keeps most
 //! orphan proofs out of storage in the first place.
 //!
-//! Ours conforms, with one stated difference (`docs/REORG-DIVERGENCES.md`):
-//! a row the chain POSITIVELY refutes (`reprove_anchor`: the tracker answers
-//! a definite false, at least two providers answer cleanly "not mined", no
-//! provider serves a path) is DEMOTED to the pre-proof state, because a
-//! retained stale proof refuses every spend that touches it (loop 8,
-//! 2026-09-07: 28 seats, `createAction` 400). Faults never demote. The
-//! queue is fed by the header task (a same-height hash change and the ring
-//! walk); the review task is the net for what the queue missed, and for a
-//! one-shot process whose queue does not outlive it.
+//! Ours keeps the queue, the aging and the three tries under the stack's
+//! reorg rule (rulings 5 and 7 of 2026-10-20; `docs/REORG-DIVERGENCES.md`):
+//! each deactivated header's proofs are rechecked with one local header read
+//! per height (`reprove_block_hash`); a proof whose root the active header
+//! still carries moves nothing; a proof whose root moved is replaced when a
+//! provider serves the active block's path, else demoted to `unproven` with
+//! its inputs still allocated and its outputs spendable, and the courier is
+//! asked once; a few a pass, the rest on the next try. Faults never demote.
+//! The queue is fed by the header task (a same-height hash change and the
+//! ring walk); the review task is the net for what the queue missed, and for
+//! a one-shot process whose queue does not outlive it.
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -136,7 +138,8 @@ where
                 height = header.height,
                 replaced = tally.replaced,
                 demoted = tally.demoted,
-                deferred = tally.deferred,
+                announced = tally.announced,
+                postponed = tally.postponed,
                 unchanged = tally.unchanged,
                 errors = tally.errors.len(),
                 marker = "reorg_header_processed",
@@ -146,11 +149,10 @@ where
             for e in &tally.errors {
                 result.add_error(e.clone());
             }
-            // The reference retries on `unchanged` or `unavailable` (ours:
-            // unchanged, deferred, a transient fault); a replacement or a
-            // demotion is final. After MAX_RETRY_COUNT tries the original
-            // proof data is retained and the header dropped: the review task
-            // is the net.
+            // Another try only for a stale proof left for the next pass or a
+            // fault; a kept root, a replacement and a demotion are final.
+            // After MAX_RETRY_COUNT tries the header is dropped: the review
+            // task is the net.
             if tally.wants_retry() {
                 if header.retry_count + 1 >= MAX_RETRY_COUNT {
                     tracing::warn!(
@@ -159,7 +161,7 @@ where
                         height = header.height,
                         tries = header.retry_count + 1,
                         marker = "reorg_max_retries_exceeded",
-                        "maximum retries exceeded, original retained"
+                        "maximum retries exceeded; the review task is the net for what is left"
                     );
                 } else {
                     let mut again = header.clone();
