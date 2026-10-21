@@ -16,6 +16,7 @@ The store's write lock (bsv-wallet-cli #44). A served `createAction` answered `d
 ### Fixed
 
 - `create_action` with two outputs naming one new basket (review F6, predating #44): `find_or_insert_output_basket` read on the reader inside the write transaction, so it could not see its own insert; a file store failed `UNIQUE constraint failed`, an in-memory store hung. It reads on the transaction's connection now (and no longer takes the storage). Tests: `two_outputs_to_one_new_basket_on_a_file_store`, `two_outputs_to_one_new_basket_in_memory`.
+- `StorageSqlx::allocate_change_input` (public; review F7, predating #44) read a candidate on the reader and marked it on the writer with no transaction and no guard, so two callers could allocate the same coin. The claim is now the `UPDATE` itself (`AND spendable = 1 AND spent_by IS NULL`, `rows_affected` checked); a coin taken meanwhile is skipped and the next candidate read. Test: `racing_callers_never_allocate_the_same_change_coin` (sixteen callers, three coins; red without the guard).
 
 ### Added
 
