@@ -1349,17 +1349,16 @@ async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
     let (_dir, wallet) = wallet().await;
     let (parsed, certifier) = issued_certificate(&wallet);
 
-    // One busy more than the tries: the call never sees the store clear.
-    wallet
-        .storage()
-        .busy_next_certificate_fields(CERTIFICATE_STORE_TRIES + 1);
+    // One busy more than the 3 tries: the call never sees the store clear.
+    // The count is a literal, so fewer tries leaves more than one busy.
+    wallet.storage().busy_next_certificate_fields(4);
     let error = store_issued(&wallet, &parsed, &certifier)
         .await
         .expect_err("the busy store is the caller's error");
     assert!(
         wallet.storage().take_busy_next_certificate_field()
             && !wallet.storage().take_busy_next_certificate_field(),
-        "exactly CERTIFICATE_STORE_TRIES tries"
+        "exactly 3 tries"
     );
     assert!(
         matches!(error, crate::Error::StorageError(_)),
@@ -1375,6 +1374,11 @@ async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
     assert!(
         message.contains("type BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="),
         "the error names the certificate type: {}",
+        message
+    );
+    assert!(
+        message.contains("tried 3 times"),
+        "the error says the store was tried 3 times: {}",
         message
     );
     assert!(
