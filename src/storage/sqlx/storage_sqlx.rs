@@ -168,6 +168,9 @@ pub struct StorageSqlx {
     /// process and not yet returned from (review 2 F1 of bsv-wallet-cli
     /// #44): a pre-check's dry run picks none of them.
     in_flight_picks: Arc<super::create_action::InFlightPicks>,
+    /// Tests only: the next `process_action` answers busy before acting.
+    #[cfg(test)]
+    busy_next_process_action: std::sync::atomic::AtomicBool,
 }
 
 impl StorageSqlx {
@@ -244,6 +247,8 @@ impl StorageSqlx {
             task_locks: RwLock::new(HashMap::new()),
             broadcast_memory,
             in_flight_picks: Default::default(),
+            #[cfg(test)]
+            busy_next_process_action: Default::default(),
         })
     }
 
@@ -301,6 +306,15 @@ impl StorageSqlx {
     /// go to [`writer`](Self::writer) or [`write_tx`](Self::write_tx).
     pub fn pool(&self) -> &SqlitePool {
         &self.reader
+    }
+
+    /// Tests only: the next `process_action` answers
+    /// `StoreBusy { SqliteBusy { code: 5 } }` before acting, as a busy store
+    /// would, so a door's busy path after its action is written is reached.
+    #[cfg(test)]
+    pub(crate) fn busy_next_process_action(&self) {
+        self.busy_next_process_action
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The in-flight pre-check picks of this process (`createAction`).
@@ -2268,6 +2282,16 @@ impl WalletStorageWriter for StorageSqlx {
         args: StorageProcessActionArgs,
     ) -> Result<StorageProcessActionResults> {
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+
+        #[cfg(test)]
+        if self
+            .busy_next_process_action
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(Error::StoreBusy {
+                reason: StoreBusyReason::SqliteBusy { code: 5 },
+            });
+        }
 
         super::process_action::process_action_internal(self, user_id, args).await
     }
