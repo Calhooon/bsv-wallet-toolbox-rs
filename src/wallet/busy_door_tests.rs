@@ -1280,46 +1280,102 @@ async fn a_busy_certificate_field_insert_writes_nothing_and_is_wallet_busy() {
     assert_eq!(certificate_rows(&wallet).await, (1, 1));
 }
 
-/// Review 4 G1: on the issuance path the store is written after the
-/// exchange with the certifier, a post to a third party that has issued. A
-/// busy there is never `WalletBusy` (a host would repeat the exchange): it is
-/// a storage error the caller sees, `Storage error: Store busy: ...`, with
-/// nothing stored.
-#[tokio::test]
-async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
-    use super::super::certificate_issuance::{store_certificate, ParseCertificateResponseResult};
+/// The issued certificate `store_certificate` is handed after the exchange
+/// with the certifier (serial number `[9; 32]`, one field), and the
+/// certifier.
+fn issued_certificate(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+) -> (
+    super::super::certificate_issuance::ParseCertificateResponseResult,
+    PublicKey,
+) {
     use bsv_rs::auth::certificates::Certificate;
 
-    let (_dir, wallet) = wallet().await;
     let certifier = PrivateKey::random().public_key();
     let subject = PublicKey::from_hex(&wallet.identity_key).unwrap();
     let mut cert_fields = HashMap::new();
     cert_fields.insert("name".to_string(), "encrypted".to_string());
-    let parsed = ParseCertificateResponseResult {
+    let parsed = super::super::certificate_issuance::ParseCertificateResponseResult {
         certificate: Certificate::new([7u8; 32], [9u8; 32], subject, certifier.clone()),
         server_nonce: String::new(),
         cert_fields,
         serial_number: [9u8; 32],
     };
+    (parsed, certifier)
+}
+
+/// `store_certificate` of the issued certificate.
+async fn store_issued(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    parsed: &super::super::certificate_issuance::ParseCertificateResponseResult,
+    certifier: &PublicKey,
+) -> crate::Result<bsv_rs::wallet::WalletCertificate> {
     let mut keyring = HashMap::new();
     keyring.insert("name".to_string(), "key".to_string());
-
-    wallet.storage().busy_next_certificate_field();
-    let stored = store_certificate(
+    super::super::certificate_issuance::store_certificate(
         wallet.storage(),
         &wallet.auth(),
-        &parsed,
+        parsed,
         &keyring,
-        &certifier,
+        certifier,
         &wallet.identity_key,
         "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
     )
-    .await;
-    let error = stored.expect_err("the busy store is the caller's error");
+    .await
+}
+
+/// Review 4 G1: on the issuance path the store is written after the
+/// exchange with the certifier, a post to a third party that has issued. A
+/// busy there is never `WalletBusy` (a host would repeat the exchange).
+/// Review 5 H2: the store is tried again, `CERTIFICATE_STORE_TRIES` times in
+/// all; a busy that never clears is a storage error, `Storage error: Store
+/// busy: ...`, naming the certificate's serial number and certifier so an
+/// operator can recover it, with nothing stored.
+#[tokio::test]
+async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
+    use super::super::certificate_issuance::{
+        CERTIFICATE_STORE_BACKOFF_MS, CERTIFICATE_STORE_TRIES,
+    };
+
+    let backoff_total: u64 = (0..CERTIFICATE_STORE_TRIES - 1)
+        .map(|n| CERTIFICATE_STORE_BACKOFF_MS << n)
+        .sum();
+    assert!(
+        backoff_total <= crate::storage::sqlx::STORE_BUSY_CEILING_MS,
+        "the tries wait {} ms in all, at most the store's ceiling",
+        backoff_total
+    );
+
+    let (_dir, wallet) = wallet().await;
+    let (parsed, certifier) = issued_certificate(&wallet);
+
+    // One busy more than the tries: the call never sees the store clear.
+    wallet
+        .storage()
+        .busy_next_certificate_fields(CERTIFICATE_STORE_TRIES + 1);
+    let error = store_issued(&wallet, &parsed, &certifier)
+        .await
+        .expect_err("the busy store is the caller's error");
+    assert!(
+        wallet.storage().take_busy_next_certificate_field()
+            && !wallet.storage().take_busy_next_certificate_field(),
+        "exactly CERTIFICATE_STORE_TRIES tries"
+    );
     assert!(
         matches!(error, crate::Error::StorageError(_)),
         "a busy after the exchange is a storage error: {:?}",
         error
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains(&parsed.certificate.serial_number_base64()),
+        "the error names the issued certificate's serial number: {}",
+        message
+    );
+    assert!(
+        message.contains(&certifier.to_hex()),
+        "the error names the certifier: {}",
+        message
     );
     let boundary: bsv_rs::Error = error.into();
     assert!(
@@ -1333,6 +1389,28 @@ async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
         boundary
     );
     assert_eq!(certificate_rows(&wallet).await, (0, 0), "nothing stored");
+}
+
+/// Review 5 H2: a busy that clears on the second try stores the issued
+/// certificate with its field, and the call succeeds.
+#[tokio::test]
+async fn a_busy_store_that_clears_on_the_second_try_stores_the_issued_certificate() {
+    let (_dir, wallet) = wallet().await;
+    let (parsed, certifier) = issued_certificate(&wallet);
+
+    wallet.storage().busy_next_certificate_fields(1);
+    let stored = store_issued(&wallet, &parsed, &certifier)
+        .await
+        .expect("the second try stores it");
+    assert_eq!(
+        stored.serial_number,
+        parsed.certificate.serial_number_base64()
+    );
+    assert!(
+        !wallet.storage().take_busy_next_certificate_field(),
+        "the busy was taken by the first try"
+    );
+    assert_eq!(certificate_rows(&wallet).await, (1, 1), "stored, once");
 }
 
 /// A root `failed` with its req at `req`, written directly (the shape an
