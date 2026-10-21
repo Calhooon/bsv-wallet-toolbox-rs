@@ -1342,7 +1342,7 @@ async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
         .sum();
     assert!(
         backoff_total <= crate::storage::sqlx::STORE_BUSY_CEILING_MS,
-        "the tries wait {} ms in all, at most the store's ceiling",
+        "the sleeps between tries are {} ms in all, at most the store's ceiling (each try can also wait up to that ceiling: about 16 s in one process, 31 s across processes)",
         backoff_total
     );
 
