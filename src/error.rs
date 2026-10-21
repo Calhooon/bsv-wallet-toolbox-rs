@@ -28,16 +28,16 @@ pub enum Error {
     #[error("Database error: {0}")]
     DatabaseError(String),
 
-    /// The store is busy, a transient refusal that wrote nothing: SQLite
-    /// answered primary result code 5 (`SQLITE_BUSY`; `SQLITE_BUSY_SNAPSHOT`,
-    /// 517, included), with `code` the extended code it gave, or the writer
-    /// connection was not acquired within the store's ceiling (the writer
-    /// pool's `acquire_timeout`, equal to `busy_timeout`, 5 s), with `code`
-    /// 5. Code 6 (`SQLITE_LOCKED`, a shared-cache or same-connection
-    /// conflict) is a deterministic bug and is not busy. The Display begins
-    /// exactly `Store busy: sqlite code N`; consumers classify on that prefix.
-    #[error("Store busy: sqlite code {code}")]
-    StoreBusy { code: i32 },
+    /// The store is busy, a transient refusal: the action wrote nothing,
+    /// built nothing and locked nothing, and the caller may repeat it
+    /// unchanged. `reason` says which busy it was (`StoreBusyReason`). The
+    /// Display begins exactly `Store busy: `, then the reason's words;
+    /// consumers classify on that prefix.
+    #[error("Store busy: {reason}")]
+    StoreBusy {
+        /// Which busy it was.
+        reason: StoreBusyReason,
+    },
 
     /// A database schema migration failed.
     #[error("Migration error: {0}")]
@@ -178,6 +178,44 @@ pub enum Error {
     Internal(String),
 }
 
+/// Why the store answered `Error::StoreBusy` (bsv-wallet-cli #44).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoreBusyReason {
+    /// SQLite answered primary result code 5 (`SQLITE_BUSY`;
+    /// `SQLITE_BUSY_SNAPSHOT`, 517, included), `code` the extended code it
+    /// gave. Code 6 (`SQLITE_LOCKED`, a shared-cache or same-connection
+    /// conflict) is a deterministic bug and is not busy. Display
+    /// `sqlite code N`.
+    SqliteBusy {
+        /// The extended SQLite result code.
+        code: i32,
+    },
+    /// The writer connection was not acquired within the store's ceiling
+    /// (the writer pool's `acquire_timeout`, equal to `busy_timeout`,
+    /// `STORE_BUSY_CEILING_MS`). A reader-pool timeout is not busy.
+    WriterNotAcquired,
+    /// `createAction`: the store moved between the pre-check and the write
+    /// lock twice (a pre-checked coin taken, or a proof stored, by another
+    /// writer each time), so the bounded retry ended with the action's
+    /// latest pre-check covered and its locked step not.
+    MovedUnderUs,
+}
+
+impl std::fmt::Display for StoreBusyReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreBusyReason::SqliteBusy { code } => write!(f, "sqlite code {code}"),
+            StoreBusyReason::WriterNotAcquired => {
+                f.write_str("the writer was not acquired within the store's ceiling")
+            }
+            StoreBusyReason::MovedUnderUs => {
+                f.write_str("the store moved between the pre-check and the write lock twice")
+            }
+        }
+    }
+}
+
 /// The `StoreBusy` code of a busy answer: the extended SQLite result code
 /// when the primary code is 5 (`SQLITE_BUSY`, 517 included). `None` for
 /// every other error, `SQLITE_LOCKED` (6) included, and for `PoolTimedOut`:
@@ -198,7 +236,9 @@ pub(crate) fn sqlite_busy_code(err: &sqlx::Error) -> Option<i32> {
 impl From<sqlx::Error> for Error {
     fn from(err: sqlx::Error) -> Self {
         match sqlite_busy_code(&err) {
-            Some(code) => Error::StoreBusy { code },
+            Some(code) => Error::StoreBusy {
+                reason: StoreBusyReason::SqliteBusy { code },
+            },
             None => Error::SqlxError(err.to_string()),
         }
     }
@@ -236,7 +276,9 @@ mod tests {
 
     #[test]
     fn store_busy_is_wallet_busy_with_no_retry_policy() {
-        match bsv_rs::Error::from(Error::StoreBusy { code: 517 }) {
+        match bsv_rs::Error::from(Error::StoreBusy {
+            reason: StoreBusyReason::SqliteBusy { code: 517 },
+        }) {
             bsv_rs::Error::WalletBusy {
                 detail,
                 retry_after_ms,
@@ -245,6 +287,36 @@ mod tests {
                 assert_eq!(retry_after_ms, None);
             }
             other => panic!("expected WalletBusy, got {other:?}"),
+        }
+    }
+
+    /// Every reason keeps the `Store busy: ` prefix and is `WalletBusy`
+    /// with its Display as the detail.
+    #[test]
+    fn every_store_busy_reason_is_wallet_busy_with_its_words() {
+        for (reason, words) in [
+            (StoreBusyReason::SqliteBusy { code: 5 }, "sqlite code 5"),
+            (
+                StoreBusyReason::WriterNotAcquired,
+                "the writer was not acquired within the store's ceiling",
+            ),
+            (
+                StoreBusyReason::MovedUnderUs,
+                "the store moved between the pre-check and the write lock twice",
+            ),
+        ] {
+            let err = Error::StoreBusy { reason };
+            assert_eq!(err.to_string(), format!("Store busy: {words}"));
+            match bsv_rs::Error::from(err) {
+                bsv_rs::Error::WalletBusy {
+                    detail,
+                    retry_after_ms,
+                } => {
+                    assert_eq!(detail, format!("Store busy: {words}"));
+                    assert_eq!(retry_after_ms, None);
+                }
+                other => panic!("expected WalletBusy, got {other:?}"),
+            }
         }
     }
 

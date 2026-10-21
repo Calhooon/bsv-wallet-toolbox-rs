@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::locked_inputs::locked_verdict_label;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, StoreBusyReason};
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{GetRawTxResult, UtxoVerdict, WalletServices};
 use crate::storage::entities::*;
@@ -67,7 +67,7 @@ pub const STORE_BUSY_CEILING_MS: u64 = 5000;
 /// `BEGIN IMMEDIATE` on `pool`: the one sanctioned way to open a transaction
 /// (`clippy.toml` disallows `Pool::begin` and `Pool::begin_with` elsewhere).
 /// `pool` is a writer pool: a `PoolTimedOut` here is the writer not acquired
-/// within the store's ceiling, `StoreBusy { code: 5 }`.
+/// within the store's ceiling, `StoreBusy` (`WriterNotAcquired`).
 #[allow(clippy::disallowed_methods)]
 pub(crate) async fn begin_immediate(
     pool: &SqlitePool,
@@ -79,7 +79,7 @@ pub(crate) async fn begin_immediate(
 
 /// The writer connection of `writer` (a writer pool) for single-statement
 /// writes, acquired at the site so that its `PoolTimedOut` is
-/// `StoreBusy { code: 5 }`: the writer not acquired within the store's
+/// `StoreBusy` (`WriterNotAcquired`): the writer not acquired within the store's
 /// ceiling, nothing written. Only the writer's timeout is busy; a reader-pool
 /// timeout converts to the plain SQLx error.
 pub(crate) async fn acquire_writer(
@@ -88,11 +88,13 @@ pub(crate) async fn acquire_writer(
     writer.acquire().await.map_err(writer_acquire_error)
 }
 
-/// A writer acquire's error: `PoolTimedOut` is `StoreBusy { code: 5 }`, any
+/// A writer acquire's error: `PoolTimedOut` is `StoreBusy` (`WriterNotAcquired`), any
 /// other error converts as every SQLx error does.
 fn writer_acquire_error(err: sqlx::Error) -> Error {
     match err {
-        sqlx::Error::PoolTimedOut => Error::StoreBusy { code: 5 },
+        sqlx::Error::PoolTimedOut => Error::StoreBusy {
+            reason: StoreBusyReason::WriterNotAcquired,
+        },
         other => other.into(),
     }
 }
@@ -6899,7 +6901,7 @@ mod tests {
 
     /// The writer's single-statement path: with the writer held, a
     /// single-statement write waits the ceiling and answers
-    /// `StoreBusy { code: 5 }` at its acquire.
+    /// `StoreBusy` (`WriterNotAcquired`) at its acquire.
     #[tokio::test]
     async fn the_writer_not_acquired_for_one_statement_is_store_busy() {
         let store = StorageSqlx::in_memory().await.unwrap();
@@ -6911,7 +6913,15 @@ mod tests {
             started.elapsed() >= std::time::Duration::from_millis(4500),
             "it waited the ceiling"
         );
-        assert!(matches!(err, Error::StoreBusy { code: 5 }), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                Error::StoreBusy {
+                    reason: StoreBusyReason::WriterNotAcquired
+                }
+            ),
+            "{err:?}"
+        );
         held.rollback().await.unwrap();
     }
 

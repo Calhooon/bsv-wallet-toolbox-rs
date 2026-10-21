@@ -14,7 +14,7 @@
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use bsv_wallet_toolbox_rs::{Error, StorageSqlx};
+use bsv_wallet_toolbox_rs::{Error, StorageSqlx, StoreBusyReason};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions, Connection, SqliteConnection};
 
@@ -89,7 +89,15 @@ async fn a_deferred_begin_that_read_first_answers_517_after_another_commit() {
     assert_eq!(code.as_deref(), Some("517"), "{err}");
 
     let err = Error::from(err);
-    assert!(matches!(err, Error::StoreBusy { code: 517 }), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            Error::StoreBusy {
+                reason: StoreBusyReason::SqliteBusy { code: 517 }
+            }
+        ),
+        "{err:?}"
+    );
     assert!(
         err.to_string().starts_with("Store busy: sqlite code 517"),
         "{err}"
@@ -248,7 +256,10 @@ async fn both_pools_keep_the_pragmas() {
 fn the_store_busy_display_prefix() {
     for code in [5, 517] {
         assert_eq!(
-            Error::StoreBusy { code }.to_string(),
+            Error::StoreBusy {
+                reason: StoreBusyReason::SqliteBusy { code }
+            }
+            .to_string(),
             format!("Store busy: sqlite code {code}")
         );
     }
@@ -310,8 +321,19 @@ async fn the_writer_not_acquired_within_the_ceiling_is_store_busy() {
         started.elapsed() >= Duration::from_millis(4500),
         "it waited the ceiling"
     );
-    assert!(matches!(err, Error::StoreBusy { code: 5 }), "{err:?}");
-    assert!(err.to_string().starts_with("Store busy: sqlite code 5"));
+    assert!(
+        matches!(
+            err,
+            Error::StoreBusy {
+                reason: StoreBusyReason::WriterNotAcquired
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "Store busy: the writer was not acquired within the store's ceiling"
+    );
 
     held.rollback().await.unwrap();
     assert_eq!(rows(&path).await, 0);
