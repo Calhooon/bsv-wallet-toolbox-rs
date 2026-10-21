@@ -199,7 +199,7 @@ impl StorageSqlx {
         .bind(attempts as i64)
         .bind(verdict)
         .bind(format!("+{} minutes", minutes))
-        .execute(self.writer())
+        .execute(&mut *self.writer_conn().await?)
         .await?;
         tracing::info!(
             output_id,
@@ -225,7 +225,7 @@ impl StorageSqlx {
              JOIN transactions src ON src.transaction_id = o.transaction_id \
              WHERE o.spendable = 0 AND t.status = 'failed' AND src.status <> 'failed'",
         )
-        .execute(self.writer())
+        .execute(&mut *self.writer_conn().await?)
         .await?;
         Ok(result.rows_affected() as u32)
     }
@@ -359,7 +359,7 @@ impl StorageSqlx {
                         )
                         .bind(now)
                         .bind(row.output_id)
-                        .execute(self.writer())
+                        .execute(&mut *self.writer_conn().await?)
                         .await?;
                         self.drop_locked_input_check(row.output_id).await?;
                     }
@@ -384,7 +384,7 @@ impl StorageSqlx {
                         .bind(check.attempts as i64)
                         .bind(LOCKED_VERDICT_SPENT_PROVEN)
                         .bind(row.output_id)
-                        .execute(self.writer())
+                        .execute(&mut *self.writer_conn().await?)
                         .await?;
                     }
                     tracing::warn!(
@@ -419,7 +419,7 @@ impl StorageSqlx {
                         .bind(label)
                         .bind(format!("+{} minutes", minutes))
                         .bind(row.output_id)
-                        .execute(self.writer())
+                        .execute(&mut *self.writer_conn().await?)
                         .await?;
                     }
                     tracing::info!(
@@ -442,7 +442,7 @@ impl StorageSqlx {
     async fn drop_locked_input_check(&self, output_id: i64) -> Result<()> {
         sqlx::query("DELETE FROM locked_input_checks WHERE output_id = ?")
             .bind(output_id)
-            .execute(self.writer())
+            .execute(&mut *self.writer_conn().await?)
             .await?;
         Ok(())
     }
