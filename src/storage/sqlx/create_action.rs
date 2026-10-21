@@ -374,7 +374,9 @@ fn random_reference() -> String {
 /// * `args` - The create action arguments
 ///
 /// The door is one step (bsv-wallet-cli #44; the stack's wallet machine,
-/// `Wallet.lean`: ok or refused, and a refusal changes no state). Before the
+/// `Wallet.lean`: ok or refused, and on a refusal the action writes nothing;
+/// the pre-check's evidence steps, a root-check record, a demotion of a
+/// refuted proof and the default basket, may be written first). Before the
 /// write lock, on a reader: the caller's `inputBEEF` roots are read against
 /// the tracker, the change coins are picked as the allocation would pick them
 /// (marking nothing), and the BEEF those coins need is assembled once so that
@@ -10277,10 +10279,11 @@ mod tests {
         }
 
         /// Option B (the captain's ruling of 2026-10-21): a BEEF failure is a
-        /// refusal that changes nothing. The only change coin's funding
-        /// transaction is unproven and its parent is not stored; createAction
-        /// asks no provider (the services here would answer) and refuses,
-        /// naming the parent. The coins, the action's row, its label, tag and
+        /// refusal, and the action writes nothing. The only change coin's
+        /// funding transaction is unproven and its parent is not stored;
+        /// createAction asks no provider (the services here would answer),
+        /// skips the coin, and refuses `Unspendable coin:`, naming the coin
+        /// and the parent. The coins, the action's row, its label, tag and
         /// basket, their links and the sequence counter are as they were.
         #[tokio::test]
         async fn a_beef_failure_refuses_with_nothing_written() {
