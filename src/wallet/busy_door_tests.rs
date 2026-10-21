@@ -125,7 +125,10 @@ fn assert_wallet_busy<T: std::fmt::Debug>(result: bsv_rs::Result<T>) {
             detail,
             retry_after_ms,
         }) => {
-            assert_eq!(detail, "Store busy: sqlite code 5");
+            assert_eq!(
+                detail,
+                "Store busy: the writer was not acquired within the store's ceiling"
+            );
             assert_eq!(retry_after_ms, None, "the store sets no retry policy");
         }
         other => panic!("expected WalletBusy, got {other:?}"),

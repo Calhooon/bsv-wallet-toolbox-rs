@@ -72,7 +72,7 @@ pub mod storage;
 pub mod tsc_proof;
 pub mod wallet;
 
-pub use error::{Error, Result};
+pub use error::{Error, Result, StoreBusyReason};
 
 // Re-export storage types
 pub use storage::{
