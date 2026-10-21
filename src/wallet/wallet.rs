@@ -1017,7 +1017,7 @@ where
         args: GetPublicKeyArgs,
         originator: &str,
     ) -> bsv_rs::Result<GetPublicKeyResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for public key revelation
         if let Some(ref protocol_id) = args.protocol_id {
             self.check_protocol_permission(
@@ -1026,14 +1026,13 @@ where
                 None,
                 crate::managers::PermissionUsageType::PublicKey,
             )
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+            .await?;
         }
         self.proto_get_public_key(args)
     }
 
     async fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_rs::Result<EncryptResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for encryption
         self.check_protocol_permission(
             originator,
@@ -1041,13 +1040,12 @@ where
             None,
             crate::managers::PermissionUsageType::Encrypting,
         )
-        .await
-        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        .await?;
         self.proto_encrypt(args)
     }
 
     async fn decrypt(&self, args: DecryptArgs, originator: &str) -> bsv_rs::Result<DecryptResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for decryption
         self.check_protocol_permission(
             originator,
@@ -1055,8 +1053,7 @@ where
             None,
             crate::managers::PermissionUsageType::Encrypting,
         )
-        .await
-        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        .await?;
         self.proto_decrypt(args)
     }
 
@@ -1065,7 +1062,7 @@ where
         args: CreateHmacArgs,
         originator: &str,
     ) -> bsv_rs::Result<CreateHmacResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for HMAC
         self.check_protocol_permission(
             originator,
@@ -1073,8 +1070,7 @@ where
             None,
             crate::managers::PermissionUsageType::Hmac,
         )
-        .await
-        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        .await?;
         self.proto_create_hmac(args)
     }
 
@@ -1083,7 +1079,7 @@ where
         args: VerifyHmacArgs,
         originator: &str,
     ) -> bsv_rs::Result<VerifyHmacResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for HMAC verification
         self.check_protocol_permission(
             originator,
@@ -1091,8 +1087,7 @@ where
             None,
             crate::managers::PermissionUsageType::Hmac,
         )
-        .await
-        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        .await?;
         self.proto_verify_hmac(args)
     }
 
@@ -1101,7 +1096,7 @@ where
         args: CreateSignatureArgs,
         originator: &str,
     ) -> bsv_rs::Result<CreateSignatureResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for signing
         self.check_protocol_permission(
             originator,
@@ -1109,8 +1104,7 @@ where
             None,
             crate::managers::PermissionUsageType::Signing,
         )
-        .await
-        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        .await?;
         self.proto_create_signature(args)
     }
 
@@ -1119,7 +1113,7 @@ where
         args: VerifySignatureArgs,
         originator: &str,
     ) -> bsv_rs::Result<VerifySignatureResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
         self.proto_verify_signature(args)
     }
 
@@ -1128,7 +1122,7 @@ where
         args: InterfaceRevealCounterpartyArgs,
         originator: &str,
     ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Convert interface args to proto_wallet args
         use bsv_rs::wallet::RevealCounterpartyKeyLinkageArgs as ProtoRevealCounterpartyArgs;
@@ -1167,7 +1161,7 @@ where
         args: InterfaceRevealSpecificArgs,
         originator: &str,
     ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Convert interface args to proto_wallet args
         use bsv_rs::wallet::{
@@ -1216,7 +1210,7 @@ where
         args: CreateActionArgs,
         originator: &str,
     ) -> bsv_rs::Result<CreateActionResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Serialize spending operations to prevent UTXO contention and
         // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).
@@ -1232,8 +1226,7 @@ where
 
             if total_satoshis > 0 {
                 self.check_spending_permission(originator, total_satoshis)
-                    .await
-                    .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+                    .await?;
             }
 
             // Also check basket access for any outputs that target specific baskets
@@ -1245,8 +1238,7 @@ where
                             basket,
                             crate::managers::BasketUsageType::Insertion,
                         )
-                        .await
-                        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+                        .await?;
                     }
                 }
             }
@@ -1256,11 +1248,7 @@ where
         let args = with_trust_self_default(args, self.options.trust_self.as_deref());
 
         // Call storage to create the action
-        let storage_result = self
-            .storage
-            .create_action(&auth, args.clone())
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let storage_result = self.storage.create_action(&auth, args.clone()).await?;
 
         // Check if we should sign and process immediately
         let sign_and_process = args
@@ -1843,7 +1831,7 @@ where
         args: SignActionArgs,
         originator: &str,
     ) -> bsv_rs::Result<SignActionResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Serialize spending operations (signs and broadcasts pending transactions).
         let _spend_guard = self.spend_lock.lock().await;
@@ -1977,6 +1965,10 @@ where
 
         let mut process_result = match self.storage.process_action(&auth, process_args).await {
             Ok(result) => result,
+            // Busy: the store refused before acting and wrote nothing. The
+            // action is not aborted and the pending transaction stays cached,
+            // so the caller may repeat this signAction unchanged.
+            Err(e @ Error::StoreBusy { .. }) => return Err(e.into()),
             Err(e) => {
                 // Processing failed - abort the transaction to release locked UTXOs
                 tracing::error!(reference = %reference, error = %e, "Process action failed, aborting transaction to release UTXOs");
@@ -2189,18 +2181,14 @@ where
         args: AbortActionArgs,
         originator: &str,
     ) -> bsv_rs::Result<AbortActionResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Serialize spending operations (restores locked UTXOs).
         let _spend_guard = self.spend_lock.lock().await;
 
         let auth = self.auth();
 
-        let result = self
-            .storage
-            .abort_action(&auth, args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let result = self.storage.abort_action(&auth, args).await?;
 
         Ok(result)
     }
@@ -2210,15 +2198,11 @@ where
         args: ListActionsArgs,
         originator: &str,
     ) -> bsv_rs::Result<ListActionsResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         let auth = self.auth();
 
-        let result = self
-            .storage
-            .list_actions(&auth, args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let result = self.storage.list_actions(&auth, args).await?;
 
         Ok(result)
     }
@@ -2228,7 +2212,7 @@ where
         args: InternalizeActionArgs,
         originator: &str,
     ) -> bsv_rs::Result<InternalizeActionResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Serialize spending operations (creates new spendable outputs).
         let _spend_guard = self.spend_lock.lock().await;
@@ -2315,11 +2299,7 @@ where
 
         let auth = self.auth();
 
-        let result = self
-            .storage
-            .internalize_action(&auth, args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let result = self.storage.internalize_action(&auth, args).await?;
 
         // Broadcast happens synchronously inside the storage layer's
         // internalize_action (TS parity: wallet-toolbox storage/methods/
@@ -2350,7 +2330,7 @@ where
         args: ListOutputsArgs,
         originator: &str,
     ) -> bsv_rs::Result<ListOutputsResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // BRC-98/99: Check basket access permission for listing
         self.check_basket_permission(
@@ -2358,16 +2338,11 @@ where
             &args.basket,
             crate::managers::BasketUsageType::Listing,
         )
-        .await
-        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        .await?;
 
         let auth = self.auth();
 
-        let result = self
-            .storage
-            .list_outputs(&auth, args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let result = self.storage.list_outputs(&auth, args).await?;
 
         Ok(result)
     }
@@ -2377,7 +2352,7 @@ where
         args: RelinquishOutputArgs,
         originator: &str,
     ) -> bsv_rs::Result<RelinquishOutputResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Serialize spending operations (modifies UTXO state).
         let _spend_guard = self.spend_lock.lock().await;
@@ -2388,16 +2363,11 @@ where
             &args.basket,
             crate::managers::BasketUsageType::Removal,
         )
-        .await
-        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        .await?;
 
         let auth = self.auth();
 
-        let _result = self
-            .storage
-            .relinquish_output(&auth, args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let _result = self.storage.relinquish_output(&auth, args).await?;
 
         Ok(RelinquishOutputResult { relinquished: true })
     }
@@ -2411,7 +2381,7 @@ where
         args: AcquireCertificateArgs,
         originator: &str,
     ) -> bsv_rs::Result<WalletCertificate> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Route based on acquisition protocol:
         // - Direct: certificate data is already provided in args, store directly
@@ -2456,11 +2426,7 @@ where
                 };
 
                 // Persist the certificate
-                let cert_id = self
-                    .storage
-                    .insert_certificate(&auth, table_cert)
-                    .await
-                    .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+                let cert_id = self.storage.insert_certificate(&auth, table_cert).await?;
 
                 // Persist certificate fields with their master keys from the keyring
                 let keyring = args.keyring_for_subject.as_ref();
@@ -2481,10 +2447,7 @@ where
                         updated_at: now,
                     };
 
-                    self.storage
-                        .insert_certificate_field(&auth, field)
-                        .await
-                        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+                    self.storage.insert_certificate_field(&auth, field).await?;
                 }
 
                 Ok(certificate)
@@ -2503,7 +2466,7 @@ where
                     originator,
                 )
                 .await
-                .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))
+                .map_err(Into::into)
             }
         }
     }
@@ -2513,15 +2476,11 @@ where
         args: ListCertificatesArgs,
         originator: &str,
     ) -> bsv_rs::Result<ListCertificatesResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         let auth = self.auth();
 
-        let result = self
-            .storage
-            .list_certificates(&auth, args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let result = self.storage.list_certificates(&auth, args).await?;
 
         Ok(result)
     }
@@ -2531,7 +2490,7 @@ where
         args: ProveCertificateArgs,
         originator: &str,
     ) -> bsv_rs::Result<ProveCertificateResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // BRC-98/99: Check certificate disclosure permission
         self.check_certificate_permission(
@@ -2542,8 +2501,7 @@ where
             &args.fields_to_reveal,
             crate::managers::CertificateUsageType::Disclosure,
         )
-        .await
-        .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        .await?;
 
         let auth = self.auth();
 
@@ -2558,11 +2516,7 @@ where
             privileged_reason: args.privileged_reason.clone(),
         };
 
-        let list_result = self
-            .storage
-            .list_certificates(&auth, list_args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let list_result = self.storage.list_certificates(&auth, list_args).await?;
 
         // Filter by serial number, subject, revocation outpoint, and signature
         let matching_certs: Vec<_> = list_result
@@ -2643,15 +2597,11 @@ where
         args: RelinquishCertificateArgs,
         originator: &str,
     ) -> bsv_rs::Result<RelinquishCertificateResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         let auth = self.auth();
 
-        let _result = self
-            .storage
-            .relinquish_certificate(&auth, args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let _result = self.storage.relinquish_certificate(&auth, args).await?;
 
         Ok(RelinquishCertificateResult { relinquished: true })
     }
@@ -2665,7 +2615,7 @@ where
         args: DiscoverByIdentityKeyArgs,
         originator: &str,
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         let auth = self.auth();
         let identity_key_hex = &args.identity_key;
@@ -2683,11 +2633,7 @@ where
             ..Default::default()
         };
 
-        let certs = self
-            .storage
-            .find_certificates(&auth, find_args)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let certs = self.storage.find_certificates(&auth, find_args).await?;
 
         let local_certs: Vec<bsv_rs::wallet::IdentityCertificate> = certs
             .into_iter()
@@ -2741,7 +2687,7 @@ where
         args: DiscoverByAttributesArgs,
         originator: &str,
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Overlay discovery: query ls_identity via SLAP resolution
         let resolver = match self.chain {
@@ -2771,7 +2717,7 @@ where
     // =========================================================================
 
     async fn is_authenticated(&self, originator: &str) -> bsv_rs::Result<AuthenticatedResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Wallet is always authenticated (it has a key)
         Ok(AuthenticatedResult {
@@ -2783,7 +2729,7 @@ where
         &self,
         originator: &str,
     ) -> bsv_rs::Result<AuthenticatedResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         // Wallet is always authenticated
         Ok(AuthenticatedResult {
@@ -2792,13 +2738,9 @@ where
     }
 
     async fn get_height(&self, originator: &str) -> bsv_rs::Result<GetHeightResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
-        let height = self
-            .services
-            .get_height()
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let height = self.services.get_height().await?;
 
         Ok(GetHeightResult { height })
     }
@@ -2808,13 +2750,9 @@ where
         args: GetHeaderArgs,
         originator: &str,
     ) -> bsv_rs::Result<GetHeaderResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
-        let header_bytes = self
-            .services
-            .get_header_for_height(args.height)
-            .await
-            .map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        let header_bytes = self.services.get_header_for_height(args.height).await?;
 
         // GetHeaderResult expects header as hex string
         Ok(GetHeaderResult {
@@ -2823,7 +2761,7 @@ where
     }
 
     async fn get_network(&self, originator: &str) -> bsv_rs::Result<GetNetworkResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         let network = match self.chain {
             Chain::Main => Network::Mainnet,
@@ -2834,7 +2772,7 @@ where
     }
 
     async fn get_version(&self, originator: &str) -> bsv_rs::Result<GetVersionResult> {
-        validate_originator(originator).map_err(|e| bsv_rs::Error::WalletError(e.to_string()))?;
+        validate_originator(originator)?;
 
         Ok(GetVersionResult {
             version: WALLET_VERSION.to_string(),
@@ -4415,3 +4353,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "busy_door_tests.rs"]
+mod busy_door_tests;
