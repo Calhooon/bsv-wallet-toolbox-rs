@@ -13,6 +13,10 @@ The store's write lock (bsv-wallet-cli #44). A served `createAction` answered `d
 - No write lock is held across a service or a chain-tracker await. `create_action` reads the roots of the caller's `inputBEEF` against the tracker before its transaction opens (the reference's `validateRequiredInputs` does so before any allocation), commits the allocation, then assembles the input BEEF on a reader with no lock held: the walk's tracker reads and its provider fetches (a missing proof, a missing ancestor) used to run inside the transaction. A BEEF that then fails takes the allocation back in one write transaction (the inputs released, the action's outputs, label links and row deleted), so the call fails as it did. Between the commit and the BEEF the action's row exists, `unsigned`, without `input_beef`.
 - The BEEF walk (`beef_bfs_walk`, `compact_stored_beef`, `rebuild_beef_for_broadcast`, `check_unchecked_stored_proof_on`) reads on the caller's connection and writes through a `writer` it is passed, each write after the network answered. The test that pinned the proof fetch on the caller's open transaction now pins it through the writer (`test_build_input_beef_fetches_a_missing_proof_and_stores_it_through_the_writer`).
 
+### Fixed
+
+- `create_action` with two outputs naming one new basket (review F6, predating #44): `find_or_insert_output_basket` read on the reader inside the write transaction, so it could not see its own insert; a file store failed `UNIQUE constraint failed`, an in-memory store hung. It reads on the transaction's connection now (and no longer takes the storage). Tests: `two_outputs_to_one_new_basket_on_a_file_store`, `two_outputs_to_one_new_basket_in_memory`.
+
 ### Added
 
 - `StorageSqlx::writer(&self) -> &SqlitePool` and `StorageSqlx::write_tx(&self) -> Result<sqlx::Transaction<'static, Sqlite>>`; `storage::sqlx::STORE_BUSY_CEILING_MS` (5000).

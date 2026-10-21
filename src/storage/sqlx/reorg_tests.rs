@@ -593,7 +593,7 @@ async fn demoting_a_stale_proof_reverts_to_the_pre_proof_state_and_keeps_the_coi
     .await;
     let basket_id = {
         let mut conn = s.pool().acquire().await.unwrap();
-        find_or_insert_output_basket(&s, &mut conn, user_id, "default")
+        find_or_insert_output_basket(&mut conn, user_id, "default")
             .await
             .unwrap()
             .basket_id
