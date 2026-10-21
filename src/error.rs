@@ -268,8 +268,10 @@ impl From<sqlx::Error> for Error {
 }
 
 /// The toolbox error at the `WalletInterface` boundary. A `StoreBusy` is
-/// bsv-rs's `WalletBusy`: the store refused before acting and nothing was
-/// written, built or locked, so the caller may repeat the call unchanged.
+/// bsv-rs's `WalletBusy`: the store refused before acting and the refused
+/// step wrote nothing, so the caller may repeat it unchanged (a
+/// `createAction` whose `processAction` was busy keeps its written action
+/// for a `signAction` on its reference).
 /// `retry_after_ms` is `None`: the store does not know the host's retry
 /// policy, and the host sets its own. An `SdkError` passes its bsv-rs error
 /// through. Every other variant is `WalletError` with the toolbox Display,
