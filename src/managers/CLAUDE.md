@@ -177,10 +177,10 @@ Returned by `sync_from_reader` and `sync_to_writer`. Contains counts and a human
 ### Sync-Safe Cached State
 
 The manager maintains two `std::sync::RwLock` caches for synchronous trait methods:
-- `cached_settings` - Populated by `make_available()`, used by `WalletStorageReader::get_settings()` (returns `&TableSettings`)
+- `cached_settings` - Populated by `make_available()`, used by `WalletStorageReader::get_settings()` (returns an owned `TableSettings`)
 - `services_sync` - Populated by `set_services()`, used by `WalletStorageReader::get_services()` (returns `Result<Arc<dyn WalletServices>>`)
 
-These use `std::sync::RwLock` (not `tokio::sync::RwLock`) because the trait methods are synchronous. Before `make_available()` is called, `get_settings()` returns a default `TableSettings` via `OnceLock` fallback.
+These use `std::sync::RwLock` (not `tokio::sync::RwLock`) because the trait methods are synchronous. Before `make_available()` is called, `get_settings()` returns `TableSettings::default()`.
 
 ### Trait Implementations
 
