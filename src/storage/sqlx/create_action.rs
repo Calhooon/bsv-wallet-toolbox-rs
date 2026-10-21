@@ -387,9 +387,11 @@ fn random_reference() -> String {
 /// stored bytes with the tracker's answers already in hand: no service and no
 /// tracker is awaited under the lock. A coin taken meanwhile, or a root the
 /// pre-check did not read, rolls the transaction back (nothing written) and
-/// the pre-check runs once more; the second time the call refuses
+/// the pre-check runs once more; the second time a coin taken refuses
 /// `StoreBusy` (`MovedUnderUs`): the latest pre-check covered the action,
-/// so the refusal is transient, never `InsufficientFunds`. The coins a
+/// so the refusal is transient, never `InsufficientFunds`; a root unread the
+/// second time refuses `ServiceError` naming its height (the header service
+/// was not read for it; the store did not move). The coins a
 /// pre-check picks are reserved in this process until the call returns
 /// (`PickReservation`), so concurrent calls here never pick the same coin;
 /// the re-check is for another process's writes. No provider is asked: an
@@ -474,10 +476,20 @@ pub async fn create_action_at_door_internal(
             Step::Done(result) => return Ok(*result),
             Step::Again(why) => {
                 if again.is_some() {
-                    // The latest pre-check covered the action and the store
-                    // moved under it again: transient, never a shortfall.
-                    return Err(DoorRefusal::Create(Error::StoreBusy {
-                        reason: StoreBusyReason::MovedUnderUs,
+                    return Err(DoorRefusal::Create(match why {
+                        // A root the header service was not read for before
+                        // the lock, twice: the store did not move, the header
+                        // service's answer is missing. A service refusal,
+                        // naming the height, never StoreBusy.
+                        Again::NotPrechecked { height, root } => Error::ServiceError(format!(
+                            "the header service was not read for the merkle root {root} at height {height} before the write lock, twice; nothing written"
+                        )),
+                        // The latest pre-check covered the action and the
+                        // store moved under it again: transient, never a
+                        // shortfall.
+                        Again::Uncovered(_) => Error::StoreBusy {
+                            reason: StoreBusyReason::MovedUnderUs,
+                        },
                     }));
                 }
                 tracing::info!(
@@ -10637,6 +10649,114 @@ mod tests {
                 )
                 .await,
                 1
+            );
+        }
+
+        /// One proof a `StagedProvingTracker` stores: (trigger root, txid, raw
+        /// tx, proof, height).
+        type ProofStage = (String, String, Vec<u8>, Vec<u8>, u32);
+
+        /// Stores the next proof of `stages` each time its trigger root is
+        /// asked (the pre-check, no lock held): the monitor storing a proof
+        /// between each pre-check and its write lock.
+        struct StagedProvingTracker {
+            writer: sqlx::SqlitePool,
+            stages: Vec<ProofStage>,
+            stored: std::sync::Mutex<HashSet<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl ChainTracker for StagedProvingTracker {
+            async fn is_valid_root_for_height(
+                &self,
+                root: &str,
+                _height: u32,
+            ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+                for (when, txid, raw, proof, height) in &self.stages {
+                    if when == root && self.stored.lock().unwrap().insert(txid.clone()) {
+                        let now = Utc::now();
+                        sqlx::query(
+                            "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) \
+                             VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)",
+                        )
+                        .bind(txid)
+                        .bind(*height as i64)
+                        .bind("ab".repeat(32))
+                        .bind(txid)
+                        .bind(proof)
+                        .bind(raw)
+                        .bind(now)
+                        .bind(now)
+                        .execute(&self.writer)
+                        .await
+                        .expect("the writer is free during the pre-check");
+                    }
+                }
+                Ok(true)
+            }
+
+            async fn current_height(
+                &self,
+            ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+                Ok(100_000)
+            }
+        }
+
+        /// A root left unread by the pre-check twice (a proof stored after
+        /// each pre-check): the store did not move under the lock, the header
+        /// service was not read for that root. The call refuses with the
+        /// service-class error naming the height (a host's 502), never
+        /// `StoreBusy`, and the action wrote nothing.
+        #[tokio::test]
+        async fn a_root_unread_twice_refuses_as_a_service_error_naming_its_height() {
+            let (storage, user_id) = setup().await;
+            want_one_change_coin(&storage).await;
+            let grandparent = tx_spending(None, 0x61, 70_000);
+            seed_known(&storage, user_id, &grandparent, true).await;
+            let parent = tx_spending(Some(&grandparent.id()), 0x62, 60_000);
+            seed_known(&storage, user_id, &parent, false).await;
+            let funding = tx_spending(Some(&parent.id()), 0x63, 50_000);
+            seed_change_coin(&storage, user_id, &funding, false).await;
+
+            let tracker = StagedProvingTracker {
+                writer: storage.writer().clone(),
+                stages: vec![
+                    (
+                        grandparent.id(),
+                        parent.id(),
+                        parent.to_binary(),
+                        bump_for(&parent.id(), 901).to_binary(),
+                        901,
+                    ),
+                    (
+                        parent.id(),
+                        funding.id(),
+                        funding.to_binary(),
+                        bump_for(&funding.id(), 902).to_binary(),
+                        902,
+                    ),
+                ],
+                stored: Default::default(),
+            };
+            let err = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect_err("the second pre-check left a root unread");
+            match &err {
+                Error::ServiceError(text) => assert!(
+                    text.contains("at height 902") && text.contains(&funding.id()),
+                    "{text}"
+                ),
+                other => panic!("expected the service-class refusal, got {other:?}"),
+            }
+            assert!(err.to_string().starts_with("Service error: "), "{err}");
+            assert_eq!(
+                count(
+                    &storage,
+                    "SELECT COUNT(*) FROM transactions WHERE description = 'the door in one step'"
+                )
+                .await,
+                0,
+                "the action wrote nothing"
             );
         }
 
