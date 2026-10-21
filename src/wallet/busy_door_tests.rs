@@ -63,6 +63,16 @@ async fn fund(wallet: &Wallet<StorageSqlx, MockWalletServices>) {
 /// non-P2PKH `lock` (`OP_TRUE`) is signed without the derived key check, so
 /// createAction reaches processAction.
 async fn fund_with(wallet: &Wallet<StorageSqlx, MockWalletServices>, lock: &[u8]) -> i64 {
+    fund_tagged(wallet, lock, 0).await
+}
+
+/// `fund_with`, the coin's parent spending outpoint `tag:0` (its own txid
+/// per tag), so a wallet can be funded with many coins.
+async fn fund_tagged(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    lock: &[u8],
+    tag: u32,
+) -> i64 {
     let pay_lock = || lock.to_vec();
     let storage = wallet.storage();
     let basket = storage
@@ -70,7 +80,7 @@ async fn fund_with(wallet: &Wallet<StorageSqlx, MockWalletServices>, lock: &[u8]
         .await
         .unwrap();
     let mut parent = Transaction::new();
-    let mut input = TransactionInput::new("00".repeat(32), 0xffff_ffff);
+    let mut input = TransactionInput::new(format!("{tag:064x}"), 0xffff_ffff);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
     parent.inputs.push(input);
     parent.outputs.push(TransactionOutput {
@@ -98,9 +108,14 @@ async fn fund_with(wallet: &Wallet<StorageSqlx, MockWalletServices>, lock: &[u8]
     .unwrap();
     let transaction_id = sqlx::query(
         "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) \
-         VALUES (?, 'completed', 'funding-ref', 0, 100000, 1, 0, 'funding', ?, ?, ?, ?)",
+         VALUES (?, 'completed', ?, 0, 100000, 1, 0, 'funding', ?, ?, ?, ?)",
     )
     .bind(wallet.user_id)
+    .bind(if tag == 0 {
+        "funding-ref".to_string()
+    } else {
+        format!("funding-ref-{tag}")
+    })
     .bind(&txid)
     .bind(&raw)
     .bind(now)
@@ -1130,4 +1145,70 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
         "unmined",
         "the monitor's send-waiting pass healed the req"
     );
+}
+
+/// One store per file per process (bsv-wallet-cli #44, the CLI review of
+/// 2026-10-21): the host daemon gave its `Wallet` and its `Monitor` two
+/// `StorageSqlx` over the one file, two writer pools meeting in SQLite.
+/// Built over two handles of one store (a clone), they hold one writer:
+/// the writer taken through the monitor's handle is the wallet's too. Then
+/// 300 rounds of the monitor's pass beside the wallet's `createAction`:
+/// never `WalletBusy`, every action done.
+#[tokio::test]
+async fn a_wallet_and_a_monitor_over_one_store_share_the_writer() {
+    const ROUNDS: u32 = 300;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shared.db").to_string_lossy().to_string();
+    let store = StorageSqlx::open(&path).await.unwrap();
+    let root = PrivateKey::random();
+    store
+        .migrate("shared-store-tests", &root.public_key().to_hex())
+        .await
+        .unwrap();
+    store.make_available().await.unwrap();
+    let monitor_store = std::sync::Arc::new(store.clone());
+    let wallet = Wallet::new(Some(root), store, MockWalletServices::new())
+        .await
+        .unwrap();
+    let monitor = crate::Monitor::new(
+        monitor_store.clone(),
+        std::sync::Arc::new(MockWalletServices::new()),
+    );
+
+    {
+        let held = monitor_store.writer().acquire().await.unwrap();
+        assert_eq!(wallet.storage().writer().size(), 1);
+        assert_eq!(
+            wallet.storage().writer().num_idle(),
+            0,
+            "the writer the monitor's handle holds is the wallet's writer"
+        );
+        drop(held);
+    }
+
+    let lock = own_lock(&wallet);
+    for tag in 1..=ROUNDS {
+        fund_tagged(&wallet, &lock, tag).await;
+    }
+    for round in 0..ROUNDS {
+        let (created, pass) = tokio::join!(
+            wallet.create_action(labelled_payment(true), ORIGINATOR),
+            monitor.run_once()
+        );
+        match created {
+            Ok(r) => assert!(r.txid.is_some(), "round {round}"),
+            Err(e) => panic!("round {round}: createAction beside the monitor: {e:?}"),
+        }
+        if let Err(e) = pass {
+            panic!("round {round}: the monitor's pass beside createAction: {e:?}");
+        }
+    }
+    let (done,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM transactions WHERE is_outgoing = 1 AND status = 'nosend'",
+    )
+    .fetch_one(wallet.storage().pool())
+    .await
+    .unwrap();
+    assert_eq!(done, i64::from(ROUNDS));
+    assert_eq!(wallet.storage().writer().size(), 1, "one writer connection");
 }

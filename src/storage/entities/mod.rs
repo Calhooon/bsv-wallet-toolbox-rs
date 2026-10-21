@@ -125,7 +125,7 @@ pub struct TableUser {
 }
 
 /// Wallet settings (singleton).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableSettings {
     /// Settings ID (optional since remote servers may not return it).
