@@ -84,6 +84,6 @@ pub use proof_root_checks::{
 };
 pub use storage_sqlx::{
     RetireOutcome, StorageSqlx, UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT,
-    DEFAULT_MAX_OUTPUT_SCRIPT,
+    DEFAULT_MAX_OUTPUT_SCRIPT, STORE_BUSY_CEILING_MS,
 };
 pub use sync::entity_names;

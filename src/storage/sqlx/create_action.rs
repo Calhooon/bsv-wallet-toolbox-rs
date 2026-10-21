@@ -2230,7 +2230,8 @@ fn merge_beef_linked(beef: &mut Beef, other: &Beef) {
 /// bytes on disk. "BEEF structure is invalid" alone cost a seat a day of
 /// diagnosis (LOW p25, 2026-09-04): the sorter knows exactly which inputs
 /// are missing and which entries it could not place, so say so, and write
-/// the hex to `/tmp/beef-rejected-<millis>.hex` for a repro.
+/// the hex to `beef-rejected-<millis>.hex` under `std::env::temp_dir()`
+/// (`$TMPDIR`) for a repro.
 pub(super) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String {
     let sr = beef.sort_txs();
     let short = |v: &[String]| -> String {
@@ -2244,9 +2245,12 @@ pub(super) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String
         }
     };
     let bytes = beef.to_binary();
-    let dump = format!("/tmp/beef-rejected-{}.hex", Utc::now().timestamp_millis());
+    let dump = std::env::temp_dir().join(format!(
+        "beef-rejected-{}.hex",
+        Utc::now().timestamp_millis()
+    ));
     let dumped = match std::fs::write(&dump, hex::encode(&bytes)) {
-        Ok(()) => dump,
+        Ok(()) => dump.display().to_string(),
         Err(e) => format!("not written ({e})"),
     };
     format!(
@@ -8112,7 +8116,10 @@ mod tests {
             "names the root: {text}"
         );
         assert!(
-            text.contains("dump /tmp/beef-rejected-"),
+            text.contains(&format!(
+                "dump {}",
+                std::env::temp_dir().join("beef-rejected-").display()
+            )),
             "points at the dump: {text}"
         );
         let path = text.rsplit("dump ").next().unwrap().to_string();

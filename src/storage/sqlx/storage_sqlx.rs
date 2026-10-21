@@ -57,6 +57,13 @@ const MIGRATIONS: &[(&str, &str)] = &[
 /// Connections in the reader pool (sqlx's default pool size).
 const READER_POOL_SIZE: u32 = 10;
 
+/// The store's ceiling on waiting for the write lock, in milliseconds: the
+/// `busy_timeout` a writer waits on another process's lock, and the writer
+/// pool's `acquire_timeout` a caller in this process waits for the one writer
+/// connection. Past it the call answers `Error::StoreBusy` having written
+/// nothing.
+pub const STORE_BUSY_CEILING_MS: u64 = 5000;
+
 /// `BEGIN IMMEDIATE` on `pool`: the one sanctioned way to open a transaction
 /// (`clippy.toml` disallows `Pool::begin` and `Pool::begin_with` elsewhere).
 /// `pool` is a writer pool.
@@ -126,14 +133,17 @@ impl StorageSqlx {
             .map_err(|e| Error::DatabaseError(e.to_string()))?
             .pragma("foreign_keys", "ON")
             .pragma("journal_mode", "WAL")
-            .pragma("busy_timeout", "5000")
+            .pragma("busy_timeout", STORE_BUSY_CEILING_MS.to_string())
             .pragma("synchronous", "NORMAL")
             .create_if_missing(true);
         // The writer first: it creates the file and sets WAL before any
         // query-only reader opens it. Both pools share the one options value,
         // so `sqlite::memory:` names one shared in-memory database for both.
+        // The writer's acquire timeout is the store's ceiling on purpose: a
+        // caller that cannot get the writer within it answers StoreBusy.
         let writer = SqlitePoolOptions::new()
             .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_millis(STORE_BUSY_CEILING_MS))
             .connect_with(options.clone())
             .await?;
         let reader = SqlitePoolOptions::new()

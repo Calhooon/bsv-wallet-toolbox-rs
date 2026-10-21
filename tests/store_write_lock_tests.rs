@@ -243,13 +243,76 @@ async fn both_pools_keep_the_pragmas() {
     assert!(store.pool().options().get_max_connections() > 1);
 }
 
-/// Busy and locked codes become `StoreBusy`; others do not.
+/// The Display prefix consumers classify on.
 #[test]
 fn the_store_busy_display_prefix() {
-    for code in [5, 6, 517] {
+    for code in [5, 517] {
         assert_eq!(
             Error::StoreBusy { code }.to_string(),
             format!("Store busy: sqlite code {code}")
         );
     }
+}
+
+/// Only busy converts to `StoreBusy`: a UNIQUE violation (extended code
+/// 2067, a deterministic refusal) converts to the plain SQLx arm.
+#[tokio::test]
+async fn a_unique_violation_is_not_store_busy() {
+    let (_dir, path) = wal_file().await;
+    let mut c = raw(&path).await;
+    sqlx::query("CREATE TABLE u (x INTEGER NOT NULL UNIQUE)")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO u (x) VALUES (1)")
+        .execute(&mut c)
+        .await
+        .unwrap();
+    let err = sqlx::query("INSERT INTO u (x) VALUES (1)")
+        .execute(&mut c)
+        .await
+        .expect_err("a duplicate");
+    let code = err
+        .as_database_error()
+        .and_then(|d| d.code())
+        .map(|c| c.to_string());
+    assert_eq!(code.as_deref(), Some("2067"), "{err}");
+
+    let err = Error::from(err);
+    assert!(matches!(err, Error::SqlxError(_)), "{err:?}");
+    assert!(!err.to_string().starts_with("Store busy"), "{err}");
+}
+
+/// The writer not acquired within the store's ceiling (the writer pool's
+/// `acquire_timeout`, `STORE_BUSY_CEILING_MS`) answers `StoreBusy` and
+/// writes nothing.
+#[tokio::test]
+async fn the_writer_not_acquired_within_the_ceiling_is_store_busy() {
+    let (_dir, path) = wal_file().await;
+    let store = StorageSqlx::open(&path).await.unwrap();
+    assert_eq!(
+        store.writer().options().get_acquire_timeout(),
+        Duration::from_millis(bsv_wallet_toolbox_rs::storage::sqlx::STORE_BUSY_CEILING_MS)
+    );
+
+    let mut held = store.write_tx().await.unwrap();
+    sqlx::query("INSERT INTO t (x) VALUES (1)")
+        .execute(&mut *held)
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    let err = match store.write_tx().await {
+        Ok(_) => panic!("the writer is held"),
+        Err(e) => e,
+    };
+    assert!(
+        started.elapsed() >= Duration::from_millis(4500),
+        "it waited the ceiling"
+    );
+    assert!(matches!(err, Error::StoreBusy { code: 5 }), "{err:?}");
+    assert!(err.to_string().starts_with("Store busy: sqlite code 5"));
+
+    held.rollback().await.unwrap();
+    assert_eq!(rows(&path).await, 0);
 }
