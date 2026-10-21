@@ -1368,6 +1368,16 @@ async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
     );
     let message = error.to_string();
     assert!(
+        message.starts_with("Storage error: Store busy: "),
+        "the busy is wrapped once, a storage error: {}",
+        message
+    );
+    assert!(
+        message.contains("type BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="),
+        "the error names the certificate type: {}",
+        message
+    );
+    assert!(
         message.contains(&parsed.certificate.serial_number_base64()),
         "the error names the issued certificate's serial number: {}",
         message
