@@ -89,7 +89,7 @@ async fn seed(s: &StorageSqlx) -> Fixture {
     let (f_id, t_id) = (ids[0], ids[1]);
     let basket_id = {
         let mut conn = s.pool().acquire().await.unwrap();
-        find_or_insert_output_basket(s, &mut conn, user_id, "default")
+        find_or_insert_output_basket(&mut conn, user_id, "default")
             .await
             .unwrap()
             .basket_id

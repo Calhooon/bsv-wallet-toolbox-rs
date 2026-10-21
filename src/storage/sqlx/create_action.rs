@@ -7,8 +7,8 @@ use crate::error::{Error, Result};
 use crate::services::traits::WalletServices;
 use crate::storage::entities::{TableOutput, TableOutputBasket, TableOutputTag, TableTxLabel};
 use crate::storage::traits::{
-    FindOutputBasketsArgs, StorageCreateActionResult, StorageCreateTransactionInput,
-    StorageCreateTransactionOutput, StorageProvidedBy, WalletStorageReader,
+    StorageCreateActionResult, StorageCreateTransactionInput, StorageCreateTransactionOutput,
+    StorageProvidedBy, WalletStorageReader,
 };
 use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
 use chrono::Utc;
@@ -599,8 +599,7 @@ pub async fn create_action_internal(
     // First, handle user-specified outputs
     for xo in &extended_outputs {
         let basket_id = if let Some(ref basket_name) = xo.basket {
-            let basket =
-                find_or_insert_output_basket(storage, &mut tx, user_id, basket_name).await?;
+            let basket = find_or_insert_output_basket(&mut tx, user_id, basket_name).await?;
             Some(basket.basket_id)
         } else {
             None
@@ -1370,23 +1369,39 @@ async fn find_or_insert_tx_label_map(
     Ok(result.last_insert_rowid())
 }
 
-/// Finds or creates an output basket.
+/// Finds or creates an output basket. The read runs on `conn`, the caller's
+/// write transaction, so a basket inserted earlier in that transaction (an
+/// earlier output naming the same new basket) is found, not inserted twice.
 pub(super) async fn find_or_insert_output_basket(
-    storage: &StorageSqlx,
     conn: &mut SqliteConnection,
     user_id: i64,
     name: &str,
 ) -> Result<TableOutputBasket> {
-    let args = FindOutputBasketsArgs {
-        user_id: Some(user_id),
-        name: Some(name.to_string()),
-        ..Default::default()
-    };
+    let row = sqlx::query(
+        r#"
+        SELECT basket_id, user_id, name, number_of_desired_utxos, minimum_desired_utxo_value,
+               created_at, updated_at
+        FROM output_baskets
+        WHERE user_id = ? AND name = ? AND is_deleted = 0
+        ORDER BY updated_at ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(user_id)
+    .bind(name)
+    .fetch_optional(&mut *conn)
+    .await?;
 
-    let baskets = storage.find_output_baskets_internal(user_id, &args).await?;
-
-    if let Some(basket) = baskets.into_iter().next() {
-        return Ok(basket);
+    if let Some(row) = row {
+        return Ok(TableOutputBasket {
+            basket_id: row.get("basket_id"),
+            user_id: row.get("user_id"),
+            name: row.get("name"),
+            number_of_desired_utxos: row.get("number_of_desired_utxos"),
+            minimum_desired_utxo_value: row.get("minimum_desired_utxo_value"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        });
     }
 
     let now = Utc::now();
@@ -4267,6 +4282,88 @@ mod tests {
             first_output.custom_instructions,
             Some("{\"type\":\"custom\"}".to_string())
         );
+    }
+
+    /// Review F6 of bsv-wallet-cli #44: two outputs naming one new basket.
+    /// The basket is found on the transaction's own connection, so the second
+    /// output finds the first one's insert: one basket row, both outputs in
+    /// it. Before, the find ran on the reader: a file store failed `UNIQUE
+    /// constraint failed`, an in-memory store hung.
+    async fn two_outputs_to_one_new_basket(storage: StorageSqlx) {
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        seed_change_output(&storage, user.user_id, 100_000).await;
+
+        let locking_script =
+            hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap();
+        let output = |satoshis| CreateActionOutput {
+            locking_script: locking_script.clone(),
+            satoshis,
+            output_description: "to the new basket".to_string(),
+            basket: Some("brand-new".to_string()),
+            custom_instructions: None,
+            tags: None,
+        };
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "Two outputs, one new basket".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![output(1000), output(2000)]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            create_action_internal(&storage, None, user.user_id, args),
+        )
+        .await
+        .expect("no hang")
+        .expect("no UNIQUE failure");
+        assert_eq!(
+            result
+                .outputs
+                .iter()
+                .filter(|o| o.basket.as_deref() == Some("brand-new"))
+                .count(),
+            2
+        );
+
+        let (baskets,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM output_baskets WHERE user_id = ? AND name = 'brand-new'",
+        )
+        .bind(user.user_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(baskets, 1);
+        let (in_basket,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM outputs o JOIN output_baskets b ON o.basket_id = b.basket_id \
+             WHERE b.name = 'brand-new'",
+        )
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(in_basket, 2);
+    }
+
+    #[tokio::test]
+    async fn two_outputs_to_one_new_basket_on_a_file_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f6.db");
+        let storage = StorageSqlx::open(&path.to_string_lossy()).await.unwrap();
+        two_outputs_to_one_new_basket(storage).await;
+    }
+
+    #[tokio::test]
+    async fn two_outputs_to_one_new_basket_in_memory() {
+        two_outputs_to_one_new_basket(StorageSqlx::in_memory().await.unwrap()).await;
     }
 
     #[tokio::test]
@@ -7541,7 +7638,6 @@ mod tests {
         let head_lock = vec![0x51u8];
         let head_txid = seed_custom_output(&storage, user_id, 1, &head_lock, "9e4d").await;
         let head_basket = find_or_insert_output_basket(
-            &storage,
             &mut storage.writer().acquire().await.unwrap(),
             user_id,
             "pf-name-head",
