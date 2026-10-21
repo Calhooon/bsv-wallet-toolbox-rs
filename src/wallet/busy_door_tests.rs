@@ -803,3 +803,215 @@ async fn create_action_offering_spends_only_the_offer() {
             .unwrap();
     assert!(spent_by.is_some(), "the offered coin is spent");
 }
+
+/// A broadcast head `A` (`unproven`, reference `reference`) funded by a
+/// completed coin, and its descendant `D` (`unproven`) spending `A`'s
+/// change, `D` with change of its own; both reqs `unmined`. Returns
+/// `(a_txid, d_txid, coin_a, change_d)`.
+async fn broadcast_chain(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    reference: &str,
+) -> (String, String, i64, i64) {
+    let writer = wallet.storage().writer();
+    let now = Utc::now();
+    let tx = |status: &'static str, reference: String, txid: String| {
+        let user_id = wallet.user_id;
+        async move {
+            sqlx::query(
+                "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, description, txid, version, lock_time, created_at, updated_at) \
+                 VALUES (?, ?, ?, 1, 1000, 'a busy door test', ?, 1, 0, ?, ?)",
+            )
+            .bind(user_id)
+            .bind(status)
+            .bind(reference)
+            .bind(txid)
+            .bind(now)
+            .bind(now)
+            .execute(writer)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+        }
+    };
+    let output = |transaction_id: i64, txid: String, spendable: bool, spent_by: Option<i64>| {
+        let user_id = wallet.user_id;
+        async move {
+            sqlx::query(
+                "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, spendable, change, provided_by, purpose, type, txid, spent_by, created_at, updated_at) \
+                 VALUES (?, ?, 0, 1000, ?, 1, 'storage', 'change', 'P2PKH', ?, ?, ?, ?)",
+            )
+            .bind(user_id)
+            .bind(transaction_id)
+            .bind(spendable)
+            .bind(txid)
+            .bind(spent_by)
+            .bind(now)
+            .bind(now)
+            .execute(writer)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+        }
+    };
+    let (f_txid, a_txid, d_txid) = ("f".repeat(64), "1".repeat(64), "2".repeat(64));
+    let funding = tx("completed", format!("{reference}-funding"), f_txid.clone()).await;
+    let a = tx("unproven", reference.to_string(), a_txid.clone()).await;
+    let d = tx("unproven", format!("{reference}-desc"), d_txid.clone()).await;
+    let coin_a = output(funding, f_txid, false, Some(a)).await;
+    output(a, a_txid.clone(), false, Some(d)).await;
+    let change_d = output(d, d_txid.clone(), true, None).await;
+    for txid in [&a_txid, &d_txid] {
+        sqlx::query(
+            "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, created_at, updated_at) \
+             VALUES (?, 'unmined', 0, '{}', 0, '{}', X'01000000', ?, ?)",
+        )
+        .bind(txid)
+        .bind(now)
+        .bind(now)
+        .execute(writer)
+        .await
+        .unwrap();
+    }
+    (a_txid, d_txid, coin_a, change_d)
+}
+
+/// `(transaction status, req status)` of `txid`.
+async fn tx_and_req(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    txid: &str,
+) -> (String, String) {
+    sqlx::query_as(
+        "SELECT t.status, r.status FROM transactions t \
+         JOIN proven_tx_reqs r ON r.txid = t.txid WHERE t.txid = ?",
+    )
+    .bind(txid)
+    .fetch_one(wallet.storage().pool())
+    .await
+    .unwrap()
+}
+
+/// Review 3 F1 of bsv-wallet-cli #44: abortAction on a broadcast transaction
+/// commits the root's abort, then retires its descendants. A busy at that
+/// retirement is after a committed write, so it is never the call's error
+/// (a `WalletBusy` would have the host repeat a call whose repeat refuses,
+/// the root being `failed`): the abort answers its success, the marker
+/// `post_commit_retire_failed` is logged with the txid, the descendant stays
+/// `unproven`, and the monitor's review-status pass retires it; a second pass
+/// finds nothing.
+#[tokio::test]
+async fn a_busy_retirement_after_a_broadcast_abort_is_its_success_and_review_status_finishes_it() {
+    let (_dir, wallet) = wallet().await;
+    let (a_txid, d_txid, coin_a, change_d) = broadcast_chain(&wallet, "abort-retire").await;
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _capture = tracing::subscriber::set_default(LogCapture(logs.clone()));
+
+    wallet.storage().busy_next_descendant_retire();
+    let result = wallet
+        .abort_action(
+            AbortActionArgs {
+                reference: "abort-retire".to_string(),
+            },
+            ORIGINATOR,
+        )
+        .await;
+    assert!(
+        matches!(result, Ok(AbortActionResult { aborted: true })),
+        "the abort is committed: its success, never WalletBusy; got {result:?}"
+    );
+    let marked = logs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.contains("post_commit_retire_failed"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(marked.len(), 1, "{marked:?}");
+    assert!(
+        marked[0].contains(&a_txid) && marked[0].contains("Store busy: sqlite code 5"),
+        "{}",
+        marked[0]
+    );
+
+    let spendable = |output_id: i64| {
+        let pool = wallet.storage().pool().clone();
+        async move {
+            sqlx::query_scalar::<_, bool>("SELECT spendable FROM outputs WHERE output_id = ?")
+                .bind(output_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        tx_and_req(&wallet, &a_txid).await,
+        ("failed".to_string(), "invalid".to_string()),
+        "the root's abort committed"
+    );
+    assert!(spendable(coin_a).await, "the root's input released");
+    assert_eq!(
+        tx_and_req(&wallet, &d_txid).await,
+        ("unproven".to_string(), "unmined".to_string()),
+        "the descendant not yet retired"
+    );
+    assert!(spendable(change_d).await);
+
+    let review = crate::storage::MonitorStorage::review_status(wallet.storage())
+        .await
+        .unwrap();
+    assert!(
+        review
+            .log
+            .contains("Retired the unproven descendants of 1 failed transactions"),
+        "{}",
+        review.log
+    );
+    assert_eq!(
+        tx_and_req(&wallet, &d_txid).await,
+        ("failed".to_string(), "invalid".to_string()),
+        "the review-status pass retired the descendant"
+    );
+    assert!(
+        !spendable(change_d).await,
+        "the descendant's change is dead"
+    );
+
+    let again = crate::storage::MonitorStorage::review_status(wallet.storage())
+        .await
+        .unwrap();
+    assert_eq!(again.log, "No status mismatches found\n", "converged");
+}
+
+/// The review-status pass leaves the descendants of a failed root the chain
+/// knows (a `mined` row): the abort's own rule.
+#[tokio::test]
+async fn review_status_leaves_the_descendants_of_a_failed_root_with_chain_evidence() {
+    let (_dir, wallet) = wallet().await;
+    let (a_txid, d_txid, _, _) = broadcast_chain(&wallet, "abort-evidence").await;
+    for retired in [
+        "UPDATE transactions SET status = 'failed' WHERE txid = ?",
+        "UPDATE proven_tx_reqs SET status = 'invalid' WHERE txid = ?",
+    ] {
+        sqlx::query(retired)
+            .bind(&a_txid)
+            .execute(wallet.storage().writer())
+            .await
+            .unwrap();
+    }
+    wallet
+        .storage()
+        .record_broadcast_status(
+            &a_txid,
+            crate::services::broadcast_memory::PROVIDER_TAAL_ARC,
+            crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
+        )
+        .await
+        .unwrap();
+
+    crate::storage::MonitorStorage::review_status(wallet.storage())
+        .await
+        .unwrap();
+    assert_eq!(
+        tx_and_req(&wallet, &d_txid).await,
+        ("unproven".to_string(), "unmined".to_string())
+    );
+}

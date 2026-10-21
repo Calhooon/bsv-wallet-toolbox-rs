@@ -633,6 +633,12 @@ impl StorageSqlx {
             );
             return Ok((0, 0));
         }
+        #[cfg(test)]
+        if self.take_busy_next_descendant_retire() {
+            return Err(crate::error::Error::StoreBusy {
+                reason: crate::error::StoreBusyReason::SqliteBusy { code: 5 },
+            });
+        }
         let mut poisoned_ids: HashSet<i64> = descendants.iter().map(|t| t.transaction_id).collect();
         poisoned_ids.insert(root_transaction_id);
         let mut report = PoisonReport::new(root_txid, PoisonOutcome::Retired);
@@ -797,7 +803,18 @@ impl StorageSqlx {
             .execute(&mut *self.writer_conn().await?)
             .await?;
 
-        // The transaction and its req.
+        // The req, then the transaction: a retire interrupted between the
+        // two leaves an `invalid` req on a live row, which review_status's
+        // first check fails and its descendants check then retires from.
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET status = ?, attempts = attempts + 1, updated_at = ? \
+             WHERE txid = ? AND status NOT IN ('completed')",
+        )
+        .bind(req_status)
+        .bind(now)
+        .bind(&tx.txid)
+        .execute(&mut *self.writer_conn().await?)
+        .await?;
         if tx.is_retirable() {
             let failed = sqlx::query(
                 "UPDATE transactions SET status = 'failed', updated_at = ? \
@@ -809,15 +826,6 @@ impl StorageSqlx {
             .await?;
             report.failed += failed.rows_affected() as u32;
         }
-        sqlx::query(
-            "UPDATE proven_tx_reqs SET status = ?, attempts = attempts + 1, updated_at = ? \
-             WHERE txid = ? AND status NOT IN ('completed')",
-        )
-        .bind(req_status)
-        .bind(now)
-        .bind(&tx.txid)
-        .execute(&mut *self.writer_conn().await?)
-        .await?;
 
         // No provider ever skips it again.
         self.mark_broadcast_rejected_quiet(&tx.txid).await;

@@ -110,9 +110,10 @@ enum AbortKind {
 /// The transaction's own mutations are wrapped in a SQL transaction so that
 /// a crash mid-operation does not leave the database in an inconsistent
 /// state. If any step fails (via `?`), sqlx automatically rolls back on
-/// drop. The descendants of a broadcast abort are retired after the commit
-/// (the reconciler's sweep picks up a failed root with unproven descendants
-/// if the process dies in between).
+/// drop. The descendants of a broadcast abort are retired after the commit;
+/// when that fails (a busy store, or the process dying in between) the
+/// monitor's review-status pass retires them, and the call still answers
+/// its success.
 pub async fn abort_action_internal(
     storage: &StorageSqlx,
     user_id: i64,
@@ -228,10 +229,24 @@ async fn abort_broadcast(
     // whatever was built on that. The chain oracle, when the wallet has
     // one, decides their outside inputs; without one they stay locked and
     // re-checked.
+    //
+    // The abort is committed: from here no store fault is the call's error
+    // (a `StoreBusy` would tell the host to repeat a call whose repeat
+    // refuses, the root being `failed`). A failed retirement is logged with
+    // the marker `post_commit_retire_failed` and left to the monitor's
+    // review-status pass, which retires the unproven descendants of a
+    // failed root with an `invalid` req and no chain evidence.
     let services = storage.get_services().ok();
-    let (restored, kept) = storage
+    let (restored, kept) = match storage
         .retire_poisoned_descendants(services.as_deref(), txid, tx.transaction_id, now)
-        .await?;
+        .await
+    {
+        Ok(counts) => counts,
+        Err(e) => {
+            post_commit_retire_failed(txid, &e);
+            return Ok(AbortActionResult { aborted: true });
+        }
+    };
 
     tracing::warn!(
         txid = %txid,
@@ -243,6 +258,18 @@ async fn abort_broadcast(
     );
 
     Ok(AbortActionResult { aborted: true })
+}
+
+/// Logs a store fault in a broadcast abort's descendants' retirement, after
+/// the root's abort committed: the call still answers its success, and the
+/// monitor's review-status pass retires the descendants.
+pub(crate) fn post_commit_retire_failed(txid: &str, error: &Error) {
+    tracing::warn!(
+        marker = "post_commit_retire_failed",
+        txid = %txid,
+        error = %error,
+        "abort_action: the abort is committed; retiring its descendants failed, left to the review-status pass"
+    );
 }
 
 /// The chain evidence the wallet holds for `txid`, described, or `None`.
