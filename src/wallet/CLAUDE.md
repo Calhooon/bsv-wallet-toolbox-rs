@@ -363,18 +363,19 @@ All check helpers return `Ok(())` if no permissions manager is set.
 ### Immediate Signing (sign_and_process = true, default)
 
 ```
-CreateActionArgs → storage.create_action() → StorageCreateActionResult
-    → build_unsigned_transaction(result, key_deriver)
-    → WalletSigner.sign_transaction()
-    → storage.process_action()
+CreateActionArgs → storage.create_action_at_door(args, CreateActionDoor { offer, sign_and_process })
+    ├─ one write transaction: the create step's rows
+    │     → the signer closure: build_unsigned_transaction(result, key_deriver)
+    │                           → WalletSigner.sign_transaction()
+    │     → processAction's writes → ONE commit
     → services.post_beef() (if not no_send/delayed)
-    → storage.update_transaction_status_after_broadcast()
+    → storage.update_transaction_status_after_broadcast() (a failure is logged, never the call's error)
     → CreateActionResult { txid, tx, ... }
 ```
 
 For each input: derive signing key from BRC-29 protocol/counterparty, compute BIP-143 sighash, sign and build unlocking script.
 
-**Error recovery:** If signing or process_action fails, the wallet automatically calls `abort_action` to release locked UTXOs before returning the error.
+**Error recovery:** a refusal inside the door (the create step, the signer, processAction's writes) rolls the one transaction back: nothing was written, so a busy is `WalletBusy` and any other refusal keeps its text (`Signing failed: ...`, `Process action failed: ...`). After the broadcast a store fault is logged with the marker `post_broadcast_status_write_failed` and the call answers its success with the txid; the monitor's send-waiting task heals the row (bsv-wallet-cli #44). `create_action_offering(args, originator, offer)` is the same call with the change coins limited to the host's offered output ids.
 
 ### Deferred Signing (sign_and_process = false)
 
