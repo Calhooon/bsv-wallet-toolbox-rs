@@ -1041,6 +1041,19 @@ impl WalletStorageWriter for WalletStorageManager {
             .await
     }
 
+    async fn create_action_at_door(
+        &self,
+        auth: &AuthId,
+        args: CreateActionArgs,
+        door: crate::storage::CreateActionDoor<'_>,
+    ) -> std::result::Result<crate::storage::CreateActionDone, crate::storage::DoorRefusal> {
+        // The active storage's own door (one transaction on the SQL storage).
+        self.run_as_writer(|active| async move {
+            Ok(active.create_action_at_door(auth, args, door).await)
+        })
+        .await?
+    }
+
     async fn process_action(
         &self,
         auth: &AuthId,

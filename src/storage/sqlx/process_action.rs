@@ -563,7 +563,33 @@ pub async fn process_action_internal(
     // Begin SQL transaction - all DB mutations go through `tx`.
     // On drop without commit, sqlx automatically rolls back.
     let mut tx = storage.write_tx().await?;
+    let results = process_action_writes(storage, &mut tx, user_id, &args).await?;
+    super::storage_sqlx::commit(tx).await?;
+    Ok(results)
+}
 
+/// processAction's writes on `conn`, a connection inside a write transaction
+/// the caller opened and commits: `process_action_internal`'s own, or
+/// `createAction`'s one transaction when it signs and processes in the same
+/// step (bsv-wallet-cli #44). Nothing here begins, commits or awaits anything
+/// but the database.
+pub(super) async fn process_action_writes(
+    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    args: &StorageProcessActionArgs,
+) -> Result<StorageProcessActionResults> {
+    validate_process_action_args(args)?;
+
+    // Tests: a busy answer at the process step's first write.
+    #[cfg(test)]
+    if storage.take_busy_next_process_action() {
+        return Err(Error::StoreBusy {
+            reason: crate::error::StoreBusyReason::SqliteBusy { code: 5 },
+        });
+    }
+
+    let tx = conn;
     let mut send_with_results: Vec<SendWithResult> = Vec::new();
     let txids_to_broadcast: Vec<String>;
 
@@ -575,7 +601,7 @@ pub async fn process_action_internal(
         validate_txid_matches_raw_tx(txid, raw_tx)?;
         let script_offsets = parse_tx_script_offsets(raw_tx)?;
 
-        let found_tx = find_transaction_by_reference(&mut tx, user_id, reference).await?;
+        let found_tx = find_transaction_by_reference(&mut *tx, user_id, reference).await?;
         let found_tx = found_tx.ok_or_else(|| Error::NotFound {
             entity: "Transaction".to_string(),
             id: format!("reference={}", reference),
@@ -611,7 +637,7 @@ pub async fn process_action_internal(
             )));
         }
 
-        let outputs = find_outputs_for_transaction(&mut tx, found_tx.transaction_id).await?;
+        let outputs = find_outputs_for_transaction(&mut *tx, found_tx.transaction_id).await?;
 
         for output in &outputs {
             if output.change {
@@ -636,9 +662,9 @@ pub async fn process_action_internal(
             }
         }
 
-        let (tx_status, req_status) = determine_statuses(&args);
+        let (tx_status, req_status) = determine_statuses(args);
         update_transaction_with_signed_data(
-            &mut tx,
+            &mut *tx,
             found_tx.transaction_id,
             txid,
             tx_status,
@@ -661,7 +687,7 @@ pub async fn process_action_internal(
                     // scripts during create_action, but we need them stored for later spending.
                     let locking_script = &raw_tx[offset.offset..offset.offset + offset.length];
                     update_change_output_with_locking_script(
-                        &mut tx,
+                        &mut *tx,
                         output.output_id,
                         txid,
                         offset.offset as i32,
@@ -673,7 +699,7 @@ pub async fn process_action_internal(
                 } else {
                     // For non-change outputs, just update the offset/length info
                     update_output_with_script_offset(
-                        &mut tx,
+                        &mut *tx,
                         output.output_id,
                         txid,
                         offset.offset as i32,
@@ -687,7 +713,7 @@ pub async fn process_action_internal(
         }
 
         create_or_update_proven_tx_req(
-            &mut tx,
+            &mut *tx,
             txid,
             raw_tx,
             found_tx.input_beef.as_deref(),
@@ -709,7 +735,6 @@ pub async fn process_action_internal(
     }
 
     if txids_to_broadcast.is_empty() {
-        super::storage_sqlx::commit(tx).await?;
         return Ok(StorageProcessActionResults {
             send_with_results: Some(Vec::new()),
             not_delayed_results: None,
@@ -724,7 +749,7 @@ pub async fn process_action_internal(
     };
 
     for txid in &txids_to_broadcast {
-        let req = find_proven_tx_req_by_txid(&mut tx, txid).await?;
+        let req = find_proven_tx_req_by_txid(&mut *tx, txid).await?;
 
         if let Some((req_id, current_status)) = req {
             let already_sent = current_status == proven_tx_req_status::UNMINED
@@ -738,14 +763,14 @@ pub async fn process_action_internal(
                 });
             } else if args.is_delayed {
                 update_proven_tx_req_status(
-                    &mut tx,
+                    &mut *tx,
                     req_id,
                     proven_tx_req_status::UNSENT,
                     batch.as_deref(),
                 )
                 .await?;
                 update_transaction_status_by_txid(
-                    &mut tx,
+                    &mut *tx,
                     txid,
                     TransactionStatus::Sending.as_str(),
                 )
@@ -766,14 +791,14 @@ pub async fn process_action_internal(
                 // loop, leaving inputs permanently locked on broadcast failure.
                 // Matches Go reference: proven_tx_reqs start as 'unsent'.
                 update_proven_tx_req_status(
-                    &mut tx,
+                    &mut *tx,
                     req_id,
                     proven_tx_req_status::UNSENT,
                     batch.as_deref(),
                 )
                 .await?;
                 update_transaction_status_by_txid(
-                    &mut tx,
+                    &mut *tx,
                     txid,
                     TransactionStatus::Sending.as_str(),
                 )
@@ -790,8 +815,6 @@ pub async fn process_action_internal(
             });
         }
     }
-
-    super::storage_sqlx::commit(tx).await?;
 
     Ok(StorageProcessActionResults {
         send_with_results: Some(send_with_results),

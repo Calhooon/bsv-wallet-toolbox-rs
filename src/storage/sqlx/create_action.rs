@@ -7,8 +7,9 @@ use crate::error::{Error, Result, StoreBusyReason};
 use crate::services::traits::WalletServices;
 use crate::storage::entities::{TableOutput, TableOutputBasket, TableOutputTag, TableTxLabel};
 use crate::storage::traits::{
+    CreateActionDone, CreateActionDoor, DoorProcessed, DoorRefusal, SignAndProcess,
     StorageCreateActionResult, StorageCreateTransactionInput, StorageCreateTransactionOutput,
-    StorageProvidedBy, WalletStorageReader,
+    StorageProcessActionArgs, StorageProvidedBy, WalletStorageReader,
 };
 use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
 use chrono::Utc;
@@ -403,6 +404,33 @@ pub async fn create_action_internal(
     user_id: i64,
     args: bsv_rs::wallet::CreateActionArgs,
 ) -> Result<StorageCreateActionResult> {
+    create_action_at_door_internal(
+        storage,
+        chain_tracker,
+        user_id,
+        args,
+        CreateActionDoor::default(),
+    )
+    .await
+    .map(|done| done.created)
+    .map_err(DoorRefusal::into_error)
+}
+
+/// `create_action_internal` with the door's `sign_and_process`: the template
+/// is signed by the caller's signer (local CPU, nothing awaited) and
+/// processAction's writes (the signed raw tx, the status, the
+/// `proven_tx_reqs` row) are made inside the create step's own
+/// `BEGIN IMMEDIATE` transaction, committed once with the action's rows
+/// (bsv-wallet-cli #44). A busy can arise only at the writer's acquire, at
+/// `BEGIN` or at the commit, and every refusal rolls the whole step back:
+/// nothing of the action is ever written half. The caller broadcasts after.
+pub async fn create_action_at_door_internal(
+    storage: &StorageSqlx,
+    chain_tracker: Option<&dyn ChainTracker>,
+    user_id: i64,
+    args: bsv_rs::wallet::CreateActionArgs,
+    door_with: CreateActionDoor<'_>,
+) -> std::result::Result<CreateActionDone, DoorRefusal> {
     // Step 1: Validate all inputs
     validate_create_action_args(&args)?;
 
@@ -431,6 +459,7 @@ pub async fn create_action_internal(
         user_id,
         args: &args,
         change_basket: &change_basket,
+        then: door_with.sign_and_process.as_ref(),
     };
 
     // This call's pre-check picks, reserved until it returns (review 2 F1):
@@ -447,9 +476,9 @@ pub async fn create_action_internal(
                 if again.is_some() {
                     // The latest pre-check covered the action and the store
                     // moved under it again: transient, never a shortfall.
-                    return Err(Error::StoreBusy {
+                    return Err(DoorRefusal::Create(Error::StoreBusy {
                         reason: StoreBusyReason::MovedUnderUs,
-                    });
+                    }));
                 }
                 tracing::info!(
                     reason = %why,
@@ -474,12 +503,14 @@ struct Door<'a> {
     user_id: i64,
     args: &'a bsv_rs::wallet::CreateActionArgs,
     change_basket: &'a TableOutputBasket,
+    /// Sign and process in the step's own transaction.
+    then: Option<&'a SignAndProcess<'a>>,
 }
 
 /// What the write-locked step did.
 enum Step {
     /// Committed: the response.
-    Done(Box<StorageCreateActionResult>),
+    Done(Box<CreateActionDone>),
     /// Rolled back, nothing written: the pre-check must run again.
     Again(Again),
 }
@@ -656,10 +687,11 @@ impl Door<'_> {
     /// The door's one step, under one `BEGIN IMMEDIATE` transaction: the
     /// action's rows, the allocation from the `prechecked` coins only, and
     /// the BEEF from stored bytes, the tracker answered from the pre-check's
-    /// answers. Nothing but the database is awaited while the lock is held.
+    /// answers, and, with `then`, the signing and processAction's writes.
+    /// Nothing but the database is awaited while the lock is held.
     /// Every error, and every `Again`, drops the transaction: rolled back,
     /// nothing written.
-    async fn step(&self, prechecked: &[i64]) -> Result<Step> {
+    async fn step(&self, prechecked: &[i64]) -> std::result::Result<Step, DoorRefusal> {
         let user_id = self.user_id;
         let args = self.args;
         let change_basket = self.change_basket;
@@ -716,7 +748,7 @@ impl Door<'_> {
             Err(e @ Error::InsufficientFunds { .. }) => {
                 return Ok(Step::Again(Again::Uncovered(e)))
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
 
         // Step 9: Mark extended inputs as spent
@@ -962,13 +994,12 @@ impl Door<'_> {
             .bind(Utc::now())
             .bind(transaction_id)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(Error::from)?;
         }
 
-        super::storage_sqlx::commit(tx).await?;
-
         // Build final result
-        Ok(Step::Done(Box::new(StorageCreateActionResult {
+        let created = StorageCreateActionResult {
             reference,
             version: args.version.unwrap_or(1),
             lock_time: args.lock_time.unwrap_or(0),
@@ -977,6 +1008,49 @@ impl Door<'_> {
             derivation_prefix,
             input_beef,
             no_send_change_output_vouts: if is_no_send { Some(change_vouts) } else { None },
+        };
+
+        // Sign and process inside this same transaction: the signer is local
+        // CPU, and processAction's writes go on this connection. A refusal
+        // here drops `tx`: the action's rows go with it.
+        // A template with no inputs is not signed (the caller signs it).
+        let processed = match self.then {
+            Some(then) if !created.inputs.is_empty() => {
+                let raw_tx = (then.sign)(&created).map_err(DoorRefusal::Sign)?;
+                let txid = {
+                    let mut hash = bsv_rs::primitives::sha256d(&raw_tx);
+                    hash.reverse();
+                    hex::encode(hash)
+                };
+                let process = StorageProcessActionArgs {
+                    is_new_tx: true,
+                    reference: Some(created.reference.clone()),
+                    txid: Some(txid.clone()),
+                    raw_tx: Some(raw_tx.clone()),
+                    ..then.process.clone()
+                };
+                let results = super::process_action::process_action_writes(
+                    self.storage,
+                    &mut tx,
+                    user_id,
+                    &process,
+                )
+                .await
+                .map_err(DoorRefusal::Process)?;
+                Some(DoorProcessed {
+                    txid,
+                    raw_tx,
+                    results,
+                })
+            }
+            _ => None,
+        };
+
+        super::storage_sqlx::commit(tx).await?;
+
+        Ok(Step::Done(Box::new(CreateActionDone {
+            created,
+            processed,
         })))
     }
 }

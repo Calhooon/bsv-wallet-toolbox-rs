@@ -168,7 +168,8 @@ pub struct StorageSqlx {
     /// process and not yet returned from (review 2 F1 of bsv-wallet-cli
     /// #44): a pre-check's dry run picks none of them.
     in_flight_picks: Arc<super::create_action::InFlightPicks>,
-    /// Tests only: the next `process_action` answers busy before acting.
+    /// Tests only: the next process step answers busy at its first write,
+    /// inside its write transaction.
     #[cfg(test)]
     busy_next_process_action: std::sync::atomic::AtomicBool,
 }
@@ -315,6 +316,13 @@ impl StorageSqlx {
     pub(crate) fn busy_next_process_action(&self) {
         self.busy_next_process_action
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests only: takes the busy `busy_next_process_action` armed.
+    #[cfg(test)]
+    pub(crate) fn take_busy_next_process_action(&self) -> bool {
+        self.busy_next_process_action
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The in-flight pre-check picks of this process (`createAction`).
@@ -2276,22 +2284,25 @@ impl WalletStorageWriter for StorageSqlx {
         super::create_action::create_action_internal(self, tracker_ref, user_id, args).await
     }
 
+    async fn create_action_at_door(
+        &self,
+        auth: &AuthId,
+        args: bsv_rs::wallet::CreateActionArgs,
+        door: crate::storage::CreateActionDoor<'_>,
+    ) -> std::result::Result<crate::storage::CreateActionDone, crate::storage::DoorRefusal> {
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+        let chain_tracker = self.get_chain_tracker().await;
+        let tracker_ref: Option<&dyn ChainTracker> = chain_tracker.as_ref().map(|ct| ct.as_ref());
+        super::create_action::create_action_at_door_internal(self, tracker_ref, user_id, args, door)
+            .await
+    }
+
     async fn process_action(
         &self,
         auth: &AuthId,
         args: StorageProcessActionArgs,
     ) -> Result<StorageProcessActionResults> {
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
-
-        #[cfg(test)]
-        if self
-            .busy_next_process_action
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(Error::StoreBusy {
-                reason: StoreBusyReason::SqliteBusy { code: 5 },
-            });
-        }
 
         super::process_action::process_action_internal(self, user_id, args).await
     }
