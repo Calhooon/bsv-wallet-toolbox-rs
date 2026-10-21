@@ -313,8 +313,8 @@ pub struct CreateActionDoor<'a> {
     /// `InsufficientFunds`. `None`: every change coin of the default basket.
     pub offer: Option<&'a [i64]>,
     /// Sign and process in the create step's own write transaction: one
-    /// commit, then the caller broadcasts. `None`: the create step only (the
-    /// template for a later `signAction`).
+    /// commit, then the caller broadcasts. `None`, or a template with no
+    /// inputs: the create step only (the template for a later `signAction`).
     pub sign_and_process: Option<SignAndProcess<'a>>,
 }
 

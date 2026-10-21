@@ -1002,213 +1002,33 @@ where
 // WalletInterface Implementation
 // =============================================================================
 
-#[async_trait]
-impl<S, V> WalletInterface for Wallet<S, V>
+impl<S, V> Wallet<S, V>
 where
     S: WalletStorageProvider + Send + Sync + 'static,
     V: WalletServices + Send + Sync + 'static,
 {
-    // =========================================================================
-    // Key Operations (delegated to ProtoWallet)
-    // =========================================================================
-
-    async fn get_public_key(
-        &self,
-        args: GetPublicKeyArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<GetPublicKeyResult> {
-        validate_originator(originator)?;
-        // BRC-98/99: Check protocol permission for public key revelation
-        if let Some(ref protocol_id) = args.protocol_id {
-            self.check_protocol_permission(
-                originator,
-                protocol_id,
-                None,
-                crate::managers::PermissionUsageType::PublicKey,
-            )
-            .await?;
-        }
-        self.proto_get_public_key(args)
-    }
-
-    async fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_rs::Result<EncryptResult> {
-        validate_originator(originator)?;
-        // BRC-98/99: Check protocol permission for encryption
-        self.check_protocol_permission(
-            originator,
-            &args.protocol_id,
-            None,
-            crate::managers::PermissionUsageType::Encrypting,
-        )
-        .await?;
-        self.proto_encrypt(args)
-    }
-
-    async fn decrypt(&self, args: DecryptArgs, originator: &str) -> bsv_rs::Result<DecryptResult> {
-        validate_originator(originator)?;
-        // BRC-98/99: Check protocol permission for decryption
-        self.check_protocol_permission(
-            originator,
-            &args.protocol_id,
-            None,
-            crate::managers::PermissionUsageType::Encrypting,
-        )
-        .await?;
-        self.proto_decrypt(args)
-    }
-
-    async fn create_hmac(
-        &self,
-        args: CreateHmacArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<CreateHmacResult> {
-        validate_originator(originator)?;
-        // BRC-98/99: Check protocol permission for HMAC
-        self.check_protocol_permission(
-            originator,
-            &args.protocol_id,
-            None,
-            crate::managers::PermissionUsageType::Hmac,
-        )
-        .await?;
-        self.proto_create_hmac(args)
-    }
-
-    async fn verify_hmac(
-        &self,
-        args: VerifyHmacArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<VerifyHmacResult> {
-        validate_originator(originator)?;
-        // BRC-98/99: Check protocol permission for HMAC verification
-        self.check_protocol_permission(
-            originator,
-            &args.protocol_id,
-            None,
-            crate::managers::PermissionUsageType::Hmac,
-        )
-        .await?;
-        self.proto_verify_hmac(args)
-    }
-
-    async fn create_signature(
-        &self,
-        args: CreateSignatureArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<CreateSignatureResult> {
-        validate_originator(originator)?;
-        // BRC-98/99: Check protocol permission for signing
-        self.check_protocol_permission(
-            originator,
-            &args.protocol_id,
-            None,
-            crate::managers::PermissionUsageType::Signing,
-        )
-        .await?;
-        self.proto_create_signature(args)
-    }
-
-    async fn verify_signature(
-        &self,
-        args: VerifySignatureArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<VerifySignatureResult> {
-        validate_originator(originator)?;
-        self.proto_verify_signature(args)
-    }
-
-    async fn reveal_counterparty_key_linkage(
-        &self,
-        args: InterfaceRevealCounterpartyArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
-        validate_originator(originator)?;
-
-        // Convert interface args to proto_wallet args
-        use bsv_rs::wallet::RevealCounterpartyKeyLinkageArgs as ProtoRevealCounterpartyArgs;
-
-        let proto_args = ProtoRevealCounterpartyArgs {
-            counterparty: args.counterparty.clone(),
-            verifier: args.verifier.clone(),
-        };
-
-        let result = self
-            .proto_wallet
-            .reveal_counterparty_key_linkage(proto_args)?;
-
-        // Parse the prover hex string back to PublicKey
-        let prover = PublicKey::from_hex(&result.prover)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid prover key: {}", e)))?;
-
-        // Parse the counterparty hex string back to PublicKey
-        let counterparty_key = PublicKey::from_hex(&result.counterparty)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid counterparty key: {}", e)))?;
-
-        Ok(RevealCounterpartyKeyLinkageResult {
-            linkage: KeyLinkageResult {
-                encrypted_linkage: result.encrypted_linkage,
-                encrypted_linkage_proof: result.encrypted_linkage_proof,
-                prover,
-                verifier: args.verifier,
-                counterparty: counterparty_key,
-            },
-            revelation_time: result.revelation_time,
-        })
-    }
-
-    async fn reveal_specific_key_linkage(
-        &self,
-        args: InterfaceRevealSpecificArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
-        validate_originator(originator)?;
-
-        // Convert interface args to proto_wallet args
-        use bsv_rs::wallet::{
-            Counterparty, RevealSpecificKeyLinkageArgs as ProtoRevealSpecificArgs,
-        };
-
-        let proto_args = ProtoRevealSpecificArgs {
-            counterparty: args.counterparty.clone(),
-            verifier: args.verifier.clone(),
-            protocol_id: args.protocol_id.clone(),
-            key_id: args.key_id.clone(),
-        };
-
-        let result = self.proto_wallet.reveal_specific_key_linkage(proto_args)?;
-
-        // Parse the prover hex string back to PublicKey
-        let prover = PublicKey::from_hex(&result.prover)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid prover key: {}", e)))?;
-
-        // Counterparty may be "self" or "anyone" - handle gracefully
-        let counterparty_key = match &args.counterparty {
-            Counterparty::Self_ | Counterparty::Anyone => self.proto_wallet.identity_key(),
-            Counterparty::Other(pk) => pk.clone(),
-        };
-
-        Ok(RevealSpecificKeyLinkageResult {
-            linkage: KeyLinkageResult {
-                encrypted_linkage: result.encrypted_linkage,
-                encrypted_linkage_proof: result.encrypted_linkage_proof,
-                prover,
-                verifier: args.verifier,
-                counterparty: counterparty_key,
-            },
-            protocol: result.protocol_id,
-            key_id: result.key_id,
-            proof_type: result.proof_type,
-        })
-    }
-
-    // =========================================================================
-    // Action Operations (coordinated with storage and services)
-    // =========================================================================
-
-    async fn create_action(
+    /// `createAction` with the host's offer (bsv-wallet-cli #44): `offer`
+    /// is the output ids of the change coins the host offers, and the
+    /// allocation takes from these only, under concurrency too (the dry-run
+    /// pick and the locked set are both intersected with it). An offer that
+    /// does not cover the action, or an empty one, refuses
+    /// `Insufficient funds:`. The `WalletInterface` method is unchanged:
+    /// it offers every coin. The host never writes around the door to hold
+    /// back the coins it does not offer.
+    pub async fn create_action_offering(
         &self,
         args: CreateActionArgs,
         originator: &str,
+        offer: &[i64],
+    ) -> bsv_rs::Result<CreateActionResult> {
+        self.create_action_at(args, originator, Some(offer)).await
+    }
+
+    async fn create_action_at(
+        &self,
+        args: CreateActionArgs,
+        originator: &str,
+        offer: Option<&[i64]>,
     ) -> bsv_rs::Result<CreateActionResult> {
         validate_originator(originator)?;
 
@@ -1352,7 +1172,7 @@ where
                 .sign_transaction(&unsigned_tx, &signer_inputs, &self.proto_wallet)
         };
         let door = crate::storage::CreateActionDoor {
-            offer: None,
+            offer,
             sign_and_process: (!is_sign_action).then(|| crate::storage::SignAndProcess {
                 sign: &sign,
                 process: StorageProcessActionArgs {
@@ -1813,6 +1633,218 @@ where
             reference_number: None,
             beef: None, // Not available until signed
         })
+    }
+}
+
+#[async_trait]
+impl<S, V> WalletInterface for Wallet<S, V>
+where
+    S: WalletStorageProvider + Send + Sync + 'static,
+    V: WalletServices + Send + Sync + 'static,
+{
+    // =========================================================================
+    // Key Operations (delegated to ProtoWallet)
+    // =========================================================================
+
+    async fn get_public_key(
+        &self,
+        args: GetPublicKeyArgs,
+        originator: &str,
+    ) -> bsv_rs::Result<GetPublicKeyResult> {
+        validate_originator(originator)?;
+        // BRC-98/99: Check protocol permission for public key revelation
+        if let Some(ref protocol_id) = args.protocol_id {
+            self.check_protocol_permission(
+                originator,
+                protocol_id,
+                None,
+                crate::managers::PermissionUsageType::PublicKey,
+            )
+            .await?;
+        }
+        self.proto_get_public_key(args)
+    }
+
+    async fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_rs::Result<EncryptResult> {
+        validate_originator(originator)?;
+        // BRC-98/99: Check protocol permission for encryption
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Encrypting,
+        )
+        .await?;
+        self.proto_encrypt(args)
+    }
+
+    async fn decrypt(&self, args: DecryptArgs, originator: &str) -> bsv_rs::Result<DecryptResult> {
+        validate_originator(originator)?;
+        // BRC-98/99: Check protocol permission for decryption
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Encrypting,
+        )
+        .await?;
+        self.proto_decrypt(args)
+    }
+
+    async fn create_hmac(
+        &self,
+        args: CreateHmacArgs,
+        originator: &str,
+    ) -> bsv_rs::Result<CreateHmacResult> {
+        validate_originator(originator)?;
+        // BRC-98/99: Check protocol permission for HMAC
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Hmac,
+        )
+        .await?;
+        self.proto_create_hmac(args)
+    }
+
+    async fn verify_hmac(
+        &self,
+        args: VerifyHmacArgs,
+        originator: &str,
+    ) -> bsv_rs::Result<VerifyHmacResult> {
+        validate_originator(originator)?;
+        // BRC-98/99: Check protocol permission for HMAC verification
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Hmac,
+        )
+        .await?;
+        self.proto_verify_hmac(args)
+    }
+
+    async fn create_signature(
+        &self,
+        args: CreateSignatureArgs,
+        originator: &str,
+    ) -> bsv_rs::Result<CreateSignatureResult> {
+        validate_originator(originator)?;
+        // BRC-98/99: Check protocol permission for signing
+        self.check_protocol_permission(
+            originator,
+            &args.protocol_id,
+            None,
+            crate::managers::PermissionUsageType::Signing,
+        )
+        .await?;
+        self.proto_create_signature(args)
+    }
+
+    async fn verify_signature(
+        &self,
+        args: VerifySignatureArgs,
+        originator: &str,
+    ) -> bsv_rs::Result<VerifySignatureResult> {
+        validate_originator(originator)?;
+        self.proto_verify_signature(args)
+    }
+
+    async fn reveal_counterparty_key_linkage(
+        &self,
+        args: InterfaceRevealCounterpartyArgs,
+        originator: &str,
+    ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
+        validate_originator(originator)?;
+
+        // Convert interface args to proto_wallet args
+        use bsv_rs::wallet::RevealCounterpartyKeyLinkageArgs as ProtoRevealCounterpartyArgs;
+
+        let proto_args = ProtoRevealCounterpartyArgs {
+            counterparty: args.counterparty.clone(),
+            verifier: args.verifier.clone(),
+        };
+
+        let result = self
+            .proto_wallet
+            .reveal_counterparty_key_linkage(proto_args)?;
+
+        // Parse the prover hex string back to PublicKey
+        let prover = PublicKey::from_hex(&result.prover)
+            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid prover key: {}", e)))?;
+
+        // Parse the counterparty hex string back to PublicKey
+        let counterparty_key = PublicKey::from_hex(&result.counterparty)
+            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid counterparty key: {}", e)))?;
+
+        Ok(RevealCounterpartyKeyLinkageResult {
+            linkage: KeyLinkageResult {
+                encrypted_linkage: result.encrypted_linkage,
+                encrypted_linkage_proof: result.encrypted_linkage_proof,
+                prover,
+                verifier: args.verifier,
+                counterparty: counterparty_key,
+            },
+            revelation_time: result.revelation_time,
+        })
+    }
+
+    async fn reveal_specific_key_linkage(
+        &self,
+        args: InterfaceRevealSpecificArgs,
+        originator: &str,
+    ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
+        validate_originator(originator)?;
+
+        // Convert interface args to proto_wallet args
+        use bsv_rs::wallet::{
+            Counterparty, RevealSpecificKeyLinkageArgs as ProtoRevealSpecificArgs,
+        };
+
+        let proto_args = ProtoRevealSpecificArgs {
+            counterparty: args.counterparty.clone(),
+            verifier: args.verifier.clone(),
+            protocol_id: args.protocol_id.clone(),
+            key_id: args.key_id.clone(),
+        };
+
+        let result = self.proto_wallet.reveal_specific_key_linkage(proto_args)?;
+
+        // Parse the prover hex string back to PublicKey
+        let prover = PublicKey::from_hex(&result.prover)
+            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid prover key: {}", e)))?;
+
+        // Counterparty may be "self" or "anyone" - handle gracefully
+        let counterparty_key = match &args.counterparty {
+            Counterparty::Self_ | Counterparty::Anyone => self.proto_wallet.identity_key(),
+            Counterparty::Other(pk) => pk.clone(),
+        };
+
+        Ok(RevealSpecificKeyLinkageResult {
+            linkage: KeyLinkageResult {
+                encrypted_linkage: result.encrypted_linkage,
+                encrypted_linkage_proof: result.encrypted_linkage_proof,
+                prover,
+                verifier: args.verifier,
+                counterparty: counterparty_key,
+            },
+            protocol: result.protocol_id,
+            key_id: result.key_id,
+            proof_type: result.proof_type,
+        })
+    }
+
+    // =========================================================================
+    // Action Operations (coordinated with storage and services)
+    // =========================================================================
+
+    async fn create_action(
+        &self,
+        args: CreateActionArgs,
+        originator: &str,
+    ) -> bsv_rs::Result<CreateActionResult> {
+        self.create_action_at(args, originator, None).await
     }
 
     async fn sign_action(
