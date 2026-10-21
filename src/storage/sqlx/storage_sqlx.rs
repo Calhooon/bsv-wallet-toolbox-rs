@@ -139,6 +139,10 @@ pub struct StorageSqlx {
     /// Persisted broadcast acceptance memory over the same pool (0.3.56):
     /// the `broadcast_seen` / `broadcast_prefs` tables.
     broadcast_memory: Arc<super::broadcast_seen::SqlxBroadcastMemory>,
+    /// The change coins `createAction` pre-checks have picked in this
+    /// process and not yet returned from (review 2 F1 of bsv-wallet-cli
+    /// #44): a pre-check's dry run picks none of them.
+    in_flight_picks: Arc<super::create_action::InFlightPicks>,
 }
 
 impl StorageSqlx {
@@ -214,6 +218,7 @@ impl StorageSqlx {
             active_transactions: RwLock::new(HashMap::new()),
             task_locks: RwLock::new(HashMap::new()),
             broadcast_memory,
+            in_flight_picks: Default::default(),
         })
     }
 
@@ -271,6 +276,11 @@ impl StorageSqlx {
     /// go to [`writer`](Self::writer) or [`write_tx`](Self::write_tx).
     pub fn pool(&self) -> &SqlitePool {
         &self.reader
+    }
+
+    /// The in-flight pre-check picks of this process (`createAction`).
+    pub(crate) fn in_flight_picks(&self) -> &Arc<super::create_action::InFlightPicks> {
+        &self.in_flight_picks
     }
 
     /// The writer pool, exactly one connection: for single-statement writes.
