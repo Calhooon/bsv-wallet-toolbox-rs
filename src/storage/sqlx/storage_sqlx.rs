@@ -203,7 +203,8 @@ pub struct StorageSqlx {
 /// A second handle over the same store: every field is shared, none copied
 /// (`Pool` is an `Arc` inside; every other field is an `Arc`). The tests'
 /// busy hooks are shared too: a hook armed through one handle fires at the
-/// next matching step through any.
+/// next matching step through any. `destroy()` through any handle drops the
+/// tables of the one store, for every handle.
 impl Clone for StorageSqlx {
     fn clone(&self) -> Self {
         Self {
