@@ -172,8 +172,8 @@ pub struct StorageSqlx {
     /// inside its write transaction.
     #[cfg(test)]
     busy_next_process_action: std::sync::atomic::AtomicBool,
-    /// Tests only: the next `update_transaction_status_after_broadcast`
-    /// answers busy before writing.
+    /// Tests only: the next status write after a broadcast answers busy
+    /// before writing.
     #[cfg(test)]
     busy_next_status_write: std::sync::atomic::AtomicBool,
     /// Tests only: the next descendants' retirement answers busy before
@@ -337,12 +337,21 @@ impl StorageSqlx {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Tests only: the next `update_transaction_status_after_broadcast`
-    /// answers busy, as a store held by another process would.
+    /// Tests only: the next status write after a broadcast
+    /// (`update_transaction_status_after_broadcast`, or internalizeAction's
+    /// req advance to `unmined`) answers busy, as a store held by another
+    /// process would.
     #[cfg(test)]
     pub(crate) fn busy_next_status_write(&self) {
         self.busy_next_status_write
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests only: takes the busy `busy_next_status_write` armed.
+    #[cfg(test)]
+    pub(crate) fn take_busy_next_status_write(&self) -> bool {
+        self.busy_next_status_write
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Tests only: the next `retire_poisoned_descendants` answers busy
@@ -2514,10 +2523,7 @@ impl WalletStorageWriter for StorageSqlx {
         outcome: &super::BroadcastOutcome,
     ) -> Result<()> {
         #[cfg(test)]
-        if self
-            .busy_next_status_write
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
+        if self.take_busy_next_status_write() {
             return Err(Error::StoreBusy {
                 reason: StoreBusyReason::SqliteBusy { code: 5 },
             });
