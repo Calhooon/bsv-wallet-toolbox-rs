@@ -541,8 +541,10 @@ pub trait WalletStorageReader: Send + Sync {
     /// Check if storage is available and ready.
     fn is_available(&self) -> bool;
 
-    /// Get current settings.
-    fn get_settings(&self) -> &TableSettings;
+    /// Get current settings: an owned copy, so no caller holds a reference
+    /// into a cache another handle may replace (review 4 G7 of
+    /// bsv-wallet-cli #44).
+    fn get_settings(&self) -> TableSettings;
 
     /// Get the wallet services instance.
     ///
@@ -916,11 +918,11 @@ pub trait WalletStorageProvider: WalletStorageSync {
         true
     }
 
-    /// Get the storage identity key.
-    fn storage_identity_key(&self) -> &str;
+    /// Get the storage identity key (owned, as `get_settings`).
+    fn storage_identity_key(&self) -> String;
 
-    /// Get the storage name.
-    fn storage_name(&self) -> &str;
+    /// Get the storage name (owned, as `get_settings`).
+    fn storage_name(&self) -> String;
 
     /// Set the wallet services instance.
     ///

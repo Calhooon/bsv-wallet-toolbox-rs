@@ -898,23 +898,14 @@ impl WalletStorageReader for WalletStorageManager {
         true
     }
 
-    fn get_settings(&self) -> &TableSettings {
-        // The trait requires a &TableSettings reference, but settings are behind an
-        // async RwLock in the managed stores. We maintain a std::sync::RwLock cache
-        // that is populated when make_available() completes.
-        static DEFAULT_SETTINGS: std::sync::OnceLock<TableSettings> = std::sync::OnceLock::new();
-        let guard = match lock_read(&self.cached_settings) {
-            Ok(g) => g,
-            Err(_) => return DEFAULT_SETTINGS.get_or_init(TableSettings::default),
-        };
-        if let Some(ref settings) = *guard {
-            // SAFETY: The settings are effectively immutable once loaded via
-            // make_available(). The cached_settings RwLock keeps the allocation
-            // alive for the lifetime of the WalletStorageManager.
-            unsafe { &*(settings as *const TableSettings) }
-        } else {
-            DEFAULT_SETTINGS.get_or_init(TableSettings::default)
-        }
+    fn get_settings(&self) -> TableSettings {
+        // Settings are behind an async RwLock in the managed stores; a
+        // std::sync::RwLock cache is populated when make_available()
+        // completes. A copy taken under the lock; the defaults before.
+        lock_read(&self.cached_settings)
+            .ok()
+            .and_then(|settings| settings.clone())
+            .unwrap_or_default()
     }
 
     fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
@@ -1230,12 +1221,12 @@ impl WalletStorageProvider for WalletStorageManager {
         false // Manager is not a direct storage provider
     }
 
-    fn storage_identity_key(&self) -> &str {
+    fn storage_identity_key(&self) -> String {
         // This is sync - use get_active_store() for async access
         unimplemented!("Use async get_active_store() method instead")
     }
 
-    fn storage_name(&self) -> &str {
+    fn storage_name(&self) -> String {
         unimplemented!("Use async get_settings() method instead")
     }
 

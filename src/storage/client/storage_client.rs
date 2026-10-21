@@ -674,19 +674,15 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageReader for StorageClient
         true
     }
 
-    fn get_settings(&self) -> &TableSettings {
-        // The trait signature requires returning a reference but we're behind an async RwLock.
-        // Use try_read() which is synchronous. If the lock is held or settings not yet loaded,
-        // return a static default. Callers should use get_settings_async() for async contexts.
-        static DEFAULT_SETTINGS: std::sync::OnceLock<TableSettings> = std::sync::OnceLock::new();
-        if let Ok(guard) = self.settings.try_read() {
-            if let Some(ref settings) = *guard {
-                // SAFETY: Settings are effectively static once loaded via make_available().
-                // The pointer remains valid because the Arc keeps the allocation alive.
-                unsafe { return &*(settings as *const TableSettings) }
-            }
-        }
-        DEFAULT_SETTINGS.get_or_init(TableSettings::default)
+    fn get_settings(&self) -> TableSettings {
+        // The settings are behind an async RwLock: try_read() is synchronous.
+        // If the lock is held or settings not yet loaded, the defaults.
+        // Callers should use get_settings_async() for async contexts.
+        self.settings
+            .try_read()
+            .ok()
+            .and_then(|settings| settings.clone())
+            .unwrap_or_default()
     }
 
     fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
@@ -1236,15 +1232,15 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageProvider for StorageClie
         false
     }
 
-    fn storage_identity_key(&self) -> &str {
+    fn storage_identity_key(&self) -> String {
         // This would need to be fetched from settings
         // For now, return empty - proper implementation would cache this
-        ""
+        String::new()
     }
 
-    fn storage_name(&self) -> &str {
+    fn storage_name(&self) -> String {
         // This would need to be fetched from settings
-        ""
+        String::new()
     }
 
     fn set_services(&self, _services: Arc<dyn WalletServices>) {

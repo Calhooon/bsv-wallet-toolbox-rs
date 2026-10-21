@@ -124,17 +124,6 @@ fn writer_acquire_error(err: sqlx::Error) -> Error {
     }
 }
 
-/// Write `value` into `lock` only when it differs: `storage_identity_key()`
-/// and `storage_name()` lend a `&str` out of the lock, shared by every
-/// handle of the store (see `StorageSqlx::cache_settings`).
-fn replace_if_changed(lock: &std::sync::RwLock<String>, value: &str) -> Result<()> {
-    let mut current = lock_write(lock)?;
-    if current.as_str() != value {
-        *current = value.to_string();
-    }
-    Ok(())
-}
-
 /// Default maximum length for output scripts stored in the outputs table.
 /// Scripts longer than this will be retrieved from the raw transaction.
 pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
@@ -330,16 +319,11 @@ impl StorageSqlx {
         })
     }
 
-    /// Cache `settings`, replacing the cached value only when it differs.
-    /// `get_settings` lends a `&TableSettings` out of the lock (the trait's
-    /// signature), and every handle of this store shares the cache: a
-    /// second handle's `make_available` over the same row must not free
-    /// what another handle lent.
+    /// Cache `settings`, shared by every handle of this store. Readers get
+    /// owned copies (`get_settings`), so replacing it frees nothing anyone
+    /// holds.
     fn cache_settings(&self, settings: &TableSettings) -> Result<()> {
-        let mut cached = lock_write(&self.settings)?;
-        if cached.as_ref() != Some(settings) {
-            *cached = Some(settings.clone());
-        }
+        *lock_write(&self.settings)? = Some(settings.clone());
         Ok(())
     }
 
@@ -1343,21 +1327,13 @@ impl WalletStorageReader for StorageSqlx {
             .unwrap_or(false)
     }
 
-    fn get_settings(&self) -> &TableSettings {
-        // This is a bit awkward due to the RwLock, but the trait requires &self
-        // In practice, make_available() should be called first
-        static DEFAULT_SETTINGS: std::sync::OnceLock<TableSettings> = std::sync::OnceLock::new();
-        let guard = match lock_read(&self.settings) {
-            Ok(g) => g,
-            Err(_) => return DEFAULT_SETTINGS.get_or_init(TableSettings::default),
-        };
-        if let Some(ref settings) = *guard {
-            // SAFETY: This is a workaround for the trait signature
-            // The settings are effectively static once loaded
-            unsafe { &*(settings as *const TableSettings) }
-        } else {
-            DEFAULT_SETTINGS.get_or_init(TableSettings::default)
-        }
+    fn get_settings(&self) -> TableSettings {
+        // A copy taken under the lock; the defaults before make_available()
+        // (or on a poisoned lock).
+        lock_read(&self.settings)
+            .ok()
+            .and_then(|settings| settings.clone())
+            .unwrap_or_default()
     }
 
     fn get_services(&self) -> Result<Arc<dyn WalletServices>> {
@@ -2363,8 +2339,8 @@ impl WalletStorageWriter for StorageSqlx {
         self.save_settings(&settings).await?;
 
         // Update internal state
-        replace_if_changed(&self.storage_identity_key, storage_identity_key)?;
-        replace_if_changed(&self.storage_name, storage_name)?;
+        *lock_write(&self.storage_identity_key)? = storage_identity_key.to_string();
+        *lock_write(&self.storage_name)? = storage_name.to_string();
 
         Ok(MIGRATIONS
             .last()
@@ -2987,24 +2963,18 @@ impl WalletStorageSync for StorageSqlx {
 
 #[async_trait]
 impl WalletStorageProvider for StorageSqlx {
-    fn storage_identity_key(&self) -> &str {
-        // SAFETY: Similar workaround as get_settings
-        // If lock is poisoned, return empty string as fallback
-        let guard = match lock_read(&self.storage_identity_key) {
-            Ok(g) => g,
-            Err(_) => return "",
-        };
-        unsafe { &*(&*guard as *const String) }
+    fn storage_identity_key(&self) -> String {
+        // Empty on a poisoned lock.
+        lock_read(&self.storage_identity_key)
+            .map(|key| key.clone())
+            .unwrap_or_default()
     }
 
-    fn storage_name(&self) -> &str {
-        // SAFETY: Similar workaround as get_settings
-        // If lock is poisoned, return empty string as fallback
-        let guard = match lock_read(&self.storage_name) {
-            Ok(g) => g,
-            Err(_) => return "",
-        };
-        unsafe { &*(&*guard as *const String) }
+    fn storage_name(&self) -> String {
+        // Empty on a poisoned lock.
+        lock_read(&self.storage_name)
+            .map(|name| name.clone())
+            .unwrap_or_default()
     }
 
     fn broadcast_memory(
@@ -7325,14 +7295,11 @@ mod tests {
         assert_eq!(b.storage_identity_key(), "02".repeat(33));
         assert_eq!(b.storage_name(), "shared");
         assert_eq!(b.get_settings().storage_name, "shared");
-        let lent = b.get_settings();
+        let copy = b.get_settings();
         a.make_available().await.unwrap();
         b.make_available().await.unwrap();
-        assert_eq!(
-            lent.storage_identity_key,
-            "02".repeat(33),
-            "the same row made available again leaves what was lent in place"
-        );
+        assert_eq!(copy.storage_identity_key, "02".repeat(33));
+        assert_eq!(a.get_settings(), b.get_settings());
 
         assert!(Arc::ptr_eq(
             &a.sqlx_broadcast_memory(),
@@ -7341,6 +7308,67 @@ mod tests {
         let held = a.writer().acquire().await.unwrap();
         assert_eq!(b.writer().num_idle(), 0, "one writer connection");
         drop(held);
+    }
+
+    /// Review 4 G7 of #44: `get_settings`, `storage_identity_key` and
+    /// `storage_name` lent references out of their locks through `unsafe`,
+    /// so with shared handles a second handle's `make_available` (or
+    /// `migrate`) could free a value another was reading. They return owned
+    /// copies now, taken under the lock. Two handles: one replaces the
+    /// settings, the identity and the name with changing values, over and
+    /// over, while four threads read them through the other; every value
+    /// read is one that was written, whole.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reads_through_one_handle_race_make_available_through_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g7.db").to_string_lossy().to_string();
+        let a = StorageSqlx::open(&path).await.unwrap();
+        let b = a.clone();
+        let name = |i: usize| format!("store-{}", i % 7);
+        let key = |i: usize| format!("{:02x}", i % 5).repeat(33);
+        a.migrate(&name(0), &key(0)).await.unwrap();
+        a.make_available().await.unwrap();
+
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let b = b.clone();
+                let done = Arc::clone(&done);
+                std::thread::spawn(move || {
+                    let names: HashSet<String> = (0..7).map(name).collect();
+                    let keys: HashSet<String> = (0..5).map(key).collect();
+                    let mut reads = 0u64;
+                    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                        let settings = b.get_settings();
+                        assert!(names.contains(&settings.storage_name), "{settings:?}");
+                        assert!(keys.contains(&settings.storage_identity_key));
+                        assert!(names.contains(&b.storage_name()));
+                        assert!(keys.contains(&b.storage_identity_key()));
+                        reads += 1;
+                    }
+                    reads
+                })
+            })
+            .collect();
+
+        for i in 1..300 {
+            if i % 10 == 0 {
+                a.migrate(&name(i), &key(i)).await.unwrap();
+            } else {
+                sqlx::query("UPDATE settings SET storage_name = ?, updated_at = ?")
+                    .bind(name(i))
+                    .bind(Utc::now())
+                    .execute(a.writer())
+                    .await
+                    .unwrap();
+            }
+            a.make_available().await.unwrap();
+            b.make_available().await.unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        for reader in readers {
+            assert!(reader.join().expect("a reader saw a whole value") > 0);
+        }
     }
 
     /// Review 2 F4 of #44: a begin that fails for anything but busy keeps
