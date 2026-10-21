@@ -1439,7 +1439,7 @@ async fn upsert_basket(
             .bind(basket.minimum_desired_utxo_value)
             .bind(basket.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -1461,7 +1461,7 @@ async fn upsert_basket(
         .bind(basket.minimum_desired_utxo_value)
         .bind(basket.created_at)
         .bind(basket.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -1504,7 +1504,7 @@ async fn upsert_proven_tx(storage: &StorageSqlx, ptx: &TableProvenTx) -> Result<
             .bind(&ptx.raw_tx)
             .bind(ptx.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -1529,7 +1529,7 @@ async fn upsert_proven_tx(storage: &StorageSqlx, ptx: &TableProvenTx) -> Result<
         .bind(&ptx.raw_tx)
         .bind(ptx.created_at)
         .bind(ptx.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -1589,7 +1589,7 @@ async fn upsert_proven_tx_req(
             .bind(&req.batch)
             .bind(req.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -1623,7 +1623,7 @@ async fn upsert_proven_tx_req(
         .bind(&req.batch)
         .bind(req.created_at)
         .bind(req.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -1663,7 +1663,7 @@ async fn upsert_tx_label(
             )
             .bind(label.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -1683,7 +1683,7 @@ async fn upsert_tx_label(
         .bind(&label.label)
         .bind(label.created_at)
         .bind(label.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -1723,7 +1723,7 @@ async fn upsert_output_tag(
             )
             .bind(tag.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -1743,7 +1743,7 @@ async fn upsert_output_tag(
         .bind(&tag.tag)
         .bind(tag.created_at)
         .bind(tag.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -1798,7 +1798,7 @@ async fn upsert_transaction(
             .bind(&tx.proof_txid)
             .bind(tx.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -1828,7 +1828,7 @@ async fn upsert_transaction(
         .bind(&tx.proof_txid)
         .bind(tx.created_at)
         .bind(tx.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -1943,7 +1943,7 @@ async fn upsert_output(
             .bind(&output.custom_instructions)
             .bind(output.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -1981,7 +1981,7 @@ async fn upsert_output(
         .bind("change") // purpose - default to "change" for synced outputs
         .bind(output.created_at)
         .bind(output.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -2022,7 +2022,7 @@ async fn upsert_tx_label_map(
             )
             .bind(map.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -2042,7 +2042,7 @@ async fn upsert_tx_label_map(
         .bind(local_label_id)
         .bind(map.created_at)
         .bind(map.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -2083,7 +2083,7 @@ async fn upsert_output_tag_map(
             )
             .bind(map.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -2103,7 +2103,7 @@ async fn upsert_output_tag_map(
         .bind(local_tag_id)
         .bind(map.created_at)
         .bind(map.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -2151,7 +2151,7 @@ async fn upsert_certificate(
             .bind(&cert.signature)
             .bind(cert.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -2177,7 +2177,7 @@ async fn upsert_certificate(
         .bind(&cert.signature)
         .bind(cert.created_at)
         .bind(cert.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -2222,7 +2222,7 @@ async fn upsert_certificate_field(
             .bind(&field.master_key)
             .bind(field.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -2245,7 +2245,7 @@ async fn upsert_certificate_field(
         .bind(&field.master_key)
         .bind(field.created_at)
         .bind(field.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {
@@ -2292,7 +2292,7 @@ async fn upsert_commission(
             .bind(comm.is_redeemed)
             .bind(comm.updated_at)
             .bind(local_id)
-            .execute(storage.writer())
+            .execute(&mut *storage.writer_conn().await?)
             .await?;
         }
 
@@ -2316,7 +2316,7 @@ async fn upsert_commission(
         .bind(comm.is_redeemed)
         .bind(comm.created_at)
         .bind(comm.updated_at)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
         Ok(UpsertResult {

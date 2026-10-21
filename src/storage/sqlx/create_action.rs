@@ -3879,21 +3879,24 @@ async fn try_network_fallback(
                     "Fetched raw tx from network"
                 );
 
-                // Store locally for future use
+                // Store locally for future use (best effort: a busy writer
+                // or a failed insert is ignored)
                 let now = Utc::now();
-                let _ = sqlx::query(
-                    r#"
-                    INSERT OR IGNORE INTO proven_tx_reqs
-                        (txid, status, raw_tx, history, notify, created_at, updated_at)
-                    VALUES (?, 'unmined', ?, '{}', '{}', ?, ?)
-                    "#,
-                )
-                .bind(txid)
-                .bind(raw_tx)
-                .bind(now)
-                .bind(now)
-                .execute(storage.writer())
-                .await;
+                if let Ok(mut writer) = storage.writer_conn().await {
+                    let _ = sqlx::query(
+                        r#"
+                        INSERT OR IGNORE INTO proven_tx_reqs
+                            (txid, status, raw_tx, history, notify, created_at, updated_at)
+                        VALUES (?, 'unmined', ?, '{}', '{}', ?, ?)
+                        "#,
+                    )
+                    .bind(txid)
+                    .bind(raw_tx)
+                    .bind(now)
+                    .bind(now)
+                    .execute(&mut *writer)
+                    .await;
+                }
 
                 // Also try to get the merkle proof from the network, and record
                 // it: a proof fetched and thrown away has to be fetched again on

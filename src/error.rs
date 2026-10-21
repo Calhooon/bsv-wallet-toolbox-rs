@@ -179,16 +179,15 @@ pub enum Error {
 }
 
 /// The `StoreBusy` code of a busy answer: the extended SQLite result code
-/// when the primary code is 5 (`SQLITE_BUSY`, 517 included), or 5 when a pool
-/// connection was not acquired in time (`PoolTimedOut`: the writer pool's
-/// `acquire_timeout` is the store's ceiling; nothing was written). `None` for
-/// every other error, `SQLITE_LOCKED` (6) included.
+/// when the primary code is 5 (`SQLITE_BUSY`, 517 included). `None` for
+/// every other error, `SQLITE_LOCKED` (6) included, and for `PoolTimedOut`:
+/// the conversion cannot tell the pools apart, so the writer's acquire sites
+/// (`begin_immediate`, `acquire_writer`) make a writer timeout `StoreBusy`
+/// themselves and a reader-pool timeout stays the plain SQLx error.
 #[cfg(feature = "sqlite")]
 pub(crate) fn sqlite_busy_code(err: &sqlx::Error) -> Option<i32> {
-    let db = match err {
-        sqlx::Error::PoolTimedOut => return Some(5),
-        sqlx::Error::Database(db) => db,
-        _ => return None,
+    let sqlx::Error::Database(db) = err else {
+        return None;
     };
     let code: i32 = db.code()?.parse().ok()?;
     (code & 0xff == 5).then_some(code)

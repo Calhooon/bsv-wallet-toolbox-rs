@@ -154,7 +154,7 @@ pub(crate) async fn check_unchecked_stored_proof_on(
             let Some(writer) = writer else {
                 return Ok(ReadCheck::Confirmed);
             };
-            let mut w = writer.acquire().await?;
+            let mut w = super::storage_sqlx::acquire_writer(writer).await?;
             record_root_checked_on(&mut w, txid, merkle_path.block_height, &root).await?;
             tracing::info!(
                 txid = %txid,

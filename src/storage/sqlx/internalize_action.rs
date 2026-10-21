@@ -1582,7 +1582,7 @@ async fn broadcast_new_internalized_req(
     )
     .bind(now)
     .bind(txid)
-    .execute(storage.writer())
+    .execute(&mut *storage.writer_conn().await?)
     .await?;
 
     tracing::info!(
@@ -1621,7 +1621,7 @@ pub async fn mark_internalized_tx_failed(storage: &StorageSqlx, txid: &str) -> R
     sqlx::query("UPDATE transactions SET status = 'failed', updated_at = ? WHERE txid = ?")
         .bind(now)
         .bind(txid)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
     // 2. Mark created outputs as unspendable
@@ -1634,14 +1634,14 @@ pub async fn mark_internalized_tx_failed(storage: &StorageSqlx, txid: &str) -> R
     )
     .bind(now)
     .bind(txid)
-    .execute(storage.writer())
+    .execute(&mut *storage.writer_conn().await?)
     .await?;
 
     // 3. Mark proven_tx_req as invalid
     sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', updated_at = ? WHERE txid = ?")
         .bind(now)
         .bind(txid)
-        .execute(storage.writer())
+        .execute(&mut *storage.writer_conn().await?)
         .await?;
 
     tracing::info!(

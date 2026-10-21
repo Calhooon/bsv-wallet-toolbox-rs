@@ -53,8 +53,10 @@ pub(crate) fn parse_db_timestamp(text: &str) -> DateTime<Utc> {
 
 /// Run every statement of one migration file: comment lines stripped,
 /// statements split on `;`. Shared by `StorageSqlx::run_migrations` and the
-/// lazy schema check of [`SqlxBroadcastMemory`].
+/// lazy schema check of [`SqlxBroadcastMemory`]. `pool` is a writer pool,
+/// acquired once for the whole migration (a timeout is `StoreBusy`).
 pub(crate) async fn apply_migration_sql(pool: &Pool<Sqlite>, name: &str, sql: &str) -> Result<()> {
+    let mut conn = super::storage_sqlx::acquire_writer(pool).await?;
     // Remove comments and split by semicolons
     let sql_without_comments: String = sql
         .lines()
@@ -66,7 +68,7 @@ pub(crate) async fn apply_migration_sql(pool: &Pool<Sqlite>, name: &str, sql: &s
         let statement = statement.trim();
         if !statement.is_empty() {
             sqlx::query(statement)
-                .execute(pool)
+                .execute(&mut *conn)
                 .await
                 .map_err(|e| Error::MigrationError(format!("{}: {}: {}", name, e, statement)))?;
         }
@@ -317,7 +319,7 @@ impl BroadcastMemory for SqlxBroadcastMemory {
         )
         .bind(key)
         .bind(value)
-        .execute(&self.writer)
+        .execute(&mut *super::storage_sqlx::acquire_writer(&self.writer).await?)
         .await?;
         Ok(())
     }

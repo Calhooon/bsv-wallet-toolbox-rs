@@ -554,7 +554,7 @@ impl StorageSqlx {
                 )
                 .bind(now)
                 .bind(root_txid)
-                .execute(self.writer())
+                .execute(&mut *self.writer_conn().await?)
                 .await?;
                 sqlx::query(
                     "UPDATE transactions SET status = 'unproven', updated_at = ? \
@@ -562,7 +562,7 @@ impl StorageSqlx {
                 )
                 .bind(now)
                 .bind(root_txid)
-                .execute(self.writer())
+                .execute(&mut *self.writer_conn().await?)
                 .await?;
             }
             let mut report = PoisonReport::new(root_txid, PoisonOutcome::Alive);
@@ -724,7 +724,7 @@ impl StorageSqlx {
                     .bind(now)
                     .bind(output_id)
                     .bind(tx.transaction_id)
-                    .execute(self.writer())
+                    .execute(&mut *self.writer_conn().await?)
                     .await?;
                     report.restored += 1;
                     report.restored_sats += satoshis.max(0);
@@ -794,7 +794,7 @@ impl StorageSqlx {
         sqlx::query("UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ?")
             .bind(now)
             .bind(tx.transaction_id)
-            .execute(self.writer())
+            .execute(&mut *self.writer_conn().await?)
             .await?;
 
         // The transaction and its req.
@@ -805,7 +805,7 @@ impl StorageSqlx {
             )
             .bind(now)
             .bind(tx.transaction_id)
-            .execute(self.writer())
+            .execute(&mut *self.writer_conn().await?)
             .await?;
             report.failed += failed.rows_affected() as u32;
         }
@@ -816,7 +816,7 @@ impl StorageSqlx {
         .bind(req_status)
         .bind(now)
         .bind(&tx.txid)
-        .execute(self.writer())
+        .execute(&mut *self.writer_conn().await?)
         .await?;
 
         // No provider ever skips it again.
