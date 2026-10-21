@@ -205,8 +205,83 @@ impl From<sqlx::Error> for Error {
     }
 }
 
+/// The toolbox error at the `WalletInterface` boundary. A `StoreBusy` is
+/// bsv-rs's `WalletBusy`: the store refused before acting and nothing was
+/// written, built or locked, so the caller may repeat the call unchanged.
+/// `retry_after_ms` is `None`: the store does not know the host's retry
+/// policy, and the host sets its own. An `SdkError` passes its bsv-rs error
+/// through. Every other variant is `WalletError` with the toolbox Display,
+/// the text the erasure sites gave before this impl.
+impl From<Error> for bsv_rs::Error {
+    fn from(err: Error) -> Self {
+        match err {
+            Error::StoreBusy { .. } => bsv_rs::Error::WalletBusy {
+                detail: err.to_string(),
+                retry_after_ms: None,
+            },
+            Error::SdkError(e) => e,
+            other => bsv_rs::Error::WalletError(other.to_string()),
+        }
+    }
+}
+
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         Error::HttpError(err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_busy_is_wallet_busy_with_no_retry_policy() {
+        match bsv_rs::Error::from(Error::StoreBusy { code: 517 }) {
+            bsv_rs::Error::WalletBusy {
+                detail,
+                retry_after_ms,
+            } => {
+                assert_eq!(detail, "Store busy: sqlite code 517");
+                assert_eq!(retry_after_ms, None);
+            }
+            other => panic!("expected WalletBusy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_sdk_error_passes_through() {
+        let sdk = bsv_rs::Error::WalletBusy {
+            detail: "upstream".to_string(),
+            retry_after_ms: Some(250),
+        };
+        match bsv_rs::Error::from(Error::SdkError(sdk)) {
+            bsv_rs::Error::WalletBusy {
+                detail,
+                retry_after_ms,
+            } => {
+                assert_eq!(detail, "upstream");
+                assert_eq!(retry_after_ms, Some(250));
+            }
+            other => panic!("expected the SDK error itself, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_other_error_is_wallet_error_with_its_display() {
+        for err in [
+            Error::ValidationError("bad".to_string()),
+            Error::InsufficientFunds {
+                needed: 2,
+                available: 1,
+            },
+            Error::LockTimeout("writer".to_string()),
+        ] {
+            let text = err.to_string();
+            match bsv_rs::Error::from(err) {
+                bsv_rs::Error::WalletError(t) => assert_eq!(t, text),
+                other => panic!("expected WalletError, got {other:?}"),
+            }
+        }
     }
 }
