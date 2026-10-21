@@ -1581,6 +1581,12 @@ async fn broadcast_new_internalized_req(
     // req to 'unmined' so send_waiting never re-broadcasts it and
     // CheckForProofs takes ownership. Matches the send_waiting success
     // transition (req -> 'unmined', tx stays 'unproven').
+    #[cfg(test)]
+    if storage.take_busy_next_status_write() {
+        return Err(crate::error::Error::StoreBusy {
+            reason: crate::error::StoreBusyReason::SqliteBusy { code: 5 },
+        });
+    }
     let now = Utc::now();
     sqlx::query(
         "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status = 'unsent'",

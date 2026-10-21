@@ -1015,3 +1015,119 @@ async fn review_status_leaves_the_descendants_of_a_failed_root_with_chain_eviden
         ("unproven".to_string(), "unmined".to_string())
     );
 }
+
+/// Review 3 F3 of bsv-wallet-cli #44: internalizeAction's post-broadcast
+/// site. The payment is committed and posted; the req's advance to
+/// `unmined` after the post answers busy. The call answers its success, the
+/// marker `post_broadcast_status_write_failed` is logged with the txid, the
+/// req stays `unsent`, and the monitor's send-waiting pass re-posts it and
+/// writes `unmined`.
+#[tokio::test]
+async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_send_waiting_heals_it(
+) {
+    let (_dir, wallet) = wallet().await;
+    wallet
+        .storage()
+        .set_services(std::sync::Arc::new(MockWalletServices::new()));
+    let mut parent = Transaction::new();
+    let mut parent_input = TransactionInput::new("33".repeat(32), 0);
+    parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    parent.inputs.push(parent_input);
+    parent.outputs.push(TransactionOutput {
+        satoshis: Some(20_000),
+        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        change: false,
+    });
+    let parent_txid = parent.id();
+    let mut tx = Transaction::new();
+    let mut input = TransactionInput::new(parent_txid.clone(), 0);
+    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    tx.inputs.push(input);
+    tx.outputs.push(TransactionOutput {
+        satoshis: Some(10_000),
+        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        change: false,
+    });
+    let txid = tx.id();
+    let mut beef = Beef::new();
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_002));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    beef.merge_transaction(tx);
+    let atomic = beef.to_binary_atomic(&txid).unwrap();
+
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _capture = tracing::subscriber::set_default(LogCapture(logs.clone()));
+    wallet.storage().busy_next_status_write();
+    let result = wallet
+        .internalize_action(
+            InternalizeActionArgs {
+                tx: atomic,
+                outputs: vec![InternalizeOutput {
+                    output_index: 0,
+                    protocol: "basket insertion".to_string(),
+                    payment_remittance: None,
+                    insertion_remittance: Some(BasketInsertion {
+                        basket: "post-broadcast".to_string(),
+                        custom_instructions: None,
+                        tags: None,
+                    }),
+                }],
+                description: "a busy door test".to_string(),
+                labels: None,
+                seek_permission: None,
+            },
+            ORIGINATOR,
+        )
+        .await
+        .expect("the payment is committed and posted: the call succeeds");
+    assert!(result.accepted);
+    assert!(
+        !wallet.storage().take_busy_next_status_write(),
+        "the post-broadcast write was reached"
+    );
+    let marked = logs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.contains("post_broadcast_status_write_failed"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(marked.len(), 1, "{marked:?}");
+    assert!(
+        marked[0].contains(&txid) && marked[0].contains("Store busy: sqlite code 5"),
+        "{}",
+        marked[0]
+    );
+    let req = || {
+        let pool = wallet.storage().pool().clone();
+        let txid = txid.clone();
+        async move {
+            sqlx::query_scalar::<_, String>("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(req().await, "unsent", "the req's advance did not land");
+
+    let earlier = Utc::now() - chrono::Duration::minutes(10);
+    sqlx::query("UPDATE proven_tx_reqs SET created_at = ?, updated_at = ? WHERE txid = ?")
+        .bind(earlier)
+        .bind(earlier)
+        .bind(&txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+    crate::storage::MonitorStorage::send_waiting_transactions(
+        wallet.storage(),
+        std::time::Duration::from_secs(60),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        req().await,
+        "unmined",
+        "the monitor's send-waiting pass healed the req"
+    );
+}
