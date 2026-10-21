@@ -108,6 +108,29 @@ pub enum Error {
     #[error("Insufficient funds: need {needed}, have {available}")]
     InsufficientFunds { needed: u64, available: u64 },
 
+    /// `createAction`: a change coin the wallet holds cannot be spent,
+    /// because its stored ancestry is incomplete (a reorg-demoted received
+    /// coin whose parents were never stored), and no other set of the
+    /// wallet's coins covers the action. The pre-check skipped the coin and
+    /// picked again; the coins offered covered the action only with it, so
+    /// this is not `InsufficientFunds`, and the caller passed no bad
+    /// `inputBEEF`, so it is not a `ValidationError`. The action wrote
+    /// nothing. The Display begins exactly `Unspendable coin: `, then the
+    /// coin's outpoint and the ancestors not stored; a host maps the prefix
+    /// apart from `Insufficient funds:` (402) and `Validation error:` (400):
+    /// the wallet's own state refuses a well-formed request (409 Conflict).
+    #[error(
+        "Unspendable coin: {outpoint}: its stored ancestry is incomplete, ancestor(s) not stored: [{}]; createAction fetches none, and the wallet's other coins do not cover the action",
+        .missing.join(",")
+    )]
+    UnspendableCoin {
+        /// The coin, `txid.vout`.
+        outpoint: String,
+        /// The ancestors the wallet does not store (the coin's own txid when
+        /// its transaction's bytes are not stored).
+        missing: Vec<String>,
+    },
+
     // ===================
     // Validation errors
     // ===================
