@@ -765,3 +765,41 @@ async fn a_busy_status_write_after_a_sign_action_broadcast_is_its_success() {
         .unwrap();
     assert_eq!(status, "sending", "left for the send-waiting task");
 }
+
+/// The host's offer at the wallet (bsv-wallet-cli #44, bsv-low #828):
+/// `create_action_offering` takes change only from the offered output ids.
+/// An offer that does not hold the wallet's coin refuses insufficient funds,
+/// its coin untouched; the offer that holds it signs and processes as
+/// createAction does.
+#[tokio::test]
+async fn create_action_offering_spends_only_the_offer() {
+    let (_dir, wallet) = wallet().await;
+    let coin = fund_with(&wallet, &own_lock(&wallet)).await;
+    let before = store_snapshot(&wallet).await;
+
+    for offer in [&[][..], &[coin + 1000][..]] {
+        match wallet
+            .create_action_offering(labelled_payment(true), ORIGINATOR, offer)
+            .await
+        {
+            Err(bsv_rs::Error::WalletError(text)) => {
+                assert!(text.starts_with("Insufficient funds: "), "{text}")
+            }
+            other => panic!("expected the shortfall, got {other:?}"),
+        }
+        assert_eq!(store_snapshot(&wallet).await, before, "nothing written");
+    }
+
+    let result = wallet
+        .create_action_offering(labelled_payment(true), ORIGINATOR, &[coin])
+        .await
+        .expect("the offered coin funds the action");
+    assert!(result.txid.is_some());
+    let (spent_by,): (Option<i64>,) =
+        sqlx::query_as("SELECT spent_by FROM outputs WHERE output_id = ?")
+            .bind(coin)
+            .fetch_one(wallet.storage().pool())
+            .await
+            .unwrap();
+    assert!(spent_by.is_some(), "the offered coin is spent");
+}

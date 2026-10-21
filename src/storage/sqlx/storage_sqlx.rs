@@ -360,6 +360,30 @@ impl StorageSqlx {
         begin_immediate(&self.writer).await
     }
 
+    /// `create_action` with the host's offer (bsv-wallet-cli #44): the change
+    /// coins are picked from the output ids in `offer` only (the dry-run pick
+    /// and the locked set both); an offer that does not cover the action, or
+    /// an empty one, refuses `InsufficientFunds`. The storage-level
+    /// `Wallet::create_action_offering`.
+    pub async fn create_action_offering(
+        &self,
+        auth: &AuthId,
+        args: bsv_rs::wallet::CreateActionArgs,
+        offer: &[i64],
+    ) -> Result<StorageCreateActionResult> {
+        self.create_action_at_door(
+            auth,
+            args,
+            crate::storage::CreateActionDoor {
+                offer: Some(offer),
+                sign_and_process: None,
+            },
+        )
+        .await
+        .map(|done| done.created)
+        .map_err(crate::storage::DoorRefusal::into_error)
+    }
+
     /// The writer connection for a single-statement write: see
     /// [`acquire_writer`]. Hold it for the one statement only.
     pub(crate) async fn writer_conn(&self) -> Result<sqlx::pool::PoolConnection<Sqlite>> {
