@@ -1396,3 +1396,53 @@ async fn review_status_leaves_the_descendants_when_a_descendant_has_chain_eviden
         "its change lives"
     );
 }
+
+/// Review 4 G3: a completed descendant made the descendants check count the
+/// root as retired and log a line (and the retirement's refusal) on every
+/// pass, forever. The root is skipped, uncounted: the passes say nothing.
+#[tokio::test]
+async fn review_status_with_a_completed_descendant_is_quiet_every_pass() {
+    let (_dir, wallet) = wallet().await;
+    let (a_txid, d_txid, _, change_d) = broadcast_chain(&wallet, "g3").await;
+    let now = Utc::now();
+    let grandchild = sqlx::query(
+        "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, description, txid, version, lock_time, created_at, updated_at) \
+         VALUES (?, 'completed', 'g3-grandchild', 1, 1000, 'a busy door test', ?, 1, 0, ?, ?)",
+    )
+    .bind(wallet.user_id)
+    .bind("3".repeat(64))
+    .bind(now)
+    .bind(now)
+    .execute(wallet.storage().writer())
+    .await
+    .unwrap()
+    .last_insert_rowid();
+    sqlx::query("UPDATE outputs SET spent_by = ?, spendable = 0 WHERE output_id = ?")
+        .bind(grandchild)
+        .bind(change_d)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+    fail_root(&wallet, &a_txid, "invalid").await;
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _capture = tracing::subscriber::set_default(LogCapture(logs.clone()));
+
+    for pass in 0..2 {
+        let review = crate::storage::MonitorStorage::review_status(wallet.storage())
+            .await
+            .unwrap();
+        assert_eq!(review.log, "No status mismatches found\n", "pass {pass}");
+    }
+    let refusals = logs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.contains("PROVEN") || line.contains("retired"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(refusals.is_empty(), "{refusals:?}");
+    assert_eq!(
+        tx_and_req(&wallet, &d_txid).await,
+        ("unproven".to_string(), "unmined".to_string())
+    );
+}
