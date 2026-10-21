@@ -1033,6 +1033,37 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageWriter for StorageClient
         .await
     }
 
+    /// One call: the reference's `insertCertificateAuth` takes a
+    /// `TableCertificateX`, the certificate with its `fields`, and the
+    /// server inserts them together (each field's certificate id is the
+    /// server's to set).
+    async fn insert_certificate_with_fields(
+        &self,
+        auth: &AuthId,
+        certificate: TableCertificate,
+        fields: Vec<TableCertificateField>,
+    ) -> Result<i64> {
+        let mut certificate = Self::to_value(&certificate)?;
+        let fields = fields
+            .iter()
+            .map(|field| {
+                let mut field = Self::to_value(field)?;
+                if let Some(field) = field.as_object_mut() {
+                    field.remove("certificateFieldId");
+                }
+                Ok(field)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if let Some(certificate) = certificate.as_object_mut() {
+            certificate.insert("fields".to_string(), serde_json::Value::Array(fields));
+        }
+        self.rpc_call(
+            "insertCertificateAuth",
+            vec![Self::to_value(auth)?, certificate],
+        )
+        .await
+    }
+
     async fn relinquish_certificate(
         &self,
         auth: &AuthId,

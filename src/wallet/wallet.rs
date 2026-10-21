@@ -2447,30 +2447,31 @@ where
                     updated_at: now,
                 };
 
-                // Persist the certificate
-                let cert_id = self.storage.insert_certificate(&auth, table_cert).await?;
-
-                // Persist certificate fields with their master keys from the keyring
+                // The certificate and its fields (with their master keys
+                // from the keyring) in one write: a busy store writes none
+                // of them, so a busy answer is honest and the call may be
+                // repeated (bsv-wallet-cli #44 review 4 G1).
                 let keyring = args.keyring_for_subject.as_ref();
-                for (field_name, field_value) in &certificate.fields {
-                    let master_key = keyring
-                        .and_then(|kr| kr.get(field_name))
-                        .cloned()
-                        .unwrap_or_default();
-
-                    let field = TableCertificateField {
+                let fields = certificate
+                    .fields
+                    .iter()
+                    .map(|(field_name, field_value)| TableCertificateField {
                         certificate_field_id: 0, // Will be assigned by storage
-                        certificate_id: cert_id,
+                        certificate_id: 0,       // The certificate's, in storage
                         user_id: self.user_id,
                         field_name: field_name.clone(),
                         field_value: field_value.clone(),
-                        master_key,
+                        master_key: keyring
+                            .and_then(|kr| kr.get(field_name))
+                            .cloned()
+                            .unwrap_or_default(),
                         created_at: now,
                         updated_at: now,
-                    };
-
-                    self.storage.insert_certificate_field(&auth, field).await?;
-                }
+                    })
+                    .collect();
+                self.storage
+                    .insert_certificate_with_fields(&auth, table_cert, fields)
+                    .await?;
 
                 Ok(certificate)
             }

@@ -1102,6 +1102,20 @@ impl WalletStorageWriter for WalletStorageManager {
         .await
     }
 
+    async fn insert_certificate_with_fields(
+        &self,
+        auth: &AuthId,
+        certificate: TableCertificate,
+        fields: Vec<TableCertificateField>,
+    ) -> Result<i64> {
+        self.run_as_writer(|active| async move {
+            active
+                .insert_certificate_with_fields(auth, certificate, fields)
+                .await
+        })
+        .await
+    }
+
     async fn relinquish_certificate(
         &self,
         auth: &AuthId,
