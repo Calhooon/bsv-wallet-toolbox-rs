@@ -5878,8 +5878,8 @@ impl MonitorStorage for StorageSqlx {
         // transaction whose req is `invalid` or `doubleSpend`, with no chain
         // evidence, spent by a transaction still `unproven`, `sending` or
         // `nosend`; retiring from it is the abort's own retirement (outside
-        // inputs released only on verification, a proven descendant refuses).
-        // A root with a descendant with chain evidence is left.
+        // inputs released only on verification). A root with a completed
+        // descendant, or a descendant with chain evidence, is left.
         let roots: Vec<(i64, String)> = sqlx::query_as(
             r#"
             SELECT DISTINCT p.transaction_id, p.txid
@@ -5911,8 +5911,17 @@ impl MonitorStorage for StorageSqlx {
                 // A descendant with chain evidence (a broadcaster's mined
                 // word, a proof) says the chain disagrees with the root's
                 // retirement: none is retired (review 4 G2; the unfail
-                // canary judges the root).
+                // canary judges the root). A completed descendant makes the
+                // retirement refuse, so the root is skipped, uncounted, and
+                // the pass stays quiet (review 4 G3).
                 let descendants = self.poisoned_descendants(txid).await?;
+                if descendants.iter().any(|d| d.status == "completed") {
+                    tracing::debug!(
+                        txid = %txid,
+                        "review_status: a failed root has a completed descendant; descendants left"
+                    );
+                    continue;
+                }
                 let mut evidenced = None;
                 for descendant in &descendants {
                     if let Some(evidence) =
