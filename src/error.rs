@@ -11,6 +11,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// transaction, validation, sync, and wrapped errors from dependencies.
 /// Use the [`Result`] type alias for convenient error propagation.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     // ===================
     // Storage errors
@@ -27,10 +28,14 @@ pub enum Error {
     #[error("Database error: {0}")]
     DatabaseError(String),
 
-    /// The SQLite store answered busy or locked: primary result code 5
-    /// (`SQLITE_BUSY`, `SQLITE_BUSY_SNAPSHOT` is 517) or 6 (`SQLITE_LOCKED`).
-    /// `code` is the extended code SQLite gave. The Display begins exactly
-    /// `Store busy: sqlite code N`; consumers classify on that prefix.
+    /// The store is busy, a transient refusal that wrote nothing: SQLite
+    /// answered primary result code 5 (`SQLITE_BUSY`; `SQLITE_BUSY_SNAPSHOT`,
+    /// 517, included), with `code` the extended code it gave, or the writer
+    /// connection was not acquired within the store's ceiling (the writer
+    /// pool's `acquire_timeout`, equal to `busy_timeout`, 5 s), with `code`
+    /// 5. Code 6 (`SQLITE_LOCKED`, a shared-cache or same-connection
+    /// conflict) is a deterministic bug and is not busy. The Display begins
+    /// exactly `Store busy: sqlite code N`; consumers classify on that prefix.
     #[error("Store busy: sqlite code {code}")]
     StoreBusy { code: i32 },
 
@@ -173,15 +178,20 @@ pub enum Error {
     Internal(String),
 }
 
-/// The extended SQLite result code of a busy or locked answer (primary code
-/// 5 or 6), or `None` for every other error.
+/// The `StoreBusy` code of a busy answer: the extended SQLite result code
+/// when the primary code is 5 (`SQLITE_BUSY`, 517 included), or 5 when a pool
+/// connection was not acquired in time (`PoolTimedOut`: the writer pool's
+/// `acquire_timeout` is the store's ceiling; nothing was written). `None` for
+/// every other error, `SQLITE_LOCKED` (6) included.
 #[cfg(feature = "sqlite")]
 pub(crate) fn sqlite_busy_code(err: &sqlx::Error) -> Option<i32> {
-    let sqlx::Error::Database(db) = err else {
-        return None;
+    let db = match err {
+        sqlx::Error::PoolTimedOut => return Some(5),
+        sqlx::Error::Database(db) => db,
+        _ => return None,
     };
     let code: i32 = db.code()?.parse().ok()?;
-    matches!(code & 0xff, 5 | 6).then_some(code)
+    (code & 0xff == 5).then_some(code)
 }
 
 // Manual From impl for sqlx::Error to avoid trait bound issues
