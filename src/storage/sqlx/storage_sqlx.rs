@@ -176,6 +176,10 @@ pub struct StorageSqlx {
     /// answers busy before writing.
     #[cfg(test)]
     busy_next_status_write: std::sync::atomic::AtomicBool,
+    /// Tests only: the next descendants' retirement answers busy before
+    /// writing.
+    #[cfg(test)]
+    busy_next_descendant_retire: std::sync::atomic::AtomicBool,
 }
 
 impl StorageSqlx {
@@ -256,6 +260,8 @@ impl StorageSqlx {
             busy_next_process_action: Default::default(),
             #[cfg(test)]
             busy_next_status_write: Default::default(),
+            #[cfg(test)]
+            busy_next_descendant_retire: Default::default(),
         })
     }
 
@@ -337,6 +343,21 @@ impl StorageSqlx {
     pub(crate) fn busy_next_status_write(&self) {
         self.busy_next_status_write
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests only: the next `retire_poisoned_descendants` answers busy
+    /// before its first write, as a store held by another process would.
+    #[cfg(test)]
+    pub(crate) fn busy_next_descendant_retire(&self) {
+        self.busy_next_descendant_retire
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests only: takes the busy `busy_next_descendant_retire` armed.
+    #[cfg(test)]
+    pub(crate) fn take_busy_next_descendant_retire(&self) -> bool {
+        self.busy_next_descendant_retire
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The in-flight pre-check picks of this process (`createAction`).
@@ -5669,6 +5690,55 @@ impl MonitorStorage for StorageSqlx {
                 "Updated {} transaction statuses to completed\n",
                 rows.len()
             ));
+        }
+
+        // Check 4: the unproven descendants of a retired root (bsv-wallet-cli
+        // #44). A broadcast abort commits the root (`failed`, req `invalid`)
+        // and retires its descendants after; when that retirement fails (a
+        // busy store, the process dying in between) the abort still answers
+        // its success, and this pass finishes it. A root is a failed
+        // transaction whose req is `invalid` or `doubleSpend`, with no chain
+        // evidence, spent by a transaction still `unproven`, `sending` or
+        // `nosend`; retiring from it is the abort's own retirement (outside
+        // inputs released only on verification, a proven descendant refuses).
+        let roots: Vec<(i64, String)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT p.transaction_id, p.txid
+            FROM transactions p
+            JOIN proven_tx_reqs r ON r.txid = p.txid
+            JOIN outputs o ON o.transaction_id = p.transaction_id
+            JOIN transactions c ON c.transaction_id = o.spent_by
+            WHERE p.status = 'failed'
+              AND p.txid IS NOT NULL
+              AND r.status IN ('invalid', 'doubleSpend')
+              AND c.status IN ('unproven', 'sending', 'nosend')
+            ORDER BY p.transaction_id
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await?;
+        if !roots.is_empty() {
+            let services = self.get_services().ok();
+            let mut retired = 0usize;
+            for (transaction_id, txid) in &roots {
+                if let Some(evidence) = super::abort_action::chain_evidence_for(self, txid).await? {
+                    tracing::warn!(
+                        txid = %txid,
+                        evidence = %evidence,
+                        "review_status: a failed root with unproven descendants has chain evidence; descendants left"
+                    );
+                    continue;
+                }
+                self.retire_poisoned_descendants(services.as_deref(), txid, *transaction_id, now)
+                    .await?;
+                retired += 1;
+            }
+            if retired > 0 {
+                log.push_str(&format!(
+                    "Retired the unproven descendants of {} failed transactions\n",
+                    retired
+                ));
+            }
         }
 
         if log.is_empty() {
