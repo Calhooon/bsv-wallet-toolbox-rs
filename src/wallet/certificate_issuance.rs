@@ -711,7 +711,21 @@ where
 // Step 5: Store Certificate
 // =============================================================================
 
+/// Tries of the store after the certifier issued: a busy store is tried
+/// again, at most this many times in all.
+pub(crate) const CERTIFICATE_STORE_TRIES: u32 = 3;
+
+/// The first wait between tries, doubled after each (250 then 500 ms: 750 ms
+/// in all, under the store's 5 s ceiling, `STORE_BUSY_CEILING_MS`).
+pub(crate) const CERTIFICATE_STORE_BACKOFF_MS: u64 = 250;
+
 /// Stores the certificate in the wallet storage.
+///
+/// The certifier has issued by now. A busy store (`Error::StoreBusy`, which
+/// wrote nothing) is tried again, `CERTIFICATE_STORE_TRIES` times in all
+/// with a doubling wait; if it is still busy the error is a storage error
+/// naming the certificate's serial number, certifier and type, so an
+/// operator can recover the certificate from the certifier.
 pub(super) async fn store_certificate<S>(
     storage: &S,
     auth: &AuthId,
@@ -759,10 +773,11 @@ where
     // The certificate and its fields in one write. This is after the
     // exchange with the certifier, a post to a third party: the certifier
     // has issued, and a busy here is never `StoreBusy` (a host would repeat
-    // the whole exchange); it is a storage error the caller sees, nothing
-    // stored (bsv-wallet-cli #44 review 4 G1).
+    // the whole exchange); it is tried again a bounded number of times,
+    // then a storage error the caller sees naming the issued certificate,
+    // nothing stored (bsv-wallet-cli #44 review 4 G1, review 5 H2).
     let now = chrono::Utc::now();
-    let fields = parsed
+    let fields: Vec<TableCertificateField> = parsed
         .cert_fields
         .iter()
         .map(|(field_name, field_value)| TableCertificateField {
@@ -776,10 +791,37 @@ where
             updated_at: now,
         })
         .collect();
-    storage
-        .insert_certificate_with_fields(auth, table_cert, fields)
-        .await
-        .map_err(not_busy)?;
+    let serial_number = table_cert.serial_number.clone();
+    let mut attempt = 1;
+    loop {
+        match storage
+            .insert_certificate_with_fields(auth, table_cert.clone(), fields.clone())
+            .await
+        {
+            Ok(_) => break,
+            // A busy wrote nothing: the one transaction rolled back, so the
+            // same insert is safe to repeat.
+            Err(Error::StoreBusy { .. }) if attempt < CERTIFICATE_STORE_TRIES => {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    CERTIFICATE_STORE_BACKOFF_MS << (attempt - 1),
+                ))
+                .await;
+                attempt += 1;
+            }
+            Err(e @ Error::StoreBusy { .. }) => {
+                return Err(Error::StorageError(format!(
+                    "{} (the certifier issued a certificate that was not stored: \
+                     serial number {}, certifier {}, type {}; tried {} times)",
+                    not_busy(e),
+                    serial_number,
+                    certifier.to_hex(),
+                    cert_type_b64,
+                    CERTIFICATE_STORE_TRIES
+                )));
+            }
+            Err(e) => return Err(not_busy(e)),
+        }
+    }
 
     // Build and return WalletCertificate
     Ok(WalletCertificate {

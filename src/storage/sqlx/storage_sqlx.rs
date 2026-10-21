@@ -193,7 +193,7 @@ pub struct StorageSqlx {
     /// Tests only: the next certificate field insert answers busy, inside
     /// its write transaction.
     #[cfg(test)]
-    busy_next_certificate_field: Arc<std::sync::atomic::AtomicBool>,
+    busy_next_certificate_field: Arc<std::sync::atomic::AtomicU32>,
     /// Tests only: the next poisoned retirement is cut between its req
     /// write and its status write.
     #[cfg(test)]
@@ -436,15 +436,28 @@ impl StorageSqlx {
     /// transaction that inserted the certificate, which rolls back.
     #[cfg(test)]
     pub(crate) fn busy_next_certificate_field(&self) {
-        self.busy_next_certificate_field
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.busy_next_certificate_fields(1);
     }
 
-    /// Tests only: takes the busy `busy_next_certificate_field` armed.
+    /// Tests only: the next `times` certificate field inserts answer busy,
+    /// one per `insert_certificate_with_fields` call.
+    #[cfg(test)]
+    pub(crate) fn busy_next_certificate_fields(&self, times: u32) {
+        self.busy_next_certificate_field
+            .store(times, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests only: takes one of the busies `busy_next_certificate_fields`
+    /// armed.
     #[cfg(test)]
     pub(crate) fn take_busy_next_certificate_field(&self) -> bool {
         self.busy_next_certificate_field
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| n.checked_sub(1),
+            )
+            .is_ok()
     }
 
     /// Tests only: the next `retire_one_poisoned` stops between its first
