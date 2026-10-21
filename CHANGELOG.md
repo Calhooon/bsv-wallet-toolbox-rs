@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.11.0] - 2026-10-21
 
 The store's write lock (bsv-wallet-cli #44). A served `createAction` answered `database is locked (code 517)`, `SQLITE_BUSY_SNAPSHOT`: its write transaction opened with a deferred `BEGIN`, read under a WAL snapshot, and wrote after another pooled connection (the monitor's proof task) had committed; `busy_timeout` never applies to 517. The fault is now impossible by construction, not retried. A minor, 0.11.0: `pool()` no longer writes, `Error` is `#[non_exhaustive]` and gains two variants (`StoreBusy`, `UnspendableCoin`) and a type (`StoreBusyReason`), and bsv-rs moves to a new line (0.8.0).
 
