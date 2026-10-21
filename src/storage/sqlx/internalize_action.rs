@@ -655,7 +655,7 @@ pub async fn internalize_action_internal(
     }
 
     // Commit the SQL transaction. All DB operations above are now atomically persisted.
-    tx.commit().await?;
+    super::storage_sqlx::commit(tx).await?;
 
     // Step 11: Synchronous broadcast for a brand-new req.
     // TS parity: wallet-toolbox storage/methods/internalizeAction.ts:598-623

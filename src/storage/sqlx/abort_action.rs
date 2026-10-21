@@ -157,7 +157,7 @@ async fn abort_pending(storage: &StorageSqlx, tx: &TransactionRecord) -> Result<
     update_transaction_status_to_failed(&mut db_tx, tx.transaction_id).await?;
 
     // Commit the transaction to make all changes durable.
-    db_tx.commit().await?;
+    super::storage_sqlx::commit(db_tx).await?;
 
     Ok(AbortActionResult { aborted: true })
 }
@@ -218,7 +218,7 @@ async fn abort_broadcast(
     .execute(&mut *db_tx)
     .await?;
 
-    db_tx.commit().await?;
+    super::storage_sqlx::commit(db_tx).await?;
 
     // No provider ever skips it again, and the reconciler treats it as a
     // rejected root rather than a candidate.

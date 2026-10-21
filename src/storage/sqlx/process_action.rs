@@ -709,7 +709,7 @@ pub async fn process_action_internal(
     }
 
     if txids_to_broadcast.is_empty() {
-        tx.commit().await?;
+        super::storage_sqlx::commit(tx).await?;
         return Ok(StorageProcessActionResults {
             send_with_results: Some(Vec::new()),
             not_delayed_results: None,
@@ -791,7 +791,7 @@ pub async fn process_action_internal(
         }
     }
 
-    tx.commit().await?;
+    super::storage_sqlx::commit(tx).await?;
 
     Ok(StorageProcessActionResults {
         send_with_results: Some(send_with_results),
@@ -941,7 +941,7 @@ pub async fn update_transaction_status_after_broadcast_internal(
             .execute(&mut *tx)
             .await?;
 
-            tx.commit().await?;
+            super::storage_sqlx::commit(tx).await?;
             return Ok(());
         }
         BroadcastOutcome::ServiceError { details } => ("serviceError", details, &[]),

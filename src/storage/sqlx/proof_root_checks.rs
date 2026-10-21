@@ -170,7 +170,7 @@ pub(crate) async fn check_unchecked_stored_proof_on(
             };
             let mut wtx = super::storage_sqlx::begin_immediate(writer).await?;
             super::storage_sqlx::demote_stale_proof_on(&mut wtx, txid).await?;
-            wtx.commit().await?;
+            super::storage_sqlx::commit(wtx).await?;
             tracing::warn!(
                 txid = %txid,
                 height = merkle_path.block_height,
