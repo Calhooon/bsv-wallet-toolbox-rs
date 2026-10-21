@@ -14,7 +14,7 @@ use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
 use chrono::Utc;
 use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use sqlx::Row;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::storage_sqlx::{
     bump_leaf_index, store_validated_proof_on, StoreProofOutcome, ValidatedProofRow,
@@ -373,6 +373,21 @@ fn random_reference() -> String {
 /// * `user_id` - The user ID
 /// * `args` - The create action arguments
 ///
+/// The door is one step (bsv-wallet-cli #44; the stack's wallet machine,
+/// `Wallet.lean`: ok or refused, and a refusal changes no state). Before the
+/// write lock, on a reader: the caller's `inputBEEF` roots are read against
+/// the tracker, the change coins are picked as the allocation would pick them
+/// (marking nothing), and the BEEF those coins need is assembled once so that
+/// every stored proof's root is read against the tracker (stillConfirmed).
+/// Then, under one `BEGIN IMMEDIATE` transaction: the action is written, the
+/// allocation takes only pre-checked coins, and the BEEF is assembled from
+/// stored bytes with the tracker's answers already in hand: no service and no
+/// tracker is awaited under the lock. A coin taken meanwhile, or a root the
+/// pre-check did not read, rolls the transaction back (nothing written) and
+/// the pre-check runs once more; the second time the call refuses. No
+/// provider is asked: an ancestor this wallet does not store is a refusal
+/// naming it.
+///
 /// Note: Change outputs are created with empty locking scripts. The locking scripts
 /// are derived during transaction signing and stored via process_action when the
 /// signed transaction is processed.
@@ -385,13 +400,6 @@ pub async fn create_action_internal(
     // Step 1: Validate all inputs
     validate_create_action_args(&args)?;
 
-    // Determine action flags
-    let options = args.options.as_ref();
-    let is_no_send = options.and_then(|o| o.no_send).unwrap_or(false);
-    let is_delayed = options
-        .and_then(|o| o.accept_delayed_broadcast)
-        .unwrap_or(false);
-
     // Step 2: Get or create default output basket
     // NOTE: This uses its own pool connection (known limitation for first pass).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
@@ -399,44 +407,535 @@ pub async fn create_action_internal(
     // The caller's inputBEEF proofs are facts independent of this action:
     // their roots are read against the tracker here, before the write lock
     // (as the reference's `validateRequiredInputs` does, before any
-    // allocation). The assembly after the commit does not ask again.
-    let confirmed_roots =
-        confirm_caller_beef_roots(chain_tracker, args.input_beef.as_deref()).await?;
-    let prechecked = chain_tracker.map(|inner| PrecheckedTracker {
-        inner,
-        confirmed: confirmed_roots,
-    });
-    let chain_tracker: Option<&dyn ChainTracker> =
-        prechecked.as_ref().map(|t| t as &dyn ChainTracker);
+    // allocation). A refused root is refused before anything is picked.
+    let answers = TrackerAnswers::confirmed(
+        confirm_caller_beef_roots(chain_tracker, args.input_beef.as_deref()).await?,
+    );
+    // With no caller tracker the walk reads stored proofs against the
+    // storage's own, and the assembled roots are not verified.
+    let storage_tracker = match chain_tracker {
+        Some(_) => None,
+        None => storage.get_chain_tracker().await,
+    };
+    let door = Door {
+        storage,
+        verify_roots: chain_tracker.is_some(),
+        reads_proofs: chain_tracker.is_some() || storage_tracker.is_some(),
+        answers: &answers,
+        user_id,
+        args: &args,
+        change_basket: &change_basket,
+    };
 
-    // Begin SQL transaction to ensure atomicity of the allocation's DB writes.
-    // `BEGIN IMMEDIATE` on the writer (bsv-wallet-cli #44); nothing inside it
-    // awaits a service or a tracker. If the function returns an error (via
-    // `?`), `tx` is dropped and sqlx auto-rollbacks.
-    let mut tx = storage.write_tx().await?;
-
-    // Step 3: Process caller-provided outputs
-    let extended_outputs = validate_and_extend_outputs(&args)?;
-
-    // Step 4: Process caller-provided inputs
-    let extended_inputs = validate_and_extend_inputs(storage, &mut tx, user_id, &args).await?;
-
-    // Step 5: Count available change outputs for targeting
-    let available_change_count =
-        count_change_inputs(&mut tx, user_id, change_basket.basket_id, !is_delayed).await?;
-
-    // Step 6: Create transaction record in DB
-    let transaction_id = create_transaction_record(&mut tx, user_id, &args).await?;
-
-    // Step 7: Create transaction labels
-    if let Some(ref labels) = args.labels {
-        for label in labels {
-            let tx_label = find_or_insert_tx_label(&mut tx, user_id, label).await?;
-            find_or_insert_tx_label_map(&mut tx, transaction_id, tx_label.label_id).await?;
+    let mut again = None;
+    loop {
+        let prechecked = door
+            .precheck(chain_tracker, storage_tracker.as_deref())
+            .await?;
+        match door.step(&prechecked).await? {
+            Step::Done(result) => return Ok(*result),
+            Step::Again(why) => {
+                if again.is_some() {
+                    return Err(why.refusal());
+                }
+                tracing::info!(
+                    reason = %why.refusal(),
+                    marker = "create_action_precheck_again",
+                    "create_action: the store moved between the pre-check and the write lock; nothing written, checking once more"
+                );
+                again = Some(why);
+            }
         }
     }
+}
 
-    // Step 8: Calculate fees and generate change
+/// One `createAction` call's door: its arguments and the tracker answers
+/// gathered before the write lock.
+struct Door<'a> {
+    storage: &'a StorageSqlx,
+    /// The caller passed a tracker: the assembled BEEF's roots are verified.
+    verify_roots: bool,
+    /// A tracker (the caller's, else the storage's own) reads stored proofs.
+    reads_proofs: bool,
+    answers: &'a TrackerAnswers,
+    user_id: i64,
+    args: &'a bsv_rs::wallet::CreateActionArgs,
+    change_basket: &'a TableOutputBasket,
+}
+
+/// What the write-locked step did.
+enum Step {
+    /// Committed: the response.
+    Done(Box<StorageCreateActionResult>),
+    /// Rolled back, nothing written: the pre-check must run again.
+    Again(Again),
+}
+
+/// Why the write-locked step rolled back.
+enum Again {
+    /// The pre-checked coins no longer cover the action (one was taken
+    /// meanwhile): the allocation's own refusal.
+    Uncovered(Error),
+    /// The assembly needed a root the pre-check did not read (a proof
+    /// stored meanwhile).
+    NotPrechecked { height: u32, root: String },
+}
+
+impl Again {
+    /// The refusal when it happens twice.
+    fn refusal(&self) -> Error {
+        match self {
+            Again::Uncovered(Error::InsufficientFunds { needed, available }) => {
+                Error::InsufficientFunds {
+                    needed: *needed,
+                    available: *available,
+                }
+            }
+            Again::Uncovered(e) => Error::ValidationError(e.to_string()),
+            Again::NotPrechecked { height, root } => Error::ValidationError(format!(
+                "inputBEEF: the merkle root {} at height {} was not read against the chain \
+                 tracker before the write lock (the store changed during the call); refused, \
+                 nothing written",
+                root, height
+            )),
+        }
+    }
+}
+
+impl Door<'_> {
+    fn options(&self) -> Option<&bsv_rs::wallet::CreateActionOptions> {
+        self.args.options.as_ref()
+    }
+
+    fn is_delayed(&self) -> bool {
+        self.options()
+            .and_then(|o| o.accept_delayed_broadcast)
+            .unwrap_or(false)
+    }
+
+    fn return_txid_only(&self) -> bool {
+        self.options()
+            .and_then(|o| o.return_txid_only)
+            .unwrap_or(false)
+    }
+
+    fn known_txids(&self) -> Vec<String> {
+        self.options()
+            .and_then(|o| o.known_txids.as_ref())
+            .map(|txids| txids.iter().map(hex::encode).collect())
+            .unwrap_or_default()
+    }
+
+    fn trust_self(&self) -> bool {
+        self.options().and_then(|o| o.trust_self) == Some(bsv_rs::wallet::TrustSelf::Known)
+    }
+
+    /// Before the write lock, on a reader: pick the change coins as the
+    /// allocation would (marking nothing) and assemble the BEEF they and the
+    /// caller's inputs need, every stored proof's root read against the
+    /// tracker with no lock held (stillConfirmed) and every answer kept.
+    /// The walk's read checks are written through the writer, one short
+    /// write each, as before. Returns the coins picked; an error is the
+    /// call's refusal, and the action wrote nothing.
+    async fn precheck(
+        &self,
+        chain_tracker: Option<&dyn ChainTracker>,
+        storage_tracker: Option<&dyn ChainTracker>,
+    ) -> Result<Vec<i64>> {
+        let mut conn = self.storage.pool().acquire().await?;
+        let extended_outputs = validate_and_extend_outputs(self.args)?;
+        let extended_inputs =
+            validate_and_extend_inputs(self.storage, &mut conn, self.user_id, self.args).await?;
+        let available_change_count = count_change_inputs(
+            &mut conn,
+            self.user_id,
+            self.change_basket.basket_id,
+            !self.is_delayed(),
+        )
+        .await?;
+        let mut picked = Vec::new();
+        let (change_result, _) = plan_change(
+            &mut conn,
+            self.user_id,
+            self.change_basket,
+            0, // no row: a dry run marks nothing
+            self.args,
+            &extended_inputs,
+            &extended_outputs,
+            available_change_count,
+            self.is_delayed(),
+            &mut ChangePick::DryRun { taken: &mut picked },
+        )
+        .await?;
+
+        let caller = chain_tracker.map(|inner| RecordingTracker {
+            inner,
+            answers: self.answers,
+        });
+        let own = storage_tracker.map(|inner| RecordingTracker {
+            inner,
+            answers: self.answers,
+        });
+        build_input_beef(
+            &mut conn,
+            Some(self.storage.writer()),
+            caller.as_ref().map(|t| t as &dyn ChainTracker),
+            &extended_inputs,
+            &change_result.allocated_change_inputs,
+            self.args.input_beef.as_deref(),
+            &self.known_txids(),
+            self.return_txid_only(),
+            self.trust_self(),
+            own.as_ref().map(|t| t as &dyn ChainTracker),
+        )
+        .await?;
+        Ok(picked)
+    }
+
+    /// The door's one step, under one `BEGIN IMMEDIATE` transaction: the
+    /// action's rows, the allocation from the `prechecked` coins only, and
+    /// the BEEF from stored bytes, the tracker answered from the pre-check's
+    /// answers. Nothing but the database is awaited while the lock is held.
+    /// Every error, and every `Again`, drops the transaction: rolled back,
+    /// nothing written.
+    async fn step(&self, prechecked: &[i64]) -> Result<Step> {
+        let user_id = self.user_id;
+        let args = self.args;
+        let change_basket = self.change_basket;
+        let is_no_send = self.options().and_then(|o| o.no_send).unwrap_or(false);
+        let is_delayed = self.is_delayed();
+
+        // `BEGIN IMMEDIATE` on the writer (bsv-wallet-cli #44). If the
+        // function returns an error (via `?`), `tx` is dropped and sqlx
+        // rolls back.
+        let mut tx = self.storage.write_tx().await?;
+
+        // Step 3: Process caller-provided outputs
+        let extended_outputs = validate_and_extend_outputs(args)?;
+
+        // Step 4: Process caller-provided inputs
+        let extended_inputs =
+            validate_and_extend_inputs(self.storage, &mut tx, user_id, args).await?;
+
+        // Step 5: Count available change outputs for targeting
+        let available_change_count =
+            count_change_inputs(&mut tx, user_id, change_basket.basket_id, !is_delayed).await?;
+
+        // Step 6: Create transaction record in DB
+        let transaction_id = create_transaction_record(&mut tx, user_id, args).await?;
+
+        // Step 7: Create transaction labels
+        if let Some(ref labels) = args.labels {
+            for label in labels {
+                let tx_label = find_or_insert_tx_label(&mut tx, user_id, label).await?;
+                find_or_insert_tx_label_map(&mut tx, transaction_id, tx_label.label_id).await?;
+            }
+        }
+
+        // Step 8: Calculate fees and generate change, from the pre-checked
+        // coins only. A shortfall here is a coin taken since the pre-check
+        // (which funded the same action from the same coins).
+        let (change_result, derivation_prefix) = match plan_change(
+            &mut tx,
+            user_id,
+            change_basket,
+            transaction_id,
+            args,
+            &extended_inputs,
+            &extended_outputs,
+            available_change_count,
+            is_delayed,
+            &mut ChangePick::Within {
+                allowed: prechecked,
+            },
+        )
+        .await
+        {
+            Ok(planned) => planned,
+            Err(e @ Error::InsufficientFunds { .. }) => {
+                return Ok(Step::Again(Again::Uncovered(e)))
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Step 9: Mark extended inputs as spent
+        for input in &extended_inputs {
+            if let Some(ref output) = input.output {
+                update_output_spent(
+                    &mut tx,
+                    output.output_id,
+                    transaction_id,
+                    input.input_description.as_deref(),
+                )
+                .await?;
+            }
+        }
+
+        // Step 10: Calculate net satoshis (change received - change spent)
+        let change_out_sats: i64 = change_result
+            .change_outputs
+            .iter()
+            .map(|o| o.satoshis as i64)
+            .sum();
+        let change_in_sats: i64 = change_result
+            .allocated_change_inputs
+            .iter()
+            .map(|i| i.satoshis as i64)
+            .sum();
+        let satoshis = change_out_sats - change_in_sats;
+
+        // Update transaction with calculated satoshis
+        update_transaction_satoshis(&mut tx, transaction_id, satoshis).await?;
+
+        // Step 11: Create output records
+        let mut result_outputs = Vec::new();
+        let mut change_vouts = Vec::new();
+
+        // First, handle user-specified outputs
+        for xo in &extended_outputs {
+            let basket_id = if let Some(ref basket_name) = xo.basket {
+                let basket = find_or_insert_output_basket(&mut tx, user_id, basket_name).await?;
+                Some(basket.basket_id)
+            } else {
+                None
+            };
+
+            let output_id = insert_output(
+                &mut tx,
+                user_id,
+                transaction_id,
+                basket_id,
+                xo.vout as i32,
+                xo.satoshis as i64,
+                &xo.locking_script,
+                &xo.output_description,
+                &xo.provided_by,
+                xo.purpose.as_deref().unwrap_or(""),
+                xo.custom_instructions.as_deref(),
+                None, // derivation_prefix for user outputs
+                xo.derivation_suffix.as_deref(),
+                false, // not change
+                // spendable = true is CORRECT and INTENTIONAL — do NOT "fix" it.
+                // createAction records every output it builds, INCLUDING payments to
+                // third parties, with spendable = true. This matches the reference
+                // (ts-stack wallet-toolbox createAction.ts makeDefaultOutput defaults
+                // spendable: true; the user-output branch does not override it).
+                // `spendable = true` does NOT mean "this wallet can spend it" —
+                // that is gated by the BASKET (coin selection is basket-scoped;
+                // a basket_id = NULL payment is never selected). A usable balance is
+                // Σ spendable in the change/default basket, never SUM(spendable=1).
+                // See docs/reading-a-balance.md (bsv-wallet-cli). Changing this to a
+                // basket-conditional would DIVERGE from the reference — a parity bug.
+                true, // spendable (see the note above before touching this)
+            )
+            .await?;
+
+            // Create tag associations
+            for tag in &xo.tags {
+                let output_tag = find_or_insert_output_tag(&mut tx, user_id, tag).await?;
+                find_or_insert_output_tag_map(&mut tx, output_id, output_tag.tag_id).await?;
+            }
+
+            result_outputs.push(StorageCreateTransactionOutput {
+                vout: xo.vout,
+                satoshis: xo.satoshis,
+                locking_script: hex::encode(&xo.locking_script),
+                provided_by: xo.provided_by,
+                purpose: xo.purpose.clone(),
+                derivation_suffix: xo.derivation_suffix.clone(),
+                basket: xo.basket.clone(),
+                tags: xo.tags.clone(),
+                output_description: Some(xo.output_description.clone()),
+                custom_instructions: xo.custom_instructions.clone(),
+            });
+        }
+
+        // Then, handle change outputs
+        // Note: Change outputs are created with empty locking scripts here.
+        // The locking scripts are derived during transaction signing and stored
+        // in process_action when the signed transaction is processed.
+        let base_vout = extended_outputs.len() as u32;
+        for (i, co) in change_result.change_outputs.iter().enumerate() {
+            let vout = base_vout + i as u32;
+
+            let _output_id = insert_output(
+                &mut tx,
+                user_id,
+                transaction_id,
+                Some(change_basket.basket_id),
+                vout as i32,
+                co.satoshis as i64,
+                &[], // Locking script stored in process_action after signing
+                "",
+                &StorageProvidedBy::Storage,
+                "change",
+                None,
+                Some(&co.derivation_prefix),
+                Some(&co.derivation_suffix),
+                true,  // is change
+                false, // not spendable until confirmed
+            )
+            .await?;
+
+            change_vouts.push(vout);
+
+            result_outputs.push(StorageCreateTransactionOutput {
+                vout,
+                satoshis: co.satoshis,
+                locking_script: String::new(), // Filled in by process_action
+                provided_by: StorageProvidedBy::Storage,
+                purpose: Some("change".to_string()),
+                derivation_suffix: Some(co.derivation_suffix.clone()),
+                basket: Some("default".to_string()),
+                tags: vec![],
+                output_description: None,
+                custom_instructions: None,
+            });
+        }
+
+        // Step 12: Build result inputs
+        let mut result_inputs = Vec::new();
+
+        // First, user-specified inputs
+        for xi in &extended_inputs {
+            let (provided_by, d_prefix, d_suffix, sender_identity_key, input_type) =
+                if let Some(ref output) = xi.output {
+                    let pb = if output.change {
+                        StorageProvidedBy::YouAndStorage
+                    } else {
+                        StorageProvidedBy::You
+                    };
+                    (
+                        pb,
+                        output.derivation_prefix.clone(),
+                        output.derivation_suffix.clone(),
+                        output.sender_identity_key.clone(),
+                        output.output_type.clone(),
+                    )
+                } else {
+                    (
+                        StorageProvidedBy::You,
+                        None,
+                        None,
+                        None,
+                        "custom".to_string(),
+                    )
+                };
+
+            result_inputs.push(StorageCreateTransactionInput {
+                vin: xi.vin,
+                source_txid: xi.txid.clone(),
+                source_vout: xi.vout,
+                source_satoshis: xi.satoshis,
+                source_locking_script: hex::encode(&xi.locking_script),
+                source_transaction: None,
+                unlocking_script_length: xi.unlocking_script_length,
+                provided_by,
+                input_type,
+                spending_description: xi.input_description.clone(),
+                derivation_prefix: d_prefix,
+                derivation_suffix: d_suffix,
+                sender_identity_key,
+            });
+        }
+
+        // Then, allocated change inputs
+        let base_vin = extended_inputs.len() as u32;
+        for (i, aci) in change_result.allocated_change_inputs.iter().enumerate() {
+            result_inputs.push(StorageCreateTransactionInput {
+                vin: base_vin + i as u32,
+                source_txid: aci.txid.clone(),
+                source_vout: aci.vout as u32,
+                source_satoshis: aci.satoshis,
+                source_locking_script: hex::encode(&aci.locking_script),
+                source_transaction: None,
+                unlocking_script_length: P2PKH_UNLOCKING_SCRIPT_LENGTH,
+                provided_by: StorageProvidedBy::Storage,
+                input_type: "P2PKH".to_string(),
+                spending_description: None,
+                derivation_prefix: aci.derivation_prefix.clone(),
+                derivation_suffix: aci.derivation_suffix.clone(),
+                sender_identity_key: aci.sender_identity_key.clone(),
+            });
+        }
+
+        // Get the transaction reference
+        let reference = get_transaction_reference(&mut tx, transaction_id).await?;
+
+        // Build input BEEF containing all input transactions with their
+        // merkle proofs, from stored bytes, on this transaction's
+        // connection; the tracker answers from the pre-check, and the walk
+        // writes nothing (its read checks were recorded by the pre-check).
+        let cached = CachedTracker::new(self.answers);
+        let tracker = Some(&cached as &dyn ChainTracker);
+        let (verify, read_check) = match (self.verify_roots, self.reads_proofs) {
+            (true, _) => (tracker, None),
+            (false, true) => (None, tracker),
+            (false, false) => (None, None),
+        };
+        let built = build_input_beef(
+            &mut tx,
+            None,
+            verify,
+            &extended_inputs,
+            &change_result.allocated_change_inputs,
+            args.input_beef.as_deref(),
+            &self.known_txids(),
+            self.return_txid_only(),
+            self.trust_self(),
+            read_check,
+        )
+        .await;
+        if let Some((height, root)) = cached.missed() {
+            return Ok(Step::Again(Again::NotPrechecked { height, root }));
+        }
+        let input_beef = built?;
+
+        // Store input_beef in the transaction record (required for process_action)
+        // This matches the TypeScript behavior which stores inputBEEF at transaction creation
+        if let Some(ref beef_bytes) = input_beef {
+            sqlx::query(
+                "UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?",
+            )
+            .bind(beef_bytes)
+            .bind(Utc::now())
+            .bind(transaction_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        // Build final result
+        Ok(Step::Done(Box::new(StorageCreateActionResult {
+            reference,
+            version: args.version.unwrap_or(1),
+            lock_time: args.lock_time.unwrap_or(0),
+            inputs: result_inputs,
+            outputs: result_outputs,
+            derivation_prefix,
+            input_beef,
+            no_send_change_output_vouts: if is_no_send { Some(change_vouts) } else { None },
+        })))
+    }
+}
+
+/// Fees and change for the action: the caller-complete plan, else
+/// `generate_change`, the coins taken as `pick` says. Returns the change and
+/// the derivation prefix of its outputs.
+#[allow(clippy::too_many_arguments)]
+async fn plan_change(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    change_basket: &TableOutputBasket,
+    transaction_id: i64,
+    args: &bsv_rs::wallet::CreateActionArgs,
+    extended_inputs: &[ExtendedInput],
+    extended_outputs: &[ExtendedOutput],
+    available_change_count: usize,
+    is_delayed: bool,
+    pick: &mut ChangePick<'_>,
+) -> Result<(GenerateChangeResult, String)> {
     let fee_rate = DEFAULT_FEE_RATE_SAT_PER_KB;
 
     let params = GenerateChangeParams {
@@ -539,313 +1038,33 @@ pub async fn create_action_internal(
                     "caller-complete tx signed ANYONECANPAY has a shortfall — appending a funding input and change"
                 );
                 generate_change(
-                    &mut tx,
+                    &mut *conn,
                     user_id,
                     change_basket.basket_id,
                     transaction_id,
                     &params,
                     &derivation_prefix,
                     is_delayed,
+                    pick,
                 )
                 .await?
             }
         }
     } else {
         generate_change(
-            &mut tx,
+            &mut *conn,
             user_id,
             change_basket.basket_id,
             transaction_id,
             &params,
             &derivation_prefix,
             is_delayed,
+            pick,
         )
         .await?
     };
 
-    // Step 9: Mark extended inputs as spent
-    for input in &extended_inputs {
-        if let Some(ref output) = input.output {
-            update_output_spent(
-                &mut tx,
-                output.output_id,
-                transaction_id,
-                input.input_description.as_deref(),
-            )
-            .await?;
-        }
-    }
-
-    // Step 10: Calculate net satoshis (change received - change spent)
-    let change_out_sats: i64 = change_result
-        .change_outputs
-        .iter()
-        .map(|o| o.satoshis as i64)
-        .sum();
-    let change_in_sats: i64 = change_result
-        .allocated_change_inputs
-        .iter()
-        .map(|i| i.satoshis as i64)
-        .sum();
-    let satoshis = change_out_sats - change_in_sats;
-
-    // Update transaction with calculated satoshis
-    update_transaction_satoshis(&mut tx, transaction_id, satoshis).await?;
-
-    // Step 11: Create output records
-    let mut result_outputs = Vec::new();
-    let mut change_vouts = Vec::new();
-
-    // First, handle user-specified outputs
-    for xo in &extended_outputs {
-        let basket_id = if let Some(ref basket_name) = xo.basket {
-            let basket = find_or_insert_output_basket(&mut tx, user_id, basket_name).await?;
-            Some(basket.basket_id)
-        } else {
-            None
-        };
-
-        let output_id = insert_output(
-            &mut tx,
-            user_id,
-            transaction_id,
-            basket_id,
-            xo.vout as i32,
-            xo.satoshis as i64,
-            &xo.locking_script,
-            &xo.output_description,
-            &xo.provided_by,
-            xo.purpose.as_deref().unwrap_or(""),
-            xo.custom_instructions.as_deref(),
-            None, // derivation_prefix for user outputs
-            xo.derivation_suffix.as_deref(),
-            false, // not change
-            // spendable = true is CORRECT and INTENTIONAL — do NOT "fix" it.
-            // createAction records every output it builds, INCLUDING payments to
-            // third parties, with spendable = true. This matches the reference
-            // (ts-stack wallet-toolbox createAction.ts makeDefaultOutput defaults
-            // spendable: true; the user-output branch does not override it).
-            // `spendable = true` does NOT mean "this wallet can spend it" —
-            // that is gated by the BASKET (coin selection is basket-scoped;
-            // a basket_id = NULL payment is never selected). A usable balance is
-            // Σ spendable in the change/default basket, never SUM(spendable=1).
-            // See docs/reading-a-balance.md (bsv-wallet-cli). Changing this to a
-            // basket-conditional would DIVERGE from the reference — a parity bug.
-            true, // spendable (see the note above before touching this)
-        )
-        .await?;
-
-        // Create tag associations
-        for tag in &xo.tags {
-            let output_tag = find_or_insert_output_tag(&mut tx, user_id, tag).await?;
-            find_or_insert_output_tag_map(&mut tx, output_id, output_tag.tag_id).await?;
-        }
-
-        result_outputs.push(StorageCreateTransactionOutput {
-            vout: xo.vout,
-            satoshis: xo.satoshis,
-            locking_script: hex::encode(&xo.locking_script),
-            provided_by: xo.provided_by,
-            purpose: xo.purpose.clone(),
-            derivation_suffix: xo.derivation_suffix.clone(),
-            basket: xo.basket.clone(),
-            tags: xo.tags.clone(),
-            output_description: Some(xo.output_description.clone()),
-            custom_instructions: xo.custom_instructions.clone(),
-        });
-    }
-
-    // Then, handle change outputs
-    // Note: Change outputs are created with empty locking scripts here.
-    // The locking scripts are derived during transaction signing and stored
-    // in process_action when the signed transaction is processed.
-    let base_vout = extended_outputs.len() as u32;
-    for (i, co) in change_result.change_outputs.iter().enumerate() {
-        let vout = base_vout + i as u32;
-
-        let _output_id = insert_output(
-            &mut tx,
-            user_id,
-            transaction_id,
-            Some(change_basket.basket_id),
-            vout as i32,
-            co.satoshis as i64,
-            &[], // Locking script stored in process_action after signing
-            "",
-            &StorageProvidedBy::Storage,
-            "change",
-            None,
-            Some(&co.derivation_prefix),
-            Some(&co.derivation_suffix),
-            true,  // is change
-            false, // not spendable until confirmed
-        )
-        .await?;
-
-        change_vouts.push(vout);
-
-        result_outputs.push(StorageCreateTransactionOutput {
-            vout,
-            satoshis: co.satoshis,
-            locking_script: String::new(), // Filled in by process_action
-            provided_by: StorageProvidedBy::Storage,
-            purpose: Some("change".to_string()),
-            derivation_suffix: Some(co.derivation_suffix.clone()),
-            basket: Some("default".to_string()),
-            tags: vec![],
-            output_description: None,
-            custom_instructions: None,
-        });
-    }
-
-    // Step 12: Build result inputs
-    let mut result_inputs = Vec::new();
-
-    // First, user-specified inputs
-    for xi in &extended_inputs {
-        let (provided_by, d_prefix, d_suffix, sender_identity_key, input_type) =
-            if let Some(ref output) = xi.output {
-                let pb = if output.change {
-                    StorageProvidedBy::YouAndStorage
-                } else {
-                    StorageProvidedBy::You
-                };
-                (
-                    pb,
-                    output.derivation_prefix.clone(),
-                    output.derivation_suffix.clone(),
-                    output.sender_identity_key.clone(),
-                    output.output_type.clone(),
-                )
-            } else {
-                (
-                    StorageProvidedBy::You,
-                    None,
-                    None,
-                    None,
-                    "custom".to_string(),
-                )
-            };
-
-        result_inputs.push(StorageCreateTransactionInput {
-            vin: xi.vin,
-            source_txid: xi.txid.clone(),
-            source_vout: xi.vout,
-            source_satoshis: xi.satoshis,
-            source_locking_script: hex::encode(&xi.locking_script),
-            source_transaction: None,
-            unlocking_script_length: xi.unlocking_script_length,
-            provided_by,
-            input_type,
-            spending_description: xi.input_description.clone(),
-            derivation_prefix: d_prefix,
-            derivation_suffix: d_suffix,
-            sender_identity_key,
-        });
-    }
-
-    // Then, allocated change inputs
-    let base_vin = extended_inputs.len() as u32;
-    for (i, aci) in change_result.allocated_change_inputs.iter().enumerate() {
-        result_inputs.push(StorageCreateTransactionInput {
-            vin: base_vin + i as u32,
-            source_txid: aci.txid.clone(),
-            source_vout: aci.vout as u32,
-            source_satoshis: aci.satoshis,
-            source_locking_script: hex::encode(&aci.locking_script),
-            source_transaction: None,
-            unlocking_script_length: P2PKH_UNLOCKING_SCRIPT_LENGTH,
-            provided_by: StorageProvidedBy::Storage,
-            input_type: "P2PKH".to_string(),
-            spending_description: None,
-            derivation_prefix: aci.derivation_prefix.clone(),
-            derivation_suffix: aci.derivation_suffix.clone(),
-            sender_identity_key: aci.sender_identity_key.clone(),
-        });
-    }
-
-    // Get the transaction reference
-    let reference = get_transaction_reference(&mut tx, transaction_id).await?;
-
-    // Commit the allocation atomically. The BEEF is assembled after it, with
-    // no lock held: the walk awaits the tracker and, for a missing ancestor
-    // or proof, the providers.
-    tx.commit().await?;
-
-    // Extract BEEF-related options
-    let return_txid_only = options.and_then(|o| o.return_txid_only).unwrap_or(false);
-    let known_txids: Vec<String> = options
-        .and_then(|o| o.known_txids.as_ref())
-        .map(|txids| txids.iter().map(hex::encode).collect())
-        .unwrap_or_default();
-    let trust_self = options.and_then(|o| o.trust_self) == Some(bsv_rs::wallet::TrustSelf::Known);
-
-    // Build input BEEF containing all input transactions with their merkle proofs
-    // Verify BEEF against ChainTracker if provided (matches TypeScript/Go behavior).
-    // Reads on a reader connection; the walk's own writes (a fetched proof,
-    // a read check) go through the writer, one short write each.
-    let assembled: Result<Option<Vec<u8>>> = async {
-        let mut conn = storage.pool().acquire().await?;
-        let input_beef = build_input_beef(
-            &mut conn,
-            storage.writer(),
-            chain_tracker,
-            &extended_inputs,
-            &change_result.allocated_change_inputs,
-            args.input_beef.as_deref(),
-            &known_txids,
-            return_txid_only,
-            trust_self,
-            Some(storage),
-        )
-        .await?;
-        drop(conn);
-
-        // Store input_beef in the transaction record (required for process_action)
-        // This matches the TypeScript behavior which stores inputBEEF at transaction creation
-        if let Some(ref beef_bytes) = input_beef {
-            sqlx::query(
-                "UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?",
-            )
-            .bind(beef_bytes)
-            .bind(Utc::now())
-            .bind(transaction_id)
-            .execute(storage.writer())
-            .await?;
-        }
-        Ok(input_beef)
-    }
-    .await;
-
-    // A BEEF that cannot be assembled or verified fails the call, as it did
-    // when the assembly ran inside the transaction: what the commit wrote is
-    // taken back and the inputs are released.
-    let input_beef = match assembled {
-        Ok(input_beef) => input_beef,
-        Err(e) => {
-            if let Err(undo) = undo_unassembled_action(storage, transaction_id).await {
-                tracing::error!(
-                    transaction_id,
-                    error = %undo,
-                    marker = "create_action_undo_failed",
-                    "create_action: the input BEEF failed and the allocation could not be taken back; the action stays unsigned until it is aborted"
-                );
-            }
-            return Err(e);
-        }
-    };
-
-    // Build final result
-    Ok(StorageCreateActionResult {
-        reference,
-        version: args.version.unwrap_or(1),
-        lock_time: args.lock_time.unwrap_or(0),
-        inputs: result_inputs,
-        outputs: result_outputs,
-        derivation_prefix,
-        input_beef,
-        no_send_change_output_vouts: if is_no_send { Some(change_vouts) } else { None },
-    })
+    Ok((change_result, derivation_prefix))
 }
 
 // =============================================================================
@@ -901,24 +1120,58 @@ async fn confirm_caller_beef_roots(
     Ok(confirmed)
 }
 
-/// The caller's tracker, answering `true` without asking for a root
-/// [`confirm_caller_beef_roots`] confirmed before the write lock.
-struct PrecheckedTracker<'a> {
+/// Every answer the chain tracker gave this call before the write lock, by
+/// `(height, root)`: `Ok(verdict)`, or the fault's text.
+struct TrackerAnswers(std::sync::Mutex<HashMap<(u32, String), std::result::Result<bool, String>>>);
+
+impl TrackerAnswers {
+    /// Seeded with the caller's roots, confirmed before anything else.
+    fn confirmed(roots: HashSet<(u32, String)>) -> Self {
+        Self(std::sync::Mutex::new(
+            roots.into_iter().map(|key| (key, Ok(true))).collect(),
+        ))
+    }
+
+    fn get(&self, height: u32, root: &str) -> Option<std::result::Result<bool, String>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&(height, root.to_string()))
+            .cloned()
+    }
+
+    fn put(&self, height: u32, root: &str, answer: std::result::Result<bool, String>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((height, root.to_string()), answer);
+    }
+}
+
+/// The pre-check's tracker: asks `inner` (with no lock held) and keeps every
+/// answer. A root already confirmed this call is not asked again.
+struct RecordingTracker<'a> {
     inner: &'a dyn ChainTracker,
-    confirmed: HashSet<(u32, String)>,
+    answers: &'a TrackerAnswers,
 }
 
 #[async_trait::async_trait]
-impl ChainTracker for PrecheckedTracker<'_> {
+impl ChainTracker for RecordingTracker<'_> {
     async fn is_valid_root_for_height(
         &self,
         root: &str,
         height: u32,
     ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
-        if self.confirmed.contains(&(height, root.to_string())) {
+        if let Some(Ok(true)) = self.answers.get(height, root) {
             return Ok(true);
         }
-        self.inner.is_valid_root_for_height(root, height).await
+        let answer = self.inner.is_valid_root_for_height(root, height).await;
+        self.answers.put(
+            height,
+            root,
+            answer.as_ref().map(|v| *v).map_err(ToString::to_string),
+        );
+        answer
     }
 
     async fn current_height(
@@ -928,41 +1181,62 @@ impl ChainTracker for PrecheckedTracker<'_> {
     }
 }
 
-/// Take back what `create_action` committed for `transaction_id` when its
-/// input BEEF then fails: release the inputs it allocated and delete the
-/// outputs, label links and the transaction row it wrote. One write
-/// transaction; the labels, tags and baskets it found or inserted stay.
-async fn undo_unassembled_action(storage: &StorageSqlx, transaction_id: i64) -> Result<()> {
-    let mut tx = storage.write_tx().await?;
-    sqlx::query(
-        "UPDATE outputs SET spendable = 1, spent_by = NULL, spending_description = NULL, updated_at = ? \
-         WHERE spent_by = ?",
-    )
-    .bind(Utc::now())
-    .bind(transaction_id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "DELETE FROM output_tags_map WHERE output_id IN \
-         (SELECT output_id FROM outputs WHERE transaction_id = ?)",
-    )
-    .bind(transaction_id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("DELETE FROM outputs WHERE transaction_id = ?")
-        .bind(transaction_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM tx_labels_map WHERE transaction_id = ?")
-        .bind(transaction_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM transactions WHERE transaction_id = ?")
-        .bind(transaction_id)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    Ok(())
+/// The write-locked step's tracker: answers from the pre-check's answers
+/// only, never asking anyone. A root the pre-check did not read answers a
+/// fault and is remembered, so the step rolls back and checks again.
+struct CachedTracker<'a> {
+    answers: &'a TrackerAnswers,
+    missed: std::sync::Mutex<Option<(u32, String)>>,
+}
+
+impl<'a> CachedTracker<'a> {
+    fn new(answers: &'a TrackerAnswers) -> Self {
+        Self {
+            answers,
+            missed: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The first root asked that the pre-check had not read.
+    fn missed(&self) -> Option<(u32, String)> {
+        self.missed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl ChainTracker for CachedTracker<'_> {
+    async fn is_valid_root_for_height(
+        &self,
+        root: &str,
+        height: u32,
+    ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+        use bsv_rs::transaction::ChainTrackerError;
+        match self.answers.get(height, root) {
+            Some(Ok(verdict)) => Ok(verdict),
+            Some(Err(fault)) => Err(ChainTrackerError::Other(fault)),
+            None => {
+                self.missed
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get_or_insert_with(|| (height, root.to_string()));
+                Err(ChainTrackerError::Other(format!(
+                    "root {} at height {} was not read before the write lock",
+                    root, height
+                )))
+            }
+        }
+    }
+
+    async fn current_height(
+        &self,
+    ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+        Err(bsv_rs::transaction::ChainTrackerError::Other(
+            "the chain tracker is not asked under the write lock".to_string(),
+        ))
+    }
 }
 
 /// Validates and extends output specifications.
@@ -1769,6 +2043,7 @@ fn der_signature_sighash(data: &[u8]) -> Option<u8> {
 /// 2. Allocate inputs to fund the transaction
 /// 3. If can't fund, remove change outputs one at a time
 /// 4. Distribute excess to change outputs
+#[allow(clippy::too_many_arguments)]
 async fn generate_change(
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -1777,6 +2052,7 @@ async fn generate_change(
     params: &GenerateChangeParams,
     derivation_prefix: &str,
     is_delayed: bool,
+    pick: &mut ChangePick<'_>,
 ) -> Result<GenerateChangeResult> {
     let mut allocated_inputs: Vec<AllocatedChangeInput> = Vec::new();
     let mut change_outputs: Vec<ChangeOutput> = Vec::new();
@@ -1864,7 +2140,7 @@ async fn generate_change(
     loop {
         // Release all allocated inputs (TypeScript: releaseAllocatedChangeInputs)
         for input in allocated_inputs.drain(..) {
-            release_change_input(&mut *conn, input.output_id).await?;
+            release_change_input(&mut *conn, input.output_id, pick).await?;
         }
 
         // Recalculate after releasing
@@ -1884,13 +2160,14 @@ async fn generate_change(
             };
             let target_sats = (-fee_excess) as u64 + extra_for_output;
 
-            let allocated = allocate_change_input(
+            let allocated = allocate_change_input_by(
                 &mut *conn,
                 user_id,
                 basket_id,
                 transaction_id,
                 target_sats,
                 !is_delayed,
+                pick,
             )
             .await?;
 
@@ -2011,8 +2288,32 @@ async fn generate_change(
     })
 }
 
+/// How `generate_change` takes a change coin (bsv-wallet-cli #44, the door
+/// in one step).
+pub(super) enum ChangePick<'a> {
+    /// Mark each coin picked as allocated to the transaction, from every
+    /// free coin (the tests' allocation).
+    #[cfg(test)]
+    Allocate,
+    /// Before the write lock, on a reader: pick exactly as the allocation
+    /// would and mark nothing; the picks are collected in `taken` (a coin
+    /// released is removed), which is the set the pre-check reads.
+    DryRun { taken: &'a mut Vec<i64> },
+    /// Under the write lock: allocate, but only from the coins the pre-check
+    /// read. A coin taken meanwhile is skipped as any allocated coin is.
+    Within { allowed: &'a [i64] },
+}
+
 /// Releases a previously allocated change input.
-async fn release_change_input(conn: &mut SqliteConnection, output_id: i64) -> Result<()> {
+async fn release_change_input(
+    conn: &mut SqliteConnection,
+    output_id: i64,
+    pick: &mut ChangePick<'_>,
+) -> Result<()> {
+    if let ChangePick::DryRun { taken } = pick {
+        taken.retain(|id| *id != output_id);
+        return Ok(());
+    }
     sqlx::query("UPDATE outputs SET spendable = 1, spent_by = NULL WHERE output_id = ?")
         .bind(output_id)
         .execute(&mut *conn)
@@ -2021,6 +2322,7 @@ async fn release_change_input(conn: &mut SqliteConnection, output_id: i64) -> Re
 }
 
 /// Allocates a change input from the default basket.
+#[cfg(test)]
 pub(super) async fn allocate_change_input(
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -2029,10 +2331,46 @@ pub(super) async fn allocate_change_input(
     target_satoshis: u64,
     require_spendable: bool,
 ) -> Result<Option<AllocatedChangeInput>> {
+    allocate_change_input_by(
+        conn,
+        user_id,
+        basket_id,
+        transaction_id,
+        target_satoshis,
+        require_spendable,
+        &mut ChangePick::Allocate,
+    )
+    .await
+}
+
+/// Picks a change input from the default basket as `pick` says.
+async fn allocate_change_input_by(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    basket_id: i64,
+    transaction_id: i64,
+    target_satoshis: u64,
+    require_spendable: bool,
+    pick: &mut ChangePick<'_>,
+) -> Result<Option<AllocatedChangeInput>> {
     let spendable_clause = if require_spendable {
         "AND o.spendable = 1"
     } else {
         ""
+    };
+    let (pick_clause, pick_ids): (String, Vec<i64>) = match pick {
+        #[cfg(test)]
+        ChangePick::Allocate => (String::new(), Vec::new()),
+        ChangePick::DryRun { taken } if taken.is_empty() => (String::new(), Vec::new()),
+        ChangePick::DryRun { taken } => (
+            format!("AND o.output_id NOT IN ({})", placeholders(taken.len())),
+            taken.clone(),
+        ),
+        ChangePick::Within { allowed } if allowed.is_empty() => return Ok(None),
+        ChangePick::Within { allowed } => (
+            format!("AND o.output_id IN ({})", placeholders(allowed.len())),
+            allowed.to_vec(),
+        ),
     };
 
     // Try to find an output with at least target_satoshis
@@ -2048,6 +2386,7 @@ pub(super) async fn allocate_change_input(
           AND o.spent_by IS NULL
           AND t.status IN ('completed', 'unproven')
           {}
+          {}
         ORDER BY
             CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
             CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
@@ -2055,12 +2394,14 @@ pub(super) async fn allocate_change_input(
             ABS(o.satoshis - ?) ASC
         LIMIT 1
         "#,
-        spendable_clause
+        spendable_clause, pick_clause
     );
 
-    let row = sqlx::query(&sql)
-        .bind(user_id)
-        .bind(basket_id)
+    let mut query = sqlx::query(&sql).bind(user_id).bind(basket_id);
+    for id in &pick_ids {
+        query = query.bind(*id);
+    }
+    let row = query
         .bind(target_satoshis as i64)
         .bind(target_satoshis as i64)
         .fetch_optional(&mut *conn)
@@ -2076,16 +2417,20 @@ pub(super) async fn allocate_change_input(
         let derivation_suffix: Option<String> = row.get("derivation_suffix");
         let sender_identity_key: Option<String> = row.get("sender_identity_key");
 
-        // Mark as allocated (spent_by this transaction)
-        let now = Utc::now();
-        sqlx::query(
+        if let ChangePick::DryRun { taken } = pick {
+            taken.push(output_id);
+        } else {
+            // Mark as allocated (spent_by this transaction)
+            let now = Utc::now();
+            sqlx::query(
             "UPDATE outputs SET spendable = 0, spent_by = ?, updated_at = ? WHERE output_id = ?",
         )
-        .bind(transaction_id)
-        .bind(now)
-        .bind(output_id)
-        .execute(&mut *conn)
-        .await?;
+            .bind(transaction_id)
+            .bind(now)
+            .bind(output_id)
+            .execute(&mut *conn)
+            .await?;
+        }
 
         Ok(Some(AllocatedChangeInput {
             output_id,
@@ -2100,6 +2445,11 @@ pub(super) async fn allocate_change_input(
     } else {
         Ok(None)
     }
+}
+
+/// `?, ?, ?` for `n` binds.
+fn placeholders(n: usize) -> String {
+    vec!["?"; n].join(", ")
 }
 
 // =============================================================================
@@ -2411,13 +2761,13 @@ async fn local_record_age_secs(conn: &mut SqliteConnection, txid: &str) -> Optio
 
 /// Asks services for a transaction's merkle path and records it.
 ///
-/// A BEEF only ever gets smaller by acquiring bumps and proofs, and a wallet
-/// serving `create_action` cannot rely on its monitor having run: a wallet
-/// started without the monitor (or one holding a transaction it did not build)
-/// never records a proof, so every later spend drags the whole unproven chain.
-/// This is the same fall-through the TypeScript builder takes when storage
-/// cannot prove a transaction, and it records the result so the cost is paid
-/// once per ancestor rather than on every spend.
+/// A BEEF only ever gets smaller by acquiring bumps and proofs. The broadcast
+/// rebuild (`rebuild_beef_for_broadcast`) asks; `create_action` does not
+/// (bsv-wallet-cli #44: its door is one step and awaits no service; the
+/// monitor's backstop fetches proofs). This is the same fall-through the
+/// TypeScript builder takes when storage cannot prove a transaction, and it
+/// records the result so the cost is paid once per ancestor rather than on
+/// every rebuild.
 ///
 /// The providers and the tracker are asked with no lock held; the store is
 /// then one `BEGIN IMMEDIATE` transaction on the writer (the walk runs on a
@@ -2591,7 +2941,10 @@ async fn fetch_and_store_merkle_path(storage: Option<&StorageSqlx>, txid: &str) 
 /// Direct inputs (depth 0) that cannot be found cause an error; deeper ancestors just warn.
 ///
 /// This is the shared core used by both `build_input_beef` (create_action) and
-/// `rebuild_beef_for_broadcast` (send_waiting_transactions).
+/// `rebuild_beef_for_broadcast` (send_waiting_transactions). Only a walk given
+/// `storage` asks a provider (the rebuild); `build_input_beef` passes none.
+/// With no `writer` (create_action under its write lock) the walk's read
+/// checks decide and write nothing.
 /// Does the chain tracker DEFINITELY refute a stored bump for `txid`?
 ///
 /// Only `Ok(false)` from the tracker refutes; no tracker, a tracker fault
@@ -2621,7 +2974,7 @@ pub(super) async fn stored_bump_refuted(
 
 pub(super) async fn beef_bfs_walk(
     conn: &mut SqliteConnection,
-    writer: &SqlitePool,
+    writer: Option<&SqlitePool>,
     beef: &mut Beef,
     pending_txids: &mut Vec<(String, usize)>,
     processed_txids: &mut HashSet<String>,
@@ -2920,7 +3273,7 @@ pub(super) async fn rebuild_beef_for_broadcast(
 
     beef_bfs_walk(
         conn,
-        writer,
+        Some(writer),
         &mut beef,
         &mut pending_txids,
         &mut processed_txids,
@@ -3025,7 +3378,15 @@ fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<Str
 /// * `return_txid_only` - If true, skip BEEF construction entirely
 /// * `trust_self` - `trustSelf: 'known'`: the caller's txid-only entries are
 ///   resolved from storage (`resolve_known_txid_only_entries`)
-/// * `storage` - Optional storage backend for network fallback when local lookup fails
+/// * `read_check_tracker` - the walk's tracker when `chain_tracker` is `None`
+///   (the storage's own): stored proofs are read against it, the assembled
+///   roots are not
+///
+/// The BEEF is assembled from stored bytes only: no provider is asked
+/// (`createAction` fetches nothing, bsv-wallet-cli #44). An ancestor whose
+/// bytes are not stored, or a chain that reaches no stored proof, is refused,
+/// naming the txid. `writer` is where the walk records its read checks; `None`
+/// under the write lock (they were recorded by the pre-check).
 ///
 /// # Returns
 /// * `Ok(Some(beef_bytes))` - BEEF binary data if there are inputs
@@ -3037,7 +3398,7 @@ fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<Str
 #[allow(clippy::too_many_arguments)]
 async fn build_input_beef(
     conn: &mut SqliteConnection,
-    writer: &SqlitePool,
+    writer: Option<&SqlitePool>,
     chain_tracker: Option<&dyn ChainTracker>,
     extended_inputs: &[ExtendedInput],
     change_inputs: &[AllocatedChangeInput],
@@ -3045,7 +3406,7 @@ async fn build_input_beef(
     known_txids: &[String],
     return_txid_only: bool,
     trust_self: bool,
-    storage: Option<&StorageSqlx>,
+    read_check_tracker: Option<&dyn ChainTracker>,
 ) -> Result<Option<Vec<u8>>> {
     // Gap #3: If return_txid_only, skip BEEF construction entirely
     if return_txid_only {
@@ -3126,15 +3487,16 @@ async fn build_input_beef(
     // transaction. Captured before the walk drains the queue.
     let root_txids: Vec<String> = pending_txids.iter().map(|(t, _)| t.clone()).collect();
 
-    // Delegate the BFS ancestor walk to the shared core function.
+    // Delegate the BFS ancestor walk to the shared core function. No
+    // storage: the walk asks no provider and finds no tracker of its own.
     beef_bfs_walk(
         &mut *conn,
         writer,
         &mut beef,
         &mut pending_txids,
         &mut processed_txids,
-        storage,
-        chain_tracker,
+        None,
+        chain_tracker.or(read_check_tracker),
     )
     .await?;
 
@@ -3144,11 +3506,23 @@ async fn build_input_beef(
     prune_beef_to_roots(&mut beef, &root_txids);
 
     // Validate every assembly before trimming known txids, including bodies
-    // without BUMPs and calls with no tracker. Missing ancestry is an error.
+    // without BUMPs and calls with no tracker. Missing ancestry is an error,
+    // and an ancestor this wallet does not store is named: createAction
+    // fetches none (the monitor's backstop fetches proofs).
     let validation = beef.verify_valid(true);
     if !validation.valid {
+        let missing = beef.sort_txs().missing_inputs;
+        let not_stored = if missing.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "ancestor(s) not stored, and createAction fetches none: [{}]; ",
+                missing.join(",")
+            )
+        };
         return Err(Error::ValidationError(format!(
-            "inputBEEF: BEEF structure is invalid: {}",
+            "inputBEEF: BEEF structure is invalid: {}{}",
+            not_stored,
             describe_invalid_beef(&mut beef, &root_txids)
         )));
     }
@@ -3568,7 +3942,7 @@ async fn try_network_fallback(
 /// unproven ancestor chains can shrink to a few KB once ancestors are proven.
 pub(super) async fn compact_stored_beef(
     conn: &mut SqliteConnection,
-    writer: &SqlitePool,
+    writer: Option<&SqlitePool>,
     beef: &mut Beef,
     chain_tracker: Option<&dyn ChainTracker>,
 ) -> Result<()> {
@@ -4629,7 +5003,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
@@ -4679,7 +5053,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
@@ -4747,7 +5121,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &extended_inputs,
             &change_inputs,
@@ -4824,7 +5198,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &extended_inputs,
             &change_inputs,
@@ -5090,7 +5464,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &extended_inputs,
             &change_inputs,
@@ -5138,7 +5512,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -5186,7 +5560,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -5248,7 +5622,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -5298,7 +5672,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -5361,7 +5735,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let err = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &extended_inputs,
             &[],
@@ -5438,7 +5812,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -5493,7 +5867,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -5540,7 +5914,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &extended_inputs,
             &change_inputs,
@@ -5771,7 +6145,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending_txids,
             &mut processed_txids,
@@ -5987,7 +6361,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let walk = beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -6086,7 +6460,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending_txids,
             &mut processed_txids,
@@ -6129,7 +6503,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending_txids,
             &mut processed_txids,
@@ -6414,7 +6788,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &extended_inputs,
             &change_inputs,
@@ -6475,7 +6849,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &extended_inputs,
             &change_inputs,
@@ -6616,7 +6990,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &extended_inputs,
             &change_inputs,
@@ -6748,9 +7122,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_beef_with_network_fallback() {
+    async fn test_the_broadcast_rebuild_has_a_network_fallback() {
         // Set up mock services that return a raw tx for a missing txid.
-        // Build BEEF where a parent is missing from local storage.
+        // Rebuild a BEEF for broadcast where a parent is missing from local
+        // storage (createAction asks no provider since bsv-wallet-cli #44;
+        // the broadcast rebuild still does).
         // Verify the mock service was called and the BEEF is complete.
         use crate::services::mock::{MockResponse, MockWalletServices};
         use crate::services::traits::GetRawTxResult;
@@ -6786,42 +7162,15 @@ mod tests {
             .build();
         storage.set_services(Arc::new(mock_services));
 
-        // Build BEEF for a tx that references the missing txid
-        let extended_inputs = vec![ExtendedInput {
-            vin: 0,
-            txid: missing_txid.clone(),
-            vout: 0,
-            satoshis: 50_000_000,
-            locking_script: vec![],
-            unlocking_script_length: 107,
-            input_description: None,
-            output: None,
-        }];
-        let change_inputs: Vec<AllocatedChangeInput> = vec![];
-
         let mut conn = storage.pool().acquire().await.unwrap();
-        let result = build_input_beef(
+        let beef = rebuild_beef_for_broadcast(
             &mut conn,
             storage.writer(),
-            None,
-            &extended_inputs,
-            &change_inputs,
-            None,
-            &[],
-            false,
-            false,
+            std::slice::from_ref(&missing_txid),
             Some(&storage),
         )
         .await
         .unwrap();
-
-        // BEEF should be produced (network fallback fetched the tx)
-        assert!(
-            result.is_some(),
-            "BEEF should be produced via network fallback"
-        );
-        let beef_bytes = result.unwrap();
-        let beef = Beef::from_binary(&beef_bytes).unwrap();
 
         // The fetched tx should be in the BEEF
         assert!(
@@ -8050,7 +8399,7 @@ mod tests {
         let mut conn = s.pool().acquire().await.unwrap();
         let bytes = build_input_beef(
             &mut conn,
-            s.writer(),
+            Some(s.writer()),
             if tracker { Some(&t) } else { None },
             &[l2_23_input(&chain[2].1)],
             &[],
@@ -8160,7 +8509,7 @@ mod tests {
             let mut conn = s.pool().acquire().await.unwrap();
             let result = build_input_beef(
                 &mut conn,
-                s.writer(),
+                Some(s.writer()),
                 if tracker { Some(&t) } else { None },
                 &[l2_23_input(&chain[1].1)],
                 &[],
@@ -8346,7 +8695,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8386,7 +8735,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8432,7 +8781,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8484,7 +8833,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8540,7 +8889,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8613,7 +8962,7 @@ mod tests {
             let mut conn = storage.pool().acquire().await.unwrap();
             let out = build_input_beef(
                 &mut conn,
-                storage.writer(),
+                Some(storage.writer()),
                 Some(&tracker),
                 &inputs,
                 &[],
@@ -8621,7 +8970,7 @@ mod tests {
                 &[],
                 false,
                 false,
-                Some(&storage),
+                None,
             )
             .await;
             let bytes = match out {
@@ -8661,7 +9010,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8714,7 +9063,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let untrimmed = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &inputs,
             &[],
@@ -8730,7 +9079,7 @@ mod tests {
 
         let trimmed = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &inputs,
             &[],
@@ -8802,7 +9151,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let bytes = build_input_beef(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             None,
             &inputs,
             &[],
@@ -8838,7 +9187,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_input_beef_skips_a_proof_lookup_for_a_young_transaction() {
+    async fn test_the_broadcast_rebuild_skips_a_proof_lookup_for_a_young_transaction() {
         // A transaction this wallet recorded seconds ago cannot be mined yet,
         // and its ancestors answer the question anyway. No network call.
         use crate::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
@@ -8862,33 +9211,15 @@ mod tests {
         );
         storage.set_services(services.clone());
 
-        let inputs = vec![ExtendedInput {
-            vin: 0,
-            txid: chain[1].1.clone(),
-            vout: 0,
-            satoshis: 1_000,
-            locking_script: vec![0x51],
-            unlocking_script_length: 107,
-            input_description: Some("spend".to_string()),
-            output: None,
-        }];
-
         let mut conn = storage.pool().acquire().await.unwrap();
-        build_input_beef(
+        rebuild_beef_for_broadcast(
             &mut conn,
             storage.writer(),
-            None,
-            &inputs,
-            &[],
-            None,
-            &[],
-            false,
-            false,
+            std::slice::from_ref(&chain[1].1),
             Some(&storage),
         )
         .await
-        .unwrap()
-        .expect("a BEEF is produced");
+        .unwrap();
 
         assert_eq!(
             services.call_count("get_merkle_path"),
@@ -8898,9 +9229,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_input_beef_fetches_a_missing_proof_and_stores_it_through_the_writer() {
+    async fn test_the_broadcast_rebuild_fetches_a_missing_proof_and_stores_it_through_the_writer() {
         // The wallet holds the parent but no proof for it, exactly what a
-        // wallet running without its monitor looks like. The builder must ask
+        // wallet running without its monitor looks like. The broadcast
+        // rebuild (not createAction, which fetches nothing) must ask
         // services once, with no lock held, record the proof through the
         // writer (the walk itself reads on a query-only reader), and stop the
         // chain there.
@@ -8957,37 +9289,18 @@ mod tests {
             .set_chain_tracker(std::sync::Arc::new(tracker))
             .await;
 
-        let inputs = vec![ExtendedInput {
-            vin: 0,
-            txid: chain[1].1.clone(),
-            vout: 0,
-            satoshis: 1_000,
-            locking_script: vec![0x51],
-            unlocking_script_length: 107,
-            input_description: Some("spend".to_string()),
-            output: None,
-        }];
-
         // A reader connection: the walk never holds the writer.
         let mut conn = storage.pool().acquire().await.unwrap();
 
-        let bytes = build_input_beef(
+        let beef = rebuild_beef_for_broadcast(
             &mut conn,
             storage.writer(),
-            None,
-            &inputs,
-            &[],
-            None,
-            &[],
-            false,
-            false,
+            std::slice::from_ref(&chain[1].1),
             Some(&storage),
         )
         .await
-        .unwrap()
-        .expect("a BEEF is produced");
+        .unwrap();
 
-        let beef = Beef::from_binary(&bytes).unwrap();
         let kept = beef_txids(&beef);
         assert_eq!(kept.len(), 1, "only the proven parent is needed");
         assert!(kept.contains(&chain[1].1));
@@ -9150,7 +9463,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         beef_bfs_walk(
             &mut conn,
-            storage.writer(),
+            Some(storage.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -9606,51 +9919,435 @@ mod tests {
             );
         }
 
-        /// A BEEF that fails after the allocation committed takes the
-        /// allocation back: the wallet's input is spendable again and the
-        /// action's rows are gone, as the rolled-back transaction left them.
-        #[tokio::test]
-        async fn a_beef_that_fails_after_the_commit_takes_the_allocation_back() {
-            let (storage, user_id) = setup().await;
-            let external = tx_spending(None, 0xaa, 5_000);
-            let known = tx_spending(None, 0xcc, 5_000);
-            seed_known(&storage, user_id, &known, true).await;
-            let outputs_before = count(&storage, "SELECT COUNT(*) FROM outputs").await;
-
-            let mut a = args(
-                vec![input(&external.id()), input(&known.id())],
-                caller_beef(&external, &[known.id()]),
-            );
-            a.options = None;
-            let err = create_action_internal(&storage, None, user_id, a)
+        /// A change coin of the default basket on `funding`'s output 0
+        /// (`funding` recorded `completed`, with its proof when `proven`).
+        async fn seed_change_coin(
+            storage: &StorageSqlx,
+            user_id: i64,
+            funding: &Transaction,
+            proven: bool,
+        ) -> i64 {
+            let basket = storage
+                .find_or_create_default_basket(user_id)
                 .await
-                .expect_err("no trustSelf: the txid-only entry is not proven");
-            assert!(
-                err.to_string().contains("BEEF structure is invalid"),
-                "{err}"
-            );
+                .unwrap();
+            let txid = funding.id();
+            let raw = funding.to_binary();
+            if proven {
+                seed_proven_tx(storage, &txid, &raw, &bump_for(&txid, 900).to_binary()).await;
+            }
+            let now = Utc::now();
+            let row = sqlx::query(
+                r#"
+                INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
+                VALUES (?, 'completed', ?, 0, ?, 1, 0, 'funding', ?, ?, ?, ?)
+                "#,
+            )
+            .bind(user_id)
+            .bind(format!("fund-{}", &txid[..8]))
+            .bind(funding.outputs[0].satoshis.unwrap() as i64)
+            .bind(&txid)
+            .bind(&raw)
+            .bind(now)
+            .bind(now)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+            sqlx::query(
+                r#"
+                INSERT INTO outputs (user_id, transaction_id, basket_id, vout, satoshis, locking_script,
+                                     txid, type, spendable, change, derivation_prefix, derivation_suffix,
+                                     provided_by, purpose, output_description, created_at, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?, ?, 'P2PKH', 1, 1, 'prefix', 'suffix', 'storage', 'change', 'change', ?, ?)
+                "#,
+            )
+            .bind(user_id)
+            .bind(row.last_insert_rowid())
+            .bind(basket.basket_id)
+            .bind(funding.outputs[0].satoshis.unwrap() as i64)
+            .bind(hex::decode(LOCK).unwrap())
+            .bind(&txid)
+            .bind(now)
+            .bind(now)
+            .execute(storage.writer())
+            .await
+            .unwrap()
+            .last_insert_rowid()
+        }
 
+        /// One change coin is enough: the default basket wants one.
+        async fn want_one_change_coin(storage: &StorageSqlx) {
+            sqlx::query("UPDATE output_baskets SET number_of_desired_utxos = 1")
+                .execute(storage.writer())
+                .await
+                .unwrap();
+        }
+
+        /// A wallet-funded action: one output to a new basket, with a label
+        /// and a tag, so a written action would leave rows in every table.
+        fn funded_args() -> bsv_rs::wallet::CreateActionArgs {
+            bsv_rs::wallet::CreateActionArgs {
+                description: "the door in one step".to_string(),
+                input_beef: None,
+                inputs: None,
+                outputs: Some(vec![CreateActionOutput {
+                    locking_script: hex::decode(LOCK).unwrap(),
+                    satoshis: 1_000,
+                    output_description: "an output".to_string(),
+                    basket: Some("a-new-basket".to_string()),
+                    custom_instructions: None,
+                    tags: Some(vec!["a-new-tag".to_string()]),
+                }]),
+                lock_time: None,
+                version: None,
+                labels: Some(vec!["a-new-label".to_string()]),
+                options: None,
+            }
+        }
+
+        /// Everything an action writes, as text: the coins, the rows, the
+        /// labels, tags, baskets and their links, and the sequence counter.
+        async fn the_store(storage: &StorageSqlx) -> Vec<Option<String>> {
+            let mut seen = Vec::new();
+            for sql in [
+                "SELECT group_concat(output_id || ':' || spendable || ':' || ifnull(spent_by, '-'), ',') FROM outputs",
+                "SELECT group_concat(transaction_id || ':' || status, ',') FROM transactions",
+                "SELECT group_concat(label, ',') FROM tx_labels",
+                "SELECT group_concat(transaction_id || ':' || tx_label_id, ',') FROM tx_labels_map",
+                "SELECT group_concat(tag, ',') FROM output_tags",
+                "SELECT group_concat(output_id || ':' || output_tag_id, ',') FROM output_tags_map",
+                "SELECT group_concat(name, ',') FROM output_baskets",
+                "SELECT group_concat(name || ':' || seq, ',') FROM sqlite_sequence",
+            ] {
+                seen.push(
+                    sqlx::query_scalar::<_, Option<String>>(sql)
+                        .fetch_one(storage.pool())
+                        .await
+                        .unwrap(),
+                );
+            }
+            seen
+        }
+
+        /// Option B (the captain's ruling of 2026-10-21): a BEEF failure is a
+        /// refusal that changes nothing. The only change coin's funding
+        /// transaction is unproven and its parent is not stored; createAction
+        /// asks no provider (the services here would answer) and refuses,
+        /// naming the parent. The coins, the action's row, its label, tag and
+        /// basket, their links and the sequence counter are as they were.
+        #[tokio::test]
+        async fn a_beef_failure_refuses_with_nothing_written() {
+            use crate::services::mock::{MockResponse, MockWalletServices};
+            use crate::services::traits::GetRawTxResult;
+            use crate::storage::traits::WalletStorageProvider;
+
+            let (storage, user_id) = setup().await;
+            let parent = tx_spending(None, 0x11, 60_000);
+            let funding = tx_spending(Some(&parent.id()), 0x22, 50_000);
+            seed_change_coin(&storage, user_id, &funding, false).await;
+            let services = std::sync::Arc::new(
+                MockWalletServices::builder()
+                    .get_raw_tx_response(MockResponse::Success(GetRawTxResult {
+                        name: "mock".to_string(),
+                        txid: parent.id(),
+                        raw_tx: Some(parent.to_binary()),
+                        error: None,
+                        could_not_look: false,
+                    }))
+                    .build(),
+            );
+            storage.set_services(services.clone());
+            let before = the_store(&storage).await;
+
+            let tracker = ProbeTracker::new(&storage, None);
+            let err = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect_err("the parent is not stored");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!(
+                    "ancestor(s) not stored, and createAction fetches none: [{}]",
+                    parent.id()
+                )),
+                "the refusal names the missing ancestor: {msg}"
+            );
+            assert_eq!(services.call_count("get_raw_tx"), 0, "no provider asked");
             assert_eq!(
-                count(
-                    &storage,
-                    "SELECT COUNT(*) FROM transactions WHERE description = 'trust self known'"
-                )
-                .await,
+                services.call_count("get_merkle_path"),
                 0,
-                "the action's row is taken back"
+                "no provider asked"
             );
-            assert_eq!(
-                count(&storage, "SELECT COUNT(*) FROM outputs").await,
-                outputs_before
-            );
-            let (spendable, spent_by): (bool, Option<i64>) =
-                sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE txid = ?")
-                    .bind(known.id())
+            assert_eq!(tracker.asked_under_lock(), 0);
+            assert_eq!(the_store(&storage).await, before, "nothing written");
+        }
+
+        /// Takes `coin` for another action the first time the root `when` is
+        /// asked (the pre-check, no lock held): a concurrent allocation
+        /// between the pre-check and the write lock. Records every root asked.
+        struct TakingTracker {
+            writer: sqlx::SqlitePool,
+            when: String,
+            coin: i64,
+            by: i64,
+            taken: std::sync::atomic::AtomicBool,
+            asked: std::sync::Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl ChainTracker for TakingTracker {
+            async fn is_valid_root_for_height(
+                &self,
+                root: &str,
+                _height: u32,
+            ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+                self.asked.lock().unwrap().push(root.to_string());
+                if root == self.when && !self.taken.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let taken = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        sqlx::query(
+                            "UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?",
+                        )
+                        .bind(self.by)
+                        .bind(self.coin)
+                        .execute(&self.writer),
+                    )
+                    .await;
+                    assert!(
+                        matches!(taken, Ok(Ok(_))),
+                        "the writer is free during the pre-check"
+                    );
+                }
+                Ok(true)
+            }
+
+            async fn current_height(
+                &self,
+            ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+                Ok(100_000)
+            }
+        }
+
+        /// The pre-checked coin is taken before the write lock: the step
+        /// rolls back (nothing written), the pre-check runs once more and
+        /// picks the other coin, and the action is created from it.
+        #[tokio::test]
+        async fn a_coin_taken_after_the_precheck_is_skipped_and_the_precheck_runs_again() {
+            let (storage, user_id) = setup().await;
+            want_one_change_coin(&storage).await;
+            let near = tx_spending(None, 0x31, 50_000);
+            let far = tx_spending(None, 0x32, 900_000);
+            let near_coin = seed_change_coin(&storage, user_id, &near, true).await;
+            let far_coin = seed_change_coin(&storage, user_id, &far, true).await;
+            let outsider: i64 =
+                sqlx::query_scalar("SELECT transaction_id FROM transactions WHERE txid = ?")
+                    .bind(near.id())
                     .fetch_one(storage.pool())
                     .await
                     .unwrap();
-            assert!(spendable, "the wallet's input is spendable again");
-            assert_eq!(spent_by, None);
+
+            let tracker = TakingTracker {
+                writer: storage.writer().clone(),
+                when: near.id(),
+                coin: near_coin,
+                by: outsider,
+                taken: Default::default(),
+                asked: Default::default(),
+            };
+            let result = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect("the action is created from the other coin");
+
+            let asked = tracker.asked.lock().unwrap().clone();
+            assert_eq!(
+                asked.first(),
+                Some(&near.id()),
+                "the first pre-check read the near coin"
+            );
+            assert!(
+                asked.contains(&far.id()),
+                "the second pre-check read the far coin: {asked:?}"
+            );
+            let sources: Vec<&str> = result
+                .inputs
+                .iter()
+                .map(|i| i.source_txid.as_str())
+                .collect();
+            assert_eq!(sources, vec![far.id().as_str()]);
+            let spent_by = |coin: i64| {
+                let pool = storage.pool().clone();
+                async move {
+                    sqlx::query_scalar::<_, Option<i64>>(
+                        "SELECT spent_by FROM outputs WHERE output_id = ?",
+                    )
+                    .bind(coin)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+                }
+            };
+            assert_eq!(
+                spent_by(near_coin).await,
+                Some(outsider),
+                "the taker keeps it"
+            );
+            let action: i64 = sqlx::query_scalar(
+                "SELECT transaction_id FROM transactions WHERE description = 'the door in one step'",
+            )
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+            assert_eq!(spent_by(far_coin).await, Some(action));
+            assert_eq!(
+                count(
+                    &storage,
+                    "SELECT COUNT(*) FROM transactions WHERE description = 'the door in one step'"
+                )
+                .await,
+                1,
+                "one action row: the rolled-back step left none"
+            );
+        }
+
+        /// Stores `proof` for `txid` the first time the root `when` is asked
+        /// (the pre-check, no lock held): the monitor storing a proof between
+        /// the pre-check and the write lock. Records every root asked.
+        struct ProvingTracker {
+            writer: sqlx::SqlitePool,
+            when: String,
+            txid: String,
+            raw: Vec<u8>,
+            proof: Vec<u8>,
+            stored: std::sync::atomic::AtomicBool,
+            asked: std::sync::Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl ChainTracker for ProvingTracker {
+            async fn is_valid_root_for_height(
+                &self,
+                root: &str,
+                _height: u32,
+            ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+                self.asked.lock().unwrap().push(root.to_string());
+                if root == self.when && !self.stored.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let now = Utc::now();
+                    sqlx::query(
+                        "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) \
+                         VALUES (?, 901, 0, ?, ?, ?, ?, ?, ?)",
+                    )
+                    .bind(&self.txid)
+                    .bind("ab".repeat(32))
+                    .bind(&self.txid)
+                    .bind(&self.proof)
+                    .bind(&self.raw)
+                    .bind(now)
+                    .bind(now)
+                    .execute(&self.writer)
+                    .await
+                    .expect("the writer is free during the pre-check");
+                }
+                Ok(true)
+            }
+
+            async fn current_height(
+                &self,
+            ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+                Ok(100_000)
+            }
+        }
+
+        /// A proof stored between the pre-check and the write lock is a root
+        /// the pre-check did not read: the step rolls back (nothing written),
+        /// the pre-check runs once more and reads it, and the action's BEEF
+        /// carries the new proof, its parent no longer needed.
+        #[tokio::test]
+        async fn a_proof_stored_after_the_precheck_is_read_before_the_lock_on_the_second_try() {
+            let (storage, user_id) = setup().await;
+            want_one_change_coin(&storage).await;
+            let parent = tx_spending(None, 0x51, 60_000);
+            seed_known(&storage, user_id, &parent, true).await;
+            let funding = tx_spending(Some(&parent.id()), 0x52, 50_000);
+            seed_change_coin(&storage, user_id, &funding, false).await;
+
+            let tracker = ProvingTracker {
+                writer: storage.writer().clone(),
+                when: parent.id(),
+                txid: funding.id(),
+                raw: funding.to_binary(),
+                proof: bump_for(&funding.id(), 901).to_binary(),
+                stored: Default::default(),
+                asked: Default::default(),
+            };
+            let result = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect("the action is created on the second try");
+
+            let asked = tracker.asked.lock().unwrap().clone();
+            assert_eq!(
+                asked.first(),
+                Some(&parent.id()),
+                "the first pre-check read the parent"
+            );
+            assert!(
+                asked.contains(&funding.id()),
+                "the second read the new proof: {asked:?}"
+            );
+            let beef = Beef::from_binary(result.input_beef.as_ref().expect("a BEEF")).unwrap();
+            assert!(
+                beef.find_txid(&funding.id())
+                    .and_then(|t| t.bump_index())
+                    .is_some(),
+                "the funding transaction rides with its new proof"
+            );
+            assert!(
+                beef.find_txid(&parent.id()).is_none(),
+                "its parent is not needed"
+            );
+            assert_eq!(
+                count(
+                    &storage,
+                    "SELECT COUNT(*) FROM transactions WHERE description = 'the door in one step'"
+                )
+                .await,
+                1
+            );
+        }
+
+        /// The only coin is taken before the write lock: the step rolls
+        /// back, the pre-check finds nothing to fund the action, and the call
+        /// refuses with insufficient funds, nothing written by it.
+        #[tokio::test]
+        async fn a_coin_taken_after_the_precheck_with_none_left_refuses_with_nothing_written() {
+            let (storage, user_id) = setup().await;
+            want_one_change_coin(&storage).await;
+            let only = tx_spending(None, 0x41, 50_000);
+            let coin = seed_change_coin(&storage, user_id, &only, true).await;
+            let outsider: i64 =
+                sqlx::query_scalar("SELECT transaction_id FROM transactions WHERE txid = ?")
+                    .bind(only.id())
+                    .fetch_one(storage.pool())
+                    .await
+                    .unwrap();
+            let tracker = TakingTracker {
+                writer: storage.writer().clone(),
+                when: only.id(),
+                coin,
+                by: outsider,
+                taken: Default::default(),
+                asked: Default::default(),
+            };
+            let mut before = the_store(&storage).await;
+
+            let err = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect_err("no coin is left");
+            assert!(matches!(err, Error::InsufficientFunds { .. }), "{err:?}");
+
+            // Only the taker's write moved anything: the coin it took.
+            before[0] = Some(format!("{coin}:0:{outsider}"));
+            assert_eq!(the_store(&storage).await, before);
         }
     }
 }

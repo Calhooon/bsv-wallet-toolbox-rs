@@ -2004,7 +2004,7 @@ impl WalletStorageReader for StorageSqlx {
 
             beef_bfs_walk(
                 &mut conn,
-                self.writer(),
+                Some(self.writer()),
                 &mut beef_struct,
                 &mut pending_txids,
                 &mut processed_txids,
@@ -4903,7 +4903,7 @@ impl MonitorStorage for StorageSqlx {
                                     let tracker = self.get_chain_tracker().await;
                                     if let Err(e2) = super::create_action::compact_stored_beef(
                                         &mut conn,
-                                        self.writer(),
+                                        Some(self.writer()),
                                         &mut fallback_beef,
                                         tracker.as_deref(),
                                     )
@@ -5674,7 +5674,7 @@ impl MonitorStorage for StorageSqlx {
                         // row stays unchecked for a later pass.
                         if !super::proof_root_checks::check_unchecked_stored_proof_on(
                             &mut conn,
-                            self.writer(),
+                            Some(self.writer()),
                             tracker.as_deref(),
                             txid,
                             &merkle_path,

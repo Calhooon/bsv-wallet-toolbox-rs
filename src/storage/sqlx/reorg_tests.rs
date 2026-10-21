@@ -846,7 +846,7 @@ async fn the_beef_walk_skips_a_refuted_stored_bump_and_demotes_nothing() {
     let mut processed = std::collections::HashSet::new();
     beef_bfs_walk(
         &mut conn,
-        s.writer(),
+        Some(s.writer()),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -917,7 +917,7 @@ async fn a_tracker_outage_keeps_the_stored_bump_and_mutates_nothing() {
     let mut processed = std::collections::HashSet::new();
     beef_bfs_walk(
         &mut conn,
-        s.writer(),
+        Some(s.writer()),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -999,7 +999,7 @@ async fn the_walks_own_proof_fetch_goes_through_the_funnel_and_the_gate() {
         let mut processed = std::collections::HashSet::new();
         beef_bfs_walk(
             &mut conn,
-            s.writer(),
+            Some(s.writer()),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -1030,7 +1030,7 @@ async fn the_walks_own_proof_fetch_goes_through_the_funnel_and_the_gate() {
         let mut processed = std::collections::HashSet::new();
         beef_bfs_walk(
             &mut conn,
-            s.writer(),
+            Some(s.writer()),
             &mut beef,
             &mut pending,
             &mut processed,

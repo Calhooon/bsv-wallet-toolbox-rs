@@ -47,7 +47,7 @@ async fn walk_and_prune(
     let mut processed = HashSet::new();
     beef_bfs_walk(
         &mut conn,
-        s.writer(),
+        Some(s.writer()),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -222,7 +222,7 @@ async fn compaction_flags_the_leaf_it_links() {
     let mut conn = s.pool().acquire().await.unwrap();
     compact_stored_beef(
         &mut conn,
-        s.writer(),
+        Some(s.writer()),
         &mut stored,
         Some(&tracker as &dyn ChainTracker),
     )
