@@ -124,6 +124,17 @@ fn writer_acquire_error(err: sqlx::Error) -> Error {
     }
 }
 
+/// Write `value` into `lock` only when it differs: `storage_identity_key()`
+/// and `storage_name()` lend a `&str` out of the lock, shared by every
+/// handle of the store (see `StorageSqlx::cache_settings`).
+fn replace_if_changed(lock: &std::sync::RwLock<String>, value: &str) -> Result<()> {
+    let mut current = lock_write(lock)?;
+    if current.as_str() != value {
+        *current = value.to_string();
+    }
+    Ok(())
+}
+
 /// Default maximum length for output scripts stored in the outputs table.
 /// Scripts longer than this will be retrieved from the raw transaction.
 pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
@@ -132,6 +143,16 @@ pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
 ///
 /// Implements the full `WalletStorageProvider` trait hierarchy using SQLx
 /// with SQLite as the backend.
+///
+/// One store per file per process (bsv-wallet-cli #44). A clone is a second
+/// handle over the same store: the same writer pool (one connection), the
+/// same reader pool, the same in-flight pick reservations, the same settings,
+/// identity, chain tracker, services, broadcast memory and trx tokens; a
+/// change made through one handle is seen through every other. Give a
+/// `Wallet` and a `Monitor` (or two `Wallet`s) clones of one store. Two
+/// `StorageSqlx::new` over one file are two stores: two writer pools whose
+/// writers meet in SQLite and wait on its busy handler (`busy_timeout`, then
+/// `StoreBusy`) instead of queueing on one writer, and two reservation sets.
 pub struct StorageSqlx {
     /// The reader pool: several connections, each `PRAGMA query_only = ON`,
     /// so a write sent here fails loudly instead of racing the writer.
@@ -142,25 +163,25 @@ pub struct StorageSqlx {
     /// SQLite (toolbox cli#44: `SQLITE_BUSY_SNAPSHOT`, 517).
     writer: Pool<Sqlite>,
     /// Cached settings (loaded on make_available).
-    settings: std::sync::RwLock<Option<TableSettings>>,
+    settings: Arc<std::sync::RwLock<Option<TableSettings>>>,
     /// Storage identity key (set during migration).
-    storage_identity_key: std::sync::RwLock<String>,
+    storage_identity_key: Arc<std::sync::RwLock<String>>,
     /// Storage name (set during migration).
-    storage_name: std::sync::RwLock<String>,
+    storage_name: Arc<std::sync::RwLock<String>>,
     /// Optional ChainTracker for BEEF and proof verification.
     /// When set, create_action will verify BEEF merkle roots against the chain.
     /// When NOT set, no merkle proof is ever stored as proven (P0-1).
-    chain_tracker: RwLock<Option<Arc<dyn ChainTracker>>>,
+    chain_tracker: Arc<RwLock<Option<Arc<dyn ChainTracker>>>>,
     /// Optional WalletServices for blockchain operations.
     /// When set, storage can perform BEEF verification, broadcast transactions,
     /// validate UTXOs, and look up block headers.
-    services: std::sync::RwLock<Option<Arc<dyn WalletServices>>>,
+    services: Arc<std::sync::RwLock<Option<Arc<dyn WalletServices>>>>,
     /// Active transaction tokens for TrxToken scope tracking.
-    active_transactions: RwLock<HashMap<u64, ()>>,
+    active_transactions: Arc<RwLock<HashMap<u64, ()>>>,
     /// In-memory task locks for multi-instance monitor support.
     /// Maps task_name -> (instance_id, expiry).
     #[allow(dead_code)]
-    task_locks: RwLock<HashMap<String, (String, std::time::Instant)>>,
+    task_locks: Arc<RwLock<HashMap<String, (String, std::time::Instant)>>>,
     /// Persisted broadcast acceptance memory over the same pool (0.3.56):
     /// the `broadcast_seen` / `broadcast_prefs` tables.
     broadcast_memory: Arc<super::broadcast_seen::SqlxBroadcastMemory>,
@@ -171,15 +192,43 @@ pub struct StorageSqlx {
     /// Tests only: the next process step answers busy at its first write,
     /// inside its write transaction.
     #[cfg(test)]
-    busy_next_process_action: std::sync::atomic::AtomicBool,
+    busy_next_process_action: Arc<std::sync::atomic::AtomicBool>,
     /// Tests only: the next status write after a broadcast answers busy
     /// before writing.
     #[cfg(test)]
-    busy_next_status_write: std::sync::atomic::AtomicBool,
+    busy_next_status_write: Arc<std::sync::atomic::AtomicBool>,
     /// Tests only: the next descendants' retirement answers busy before
     /// writing.
     #[cfg(test)]
-    busy_next_descendant_retire: std::sync::atomic::AtomicBool,
+    busy_next_descendant_retire: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A second handle over the same store: every field is shared, none copied
+/// (`Pool` is an `Arc` inside; every other field is an `Arc`). The tests'
+/// busy hooks are shared too: a hook armed through one handle fires at the
+/// next matching step through any.
+impl Clone for StorageSqlx {
+    fn clone(&self) -> Self {
+        Self {
+            reader: self.reader.clone(),
+            writer: self.writer.clone(),
+            settings: Arc::clone(&self.settings),
+            storage_identity_key: Arc::clone(&self.storage_identity_key),
+            storage_name: Arc::clone(&self.storage_name),
+            chain_tracker: Arc::clone(&self.chain_tracker),
+            services: Arc::clone(&self.services),
+            active_transactions: Arc::clone(&self.active_transactions),
+            task_locks: Arc::clone(&self.task_locks),
+            broadcast_memory: Arc::clone(&self.broadcast_memory),
+            in_flight_picks: Arc::clone(&self.in_flight_picks),
+            #[cfg(test)]
+            busy_next_process_action: Arc::clone(&self.busy_next_process_action),
+            #[cfg(test)]
+            busy_next_status_write: Arc::clone(&self.busy_next_status_write),
+            #[cfg(test)]
+            busy_next_descendant_retire: Arc::clone(&self.busy_next_descendant_retire),
+        }
+    }
 }
 
 impl StorageSqlx {
@@ -247,13 +296,13 @@ impl StorageSqlx {
         Ok(Self {
             reader,
             writer,
-            settings: std::sync::RwLock::new(None),
-            storage_identity_key: std::sync::RwLock::new(String::new()),
-            storage_name: std::sync::RwLock::new(String::new()),
-            chain_tracker: RwLock::new(None),
-            services: std::sync::RwLock::new(None),
-            active_transactions: RwLock::new(HashMap::new()),
-            task_locks: RwLock::new(HashMap::new()),
+            settings: Default::default(),
+            storage_identity_key: Default::default(),
+            storage_name: Default::default(),
+            chain_tracker: Default::default(),
+            services: Default::default(),
+            active_transactions: Default::default(),
+            task_locks: Default::default(),
             broadcast_memory,
             in_flight_picks: Default::default(),
             #[cfg(test)]
@@ -263,6 +312,19 @@ impl StorageSqlx {
             #[cfg(test)]
             busy_next_descendant_retire: Default::default(),
         })
+    }
+
+    /// Cache `settings`, replacing the cached value only when it differs.
+    /// `get_settings` lends a `&TableSettings` out of the lock (the trait's
+    /// signature), and every handle of this store shares the cache: a
+    /// second handle's `make_available` over the same row must not free
+    /// what another handle lent.
+    fn cache_settings(&self, settings: &TableSettings) -> Result<()> {
+        let mut cached = lock_write(&self.settings)?;
+        if cached.as_ref() != Some(settings) {
+            *cached = Some(settings.clone());
+        }
+        Ok(())
     }
 
     /// Set the ChainTracker for BEEF and proof verification.
@@ -614,8 +676,7 @@ impl StorageSqlx {
         }
 
         // Update cache
-        let mut cached = lock_write(&self.settings)?;
-        *cached = Some(settings.clone());
+        self.cache_settings(settings)?;
 
         Ok(())
     }
@@ -2228,8 +2289,7 @@ impl WalletStorageWriter for StorageSqlx {
             self.ensure_locked_inputs_schema().await?;
             super::monitor_state::ensure_monitor_state_schema(self.writer()).await?;
             super::proof_root_checks::ensure_proof_root_checks_schema(self.writer()).await?;
-            let mut cached = lock_write(&self.settings)?;
-            *cached = Some(settings.clone());
+            self.cache_settings(&settings)?;
             Ok(settings)
         } else {
             Err(Error::StorageNotAvailable)
@@ -2255,14 +2315,8 @@ impl WalletStorageWriter for StorageSqlx {
         self.save_settings(&settings).await?;
 
         // Update internal state
-        {
-            let mut key = lock_write(&self.storage_identity_key)?;
-            *key = storage_identity_key.to_string();
-        }
-        {
-            let mut name = lock_write(&self.storage_name)?;
-            *name = storage_name.to_string();
-        }
+        replace_if_changed(&self.storage_identity_key, storage_identity_key)?;
+        replace_if_changed(&self.storage_name, storage_name)?;
 
         Ok(MIGRATIONS
             .last()
@@ -7072,6 +7126,71 @@ impl StorageSqlx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tracker that answers every root valid.
+    struct AnyRoot;
+
+    #[async_trait]
+    impl ChainTracker for AnyRoot {
+        async fn is_valid_root_for_height(
+            &self,
+            _root: &str,
+            _height: u32,
+        ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+            Ok(true)
+        }
+
+        async fn current_height(
+            &self,
+        ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+            Ok(1)
+        }
+    }
+
+    /// One store, two handles (bsv-wallet-cli #44: one store per file per
+    /// process): the chain tracker, the services, the settings and the
+    /// identity set through one handle are seen through the other, cleared
+    /// as well; the two hold one broadcast memory and one writer.
+    #[tokio::test]
+    async fn the_tracker_services_and_settings_set_on_one_handle_are_seen_by_the_other() {
+        let a = StorageSqlx::in_memory().await.unwrap();
+        let b = a.clone();
+        assert!(b.get_chain_tracker().await.is_none());
+        assert!(b.get_services().is_err());
+
+        let tracker: Arc<dyn ChainTracker> = Arc::new(AnyRoot);
+        a.set_chain_tracker(tracker.clone()).await;
+        let seen = b.get_chain_tracker().await.expect("set through a");
+        assert!(Arc::ptr_eq(&seen, &tracker));
+        b.clear_chain_tracker().await;
+        assert!(a.get_chain_tracker().await.is_none(), "cleared through b");
+
+        let services: Arc<dyn WalletServices> =
+            Arc::new(crate::services::mock::MockWalletServices::new());
+        b.set_services(services.clone());
+        assert!(Arc::ptr_eq(&a.get_services().unwrap(), &services));
+
+        a.migrate("shared", &"02".repeat(33)).await.unwrap();
+        assert_eq!(b.storage_identity_key(), "02".repeat(33));
+        assert_eq!(b.storage_name(), "shared");
+        assert_eq!(b.get_settings().storage_name, "shared");
+        let lent = b.get_settings();
+        a.make_available().await.unwrap();
+        b.make_available().await.unwrap();
+        assert_eq!(
+            lent.storage_identity_key,
+            "02".repeat(33),
+            "the same row made available again leaves what was lent in place"
+        );
+
+        assert!(Arc::ptr_eq(
+            &a.sqlx_broadcast_memory(),
+            &b.sqlx_broadcast_memory()
+        ));
+        let held = a.writer().acquire().await.unwrap();
+        assert_eq!(b.writer().num_idle(), 0, "one writer connection");
+        drop(held);
+    }
 
     /// Review 2 F4 of #44: a begin that fails for anything but busy keeps
     /// the `Database error:` prefix these sites answered before #44. The

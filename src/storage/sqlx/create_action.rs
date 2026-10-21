@@ -11096,6 +11096,47 @@ mod tests {
                 .expect("released, the wallet funds the call");
         }
 
+        /// One store, two handles (a clone, as a host gives its `Wallet` and
+        /// its `Monitor`): the coins reserved through one handle are held
+        /// for the other's dry run, which answers `InFlight`, never picking
+        /// them; released through the first, the second's call is done.
+        #[tokio::test]
+        async fn a_reservation_through_one_handle_is_seen_by_the_others_dry_run() {
+            let (storage, user_id) = setup().await;
+            eight_coins(&storage, user_id).await;
+            let other = storage.clone();
+            let coins: Vec<i64> = sqlx::query_scalar(
+                "SELECT output_id FROM outputs WHERE change = 1 AND spendable = 1",
+            )
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+            let mut held = PickReservation::new(storage.in_flight_picks().clone());
+            for coin in &coins {
+                assert!(held.try_take(*coin));
+            }
+            assert_eq!(other.in_flight_picks().reserved().len(), 8);
+
+            let err = create_action_internal(&other, None, user_id, funded_args())
+                .await
+                .expect_err("every coin is held through the first handle");
+            assert!(
+                matches!(
+                    err,
+                    Error::StoreBusy {
+                        reason: StoreBusyReason::InFlight
+                    }
+                ),
+                "{err:?}"
+            );
+
+            drop(held);
+            assert!(other.in_flight_picks().reserved().is_empty());
+            create_action_internal(&other, None, user_id, funded_args())
+                .await
+                .expect("released through the first handle, the second's call is done");
+        }
+
         /// A shortfall that is the funds stays `InsufficientFunds` while a
         /// call is in flight: two 300-sat coins, one held; planned without
         /// the reservation the action is still uncovered, so not busy.

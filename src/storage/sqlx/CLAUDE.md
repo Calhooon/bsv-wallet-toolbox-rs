@@ -28,18 +28,24 @@ This module provides a production-ready storage backend for BSV wallet state usi
 The main storage provider struct implementing all wallet storage traits.
 
 ```rust
+// impl Clone by hand: every field shared, none copied
 pub struct StorageSqlx {
     reader: Pool<Sqlite>,                            // several connections, PRAGMA query_only = ON
     writer: Pool<Sqlite>,                            // exactly one connection: every write
-    settings: std::sync::RwLock<Option<TableSettings>>,
-    storage_identity_key: std::sync::RwLock<String>,
-    storage_name: std::sync::RwLock<String>,
-    chain_tracker: RwLock<Option<Arc<dyn ChainTracker>>>,  // For BEEF verification
-    services: std::sync::RwLock<Option<Arc<dyn WalletServices>>>,
-    active_transactions: RwLock<HashMap<u64, ()>>,         // TrxToken scope tracking
-    task_locks: RwLock<HashMap<String, (String, Instant)>>, // Multi-instance task locking
+    settings: Arc<std::sync::RwLock<Option<TableSettings>>>,
+    storage_identity_key: Arc<std::sync::RwLock<String>>,
+    storage_name: Arc<std::sync::RwLock<String>>,
+    chain_tracker: Arc<RwLock<Option<Arc<dyn ChainTracker>>>>,  // For BEEF verification
+    services: Arc<std::sync::RwLock<Option<Arc<dyn WalletServices>>>>,
+    active_transactions: Arc<RwLock<HashMap<u64, ()>>>,         // TrxToken scope tracking
+    task_locks: Arc<RwLock<HashMap<String, (String, Instant)>>>, // Multi-instance task locking
+    broadcast_memory: Arc<SqlxBroadcastMemory>,
+    in_flight_picks: Arc<InFlightPicks>,             // createAction's in-flight reservations
+    // #[cfg(test)] busy hooks: Arc<AtomicBool> each
 }
 ```
+
+**One store per file per process (the CLI review of 2026-10-21).** `StorageSqlx` is `Clone`: a clone is a second handle over the same store, the same writer pool (one connection), the same reader pool, and every other field behind the same `Arc` (settings, identity key and name, chain tracker, services, broadcast memory, in-flight reservations, trx tokens, task locks, the tests' busy hooks), so a change through one handle is seen through every other. Give a `Wallet` and a `Monitor` (or two `Wallet`s) clones of ONE store: `let monitor_store = Arc::new(store.clone()); Wallet::new(key, store, services)`. Never `StorageSqlx::open` the same file twice in one process: that is two stores, two writer pools whose writers meet in SQLite and wait on its busy handler (`busy_timeout`, then `StoreBusy { SqliteBusy }`) instead of queueing on one writer, and two reservation sets, so a coin one reserves is not held for the other's pick (the bounded re-check catches the collision, `StoreBusy { MovedUnderUs }` the second time). A new field must be shared the same way (an `Arc`, cloned in `impl Clone`). The cached settings, identity key and name are written only when the value differs (`cache_settings`, `replace_if_changed`): `get_settings`, `storage_identity_key` and `storage_name` lend references out of their locks, shared by every handle.
 
 **Constructor methods:**
 - `new(database_url: &str)` - Create from SQLite URL (e.g., `"sqlite:wallet.db"`)

@@ -338,3 +338,107 @@ async fn the_writer_not_acquired_within_the_ceiling_is_store_busy() {
     held.rollback().await.unwrap();
     assert_eq!(rows(&path).await, 0);
 }
+
+// =============================================================================
+// One store per file per process (the CLI review of 2026-10-21)
+// =============================================================================
+
+/// Two handles over one file (a clone, as a host gives its `Wallet` and its
+/// `Monitor`): A's `write_tx` held, B's waits for the one writer connection
+/// in the pool (B never reaches SQLite, so no busy handler, no
+/// `StoreBusy`), then both commit. One writer connection in all.
+#[tokio::test]
+async fn two_handles_of_one_store_queue_on_one_writer_and_both_commit() {
+    let (_dir, path) = wal_file().await;
+    let a = StorageSqlx::open(&path).await.unwrap();
+    let b = a.clone();
+
+    let mut ta = a.write_tx().await.unwrap();
+    sqlx::query("INSERT INTO t (x) VALUES (1)")
+        .execute(&mut *ta)
+        .await
+        .unwrap();
+
+    let contender = tokio::spawn(async move {
+        let mut tb = b.write_tx().await?;
+        sqlx::query("INSERT INTO t (x) VALUES (2)")
+            .execute(&mut *tb)
+            .await?;
+        tb.commit().await?;
+        Ok::<_, Error>(b)
+    });
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert!(!contender.is_finished(), "B waits for the writer A holds");
+    assert_eq!(a.writer().size(), 1, "one writer connection, held by A");
+    assert_eq!(a.writer().num_idle(), 0);
+
+    ta.commit().await.unwrap();
+    let b = contender
+        .await
+        .unwrap()
+        .expect("B commits after A, never busy");
+    assert_eq!(rows(&path).await, 2);
+    assert_eq!(b.writer().size(), 1, "still one writer connection");
+}
+
+/// The host's shape, counted. Opened twice (today's daemon: one
+/// `StorageSqlx` for the monitor, one for the served `Wallet`), the file has
+/// two writer pools, two writer connections: with A's writer held, B takes
+/// its own writer at once and its `BEGIN IMMEDIATE` waits in SQLite's busy
+/// handler, `busy_timeout`, then `StoreBusy { SqliteBusy }`. Shared (one
+/// store, two handles), there is one writer connection: B cannot take a
+/// second, it queues in the pool.
+#[tokio::test]
+async fn a_store_opened_twice_has_two_writers_and_a_shared_store_one() {
+    let (_dir, path) = wal_file().await;
+
+    // Opened twice.
+    let a = StorageSqlx::open(&path).await.unwrap();
+    let b = StorageSqlx::open(&path).await.unwrap();
+    let mut ta = a.write_tx().await.unwrap();
+    sqlx::query("INSERT INTO t (x) VALUES (1)")
+        .execute(&mut *ta)
+        .await
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_millis(200), b.writer().acquire())
+        .await
+        .expect("a second writer pool hands out its own writer at once")
+        .unwrap();
+    drop(second);
+    assert_eq!(a.writer().size() + b.writer().size(), 2, "two writers");
+    let err = match b.write_tx().await {
+        Ok(_) => panic!("A holds the file's write lock"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(
+            err,
+            Error::StoreBusy {
+                reason: StoreBusyReason::SqliteBusy { .. }
+            }
+        ),
+        "the second writer met the first in SQLite: {err:?}"
+    );
+    ta.commit().await.unwrap();
+    drop((a, b));
+
+    // Shared.
+    let a = StorageSqlx::open(&path).await.unwrap();
+    let b = a.clone();
+    let mut ta = a.write_tx().await.unwrap();
+    sqlx::query("INSERT INTO t (x) VALUES (2)")
+        .execute(&mut *ta)
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), b.writer().acquire())
+            .await
+            .is_err(),
+        "one writer, held by A: B queues for it"
+    );
+    assert_eq!(a.writer().size(), 1);
+    assert_eq!(b.writer().size(), 1, "the same pool, one writer");
+    ta.commit().await.unwrap();
+    assert_eq!(rows(&path).await, 2);
+}
