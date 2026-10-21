@@ -1623,13 +1623,15 @@ where
                     )));
                 };
 
-                // Update transaction status based on classified broadcast outcome
+                // Update transaction status based on classified broadcast
+                // outcome. After the post a store fault is never the call's
+                // error: the transaction is on the network (bsv-wallet-cli #44).
                 if let Err(e) = self
                     .storage
                     .update_transaction_status_after_broadcast(&txid, &broadcast_outcome)
                     .await
                 {
-                    tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
+                    crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
                 }
                 mark_send_with_result_after_broadcast(
                     &mut process_result.send_with_results,
@@ -2073,13 +2075,14 @@ where
                 }
             };
 
-            // Update transaction status based on classified broadcast outcome
+            // Update transaction status based on classified broadcast outcome.
+            // After the post a store fault is never the call's error.
             if let Err(e) = self
                 .storage
                 .update_transaction_status_after_broadcast(&txid, &broadcast_outcome)
                 .await
             {
-                tracing::error!(txid = %txid, error = %e, "Failed to update transaction status after broadcast");
+                crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
             }
             mark_send_with_result_after_broadcast(
                 &mut process_result.send_with_results,

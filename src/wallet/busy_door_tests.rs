@@ -612,3 +612,156 @@ async fn a_store_error_that_is_not_busy_keeps_its_wallet_error_text() {
         other => panic!("expected WalletError, got {other:?}"),
     }
 }
+
+/// Every event logged on this thread while the guard lives, its fields as
+/// `name=value` text.
+struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for LogCapture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={:?} ", field.name(), value));
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0.lock().unwrap().push(fields.0);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// bsv-wallet-cli #44: after the broadcast a store fault is never the
+/// call's error. The status write after the post answers busy: createAction
+/// still answers its success with the txid, the fault is logged at warn with
+/// the marker `post_broadcast_status_write_failed` and the txid, the row
+/// stays `sending` with its request `unsent`, and the monitor's next
+/// send-waiting pass (`send_waiting_transactions`) re-posts it and writes
+/// `unproven` / `unmined`.
+#[tokio::test]
+async fn a_busy_status_write_after_the_broadcast_is_logged_and_healed_by_send_waiting() {
+    let (_dir, wallet) = wallet().await;
+    fund_with(&wallet, &own_lock(&wallet)).await;
+    wallet
+        .storage()
+        .set_services(std::sync::Arc::new(MockWalletServices::new()));
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _capture = tracing::subscriber::set_default(LogCapture(logs.clone()));
+
+    wallet.storage().busy_next_status_write();
+    let result = wallet
+        .create_action(labelled_payment(false), ORIGINATOR)
+        .await
+        .expect("the transaction is on the network: the call succeeds");
+    let txid = hex::encode(result.txid.expect("the answer carries the txid"));
+    assert!(result.tx.is_some());
+
+    let marked = logs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|line| line.contains("post_broadcast_status_write_failed"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(marked.len(), 1, "{marked:?}");
+    assert!(
+        marked[0].contains(&txid) && marked[0].contains("Store busy: sqlite code 5"),
+        "{}",
+        marked[0]
+    );
+
+    let statuses = |wallet: &Wallet<StorageSqlx, MockWalletServices>| {
+        let txid = txid.clone();
+        let pool = wallet.storage().pool().clone();
+        async move {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT t.status, r.status FROM transactions t \
+                 JOIN proven_tx_reqs r ON r.txid = t.txid WHERE t.txid = ?",
+            )
+            .bind(&txid)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        statuses(&wallet).await,
+        ("sending".to_string(), "unsent".to_string()),
+        "the status write did not land"
+    );
+
+    // The monitor's pass comes on its cadence, past the send-waiting
+    // task's minimum age.
+    let earlier = Utc::now() - chrono::Duration::minutes(10);
+    sqlx::query("UPDATE proven_tx_reqs SET created_at = ?, updated_at = ? WHERE txid = ?")
+        .bind(earlier)
+        .bind(earlier)
+        .bind(&txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+    crate::storage::MonitorStorage::send_waiting_transactions(
+        wallet.storage(),
+        std::time::Duration::from_secs(60),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        statuses(&wallet).await,
+        ("unproven".to_string(), "unmined".to_string()),
+        "the monitor's send-waiting pass healed the row"
+    );
+}
+
+/// The same rule at signAction: the status write after its post answers
+/// busy, and the call still answers its success with the txid, the marker
+/// logged.
+#[tokio::test]
+async fn a_busy_status_write_after_a_sign_action_broadcast_is_its_success() {
+    let (_dir, wallet) = wallet().await;
+    fund_with(&wallet, &own_lock(&wallet)).await;
+    let mut args = labelled_payment(false);
+    args.options = Some(bsv_rs::wallet::CreateActionOptions {
+        sign_and_process: Some(false),
+        ..Default::default()
+    });
+    let created = wallet.create_action(args, ORIGINATOR).await.unwrap();
+    let reference = String::from_utf8(created.signable_transaction.unwrap().reference).unwrap();
+
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _capture = tracing::subscriber::set_default(LogCapture(logs.clone()));
+    wallet.storage().busy_next_status_write();
+    let signed = wallet
+        .sign_action(
+            SignActionArgs {
+                spends: HashMap::new(),
+                reference,
+                options: None,
+            },
+            ORIGINATOR,
+        )
+        .await
+        .expect("the transaction is on the network: the call succeeds");
+    let txid = hex::encode(signed.txid.expect("the answer carries the txid"));
+    assert!(logs
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|line| line.contains("post_broadcast_status_write_failed") && line.contains(&txid)));
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
+        .bind(&txid)
+        .fetch_one(wallet.storage().pool())
+        .await
+        .unwrap();
+    assert_eq!(status, "sending", "left for the send-waiting task");
+}

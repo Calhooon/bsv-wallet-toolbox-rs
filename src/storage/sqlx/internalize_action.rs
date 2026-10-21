@@ -666,8 +666,13 @@ pub async fn internalize_action_internal(
     // be scored as orphan/double-spend and zero the outputs' spendability.
     // Committing the state import first is crash-safe: if we die before the
     // broadcast, the req is 'unsent' and SendWaiting remains the backstop.
+    // Every error of the broadcast step is a write after the post: never the
+    // call's error, the transaction is on the network (bsv-wallet-cli #44);
+    // the req stays 'unsent' and the send-waiting task heals it.
     if new_req_created {
-        broadcast_new_internalized_req(storage, &txid, &args.tx).await?;
+        if let Err(e) = broadcast_new_internalized_req(storage, &txid, &args.tx).await {
+            crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
+        }
     }
 
     Ok(StorageInternalizeActionResult {
