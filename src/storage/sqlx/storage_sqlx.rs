@@ -452,13 +452,23 @@ impl StorageSqlx {
     /// armed.
     #[cfg(test)]
     pub(crate) fn take_busy_next_certificate_field(&self) -> bool {
-        self.busy_next_certificate_field
-            .fetch_update(
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-                |n| n.checked_sub(1),
-            )
-            .is_ok()
+        // A compare-exchange loop rather than `fetch_update`: the newest
+        // stable deprecates `fetch_update` for `try_update`, which the
+        // crate's oldest supported toolchain does not have.
+        use std::sync::atomic::Ordering::SeqCst;
+        let mut n = self.busy_next_certificate_field.load(SeqCst);
+        loop {
+            let Some(next) = n.checked_sub(1) else {
+                return false;
+            };
+            match self
+                .busy_next_certificate_field
+                .compare_exchange(n, next, SeqCst, SeqCst)
+            {
+                Ok(_) => return true,
+                Err(now) => n = now,
+            }
+        }
     }
 
     /// Tests only: the next `retire_one_poisoned` stops between its first
