@@ -309,6 +309,20 @@ pub fn validate_beef_for_broadcast(beef: &Beef, txid: &str) -> std::result::Resu
     Ok(())
 }
 
+/// A status write after the broadcast failed (busy or not). The transaction
+/// is on the network, so the call still answers its success with the txid
+/// (bsv-wallet-cli #44): the row stays `sending` with its request `unsent`,
+/// and the monitor's send-waiting task (`send_waiting_transactions`, every
+/// `SendWaitingTask` pass) re-posts it and writes `unproven` / `unmined`.
+pub(crate) fn post_broadcast_status_write_failed(txid: &str, error: &crate::Error) {
+    tracing::warn!(
+        txid = %txid,
+        error = %error,
+        marker = "post_broadcast_status_write_failed",
+        "the transaction is on the network but its status write failed; the call answers its success, and the monitor's send-waiting task heals the row"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

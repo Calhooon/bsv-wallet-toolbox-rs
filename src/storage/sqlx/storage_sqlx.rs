@@ -172,6 +172,10 @@ pub struct StorageSqlx {
     /// inside its write transaction.
     #[cfg(test)]
     busy_next_process_action: std::sync::atomic::AtomicBool,
+    /// Tests only: the next `update_transaction_status_after_broadcast`
+    /// answers busy before writing.
+    #[cfg(test)]
+    busy_next_status_write: std::sync::atomic::AtomicBool,
 }
 
 impl StorageSqlx {
@@ -250,6 +254,8 @@ impl StorageSqlx {
             in_flight_picks: Default::default(),
             #[cfg(test)]
             busy_next_process_action: Default::default(),
+            #[cfg(test)]
+            busy_next_status_write: Default::default(),
         })
     }
 
@@ -309,9 +315,9 @@ impl StorageSqlx {
         &self.reader
     }
 
-    /// Tests only: the next `process_action` answers
-    /// `StoreBusy { SqliteBusy { code: 5 } }` before acting, as a busy store
-    /// would, so a door's busy path after its action is written is reached.
+    /// Tests only: the next process step (`process_action`, or the one inside
+    /// `createAction`'s door) answers `StoreBusy { SqliteBusy { code: 5 } }`
+    /// at its first write, inside its write transaction, which rolls back.
     #[cfg(test)]
     pub(crate) fn busy_next_process_action(&self) {
         self.busy_next_process_action
@@ -323,6 +329,14 @@ impl StorageSqlx {
     pub(crate) fn take_busy_next_process_action(&self) -> bool {
         self.busy_next_process_action
             .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Tests only: the next `update_transaction_status_after_broadcast`
+    /// answers busy, as a store held by another process would.
+    #[cfg(test)]
+    pub(crate) fn busy_next_status_write(&self) {
+        self.busy_next_status_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The in-flight pre-check picks of this process (`createAction`).
@@ -2454,6 +2468,16 @@ impl WalletStorageWriter for StorageSqlx {
         txid: &str,
         outcome: &super::BroadcastOutcome,
     ) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .busy_next_status_write
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(Error::StoreBusy {
+                reason: StoreBusyReason::SqliteBusy { code: 5 },
+            });
+        }
+
         super::process_action::update_transaction_status_after_broadcast_internal(
             self, txid, outcome,
         )
