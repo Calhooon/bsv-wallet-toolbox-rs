@@ -812,7 +812,7 @@ where
                 return Err(Error::StorageError(format!(
                     "{} (the certifier issued a certificate that was not stored: \
                      serial number {}, certifier {}, type {}; tried {} times)",
-                    not_busy(e),
+                    e,
                     serial_number,
                     certifier.to_hex(),
                     cert_type_b64,
