@@ -558,22 +558,6 @@ impl Door<'_> {
             !self.is_delayed(),
         )
         .await?;
-        let (change_result, _) = plan_change(
-            &mut conn,
-            self.user_id,
-            self.change_basket,
-            0, // no row: a dry run marks nothing
-            self.args,
-            &extended_inputs,
-            &extended_outputs,
-            available_change_count,
-            self.is_delayed(),
-            &mut ChangePick::DryRun {
-                reserved: &mut *reserved,
-            },
-        )
-        .await?;
-
         let caller = chain_tracker.map(|inner| RecordingTracker {
             inner,
             answers: self.answers,
@@ -582,20 +566,89 @@ impl Door<'_> {
             inner,
             answers: self.answers,
         });
-        build_input_beef(
-            &mut conn,
-            Some(self.storage.writer()),
-            caller.as_ref().map(|t| t as &dyn ChainTracker),
-            &extended_inputs,
-            &change_result.allocated_change_inputs,
-            self.args.input_beef.as_deref(),
-            &self.known_txids(),
-            self.return_txid_only(),
-            self.trust_self(),
-            own.as_ref().map(|t| t as &dyn ChainTracker),
-        )
-        .await?;
-        Ok(reserved.mine().to_vec())
+        let caller = caller.as_ref().map(|t| t as &dyn ChainTracker);
+        let own = own.as_ref().map(|t| t as &dyn ChainTracker);
+
+        // The change coins whose BEEF cannot be built from what this wallet
+        // stores (review 2 F2: a reorg-demoted received coin, its parents
+        // never stored). Each is skipped and the coins picked again; every
+        // round skips at least one more coin, so the loop ends within the
+        // number of coins.
+        let mut unspendable: Vec<(AllocatedChangeInput, Vec<String>)> = Vec::new();
+        loop {
+            reserved.release_all();
+            let skip: Vec<i64> = unspendable.iter().map(|(c, _)| c.output_id).collect();
+            let planned = plan_change(
+                &mut conn,
+                self.user_id,
+                self.change_basket,
+                0, // no row: a dry run marks nothing
+                self.args,
+                &extended_inputs,
+                &extended_outputs,
+                available_change_count,
+                self.is_delayed(),
+                &mut ChangePick::DryRun {
+                    reserved: &mut *reserved,
+                    skip: &skip,
+                },
+            )
+            .await;
+            let change_result = match planned {
+                Ok((change_result, _)) => change_result,
+                // The coins offered covered the action until a skipped coin
+                // was taken out: that coin is the refusal, not the funds.
+                Err(Error::InsufficientFunds { .. }) if !unspendable.is_empty() => {
+                    let (coin, missing) = unspendable.swap_remove(0);
+                    return Err(Error::UnspendableCoin {
+                        outpoint: format!("{}.{}", coin.txid, coin.vout),
+                        missing,
+                    });
+                }
+                Err(e) => return Err(e),
+            };
+
+            let built = build_input_beef(
+                &mut conn,
+                Some(self.storage.writer()),
+                caller,
+                &extended_inputs,
+                &change_result.allocated_change_inputs,
+                self.args.input_beef.as_deref(),
+                &self.known_txids(),
+                self.return_txid_only(),
+                self.trust_self(),
+                own,
+            )
+            .await;
+            let Err(refusal) = built else {
+                return Ok(reserved.mine().to_vec());
+            };
+            // Which of the picked coins cannot be built on its own? None:
+            // the refusal is the caller's inputs', and it stands.
+            let before = unspendable.len();
+            for coin in &change_result.allocated_change_inputs {
+                if let Some(missing) = change_coin_gap(
+                    &mut conn,
+                    Some(self.storage.writer()),
+                    caller.or(own),
+                    &coin.txid,
+                )
+                .await?
+                {
+                    tracing::info!(
+                        outpoint = %format!("{}.{}", coin.txid, coin.vout),
+                        missing = ?missing,
+                        marker = "create_action_unspendable_coin_skipped",
+                        "create_action: a change coin's stored ancestry is incomplete; picking again without it"
+                    );
+                    unspendable.push((coin.clone(), missing));
+                }
+            }
+            if unspendable.len() == before {
+                return Err(refusal);
+            }
+        }
     }
 
     /// The door's one step, under one `BEGIN IMMEDIATE` transaction: the
@@ -2306,7 +2359,12 @@ pub(super) enum ChangePick<'a> {
     /// picked and not yet returned from; the picks are reserved in
     /// `reserved` (a coin released is let go), whose coins are the set the
     /// pre-check reads.
-    DryRun { reserved: &'a mut PickReservation },
+    /// `skip` are coins the pre-check found unspendable (their BEEF cannot
+    /// be built) and never picks again.
+    DryRun {
+        reserved: &'a mut PickReservation,
+        skip: &'a [i64],
+    },
     /// Under the write lock: allocate, but only from the coins the pre-check
     /// read. A coin taken meanwhile is skipped as any allocated coin is.
     Within { allowed: &'a [i64] },
@@ -2430,7 +2488,7 @@ async fn release_change_input(
     output_id: i64,
     pick: &mut ChangePick<'_>,
 ) -> Result<()> {
-    if let ChangePick::DryRun { reserved } = pick {
+    if let ChangePick::DryRun { reserved, .. } = pick {
         reserved.release(output_id);
         return Ok(());
     }
@@ -2486,8 +2544,9 @@ async fn allocate_change_input_by(
         let (pick_clause, pick_ids): (String, Vec<i64>) = match pick {
             #[cfg(test)]
             ChangePick::Allocate => (String::new(), Vec::new()),
-            ChangePick::DryRun { reserved } => {
-                let unavailable = reserved.unavailable();
+            ChangePick::DryRun { reserved, skip } => {
+                let mut unavailable = reserved.unavailable();
+                unavailable.extend_from_slice(skip);
                 if unavailable.is_empty() {
                     (String::new(), Vec::new())
                 } else {
@@ -2541,7 +2600,7 @@ async fn allocate_change_input_by(
             .fetch_optional(&mut *conn)
             .await?;
         match (row, &mut *pick) {
-            (Some(row), ChangePick::DryRun { reserved }) => {
+            (Some(row), ChangePick::DryRun { reserved, .. }) => {
                 if reserved.try_take(row.get("output_id")) {
                     break Some(row);
                 }
@@ -3711,6 +3770,48 @@ async fn build_input_beef(
     } else {
         Ok(None)
     }
+}
+
+/// The gap in a change coin's stored ancestry: the BEEF for `txid` alone,
+/// walked from stored bytes as `build_input_beef` walks it, is invalid.
+/// Returns the ancestors it lacks (the coin's own txid when its bytes are
+/// not stored, or when the walk reaches no proof with no input missing), or
+/// `None` when the coin's BEEF is complete.
+async fn change_coin_gap(
+    conn: &mut SqliteConnection,
+    writer: Option<&SqlitePool>,
+    tracker: Option<&dyn ChainTracker>,
+    txid: &str,
+) -> Result<Option<Vec<String>>> {
+    let mut beef = Beef::new();
+    let mut pending = vec![(txid.to_string(), 0)];
+    let mut processed = HashSet::new();
+    match beef_bfs_walk(
+        &mut *conn,
+        writer,
+        &mut beef,
+        &mut pending,
+        &mut processed,
+        None,
+        tracker,
+    )
+    .await
+    {
+        Ok(()) => {}
+        // The coin's own transaction is not stored.
+        Err(Error::TransactionError(_)) => return Ok(Some(vec![txid.to_string()])),
+        Err(e) => return Err(e),
+    }
+    prune_beef_to_roots(&mut beef, &[txid.to_string()]);
+    if beef.verify_valid(true).valid {
+        return Ok(None);
+    }
+    let missing = beef.sort_txs().missing_inputs;
+    Ok(Some(if missing.is_empty() {
+        vec![txid.to_string()]
+    } else {
+        missing
+    }))
 }
 
 /// Parses a raw transaction and extracts the txids of its inputs.
@@ -10211,10 +10312,11 @@ mod tests {
                 .expect_err("the parent is not stored");
             let msg = err.to_string();
             assert!(
-                msg.contains(&format!(
-                    "ancestor(s) not stored, and createAction fetches none: [{}]",
-                    parent.id()
-                )),
+                msg.starts_with(&format!("Unspendable coin: {}.0: ", funding.id())),
+                "the refusal names the wallet's coin: {msg}"
+            );
+            assert!(
+                msg.contains(&format!("ancestor(s) not stored: [{}]", parent.id())),
                 "the refusal names the missing ancestor: {msg}"
             );
             assert_eq!(services.call_count("get_raw_tx"), 0, "no provider asked");
@@ -10649,6 +10751,118 @@ mod tests {
             create_action_internal(&storage, Some(&tracker), user_id, funded_args())
                 .await
                 .expect("funded now");
+            assert!(storage.in_flight_picks().reserved().is_empty());
+        }
+
+        // =====================================================================
+        // A change coin whose BEEF cannot be built (review 2 F2 of #44)
+        // =====================================================================
+
+        /// A reorg-demoted received coin: its transaction `unproven`, with
+        /// no proof, and its parent never stored. Returns the coin.
+        async fn seed_demoted_coin(
+            storage: &StorageSqlx,
+            user_id: i64,
+            tag: u8,
+            satoshis: u64,
+        ) -> (Transaction, Transaction) {
+            let parent = tx_spending(None, tag, satoshis + 1_000);
+            let funding = tx_spending(Some(&parent.id()), tag + 1, satoshis);
+            seed_change_coin(storage, user_id, &funding, false).await;
+            sqlx::query("UPDATE transactions SET status = 'unproven' WHERE txid = ?")
+                .bind(funding.id())
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            (parent, funding)
+        }
+
+        /// The demoted coin is the best pick (900,000 sats, the only coin at
+        /// or above the target), but its BEEF cannot be built: the
+        /// pre-check skips it and funds the action from the two proven
+        /// 800-sat coins.
+        #[tokio::test]
+        async fn a_precheck_skips_a_coin_whose_beef_cannot_be_built() {
+            let (storage, user_id) = setup().await;
+            want_one_change_coin(&storage).await;
+            let (_, demoted) = seed_demoted_coin(&storage, user_id, 0x71, 900_000).await;
+            let b1 = tx_spending(None, 0x75, 800);
+            let b2 = tx_spending(None, 0x76, 800);
+            seed_change_coin(&storage, user_id, &b1, true).await;
+            seed_change_coin(&storage, user_id, &b2, true).await;
+            // One root per height: b2's proof is in the next block.
+            sqlx::query("UPDATE proven_txs SET height = 901, merkle_path = ? WHERE txid = ?")
+                .bind(bump_for(&b2.id(), 901).to_binary())
+                .bind(b2.id())
+                .execute(storage.writer())
+                .await
+                .unwrap();
+
+            let tracker = AlwaysValidChainTracker::new(100_000);
+            let result = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect("the proven coins fund the action");
+            let mut sources: Vec<String> = result
+                .inputs
+                .iter()
+                .map(|i| i.source_txid.clone())
+                .collect();
+            sources.sort();
+            let mut want = vec![b1.id(), b2.id()];
+            want.sort();
+            assert_eq!(
+                sources,
+                want,
+                "the demoted coin {} is not spent",
+                demoted.id()
+            );
+            let beef = Beef::from_binary(result.input_beef.as_ref().unwrap()).unwrap();
+            assert!(beef.find_txid(&demoted.id()).is_none());
+            assert!(storage.in_flight_picks().reserved().is_empty());
+        }
+
+        /// The demoted coin alone covers the action; the proven 300-sat coin
+        /// does not. The refusal names the wallet's coin and its missing
+        /// ancestor under `Unspendable coin:`, never `inputBEEF` (the caller
+        /// passed none) and never `Insufficient funds` (the coins offered
+        /// cover the action).
+        #[tokio::test]
+        async fn an_unspendable_coin_refusal_names_the_coin_and_its_missing_ancestor() {
+            let (storage, user_id) = setup().await;
+            want_one_change_coin(&storage).await;
+            let (parent, demoted) = seed_demoted_coin(&storage, user_id, 0x81, 900_000).await;
+            let small = tx_spending(None, 0x85, 300);
+            seed_change_coin(&storage, user_id, &small, true).await;
+            let before = the_store(&storage).await;
+
+            let tracker = AlwaysValidChainTracker::new(100_000);
+            let err = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect_err("only the unspendable coin covers the action");
+            match &err {
+                Error::UnspendableCoin { outpoint, missing } => {
+                    assert_eq!(outpoint, &format!("{}.0", demoted.id()));
+                    assert_eq!(missing, &vec![parent.id()]);
+                }
+                other => panic!("expected UnspendableCoin, got {other:?}"),
+            }
+            let msg = err.to_string();
+            assert_eq!(
+                msg,
+                format!(
+                    "Unspendable coin: {}.0: its stored ancestry is incomplete, ancestor(s) not stored: [{}]; \
+                     createAction fetches none, and the wallet's other coins do not cover the action",
+                    demoted.id(),
+                    parent.id()
+                )
+            );
+            assert!(!msg.contains("inputBEEF"), "{msg}");
+            assert!(!msg.starts_with("Insufficient funds"), "{msg}");
+            assert_eq!(
+                the_store(&storage).await,
+                before,
+                "the action wrote nothing"
+            );
             assert!(storage.in_flight_picks().reserved().is_empty());
         }
     }
