@@ -715,8 +715,11 @@ where
 /// again, at most this many times in all.
 pub(crate) const CERTIFICATE_STORE_TRIES: u32 = 3;
 
-/// The first wait between tries, doubled after each (250 then 500 ms: 750 ms
-/// in all, under the store's 5 s ceiling, `STORE_BUSY_CEILING_MS`).
+/// The first sleep between tries, doubled after each (250 then 500 ms: 750 ms
+/// of sleeps in all). Each try can itself wait up to the writer's 5 s acquire
+/// ceiling, `STORE_BUSY_CEILING_MS`, so a call that stays busy waits about
+/// 16 s in one process (3 x 5 s + 0.75 s) and about 31 s across processes
+/// (another process's lock adds up to 5 s per try).
 pub(crate) const CERTIFICATE_STORE_BACKOFF_MS: u64 = 250;
 
 /// Stores the certificate in the wallet storage.
