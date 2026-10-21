@@ -643,6 +643,39 @@ impl Door<'_> {
                 },
             )
             .await;
+            // Uncovered: planned once more without the other calls'
+            // reservations (a private one, released when dropped). Covered
+            // so, the shortfall is the calls in flight, not the funds: the
+            // refusal is StoreBusy, at once (review 3 F2 of bsv-wallet-cli
+            // #44). No wait: a call in flight that commits spends its coin,
+            // and after it the true answer may be a shortfall; the host's
+            // repeat reads that state.
+            if let Err(Error::InsufficientFunds { .. }) = planned {
+                let mut own_only = PickReservation::new(Default::default());
+                let covered_without_others = plan_change(
+                    &mut conn,
+                    self.user_id,
+                    self.change_basket,
+                    0,
+                    self.args,
+                    &extended_inputs,
+                    &extended_outputs,
+                    available_change_count,
+                    self.is_delayed(),
+                    &mut ChangePick::DryRun {
+                        reserved: &mut own_only,
+                        skip: &skip,
+                        offer: self.offer,
+                    },
+                )
+                .await
+                .is_ok();
+                if covered_without_others {
+                    return Err(Error::StoreBusy {
+                        reason: StoreBusyReason::InFlight,
+                    });
+                }
+            }
             let change_result = match planned {
                 Ok((change_result, _)) => change_result,
                 // The coins offered covered the action until a skipped coin
@@ -10973,6 +11006,116 @@ mod tests {
             assert!(storage.in_flight_picks().reserved().is_empty());
         }
 
+        /// Review 3 F2 of #44: nine concurrent createActions on eight coins,
+        /// each needing one. Eight are done, each from its own coin; the
+        /// ninth's pre-check finds every coin reserved by a call in flight,
+        /// and planned without those reservations it is covered: it is busy
+        /// (`InFlight`) or done, never `Insufficient funds`.
+        #[tokio::test]
+        async fn nine_concurrent_creates_on_eight_coins_are_done_or_busy_never_insufficient_funds()
+        {
+            let (storage, user_id) = setup().await;
+            eight_coins(&storage, user_id).await;
+            let tracker = SlowTracker::new(&storage);
+            let results = futures::future::join_all((0..9).map(|_| {
+                create_action_internal(
+                    &storage,
+                    Some(&tracker as &dyn ChainTracker),
+                    user_id,
+                    funded_args(),
+                )
+            }))
+            .await;
+            let mut sources = Vec::new();
+            for result in results {
+                match result {
+                    Ok(done) => sources.extend(done.inputs.into_iter().map(|i| i.source_txid)),
+                    Err(err) => {
+                        assert!(
+                            matches!(
+                                err,
+                                Error::StoreBusy {
+                                    reason: StoreBusyReason::InFlight
+                                }
+                            ),
+                            "a funded wallet's call is busy or done: {err:?}"
+                        );
+                        assert_eq!(err.to_string(), "Store busy: coins held by calls in flight");
+                    }
+                }
+            }
+            let distinct: HashSet<&String> = sources.iter().collect();
+            assert_eq!(sources.len(), 8, "eight done: {sources:?}");
+            assert_eq!(distinct.len(), 8, "each from its own coin");
+            assert!(storage.in_flight_picks().reserved().is_empty());
+        }
+
+        /// The reviewer's probe (review 3 F2 of #44): the eight coins held
+        /// by reservations of calls in flight (held here by hand). The call
+        /// answers busy, `InFlight`, having written nothing; the reservations
+        /// released, the same call is done.
+        #[tokio::test]
+        async fn coins_held_by_calls_in_flight_are_busy_then_done_once_released() {
+            let (storage, user_id) = setup().await;
+            eight_coins(&storage, user_id).await;
+            let coins: Vec<i64> = sqlx::query_scalar(
+                "SELECT output_id FROM outputs WHERE change = 1 AND spendable = 1",
+            )
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+            assert_eq!(coins.len(), 8);
+            let mut held = PickReservation::new(storage.in_flight_picks().clone());
+            for coin in &coins {
+                assert!(held.try_take(*coin));
+            }
+            let before = the_store(&storage).await;
+
+            let err = create_action_internal(&storage, None, user_id, funded_args())
+                .await
+                .expect_err("every coin is held by a call in flight");
+            assert!(
+                matches!(
+                    err,
+                    Error::StoreBusy {
+                        reason: StoreBusyReason::InFlight
+                    }
+                ),
+                "never insufficient funds on a funded wallet: {err:?}"
+            );
+            assert_eq!(the_store(&storage).await, before, "nothing written");
+            assert_eq!(
+                storage.in_flight_picks().reserved().len(),
+                8,
+                "the refused call holds nothing of its own"
+            );
+
+            drop(held);
+            create_action_internal(&storage, None, user_id, funded_args())
+                .await
+                .expect("released, the wallet funds the call");
+        }
+
+        /// A shortfall that is the funds stays `InsufficientFunds` while a
+        /// call is in flight: two 300-sat coins, one held; planned without
+        /// the reservation the action is still uncovered, so not busy.
+        #[tokio::test]
+        async fn a_true_shortfall_with_a_call_in_flight_stays_insufficient_funds() {
+            let (storage, user_id) = setup().await;
+            want_one_change_coin(&storage).await;
+            let small = tx_spending(None, 0x51, 300);
+            let other = tx_spending(None, 0x52, 300);
+            let a = seed_change_coin(&storage, user_id, &small, true).await;
+            seed_change_coin(&storage, user_id, &other, true).await;
+            let mut held = PickReservation::new(storage.in_flight_picks().clone());
+            assert!(held.try_take(a));
+
+            let err = create_action_internal(&storage, None, user_id, funded_args())
+                .await
+                .expect_err("600 sats in all do not fund 1,000");
+            assert!(matches!(err, Error::InsufficientFunds { .. }), "{err:?}");
+        }
+
         // =====================================================================
         // A change coin whose BEEF cannot be built (review 2 F2 of #44)
         // =====================================================================
@@ -11133,9 +11276,10 @@ mod tests {
         }
 
         /// Eight coins, an offer of four, five concurrent calls: the four
-        /// offered coins fund four calls, one each, the fifth refuses
-        /// insufficient funds (the offer is spent, not the store busy), and
-        /// no coin outside the offer is ever allocated.
+        /// offered coins fund four calls, one each, and no coin outside the
+        /// offer is ever allocated. The fifth refuses: busy (`InFlight`)
+        /// when it pre-checks while the four hold the offer (review 3 F2),
+        /// insufficient funds when it pre-checks after they spent it.
         #[tokio::test]
         async fn a_coin_outside_the_offer_is_never_allocated_under_concurrency() {
             let (storage, user_id) = setup().await;
@@ -11148,7 +11292,16 @@ mod tests {
             for r in [a, b, c, d, e] {
                 match r {
                     Ok(_) => done += 1,
-                    Err(e) => assert!(matches!(e, Error::InsufficientFunds { .. }), "{e:?}"),
+                    Err(e) => assert!(
+                        matches!(
+                            e,
+                            Error::InsufficientFunds { .. }
+                                | Error::StoreBusy {
+                                    reason: StoreBusyReason::InFlight
+                                }
+                        ),
+                        "{e:?}"
+                    ),
                 }
             }
             assert_eq!(done, 4, "each offered coin funds one call");

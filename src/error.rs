@@ -223,6 +223,11 @@ pub enum StoreBusyReason {
     /// writer each time), so the bounded retry ended with the action's
     /// latest pre-check covered and its locked step not.
     MovedUnderUs,
+    /// `createAction`: the pre-check did not cover the action only because
+    /// coins it would pick are reserved by other `createAction` calls of
+    /// this process still in flight. Planned without those reservations the
+    /// action is covered: not a shortfall. Answered at once, with no wait.
+    InFlight,
 }
 
 impl std::fmt::Display for StoreBusyReason {
@@ -235,6 +240,7 @@ impl std::fmt::Display for StoreBusyReason {
             StoreBusyReason::MovedUnderUs => {
                 f.write_str("the store moved between the pre-check and the write lock twice")
             }
+            StoreBusyReason::InFlight => f.write_str("coins held by calls in flight"),
         }
     }
 }
@@ -329,6 +335,7 @@ mod tests {
                 StoreBusyReason::MovedUnderUs,
                 "the store moved between the pre-check and the write lock twice",
             ),
+            (StoreBusyReason::InFlight, "coins held by calls in flight"),
         ] {
             let err = Error::StoreBusy { reason };
             assert_eq!(err.to_string(), format!("Store busy: {words}"));
