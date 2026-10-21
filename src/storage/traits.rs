@@ -290,6 +290,86 @@ pub struct StorageProcessActionResults {
     pub log: Option<String>,
 }
 
+/// The signer `createAction` runs inside its one write transaction
+/// (bsv-wallet-cli #44): the unsigned template in, the signed raw transaction
+/// out. Local CPU only: it awaits nothing and reaches no network.
+pub type DoorSigner<'a> = dyn Fn(&StorageCreateActionResult) -> Result<Vec<u8>> + Send + Sync + 'a;
+
+/// Sign and process within `createAction`'s door.
+pub struct SignAndProcess<'a> {
+    /// Signs the template.
+    pub sign: &'a DoorSigner<'a>,
+    /// processAction's flags (`is_no_send`, `is_delayed`, `is_send_with`,
+    /// `send_with`); the door sets `is_new_tx`, `reference`, `txid` and
+    /// `raw_tx`.
+    pub process: StorageProcessActionArgs,
+}
+
+/// What `createAction`'s door does beyond the create step.
+#[derive(Default)]
+pub struct CreateActionDoor<'a> {
+    /// The change coins (output ids) the host offers: the allocation picks
+    /// from these only, and a shortfall among them refuses
+    /// `InsufficientFunds`. `None`: every change coin of the default basket.
+    pub offer: Option<&'a [i64]>,
+    /// Sign and process in the create step's own write transaction: one
+    /// commit, then the caller broadcasts. `None`: the create step only (the
+    /// template for a later `signAction`).
+    pub sign_and_process: Option<SignAndProcess<'a>>,
+}
+
+/// The signed transaction the door processed.
+#[derive(Debug, Clone)]
+pub struct DoorProcessed {
+    pub txid: String,
+    pub raw_tx: Vec<u8>,
+    pub results: StorageProcessActionResults,
+}
+
+/// What `createAction`'s door committed.
+#[derive(Debug, Clone)]
+pub struct CreateActionDone {
+    pub created: StorageCreateActionResult,
+    /// `Some` when the door signed and processed.
+    pub processed: Option<DoorProcessed>,
+}
+
+/// A refusal of `createAction`'s door, by the step that refused.
+#[derive(Debug)]
+pub enum DoorRefusal {
+    /// The create step (the pre-check, the allocation, the BEEF) or the
+    /// door's begin or commit.
+    Create(Error),
+    /// The signer.
+    Sign(Error),
+    /// processAction's writes.
+    Process(Error),
+}
+
+impl DoorRefusal {
+    /// The refusal's error, whichever step refused.
+    pub fn into_error(self) -> Error {
+        match self {
+            DoorRefusal::Create(e) | DoorRefusal::Sign(e) | DoorRefusal::Process(e) => e,
+        }
+    }
+}
+
+impl From<Error> for DoorRefusal {
+    fn from(e: Error) -> Self {
+        DoorRefusal::Create(e)
+    }
+}
+
+/// A busy answer from a step after another step committed is not the
+/// "nothing written" `StoreBusy` promises: it becomes a `StorageError`.
+fn not_busy(e: Error) -> Error {
+    match e {
+        e @ Error::StoreBusy { .. } => Error::StorageError(e.to_string()),
+        e => e,
+    }
+}
+
 /// Result of sending a transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -553,6 +633,81 @@ pub trait WalletStorageWriter: WalletStorageReader {
         auth: &AuthId,
         args: StorageProcessActionArgs,
     ) -> Result<StorageProcessActionResults>;
+
+    /// `createAction`'s door: the create step and, with `sign_and_process`,
+    /// the signing and processAction's writes. A storage that can (the
+    /// SQL storage) does it all in one write transaction, so a refusal
+    /// leaves nothing written. This default runs `create_action`, the signer
+    /// and `process_action` as separate steps, aborting the action when the
+    /// signer or the process step refuses (a busy there is then a
+    /// `StorageError`: the abort wrote), and refuses an `offer`, which it
+    /// cannot enforce.
+    async fn create_action_at_door(
+        &self,
+        auth: &AuthId,
+        args: bsv_rs::wallet::CreateActionArgs,
+        door: CreateActionDoor<'_>,
+    ) -> std::result::Result<CreateActionDone, DoorRefusal> {
+        if door.offer.is_some() {
+            return Err(DoorRefusal::Create(Error::InvalidOperation(
+                "this storage cannot restrict createAction to an offer".to_string(),
+            )));
+        }
+        let created = self.create_action(auth, args).await?;
+        // A template with no inputs is not signed (the caller signs it).
+        let Some(then) = door.sign_and_process.filter(|_| !created.inputs.is_empty()) else {
+            return Ok(CreateActionDone {
+                created,
+                processed: None,
+            });
+        };
+        let abort = |why: &Error| {
+            tracing::error!(reference = %created.reference, error = %why, "createAction's sign or process step refused; aborting the action to release its coins");
+            self.abort_action(
+                auth,
+                AbortActionArgs {
+                    reference: created.reference.clone(),
+                },
+            )
+        };
+        let raw_tx = match (then.sign)(&created) {
+            Ok(raw_tx) => raw_tx,
+            Err(e) => {
+                if let Err(abort_err) = abort(&e).await {
+                    tracing::error!(reference = %created.reference, error = %abort_err, "Failed to abort transaction after signing error");
+                }
+                return Err(DoorRefusal::Sign(not_busy(e)));
+            }
+        };
+        let txid = {
+            let mut hash = bsv_rs::primitives::sha256d(&raw_tx);
+            hash.reverse();
+            hex::encode(hash)
+        };
+        let process = StorageProcessActionArgs {
+            is_new_tx: true,
+            reference: Some(created.reference.clone()),
+            txid: Some(txid.clone()),
+            raw_tx: Some(raw_tx.clone()),
+            ..then.process
+        };
+        match self.process_action(auth, process).await {
+            Ok(results) => Ok(CreateActionDone {
+                created,
+                processed: Some(DoorProcessed {
+                    txid,
+                    raw_tx,
+                    results,
+                }),
+            }),
+            Err(e) => {
+                if let Err(abort_err) = abort(&e).await {
+                    tracing::error!(reference = %created.reference, error = %abort_err, "Failed to abort transaction after process error");
+                }
+                Err(DoorRefusal::Process(not_busy(e)))
+            }
+        }
+    }
 
     /// Internalize an external action.
     async fn internalize_action(

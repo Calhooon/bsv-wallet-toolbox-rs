@@ -1247,9 +1247,6 @@ where
         let auth = self.auth();
         let args = with_trust_self_default(args, self.options.trust_self.as_deref());
 
-        // Call storage to create the action
-        let storage_result = self.storage.create_action(&auth, args.clone()).await?;
-
         // Check if we should sign and process immediately
         let sign_and_process = args
             .options
@@ -1288,33 +1285,31 @@ where
             .and_then(|o| o.accept_delayed_broadcast)
             .unwrap_or(false);
 
-        // If sign_and_process is true and we have inputs to sign, sign them
-        if !is_sign_action && !storage_result.inputs.is_empty() {
+        let send_with: Vec<String> = args
+            .options
+            .as_ref()
+            .and_then(|o| o.send_with.clone())
+            .map(|txids| txids.iter().map(hex::encode).collect())
+            .unwrap_or_default();
+
+        // The door (bsv-wallet-cli #44): with signAndProcess, the create
+        // step, the signing and processAction's writes are ONE write
+        // transaction in the storage, committed once; the broadcast comes
+        // after. A refusal leaves nothing written, so a busy is honestly
+        // WalletBusy. The signer here is local CPU only.
+        let key_deriver = self.proto_wallet.key_deriver();
+        let caller_inputs = args.inputs.as_deref();
+        let caller_outputs = args.outputs.as_deref();
+        let sign = |storage_result: &crate::storage::StorageCreateActionResult| -> Result<Vec<u8>> {
             // Build the unsigned transaction from storage result
             // Pass the key_deriver so we can compute locking scripts for change outputs
             let unsigned_tx = build_unsigned_transaction(
-                &storage_result,
-                Some(self.proto_wallet.key_deriver()),
-                args.inputs.as_deref(),
-                args.outputs.as_deref(),
+                storage_result,
+                Some(key_deriver),
+                caller_inputs,
+                caller_outputs,
             )
-            .map_err(|e| {
-                bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e))
-            })?;
-
-            // Debug: Log storage result outputs
-            for (i, output) in storage_result.outputs.iter().enumerate() {
-                tracing::debug!(
-                    vout = output.vout,
-                    satoshis = output.satoshis,
-                    locking_script = %output.locking_script,
-                    locking_script_len = output.locking_script.len(),
-                    provided_by = ?output.provided_by,
-                    purpose = ?output.purpose,
-                    derivation_suffix = ?output.derivation_suffix,
-                    "Storage output {}", i
-                );
-            }
+            .map_err(|e| Error::TransactionError(format!("Failed to build transaction: {}", e)))?;
 
             // Convert storage inputs to signer inputs.
             //
@@ -1330,9 +1325,7 @@ where
                 .iter()
                 .map(|input| {
                     let outpoint_key = format!("{}.{}", input.source_txid, input.source_vout);
-                    let provided_unlocking_script = args
-                        .inputs
-                        .as_ref()
+                    let provided_unlocking_script = caller_inputs
                         .and_then(|ins| {
                             ins.iter()
                                 .find(|ci| ci.outpoint.to_string() == outpoint_key)
@@ -1355,117 +1348,83 @@ where
                 .collect();
 
             // Sign the transaction using the wallet signer
-            let signed_tx = match self.signer.sign_transaction(
-                &unsigned_tx,
-                &signer_inputs,
-                &self.proto_wallet,
-            ) {
-                Ok(tx) => tx,
-                Err(e) => {
-                    // Signing failed - abort the transaction to release locked UTXOs
-                    tracing::error!(reference = %storage_result.reference, error = %e, "Signing failed in create_action, aborting transaction to release UTXOs");
-                    if let Err(abort_err) = self
-                        .storage
-                        .abort_action(
-                            &auth,
-                            bsv_rs::wallet::AbortActionArgs {
-                                reference: storage_result.reference.clone(),
-                            },
-                        )
-                        .await
-                    {
-                        tracing::error!(reference = %storage_result.reference, error = %abort_err, "Failed to abort transaction after signing error");
-                    }
-                    return Err(bsv_rs::Error::WalletError(format!(
-                        "Signing failed: {}. Transaction aborted and UTXOs released.",
-                        e
-                    )));
-                }
-            };
+            self.signer
+                .sign_transaction(&unsigned_tx, &signer_inputs, &self.proto_wallet)
+        };
+        let door = crate::storage::CreateActionDoor {
+            offer: None,
+            sign_and_process: (!is_sign_action).then(|| crate::storage::SignAndProcess {
+                sign: &sign,
+                process: StorageProcessActionArgs {
+                    is_new_tx: true,
+                    is_send_with: !send_with.is_empty(),
+                    is_no_send: no_send,
+                    is_delayed: accept_delayed_broadcast,
+                    txid: None,
+                    raw_tx: None,
+                    reference: None,
+                    send_with: send_with.clone(),
+                },
+            }),
+        };
+        let done = match self
+            .storage
+            .create_action_at_door(&auth, args.clone(), door)
+            .await
+        {
+            Ok(done) => done,
+            Err(crate::storage::DoorRefusal::Create(e)) => return Err(e.into()),
+            Err(crate::storage::DoorRefusal::Sign(e)) => {
+                // Signing failed inside the door: rolled back, nothing written.
+                tracing::error!(error = %e, "Signing failed in create_action; the action was not written");
+                return Err(bsv_rs::Error::WalletError(format!(
+                    "Signing failed: {}. Transaction aborted and UTXOs released.",
+                    e
+                )));
+            }
+            // Busy inside the door's one transaction: rolled back, nothing
+            // written, so the call may be repeated unchanged.
+            Err(crate::storage::DoorRefusal::Process(e @ Error::StoreBusy { .. })) => {
+                return Err(e.into())
+            }
+            Err(crate::storage::DoorRefusal::Process(e)) => {
+                tracing::error!(error = %e, "Process action failed in create_action; the action was not written");
+                return Err(bsv_rs::Error::WalletError(format!(
+                    "Process action failed: {}. Transaction aborted and UTXOs released.",
+                    e
+                )));
+            }
+        };
+        let storage_result = done.created;
 
-            // Compute txid from signed transaction
-            let txid = compute_txid(&signed_tx);
+        // Signed and processed in the door: broadcast and answer.
+        if let Some(processed) = done.processed {
+            let crate::storage::DoorProcessed {
+                txid,
+                raw_tx: signed_tx,
+                results: mut process_result,
+            } = processed;
+
+            // Debug: Log storage result outputs
+            for (i, output) in storage_result.outputs.iter().enumerate() {
+                tracing::debug!(
+                    vout = output.vout,
+                    satoshis = output.satoshis,
+                    locking_script = %output.locking_script,
+                    locking_script_len = output.locking_script.len(),
+                    provided_by = ?output.provided_by,
+                    purpose = ?output.purpose,
+                    derivation_suffix = ?output.derivation_suffix,
+                    "Storage output {}", i
+                );
+            }
 
             tracing::debug!(
                 txid = %txid,
                 raw_tx_hex = %hex::encode(&signed_tx),
                 raw_tx_len = signed_tx.len(),
-                "Sending processAction with signed transaction"
+                "processAction done in the door with the signed transaction"
             );
-
-            // Process the signed transaction
-            let process_args = StorageProcessActionArgs {
-                is_new_tx: true,
-                is_send_with: args
-                    .options
-                    .as_ref()
-                    .and_then(|o| o.send_with.as_ref())
-                    .map(|s| !s.is_empty())
-                    .unwrap_or(false),
-                is_no_send: no_send,
-                is_delayed: accept_delayed_broadcast,
-                txid: Some(txid.clone()),
-                raw_tx: Some(signed_tx.clone()),
-                reference: Some(storage_result.reference.clone()),
-                send_with: args
-                    .options
-                    .as_ref()
-                    .and_then(|o| o.send_with.clone())
-                    .map(|txids| txids.iter().map(hex::encode).collect())
-                    .unwrap_or_default(),
-            };
-
-            let mut process_result = match self.storage.process_action(&auth, process_args).await {
-                Ok(result) => result,
-                // Busy (review 2 F5 of #44): the store refused before
-                // processing and wrote nothing. The action is not aborted,
-                // its coins stay locked to it, and the unsigned transaction
-                // is cached under its reference, as signAndProcess false
-                // caches it, so a signAction on that reference completes it.
-                Err(e @ Error::StoreBusy { .. }) => {
-                    let pending_tx = PendingTransaction {
-                        reference: storage_result.reference.clone(),
-                        raw_tx: unsigned_tx.clone(),
-                        inputs: signer_inputs.clone(),
-                        input_beef: storage_result.input_beef.clone(),
-                        is_no_send: no_send,
-                        is_delayed: accept_delayed_broadcast,
-                        send_with: args
-                            .options
-                            .as_ref()
-                            .and_then(|o| o.send_with.clone())
-                            .map(|txids| txids.iter().map(hex::encode).collect())
-                            .unwrap_or_default(),
-                        created_at: Utc::now(),
-                    };
-                    let mut cache = self.pending_transactions.write().await;
-                    let cutoff =
-                        Utc::now() - chrono::Duration::seconds(PENDING_TRANSACTION_TTL_SECS);
-                    cache.retain(|_, tx| tx.created_at > cutoff);
-                    cache.insert(storage_result.reference.clone(), pending_tx);
-                    return Err(e.into());
-                }
-                Err(e) => {
-                    // Processing failed - abort the transaction to release locked UTXOs
-                    tracing::error!(reference = %storage_result.reference, error = %e, "Process action failed in create_action, aborting transaction to release UTXOs");
-                    if let Err(abort_err) = self
-                        .storage
-                        .abort_action(
-                            &auth,
-                            bsv_rs::wallet::AbortActionArgs {
-                                reference: storage_result.reference.clone(),
-                            },
-                        )
-                        .await
-                    {
-                        tracing::error!(reference = %storage_result.reference, error = %abort_err, "Failed to abort transaction after process error");
-                    }
-                    return Err(bsv_rs::Error::WalletError(format!(
-                        "Process action failed: {}. Transaction aborted and UTXOs released.",
-                        e
-                    )));
-                }
-            };
 
             // Log the process result for debugging
             tracing::debug!(
