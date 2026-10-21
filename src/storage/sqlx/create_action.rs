@@ -963,7 +963,7 @@ impl Door<'_> {
             .await?;
         }
 
-        tx.commit().await?;
+        super::storage_sqlx::commit(tx).await?;
 
         // Build final result
         Ok(Step::Done(Box::new(StorageCreateActionResult {

@@ -74,7 +74,32 @@ pub(crate) async fn begin_immediate(
 ) -> Result<sqlx::Transaction<'static, Sqlite>> {
     pool.begin_with("BEGIN IMMEDIATE")
         .await
-        .map_err(writer_acquire_error)
+        .map_err(write_tx_error)
+}
+
+/// Commits a write transaction (`write_tx`): a busy answer is `StoreBusy`,
+/// any other failure `DatabaseError` (review 2 F4 of #44).
+pub(crate) async fn commit(tx: sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+    tx.commit().await.map_err(write_tx_error)
+}
+
+/// A begin's or a commit's error: the writer not acquired within the
+/// store's ceiling is `StoreBusy` (`WriterNotAcquired`), SQLite's busy is
+/// `StoreBusy` (`SqliteBusy`), anything else `DatabaseError` with the error's
+/// text, the `Database error:` these sites answered before #44 (a host's
+/// 500, not the `SQLx error:` of the plain conversion).
+fn write_tx_error(err: sqlx::Error) -> Error {
+    if let sqlx::Error::PoolTimedOut = err {
+        return Error::StoreBusy {
+            reason: StoreBusyReason::WriterNotAcquired,
+        };
+    }
+    match crate::error::sqlite_busy_code(&err) {
+        Some(code) => Error::StoreBusy {
+            reason: StoreBusyReason::SqliteBusy { code },
+        },
+        None => Error::DatabaseError(err.to_string()),
+    }
 }
 
 /// The writer connection of `writer` (a writer pool) for single-statement
@@ -2919,7 +2944,7 @@ impl StorageSqlx {
         .bind(txid)
         .execute(&mut *tx)
         .await?;
-        tx.commit().await?;
+        commit(tx).await?;
 
         Ok(ProofIngestOutcome::Ingested(TxSynchronizedStatus {
             txid: txid.to_string(),
@@ -3944,7 +3969,7 @@ impl StorageSqlx {
             if proof_gate > counted {
                 super::monitor_state::write_proof_attempt_height_on(&mut tx, proof_gate).await?;
             }
-            tx.commit().await?;
+            commit(tx).await?;
             proof_gate > counted
         };
 
@@ -4753,7 +4778,7 @@ impl MonitorStorage for StorageSqlx {
         // One transaction: either every step of the revert lands or none.
         let mut tx = self.write_tx().await?;
         let existed = demote_stale_proof_on(&mut tx, txid).await?;
-        tx.commit().await?;
+        commit(tx).await?;
         Ok(existed)
     }
 
@@ -6888,6 +6913,56 @@ impl StorageSqlx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review 2 F4 of #44: a begin that fails for anything but busy keeps
+    /// the `Database error:` prefix these sites answered before #44. The
+    /// pool's one connection is already inside a transaction, so SQLite
+    /// refuses `BEGIN IMMEDIATE` (code 1, not busy).
+    #[tokio::test]
+    async fn a_non_busy_begin_failure_is_a_database_error() {
+        let in_a_transaction = SqlitePoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("BEGIN").execute(&mut *conn).await?;
+                    Ok(())
+                })
+            })
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let err = match begin_immediate(&in_a_transaction).await {
+            Ok(_) => panic!("a transaction within a transaction"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, Error::DatabaseError(_)), "{err:?}");
+        assert!(err.to_string().starts_with("Database error: "), "{err}");
+        assert!(
+            err.to_string()
+                .contains("cannot start a transaction within a transaction"),
+            "{err}"
+        );
+    }
+
+    /// The begin/commit mapping: busy is `StoreBusy`, anything else
+    /// `DatabaseError` with the error's text.
+    #[test]
+    fn a_begin_or_commit_error_is_store_busy_only_when_busy() {
+        let err = write_tx_error(sqlx::Error::PoolTimedOut);
+        assert!(
+            matches!(
+                err,
+                Error::StoreBusy {
+                    reason: StoreBusyReason::WriterNotAcquired
+                }
+            ),
+            "{err:?}"
+        );
+        let err = write_tx_error(sqlx::Error::Protocol("a broken pipe".to_string()));
+        assert!(matches!(err, Error::DatabaseError(_)), "{err:?}");
+        assert!(err.to_string().starts_with("Database error: "), "{err}");
+        assert!(err.to_string().contains("a broken pipe"), "{err}");
+    }
 
     /// Only a timeout acquiring the WRITER is busy: a reader pool of one,
     /// held, and a second read times out on the reader pool. That is the

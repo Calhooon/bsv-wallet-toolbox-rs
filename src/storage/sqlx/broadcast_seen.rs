@@ -255,7 +255,7 @@ impl SqlxBroadcastMemory {
             BROADCAST_STATUS_REJECTED,
         )
         .await?;
-        tx.commit().await?;
+        super::storage_sqlx::commit(tx).await?;
         Ok(())
     }
 }
@@ -279,7 +279,7 @@ impl BroadcastMemory for SqlxBroadcastMemory {
         self.ensure_schema().await?;
         let mut tx = super::storage_sqlx::begin_immediate(&self.writer).await?;
         record_broadcast_status_on(&mut tx, txid, provider, status).await?;
-        tx.commit().await?;
+        super::storage_sqlx::commit(tx).await?;
         Ok(())
     }
 
@@ -297,7 +297,7 @@ impl BroadcastMemory for SqlxBroadcastMemory {
         for txid in txids {
             record_broadcast_status_on(&mut tx, txid, provider, status).await?;
         }
-        tx.commit().await?;
+        super::storage_sqlx::commit(tx).await?;
         Ok(())
     }
 
