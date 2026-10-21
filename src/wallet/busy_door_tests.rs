@@ -1334,3 +1334,65 @@ async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
     );
     assert_eq!(certificate_rows(&wallet).await, (0, 0), "nothing stored");
 }
+
+/// A root `failed` with its req at `req`, written directly (the shape an
+/// abort or a rejection leaves).
+async fn fail_root(wallet: &Wallet<StorageSqlx, MockWalletServices>, txid: &str, req: &str) {
+    sqlx::query("UPDATE transactions SET status = 'failed' WHERE txid = ?")
+        .bind(txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE proven_tx_reqs SET status = ? WHERE txid = ?")
+        .bind(req)
+        .bind(txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+}
+
+/// `outputs.spendable` of `output_id`.
+async fn output_spendable(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    output_id: i64,
+) -> bool {
+    sqlx::query_scalar("SELECT spendable FROM outputs WHERE output_id = ?")
+        .bind(output_id)
+        .fetch_one(wallet.storage().pool())
+        .await
+        .unwrap()
+}
+
+/// Review 4 G2 of bsv-wallet-cli #44: the review-status pass's descendants
+/// check read chain evidence for the root only, so a spender a broadcaster
+/// reports mined was retired (`failed` / `invalid`, its change dead). A
+/// descendant with chain evidence now leaves the root's descendants alone.
+#[tokio::test]
+async fn review_status_leaves_the_descendants_when_a_descendant_has_chain_evidence() {
+    let (_dir, wallet) = wallet().await;
+    let (a_txid, d_txid, _, change_d) = broadcast_chain(&wallet, "g2").await;
+    fail_root(&wallet, &a_txid, "invalid").await;
+    wallet
+        .storage()
+        .record_broadcast_status(
+            &d_txid,
+            crate::services::broadcast_memory::PROVIDER_TAAL_ARC,
+            crate::services::broadcast_memory::BROADCAST_STATUS_MINED,
+        )
+        .await
+        .unwrap();
+
+    let review = crate::storage::MonitorStorage::review_status(wallet.storage())
+        .await
+        .unwrap();
+    assert_eq!(review.log, "No status mismatches found\n");
+    assert_eq!(
+        tx_and_req(&wallet, &d_txid).await,
+        ("unproven".to_string(), "unmined".to_string()),
+        "the spender the chain knows is not retired"
+    );
+    assert!(
+        output_spendable(&wallet, change_d).await,
+        "its change lives"
+    );
+}
