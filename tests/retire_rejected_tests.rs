@@ -54,7 +54,7 @@ async fn seed() -> Seeded {
     .bind(PARENT_TXID)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("parent tx")
     .last_insert_rowid();
@@ -69,7 +69,7 @@ async fn seed() -> Seeded {
     .bind(TXID)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("our tx")
     .last_insert_rowid();
@@ -90,7 +90,7 @@ async fn seed() -> Seeded {
     .bind(tx_id)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("input output")
     .last_insert_rowid();
@@ -110,7 +110,7 @@ async fn seed() -> Seeded {
     .bind(TXID)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("own output")
     .last_insert_rowid();
@@ -124,7 +124,7 @@ async fn seed() -> Seeded {
     .bind(TXID)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("req");
 

@@ -58,7 +58,7 @@ async fn insert_tx(
     .bind(txid)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("tx")
     .last_insert_rowid()
@@ -93,7 +93,7 @@ async fn insert_output(
     .bind(spent_by)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("output")
     .last_insert_rowid()
@@ -109,7 +109,7 @@ async fn insert_req(storage: &StorageSqlx, txid: &str, status: &str) {
     .bind(status)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("req");
 }
@@ -432,7 +432,7 @@ async fn an_already_failed_root_still_retires_its_descendants() {
     let s = seed("unproven").await;
     sqlx::query("UPDATE transactions SET status = 'failed' WHERE txid = ?")
         .bind(R)
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
     let report = s
@@ -554,7 +554,7 @@ async fn backdate(storage: &StorageSqlx, minutes: i64) {
         "UPDATE transactions SET created_at = datetime('now', ?) WHERE status <> 'completed'",
     )
     .bind(format!("-{} minutes", minutes))
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("backdate");
 }
@@ -726,7 +726,7 @@ async fn a_kept_locked_input_is_rechecked_and_restored_on_a_later_pass() {
 
     // Due, and the chain vouches for it now: restored.
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
     let dry = s
@@ -771,7 +771,7 @@ async fn a_spent_locked_input_is_left_locked_and_never_rechecked_again() {
         .await
         .unwrap();
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
 
@@ -839,7 +839,7 @@ async fn two_explorers_agreeing_never_writes_a_locked_input_off() {
         .await
         .unwrap();
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
 
@@ -912,7 +912,7 @@ async fn a_spent_row_of_an_older_release_is_asked_again() {
         "UPDATE locked_input_checks SET last_verdict = 'spent', \
          next_check_at = datetime('now', '-1 minute')",
     )
-    .execute(s.storage.pool())
+    .execute(s.storage.writer())
     .await
     .unwrap();
     assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 1);
@@ -941,7 +941,7 @@ async fn an_undecided_recheck_backs_off_and_an_unknown_source_is_not_a_spend() {
         .await
         .unwrap();
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
 
@@ -968,7 +968,7 @@ async fn an_undecided_recheck_backs_off_and_an_unknown_source_is_not_a_spend() {
     // Not in the unspent set by the explorers' word, no proof of a spend:
     // a hint, not a spend, keep re-checking.
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
     let unknown_source = MockWalletServices::builder()
@@ -1002,7 +1002,7 @@ async fn adoption_finds_locked_inputs_of_failed_transactions_that_predate_the_ta
     // C1 failed by some older path, its inputs still locked, no rows.
     sqlx::query("UPDATE transactions SET status = 'failed' WHERE txid = ?")
         .bind(C1)
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
     assert_eq!(s.storage.locked_inputs_pending().await.unwrap(), 0);
@@ -1041,11 +1041,11 @@ async fn adoption_finds_locked_inputs_of_failed_transactions_that_predate_the_ta
     // Once R is retired as a phantom, its coin is dropped from the checks.
     sqlx::query("UPDATE transactions SET status = 'failed' WHERE txid = ?")
         .bind(R)
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minute')")
-        .execute(s.storage.pool())
+        .execute(s.storage.writer())
         .await
         .unwrap();
     let report = s
@@ -1074,7 +1074,7 @@ async fn migration_003_creates_the_locked_input_table_on_open() {
     assert!(table.is_some());
     // Dropped (a database from before 0.3.59) and re-created on make_available.
     sqlx::query("DROP TABLE locked_input_checks")
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     storage.make_available().await.unwrap();

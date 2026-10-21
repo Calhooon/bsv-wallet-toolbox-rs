@@ -24,7 +24,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::services::WalletServices;
 
 use super::poisoned_chain::{utxo_verdict, UtxoVerdict};
@@ -159,7 +159,7 @@ impl StorageSqlx {
     /// idempotent). Called on `make_available` and by every entry point.
     pub(crate) async fn ensure_locked_inputs_schema(&self) -> Result<()> {
         super::broadcast_seen::apply_migration_sql(
-            self.pool(),
+            self.writer(),
             MIGRATION_003_LOCKED_INPUT_CHECKS_NAME,
             MIGRATION_003_LOCKED_INPUT_CHECKS_SQL,
         )
@@ -199,7 +199,7 @@ impl StorageSqlx {
         .bind(attempts as i64)
         .bind(verdict)
         .bind(format!("+{} minutes", minutes))
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
         tracing::info!(
             output_id,
@@ -225,7 +225,7 @@ impl StorageSqlx {
              JOIN transactions src ON src.transaction_id = o.transaction_id \
              WHERE o.spendable = 0 AND t.status = 'failed' AND src.status <> 'failed'",
         )
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
         Ok(result.rows_affected() as u32)
     }
@@ -359,7 +359,7 @@ impl StorageSqlx {
                         )
                         .bind(now)
                         .bind(row.output_id)
-                        .execute(self.pool())
+                        .execute(self.writer())
                         .await?;
                         self.drop_locked_input_check(row.output_id).await?;
                     }
@@ -384,7 +384,7 @@ impl StorageSqlx {
                         .bind(check.attempts as i64)
                         .bind(LOCKED_VERDICT_SPENT_PROVEN)
                         .bind(row.output_id)
-                        .execute(self.pool())
+                        .execute(self.writer())
                         .await?;
                     }
                     tracing::warn!(
@@ -419,7 +419,7 @@ impl StorageSqlx {
                         .bind(label)
                         .bind(format!("+{} minutes", minutes))
                         .bind(row.output_id)
-                        .execute(self.pool())
+                        .execute(self.writer())
                         .await?;
                     }
                     tracing::info!(
@@ -442,7 +442,7 @@ impl StorageSqlx {
     async fn drop_locked_input_check(&self, output_id: i64) -> Result<()> {
         sqlx::query("DELETE FROM locked_input_checks WHERE output_id = ?")
             .bind(output_id)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         Ok(())
     }
@@ -455,8 +455,7 @@ impl StorageSqlx {
         )
         .bind(output_id)
         .fetch_optional(self.pool())
-        .await
-        .map_err(|e| Error::SqlxError(e.to_string()))?;
+        .await?;
         Ok(row.map(|(text,)| super::broadcast_seen::parse_db_timestamp(&text)))
     }
 }

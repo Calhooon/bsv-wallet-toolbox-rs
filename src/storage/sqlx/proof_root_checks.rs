@@ -124,10 +124,13 @@ impl ReadCheck {
 /// alone demotes it; a CHECKED row that the tracker later refutes is a
 /// reorg, the reorg and review tasks' business, and is not touched here.
 ///
-/// Runs on the caller's connection inside a savepoint, so the demotion is
-/// atomic with itself and with the caller's transaction when there is one.
+/// Reads on the caller's connection (a reader); the tracker is asked with no
+/// lock held, and the record or the demotion is written afterwards through
+/// `writer` (the demotion in one `BEGIN IMMEDIATE` transaction). The caller
+/// must not hold the writer.
 pub(crate) async fn check_unchecked_stored_proof_on(
     conn: &mut SqliteConnection,
+    writer: &Pool<Sqlite>,
     tracker: Option<&dyn ChainTracker>,
     txid: &str,
     merkle_path: &MerklePath,
@@ -146,7 +149,8 @@ pub(crate) async fn check_unchecked_stored_proof_on(
         .await
     {
         Ok(true) => {
-            record_root_checked_on(&mut *conn, txid, merkle_path.block_height, &root).await?;
+            let mut w = writer.acquire().await?;
+            record_root_checked_on(&mut w, txid, merkle_path.block_height, &root).await?;
             tracing::info!(
                 txid = %txid,
                 height = merkle_path.block_height,
@@ -156,9 +160,9 @@ pub(crate) async fn check_unchecked_stored_proof_on(
             Ok(ReadCheck::Confirmed)
         }
         Ok(false) => {
-            let mut sp = sqlx::Connection::begin(&mut *conn).await?;
-            super::storage_sqlx::demote_stale_proof_on(&mut sp, txid).await?;
-            sp.commit().await?;
+            let mut wtx = super::storage_sqlx::begin_immediate(writer).await?;
+            super::storage_sqlx::demote_stale_proof_on(&mut wtx, txid).await?;
+            wtx.commit().await?;
             tracing::warn!(
                 txid = %txid,
                 height = merkle_path.block_height,

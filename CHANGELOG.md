@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+The store's write lock (bsv-wallet-cli #44). A served `createAction` answered `database is locked (code 517)`, `SQLITE_BUSY_SNAPSHOT`: its write transaction opened with a deferred `BEGIN`, read under a WAL snapshot, and wrote after another pooled connection (the monitor's proof task) had committed; `busy_timeout` never applies to 517. The fault is now impossible by construction, not retried. A minor: `pool()` no longer writes, and `Error` gains a variant.
+
+### Changed
+
+- `StorageSqlx::new` opens two pools over the one file, both with the store's pragmas (`foreign_keys`, WAL, `busy_timeout` 5000, `synchronous` NORMAL): a writer of exactly one connection and a reader of ten, every reader connection `PRAGMA query_only = ON`. `pool()` returns the reader: a write sent there fails loudly (`attempt to write a readonly database`), and the existing suite is how every misrouted write was found.
+- Every transaction opens `BEGIN IMMEDIATE` on the writer through `write_tx()`: `create_action`, `process_action` (2), `internalize_action`, `abort_action` (2), `ingest_merkle_proof`, `demote_stale_proof`, the broadcast memory (3), the read check's demotion, the proof fetched during BEEF assembly, and the proof-attempt counter (a read then a write on a bare pooled connection before). A contender in this process waits for the writer connection; one in another process waits `busy_timeout` on the lock. `clippy.toml` disallows `Pool::begin`, `Pool::begin_with`, `Connection::begin` and `Acquire::begin`; the one `#[allow]` is on the function `write_tx` calls.
+- Every single-statement write runs on `writer()`. The schema migrations too.
+- No write lock is held across a service or a chain-tracker await. `create_action` reads the roots of the caller's `inputBEEF` against the tracker before its transaction opens (the reference's `validateRequiredInputs` does so before any allocation), commits the allocation, then assembles the input BEEF on a reader with no lock held: the walk's tracker reads and its provider fetches (a missing proof, a missing ancestor) used to run inside the transaction. A BEEF that then fails takes the allocation back in one write transaction (the inputs released, the action's outputs, label links and row deleted), so the call fails as it did. Between the commit and the BEEF the action's row exists, `unsigned`, without `input_beef`.
+- The BEEF walk (`beef_bfs_walk`, `compact_stored_beef`, `rebuild_beef_for_broadcast`, `check_unchecked_stored_proof_on`) reads on the caller's connection and writes through a `writer` it is passed, each write after the network answered. The test that pinned the proof fetch on the caller's open transaction now pins it through the writer (`test_build_input_beef_fetches_a_missing_proof_and_stores_it_through_the_writer`).
+
+### Added
+
+- `StorageSqlx::writer(&self) -> &SqlitePool` and `StorageSqlx::write_tx(&self) -> Result<sqlx::Transaction<'static, Sqlite>>`.
+- `Error::StoreBusy { code: i32 }`, Display `Store busy: sqlite code N`: every `sqlx::Error` whose SQLite primary code is 5 (`SQLITE_BUSY`, 517 included) or 6 (`SQLITE_LOCKED`) converts to it, with the extended code. Consumers classify on the prefix at the SDK boundary. Commit errors no longer become `DatabaseError` strings.
+- `SqlxBroadcastMemory::with_pools(reader, writer)`; `SqlxBroadcastMemory::new(pool)` keeps one pool for both.
+- Tests: `tests/store_write_lock_tests.rs` reproduces 517 on two raw connections over one file (`a_deferred_begin_that_read_first_answers_517_after_another_commit`), shows the same shape through `write_tx` waits and both commit across two stores and within one (`the_same_shape_through_write_tx_waits_and_both_commit_across_stores`, `..._in_one_store`), and pins `query_only` and the pragmas (`a_write_on_pool_fails_under_query_only`, `both_pools_keep_the_pragmas`, `the_store_busy_display_prefix`). In `create_action`: `the_tracker_is_never_asked_while_the_writer_is_held` (with `control_the_probe_sees_a_held_writer`), `a_caller_root_the_tracker_refuses_is_refused_before_any_allocation`, `a_beef_that_fails_after_the_commit_takes_the_allocation_back`.
+
 ## [0.10.0] - 2026-10-20
 
 The reorg below the user (bsv-stack-lean rulings 5 and 7 of 2026-10-20; the draft `corpus/scenarios/2026-10-20-reorg-below-the-user.md`). A minor: public monitor types change (`ReproveOutcome`, `ReproveTally`, `DEMOTION_WITNESSES` removed), `MonitorStorage` gains two methods, and an observable status changes (an action whose proof's root moved reads `unproven` on the local header read alone). This crate does not host bsv-tracker; the rule is written in its own reorg path.

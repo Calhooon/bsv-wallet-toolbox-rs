@@ -41,7 +41,7 @@ async fn insert_tx(s: &StorageSqlx, user_id: i64, txid: &str, status: &str) -> i
     .bind(format!("ref-{}", &txid[..8]))
     .bind(now)
     .bind(now)
-    .execute(s.pool())
+    .execute(s.writer())
     .await
     .unwrap()
     .last_insert_rowid()
@@ -67,7 +67,7 @@ async fn insert_output(
     .bind(spent_by)
     .bind(now)
     .bind(now)
-    .execute(s.pool())
+    .execute(s.writer())
     .await
     .unwrap()
     .last_insert_rowid()
@@ -156,7 +156,7 @@ async fn age_req(s: &StorageSqlx, txid: &str, hours: i64) {
     sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
         .bind(Utc::now() - Duration::hours(hours))
         .bind(txid)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
 }
@@ -362,7 +362,7 @@ async fn a_stale_seen_does_not_hold_the_req() {
     sqlx::query("UPDATE broadcast_seen SET seen_at = ? WHERE txid = ?")
         .bind(Utc::now() - Duration::hours(3))
         .bind(&b.txid)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     nobody_holds(&s, &b.txid);
@@ -448,7 +448,7 @@ async fn a_silent_source_a_closed_gate_and_a_sending_req_count_nothing() {
     open_gate(&s, 1000).await;
     sqlx::query("UPDATE proven_tx_reqs SET status = 'sending' WHERE txid = ?")
         .bind(&b.txid)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     assert!(s
@@ -479,12 +479,12 @@ async fn the_canary_watches_a_req_an_earlier_backstop_wrote_off_and_recovers_it(
         "UPDATE outputs SET spendable = 0 WHERE spent_by IS NULL",
         "UPDATE outputs SET spendable = 1, spent_by = NULL WHERE spent_by IS NOT NULL",
     ] {
-        sqlx::query(sql).execute(s.pool()).await.unwrap();
+        sqlx::query(sql).execute(s.writer()).await.unwrap();
     }
     sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
         .bind(Utc::now())
         .bind(&b.txid)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     assert_eq!(attempts_of(&s, &b.txid).await, ("invalid".to_string(), 0));
@@ -558,7 +558,7 @@ async fn past_the_count_keeps_its_word(chain: &str, limit: i64) {
     let s = storage().await;
     sqlx::query("UPDATE settings SET chain = ?")
         .bind(chain)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     crate::storage::traits::WalletStorageWriter::make_available(&s)

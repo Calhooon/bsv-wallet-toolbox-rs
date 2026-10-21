@@ -563,7 +563,7 @@ async fn an_arc_400_leaves_the_transactions_word_unchanged() {
     .bind(&parent_txid)
     .bind(then)
     .bind(then)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .unwrap()
     .last_insert_rowid();
@@ -576,7 +576,7 @@ async fn an_arc_400_leaves_the_transactions_word_unchanged() {
     .bind(&raw)
     .bind(then)
     .bind(then)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .unwrap()
     .last_insert_rowid();
@@ -594,7 +594,7 @@ async fn an_arc_400_leaves_the_transactions_word_unchanged() {
     .bind(tx_id)
     .bind(then)
     .bind(then)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .unwrap()
     .last_insert_rowid();
@@ -607,7 +607,7 @@ async fn an_arc_400_leaves_the_transactions_word_unchanged() {
     .bind(plain)
     .bind(then)
     .bind(then)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .unwrap();
 

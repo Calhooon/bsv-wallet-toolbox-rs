@@ -644,7 +644,7 @@ mod proof_ingestion {
         .bind(req_status)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert proven_tx_req");
 
@@ -661,7 +661,7 @@ mod proof_ingestion {
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert transaction");
     }
@@ -1243,7 +1243,7 @@ mod triage_inline_proofs {
         .bind(txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert proven_tx_req");
 
@@ -1259,7 +1259,7 @@ mod triage_inline_proofs {
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert transaction");
     }

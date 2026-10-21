@@ -49,7 +49,7 @@ mod review_status {
         .bind(reference)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -74,7 +74,7 @@ mod review_status {
         .bind(proven_tx_id)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -111,7 +111,7 @@ mod review_status {
         .bind(now)
         .bind(now)
         .bind(spent_by)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -268,7 +268,7 @@ mod review_status {
         .bind("a".repeat(64))
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -300,7 +300,7 @@ mod review_status {
                     .bind(user_id)
                     .bind(now)
                     .bind(now)
-                    .execute(storage.pool())
+                    .execute(storage.writer())
                     .await
                     .unwrap();
                 sqlx::query_as(
@@ -331,7 +331,7 @@ mod review_status {
         .bind(&sending_txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -352,7 +352,7 @@ mod review_status {
         .bind(&good_txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -420,7 +420,7 @@ mod review_status {
         .bind(&reference)
         .bind(old_time)
         .bind(old_time)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         let tx_id = result.last_insert_rowid();

@@ -60,7 +60,7 @@ mod concurrent {
         .bind(txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -96,7 +96,7 @@ mod concurrent {
         .bind(now)
         .bind(now)
         .bind(spent_by)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -117,7 +117,7 @@ mod concurrent {
         .bind(status)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -271,7 +271,7 @@ mod concurrent {
         sqlx::query("UPDATE outputs SET basket_id = ? WHERE user_id = ?")
             .bind(basket_id)
             .bind(user_id)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -839,7 +839,7 @@ mod concurrent {
             )
             .bind(spend_tx_id1)
             .bind(utxo_id)
-            .execute(s1.pool())
+            .execute(s1.writer())
             .await
             .unwrap();
 
@@ -857,7 +857,7 @@ mod concurrent {
             )
             .bind(spend_tx_id2)
             .bind(utxo_id)
-            .execute(s2.pool())
+            .execute(s2.writer())
             .await
             .unwrap();
 

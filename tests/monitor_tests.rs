@@ -211,7 +211,7 @@ mod monitor_integration {
         .bind(&reference)
         .bind(old_time)
         .bind(old_time)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert transaction");
 
@@ -322,7 +322,7 @@ mod monitor_integration {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert proven_tx_req");
 
@@ -445,7 +445,7 @@ mod monitor_integration {
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert transaction");
 
@@ -458,7 +458,7 @@ mod monitor_integration {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert proven_tx_req");
 
@@ -569,7 +569,7 @@ mod monitor_integration {
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(old_time)
         .bind(old_time)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert transaction");
 
@@ -583,7 +583,7 @@ mod monitor_integration {
         .bind(&txid)
         .bind(old_time)
         .bind(old_time)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert proven_tx_req");
 
@@ -805,7 +805,7 @@ mod monitor_integration {
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert transaction");
     }
@@ -945,7 +945,7 @@ mod monitor_integration {
         .bind("c".repeat(64))
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert proven_txs");
         let proven_id: i64 =
@@ -993,7 +993,7 @@ mod monitor_integration {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert nosend req");
 
@@ -1131,7 +1131,7 @@ mod monitor_integration {
         .bind(&parent_raw)
         .bind(old)
         .bind(old)
-        .fetch_one(storage.pool())
+        .fetch_one(storage.writer())
         .await
         .expect("parent tx");
         let child_id: i64 = sqlx::query_scalar(
@@ -1145,7 +1145,7 @@ mod monitor_integration {
         .bind(&child_raw)
         .bind(old)
         .bind(old)
-        .fetch_one(storage.pool())
+        .fetch_one(storage.writer())
         .await
         .expect("child tx");
         // The parent's output, LOCKED by the child.
@@ -1161,7 +1161,7 @@ mod monitor_integration {
         .bind(lock.to_binary())
         .bind(old)
         .bind(old)
-        .fetch_one(storage.pool())
+        .fetch_one(storage.writer())
         .await
         .expect("parent output");
         // The child's own change output (spendable today).
@@ -1176,7 +1176,7 @@ mod monitor_integration {
         .bind(lock.to_binary())
         .bind(old)
         .bind(old)
-        .fetch_one(storage.pool())
+        .fetch_one(storage.writer())
         .await
         .expect("child output");
         sqlx::query(
@@ -1191,7 +1191,7 @@ mod monitor_integration {
         .bind(old)
         // The last attempt is past any re-ask pause of the cadence.
         .bind(chrono::Utc::now() - chrono::Duration::days(2))
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("child req");
         (child_txid, child_id, parent_out, child_out)
@@ -1505,7 +1505,7 @@ mod monitor_integration {
             sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
                 .bind(long_ago)
                 .bind(&child)
-                .execute(storage.pool())
+                .execute(storage.writer())
                 .await
                 .expect("age the req");
         }
@@ -1547,7 +1547,7 @@ mod monitor_integration {
         sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
             .bind(chrono::Utc::now())
             .bind(&child)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .expect("fresh");
         let mock = Arc::new(transient_word(0, &child));
@@ -1564,7 +1564,7 @@ mod monitor_integration {
         sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
             .bind(long_ago)
             .bind(&child)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .expect("age the req");
         storage

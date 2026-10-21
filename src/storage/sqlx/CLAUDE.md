@@ -29,7 +29,8 @@ The main storage provider struct implementing all wallet storage traits.
 
 ```rust
 pub struct StorageSqlx {
-    pool: Pool<Sqlite>,                              // SQLx connection pool
+    reader: Pool<Sqlite>,                            // several connections, PRAGMA query_only = ON
+    writer: Pool<Sqlite>,                            // exactly one connection: every write
     settings: std::sync::RwLock<Option<TableSettings>>,
     storage_identity_key: std::sync::RwLock<String>,
     storage_name: std::sync::RwLock<String>,
@@ -44,7 +45,11 @@ pub struct StorageSqlx {
 - `new(database_url: &str)` - Create from SQLite URL (e.g., `"sqlite:wallet.db"`)
 - `in_memory()` - Create in-memory database (useful for testing)
 - `open(path: &str)` - Open file-based database (creates if not exists)
-- `pool()` - Get a reference to the underlying connection pool
+- `pool()` - The READER pool (`query_only`: a write here fails `attempt to write a readonly database`)
+- `writer()` - The writer pool, one connection: single-statement writes
+- `write_tx()` - A write transaction on the writer, `BEGIN IMMEDIATE`; the only way to open one (`clippy.toml` disallows `Pool::begin`, `Pool::begin_with`, `Connection::begin`, `Acquire::begin`)
+
+**Write lock rules (bsv-wallet-cli #44):** every write goes to `writer()` or a `write_tx()`. Nothing awaits a service or a chain tracker while holding either: ask the network first, then write. The BEEF walk reads on a reader connection and writes (a fetched proof, a read check) through the `writer` it is passed; never call it with the writer held (the pool has one connection: it would wait on itself). `create_action` checks the caller's `inputBEEF` roots before its transaction, commits the allocation, then assembles the BEEF; a failed assembly is taken back (`undo_unassembled_action`). A sqlx error with SQLite primary code 5 or 6 (517 included) converts to `Error::StoreBusy { code }` ("Store busy: sqlite code N").
 
 **ChainTracker methods:**
 - `set_chain_tracker(tracker)` - Set ChainTracker for BEEF and proof verification. Without one NO merkle proof is stored: `ingest_merkle_proof` returns `ProofIngestOutcome::TrackerUnavailable`, the BEEF walk fetches none, `internalize_action` tracks the txid as unproven (P0-1)

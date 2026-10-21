@@ -12,7 +12,7 @@ use crate::storage::traits::{
 };
 use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
 use chrono::Utc;
-use sqlx::sqlite::SqliteConnection;
+use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use sqlx::Row;
 use std::collections::HashSet;
 
@@ -396,13 +396,24 @@ pub async fn create_action_internal(
     // NOTE: This uses its own pool connection (known limitation for first pass).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
 
-    // Begin SQL transaction to ensure atomicity of all subsequent DB writes.
-    // If the function returns an error (via `?`), `tx` is dropped and sqlx auto-rollbacks.
-    let mut tx = storage
-        .pool()
-        .begin()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    // The caller's inputBEEF proofs are facts independent of this action:
+    // their roots are read against the tracker here, before the write lock
+    // (as the reference's `validateRequiredInputs` does, before any
+    // allocation). The assembly after the commit does not ask again.
+    let confirmed_roots =
+        confirm_caller_beef_roots(chain_tracker, args.input_beef.as_deref()).await?;
+    let prechecked = chain_tracker.map(|inner| PrecheckedTracker {
+        inner,
+        confirmed: confirmed_roots,
+    });
+    let chain_tracker: Option<&dyn ChainTracker> =
+        prechecked.as_ref().map(|t| t as &dyn ChainTracker);
+
+    // Begin SQL transaction to ensure atomicity of the allocation's DB writes.
+    // `BEGIN IMMEDIATE` on the writer (bsv-wallet-cli #44); nothing inside it
+    // awaits a service or a tracker. If the function returns an error (via
+    // `?`), `tx` is dropped and sqlx auto-rollbacks.
+    let mut tx = storage.write_tx().await?;
 
     // Step 3: Process caller-provided outputs
     let extended_outputs = validate_and_extend_outputs(&args)?;
@@ -757,6 +768,11 @@ pub async fn create_action_internal(
     // Get the transaction reference
     let reference = get_transaction_reference(&mut tx, transaction_id).await?;
 
+    // Commit the allocation atomically. The BEEF is assembled after it, with
+    // no lock held: the walk awaits the tracker and, for a missing ancestor
+    // or proof, the providers.
+    tx.commit().await?;
+
     // Extract BEEF-related options
     let return_txid_only = options.and_then(|o| o.return_txid_only).unwrap_or(false);
     let known_txids: Vec<String> = options
@@ -766,38 +782,59 @@ pub async fn create_action_internal(
     let trust_self = options.and_then(|o| o.trust_self) == Some(bsv_rs::wallet::TrustSelf::Known);
 
     // Build input BEEF containing all input transactions with their merkle proofs
-    // Verify BEEF against ChainTracker if provided (matches TypeScript/Go behavior)
-    let input_beef = build_input_beef(
-        &mut tx,
-        chain_tracker,
-        &extended_inputs,
-        &change_result.allocated_change_inputs,
-        args.input_beef.as_deref(),
-        &known_txids,
-        return_txid_only,
-        trust_self,
-        Some(storage),
-    )
-    .await?;
-
-    // Store input_beef in the transaction record (required for process_action)
-    // This matches the TypeScript behavior which stores inputBEEF at transaction creation
-    if let Some(ref beef_bytes) = input_beef {
-        let now = Utc::now();
-        sqlx::query(
-            "UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?",
+    // Verify BEEF against ChainTracker if provided (matches TypeScript/Go behavior).
+    // Reads on a reader connection; the walk's own writes (a fetched proof,
+    // a read check) go through the writer, one short write each.
+    let assembled: Result<Option<Vec<u8>>> = async {
+        let mut conn = storage.pool().acquire().await?;
+        let input_beef = build_input_beef(
+            &mut conn,
+            storage.writer(),
+            chain_tracker,
+            &extended_inputs,
+            &change_result.allocated_change_inputs,
+            args.input_beef.as_deref(),
+            &known_txids,
+            return_txid_only,
+            trust_self,
+            Some(storage),
         )
-        .bind(beef_bytes)
-        .bind(now)
-        .bind(transaction_id)
-        .execute(&mut *tx)
         .await?;
-    }
+        drop(conn);
 
-    // Commit all changes atomically.
-    tx.commit()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        // Store input_beef in the transaction record (required for process_action)
+        // This matches the TypeScript behavior which stores inputBEEF at transaction creation
+        if let Some(ref beef_bytes) = input_beef {
+            sqlx::query(
+                "UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?",
+            )
+            .bind(beef_bytes)
+            .bind(Utc::now())
+            .bind(transaction_id)
+            .execute(storage.writer())
+            .await?;
+        }
+        Ok(input_beef)
+    }
+    .await;
+
+    // A BEEF that cannot be assembled or verified fails the call, as it did
+    // when the assembly ran inside the transaction: what the commit wrote is
+    // taken back and the inputs are released.
+    let input_beef = match assembled {
+        Ok(input_beef) => input_beef,
+        Err(e) => {
+            if let Err(undo) = undo_unassembled_action(storage, transaction_id).await {
+                tracing::error!(
+                    transaction_id,
+                    error = %undo,
+                    marker = "create_action_undo_failed",
+                    "create_action: the input BEEF failed and the allocation could not be taken back; the action stays unsigned until it is aborted"
+                );
+            }
+            return Err(e);
+        }
+    };
 
     // Build final result
     Ok(StorageCreateActionResult {
@@ -815,6 +852,119 @@ pub async fn create_action_internal(
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// Read every root of the caller's `inputBEEF` against `tracker`, before
+/// the write lock. Returns the confirmed `(height, root)` pairs; a refused
+/// root, or a tracker fault, fails the call with the error the assembly's
+/// own verification gives. Bytes that do not parse, or a bump whose root
+/// does not compute, are left to the assembly to refuse.
+async fn confirm_caller_beef_roots(
+    tracker: Option<&dyn ChainTracker>,
+    input_beef: Option<&[u8]>,
+) -> Result<HashSet<(u32, String)>> {
+    let mut confirmed = HashSet::new();
+    let (Some(tracker), Some(bytes)) = (tracker, input_beef) else {
+        return Ok(confirmed);
+    };
+    if bytes.is_empty() {
+        return Ok(confirmed);
+    }
+    let Ok(beef) = Beef::from_binary(bytes) else {
+        return Ok(confirmed);
+    };
+    let roots: Vec<(u32, String)> = beef
+        .bumps
+        .iter()
+        .filter_map(|b| b.compute_root(None).ok().map(|r| (b.block_height, r)))
+        .collect();
+    for (height, root) in roots {
+        if confirmed.contains(&(height, root.clone())) {
+            continue;
+        }
+        match tracker.is_valid_root_for_height(&root, height).await {
+            Ok(true) => {
+                confirmed.insert((height, root));
+            }
+            Ok(false) => {
+                return Err(Error::ValidationError(format!(
+                    "inputBEEF: invalid merkle root {} at height {}",
+                    root, height
+                )));
+            }
+            Err(e) => {
+                return Err(Error::ValidationError(format!(
+                    "inputBEEF: failed to verify merkle root at height {}: {}",
+                    height, e
+                )));
+            }
+        }
+    }
+    Ok(confirmed)
+}
+
+/// The caller's tracker, answering `true` without asking for a root
+/// [`confirm_caller_beef_roots`] confirmed before the write lock.
+struct PrecheckedTracker<'a> {
+    inner: &'a dyn ChainTracker,
+    confirmed: HashSet<(u32, String)>,
+}
+
+#[async_trait::async_trait]
+impl ChainTracker for PrecheckedTracker<'_> {
+    async fn is_valid_root_for_height(
+        &self,
+        root: &str,
+        height: u32,
+    ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+        if self.confirmed.contains(&(height, root.to_string())) {
+            return Ok(true);
+        }
+        self.inner.is_valid_root_for_height(root, height).await
+    }
+
+    async fn current_height(
+        &self,
+    ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+        self.inner.current_height().await
+    }
+}
+
+/// Take back what `create_action` committed for `transaction_id` when its
+/// input BEEF then fails: release the inputs it allocated and delete the
+/// outputs, label links and the transaction row it wrote. One write
+/// transaction; the labels, tags and baskets it found or inserted stay.
+async fn undo_unassembled_action(storage: &StorageSqlx, transaction_id: i64) -> Result<()> {
+    let mut tx = storage.write_tx().await?;
+    sqlx::query(
+        "UPDATE outputs SET spendable = 1, spent_by = NULL, spending_description = NULL, updated_at = ? \
+         WHERE spent_by = ?",
+    )
+    .bind(Utc::now())
+    .bind(transaction_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM output_tags_map WHERE output_id IN \
+         (SELECT output_id FROM outputs WHERE transaction_id = ?)",
+    )
+    .bind(transaction_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM outputs WHERE transaction_id = ?")
+        .bind(transaction_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM tx_labels_map WHERE transaction_id = ?")
+        .bind(transaction_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM transactions WHERE transaction_id = ?")
+        .bind(transaction_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
 
 /// Validates and extends output specifications.
 fn validate_and_extend_outputs(
@@ -2250,22 +2400,17 @@ async fn local_record_age_secs(conn: &mut SqliteConnection, txid: &str) -> Optio
 /// cannot prove a transaction, and it records the result so the cost is paid
 /// once per ancestor rather than on every spend.
 ///
-/// The write goes through the CALLER'S connection. `create_action` runs inside
-/// an open SQLite write transaction, so a second pooled connection would block
-/// on its own database lock until `busy_timeout` expired.
-/// [`StorageSqlx::ingest_merkle_proof`] does exactly this over the pool and is
-/// the path every other proof source uses; this is its connection-scoped twin
-/// through the SAME store funnel (`store_validated_proof_on`: the proof LAG
+/// The providers and the tracker are asked with no lock held; the store is
+/// then one `BEGIN IMMEDIATE` transaction on the writer (the walk runs on a
+/// reader and never holds the writer). [`StorageSqlx::ingest_merkle_proof`]
+/// does the same and is the path every other proof source uses; this is its
+/// twin through the SAME store funnel (`store_validated_proof_on`: the proof LAG
 /// gate read on this connection, replace-on-differ, the no-raw guard). A proof
 /// the gate DEFERS (the header has not aged one cycle) is not stored and the
 /// walk continues raw, exactly as before the fetch existed.
 ///
 /// Returns the BUMP bytes only when the proof validated and was stored.
-async fn fetch_and_store_merkle_path(
-    conn: &mut SqliteConnection,
-    storage: Option<&StorageSqlx>,
-    txid: &str,
-) -> Option<Vec<u8>> {
+async fn fetch_and_store_merkle_path(storage: Option<&StorageSqlx>, txid: &str) -> Option<Vec<u8>> {
     let storage = storage?;
     // No tracker, no proof (P0-1): a path nobody can check is never stored,
     // so there is nothing to ask the providers for.
@@ -2325,8 +2470,15 @@ async fn fetch_and_store_merkle_path(
         }
     }
 
+    let mut wtx = match storage.write_tx().await {
+        Ok(wtx) => wtx,
+        Err(e) => {
+            tracing::debug!(txid = %txid, error = %e, "could not open the write transaction for the proof");
+            return None;
+        }
+    };
     let stored = match store_validated_proof_on(
-        &mut *conn,
+        &mut wtx,
         &ValidatedProofRow {
             txid,
             block_height: header.height,
@@ -2377,7 +2529,7 @@ async fn fetch_and_store_merkle_path(
     .bind(proven_tx_id)
     .bind(now)
     .bind(txid)
-    .execute(&mut *conn)
+    .execute(&mut *wtx)
     .await;
 
     let _ = sqlx::query(
@@ -2386,8 +2538,13 @@ async fn fetch_and_store_merkle_path(
     .bind(proven_tx_id)
     .bind(now)
     .bind(txid)
-    .execute(&mut *conn)
+    .execute(&mut *wtx)
     .await;
+
+    if let Err(e) = wtx.commit().await {
+        tracing::debug!(txid = %txid, error = %e, "could not commit the proven tx");
+        return None;
+    }
 
     tracing::info!(
         txid = %txid,
@@ -2445,6 +2602,7 @@ pub(super) async fn stored_bump_refuted(
 
 pub(super) async fn beef_bfs_walk(
     conn: &mut SqliteConnection,
+    writer: &SqlitePool,
     beef: &mut Beef,
     pending_txids: &mut Vec<(String, usize)>,
     processed_txids: &mut HashSet<String>,
@@ -2524,8 +2682,7 @@ pub(super) async fn beef_bfs_walk(
                     .unwrap_or(true);
                 if old_enough {
                     proof_fetch_budget -= 1;
-                    data.merkle_path =
-                        fetch_and_store_merkle_path(&mut *conn, storage, &txid).await;
+                    data.merkle_path = fetch_and_store_merkle_path(storage, &txid).await;
                 }
             }
         }
@@ -2541,7 +2698,8 @@ pub(super) async fn beef_bfs_walk(
 
         if !has_proof {
             if let Some(mut stored_beef) = get_stored_beef(&mut *conn, &txid).await? {
-                compact_stored_beef(&mut *conn, &mut stored_beef, read_check_tracker).await?;
+                compact_stored_beef(&mut *conn, writer, &mut stored_beef, read_check_tracker)
+                    .await?;
 
                 // A stored input_beef is whatever the chain looked like when the
                 // transaction was built; ancestors proven since then make most of
@@ -2587,7 +2745,7 @@ pub(super) async fn beef_bfs_walk(
 
         // Fix 3: Network fallback — if not found locally, try fetching from services
         let tx_data_opt = if tx_data_opt.is_none() {
-            try_network_fallback(&mut *conn, storage, &txid).await?
+            try_network_fallback(storage, &txid).await?
         } else {
             tx_data_opt
         };
@@ -2604,6 +2762,7 @@ pub(super) async fn beef_bfs_walk(
                         // no evidence, so the refutation alone decides.
                         let read_check = super::proof_root_checks::check_unchecked_stored_proof_on(
                             &mut *conn,
+                            writer,
                             read_check_tracker,
                             &txid,
                             &merkle_path,
@@ -2720,6 +2879,7 @@ pub(super) async fn beef_bfs_walk(
 /// A fully-built `Beef` containing all ancestors with their merkle proofs.
 pub(super) async fn rebuild_beef_for_broadcast(
     conn: &mut SqliteConnection,
+    writer: &SqlitePool,
     input_txids: &[String],
     storage: Option<&StorageSqlx>,
 ) -> Result<Beef> {
@@ -2741,6 +2901,7 @@ pub(super) async fn rebuild_beef_for_broadcast(
 
     beef_bfs_walk(
         conn,
+        writer,
         &mut beef,
         &mut pending_txids,
         &mut processed_txids,
@@ -2857,6 +3018,7 @@ fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<Str
 #[allow(clippy::too_many_arguments)]
 async fn build_input_beef(
     conn: &mut SqliteConnection,
+    writer: &SqlitePool,
     chain_tracker: Option<&dyn ChainTracker>,
     extended_inputs: &[ExtendedInput],
     change_inputs: &[AllocatedChangeInput],
@@ -2948,6 +3110,7 @@ async fn build_input_beef(
     // Delegate the BFS ancestor walk to the shared core function.
     beef_bfs_walk(
         &mut *conn,
+        writer,
         &mut beef,
         &mut pending_txids,
         &mut processed_txids,
@@ -3286,15 +3449,14 @@ pub(super) async fn get_tx_with_proof(
 /// `getProvenOrRawTxFromServices()` behavior.
 ///
 /// # Arguments
-/// * `conn` - Database connection for storing fetched tx locally
-/// * `storage` - Optional storage backend (provides services access)
+/// * `storage` - Optional storage backend (provides services access; the
+///   fetched tx is stored through its writer, after the fetch)
 /// * `txid` - The transaction ID to fetch
 ///
 /// # Returns
 /// * `Ok(Some(BeefTxData))` - If the tx was fetched from the network
 /// * `Ok(None)` - If services are unavailable or the tx was not found
 async fn try_network_fallback(
-    conn: &mut SqliteConnection,
     storage: Option<&StorageSqlx>,
     txid: &str,
 ) -> Result<Option<BeefTxData>> {
@@ -3337,14 +3499,13 @@ async fn try_network_fallback(
                 .bind(raw_tx)
                 .bind(now)
                 .bind(now)
-                .execute(&mut *conn)
+                .execute(storage.writer())
                 .await;
 
                 // Also try to get the merkle proof from the network, and record
                 // it: a proof fetched and thrown away has to be fetched again on
                 // every later spend.
-                let merkle_path =
-                    fetch_and_store_merkle_path(&mut *conn, Some(storage), txid).await;
+                let merkle_path = fetch_and_store_merkle_path(Some(storage), txid).await;
 
                 return Ok(Some(BeefTxData {
                     raw_tx: raw_tx.clone(),
@@ -3388,6 +3549,7 @@ async fn try_network_fallback(
 /// unproven ancestor chains can shrink to a few KB once ancestors are proven.
 pub(super) async fn compact_stored_beef(
     conn: &mut SqliteConnection,
+    writer: &SqlitePool,
     beef: &mut Beef,
     chain_tracker: Option<&dyn ChainTracker>,
 ) -> Result<()> {
@@ -3432,6 +3594,7 @@ pub(super) async fn compact_stored_beef(
                 // the stored BEEF) and the row stays unchecked.
                 if !super::proof_root_checks::check_unchecked_stored_proof_on(
                     &mut *conn,
+                    writer,
                     chain_tracker,
                     &txid,
                     &merkle_path,
@@ -4299,7 +4462,7 @@ mod tests {
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -4327,7 +4490,7 @@ mod tests {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }
@@ -4347,7 +4510,7 @@ mod tests {
         .bind(raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }
@@ -4365,6 +4528,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
@@ -4414,6 +4578,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None, // chain_tracker - skip verification for this test
             &extended_inputs,
             &change_inputs,
@@ -4462,7 +4627,7 @@ mod tests {
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -4481,6 +4646,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &change_inputs,
@@ -4528,7 +4694,7 @@ mod tests {
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -4557,6 +4723,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &change_inputs,
@@ -4620,7 +4787,7 @@ mod tests {
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -4802,7 +4969,7 @@ mod tests {
         .bind(&raw_tx2)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -4822,6 +4989,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &change_inputs,
@@ -4869,6 +5037,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -4916,6 +5085,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -4977,6 +5147,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -5026,6 +5197,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None, // chain_tracker - skip verification
             &extended_inputs,
             &change_inputs,
@@ -5088,6 +5260,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let err = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &[],
@@ -5141,7 +5314,7 @@ mod tests {
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -5164,6 +5337,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -5218,6 +5392,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             Some(&tracker),
             &extended_inputs,
             &change_inputs,
@@ -5264,6 +5439,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &change_inputs,
@@ -5342,7 +5518,7 @@ mod tests {
         .bind(input_beef)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }
@@ -5494,6 +5670,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending_txids,
             &mut processed_txids,
@@ -5636,13 +5813,13 @@ mod tests {
         .bind(&funding_raw)
         .bind(now)
         .bind(now)
-        .fetch_one(storage.pool())
+        .fetch_one(storage.writer())
         .await
         .unwrap();
         // The seat's tracker confirmed that root while the orphan was the
         // tip: a CHECKED row (P0-1), which only the reorg tooling demotes.
         {
-            let mut conn = storage.pool().acquire().await.unwrap();
+            let mut conn = storage.writer().acquire().await.unwrap();
             super::super::proof_root_checks::record_root_checked_on(
                 &mut conn,
                 FUNDING_TXID,
@@ -5660,7 +5837,7 @@ mod tests {
         .bind(proven_tx_id)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         sqlx::query(
@@ -5671,7 +5848,7 @@ mod tests {
         .bind(proven_tx_id)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -5709,6 +5886,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let walk = beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -5807,6 +5985,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending_txids,
             &mut processed_txids,
@@ -5849,6 +6028,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending_txids,
             &mut processed_txids,
@@ -5901,7 +6081,7 @@ mod tests {
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -5928,7 +6108,7 @@ mod tests {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }
@@ -6012,12 +6192,12 @@ mod tests {
         .bind("cc00000000000000000000000000000000000000000000000000000000000001")
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         let spending_tx_id = spending_tx.last_insert_rowid();
 
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
 
         // count_change_inputs should see 1 available output
         let count = count_change_inputs(&mut conn, user.user_id, basket.basket_id, true)
@@ -6113,7 +6293,7 @@ mod tests {
         .bind(&child_raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -6133,6 +6313,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &change_inputs,
@@ -6193,6 +6374,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &change_inputs,
@@ -6277,7 +6459,7 @@ mod tests {
         .bind(&parent_raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -6312,7 +6494,7 @@ mod tests {
         .bind(&child_raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -6333,6 +6515,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &change_inputs,
@@ -6423,7 +6606,7 @@ mod tests {
         sqlx::query("UPDATE transactions SET input_beef = ? WHERE reference = ?")
             .bind(&dummy_beef)
             .bind(&create_result.reference)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -6518,6 +6701,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &extended_inputs,
             &change_inputs,
@@ -6587,9 +6771,10 @@ mod tests {
         seed_proven_tx(&storage, txid, &raw_tx, &merkle_path_bytes).await;
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let beef = rebuild_beef_for_broadcast(&mut conn, &[txid.to_string()], None)
-            .await
-            .unwrap();
+        let beef =
+            rebuild_beef_for_broadcast(&mut conn, storage.writer(), &[txid.to_string()], None)
+                .await
+                .unwrap();
 
         // The tx should be in the BEEF
         assert!(
@@ -6613,7 +6798,7 @@ mod tests {
         storage.make_available().await.unwrap();
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let beef = rebuild_beef_for_broadcast(&mut conn, &[], None)
+        let beef = rebuild_beef_for_broadcast(&mut conn, storage.writer(), &[], None)
             .await
             .unwrap();
 
@@ -6635,6 +6820,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         let result = rebuild_beef_for_broadcast(
             &mut conn,
+            storage.writer(),
             &["0000000000000000000000000000000000000000000000000000000000ffffff".to_string()],
             None,
         )
@@ -6686,7 +6872,7 @@ mod tests {
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -6713,7 +6899,7 @@ mod tests {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -6738,7 +6924,7 @@ mod tests {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -6772,7 +6958,7 @@ mod tests {
         // Create a dummy spending transaction for the allocation
         let spending_tx_id = create_spending_tx(&storage, user.user_id, "test1").await;
 
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
 
         let allocated = allocate_change_input(
             &mut conn,
@@ -6833,7 +7019,7 @@ mod tests {
 
         let spending_tx_id = create_spending_tx(&storage, user.user_id, "test2").await;
 
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
 
         let allocated = allocate_change_input(
             &mut conn,
@@ -6887,7 +7073,7 @@ mod tests {
 
         let spending_tx_id = create_spending_tx(&storage, user.user_id, "test3").await;
 
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
 
         let allocated = allocate_change_input(
             &mut conn,
@@ -6940,7 +7126,7 @@ mod tests {
             seed_tagged_change_output(&storage, user.user_id, 9_000_000, "unproven", "big01").await;
 
         let spending_tx_id = create_spending_tx(&storage, user.user_id, "spend1").await;
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
 
         // Target: 270_000 sats (typical x402 upfront payment)
         let allocated = allocate_change_input(
@@ -7187,7 +7373,7 @@ mod tests {
         .bind(&raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         let transaction_id = tx_result.last_insert_rowid();
@@ -7209,7 +7395,7 @@ mod tests {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -7352,7 +7538,7 @@ mod tests {
         let head_txid = seed_custom_output(&storage, user_id, 1, &head_lock, "9e4d").await;
         let head_basket = find_or_insert_output_basket(
             &storage,
-            &mut storage.pool().acquire().await.unwrap(),
+            &mut storage.writer().acquire().await.unwrap(),
             user_id,
             "pf-name-head",
         )
@@ -7361,7 +7547,7 @@ mod tests {
         sqlx::query("UPDATE outputs SET basket_id = ? WHERE txid = ?")
             .bind(head_basket.basket_id)
             .bind(&head_txid)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
         seed_change_output(&storage, user_id, 100_000).await;
@@ -7676,7 +7862,7 @@ mod tests {
         .bind(raw_tx)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }
@@ -7704,7 +7890,7 @@ mod tests {
         .bind(input_beef)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }
@@ -7764,6 +7950,7 @@ mod tests {
         let mut conn = s.pool().acquire().await.unwrap();
         let bytes = build_input_beef(
             &mut conn,
+            s.writer(),
             if tracker { Some(&t) } else { None },
             &[l2_23_input(&chain[2].1)],
             &[],
@@ -7873,6 +8060,7 @@ mod tests {
             let mut conn = s.pool().acquire().await.unwrap();
             let result = build_input_beef(
                 &mut conn,
+                s.writer(),
                 if tracker { Some(&t) } else { None },
                 &[l2_23_input(&chain[1].1)],
                 &[],
@@ -8055,6 +8243,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8094,6 +8283,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8139,6 +8329,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8190,6 +8381,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8245,6 +8437,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8317,6 +8510,7 @@ mod tests {
             let mut conn = storage.pool().acquire().await.unwrap();
             let out = build_input_beef(
                 &mut conn,
+                storage.writer(),
                 Some(&tracker),
                 &inputs,
                 &[],
@@ -8364,6 +8558,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8414,14 +8609,25 @@ mod tests {
         }];
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let untrimmed =
-            build_input_beef(&mut conn, None, &inputs, &[], None, &[], false, false, None)
-                .await
-                .unwrap()
-                .expect("a BEEF is produced");
+        let untrimmed = build_input_beef(
+            &mut conn,
+            storage.writer(),
+            None,
+            &inputs,
+            &[],
+            None,
+            &[],
+            false,
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("a BEEF is produced");
 
         let trimmed = build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &inputs,
             &[],
@@ -8491,10 +8697,21 @@ mod tests {
         }];
 
         let mut conn = storage.pool().acquire().await.unwrap();
-        let bytes = build_input_beef(&mut conn, None, &inputs, &[], None, &[], false, false, None)
-            .await
-            .unwrap()
-            .expect("a BEEF is produced");
+        let bytes = build_input_beef(
+            &mut conn,
+            storage.writer(),
+            None,
+            &inputs,
+            &[],
+            None,
+            &[],
+            false,
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("a BEEF is produced");
 
         let beef = Beef::from_binary(&bytes).unwrap();
         let kept = beef_txids(&beef);
@@ -8512,7 +8729,7 @@ mod tests {
         sqlx::query("UPDATE transactions SET created_at = ? WHERE txid = ?")
             .bind(then)
             .bind(txid)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
     }
@@ -8556,6 +8773,7 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
         build_input_beef(
             &mut conn,
+            storage.writer(),
             None,
             &inputs,
             &[],
@@ -8577,12 +8795,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_input_beef_fetches_a_missing_proof_inside_the_open_transaction() {
+    async fn test_build_input_beef_fetches_a_missing_proof_and_stores_it_through_the_writer() {
         // The wallet holds the parent but no proof for it, exactly what a
         // wallet running without its monitor looks like. The builder must ask
-        // services once, record the proof on the CALLER'S open transaction (a
-        // second pooled connection would block on that transaction's write
-        // lock), and stop the chain there.
+        // services once, with no lock held, record the proof through the
+        // writer (the walk itself reads on a query-only reader), and stop the
+        // chain there.
         use crate::services::mock::{MockResponse, MockWalletServices};
         use crate::services::traits::{BlockHeader, GetMerklePathResult};
         use crate::storage::traits::WalletStorageProvider;
@@ -8647,16 +8865,12 @@ mod tests {
             output: None,
         }];
 
-        // An open write transaction that has already written, so the database
-        // write lock is held for the whole call.
-        let mut tx = storage.pool().begin().await.unwrap();
-        sqlx::query("UPDATE settings SET storage_name = storage_name")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
+        // A reader connection: the walk never holds the writer.
+        let mut conn = storage.pool().acquire().await.unwrap();
 
         let bytes = build_input_beef(
-            &mut tx,
+            &mut conn,
+            storage.writer(),
             None,
             &inputs,
             &[],
@@ -8669,7 +8883,6 @@ mod tests {
         .await
         .unwrap()
         .expect("a BEEF is produced");
-        tx.commit().await.unwrap();
 
         let beef = Beef::from_binary(&bytes).unwrap();
         let kept = beef_txids(&beef);
@@ -8834,6 +9047,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         beef_bfs_walk(
             &mut conn,
+            storage.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -8947,7 +9161,7 @@ mod tests {
             .bind(&raw)
             .bind(now)
             .bind(now)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
             sqlx::query(
@@ -8965,7 +9179,7 @@ mod tests {
             .bind(&txid)
             .bind(now)
             .bind(now)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
         }
@@ -9145,6 +9359,195 @@ mod tests {
                 msg.contains("not known to this wallet"),
                 "the reason: {msg}"
             );
+        }
+
+        // =====================================================================
+        // No tracker await under the write lock (bsv-wallet-cli #44)
+        // =====================================================================
+
+        /// Answers every root as `refuse` says and records, for each ask,
+        /// whether the storage's writer connection was held at that moment.
+        struct ProbeTracker {
+            writer: sqlx::SqlitePool,
+            refuse_height: Option<u32>,
+            asked: std::sync::atomic::AtomicUsize,
+            asked_under_lock: std::sync::atomic::AtomicUsize,
+        }
+
+        impl ProbeTracker {
+            fn new(storage: &StorageSqlx, refuse_height: Option<u32>) -> Self {
+                Self {
+                    writer: storage.writer().clone(),
+                    refuse_height,
+                    asked: Default::default(),
+                    asked_under_lock: Default::default(),
+                }
+            }
+            fn asked(&self) -> usize {
+                self.asked.load(std::sync::atomic::Ordering::SeqCst)
+            }
+            fn asked_under_lock(&self) -> usize {
+                self.asked_under_lock
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl ChainTracker for ProbeTracker {
+            async fn is_valid_root_for_height(
+                &self,
+                _root: &str,
+                height: u32,
+            ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+                use std::sync::atomic::Ordering::SeqCst;
+                self.asked.fetch_add(1, SeqCst);
+                // The writer is one connection. Held by the caller that is
+                // awaiting this answer, it can never be acquired here; a
+                // connection on its way back to the pool is, at once.
+                let probe =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), self.writer.acquire())
+                        .await;
+                if !matches!(probe, Ok(Ok(_))) {
+                    self.asked_under_lock.fetch_add(1, SeqCst);
+                }
+                Ok(self.refuse_height != Some(height))
+            }
+
+            async fn current_height(
+                &self,
+            ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+                Ok(100_000)
+            }
+        }
+
+        async fn count(storage: &StorageSqlx, sql: &str) -> i64 {
+            sqlx::query_scalar(sql)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap()
+        }
+
+        /// Control: the probe sees a writer held by an open write transaction.
+        #[tokio::test]
+        async fn control_the_probe_sees_a_held_writer() {
+            let (storage, _) = setup().await;
+            let tracker = ProbeTracker::new(&storage, None);
+            let tx = storage.write_tx().await.unwrap();
+            tracker.is_valid_root_for_height("00", 1).await.unwrap();
+            assert_eq!(tracker.asked_under_lock(), 1);
+            tx.commit().await.unwrap();
+            tracker.is_valid_root_for_height("00", 1).await.unwrap();
+            assert_eq!(tracker.asked_under_lock(), 1, "free again after the commit");
+        }
+
+        /// The caller's root (height 800) and the stored proof's (900) are
+        /// both read against the tracker, and never while the writer is held.
+        #[tokio::test]
+        async fn the_tracker_is_never_asked_while_the_writer_is_held() {
+            let (storage, user_id) = setup().await;
+            let external = tx_spending(None, 0xaa, 5_000);
+            let known = tx_spending(None, 0xcc, 5_000);
+            seed_known(&storage, user_id, &known, true).await;
+
+            let tracker = ProbeTracker::new(&storage, None);
+            create_action_internal(
+                &storage,
+                Some(&tracker),
+                user_id,
+                args(
+                    vec![input(&external.id()), input(&known.id())],
+                    caller_beef(&external, &[known.id()]),
+                ),
+            )
+            .await
+            .expect("the action is created");
+            assert!(tracker.asked() >= 2, "asked {}", tracker.asked());
+            assert_eq!(tracker.asked_under_lock(), 0);
+        }
+
+        /// A caller's root the tracker refuses is refused before the write
+        /// transaction opens: nothing is allocated, nothing is written.
+        #[tokio::test]
+        async fn a_caller_root_the_tracker_refuses_is_refused_before_any_allocation() {
+            let (storage, user_id) = setup().await;
+            let external = tx_spending(None, 0xaa, 5_000);
+            let known = tx_spending(None, 0xcc, 5_000);
+            seed_known(&storage, user_id, &known, true).await;
+
+            let tracker = ProbeTracker::new(&storage, Some(800));
+            let err = create_action_internal(
+                &storage,
+                Some(&tracker),
+                user_id,
+                args(
+                    vec![input(&external.id()), input(&known.id())],
+                    caller_beef(&external, &[known.id()]),
+                ),
+            )
+            .await
+            .expect_err("the caller's root is refused");
+            assert!(err.to_string().contains("invalid merkle root"), "{err}");
+            assert_eq!(tracker.asked(), 1, "only the caller's root was asked");
+            assert_eq!(tracker.asked_under_lock(), 0);
+            assert_eq!(
+                count(&storage, "SELECT COUNT(*) FROM transactions").await,
+                1
+            );
+            assert_eq!(
+                count(
+                    &storage,
+                    "SELECT COUNT(*) FROM outputs WHERE spent_by IS NOT NULL"
+                )
+                .await,
+                0
+            );
+        }
+
+        /// A BEEF that fails after the allocation committed takes the
+        /// allocation back: the wallet's input is spendable again and the
+        /// action's rows are gone, as the rolled-back transaction left them.
+        #[tokio::test]
+        async fn a_beef_that_fails_after_the_commit_takes_the_allocation_back() {
+            let (storage, user_id) = setup().await;
+            let external = tx_spending(None, 0xaa, 5_000);
+            let known = tx_spending(None, 0xcc, 5_000);
+            seed_known(&storage, user_id, &known, true).await;
+            let outputs_before = count(&storage, "SELECT COUNT(*) FROM outputs").await;
+
+            let mut a = args(
+                vec![input(&external.id()), input(&known.id())],
+                caller_beef(&external, &[known.id()]),
+            );
+            a.options = None;
+            let err = create_action_internal(&storage, None, user_id, a)
+                .await
+                .expect_err("no trustSelf: the txid-only entry is not proven");
+            assert!(
+                err.to_string().contains("BEEF structure is invalid"),
+                "{err}"
+            );
+
+            assert_eq!(
+                count(
+                    &storage,
+                    "SELECT COUNT(*) FROM transactions WHERE description = 'trust self known'"
+                )
+                .await,
+                0,
+                "the action's row is taken back"
+            );
+            assert_eq!(
+                count(&storage, "SELECT COUNT(*) FROM outputs").await,
+                outputs_before
+            );
+            let (spendable, spent_by): (bool, Option<i64>) =
+                sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE txid = ?")
+                    .bind(known.id())
+                    .fetch_one(storage.pool())
+                    .await
+                    .unwrap();
+            assert!(spendable, "the wallet's input is spendable again");
+            assert_eq!(spent_by, None);
         }
     }
 }

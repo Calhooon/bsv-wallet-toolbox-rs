@@ -280,7 +280,7 @@ mod push {
         .bind(req)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         sqlx::query(
@@ -294,7 +294,7 @@ mod push {
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }

@@ -71,7 +71,7 @@ async fn seed_announced(s: &StorageSqlx) -> Announced {
         .bind(outgoing)
         .bind(old)
         .bind(old)
-        .fetch_one(s.pool())
+        .fetch_one(s.writer())
         .await
         .unwrap();
         transaction_ids.push(id);
@@ -93,7 +93,7 @@ async fn seed_announced(s: &StorageSqlx) -> Announced {
         .bind(spent_by)
         .bind(old)
         .bind(old)
-        .fetch_one(s.pool())
+        .fetch_one(s.writer())
         .await
         .unwrap();
         outputs.push(id);
@@ -109,7 +109,7 @@ async fn seed_announced(s: &StorageSqlx) -> Announced {
     .bind(beef.to_binary())
     .bind(old)
     .bind(old)
-    .execute(s.pool())
+    .execute(s.writer())
     .await
     .unwrap();
     Announced {
@@ -221,7 +221,7 @@ async fn age(s: &StorageSqlx, txid: &str) {
     sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
         .bind(Utc::now() - Duration::days(2))
         .bind(txid)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
 }

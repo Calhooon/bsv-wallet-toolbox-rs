@@ -1,0 +1,10 @@
+# A transaction is opened only by `StorageSqlx::write_tx` (`BEGIN IMMEDIATE` on
+# the writer). A deferred BEGIN reads under a snapshot and then fails to write
+# with SQLITE_BUSY_SNAPSHOT (517) when another connection committed first, and
+# busy_timeout never applies to 517 (bsv-wallet-cli #44).
+disallowed-methods = [
+    { path = "sqlx::Pool::begin", reason = "open write transactions with StorageSqlx::write_tx (BEGIN IMMEDIATE on the writer)" },
+    { path = "sqlx::Pool::begin_with", reason = "open write transactions with StorageSqlx::write_tx (BEGIN IMMEDIATE on the writer)" },
+    { path = "sqlx::Connection::begin", reason = "a deferred BEGIN on a connection; open write transactions with StorageSqlx::write_tx" },
+    { path = "sqlx::Acquire::begin", reason = "a deferred BEGIN; open write transactions with StorageSqlx::write_tx" },
+]

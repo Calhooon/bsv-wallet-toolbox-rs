@@ -175,7 +175,7 @@ mod tests {
                 super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
             );
             sqlx::query("DROP TABLE monitor_state")
-                .execute(storage.pool())
+                .execute(storage.writer())
                 .await
                 .unwrap();
             assert!(!table_exists(storage.pool(), "monitor_state").await);
@@ -257,7 +257,7 @@ mod tests {
         storage.make_available().await.unwrap();
         sqlx::query("INSERT INTO monitor_state (key, value, text_value) VALUES (?, 0, 'not json')")
             .bind(MONITOR_STATE_KEY_HEADER_TRACKER)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
         assert!(storage.load_header_tracker_state().await.unwrap().is_none());

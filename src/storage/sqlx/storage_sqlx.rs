@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -54,6 +54,19 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Connections in the reader pool (sqlx's default pool size).
+const READER_POOL_SIZE: u32 = 10;
+
+/// `BEGIN IMMEDIATE` on `pool`: the one sanctioned way to open a transaction
+/// (`clippy.toml` disallows `Pool::begin` and `Pool::begin_with` elsewhere).
+/// `pool` is a writer pool.
+#[allow(clippy::disallowed_methods)]
+pub(crate) async fn begin_immediate(
+    pool: &SqlitePool,
+) -> Result<sqlx::Transaction<'static, Sqlite>> {
+    Ok(pool.begin_with("BEGIN IMMEDIATE").await?)
+}
+
 /// Default maximum length for output scripts stored in the outputs table.
 /// Scripts longer than this will be retrieved from the raw transaction.
 pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
@@ -63,8 +76,14 @@ pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
 /// Implements the full `WalletStorageProvider` trait hierarchy using SQLx
 /// with SQLite as the backend.
 pub struct StorageSqlx {
-    /// Database connection pool.
-    pool: Pool<Sqlite>,
+    /// The reader pool: several connections, each `PRAGMA query_only = ON`,
+    /// so a write sent here fails loudly instead of racing the writer.
+    reader: Pool<Sqlite>,
+    /// The writer pool: exactly one connection. Every write, and every
+    /// write transaction (`write_tx`, `BEGIN IMMEDIATE`), runs here, so two
+    /// writers in this process queue for the connection and never meet in
+    /// SQLite (toolbox cli#44: `SQLITE_BUSY_SNAPSHOT`, 517).
+    writer: Pool<Sqlite>,
     /// Cached settings (loaded on make_available).
     settings: std::sync::RwLock<Option<TableSettings>>,
     /// Storage identity key (set during migration).
@@ -110,13 +129,33 @@ impl StorageSqlx {
             .pragma("busy_timeout", "5000")
             .pragma("synchronous", "NORMAL")
             .create_if_missing(true);
-        let pool = SqlitePool::connect_with(options).await?;
-        let broadcast_memory = Arc::new(super::broadcast_seen::SqlxBroadcastMemory::new(
-            pool.clone(),
+        // The writer first: it creates the file and sets WAL before any
+        // query-only reader opens it. Both pools share the one options value,
+        // so `sqlite::memory:` names one shared in-memory database for both.
+        let writer = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await?;
+        let reader = SqlitePoolOptions::new()
+            .max_connections(READER_POOL_SIZE)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("PRAGMA query_only = ON")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect_with(options)
+            .await?;
+        let broadcast_memory = Arc::new(super::broadcast_seen::SqlxBroadcastMemory::with_pools(
+            reader.clone(),
+            writer.clone(),
         ));
 
         Ok(Self {
-            pool,
+            reader,
+            writer,
             settings: std::sync::RwLock::new(None),
             storage_identity_key: std::sync::RwLock::new(String::new()),
             storage_name: std::sync::RwLock::new(String::new()),
@@ -177,9 +216,27 @@ impl StorageSqlx {
         Self::new(&url).await
     }
 
-    /// Get the database connection pool.
-    pub fn pool(&self) -> &Pool<Sqlite> {
-        &self.pool
+    /// The reader pool. Every connection is `PRAGMA query_only = ON`: a
+    /// write sent here fails (`attempt to write a readonly database`). Writes
+    /// go to [`writer`](Self::writer) or [`write_tx`](Self::write_tx).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.reader
+    }
+
+    /// The writer pool, exactly one connection: for single-statement writes.
+    /// Never hold it (or a [`write_tx`](Self::write_tx)) across a service or
+    /// chain-tracker await.
+    pub fn writer(&self) -> &SqlitePool {
+        &self.writer
+    }
+
+    /// Open a write transaction on the writer with `BEGIN IMMEDIATE`: the
+    /// write lock is taken before the first read, so a contender (another
+    /// process on the same file) waits `busy_timeout` instead of failing
+    /// with `SQLITE_BUSY_SNAPSHOT`, and one in this process waits for the
+    /// writer connection. The only way this crate opens a transaction.
+    pub async fn write_tx(&self) -> Result<sqlx::Transaction<'static, Sqlite>> {
+        begin_immediate(&self.writer).await
     }
 
     /// The persisted broadcast acceptance memory over this storage's pool
@@ -192,7 +249,7 @@ impl StorageSqlx {
     /// Run every migration, in order (see [`MIGRATIONS`]). Idempotent.
     async fn run_migrations(&self) -> Result<()> {
         for (name, sql) in MIGRATIONS {
-            super::broadcast_seen::apply_migration_sql(&self.pool, name, sql).await?;
+            super::broadcast_seen::apply_migration_sql(&self.writer, name, sql).await?;
         }
         Ok(())
     }
@@ -211,7 +268,7 @@ impl StorageSqlx {
             "#,
         )
         .bind(identity_key)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.reader)
         .await?;
 
         match row {
@@ -236,7 +293,7 @@ impl StorageSqlx {
             "#,
         )
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.reader)
         .await?;
 
         match row {
@@ -265,7 +322,7 @@ impl StorageSqlx {
         .bind(active_storage)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         let user_id = result.last_insert_rowid();
@@ -297,7 +354,7 @@ impl StorageSqlx {
         .bind(active_storage)
         .bind(now)
         .bind(user_id)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(())
@@ -316,7 +373,7 @@ impl StorageSqlx {
             LIMIT 1
             "#,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.reader)
         .await?;
 
         match row {
@@ -355,7 +412,7 @@ impl StorageSqlx {
             .bind(&settings.chain)
             .bind(settings.max_output_script)
             .bind(now)
-            .execute(&self.pool)
+            .execute(&self.writer)
             .await?;
         } else {
             // Insert new
@@ -371,7 +428,7 @@ impl StorageSqlx {
             .bind(settings.max_output_script)
             .bind(now)
             .bind(now)
-            .execute(&self.pool)
+            .execute(&self.writer)
             .await?;
         }
 
@@ -479,7 +536,7 @@ impl StorageSqlx {
             query = query.bind(since);
         }
 
-        let rows = query.fetch_all(&self.pool).await?;
+        let rows = query.fetch_all(&self.reader).await?;
 
         let mut outputs = Vec::new();
         for row in rows {
@@ -545,7 +602,7 @@ impl StorageSqlx {
         .bind(user_id)
         .bind(txid)
         .bind(vout as i32)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.reader)
         .await?;
 
         match row {
@@ -638,7 +695,7 @@ impl StorageSqlx {
             query = query.bind(since);
         }
 
-        let rows = query.fetch_all(&self.pool).await?;
+        let rows = query.fetch_all(&self.reader).await?;
 
         let mut baskets = Vec::new();
         for row in rows {
@@ -683,7 +740,7 @@ impl StorageSqlx {
         .bind(user_id)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(TableOutputBasket {
@@ -769,7 +826,7 @@ impl StorageSqlx {
             query = query.bind(since);
         }
 
-        let rows = query.fetch_all(&self.pool).await?;
+        let rows = query.fetch_all(&self.reader).await?;
 
         let mut certificates = Vec::new();
         for row in rows {
@@ -862,7 +919,7 @@ impl StorageSqlx {
             query = query.bind(since);
         }
 
-        let rows = query.fetch_all(&self.pool).await?;
+        let rows = query.fetch_all(&self.reader).await?;
 
         let mut reqs = Vec::new();
         for row in rows {
@@ -921,7 +978,7 @@ impl StorageSqlx {
         )
         .bind(user_id)
         .bind(storage_identity_key)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.reader)
         .await?;
 
         if let Some(row) = row {
@@ -960,7 +1017,7 @@ impl StorageSqlx {
         .bind(&ref_num)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         let sync_state = TableSyncState {
@@ -1111,7 +1168,7 @@ impl WalletStorageReader for StorageSqlx {
                 query = query.bind(label);
             }
 
-            let rows = query.fetch_all(&self.pool).await?;
+            let rows = query.fetch_all(&self.reader).await?;
             label_ids = rows
                 .iter()
                 .map(|r| r.get::<i64, _>("tx_label_id"))
@@ -1156,7 +1213,7 @@ impl WalletStorageReader for StorageSqlx {
             }
             query = query.bind(limit as i32).bind(offset as i32);
 
-            let rows = query.fetch_all(&self.pool).await?;
+            let rows = query.fetch_all(&self.reader).await?;
 
             // Get total count
             let count_sql = format!(
@@ -1170,7 +1227,7 @@ impl WalletStorageReader for StorageSqlx {
             for status in &valid_statuses {
                 count_query = count_query.bind(*status);
             }
-            let count_row = count_query.fetch_one(&self.pool).await?;
+            let count_row = count_query.fetch_one(&self.reader).await?;
             let total: i64 = count_row.get("total");
 
             (rows, total as u32)
@@ -1218,7 +1275,7 @@ impl WalletStorageReader for StorageSqlx {
                 .bind(limit as i32)
                 .bind(offset as i32);
 
-            let rows = query.fetch_all(&self.pool).await?;
+            let rows = query.fetch_all(&self.reader).await?;
 
             // Get total count
             let count_sql = format!(
@@ -1239,7 +1296,7 @@ impl WalletStorageReader for StorageSqlx {
             let count_query = sqlx::query(&count_sql)
                 .bind(user_id)
                 .bind(required_count as i32);
-            let count_row = count_query.fetch_one(&self.pool).await?;
+            let count_row = count_query.fetch_one(&self.reader).await?;
             let total: i64 = count_row.get("total");
 
             (rows, total as u32)
@@ -1304,7 +1361,7 @@ impl WalletStorageReader for StorageSqlx {
                 "#;
                 let label_rows = sqlx::query(labels_sql)
                     .bind(transaction_id)
-                    .fetch_all(&self.pool)
+                    .fetch_all(&self.reader)
                     .await?;
                 let labels: Vec<String> = label_rows.iter().map(|r| r.get("label")).collect();
                 action.labels = Some(labels);
@@ -1322,7 +1379,7 @@ impl WalletStorageReader for StorageSqlx {
                 "#;
                 let output_rows = sqlx::query(outputs_sql)
                     .bind(transaction_id)
-                    .fetch_all(&self.pool)
+                    .fetch_all(&self.reader)
                     .await?;
 
                 let mut wallet_outputs: Vec<WalletActionOutput> = Vec::new();
@@ -1348,7 +1405,7 @@ impl WalletStorageReader for StorageSqlx {
                     "#;
                     let tag_rows = sqlx::query(tags_sql)
                         .bind(output_id)
-                        .fetch_all(&self.pool)
+                        .fetch_all(&self.reader)
                         .await?;
                     let tags: Vec<String> = tag_rows.iter().map(|r| r.get("tag")).collect();
 
@@ -1377,7 +1434,7 @@ impl WalletStorageReader for StorageSqlx {
                 "#;
                 let input_rows = sqlx::query(inputs_sql)
                     .bind(transaction_id)
-                    .fetch_all(&self.pool)
+                    .fetch_all(&self.reader)
                     .await?;
 
                 let mut wallet_inputs: Vec<WalletActionInput> = Vec::new();
@@ -1387,7 +1444,7 @@ impl WalletStorageReader for StorageSqlx {
                     let tx_row =
                         sqlx::query("SELECT raw_tx FROM transactions WHERE transaction_id = ?")
                             .bind(transaction_id)
-                            .fetch_optional(&self.pool)
+                            .fetch_optional(&self.reader)
                             .await?;
                     tx_row.and_then(|r| r.get("raw_tx"))
                 } else {
@@ -1502,7 +1559,7 @@ impl WalletStorageReader for StorageSqlx {
 
         query = query.bind(limit as i32).bind(offset as i32);
 
-        let rows = query.fetch_all(&self.pool).await?;
+        let rows = query.fetch_all(&self.reader).await?;
 
         // Get total count
         let mut count_sql = String::from(
@@ -1530,7 +1587,7 @@ impl WalletStorageReader for StorageSqlx {
             count_query = count_query.bind(cert_type);
         }
 
-        let count_row = count_query.fetch_one(&self.pool).await?;
+        let count_row = count_query.fetch_one(&self.reader).await?;
         let total: i64 = count_row.get("total");
 
         // Build certificate results with fields
@@ -1555,7 +1612,7 @@ impl WalletStorageReader for StorageSqlx {
             let field_rows = sqlx::query(fields_sql)
                 .bind(certificate_id)
                 .bind(user_id)
-                .fetch_all(&self.pool)
+                .fetch_all(&self.reader)
                 .await?;
 
             let mut fields: HashMap<String, String> = HashMap::new();
@@ -1641,7 +1698,7 @@ impl WalletStorageReader for StorageSqlx {
             )
             .bind(user_id)
             .bind(&args.basket)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&self.reader)
             .await?;
 
             match basket_row {
@@ -1677,7 +1734,7 @@ impl WalletStorageReader for StorageSqlx {
                     query = query.bind(tag);
                 }
 
-                let rows = query.fetch_all(&self.pool).await?;
+                let rows = query.fetch_all(&self.reader).await?;
                 tag_ids = rows
                     .iter()
                     .map(|r| r.get::<i64, _>("output_tag_id"))
@@ -1730,7 +1787,7 @@ impl WalletStorageReader for StorageSqlx {
             ));
 
             let query = sqlx::query(&sql).bind(user_id);
-            let rows = query.fetch_all(&self.pool).await?;
+            let rows = query.fetch_all(&self.reader).await?;
 
             // Get total count
             let mut count_sql = format!(
@@ -1748,7 +1805,7 @@ impl WalletStorageReader for StorageSqlx {
 
             let count_row = sqlx::query(&count_sql)
                 .bind(user_id)
-                .fetch_one(&self.pool)
+                .fetch_one(&self.reader)
                 .await?;
             let total: i64 = count_row.get("total");
 
@@ -1798,7 +1855,7 @@ impl WalletStorageReader for StorageSqlx {
                 .bind(limit as i32)
                 .bind(actual_offset as i32);
 
-            let rows = query.fetch_all(&self.pool).await?;
+            let rows = query.fetch_all(&self.reader).await?;
 
             // Get total count
             let count_sql = format!(
@@ -1821,7 +1878,7 @@ impl WalletStorageReader for StorageSqlx {
             let count_query = sqlx::query(&count_sql)
                 .bind(user_id)
                 .bind(required_count as i32);
-            let count_row = count_query.fetch_one(&self.pool).await?;
+            let count_row = count_query.fetch_one(&self.reader).await?;
             let total: i64 = count_row.get("total");
 
             (rows, total as u32)
@@ -1873,7 +1930,7 @@ impl WalletStorageReader for StorageSqlx {
                 "#;
                 let tag_rows = sqlx::query(tags_sql)
                     .bind(output_id)
-                    .fetch_all(&self.pool)
+                    .fetch_all(&self.reader)
                     .await?;
                 Some(tag_rows.iter().map(|r| r.get("tag")).collect())
             } else {
@@ -1889,7 +1946,7 @@ impl WalletStorageReader for StorageSqlx {
                 "#;
                 let label_rows = sqlx::query(labels_sql)
                     .bind(transaction_id)
-                    .fetch_all(&self.pool)
+                    .fetch_all(&self.reader)
                     .await?;
                 Some(label_rows.iter().map(|r| r.get("label")).collect())
             } else {
@@ -1933,10 +1990,11 @@ impl WalletStorageReader for StorageSqlx {
             let mut pending_txids: Vec<(String, usize)> =
                 unique_txids.iter().map(|t| (t.clone(), 0)).collect();
 
-            let mut conn = self.pool.acquire().await?;
+            let mut conn = self.reader.acquire().await?;
 
             beef_bfs_walk(
                 &mut conn,
+                self.writer(),
                 &mut beef_struct,
                 &mut pending_txids,
                 &mut processed_txids,
@@ -1987,8 +2045,8 @@ impl WalletStorageWriter for StorageSqlx {
             // 002 gets the broadcast tables on open, not only on `migrate`.
             self.ensure_broadcast_schema().await?;
             self.ensure_locked_inputs_schema().await?;
-            super::monitor_state::ensure_monitor_state_schema(self.pool()).await?;
-            super::proof_root_checks::ensure_proof_root_checks_schema(self.pool()).await?;
+            super::monitor_state::ensure_monitor_state_schema(self.writer()).await?;
+            super::proof_root_checks::ensure_proof_root_checks_schema(self.writer()).await?;
             let mut cached = lock_write(&self.settings)?;
             *cached = Some(settings.clone());
             Ok(settings)
@@ -2056,7 +2114,7 @@ impl WalletStorageWriter for StorageSqlx {
 
         for table in tables {
             let sql = format!("DROP TABLE IF EXISTS {}", table);
-            sqlx::query(&sql).execute(&self.pool).await?;
+            sqlx::query(&sql).execute(&self.writer).await?;
         }
 
         // Clear cached settings
@@ -2167,7 +2225,7 @@ impl WalletStorageWriter for StorageSqlx {
         .bind(&certificate.signature)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(result.last_insert_rowid())
@@ -2202,7 +2260,7 @@ impl WalletStorageWriter for StorageSqlx {
         .bind(&field.master_key)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(result.last_insert_rowid())
@@ -2230,7 +2288,7 @@ impl WalletStorageWriter for StorageSqlx {
         .bind(&args.certificate_type)
         .bind(&args.certifier)
         .bind(&args.serial_number)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(result.rows_affected() as i64)
@@ -2257,7 +2315,7 @@ impl WalletStorageWriter for StorageSqlx {
         .bind(user_id)
         .bind(&txid)
         .bind(vout)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(result.rows_affected() as i64)
@@ -2328,7 +2386,7 @@ impl WalletStorageWriter for StorageSqlx {
                     .bind(proven_tx_id)
                     .bind(chrono::Utc::now())
                     .bind(tx_id)
-                    .execute(self.pool())
+                    .execute(self.writer())
                     .await?;
                 log.push_str(&format!(
                     "Fixed tx {}: unproven -> completed (proof exists).\n",
@@ -2350,7 +2408,7 @@ impl WalletStorageWriter for StorageSqlx {
                 .bind(proven_tx_id)
                 .bind(chrono::Utc::now())
                 .bind(tx_id)
-                .execute(self.pool())
+                .execute(self.writer())
                 .await?;
                 log.push_str(&format!(
                     "Fixed tx {}: sending -> {} (req={}).\n",
@@ -2408,7 +2466,7 @@ impl WalletStorageWriter for StorageSqlx {
             .bind(chrono::Utc::now())
             .bind(user_id)
             .bind(cutoff)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
             let rows = result.rows_affected() as u32;
             if rows > 0 {
@@ -2430,7 +2488,7 @@ impl WalletStorageWriter for StorageSqlx {
                 "#,
             )
             .bind(cutoff)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
             let rows = result.rows_affected() as u32;
             if rows > 0 {
@@ -2442,7 +2500,7 @@ impl WalletStorageWriter for StorageSqlx {
         // 3. Clean up old monitor events
         let result = sqlx::query(r#"DELETE FROM monitor_events WHERE created_at < ?"#)
             .bind(cutoff)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         let rows = result.rows_affected() as u32;
         if rows > 0 {
@@ -2721,7 +2779,7 @@ impl StorageSqlx {
         // beef should replace the proof in storage"; Arcade's `reorg_reanchor`
         // MINED is the same message), the no-raw guard and the empty-hash
         // backfill, in one transaction with the record completion below.
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write_tx().await?;
         let stored = store_validated_proof_on(
             &mut tx,
             &ValidatedProofRow {
@@ -2900,7 +2958,7 @@ impl StorageSqlx {
             "#,
         )
         .bind(now)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?
         .rows_affected();
         out.linked_from_proven_txs = linked;
@@ -2920,7 +2978,7 @@ impl StorageSqlx {
                 "#,
             )
             .bind(now)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         }
 
@@ -2958,7 +3016,7 @@ impl StorageSqlx {
             .bind(&input_beef)
             .bind(now)
             .bind(now)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?
             .rows_affected();
             if created > 0 {
@@ -3034,7 +3092,7 @@ impl StorageSqlx {
             .bind(attempts)
             .bind(now)
             .bind(proven_tx_req_id)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
 
         let tx_row: Option<(i64,)> = sqlx::query_as(
@@ -3056,7 +3114,7 @@ impl StorageSqlx {
         )
         .bind(now)
         .bind(transaction_id)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         // Its inputs: released one by one, each on a chain verification.
@@ -3093,7 +3151,7 @@ impl StorageSqlx {
                 )
                 .bind(now)
                 .bind(output_id)
-                .execute(self.pool())
+                .execute(self.writer())
                 .await?;
                 restored += 1;
             } else {
@@ -3113,7 +3171,7 @@ impl StorageSqlx {
         )
         .bind(now)
         .bind(transaction_id)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         // No provider skips it again, and everything this wallet built on
@@ -3144,12 +3202,12 @@ impl StorageSqlx {
         sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
             .bind(now)
             .bind(proven_tx_req_id)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ? AND status IN ('sending', 'unproven')")
             .bind(now)
             .bind(txid)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         Ok(true)
     }
@@ -3296,7 +3354,7 @@ impl StorageSqlx {
             .bind(history)
             .bind(now)
             .bind(req.proven_tx_req_id)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         Ok(())
     }
@@ -3348,7 +3406,7 @@ impl StorageSqlx {
             .bind(history)
             .bind(now)
             .bind(proven_tx_req_id)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         self.queue_competitors(txid, competitors).await?;
         Ok(())
@@ -3417,7 +3475,7 @@ impl StorageSqlx {
             sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
                 .bind(append_req_history_note(&history, note))
                 .bind(proven_tx_req_id)
-                .execute(self.pool())
+                .execute(self.writer())
                 .await?;
         }
         Ok(())
@@ -3469,7 +3527,7 @@ impl StorageSqlx {
         sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
             .bind(serde_json::Value::Object(object).to_string())
             .bind(proven_tx_req_id)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         tracing::info!(
             txid = %txid,
@@ -3813,11 +3871,12 @@ impl StorageSqlx {
         // pass at a gate already counted (an Arcade MINED word, the 2-hour
         // fallback, a `tick`, a nosend proof) asks but counts nothing.
         let counts_as_attempt = {
-            let mut conn = self.pool().acquire().await?;
-            let counted = super::monitor_state::read_proof_attempt_height_on(&mut conn).await?;
+            let mut tx = self.write_tx().await?;
+            let counted = super::monitor_state::read_proof_attempt_height_on(&mut tx).await?;
             if proof_gate > counted {
-                super::monitor_state::write_proof_attempt_height_on(&mut conn, proof_gate).await?;
+                super::monitor_state::write_proof_attempt_height_on(&mut tx, proof_gate).await?;
             }
+            tx.commit().await?;
             proof_gate > counted
         };
 
@@ -3897,7 +3956,7 @@ impl StorageSqlx {
             )
             .bind(now)
             .bind(req.proven_tx_req_id)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         }
 
@@ -4069,7 +4128,7 @@ impl StorageSqlx {
                                 .bind(attempts)
                                 .bind(now)
                                 .bind(req.proven_tx_req_id)
-                                .execute(self.pool())
+                                .execute(self.writer())
                                 .await?;
                                 continue;
                             }
@@ -4083,7 +4142,7 @@ impl StorageSqlx {
                         .bind(req.attempts + 1)
                         .bind(chrono::Utc::now())
                         .bind(req.proven_tx_req_id)
-                        .execute(self.pool())
+                        .execute(self.writer())
                         .await?;
                     }
                 }
@@ -4096,7 +4155,7 @@ impl StorageSqlx {
                     )
                     .bind(now)
                     .bind(req.proven_tx_req_id)
-                    .execute(self.pool())
+                    .execute(self.writer())
                     .await?;
                 }
             }
@@ -4145,7 +4204,7 @@ impl StorageSqlx {
                                     .bind(&header.merkle_root)
                                     .bind(now)
                                     .bind(proven_tx_id)
-                                    .execute(self.pool())
+                                    .execute(self.writer())
                                     .await?;
                                 header.height
                             }
@@ -4169,7 +4228,7 @@ impl StorageSqlx {
                         .bind(&bump_bytes)
                         .bind(now)
                         .bind(proven_tx_id)
-                        .execute(self.pool())
+                        .execute(self.writer())
                         .await?;
                     repaired_count += 1;
                 }
@@ -4564,7 +4623,7 @@ impl MonitorStorage for StorageSqlx {
     }
 
     async fn set_max_acceptable_proof_height(&self, height: u32) -> Result<()> {
-        let mut conn = self.pool().acquire().await?;
+        let mut conn = self.writer().acquire().await?;
         super::monitor_state::write_proof_gate_on(&mut conn, height).await
     }
 
@@ -4574,7 +4633,7 @@ impl MonitorStorage for StorageSqlx {
     }
 
     async fn save_header_tracker_state(&self, state: &HeaderTrackerState) -> Result<()> {
-        let mut conn = self.pool().acquire().await?;
+        let mut conn = self.writer().acquire().await?;
         super::monitor_state::write_header_tracker_on(&mut conn, state).await
     }
 
@@ -4592,7 +4651,7 @@ impl MonitorStorage for StorageSqlx {
         .bind(block_hash)
         .bind(chrono::Utc::now())
         .bind(txid)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
         Ok(done.rows_affected() > 0)
     }
@@ -4624,7 +4683,7 @@ impl MonitorStorage for StorageSqlx {
 
     async fn demote_stale_proof(&self, txid: &str) -> Result<bool> {
         // One transaction: either every step of the revert lands or none.
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.write_tx().await?;
         let existed = demote_stale_proof_on(&mut tx, txid).await?;
         tx.commit().await?;
         Ok(existed)
@@ -4650,7 +4709,7 @@ impl MonitorStorage for StorageSqlx {
         let input_txids = parse_input_txids(&raw_tx)?;
         let mut beef = {
             let mut conn = self.pool().acquire().await?;
-            rebuild_beef_for_broadcast(&mut conn, &input_txids, Some(self)).await?
+            rebuild_beef_for_broadcast(&mut conn, self.writer(), &input_txids, Some(self)).await?
         };
         beef.merge_raw_tx(raw_tx, None);
         let results = services
@@ -4813,8 +4872,13 @@ impl MonitorStorage for StorageSqlx {
 
                 // Rebuild BEEF from DB state
                 let mut conn = self.pool().acquire().await?;
-                let mut beef = match rebuild_beef_for_broadcast(&mut conn, &input_txids, Some(self))
-                    .await
+                let mut beef = match rebuild_beef_for_broadcast(
+                    &mut conn,
+                    self.writer(),
+                    &input_txids,
+                    Some(self),
+                )
+                .await
                 {
                     Ok(b) => b,
                     Err(e) => {
@@ -4829,6 +4893,7 @@ impl MonitorStorage for StorageSqlx {
                                     let tracker = self.get_chain_tracker().await;
                                     if let Err(e2) = super::create_action::compact_stored_beef(
                                         &mut conn,
+                                        self.writer(),
                                         &mut fallback_beef,
                                         tracker.as_deref(),
                                     )
@@ -4874,7 +4939,7 @@ impl MonitorStorage for StorageSqlx {
             sqlx::query("UPDATE proven_tx_reqs SET status = 'sending', updated_at = ? WHERE proven_tx_req_id = ?")
                 .bind(now)
                 .bind(req.proven_tx_req_id)
-                .execute(self.pool())
+                .execute(self.writer())
                 .await?;
 
             // Broadcast via services - returns Vec<PostBeefResult> (one per provider)
@@ -4890,13 +4955,13 @@ impl MonitorStorage for StorageSqlx {
                         sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
                             .bind(now)
                             .bind(req.proven_tx_req_id)
-                            .execute(self.pool())
+                            .execute(self.writer())
                             .await?;
 
                         sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
                             .bind(now)
                             .bind(&req.txid)
-                            .execute(self.pool())
+                            .execute(self.writer())
                             .await?;
 
                         send_with_results.push(SendWithResult {
@@ -4947,12 +5012,12 @@ impl MonitorStorage for StorageSqlx {
                                 sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
                                     .bind(now)
                                     .bind(req.proven_tx_req_id)
-                                    .execute(self.pool())
+                                    .execute(self.writer())
                                     .await?;
                                 sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
                                     .bind(now)
                                     .bind(&req.txid)
-                                    .execute(self.pool())
+                                    .execute(self.writer())
                                     .await?;
                                 tracing::info!(
                                     "send_waiting: tx {} reported as orphan mempool but found alive on chain — treating as success",
@@ -5319,7 +5384,7 @@ impl MonitorStorage for StorageSqlx {
                     )
                     .bind(now)
                     .bind(req.proven_tx_req_id)
-                    .execute(self.pool())
+                    .execute(self.writer())
                     .await?;
 
                     tracing::debug!(
@@ -5363,7 +5428,7 @@ impl MonitorStorage for StorageSqlx {
             "#,
         )
         .bind(now)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?
         .rows_affected();
 
@@ -5414,7 +5479,7 @@ impl MonitorStorage for StorageSqlx {
                 .bind(proven_tx_id)
                 .bind(now)
                 .bind(txid)
-                .execute(self.pool())
+                .execute(self.writer())
                 .await?;
 
                 tracing::debug!(
@@ -5453,7 +5518,7 @@ impl MonitorStorage for StorageSqlx {
                 "#,
             )
             .bind(cutoff)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
 
             let deleted = result.rows_affected() as u32;
@@ -5477,7 +5542,7 @@ impl MonitorStorage for StorageSqlx {
                 "#,
             )
             .bind(cutoff)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
 
             let deleted = result.rows_affected() as u32;
@@ -5500,7 +5565,7 @@ impl MonitorStorage for StorageSqlx {
             )
             .bind(now)
             .bind(cutoff)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
 
             let cleaned = result.rows_affected() as u32;
@@ -5599,6 +5664,7 @@ impl MonitorStorage for StorageSqlx {
                         // row stays unchecked for a later pass.
                         if !super::proof_root_checks::check_unchecked_stored_proof_on(
                             &mut conn,
+                            self.writer(),
                             tracker.as_deref(),
                             txid,
                             &merkle_path,
@@ -5651,7 +5717,7 @@ impl MonitorStorage for StorageSqlx {
                 .bind(&new_bytes)
                 .bind(now)
                 .bind(req_id)
-                .execute(self.pool())
+                .execute(self.writer())
                 .await?;
 
                 compacted += 1;
@@ -5739,7 +5805,7 @@ impl MonitorStorage for StorageSqlx {
         .bind(status_str)
         .bind(now)
         .bind(proven_tx_req_id)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         tracing::debug!(
@@ -5784,7 +5850,7 @@ impl MonitorStorage for StorageSqlx {
         )
         .bind(now)
         .bind(txid)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         let tx_result = sqlx::query(
@@ -5793,7 +5859,7 @@ impl MonitorStorage for StorageSqlx {
         )
         .bind(now)
         .bind(txid)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         let updated = req_result.rows_affected() > 0 || tx_result.rows_affected() > 0;
@@ -5822,7 +5888,7 @@ impl MonitorStorage for StorageSqlx {
         .bind(req_status)
         .bind(now)
         .bind(txid)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         let tx_result = sqlx::query(
@@ -5831,7 +5897,7 @@ impl MonitorStorage for StorageSqlx {
         )
         .bind(now)
         .bind(txid)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         if tx_result.rows_affected() > 0 {
@@ -5846,7 +5912,7 @@ impl MonitorStorage for StorageSqlx {
             )
             .bind(now)
             .bind(txid)
-            .execute(self.pool())
+            .execute(self.writer())
             .await?;
         }
 
@@ -5962,7 +6028,7 @@ impl StorageSqlx {
         .bind(key_offset)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(result.last_insert_rowid())
@@ -5981,7 +6047,7 @@ impl StorageSqlx {
         )
         .bind(now)
         .bind(commission_id)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(())
@@ -5998,7 +6064,7 @@ impl StorageSqlx {
             "#,
         )
         .bind(user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&self.reader)
         .await?;
 
         let commissions = rows
@@ -6039,7 +6105,7 @@ impl StorageSqlx {
         .bind(details)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(result.last_insert_rowid())
@@ -6067,7 +6133,7 @@ impl StorageSqlx {
             )
             .bind(event)
             .bind(limit)
-            .fetch_all(&self.pool)
+            .fetch_all(&self.reader)
             .await?
         } else {
             sqlx::query(
@@ -6079,7 +6145,7 @@ impl StorageSqlx {
                 "#,
             )
             .bind(limit)
-            .fetch_all(&self.pool)
+            .fetch_all(&self.reader)
             .await?
         };
 
@@ -6164,7 +6230,7 @@ impl StorageSqlx {
                 .bind(transaction_id)
                 .bind(target_satoshis)
                 .bind(target_satoshis)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&self.reader)
                 .await?;
 
         match row {
@@ -6173,13 +6239,13 @@ impl StorageSqlx {
                 sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
                     .bind(transaction_id)
                     .bind(output_id)
-                    .execute(&self.pool)
+                    .execute(&self.writer)
                     .await?;
 
                 // Fetch the full output record
                 let full_row = sqlx::query("SELECT * FROM outputs WHERE output_id = ?")
                     .bind(output_id)
-                    .fetch_one(&self.pool)
+                    .fetch_one(&self.reader)
                     .await?;
 
                 let now = chrono::Utc::now();
@@ -6422,7 +6488,7 @@ impl StorageSqlx {
             "#,
         )
         .bind(cutoff)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
 
         Ok(result.rows_affected())
@@ -6544,7 +6610,7 @@ impl StorageSqlx {
         )
         .bind(now)
         .bind(req_id)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         // 'completed' rows are already correct — never move them backward.
@@ -6553,7 +6619,7 @@ impl StorageSqlx {
         )
         .bind(now)
         .bind(txid)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
 
         // Restore outputs of this transaction, but validate each against
@@ -6579,7 +6645,7 @@ impl StorageSqlx {
                     )
                     .bind(now)
                     .bind(output_id)
-                    .execute(self.pool())
+                    .execute(self.writer())
                     .await?;
                     restored += 1;
                 }
@@ -6703,7 +6769,7 @@ impl StorageSqlx {
                     .bind(user_tx_id)
                     .bind(now)
                     .bind(output_id)
-                    .execute(self.pool())
+                    .execute(self.writer())
                     .await?;
                 } else {
                     sqlx::query(
@@ -6711,7 +6777,7 @@ impl StorageSqlx {
                     )
                     .bind(now)
                     .bind(output_id)
-                    .execute(self.pool())
+                    .execute(self.writer())
                     .await?;
                 }
             }
@@ -6731,7 +6797,7 @@ impl StorageSqlx {
         )
         .bind(now)
         .bind(req_id)
-        .execute(self.pool())
+        .execute(self.writer())
         .await?;
         Ok(())
     }
@@ -6864,7 +6930,7 @@ mod tests {
         )
         .bind(user.user_id)
         .bind(&txid)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -6919,7 +6985,7 @@ mod tests {
         )
         .bind(user.user_id)
         .bind(&txid)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -6939,7 +7005,7 @@ mod tests {
             "#,
         )
         .bind(user.user_id)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -6959,7 +7025,7 @@ mod tests {
         )
         .bind(label_id)
         .bind(transaction_id)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -7148,7 +7214,7 @@ mod tests {
             "#,
         )
         .bind(user.user_id)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -7170,7 +7236,7 @@ mod tests {
         )
         .bind(user.user_id)
         .bind(cert_id)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -7241,7 +7307,7 @@ mod tests {
             "#,
         )
         .bind(user.user_id)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -7252,7 +7318,7 @@ mod tests {
             "#,
         )
         .bind(user.user_id)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -7602,7 +7668,7 @@ mod tests {
             "#,
         )
         .bind(user.user_id)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -8429,7 +8495,7 @@ mod tests {
             .bind(format!("ref-{}", &txid[..8]))
             .bind(now)
             .bind(now)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap()
             .last_insert_rowid()
@@ -8455,7 +8521,7 @@ mod tests {
             .bind(txid)
             .bind(now)
             .bind(now)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap()
             .last_insert_rowid()
@@ -8480,7 +8546,7 @@ mod tests {
             .bind(raw_tx)
             .bind(stamp)
             .bind(stamp)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap()
             .last_insert_rowid()
@@ -8933,7 +8999,7 @@ mod tests {
             ))
             .bind(txid)
             .bind(provider)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
         }

@@ -171,11 +171,7 @@ pub async fn internalize_action_internal(
 
     // Begin a SQL transaction to ensure atomicity of all subsequent DB operations.
     // If any step fails or the function returns early, sqlx will auto-rollback on drop.
-    let mut tx = storage
-        .pool()
-        .begin()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    let mut tx = storage.write_tx().await?;
 
     // Step 3: Check for existing transaction
     let existing_tx = find_existing_transaction(&mut tx, user_id, &txid).await?;
@@ -659,9 +655,7 @@ pub async fn internalize_action_internal(
     }
 
     // Commit the SQL transaction. All DB operations above are now atomically persisted.
-    tx.commit()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    tx.commit().await?;
 
     // Step 11: Synchronous broadcast for a brand-new req.
     // TS parity: wallet-toolbox storage/methods/internalizeAction.ts:598-623
@@ -1588,7 +1582,7 @@ async fn broadcast_new_internalized_req(
     )
     .bind(now)
     .bind(txid)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await?;
 
     tracing::info!(
@@ -1627,7 +1621,7 @@ pub async fn mark_internalized_tx_failed(storage: &StorageSqlx, txid: &str) -> R
     sqlx::query("UPDATE transactions SET status = 'failed', updated_at = ? WHERE txid = ?")
         .bind(now)
         .bind(txid)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await?;
 
     // 2. Mark created outputs as unspendable
@@ -1640,14 +1634,14 @@ pub async fn mark_internalized_tx_failed(storage: &StorageSqlx, txid: &str) -> R
     )
     .bind(now)
     .bind(txid)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await?;
 
     // 3. Mark proven_tx_req as invalid
     sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid', updated_at = ? WHERE txid = ?")
         .bind(now)
         .bind(txid)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await?;
 
     tracing::info!(
@@ -2548,7 +2542,7 @@ mod tests {
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -2569,7 +2563,7 @@ mod tests {
         .bind(status)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }
@@ -3189,7 +3183,7 @@ mod tests {
         .bind(satoshis)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         (tx_id, result.last_insert_rowid())
@@ -3228,7 +3222,7 @@ mod tests {
         let spender_tx_id =
             insert_existing_tx(&storage, user_id, &"22".repeat(32), "unproven").await;
 
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
         let transitions =
             mark_user_inputs_spent(&mut conn, user_id, spender_tx_id, &[(coin_txid.clone(), 0)])
                 .await
@@ -3292,13 +3286,13 @@ mod tests {
         sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
             .bind(competing_tx_id)
             .bind(out1)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
         sqlx::query("UPDATE outputs SET spendable = 1, spent_by = ? WHERE output_id = ?")
             .bind(competing_tx_id)
             .bind(out2)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -3337,7 +3331,7 @@ mod tests {
         let spender_tx_id =
             insert_existing_tx(&storage, user_a, &"22".repeat(32), "unproven").await;
 
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
         let transitions =
             mark_user_inputs_spent(&mut conn, user_a, spender_tx_id, &[(coin_txid.clone(), 0)])
                 .await
@@ -3380,7 +3374,7 @@ mod tests {
         let spender_tx_id =
             insert_existing_tx(&storage, user_a, &"22".repeat(32), "unproven").await;
 
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
         let transitions =
             mark_user_inputs_spent(&mut conn, user_a, spender_tx_id, &[(coin_txid.clone(), 0)])
                 .await
@@ -3388,7 +3382,7 @@ mod tests {
         drop(conn);
         assert_eq!(transitions.len(), 2);
 
-        restore_inputs_to_spendable(storage.pool(), &transitions)
+        restore_inputs_to_spendable(storage.writer(), &transitions)
             .await
             .unwrap();
 
@@ -3419,11 +3413,11 @@ mod tests {
         sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
             .bind(competing_tx_id)
             .bind(out_competing)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
-        let mut conn = storage.pool().acquire().await.unwrap();
+        let mut conn = storage.writer().acquire().await.unwrap();
         let transitions = mark_user_inputs_spent(
             &mut conn,
             user_id,
@@ -3435,11 +3429,11 @@ mod tests {
         drop(conn);
         assert_eq!(transitions.len(), 1, "competing row not in transitions");
 
-        restore_inputs_to_spendable(storage.pool(), &transitions)
+        restore_inputs_to_spendable(storage.writer(), &transitions)
             .await
             .unwrap();
         // Double-restore is harmless.
-        restore_inputs_to_spendable(storage.pool(), &transitions)
+        restore_inputs_to_spendable(storage.writer(), &transitions)
             .await
             .unwrap();
 
@@ -3455,7 +3449,7 @@ mod tests {
     #[tokio::test]
     async fn test_restore_empty_list_noop() {
         let storage = create_test_storage().await;
-        restore_inputs_to_spendable(storage.pool(), &[])
+        restore_inputs_to_spendable(storage.writer(), &[])
             .await
             .unwrap();
     }

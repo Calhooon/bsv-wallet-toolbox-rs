@@ -81,7 +81,7 @@ async fn seed(s: &StorageSqlx) -> Fixture {
         .bind(outgoing)
         .bind(Utc::now())
         .bind(Utc::now())
-        .fetch_one(s.pool())
+        .fetch_one(s.writer())
         .await
         .unwrap();
         ids.push(id);
@@ -111,7 +111,7 @@ async fn seed(s: &StorageSqlx) -> Fixture {
         .bind(spent_by)
         .bind(Utc::now())
         .bind(Utc::now())
-        .fetch_one(s.pool())
+        .fetch_one(s.writer())
         .await
         .unwrap();
         outputs.push(id);
@@ -211,10 +211,10 @@ async fn change_is_offered(s: &StorageSqlx, f: &Fixture) -> bool {
     .bind(format!("t2-{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)))
     .bind(Utc::now())
     .bind(Utc::now())
-    .fetch_one(s.pool())
+    .fetch_one(s.writer())
     .await
     .unwrap();
-    let mut conn = s.pool().acquire().await.unwrap();
+    let mut conn = s.writer().acquire().await.unwrap();
     let picked = allocate_change_input(&mut conn, f.user_id, f.basket_id, spender, 500, true)
         .await
         .unwrap();
@@ -479,9 +479,10 @@ async fn ruling_7c_step_6_the_beef_carries_the_stale_ancestor_as_bytes() {
     assert!(proven_row(&s, &f.t).await.is_some(), "A1's path is stored");
 
     let mut conn = s.pool().acquire().await.unwrap();
-    let beef = rebuild_beef_for_broadcast(&mut conn, std::slice::from_ref(&f.t), Some(&s))
-        .await
-        .unwrap();
+    let beef =
+        rebuild_beef_for_broadcast(&mut conn, s.writer(), std::slice::from_ref(&f.t), Some(&s))
+            .await
+            .unwrap();
     let t = beef.find_txid(&f.t).expect("T rides in the BEEF");
     assert!(t.bump_index().is_none(), "T as bytes, no BUMP");
     assert_eq!(t.raw_tx().map(<[u8]>::to_vec), Some(f.t_raw.clone()));
@@ -498,6 +499,7 @@ async fn ruling_7c_step_6_the_beef_carries_the_stale_ancestor_as_bytes() {
     let mut processed = std::collections::HashSet::new();
     beef_bfs_walk(
         &mut conn,
+        s.writer(),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -524,9 +526,10 @@ async fn ruling_7c_control_a_kept_root_merges_the_stored_path() {
     let _mock = after_reorg(&s, true, statuses(BroadcastStatus::Unknown), &f.t).await;
 
     let mut conn = s.pool().acquire().await.unwrap();
-    let beef = rebuild_beef_for_broadcast(&mut conn, std::slice::from_ref(&f.t), Some(&s))
-        .await
-        .unwrap();
+    let beef =
+        rebuild_beef_for_broadcast(&mut conn, s.writer(), std::slice::from_ref(&f.t), Some(&s))
+            .await
+            .unwrap();
     assert!(beef.find_txid(&f.t).unwrap().bump_index().is_some());
     assert!(
         beef.find_txid(COINBASE_TXID).is_none(),

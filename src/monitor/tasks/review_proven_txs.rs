@@ -266,7 +266,7 @@ mod tests {
         )
         .bind(&txid)
         .bind("aa".repeat(32))
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         // The header service's root at height 5 (the synthetic header's,

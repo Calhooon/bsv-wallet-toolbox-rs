@@ -27,6 +27,13 @@ pub enum Error {
     #[error("Database error: {0}")]
     DatabaseError(String),
 
+    /// The SQLite store answered busy or locked: primary result code 5
+    /// (`SQLITE_BUSY`, `SQLITE_BUSY_SNAPSHOT` is 517) or 6 (`SQLITE_LOCKED`).
+    /// `code` is the extended code SQLite gave. The Display begins exactly
+    /// `Store busy: sqlite code N`; consumers classify on that prefix.
+    #[error("Store busy: sqlite code {code}")]
+    StoreBusy { code: i32 },
+
     /// A database schema migration failed.
     #[error("Migration error: {0}")]
     MigrationError(String),
@@ -166,11 +173,25 @@ pub enum Error {
     Internal(String),
 }
 
+/// The extended SQLite result code of a busy or locked answer (primary code
+/// 5 or 6), or `None` for every other error.
+#[cfg(feature = "sqlite")]
+pub(crate) fn sqlite_busy_code(err: &sqlx::Error) -> Option<i32> {
+    let sqlx::Error::Database(db) = err else {
+        return None;
+    };
+    let code: i32 = db.code()?.parse().ok()?;
+    matches!(code & 0xff, 5 | 6).then_some(code)
+}
+
 // Manual From impl for sqlx::Error to avoid trait bound issues
 #[cfg(feature = "sqlite")]
 impl From<sqlx::Error> for Error {
     fn from(err: sqlx::Error) -> Self {
-        Error::SqlxError(err.to_string())
+        match sqlite_busy_code(&err) {
+            Some(code) => Error::StoreBusy { code },
+            None => Error::SqlxError(err.to_string()),
+        }
     }
 }
 
