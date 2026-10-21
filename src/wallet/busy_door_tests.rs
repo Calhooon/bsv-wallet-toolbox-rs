@@ -1212,3 +1212,125 @@ async fn a_wallet_and_a_monitor_over_one_store_share_the_writer() {
     assert_eq!(done, i64::from(ROUNDS));
     assert_eq!(wallet.storage().writer().size(), 1, "one writer connection");
 }
+
+/// The arguments of a direct `acquireCertificate` with one field.
+fn direct_certificate_args() -> bsv_rs::wallet::AcquireCertificateArgs {
+    let mut fields = HashMap::new();
+    fields.insert("name".to_string(), "v".to_string());
+    bsv_rs::wallet::AcquireCertificateArgs {
+        certificate_type: "dGVzdC1jZXJ0LXR5cGU=".to_string(),
+        certifier: "02".to_string() + &"ab".repeat(32),
+        acquisition_protocol: bsv_rs::wallet::AcquisitionProtocol::Direct,
+        fields,
+        serial_number: Some("c2VyaWFsLW51bWJlcg==".to_string()),
+        revocation_outpoint: Some("abc123.0".to_string()),
+        signature: Some("deadbeef".to_string()),
+        certifier_url: None,
+        keyring_revealer: None,
+        keyring_for_subject: None,
+        privileged: None,
+        privileged_reason: None,
+    }
+}
+
+/// `(certificates, certificate_fields)` rows.
+async fn certificate_rows(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> (i64, i64) {
+    let pool = wallet.storage().pool();
+    let certificates: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM certificates")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let fields: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM certificate_fields")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    (certificates, fields)
+}
+
+/// Review 4 G1 of bsv-wallet-cli #44: a direct `acquireCertificate` wrote
+/// the certificate row, then each field as its own write; a busy at a field
+/// answered `WalletBusy` with the row committed and no fields, and the repeat
+/// refused `UNIQUE constraint failed: certificates`. The certificate and its
+/// fields are one write transaction now: a busy at the field writes nothing,
+/// the answer is `WalletBusy` (honest), and the same call repeated stores
+/// the certificate with its field.
+#[tokio::test]
+async fn a_busy_certificate_field_insert_writes_nothing_and_is_wallet_busy() {
+    let (_dir, wallet) = wallet().await;
+
+    wallet.storage().busy_next_certificate_field();
+    let first = wallet
+        .acquire_certificate(direct_certificate_args(), ORIGINATOR)
+        .await;
+    assert!(
+        matches!(first, Err(bsv_rs::Error::WalletBusy { .. })),
+        "a busy before anything committed is WalletBusy: {:?}",
+        first
+    );
+    assert_eq!(
+        certificate_rows(&wallet).await,
+        (0, 0),
+        "nothing stored: the certificate and its fields are one write"
+    );
+
+    let repeat = wallet
+        .acquire_certificate(direct_certificate_args(), ORIGINATOR)
+        .await;
+    assert!(repeat.is_ok(), "the repeat stores it: {:?}", repeat.err());
+    assert_eq!(certificate_rows(&wallet).await, (1, 1));
+}
+
+/// Review 4 G1: on the issuance path the store is written after the
+/// exchange with the certifier, a post to a third party that has issued. A
+/// busy there is never `WalletBusy` (a host would repeat the exchange): it is
+/// a storage error the caller sees, `Storage error: Store busy: ...`, with
+/// nothing stored.
+#[tokio::test]
+async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
+    use super::super::certificate_issuance::{store_certificate, ParseCertificateResponseResult};
+    use bsv_rs::auth::certificates::Certificate;
+
+    let (_dir, wallet) = wallet().await;
+    let certifier = PrivateKey::random().public_key();
+    let subject = PublicKey::from_hex(&wallet.identity_key).unwrap();
+    let mut cert_fields = HashMap::new();
+    cert_fields.insert("name".to_string(), "encrypted".to_string());
+    let parsed = ParseCertificateResponseResult {
+        certificate: Certificate::new([7u8; 32], [9u8; 32], subject, certifier.clone()),
+        server_nonce: String::new(),
+        cert_fields,
+        serial_number: [9u8; 32],
+    };
+    let mut keyring = HashMap::new();
+    keyring.insert("name".to_string(), "key".to_string());
+
+    wallet.storage().busy_next_certificate_field();
+    let stored = store_certificate(
+        wallet.storage(),
+        &wallet.auth(),
+        &parsed,
+        &keyring,
+        &certifier,
+        &wallet.identity_key,
+        "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+    )
+    .await;
+    let error = stored.expect_err("the busy store is the caller's error");
+    assert!(
+        matches!(error, crate::Error::StorageError(_)),
+        "a busy after the exchange is a storage error: {:?}",
+        error
+    );
+    let boundary: bsv_rs::Error = error.into();
+    assert!(
+        !matches!(boundary, bsv_rs::Error::WalletBusy { .. }),
+        "never WalletBusy after the certifier issued: {:?}",
+        boundary
+    );
+    assert!(
+        boundary.to_string().contains("Storage error: Store busy"),
+        "{}",
+        boundary
+    );
+    assert_eq!(certificate_rows(&wallet).await, (0, 0), "nothing stored");
+}

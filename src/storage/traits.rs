@@ -361,9 +361,10 @@ impl From<Error> for DoorRefusal {
     }
 }
 
-/// A busy answer from a step after another step committed is not the
-/// "nothing written" `StoreBusy` promises: it becomes a `StorageError`.
-fn not_busy(e: Error) -> Error {
+/// A busy answer from a step after another step committed (or after a post
+/// to a third party) is not the "nothing written, repeat it" `StoreBusy`
+/// promises: it becomes a `StorageError`.
+pub(crate) fn not_busy(e: Error) -> Error {
     match e {
         e @ Error::StoreBusy { .. } => Error::StorageError(e.to_string()),
         e => e,
@@ -732,6 +733,19 @@ pub trait WalletStorageWriter: WalletStorageReader {
         &self,
         auth: &AuthId,
         field: TableCertificateField,
+    ) -> Result<i64>;
+
+    /// Insert a certificate and its fields, all or nothing (the reference's
+    /// `insertCertificateAuth` with a `TableCertificateX`): every field's
+    /// `certificate_id` is the new certificate's. Returns the certificate's
+    /// id. A busy here wrote nothing (bsv-wallet-cli #44 review 4 G1: a
+    /// certificate row committed without its fields could never be
+    /// acquired again).
+    async fn insert_certificate_with_fields(
+        &self,
+        auth: &AuthId,
+        certificate: TableCertificate,
+        fields: Vec<TableCertificateField>,
     ) -> Result<i64>;
 
     /// Relinquish (release) a certificate.

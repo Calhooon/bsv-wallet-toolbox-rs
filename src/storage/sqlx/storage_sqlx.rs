@@ -201,6 +201,14 @@ pub struct StorageSqlx {
     /// writing.
     #[cfg(test)]
     busy_next_descendant_retire: Arc<std::sync::atomic::AtomicBool>,
+    /// Tests only: the next certificate field insert answers busy, inside
+    /// its write transaction.
+    #[cfg(test)]
+    busy_next_certificate_field: Arc<std::sync::atomic::AtomicBool>,
+    /// Tests only: the next poisoned retirement is cut between its req
+    /// write and its status write.
+    #[cfg(test)]
+    cut_next_retirement: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A second handle over the same store: every field is shared, none copied
@@ -227,6 +235,10 @@ impl Clone for StorageSqlx {
             busy_next_status_write: Arc::clone(&self.busy_next_status_write),
             #[cfg(test)]
             busy_next_descendant_retire: Arc::clone(&self.busy_next_descendant_retire),
+            #[cfg(test)]
+            busy_next_certificate_field: Arc::clone(&self.busy_next_certificate_field),
+            #[cfg(test)]
+            cut_next_retirement: Arc::clone(&self.cut_next_retirement),
         }
     }
 }
@@ -311,6 +323,10 @@ impl StorageSqlx {
             busy_next_status_write: Default::default(),
             #[cfg(test)]
             busy_next_descendant_retire: Default::default(),
+            #[cfg(test)]
+            busy_next_certificate_field: Default::default(),
+            #[cfg(test)]
+            cut_next_retirement: Default::default(),
         })
     }
 
@@ -428,6 +444,38 @@ impl StorageSqlx {
     #[cfg(test)]
     pub(crate) fn take_busy_next_descendant_retire(&self) -> bool {
         self.busy_next_descendant_retire
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Tests only: the next certificate field insert
+    /// (`insert_certificate_with_fields`) answers busy, inside the write
+    /// transaction that inserted the certificate, which rolls back.
+    #[cfg(test)]
+    pub(crate) fn busy_next_certificate_field(&self) {
+        self.busy_next_certificate_field
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests only: takes the busy `busy_next_certificate_field` armed.
+    #[cfg(test)]
+    pub(crate) fn take_busy_next_certificate_field(&self) -> bool {
+        self.busy_next_certificate_field
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Tests only: the next `retire_one_poisoned` stops between its first
+    /// write (the req) and its second (the transaction's status) with a
+    /// busy, as a process dying there would leave it.
+    #[cfg(test)]
+    pub(crate) fn cut_next_retirement(&self) {
+        self.cut_next_retirement
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests only: takes the cut `cut_next_retirement` armed.
+    #[cfg(test)]
+    pub(crate) fn take_cut_next_retirement(&self) -> bool {
+        self.cut_next_retirement
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -2514,6 +2562,76 @@ impl WalletStorageWriter for StorageSqlx {
         .await?;
 
         Ok(result.last_insert_rowid())
+    }
+
+    async fn insert_certificate_with_fields(
+        &self,
+        auth: &AuthId,
+        certificate: TableCertificate,
+        fields: Vec<TableCertificateField>,
+    ) -> Result<i64> {
+        let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+        if certificate.user_id != user_id {
+            return Err(Error::AccessDenied(
+                "Certificate user_id does not match auth".to_string(),
+            ));
+        }
+        if fields.iter().any(|f| f.user_id != user_id) {
+            return Err(Error::AccessDenied(
+                "Certificate field user_id does not match auth".to_string(),
+            ));
+        }
+
+        let now = Utc::now();
+
+        // One write transaction: the certificate and every field, or none.
+        let mut tx = self.write_tx().await?;
+        let certificate_id = sqlx::query(
+            r#"
+            INSERT INTO certificates (user_id, type, serial_number, certifier, subject, verifier, revocation_outpoint, signature, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(&certificate.cert_type)
+        .bind(&certificate.serial_number)
+        .bind(&certificate.certifier)
+        .bind(&certificate.subject)
+        .bind(&certificate.verifier)
+        .bind(&certificate.revocation_outpoint)
+        .bind(&certificate.signature)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?
+        .last_insert_rowid();
+
+        for field in &fields {
+            #[cfg(test)]
+            if self.take_busy_next_certificate_field() {
+                return Err(Error::StoreBusy {
+                    reason: StoreBusyReason::SqliteBusy { code: 5 },
+                });
+            }
+            sqlx::query(
+                r#"
+                INSERT INTO certificate_fields (certificate_id, user_id, field_name, field_value, master_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(certificate_id)
+            .bind(user_id)
+            .bind(&field.field_name)
+            .bind(&field.field_value)
+            .bind(&field.master_key)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        commit(tx).await?;
+
+        Ok(certificate_id)
     }
 
     async fn relinquish_certificate(

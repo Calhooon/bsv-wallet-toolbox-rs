@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::storage::entities::{TableCertificate, TableCertificateField};
-use crate::storage::{AuthId, WalletStorageProvider};
+use crate::storage::{not_busy, AuthId, WalletStorageProvider};
 
 // =============================================================================
 // Constants
@@ -712,7 +712,7 @@ where
 // =============================================================================
 
 /// Stores the certificate in the wallet storage.
-async fn store_certificate<S>(
+pub(super) async fn store_certificate<S>(
     storage: &S,
     auth: &AuthId,
     parsed: &ParseCertificateResponseResult,
@@ -756,26 +756,30 @@ where
         updated_at: chrono::Utc::now(),
     };
 
-    // Insert certificate and get the ID
-    let cert_id = storage.insert_certificate(auth, table_cert).await?;
-
-    // Insert certificate fields
-    for (field_name, field_value) in &parsed.cert_fields {
-        let master_key = master_keyring.get(field_name).cloned().unwrap_or_default();
-
-        let field = TableCertificateField {
+    // The certificate and its fields in one write. This is after the
+    // exchange with the certifier, a post to a third party: the certifier
+    // has issued, and a busy here is never `StoreBusy` (a host would repeat
+    // the whole exchange); it is a storage error the caller sees, nothing
+    // stored (bsv-wallet-cli #44 review 4 G1).
+    let now = chrono::Utc::now();
+    let fields = parsed
+        .cert_fields
+        .iter()
+        .map(|(field_name, field_value)| TableCertificateField {
             certificate_field_id: 0, // Will be assigned by storage
-            certificate_id: cert_id,
+            certificate_id: 0,       // The certificate's, in storage
             user_id,
             field_name: field_name.clone(),
             field_value: field_value.clone(),
-            master_key,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        storage.insert_certificate_field(auth, field).await?;
-    }
+            master_key: master_keyring.get(field_name).cloned().unwrap_or_default(),
+            created_at: now,
+            updated_at: now,
+        })
+        .collect();
+    storage
+        .insert_certificate_with_fields(auth, table_cert, fields)
+        .await
+        .map_err(not_busy)?;
 
     // Build and return WalletCertificate
     Ok(WalletCertificate {
