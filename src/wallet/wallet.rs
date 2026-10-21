@@ -1417,6 +1417,34 @@ where
 
             let mut process_result = match self.storage.process_action(&auth, process_args).await {
                 Ok(result) => result,
+                // Busy (review 2 F5 of #44): the store refused before
+                // processing and wrote nothing. The action is not aborted,
+                // its coins stay locked to it, and the unsigned transaction
+                // is cached under its reference, as signAndProcess false
+                // caches it, so a signAction on that reference completes it.
+                Err(e @ Error::StoreBusy { .. }) => {
+                    let pending_tx = PendingTransaction {
+                        reference: storage_result.reference.clone(),
+                        raw_tx: unsigned_tx.clone(),
+                        inputs: signer_inputs.clone(),
+                        input_beef: storage_result.input_beef.clone(),
+                        is_no_send: no_send,
+                        is_delayed: accept_delayed_broadcast,
+                        send_with: args
+                            .options
+                            .as_ref()
+                            .and_then(|o| o.send_with.clone())
+                            .map(|txids| txids.iter().map(hex::encode).collect())
+                            .unwrap_or_default(),
+                        created_at: Utc::now(),
+                    };
+                    let mut cache = self.pending_transactions.write().await;
+                    let cutoff =
+                        Utc::now() - chrono::Duration::seconds(PENDING_TRANSACTION_TTL_SECS);
+                    cache.retain(|_, tx| tx.created_at > cutoff);
+                    cache.insert(storage_result.reference.clone(), pending_tx);
+                    return Err(e.into());
+                }
                 Err(e) => {
                     // Processing failed - abort the transaction to release locked UTXOs
                     tracing::error!(reference = %storage_result.reference, error = %e, "Process action failed in create_action, aborting transaction to release UTXOs");

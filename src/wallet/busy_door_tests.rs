@@ -56,6 +56,14 @@ async fn unsigned_action(wallet: &Wallet<StorageSqlx, MockWalletServices>, refer
 /// One spendable 100,000-sat change output on a proven parent, so
 /// createAction's pre-check finds the funds and the door reaches the writer.
 async fn fund(wallet: &Wallet<StorageSqlx, MockWalletServices>) {
+    fund_with(wallet, &pay_lock()).await;
+}
+
+/// `fund`, the coin locked by `lock`; returns the coin's output id. A
+/// non-P2PKH `lock` (`OP_TRUE`) is signed without the derived key check, so
+/// createAction reaches processAction.
+async fn fund_with(wallet: &Wallet<StorageSqlx, MockWalletServices>, lock: &[u8]) -> i64 {
+    let pay_lock = || lock.to_vec();
     let storage = wallet.storage();
     let basket = storage
         .find_or_create_default_basket(wallet.user_id)
@@ -116,19 +124,24 @@ async fn fund(wallet: &Wallet<StorageSqlx, MockWalletServices>) {
     .bind(now)
     .execute(storage.writer())
     .await
-    .unwrap();
+    .unwrap()
+    .last_insert_rowid()
 }
 
 fn assert_wallet_busy<T: std::fmt::Debug>(result: bsv_rs::Result<T>) {
+    assert_wallet_busy_with(
+        result,
+        "Store busy: the writer was not acquired within the store's ceiling",
+    );
+}
+
+fn assert_wallet_busy_with<T: std::fmt::Debug>(result: bsv_rs::Result<T>, want: &str) {
     match result {
         Err(bsv_rs::Error::WalletBusy {
             detail,
             retry_after_ms,
         }) => {
-            assert_eq!(
-                detail,
-                "Store busy: the writer was not acquired within the store's ceiling"
-            );
+            assert_eq!(detail, want);
             assert_eq!(retry_after_ms, None, "the store sets no retry policy");
         }
         other => panic!("expected WalletBusy, got {other:?}"),
@@ -306,6 +319,241 @@ async fn sign_action_on_a_busy_store_is_wallet_busy_and_keeps_the_action() {
             .await
             .unwrap();
     assert_eq!(status, "unsigned", "not aborted");
+}
+
+/// The P2PKH script of the wallet's own BRC-29 key for `fund`'s
+/// derivation (prefix `cHJlZml4`, suffix `c3VmZml4`, counterparty self),
+/// so the signer signs the coin.
+fn own_lock(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> Vec<u8> {
+    use bsv_rs::wallet::{Counterparty, KeyDeriverApi, Protocol, SecurityLevel};
+    let key = wallet
+        .proto_wallet
+        .key_deriver()
+        .derive_private_key(
+            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
+            "cHJlZml4 c3VmZml4",
+            &Counterparty::Self_,
+        )
+        .unwrap();
+    let hash = bsv_rs::primitives::hash160(&key.public_key().to_compressed());
+    [&[0x76, 0xa9, 0x14][..], &hash[..], &[0x88, 0xac][..]].concat()
+}
+
+/// A change coin locked to the action under `reference`, as createAction
+/// leaves it; returns the coin's output id.
+async fn lock_a_coin_to(wallet: &Wallet<StorageSqlx, MockWalletServices>, reference: &str) -> i64 {
+    let coin = fund_with(wallet, &pay_lock()).await;
+    sqlx::query(
+        "UPDATE outputs SET spendable = 0, spent_by = \
+         (SELECT transaction_id FROM transactions WHERE reference = ?) WHERE output_id = ?",
+    )
+    .bind(reference)
+    .bind(coin)
+    .execute(wallet.storage().writer())
+    .await
+    .unwrap();
+    coin
+}
+
+/// The action's status and whether `coin` is still locked to it.
+async fn action_and_coin(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    reference: &str,
+    coin: i64,
+) -> (String, bool) {
+    let (status, transaction_id): (String, i64) =
+        sqlx::query_as("SELECT status, transaction_id FROM transactions WHERE reference = ?")
+            .bind(reference)
+            .fetch_one(wallet.storage().pool())
+            .await
+            .unwrap();
+    let (spendable, spent_by): (bool, Option<i64>) =
+        sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE output_id = ?")
+            .bind(coin)
+            .fetch_one(wallet.storage().pool())
+            .await
+            .unwrap();
+    (status, !spendable && spent_by == Some(transaction_id))
+}
+
+/// A pending transaction under `reference`: one input, one output.
+async fn pending(wallet: &Wallet<StorageSqlx, MockWalletServices>, reference: &str, tag: &str) {
+    let mut tx = Transaction::new();
+    let mut input = TransactionInput::new(tag.repeat(32), 0);
+    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    tx.inputs.push(input);
+    tx.outputs.push(TransactionOutput {
+        satoshis: Some(1_000),
+        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        change: false,
+    });
+    wallet.pending_transactions.write().await.insert(
+        reference.to_string(),
+        PendingTransaction {
+            reference: reference.to_string(),
+            raw_tx: tx.to_binary(),
+            inputs: vec![],
+            input_beef: None,
+            is_no_send: true,
+            is_delayed: false,
+            send_with: vec![],
+            created_at: Utc::now(),
+        },
+    );
+}
+
+/// Review 2 F5 of #44: signAction's processAction answers busy. The action
+/// is not abandoned, its coin stays locked to it, and the pending
+/// transaction stays cached.
+#[tokio::test]
+async fn sign_action_busy_in_process_action_keeps_the_action_and_its_coins() {
+    let (_dir, wallet) = wallet().await;
+    unsigned_action(&wallet, "sign-busy-coin").await;
+    let coin = lock_a_coin_to(&wallet, "sign-busy-coin").await;
+    pending(&wallet, "sign-busy-coin", "23").await;
+
+    wallet.storage().busy_next_process_action();
+    let result = wallet
+        .sign_action(
+            SignActionArgs {
+                spends: HashMap::new(),
+                reference: "sign-busy-coin".to_string(),
+                options: None,
+            },
+            ORIGINATOR,
+        )
+        .await;
+    assert_wallet_busy_with(result, "Store busy: sqlite code 5");
+    assert!(wallet
+        .pending_transactions
+        .read()
+        .await
+        .contains_key("sign-busy-coin"));
+    assert_eq!(
+        action_and_coin(&wallet, "sign-busy-coin", coin).await,
+        ("unsigned".to_string(), true),
+        "not abandoned, the coin still locked to it"
+    );
+}
+
+/// Any other processAction error still aborts, as it did: the action is
+/// failed and its coin released. (The action has no inputBEEF:
+/// processAction refuses it, a validation error, not busy.)
+#[tokio::test]
+async fn sign_action_on_another_process_action_error_still_aborts() {
+    let (_dir, wallet) = wallet().await;
+    unsigned_action(&wallet, "sign-other").await;
+    let coin = lock_a_coin_to(&wallet, "sign-other").await;
+    pending(&wallet, "sign-other", "24").await;
+
+    let err = wallet
+        .sign_action(
+            SignActionArgs {
+                spends: HashMap::new(),
+                reference: "sign-other".to_string(),
+                options: None,
+            },
+            ORIGINATOR,
+        )
+        .await
+        .unwrap_err();
+    match &err {
+        bsv_rs::Error::WalletError(text) => assert!(
+            text.starts_with("Process action failed: ")
+                && text.ends_with("Transaction aborted and UTXOs released."),
+            "{text}"
+        ),
+        other => panic!("expected the abort's WalletError, got {other:?}"),
+    }
+    assert_eq!(
+        action_and_coin(&wallet, "sign-other", coin).await,
+        ("failed".to_string(), false),
+        "aborted, the coin released"
+    );
+    let (spendable,): (bool,) = sqlx::query_as("SELECT spendable FROM outputs WHERE output_id = ?")
+        .bind(coin)
+        .fetch_one(wallet.storage().pool())
+        .await
+        .unwrap();
+    assert!(spendable, "the coin is spendable again");
+}
+
+/// Review 2 F5 of #44: createAction's processAction answers busy after the
+/// action is written and signed. Not aborted (at 87d3d43 it was, the text
+/// 'Process action failed: Store busy: ... Transaction aborted and UTXOs
+/// released'): WalletBusy, the action unsigned with its coin locked, and
+/// the unsigned transaction cached under its reference, so a signAction on
+/// it completes the action.
+#[tokio::test]
+async fn create_action_busy_in_process_action_keeps_the_action_for_a_sign_action() {
+    let (_dir, wallet) = wallet().await;
+    let coin = fund_with(&wallet, &own_lock(&wallet)).await;
+    wallet.storage().busy_next_process_action();
+    let result = wallet
+        .create_action(
+            CreateActionArgs {
+                description: "a busy door test".to_string(),
+                input_beef: None,
+                inputs: None,
+                outputs: Some(vec![CreateActionOutput {
+                    locking_script: pay_lock(),
+                    satoshis: 1_000,
+                    output_description: "a payment".to_string(),
+                    basket: None,
+                    custom_instructions: None,
+                    tags: None,
+                }]),
+                lock_time: None,
+                version: None,
+                labels: None,
+                options: Some(bsv_rs::wallet::CreateActionOptions {
+                    no_send: Some(true),
+                    ..Default::default()
+                }),
+            },
+            ORIGINATOR,
+        )
+        .await;
+    assert_wallet_busy_with(result, "Store busy: sqlite code 5");
+
+    let (reference,): (String,) = sqlx::query_as(
+        "SELECT reference FROM transactions WHERE is_outgoing = 1 AND description = 'a busy door test'",
+    )
+    .fetch_one(wallet.storage().pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        action_and_coin(&wallet, &reference, coin).await,
+        ("unsigned".to_string(), true),
+        "not abandoned, the coin still locked to it"
+    );
+    assert!(
+        wallet
+            .pending_transactions
+            .read()
+            .await
+            .contains_key(&reference),
+        "cached for the repeat"
+    );
+
+    wallet
+        .sign_action(
+            SignActionArgs {
+                spends: HashMap::new(),
+                reference: reference.clone(),
+                options: None,
+            },
+            ORIGINATOR,
+        )
+        .await
+        .expect("the repeat completes the action");
+    let (status,): (String,) =
+        sqlx::query_as("SELECT status FROM transactions WHERE reference = ?")
+            .bind(&reference)
+            .fetch_one(wallet.storage().pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "nosend");
 }
 
 /// A store error that is not busy keeps the exact text the erasure sites
