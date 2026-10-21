@@ -815,6 +815,12 @@ impl StorageSqlx {
         .bind(&tx.txid)
         .execute(&mut *self.writer_conn().await?)
         .await?;
+        #[cfg(test)]
+        if self.take_cut_next_retirement() {
+            return Err(crate::error::Error::StoreBusy {
+                reason: crate::error::StoreBusyReason::SqliteBusy { code: 5 },
+            });
+        }
         if tx.is_retirable() {
             let failed = sqlx::query(
                 "UPDATE transactions SET status = 'failed', updated_at = ? \

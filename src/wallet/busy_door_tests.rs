@@ -1446,3 +1446,45 @@ async fn review_status_with_a_completed_descendant_is_quiet_every_pass() {
         ("unproven".to_string(), "unmined".to_string())
     );
 }
+
+/// Review 4 G4: `retire_one_poisoned` writes the req, then the transaction's
+/// status. A retirement cut between the two (a busy, a process dying) leaves
+/// an `invalid` req on a live row, and the next pass finishes it: its first
+/// check fails the row. In the other order the cut would leave a `failed`
+/// row with its req `unmined`, which no check revisits.
+#[tokio::test]
+async fn a_retirement_cut_between_its_two_writes_is_finished_by_the_next_pass() {
+    let (_dir, wallet) = wallet().await;
+    let (a_txid, d_txid, _, change_d) = broadcast_chain(&wallet, "g4").await;
+    fail_root(&wallet, &a_txid, "invalid").await;
+
+    wallet.storage().cut_next_retirement();
+    let cut = crate::storage::MonitorStorage::review_status(wallet.storage()).await;
+    assert!(
+        matches!(cut, Err(crate::Error::StoreBusy { .. })),
+        "the pass was cut: {cut:?}"
+    );
+    assert_eq!(
+        tx_and_req(&wallet, &d_txid).await,
+        ("unproven".to_string(), "invalid".to_string()),
+        "cut after the req, before the status"
+    );
+
+    crate::storage::MonitorStorage::review_status(wallet.storage())
+        .await
+        .unwrap();
+    assert_eq!(
+        tx_and_req(&wallet, &d_txid).await,
+        ("failed".to_string(), "invalid".to_string()),
+        "the next pass finished the retirement"
+    );
+    assert!(
+        !output_spendable(&wallet, change_d).await,
+        "its change is dead"
+    );
+
+    let again = crate::storage::MonitorStorage::review_status(wallet.storage())
+        .await
+        .unwrap();
+    assert_eq!(again.log, "No status mismatches found\n", "converged");
+}
