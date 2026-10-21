@@ -28,8 +28,9 @@ pub enum Error {
     #[error("Database error: {0}")]
     DatabaseError(String),
 
-    /// The store is busy, a transient refusal: the action wrote nothing,
-    /// built nothing and locked nothing, and the caller may repeat it
+    /// The store is busy, a transient refusal: the action writes nothing,
+    /// builds nothing and locks nothing; the pre-check's evidence records
+    /// are idempotent and repeating is safe, so the caller may repeat it
     /// unchanged. `reason` says which busy it was (`StoreBusyReason`). The
     /// Display begins exactly `Store busy: `, then the reason's words;
     /// consumers classify on that prefix.
@@ -274,10 +275,9 @@ impl From<sqlx::Error> for Error {
 }
 
 /// The toolbox error at the `WalletInterface` boundary. A `StoreBusy` is
-/// bsv-rs's `WalletBusy`: the store refused before acting and the refused
-/// step wrote nothing, so the caller may repeat it unchanged (a
-/// `createAction` whose `processAction` was busy keeps its written action
-/// for a `signAction` on its reference).
+/// bsv-rs's `WalletBusy`: the store refused before acting and the action
+/// writes nothing (the pre-check's evidence records are idempotent and
+/// repeating is safe), so the caller may repeat it unchanged.
 /// `retry_after_ms` is `None`: the store does not know the host's retry
 /// policy, and the host sets its own. An `SdkError` passes its bsv-rs error
 /// through. Every other variant is `WalletError` with the toolbox Display,
