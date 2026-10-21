@@ -3,7 +3,7 @@
 //! This module contains the full implementation of the `create_action` method
 //! for the `StorageSqlx` wallet storage backend.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, StoreBusyReason};
 use crate::services::traits::WalletServices;
 use crate::storage::entities::{TableOutput, TableOutputBasket, TableOutputTag, TableTxLabel};
 use crate::storage::traits::{
@@ -384,9 +384,13 @@ fn random_reference() -> String {
 /// stored bytes with the tracker's answers already in hand: no service and no
 /// tracker is awaited under the lock. A coin taken meanwhile, or a root the
 /// pre-check did not read, rolls the transaction back (nothing written) and
-/// the pre-check runs once more; the second time the call refuses. No
-/// provider is asked: an ancestor this wallet does not store is a refusal
-/// naming it.
+/// the pre-check runs once more; the second time the call refuses
+/// `StoreBusy` (`MovedUnderUs`): the latest pre-check covered the action,
+/// so the refusal is transient, never `InsufficientFunds`. The coins a
+/// pre-check picks are reserved in this process until the call returns
+/// (`PickReservation`), so concurrent calls here never pick the same coin;
+/// the re-check is for another process's writes. No provider is asked: an
+/// ancestor this wallet does not store is a refusal naming it.
 ///
 /// Note: Change outputs are created with empty locking scripts. The locking scripts
 /// are derived during transaction signing and stored via process_action when the
@@ -427,19 +431,26 @@ pub async fn create_action_internal(
         change_basket: &change_basket,
     };
 
+    // This call's pre-check picks, reserved until it returns (review 2 F1):
+    // a concurrent call of this process never pre-checks the same coin.
+    let mut reserved = PickReservation::new(storage.in_flight_picks().clone());
     let mut again = None;
     loop {
         let prechecked = door
-            .precheck(chain_tracker, storage_tracker.as_deref())
+            .precheck(chain_tracker, storage_tracker.as_deref(), &mut reserved)
             .await?;
         match door.step(&prechecked).await? {
             Step::Done(result) => return Ok(*result),
             Step::Again(why) => {
                 if again.is_some() {
-                    return Err(why.refusal());
+                    // The latest pre-check covered the action and the store
+                    // moved under it again: transient, never a shortfall.
+                    return Err(Error::StoreBusy {
+                        reason: StoreBusyReason::MovedUnderUs,
+                    });
                 }
                 tracing::info!(
-                    reason = %why.refusal(),
+                    reason = %why,
                     marker = "create_action_precheck_again",
                     "create_action: the store moved between the pre-check and the write lock; nothing written, checking once more"
                 );
@@ -474,30 +485,21 @@ enum Step {
 /// Why the write-locked step rolled back.
 enum Again {
     /// The pre-checked coins no longer cover the action (one was taken
-    /// meanwhile): the allocation's own refusal.
+    /// meanwhile, by another process): the allocation's own shortfall.
     Uncovered(Error),
     /// The assembly needed a root the pre-check did not read (a proof
     /// stored meanwhile).
     NotPrechecked { height: u32, root: String },
 }
 
-impl Again {
-    /// The refusal when it happens twice.
-    fn refusal(&self) -> Error {
+impl std::fmt::Display for Again {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Again::Uncovered(Error::InsufficientFunds { needed, available }) => {
-                Error::InsufficientFunds {
-                    needed: *needed,
-                    available: *available,
-                }
-            }
-            Again::Uncovered(e) => Error::ValidationError(e.to_string()),
-            Again::NotPrechecked { height, root } => Error::ValidationError(format!(
-                "inputBEEF: the merkle root {} at height {} was not read against the chain \
-                 tracker before the write lock (the store changed during the call); refused, \
-                 nothing written",
-                root, height
-            )),
+            Again::Uncovered(e) => write!(f, "the pre-checked coins were taken: {e}"),
+            Again::NotPrechecked { height, root } => write!(
+                f,
+                "the merkle root {root} at height {height} was not read before the write lock"
+            ),
         }
     }
 }
@@ -541,7 +543,10 @@ impl Door<'_> {
         &self,
         chain_tracker: Option<&dyn ChainTracker>,
         storage_tracker: Option<&dyn ChainTracker>,
+        reserved: &mut PickReservation,
     ) -> Result<Vec<i64>> {
+        // A second pre-check picks afresh: the first one's coins go back.
+        reserved.release_all();
         let mut conn = self.storage.pool().acquire().await?;
         let extended_outputs = validate_and_extend_outputs(self.args)?;
         let extended_inputs =
@@ -553,7 +558,6 @@ impl Door<'_> {
             !self.is_delayed(),
         )
         .await?;
-        let mut picked = Vec::new();
         let (change_result, _) = plan_change(
             &mut conn,
             self.user_id,
@@ -564,7 +568,9 @@ impl Door<'_> {
             &extended_outputs,
             available_change_count,
             self.is_delayed(),
-            &mut ChangePick::DryRun { taken: &mut picked },
+            &mut ChangePick::DryRun {
+                reserved: &mut *reserved,
+            },
         )
         .await?;
 
@@ -589,7 +595,7 @@ impl Door<'_> {
             own.as_ref().map(|t| t as &dyn ChainTracker),
         )
         .await?;
-        Ok(picked)
+        Ok(reserved.mine().to_vec())
     }
 
     /// The door's one step, under one `BEGIN IMMEDIATE` transaction: the
@@ -2296,12 +2302,126 @@ pub(super) enum ChangePick<'a> {
     #[cfg(test)]
     Allocate,
     /// Before the write lock, on a reader: pick exactly as the allocation
-    /// would and mark nothing; the picks are collected in `taken` (a coin
-    /// released is removed), which is the set the pre-check reads.
-    DryRun { taken: &'a mut Vec<i64> },
+    /// would and mark nothing, never a coin another call of this process has
+    /// picked and not yet returned from; the picks are reserved in
+    /// `reserved` (a coin released is let go), whose coins are the set the
+    /// pre-check reads.
+    DryRun { reserved: &'a mut PickReservation },
     /// Under the write lock: allocate, but only from the coins the pre-check
     /// read. A coin taken meanwhile is skipped as any allocated coin is.
     Within { allowed: &'a [i64] },
+}
+
+/// The change coins `createAction` pre-checks in this process have picked
+/// and whose calls have not yet returned (review 2 F1 of bsv-wallet-cli #44).
+/// The dry run sees only committed state, so without this two concurrent
+/// calls pick the same best coin, one loses it under the lock, and a funded
+/// wallet reads as empty. Another process's picks are not here: for those
+/// the bounded re-check stands, and its end is `StoreBusy`.
+#[derive(Default)]
+pub(crate) struct InFlightPicks {
+    coins: std::sync::Mutex<HashSet<i64>>,
+    /// Tests only: reserve nothing, so the cross-process race is reachable
+    /// within one process.
+    #[cfg(test)]
+    off: std::sync::atomic::AtomicBool,
+}
+
+impl InFlightPicks {
+    fn coins(&self) -> std::sync::MutexGuard<'_, HashSet<i64>> {
+        self.coins.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn is_off(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.off.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
+    /// Tests only: turn the reservation off (`true`) or on.
+    #[cfg(test)]
+    pub(crate) fn set_off(&self, off: bool) {
+        self.off.store(off, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The coins reserved now, by every call.
+    #[cfg(test)]
+    pub(crate) fn reserved(&self) -> HashSet<i64> {
+        self.coins().clone()
+    }
+}
+
+/// One `createAction` call's reserved pre-check picks. Dropped when the call
+/// returns, on every path (a refusal, an early `?`, a panic), and every coin
+/// it holds is released.
+pub(crate) struct PickReservation {
+    in_flight: std::sync::Arc<InFlightPicks>,
+    mine: Vec<i64>,
+}
+
+impl PickReservation {
+    pub(crate) fn new(in_flight: std::sync::Arc<InFlightPicks>) -> Self {
+        Self {
+            in_flight,
+            mine: Vec::new(),
+        }
+    }
+
+    /// The coins this call holds, in the order picked.
+    fn mine(&self) -> &[i64] {
+        &self.mine
+    }
+
+    /// The coins a dry run may not pick: this call's and every other call's.
+    fn unavailable(&self) -> Vec<i64> {
+        if self.in_flight.is_off() {
+            return self.mine.clone();
+        }
+        let mut ids: Vec<i64> = self.in_flight.coins().iter().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Reserves `id` for this call; `false` when another call holds it.
+    fn try_take(&mut self, id: i64) -> bool {
+        if !self.in_flight.is_off() && !self.in_flight.coins().insert(id) {
+            return false;
+        }
+        self.mine.push(id);
+        true
+    }
+
+    /// Lets `id` go, if this call holds it.
+    fn release(&mut self, id: i64) {
+        let held = self.mine.len();
+        self.mine.retain(|m| *m != id);
+        if self.mine.len() != held && !self.in_flight.is_off() {
+            self.in_flight.coins().remove(&id);
+        }
+    }
+
+    /// Lets every coin this call holds go.
+    fn release_all(&mut self) {
+        if self.in_flight.is_off() {
+            self.mine.clear();
+            return;
+        }
+        let mut coins = self.in_flight.coins();
+        for id in self.mine.drain(..) {
+            coins.remove(&id);
+        }
+    }
+}
+
+impl Drop for PickReservation {
+    fn drop(&mut self) {
+        self.release_all();
+    }
 }
 
 /// Releases a previously allocated change input.
@@ -2310,8 +2430,8 @@ async fn release_change_input(
     output_id: i64,
     pick: &mut ChangePick<'_>,
 ) -> Result<()> {
-    if let ChangePick::DryRun { taken } = pick {
-        taken.retain(|id| *id != output_id);
+    if let ChangePick::DryRun { reserved } = pick {
+        reserved.release(output_id);
         return Ok(());
     }
     sqlx::query("UPDATE outputs SET spendable = 1, spent_by = NULL WHERE output_id = ?")
@@ -2358,54 +2478,77 @@ async fn allocate_change_input_by(
     } else {
         ""
     };
-    let (pick_clause, pick_ids): (String, Vec<i64>) = match pick {
-        #[cfg(test)]
-        ChangePick::Allocate => (String::new(), Vec::new()),
-        ChangePick::DryRun { taken } if taken.is_empty() => (String::new(), Vec::new()),
-        ChangePick::DryRun { taken } => (
-            format!("AND o.output_id NOT IN ({})", placeholders(taken.len())),
-            taken.clone(),
-        ),
-        ChangePick::Within { allowed } if allowed.is_empty() => return Ok(None),
-        ChangePick::Within { allowed } => (
-            format!("AND o.output_id IN ({})", placeholders(allowed.len())),
-            allowed.to_vec(),
-        ),
+    // A dry run reserves each coin it picks; a coin another call reserved
+    // between the query and the reservation is passed over and the query
+    // asked again (each pass over adds the coin to the unavailable set, so
+    // the loop ends within the number of coins).
+    let row = loop {
+        let (pick_clause, pick_ids): (String, Vec<i64>) = match pick {
+            #[cfg(test)]
+            ChangePick::Allocate => (String::new(), Vec::new()),
+            ChangePick::DryRun { reserved } => {
+                let unavailable = reserved.unavailable();
+                if unavailable.is_empty() {
+                    (String::new(), Vec::new())
+                } else {
+                    (
+                        format!(
+                            "AND o.output_id NOT IN ({})",
+                            placeholders(unavailable.len())
+                        ),
+                        unavailable,
+                    )
+                }
+            }
+            ChangePick::Within { allowed } if allowed.is_empty() => return Ok(None),
+            ChangePick::Within { allowed } => (
+                format!("AND o.output_id IN ({})", placeholders(allowed.len())),
+                allowed.to_vec(),
+            ),
+        };
+
+        // Try to find an output with at least target_satoshis
+        let sql = format!(
+            r#"
+            SELECT o.output_id, o.satoshis, o.txid, o.vout, o.locking_script,
+                   o.derivation_prefix, o.derivation_suffix, o.sender_identity_key
+            FROM outputs o
+            JOIN transactions t ON o.transaction_id = t.transaction_id
+            WHERE o.user_id = ?
+              AND o.basket_id = ?
+              AND o.change = 1
+              AND o.spent_by IS NULL
+              AND t.status IN ('completed', 'unproven')
+              {}
+              {}
+            ORDER BY
+                CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
+                CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
+                LENGTH(COALESCE(t.input_beef, X'')) ASC,
+                ABS(o.satoshis - ?) ASC
+            LIMIT 1
+            "#,
+            spendable_clause, pick_clause
+        );
+
+        let mut query = sqlx::query(&sql).bind(user_id).bind(basket_id);
+        for id in &pick_ids {
+            query = query.bind(*id);
+        }
+        let row = query
+            .bind(target_satoshis as i64)
+            .bind(target_satoshis as i64)
+            .fetch_optional(&mut *conn)
+            .await?;
+        match (row, &mut *pick) {
+            (Some(row), ChangePick::DryRun { reserved }) => {
+                if reserved.try_take(row.get("output_id")) {
+                    break Some(row);
+                }
+            }
+            (row, _) => break row,
+        }
     };
-
-    // Try to find an output with at least target_satoshis
-    let sql = format!(
-        r#"
-        SELECT o.output_id, o.satoshis, o.txid, o.vout, o.locking_script,
-               o.derivation_prefix, o.derivation_suffix, o.sender_identity_key
-        FROM outputs o
-        JOIN transactions t ON o.transaction_id = t.transaction_id
-        WHERE o.user_id = ?
-          AND o.basket_id = ?
-          AND o.change = 1
-          AND o.spent_by IS NULL
-          AND t.status IN ('completed', 'unproven')
-          {}
-          {}
-        ORDER BY
-            CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
-            CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
-            LENGTH(COALESCE(t.input_beef, X'')) ASC,
-            ABS(o.satoshis - ?) ASC
-        LIMIT 1
-        "#,
-        spendable_clause, pick_clause
-    );
-
-    let mut query = sqlx::query(&sql).bind(user_id).bind(basket_id);
-    for id in &pick_ids {
-        query = query.bind(*id);
-    }
-    let row = query
-        .bind(target_satoshis as i64)
-        .bind(target_satoshis as i64)
-        .fetch_optional(&mut *conn)
-        .await?;
 
     if let Some(row) = row {
         let output_id: i64 = row.get("output_id");
@@ -2417,8 +2560,8 @@ async fn allocate_change_input_by(
         let derivation_suffix: Option<String> = row.get("derivation_suffix");
         let sender_identity_key: Option<String> = row.get("sender_identity_key");
 
-        if let ChangePick::DryRun { taken } = pick {
-            taken.push(output_id);
+        if let ChangePick::DryRun { .. } = pick {
+            // Reserved above; a dry run marks nothing.
         } else {
             // Mark as allocated (spent_by this transaction)
             let now = Utc::now();
@@ -10351,6 +10494,162 @@ mod tests {
             // Only the taker's write moved anything: the coin it took.
             before[0] = Some(format!("{coin}:0:{outsider}"));
             assert_eq!(the_store(&storage).await, before);
+        }
+
+        // =====================================================================
+        // Concurrent createActions in one process (review 2 F1 of #44)
+        // =====================================================================
+
+        /// Waits 30 ms on every root (the reviewer's scratch tracker), so
+        /// concurrent pre-checks overlap, and records the coins reserved by
+        /// every call at each ask.
+        struct SlowTracker {
+            in_flight: std::sync::Arc<InFlightPicks>,
+            seen_reserved: std::sync::Mutex<Vec<usize>>,
+        }
+
+        impl SlowTracker {
+            fn new(storage: &StorageSqlx) -> Self {
+                Self {
+                    in_flight: storage.in_flight_picks().clone(),
+                    seen_reserved: Default::default(),
+                }
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl ChainTracker for SlowTracker {
+            async fn is_valid_root_for_height(
+                &self,
+                _root: &str,
+                _height: u32,
+            ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+                self.seen_reserved
+                    .lock()
+                    .unwrap()
+                    .push(self.in_flight.reserved().len());
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                Ok(true)
+            }
+
+            async fn current_height(
+                &self,
+            ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+                Ok(100_000)
+            }
+        }
+
+        /// Eight proven 900,000-sat change coins; one wanted.
+        async fn eight_coins(storage: &StorageSqlx, user_id: i64) {
+            want_one_change_coin(storage).await;
+            for i in 0..8u8 {
+                let t = tx_spending(None, 0x40 + i, 900_000);
+                seed_change_coin(storage, user_id, &t, true).await;
+            }
+        }
+
+        /// The reviewer's race: four createActions under `tokio::join!` on a
+        /// wallet of eight 900,000-sat coins. At 87d3d43 two of four were
+        /// refused 'Insufficient funds: need 1005, have 0'; with the
+        /// in-flight reservation every call succeeds, each from its own
+        /// coin, and no reservation outlives its call.
+        #[tokio::test]
+        async fn four_concurrent_creates_on_eight_coins_all_succeed() {
+            let (storage, user_id) = setup().await;
+            eight_coins(&storage, user_id).await;
+            let tracker = SlowTracker::new(&storage);
+            let f = || {
+                create_action_internal(
+                    &storage,
+                    Some(&tracker as &dyn ChainTracker),
+                    user_id,
+                    funded_args(),
+                )
+            };
+            let (a, b, c, d) = tokio::join!(f(), f(), f(), f());
+            let mut sources = Vec::new();
+            for r in [a, b, c, d] {
+                let r = r.expect("a funded wallet funds every call");
+                sources.extend(r.inputs.into_iter().map(|i| i.source_txid));
+            }
+            let distinct: HashSet<&String> = sources.iter().collect();
+            assert_eq!(sources.len(), 4, "{sources:?}");
+            assert_eq!(distinct.len(), 4, "each call spends its own coin");
+            let seen = tracker.seen_reserved.lock().unwrap().clone();
+            assert!(
+                seen.iter().any(|n| *n > 1),
+                "the pre-checks overlapped, several coins reserved at once: {seen:?}"
+            );
+            assert!(
+                storage.in_flight_picks().reserved().is_empty(),
+                "every reservation is released when its call returns"
+            );
+        }
+
+        /// The same race with the reservation off (the case of another
+        /// process): a call whose pre-check covered the action and whose
+        /// coin was taken under it twice is refused `StoreBusy`
+        /// (`MovedUnderUs`), never `InsufficientFunds`: the wallet is funded.
+        #[tokio::test]
+        async fn without_the_reservation_a_twice_lost_race_is_store_busy_never_insufficient_funds()
+        {
+            let (storage, user_id) = setup().await;
+            eight_coins(&storage, user_id).await;
+            storage.in_flight_picks().set_off(true);
+            let tracker = SlowTracker::new(&storage);
+            let f = || {
+                create_action_internal(
+                    &storage,
+                    Some(&tracker as &dyn ChainTracker),
+                    user_id,
+                    funded_args(),
+                )
+            };
+            let (a, b, c, d) = tokio::join!(f(), f(), f(), f());
+            let errs: Vec<Error> = [a, b, c, d].into_iter().filter_map(|r| r.err()).collect();
+            assert!(
+                !errs.is_empty(),
+                "with no reservation the concurrent pre-checks collide"
+            );
+            for err in &errs {
+                assert!(
+                    matches!(
+                        err,
+                        Error::StoreBusy {
+                            reason: StoreBusyReason::MovedUnderUs
+                        }
+                    ),
+                    "a funded wallet's lost race is busy: {err:?}"
+                );
+                assert_eq!(
+                    err.to_string(),
+                    "Store busy: the store moved between the pre-check and the write lock twice"
+                );
+            }
+        }
+
+        /// The reservation is released on a refusal too: a call refused
+        /// for want of funds leaves no coin reserved, and the next call
+        /// picks the same coin.
+        #[tokio::test]
+        async fn a_refused_call_releases_its_reservation() {
+            let (storage, user_id) = setup().await;
+            want_one_change_coin(&storage).await;
+            let small = tx_spending(None, 0x61, 600);
+            seed_change_coin(&storage, user_id, &small, true).await;
+            let tracker = SlowTracker::new(&storage);
+            let err = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect_err("600 sats do not fund 1,000");
+            assert!(matches!(err, Error::InsufficientFunds { .. }), "{err:?}");
+            assert!(storage.in_flight_picks().reserved().is_empty());
+
+            let big = tx_spending(None, 0x62, 50_000);
+            seed_change_coin(&storage, user_id, &big, true).await;
+            create_action_internal(&storage, Some(&tracker), user_id, funded_args())
+                .await
+                .expect("funded now");
+            assert!(storage.in_flight_picks().reserved().is_empty());
         }
     }
 }
