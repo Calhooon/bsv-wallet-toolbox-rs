@@ -127,10 +127,12 @@ impl ReadCheck {
 /// Reads on the caller's connection (a reader); the tracker is asked with no
 /// lock held, and the record or the demotion is written afterwards through
 /// `writer` (the demotion in one `BEGIN IMMEDIATE` transaction). The caller
-/// must not hold the writer.
+/// must not hold the writer. With no `writer` (the caller holds the write
+/// lock and its tracker answers from what it checked before taking it) the
+/// verdict is returned and nothing is written.
 pub(crate) async fn check_unchecked_stored_proof_on(
     conn: &mut SqliteConnection,
-    writer: &Pool<Sqlite>,
+    writer: Option<&Pool<Sqlite>>,
     tracker: Option<&dyn ChainTracker>,
     txid: &str,
     merkle_path: &MerklePath,
@@ -149,6 +151,9 @@ pub(crate) async fn check_unchecked_stored_proof_on(
         .await
     {
         Ok(true) => {
+            let Some(writer) = writer else {
+                return Ok(ReadCheck::Confirmed);
+            };
             let mut w = writer.acquire().await?;
             record_root_checked_on(&mut w, txid, merkle_path.block_height, &root).await?;
             tracing::info!(
@@ -160,6 +165,9 @@ pub(crate) async fn check_unchecked_stored_proof_on(
             Ok(ReadCheck::Confirmed)
         }
         Ok(false) => {
+            let Some(writer) = writer else {
+                return Ok(ReadCheck::Demoted);
+            };
             let mut wtx = super::storage_sqlx::begin_immediate(writer).await?;
             super::storage_sqlx::demote_stale_proof_on(&mut wtx, txid).await?;
             wtx.commit().await?;

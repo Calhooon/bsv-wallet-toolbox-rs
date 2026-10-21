@@ -499,7 +499,7 @@ async fn ruling_7c_step_6_the_beef_carries_the_stale_ancestor_as_bytes() {
     let mut processed = std::collections::HashSet::new();
     beef_bfs_walk(
         &mut conn,
-        s.writer(),
+        Some(s.writer()),
         &mut beef,
         &mut pending,
         &mut processed,

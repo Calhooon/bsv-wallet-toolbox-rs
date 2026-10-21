@@ -64,7 +64,7 @@ async fn walk(s: &StorageSqlx, root: &str, tracker: Option<&MockChainTracker>) -
     let mut processed = std::collections::HashSet::new();
     beef_bfs_walk(
         &mut conn,
-        s.writer(),
+        Some(s.writer()),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -431,7 +431,7 @@ async fn compaction_checks_an_unchecked_proof_once() {
         let mut conn = s.pool().acquire().await.unwrap();
         compact_stored_beef(
             &mut conn,
-            s.writer(),
+            Some(s.writer()),
             beef,
             tracker.map(|t| t as &dyn bsv_rs::transaction::ChainTracker),
         )
@@ -505,7 +505,7 @@ async fn compaction_attaches_no_unchecked_proof_without_a_tracker_answer() {
         let mut beef = Beef::new();
         beef.merge_raw_tx(raw.clone(), None);
         let mut conn = s.pool().acquire().await.unwrap();
-        compact_stored_beef(&mut conn, s.writer(), &mut beef, tracker)
+        compact_stored_beef(&mut conn, Some(s.writer()), &mut beef, tracker)
             .await
             .unwrap();
         drop(conn);
