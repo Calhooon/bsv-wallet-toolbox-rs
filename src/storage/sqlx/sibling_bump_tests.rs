@@ -47,6 +47,7 @@ async fn walk_and_prune(
     let mut processed = HashSet::new();
     beef_bfs_walk(
         &mut conn,
+        s.writer(),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -169,7 +170,7 @@ pub(super) async fn soak_storage(x: &Siblings) -> StorageSqlx {
         .bind(raw)
         .bind(now)
         .bind(now)
-        .fetch_one(s.pool())
+        .fetch_one(s.writer())
         .await
         .unwrap();
         super::reorg_tests::seed_completed_tx(&s, user_id, txid, Some(proven_tx_id), Some(raw))
@@ -219,9 +220,14 @@ async fn compaction_flags_the_leaf_it_links() {
     let mut stored = Beef::new();
     stored.merge_raw_tx(x.b.0.clone(), None);
     let mut conn = s.pool().acquire().await.unwrap();
-    compact_stored_beef(&mut conn, &mut stored, Some(&tracker as &dyn ChainTracker))
-        .await
-        .unwrap();
+    compact_stored_beef(
+        &mut conn,
+        s.writer(),
+        &mut stored,
+        Some(&tracker as &dyn ChainTracker),
+    )
+    .await
+    .unwrap();
     assert!(
         stored
             .find_txid(&x.b.1)
@@ -390,7 +396,7 @@ async fn the_monitors_compaction_stores_the_leaf_flagged() {
     sqlx::query("UPDATE proven_tx_reqs SET input_beef = ? WHERE txid = ?")
         .bind(&stored_bytes)
         .bind(&x.t.1)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     s.set_chain_tracker(Arc::new(tracker_with(&[(HEIGHT, &x.root)])))

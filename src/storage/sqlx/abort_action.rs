@@ -145,11 +145,7 @@ pub async fn abort_action_internal(
 /// The abort of a never-broadcast transaction.
 async fn abort_pending(storage: &StorageSqlx, tx: &TransactionRecord) -> Result<AbortActionResult> {
     // Begin a SQL transaction so that all mutations are atomic.
-    let mut db_tx = storage
-        .pool()
-        .begin()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    let mut db_tx = storage.write_tx().await?;
 
     // Step 3: Check that transaction outputs haven't been spent
     check_outputs_not_spent(&mut db_tx, tx.transaction_id).await?;
@@ -161,10 +157,7 @@ async fn abort_pending(storage: &StorageSqlx, tx: &TransactionRecord) -> Result<
     update_transaction_status_to_failed(&mut db_tx, tx.transaction_id).await?;
 
     // Commit the transaction to make all changes durable.
-    db_tx
-        .commit()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    db_tx.commit().await?;
 
     Ok(AbortActionResult { aborted: true })
 }
@@ -200,11 +193,7 @@ async fn abort_broadcast(
     }
 
     let now = Utc::now();
-    let mut db_tx = storage
-        .pool()
-        .begin()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    let mut db_tx = storage.write_tx().await?;
 
     // Its inputs come back: the caller vouches the transaction never mines.
     release_locked_outputs(&mut db_tx, tx.transaction_id).await?;
@@ -229,10 +218,7 @@ async fn abort_broadcast(
     .execute(&mut *db_tx)
     .await?;
 
-    db_tx
-        .commit()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    db_tx.commit().await?;
 
     // No provider ever skips it again, and the reconciler treats it as a
     // rejected root rather than a candidate.
@@ -566,7 +552,7 @@ mod tests {
         .bind(txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -599,7 +585,7 @@ mod tests {
         .bind(spent_by)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 
@@ -1116,7 +1102,7 @@ mod tests {
         .bind(status)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }
@@ -1371,7 +1357,7 @@ mod tests {
         let c = seed_broadcast_chain(&storage, user_id, reference).await;
         sqlx::query("UPDATE transactions SET status = 'completed' WHERE transaction_id = ?")
             .bind(c.d)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -1440,7 +1426,7 @@ mod tests {
              VALUES (?, 1, 0, 'h', 'r', X'00', X'00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
         .bind(&proven)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         assert_eq!(
@@ -1651,7 +1637,7 @@ mod tests {
         .bind(tx_id)
         .bind(now)
         .bind(output_id)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
 

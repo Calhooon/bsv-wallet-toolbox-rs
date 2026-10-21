@@ -64,6 +64,7 @@ async fn walk(s: &StorageSqlx, root: &str, tracker: Option<&MockChainTracker>) -
     let mut processed = std::collections::HashSet::new();
     beef_bfs_walk(
         &mut conn,
+        s.writer(),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -430,6 +431,7 @@ async fn compaction_checks_an_unchecked_proof_once() {
         let mut conn = s.pool().acquire().await.unwrap();
         compact_stored_beef(
             &mut conn,
+            s.writer(),
             beef,
             tracker.map(|t| t as &dyn bsv_rs::transaction::ChainTracker),
         )
@@ -503,7 +505,7 @@ async fn compaction_attaches_no_unchecked_proof_without_a_tracker_answer() {
         let mut beef = Beef::new();
         beef.merge_raw_tx(raw.clone(), None);
         let mut conn = s.pool().acquire().await.unwrap();
-        compact_stored_beef(&mut conn, &mut beef, tracker)
+        compact_stored_beef(&mut conn, s.writer(), &mut beef, tracker)
             .await
             .unwrap();
         drop(conn);
@@ -583,7 +585,7 @@ async fn the_monitors_compaction_with_no_tracker_stores_no_unchecked_proof() {
     sqlx::query("UPDATE proven_tx_reqs SET input_beef = ? WHERE txid = ?")
         .bind(&stored_bytes)
         .bind(&child_txid)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     assert!(
@@ -829,7 +831,7 @@ async fn migration_005_applies_on_open_of_an_existing_004_database() {
         let s = StorageSqlx::open(&path).await.unwrap();
         s.migrate("old-wallet", &"1".repeat(64)).await.unwrap();
         sqlx::query("DROP TABLE proof_root_checks")
-            .execute(s.pool())
+            .execute(s.writer())
             .await
             .unwrap();
         // A proof the old code stored unchecked.
@@ -843,7 +845,7 @@ async fn migration_005_applies_on_open_of_an_existing_004_database() {
         .bind(&raw)
         .bind(Utc::now())
         .bind(Utc::now())
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
         s.pool().close().await;

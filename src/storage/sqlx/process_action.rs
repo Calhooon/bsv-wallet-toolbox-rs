@@ -562,11 +562,7 @@ pub async fn process_action_internal(
 
     // Begin SQL transaction - all DB mutations go through `tx`.
     // On drop without commit, sqlx automatically rolls back.
-    let mut tx = storage
-        .pool()
-        .begin()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    let mut tx = storage.write_tx().await?;
 
     let mut send_with_results: Vec<SendWithResult> = Vec::new();
     let txids_to_broadcast: Vec<String>;
@@ -713,9 +709,7 @@ pub async fn process_action_internal(
     }
 
     if txids_to_broadcast.is_empty() {
-        tx.commit()
-            .await
-            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        tx.commit().await?;
         return Ok(StorageProcessActionResults {
             send_with_results: Some(Vec::new()),
             not_delayed_results: None,
@@ -797,9 +791,7 @@ pub async fn process_action_internal(
         }
     }
 
-    tx.commit()
-        .await
-        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+    tx.commit().await?;
 
     Ok(StorageProcessActionResults {
         send_with_results: Some(send_with_results),
@@ -922,11 +914,7 @@ pub async fn update_transaction_status_after_broadcast_internal(
 
     let (word, details, competitors): (&str, &[String], &[String]) = match effective_outcome {
         BroadcastOutcome::Success => {
-            let mut tx = storage
-                .pool()
-                .begin()
-                .await
-                .map_err(|e| Error::DatabaseError(e.to_string()))?;
+            let mut tx = storage.write_tx().await?;
             let now = Utc::now();
 
             // Broadcast succeeded: unproven / unmined. A broadcaster's
@@ -953,9 +941,7 @@ pub async fn update_transaction_status_after_broadcast_internal(
             .execute(&mut *tx)
             .await?;
 
-            tx.commit()
-                .await
-                .map_err(|e| Error::DatabaseError(e.to_string()))?;
+            tx.commit().await?;
             return Ok(());
         }
         BroadcastOutcome::ServiceError { details } => ("serviceError", details, &[]),
@@ -1312,7 +1298,7 @@ mod tests {
         sqlx::query("UPDATE transactions SET input_beef = ? WHERE reference = ?")
             .bind(&dummy_input_beef)
             .bind(&result.reference)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -1338,7 +1324,7 @@ mod tests {
         let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(&txid, 100_000);
         sqlx::query("INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, 100000, 0, ?, ?, ?, ?, ?, ?)")
             .bind(&txid).bind("aa".repeat(32)).bind(&txid).bind(bump.to_binary())
-            .bind(&raw_tx).bind(now).bind(now).execute(storage.pool()).await.unwrap();
+            .bind(&raw_tx).bind(now).bind(now).execute(storage.writer()).await.unwrap();
         let tx_result = sqlx::query(
             "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?, ?)",
         )
@@ -1346,7 +1332,7 @@ mod tests {
         .bind(&txid)
         .bind(&raw_tx)
         .bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
 
         let transaction_id = tx_result.last_insert_rowid();
         let locking_script =
@@ -1358,7 +1344,7 @@ mod tests {
         .bind(user_id).bind(transaction_id).bind(basket.basket_id).bind(satoshis).bind(&locking_script)
         .bind(&txid)
         .bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
     }
 
     #[tokio::test]
@@ -1576,7 +1562,7 @@ mod tests {
 
         sqlx::query("UPDATE transactions SET status = 'completed' WHERE reference = ?")
             .bind(&reference)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -1693,7 +1679,7 @@ mod tests {
         // Clear the input_beef to simulate already processed state
         sqlx::query("UPDATE transactions SET input_beef = NULL WHERE reference = ?")
             .bind(&reference)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -1726,7 +1712,7 @@ mod tests {
         // Set is_outgoing to false
         sqlx::query("UPDATE transactions SET is_outgoing = 0 WHERE reference = ?")
             .bind(&reference)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -1763,7 +1749,7 @@ mod tests {
             "INSERT INTO proven_tx_reqs (txid, status, raw_tx, history, notify, created_at, updated_at) VALUES (?, 'unprocessed', X'01', '{}', '{}', ?, ?)",
         )
         .bind(other_txid).bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
 
         let args = StorageProcessActionArgs {
             is_new_tx: true,
@@ -2836,7 +2822,7 @@ mod tests {
             "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'source_ref1', 0, 50000, 1, 0, 'Source tx 1', ?, ?, ?, ?)",
         )
         .bind(user_id).bind(source_txid1).bind(&source_raw_tx1).bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
         let source_tx_id1 = r1.last_insert_rowid();
 
         let r_out1 = sqlx::query(
@@ -2844,7 +2830,7 @@ mod tests {
         )
         .bind(user_id).bind(source_tx_id1).bind(basket.basket_id).bind(&locking_script)
         .bind(source_txid1).bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
         let output_id1 = r_out1.last_insert_rowid();
 
         // --- Create source transaction 2 (will be input 2) ---
@@ -2853,7 +2839,7 @@ mod tests {
             "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'source_ref2', 0, 30000, 1, 0, 'Source tx 2', ?, ?, ?, ?)",
         )
         .bind(user_id).bind(source_txid2).bind(&source_raw_tx1).bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
         let source_tx_id2 = r2.last_insert_rowid();
 
         let r_out2 = sqlx::query(
@@ -2861,7 +2847,7 @@ mod tests {
         )
         .bind(user_id).bind(source_tx_id2).bind(basket.basket_id).bind(&locking_script)
         .bind(source_txid2).bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
         let output_id2 = r_out2.last_insert_rowid();
 
         // --- Create the spending transaction ---
@@ -2871,20 +2857,20 @@ mod tests {
             "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'sending', 'spend_ref', 1, 80000, 1, 0, 'Spending tx', ?, ?, ?, ?)",
         )
         .bind(user_id).bind(spending_txid).bind(&spending_raw_tx).bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
         let spending_tx_id = r_spend.last_insert_rowid();
 
         // Mark both source outputs as spent by the spending transaction
         sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
             .bind(spending_tx_id)
             .bind(output_id1)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
         sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
             .bind(spending_tx_id)
             .bind(output_id2)
-            .execute(storage.pool())
+            .execute(storage.writer())
             .await
             .unwrap();
 
@@ -2894,14 +2880,14 @@ mod tests {
         )
         .bind(user_id).bind(spending_tx_id).bind(basket.basket_id).bind(&locking_script)
         .bind(spending_txid).bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
 
         // Create proven_tx_req for the spending transaction
         sqlx::query(
             "INSERT INTO proven_tx_reqs (txid, raw_tx, status, attempts, history, notify, created_at, updated_at) VALUES (?, ?, 'unprocessed', 0, '{}', '{}', ?, ?)",
         )
         .bind(spending_txid).bind(&spending_raw_tx).bind(now).bind(now)
-        .execute(storage.pool()).await.unwrap();
+        .execute(storage.writer()).await.unwrap();
 
         // --- Configure mock services ---
         // is_utxo Sequence: first call returns true, second returns false.

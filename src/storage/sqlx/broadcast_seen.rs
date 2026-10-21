@@ -144,15 +144,24 @@ pub(crate) async fn forget_mined_on(conn: &mut SqliteConnection, txid: &str) -> 
 /// migration 002) has the tables. Reads are one indexed query per call
 /// (`txid IN (...)`, chunked).
 pub struct SqlxBroadcastMemory {
+    /// Reads.
     pool: Pool<Sqlite>,
+    /// Writes and write transactions (`BEGIN IMMEDIATE`).
+    writer: Pool<Sqlite>,
     schema: OnceCell<()>,
 }
 
 impl SqlxBroadcastMemory {
-    /// Wrap a pool.
+    /// Wrap one pool, used for reads and writes alike.
     pub fn new(pool: Pool<Sqlite>) -> Self {
+        Self::with_pools(pool.clone(), pool)
+    }
+
+    /// Wrap a reader pool and a writer pool (`StorageSqlx`'s two pools).
+    pub fn with_pools(reader: Pool<Sqlite>, writer: Pool<Sqlite>) -> Self {
         Self {
-            pool,
+            pool: reader,
+            writer,
             schema: OnceCell::new(),
         }
     }
@@ -162,7 +171,7 @@ impl SqlxBroadcastMemory {
         self.schema
             .get_or_try_init(|| async {
                 apply_migration_sql(
-                    &self.pool,
+                    &self.writer,
                     MIGRATION_002_BROADCAST_SEEN_NAME,
                     MIGRATION_002_BROADCAST_SEEN_SQL,
                 )
@@ -228,7 +237,7 @@ impl SqlxBroadcastMemory {
     /// provider ever skips the txid again. The retire paths call this.
     pub async fn mark_rejected(&self, txid: &str) -> Result<()> {
         self.ensure_schema().await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::storage_sqlx::begin_immediate(&self.writer).await?;
         sqlx::query(
             "UPDATE broadcast_seen SET status = ?, seen_at = CURRENT_TIMESTAMP \
              WHERE txid = ? AND status NOT IN ('mined', 'rejected')",
@@ -266,7 +275,7 @@ impl BroadcastMemory for SqlxBroadcastMemory {
         status: &str,
     ) -> Result<()> {
         self.ensure_schema().await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::storage_sqlx::begin_immediate(&self.writer).await?;
         record_broadcast_status_on(&mut tx, txid, provider, status).await?;
         tx.commit().await?;
         Ok(())
@@ -282,7 +291,7 @@ impl BroadcastMemory for SqlxBroadcastMemory {
             return Ok(());
         }
         self.ensure_schema().await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::storage_sqlx::begin_immediate(&self.writer).await?;
         for txid in txids {
             record_broadcast_status_on(&mut tx, txid, provider, status).await?;
         }
@@ -308,7 +317,7 @@ impl BroadcastMemory for SqlxBroadcastMemory {
         )
         .bind(key)
         .bind(value)
-        .execute(&self.pool)
+        .execute(&self.writer)
         .await?;
         Ok(())
     }
@@ -502,11 +511,11 @@ mod tests {
                 super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
             );
             sqlx::query("DROP TABLE broadcast_seen")
-                .execute(storage.pool())
+                .execute(storage.writer())
                 .await
                 .unwrap();
             sqlx::query("DROP TABLE broadcast_prefs")
-                .execute(storage.pool())
+                .execute(storage.writer())
                 .await
                 .unwrap();
             assert!(!table_exists(storage.pool(), "broadcast_seen").await);
@@ -634,7 +643,7 @@ mod tests {
         )
         .bind(&txid)
         .bind(PROVIDER_ARCADE_V2)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         storage

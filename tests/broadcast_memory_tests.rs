@@ -1354,7 +1354,7 @@ mod storage_wiring {
         .bind(&txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .expect("insert proven_tx_req");
 

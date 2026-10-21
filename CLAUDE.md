@@ -101,6 +101,7 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 ## Known Issues / Gotchas
 
 - `bsv-sdk` is a local path dep - must have `../rust-sdk` checked out
+- `StorageSqlx::pool()` is the READER pool (`query_only`): writes go to `writer()` (one connection) or `write_tx()` (`BEGIN IMMEDIATE`); never await a service or tracker while holding either. `clippy.toml` bans every other `begin` (bsv-wallet-cli #44)
 - `ChainTrackerError` must be imported separately: `use bsv_sdk::transaction::ChainTrackerError;`
 - `target >= u128::MAX` triggers clippy `absurd_extreme_comparisons` - use `==` instead
 - `WalletPermissionsManager` provides full BRC-98/99 permission enforcement (1978 lines)

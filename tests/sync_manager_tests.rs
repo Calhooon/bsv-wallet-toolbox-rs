@@ -25,7 +25,7 @@ async fn insert_transaction(store: &StorageSqlx, user_id: i64, txid: &str) -> i6
     .bind(reference)
     .bind(now)
     .bind(now)
-    .execute(store.pool())
+    .execute(store.writer())
     .await
     .unwrap()
     .last_insert_rowid()
@@ -52,7 +52,7 @@ async fn insert_output(
     .bind(txid)
     .bind(now)
     .bind(now)
-    .execute(store.pool())
+    .execute(store.writer())
     .await
     .unwrap();
 }
@@ -86,7 +86,7 @@ async fn insert_proven_tx_req(
     .bind(batch)
     .bind(now)
     .bind(now)
-    .execute(store.pool())
+    .execute(store.writer())
     .await
     .unwrap()
     .last_insert_rowid()
@@ -336,7 +336,7 @@ async fn insert_proven_tx_req_with_timestamps(
     .bind(batch)
     .bind(created_at)
     .bind(updated_at)
-    .execute(store.pool())
+    .execute(store.writer())
     .await
     .unwrap();
 }

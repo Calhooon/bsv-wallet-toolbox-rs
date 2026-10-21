@@ -342,7 +342,7 @@ mod reorg {
         .bind(status)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -368,7 +368,7 @@ mod reorg {
         .bind(txid)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -393,7 +393,7 @@ mod reorg {
         .bind("m".repeat(64))
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         result.last_insert_rowid()
@@ -752,7 +752,7 @@ mod reorg {
             sqlx::query("UPDATE proven_tx_reqs SET proven_tx_id = ? WHERE proven_tx_req_id = ?")
                 .bind(proven_tx_id)
                 .bind(req_id)
-                .execute(storage.pool())
+                .execute(storage.writer())
                 .await
                 .unwrap();
         }
@@ -936,7 +936,7 @@ mod reorg_m19 {
         .bind(&raw)
         .bind(now)
         .bind(now)
-        .fetch_one(storage.pool())
+        .fetch_one(storage.writer())
         .await
         .unwrap();
         sqlx::query(
@@ -948,7 +948,7 @@ mod reorg_m19 {
         .bind(proven_tx_id)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
         sqlx::query(
@@ -959,7 +959,7 @@ mod reorg_m19 {
         .bind(proven_tx_id)
         .bind(now)
         .bind(now)
-        .execute(storage.pool())
+        .execute(storage.writer())
         .await
         .unwrap();
     }

@@ -97,7 +97,7 @@ pub(super) async fn insert_proven(
     .bind(raw)
     .bind(now)
     .bind(now)
-    .fetch_one(s.pool())
+    .fetch_one(s.writer())
     .await
     .unwrap()
 }
@@ -105,7 +105,7 @@ pub(super) async fn insert_proven(
 /// Record that `txid`'s single-leaf proof at `height` was checked by a
 /// tracker: the row reads as one the funnel wrote (P0-1).
 pub(super) async fn mark_checked(s: &StorageSqlx, txid: &str, height: u32) {
-    let mut conn = s.pool().acquire().await.unwrap();
+    let mut conn = s.writer().acquire().await.unwrap();
     super::proof_root_checks::record_root_checked_on(&mut conn, txid, height, txid)
         .await
         .unwrap();
@@ -131,7 +131,7 @@ pub(super) async fn insert_req(
     .bind(proven_tx_id)
     .bind(created_at)
     .bind(created_at)
-    .execute(s.pool())
+    .execute(s.writer())
     .await
     .unwrap();
 }
@@ -165,7 +165,7 @@ pub(super) async fn seed_completed_tx(
     .bind(raw)
     .bind(now)
     .bind(now)
-    .fetch_one(s.pool())
+    .fetch_one(s.writer())
     .await
     .unwrap()
 }
@@ -191,7 +191,7 @@ async fn seed_change_output(
     .bind(txid)
     .bind(now)
     .bind(now)
-    .execute(s.pool())
+    .execute(s.writer())
     .await
     .unwrap();
 }
@@ -526,7 +526,7 @@ async fn a_proof_with_a_known_hash_fills_an_empty_stored_hash() {
     // And an empty one is filled by it.
     sqlx::query("UPDATE proven_txs SET block_hash = '' WHERE txid = ?")
         .bind(txid)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     assert!(s
@@ -641,11 +641,11 @@ async fn demoting_a_stale_proof_reverts_to_the_pre_proof_state_and_keeps_the_coi
     .bind(user_id)
     .bind(Utc::now())
     .bind(Utc::now())
-    .fetch_one(s.pool())
+    .fetch_one(s.writer())
     .await
     .unwrap();
     {
-        let mut conn = s.pool().acquire().await.unwrap();
+        let mut conn = s.writer().acquire().await.unwrap();
         let picked = allocate_change_input(&mut conn, user_id, basket_id, spender_id, 500, true)
             .await
             .unwrap();
@@ -665,12 +665,12 @@ async fn demoting_a_stale_proof_reverts_to_the_pre_proof_state_and_keeps_the_coi
     // transaction's alone.
     sqlx::query("DELETE FROM transactions WHERE transaction_id = ?")
         .bind(spender_id)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     sqlx::query("UPDATE transactions SET status = 'unmined' WHERE txid = ?")
         .bind(txid)
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     let outputs = s.list_outputs(&auth, list_outputs_args()).await.unwrap();
@@ -761,7 +761,7 @@ async fn demotion_is_one_transaction() {
     sqlx::query(
         "CREATE TRIGGER forbid_proof_delete BEFORE DELETE ON proven_txs BEGIN SELECT RAISE(ABORT, 'forced'); END",
     )
-    .execute(s.pool())
+    .execute(s.writer())
     .await
     .unwrap();
 
@@ -789,7 +789,7 @@ async fn demotion_is_one_transaction() {
     assert_eq!(mined_rows(&s, txid).await, 1, "step 3 rolled back");
 
     sqlx::query("DROP TRIGGER forbid_proof_delete")
-        .execute(s.pool())
+        .execute(s.writer())
         .await
         .unwrap();
     assert!(s.demote_stale_proof(txid).await.unwrap());
@@ -846,6 +846,7 @@ async fn the_beef_walk_skips_a_refuted_stored_bump_and_demotes_nothing() {
     let mut processed = std::collections::HashSet::new();
     beef_bfs_walk(
         &mut conn,
+        s.writer(),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -916,6 +917,7 @@ async fn a_tracker_outage_keeps_the_stored_bump_and_mutates_nothing() {
     let mut processed = std::collections::HashSet::new();
     beef_bfs_walk(
         &mut conn,
+        s.writer(),
         &mut beef,
         &mut pending,
         &mut processed,
@@ -997,6 +999,7 @@ async fn the_walks_own_proof_fetch_goes_through_the_funnel_and_the_gate() {
         let mut processed = std::collections::HashSet::new();
         beef_bfs_walk(
             &mut conn,
+            s.writer(),
             &mut beef,
             &mut pending,
             &mut processed,
@@ -1027,6 +1030,7 @@ async fn the_walks_own_proof_fetch_goes_through_the_funnel_and_the_gate() {
         let mut processed = std::collections::HashSet::new();
         beef_bfs_walk(
             &mut conn,
+            s.writer(),
             &mut beef,
             &mut pending,
             &mut processed,

@@ -77,7 +77,7 @@ async fn seed() -> (StorageSqlx, PrivateKey, String) {
     let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(&parent_txid, 100_000);
     sqlx::query("INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, 100000, 0, ?, ?, ?, ?, ?, ?)")
         .bind(&parent_txid).bind("aa".repeat(32)).bind(&parent_txid).bind(bump.to_binary())
-        .bind(parent.to_binary()).bind(now).bind(now).execute(storage.pool()).await.expect("proven funding parent");
+        .bind(parent.to_binary()).bind(now).bind(now).execute(storage.writer()).await.expect("proven funding parent");
 
     let parent_id = sqlx::query(
         "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) \
@@ -89,7 +89,7 @@ async fn seed() -> (StorageSqlx, PrivateKey, String) {
     .bind(parent.to_binary())
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("insert parent")
     .last_insert_rowid();
@@ -109,7 +109,7 @@ async fn seed() -> (StorageSqlx, PrivateKey, String) {
     .bind(SUFFIX)
     .bind(now)
     .bind(now)
-    .execute(storage.pool())
+    .execute(storage.writer())
     .await
     .expect("insert funding output");
     (storage, root, parent_txid)
