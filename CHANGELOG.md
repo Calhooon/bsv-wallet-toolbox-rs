@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.11.2] - 2026-10-22
+
+- The publish of 0.11.1's content: the `v0.11.1` tag fired no Release run (the push event after a rate-limited hour created no workflow run, and the tag cannot be moved or deleted under the repository's rules), so this patch carries the same tree and publishes it; no code change (RELEASING.md step 8: tag the next patch).
+
 ## [0.11.1] - 2026-10-22
 
 A double-spend loser's descendants stayed spendable (#42, from bsv-low #818 at 0.8.0 and #831 at 0.11.0; the reading is bsv-stack-lean `docs/p0/toolbox-void-lineage.md`, sections 3 to 6 and 9). Four of #42's five points are fixed here; the reading's five witnesses land as `src/storage/sqlx/void_lineage_tests.rs`, each fix's test red at 0.11.0 and green here.
