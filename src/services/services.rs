@@ -4,7 +4,7 @@
 //! support for each method type. It implements the `WalletServices` trait.
 
 use async_trait::async_trait;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, RwLock};
 
@@ -22,14 +22,14 @@ use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
         Arc, Arcade, BananaBlocks, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
-        ChaintracksConfig, ChaintracksServiceClient, FallbackChainTracker, WhatsOnChain,
-        WhatsOnChainConfig,
+        ChaintracksConfig, ChaintracksServiceClient, FallbackChainTracker, OutpointSpend,
+        WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
         BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
-        GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, UtxoVerdict,
-        WalletServices,
+        GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, TxStatusDetail,
+        UtxoVerdict, WalletServices,
     },
     ServicesOptions,
 };
@@ -63,6 +63,51 @@ fn call_error_code(e: &Error) -> &'static str {
     match e {
         Error::RateLimited { .. } => "RATE_LIMITED",
         _ => "ERROR",
+    }
+}
+
+/// A rung's fault, by whether asking the same question again could change
+/// it: only a [`FaultKind::Transient`] one is asked again in a ladder's
+/// retry round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FaultKind {
+    /// A 5xx, a timeout (a 408, or a request that timed out), a transport
+    /// failure: the service may answer a second try.
+    Transient,
+    /// The same question gets the same fault: a 4xx that is an answer (a
+    /// 404), a malformed body, a BananaBlocks output whose script is not
+    /// the asked one (the same bytes mismatch again).
+    Deterministic,
+    /// A 429, or a rung closed by an earlier one's Retry-After: not asked
+    /// again inside its Retry-After.
+    RateLimited,
+}
+
+impl FaultKind {
+    /// A provider's error. A failed request ([`Error::NetworkError`]: no
+    /// connection, a timeout, a body cut short) is transient; a
+    /// [`Error::ServiceError`] is transient only when it carries a 5xx (or
+    /// 408) status.
+    fn of_error(e: &Error) -> Self {
+        match e {
+            Error::RateLimited { .. } => Self::RateLimited,
+            Error::NetworkError(_) => Self::Transient,
+            Error::ServiceError(message) => Self::of_message(message),
+            _ => Self::Deterministic,
+        }
+    }
+
+    /// A fault a provider reported in its answer (`status: "error"`), or
+    /// in an error's message: transient only for a 5xx or 408 status,
+    /// which the explorers write as `HTTP <code>`.
+    fn of_message(message: &str) -> Self {
+        let status = message
+            .match_indices("HTTP ")
+            .find_map(|(at, _)| message.get(at + 5..at + 8)?.parse::<u16>().ok());
+        match status {
+            Some(500..=599 | 408) => Self::Transient,
+            _ => Self::Deterministic,
+        }
     }
 }
 
@@ -250,6 +295,19 @@ trait UtxoStatusService {
     fn needs_outpoint(&self) -> bool {
         false
     }
+
+    /// `get_utxo_status`, with the outpoint's spend when the rung read it
+    /// on the way (BananaBlocks' `/txo` names the spender beside its
+    /// answer): `is_utxo` hands it to `spend_evidence`, which then does not
+    /// ask that rung again. `None` for a rung that names no spender.
+    async fn get_utxo_status_and_spend(
+        &self,
+        output: &str,
+        format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> (Result<GetUtxoStatusResult>, Option<OutpointSpend>) {
+        (self.get_utxo_status(output, format, outpoint).await, None)
+    }
 }
 
 #[async_trait]
@@ -257,10 +315,11 @@ trait StatusForTxidsService {
     async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult>;
 
     /// Whether this provider indexes the chain (WhatsOnChain, Bitails) or
-    /// answers for its own inbox (Arcade). Only a chain index's `known` /
-    /// `unknown` is a verdict about the network; a broadcaster's `known` is
-    /// its word that it holds the transaction, and stands only until a chain
-    /// index answers (see [`merge_status_results`]).
+    /// answers for its own inbox (Arcade). Only a chain index's `unknown`
+    /// is an absence vote (two of them make the absence); a broadcaster's
+    /// `known` is its word that it holds the transaction, and stands unless
+    /// a chain index places it or two chain indexes say `unknown` (see
+    /// [`merge_status_results`]).
     fn is_chain_index(&self) -> bool {
         true
     }
@@ -336,6 +395,18 @@ impl UtxoStatusService for BananaBlocks {
 
     fn needs_outpoint(&self) -> bool {
         true
+    }
+
+    async fn get_utxo_status_and_spend(
+        &self,
+        output: &str,
+        format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> (Result<GetUtxoStatusResult>, Option<OutpointSpend>) {
+        let (result, txo) = self
+            .get_utxo_status_with_txo(output, format, outpoint)
+            .await;
+        (result, txo.map(|txo| txo.spend))
     }
 }
 
@@ -485,21 +556,24 @@ impl ScriptHashHistoryService for Bitails {
 /// chain index has answered (any status) so far:
 ///
 /// * a chain index's `known` takes any non-mined slot, and its `unknown`
-///   takes a slot no chain index has decided yet, which is how a
-///   broadcaster's stale `known` for a transaction the chain never saw
-///   becomes `unknown` (the 2026-09-02 phantoms: Arcade `SEEN_MULTIPLE_NODES`
-///   for hours, WhatsOnChain 404);
+///   takes only a slot no chain index has decided yet and no provider holds
+///   as `known`: one chain index's "absent" never stands against a
+///   provider that holds the transaction, in either order;
 /// * a broadcaster's (or BananaBlocks') `known` fills a slot no chain index
-///   has decided (a gap) and takes a slot at `unknown` (one provider's
-///   "absent" never stands against a second provider that holds the
-///   transaction), but never overrides a chain index's `known`; its
-///   `unknown` never replaces anything (its inbox is not the chain);
+///   has decided (a gap) and takes a slot at `unknown`, but never overrides
+///   a chain index's `known`; its `unknown` never replaces anything (its
+///   inbox is not the chain);
 /// * a txid the earlier answer left out (a provider that stopped early)
 ///   takes the later provider's answer as it is.
 ///
-/// So a chain index that knows a transaction beats one that does not, and a
-/// broadcaster's word stands only where no chain index could answer at all
-/// (an outage never turns a held transaction into an absent one).
+/// So any provider's `known` beats one chain index's `unknown`, and the
+/// merged status does not depend on the order the providers were asked.
+/// The absence that stands is decided after the merge, in
+/// `get_status_for_txids`: [`UTXO_NEGATIVE_PROVIDERS`] chain indexes each
+/// answering `unknown` make a non-mined txid `unknown`, even against a
+/// broadcaster's `known` (the 2026-09-02 phantoms: Arcade
+/// `SEEN_MULTIPLE_NODES` for hours, WhatsOnChain 404); any other `unknown`
+/// is a gap ("could not look").
 fn merge_status_results(
     into: &mut GetStatusForTxidsResult,
     from: GetStatusForTxidsResult,
@@ -521,7 +595,7 @@ fn merge_status_results(
         let take = match detail.status.as_str() {
             "mined" => true,
             "known" => from_is_chain_index || !already_decided || slot.status == "unknown",
-            _ => from_is_chain_index && !already_decided,
+            _ => from_is_chain_index && !already_decided && slot.status != "known",
         };
         if take {
             *slot = detail;
@@ -1076,8 +1150,6 @@ impl Services {
     /// Tries to fetch rates from an open exchange rate API. Falls back to
     /// cached defaults if the fetch fails.
     async fn fetch_fiat_exchange_rates(&self) -> Result<FiatExchangeRates> {
-        use std::collections::HashMap;
-
         // Use a free/open exchange rate API
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -1154,7 +1226,15 @@ impl Services {
     ///
     /// With no header service step 3 cannot be done, so step 1 is not
     /// asked: nothing is fetched that could not be checked.
-    async fn spend_evidence(&self, txid: &str, vout: u32) -> SpendEvidence {
+    ///
+    /// `carried` is BananaBlocks' `/txo` spend the UTXO ladder already read
+    /// for this outpoint: when given, BananaBlocks is not asked again.
+    async fn spend_evidence(
+        &self,
+        txid: &str,
+        vout: u32,
+        carried: Option<OutpointSpend>,
+    ) -> SpendEvidence {
         if self.chaintracks.is_none() {
             return SpendEvidence::None;
         }
@@ -1166,9 +1246,13 @@ impl Services {
             }
         }
         if let Some(bb) = &self.bananablocks {
-            let answer = bb.get_spend(txid, vout).await.map(|spend| match spend {
-                crate::services::providers::OutpointSpend::SpentBy(spender) => Some(spender),
-                crate::services::providers::OutpointSpend::Unspent => None,
+            let spend = match carried {
+                Some(spend) => Ok(spend),
+                None => bb.get_spend(txid, vout).await,
+            };
+            let answer = spend.map(|spend| match spend {
+                OutpointSpend::SpentBy(spender) => Some(spender),
+                OutpointSpend::Unspent => None,
             });
             if let Some(spender) =
                 self.named_spender("BananaBlocks", txid, vout, answer, &mut named)
@@ -1179,6 +1263,174 @@ impl Services {
             }
         }
         SpendEvidence::None
+    }
+
+    /// The ladder of `get_utxo_status` (its doc there is the rule), with
+    /// the outpoint's spend a rung read on the way (BananaBlocks' `/txo`):
+    /// `is_utxo` hands it to `spend_evidence`, so an unspent verdict costs
+    /// at most one BananaBlocks request.
+    async fn utxo_ladder(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+        use_next: bool,
+    ) -> Result<(GetUtxoStatusResult, Option<OutpointSpend>)> {
+        let all_services: Vec<(String, String, UtxoStatusProvider)> = {
+            let mut services = lock_write(&self.get_utxo_status_services)?;
+            // If use_next, skip to next service before starting
+            if use_next {
+                services.next();
+            }
+            let from_current = services.all_services_from_current();
+            // The rotating start: the next call begins one explorer on.
+            services.next();
+            from_current
+        };
+        // A provider that answers only an outpoint is not applicable to a
+        // script's question: not asked, never counted.
+        let all_services: Vec<(String, String, UtxoStatusProvider)> = all_services
+            .into_iter()
+            .filter(|(_, _, service)| outpoint.is_some() || !service.needs_outpoint())
+            .collect();
+
+        if all_services.is_empty() {
+            return Err(Error::NoServicesAvailable);
+        }
+
+        let mut last_error = None;
+        // The explorers that answered "unspent", and "not in the unspent set".
+        let mut positives: Vec<GetUtxoStatusResult> = Vec::new();
+        let mut negatives: Vec<GetUtxoStatusResult> = Vec::new();
+        // The outpoint's spend, when a rung read it on the way.
+        let mut spend: Option<OutpointSpend> = None;
+        // The explorers still owed an answer (a transient fault is asked
+        // once more).
+        let mut pending: Vec<&(String, String, UtxoStatusProvider)> = all_services.iter().collect();
+
+        // One retry round, for transient faults only (see `FaultKind`).
+        'rounds: for retry in 0..2 {
+            let mut unanswered = Vec::new();
+            for entry in pending {
+                let (_service_name, provider_name, service) = entry;
+                let mut call = ServiceCall::new();
+                let (answer, read) = service
+                    .get_utxo_status_and_spend(output, output_format, outpoint)
+                    .await;
+                if read.is_some() {
+                    spend = read;
+                }
+                match answer {
+                    Ok(result) if result.status == "success" && result.is_utxo.is_some() => {
+                        call.mark_success(None);
+                        lock_write(&self.get_utxo_status_services)?
+                            .add_call_success(provider_name, call);
+                        let agreeing = if result.is_utxo == Some(true) {
+                            positives.push(result);
+                            positives.len() >= UTXO_POSITIVE_PROVIDERS
+                        } else {
+                            negatives.push(result);
+                            negatives.len() >= UTXO_NEGATIVE_PROVIDERS
+                        };
+                        if agreeing {
+                            break 'rounds;
+                        }
+                    }
+                    Ok(result) => {
+                        call.mark_failure(result.error.clone());
+                        lock_write(&self.get_utxo_status_services)?
+                            .add_call_failure(provider_name, call);
+                        let error = result.error.as_deref().unwrap_or("no answer");
+                        last_error = Some(format!("{}: {}", provider_name, error));
+                        if FaultKind::of_message(error) == FaultKind::Transient {
+                            unanswered.push(entry);
+                        }
+                    }
+                    Err(e) => {
+                        call.mark_error(&e.to_string(), call_error_code(&e));
+                        lock_write(&self.get_utxo_status_services)?
+                            .add_call_error(provider_name, call);
+                        last_error = Some(format!("{}: {}", provider_name, e));
+                        // A rate-limited rung stays closed for its
+                        // Retry-After, and a deterministic fault would
+                        // come back the same: the retry round asks
+                        // neither.
+                        if FaultKind::of_error(&e) == FaultKind::Transient {
+                            unanswered.push(entry);
+                        }
+                    }
+                }
+            }
+
+            pending = unanswered;
+            if pending.is_empty() {
+                break;
+            }
+            if retry < 1 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        }
+
+        let names = |answers: &[GetUtxoStatusResult]| -> String {
+            answers
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join("+")
+        };
+        if !positives.is_empty() && !negatives.is_empty() {
+            tracing::warn!(
+                output = %output,
+                outpoint = ?outpoint,
+                unspent_by = %names(&positives),
+                not_listed_by = %names(&negatives),
+                "get_utxo_status: the explorers disagree"
+            );
+        }
+        for (answers, needed) in [
+            (&mut positives, UTXO_POSITIVE_PROVIDERS),
+            (&mut negatives, UTXO_NEGATIVE_PROVIDERS),
+        ] {
+            if answers.len() >= needed {
+                let name = names(answers);
+                let mut result = answers.swap_remove(0);
+                result.name = name;
+                return Ok((result, spend));
+            }
+        }
+
+        // Could not look. A lone answer is named, never returned.
+        let lone = |answers: &[GetUtxoStatusResult], what: &str| -> Option<String> {
+            (!answers.is_empty()).then(|| format!("{} {}", names(answers), what))
+        };
+        let said: Vec<String> = [
+            lone(&positives, "lists the output as unspent"),
+            lone(&negatives, "does not list the output as unspent"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let error = if said.is_empty() {
+            last_error
+        } else {
+            Some(format!(
+                "could not look: {} and no second explorer confirmed it ({})",
+                said.join("; "),
+                last_error
+                    .as_deref()
+                    .unwrap_or("no other explorer answered")
+            ))
+        };
+        Ok((
+            GetUtxoStatusResult {
+                name: "Services".to_string(),
+                status: "error".to_string(),
+                is_utxo: None,
+                details: Vec::new(),
+                error,
+            },
+            spend,
+        ))
     }
 
     /// A provider's answer to "who spent this outpoint" as a name to bind,
@@ -1988,6 +2240,10 @@ impl WalletServices for Services {
     ///   earlier 429's Retry-After) is "could not look" and moves the
     ///   question to the next rung within the same call, before any retry
     ///   round; a rate-limited rung costs no request and no wait;
+    /// * the one retry round, after a 2 s pause, re-asks only a transient
+    ///   fault (a 5xx, a 408, a timeout, a transport failure; see
+    ///   `FaultKind`): a 404 that is an answer, a malformed body or a script
+    ///   mismatch would come back the same, and a 429's rung is closed;
     /// * BananaBlocks answers an outpoint only: for a question without one
     ///   it is not applicable, neither asked nor counted;
     /// * anything else (an outage, one unspent and one not listed, a lone
@@ -2003,152 +2259,9 @@ impl WalletServices for Services {
         outpoint: Option<&str>,
         use_next: bool,
     ) -> Result<GetUtxoStatusResult> {
-        // Get owned copies of services to avoid holding lock across await
-        let all_services: Vec<(String, String, UtxoStatusProvider)> = {
-            let mut services = lock_write(&self.get_utxo_status_services)?;
-            // If use_next, skip to next service before starting
-            if use_next {
-                services.next();
-            }
-            let from_current = services.all_services_from_current();
-            // The rotating start: the next call begins one explorer on.
-            services.next();
-            from_current
-        };
-        // A provider that answers only an outpoint is not applicable to a
-        // script's question: not asked, never counted.
-        let all_services: Vec<(String, String, UtxoStatusProvider)> = all_services
-            .into_iter()
-            .filter(|(_, _, service)| outpoint.is_some() || !service.needs_outpoint())
-            .collect();
-
-        if all_services.is_empty() {
-            return Err(Error::NoServicesAvailable);
-        }
-
-        let mut last_error = None;
-        // The explorers that answered "unspent", and "not in the unspent set".
-        let mut positives: Vec<GetUtxoStatusResult> = Vec::new();
-        let mut negatives: Vec<GetUtxoStatusResult> = Vec::new();
-        // The explorers still owed an answer (a fault is asked once more).
-        let mut pending: Vec<&(String, String, UtxoStatusProvider)> = all_services.iter().collect();
-
-        // Retry loop for transient failures
-        'rounds: for retry in 0..2 {
-            let mut unanswered = Vec::new();
-            for entry in pending {
-                let (_service_name, provider_name, service) = entry;
-                let mut call = ServiceCall::new();
-                match service
-                    .get_utxo_status(output, output_format, outpoint)
-                    .await
-                {
-                    Ok(result) if result.status == "success" && result.is_utxo.is_some() => {
-                        call.mark_success(None);
-                        lock_write(&self.get_utxo_status_services)?
-                            .add_call_success(provider_name, call);
-                        let agreeing = if result.is_utxo == Some(true) {
-                            positives.push(result);
-                            positives.len() >= UTXO_POSITIVE_PROVIDERS
-                        } else {
-                            negatives.push(result);
-                            negatives.len() >= UTXO_NEGATIVE_PROVIDERS
-                        };
-                        if agreeing {
-                            break 'rounds;
-                        }
-                    }
-                    Ok(result) => {
-                        call.mark_failure(result.error.clone());
-                        lock_write(&self.get_utxo_status_services)?
-                            .add_call_failure(provider_name, call);
-                        last_error = Some(format!(
-                            "{}: {}",
-                            provider_name,
-                            result.error.as_deref().unwrap_or("no answer")
-                        ));
-                        unanswered.push(entry);
-                    }
-                    Err(e) => {
-                        call.mark_error(&e.to_string(), call_error_code(&e));
-                        lock_write(&self.get_utxo_status_services)?
-                            .add_call_error(provider_name, call);
-                        last_error = Some(format!("{}: {}", provider_name, e));
-                        // A rate-limited rung stays closed for its
-                        // Retry-After: the retry round does not ask it.
-                        if !matches!(e, Error::RateLimited { .. }) {
-                            unanswered.push(entry);
-                        }
-                    }
-                }
-            }
-
-            pending = unanswered;
-            if pending.is_empty() {
-                break;
-            }
-            if retry < 1 {
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            }
-        }
-
-        let names = |answers: &[GetUtxoStatusResult]| -> String {
-            answers
-                .iter()
-                .map(|a| a.name.as_str())
-                .collect::<Vec<_>>()
-                .join("+")
-        };
-        if !positives.is_empty() && !negatives.is_empty() {
-            tracing::warn!(
-                output = %output,
-                outpoint = ?outpoint,
-                unspent_by = %names(&positives),
-                not_listed_by = %names(&negatives),
-                "get_utxo_status: the explorers disagree"
-            );
-        }
-        for (answers, needed) in [
-            (&mut positives, UTXO_POSITIVE_PROVIDERS),
-            (&mut negatives, UTXO_NEGATIVE_PROVIDERS),
-        ] {
-            if answers.len() >= needed {
-                let name = names(answers);
-                let mut result = answers.swap_remove(0);
-                result.name = name;
-                return Ok(result);
-            }
-        }
-
-        // Could not look. A lone answer is named, never returned.
-        let lone = |answers: &[GetUtxoStatusResult], what: &str| -> Option<String> {
-            (!answers.is_empty()).then(|| format!("{} {}", names(answers), what))
-        };
-        let said: Vec<String> = [
-            lone(&positives, "lists the output as unspent"),
-            lone(&negatives, "does not list the output as unspent"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let error = if said.is_empty() {
-            last_error
-        } else {
-            Some(format!(
-                "could not look: {} and no second explorer confirmed it ({})",
-                said.join("; "),
-                last_error
-                    .as_deref()
-                    .unwrap_or("no other explorer answered")
-            ))
-        };
-        Ok(GetUtxoStatusResult {
-            name: "Services".to_string(),
-            status: "error".to_string(),
-            is_utxo: None,
-            details: Vec::new(),
-            error,
-        })
+        self.utxo_ladder(output, output_format, outpoint, use_next)
+            .await
+            .map(|(result, _spend)| result)
     }
 
     async fn get_status_for_txids(
@@ -2175,6 +2288,9 @@ impl WalletServices for Services {
         // The txids a chain index has answered so far (see
         // `merge_status_results`).
         let mut decided: HashSet<String> = HashSet::new();
+        // Per txid, how many chain indexes answered `unknown`: the absence
+        // stands only on [`UTXO_NEGATIVE_PROVIDERS`] of them.
+        let mut absent_by: HashMap<String, usize> = HashMap::new();
 
         for (_service_name, provider_name, service) in all_services {
             // The first provider is asked about everything. Every provider
@@ -2196,7 +2312,8 @@ impl WalletServices for Services {
             // left the mined ones unproven forever (no chain index was ever
             // asked, so no proof was ever fetched) and let the phantoms pass
             // the reconciler's alive check every pass. Only `mined` ends the
-            // question; the chain index answers the rest.
+            // question; the chain indexes answer the rest, and two of their
+            // `unknown`s make the absence (see `merge_status_results`).
             let pending: Vec<String> = match &answer {
                 None => txids.to_vec(),
                 Some(previous) => txids
@@ -2232,6 +2349,11 @@ impl WalletServices for Services {
                             .count(),
                         "get_status_for_txids: provider answered"
                     );
+                    if chain_index {
+                        for d in result.results.iter().filter(|d| d.status == "unknown") {
+                            *absent_by.entry(d.txid.clone()).or_default() += 1;
+                        }
+                    }
                     match answer {
                         None => {
                             if chain_index {
@@ -2282,14 +2404,24 @@ impl WalletServices for Services {
         }
 
         if let Some(mut answer) = answer {
-            // An `unknown` no chain index gave (a broadcaster's inbox, or
+            // A negative needs two providers' clean answers: a non-mined
+            // txid two chain indexes answered `unknown` for is `unknown`,
+            // even against a broadcaster's `known` (a phantom). Any other
+            // `unknown` (one chain index's alone, a broadcaster's inbox,
             // BananaBlocks' index, which lags the mempool) is a gap, not
             // "absent": it is left out, and so is a txid no provider
             // answered (one stopped early); the answer says it could not
             // look for those.
-            answer
-                .results
-                .retain(|d| d.status != "unknown" || decided.contains(&d.txid));
+            for d in answer.results.iter_mut() {
+                let absent = absent_by.get(&d.txid).copied().unwrap_or(0);
+                if d.status != "mined" && absent >= UTXO_NEGATIVE_PROVIDERS {
+                    *d = TxStatusDetail::new(d.txid.clone(), "unknown", None);
+                }
+            }
+            answer.results.retain(|d| {
+                d.status != "unknown"
+                    || absent_by.get(&d.txid).copied().unwrap_or(0) >= UTXO_NEGATIVE_PROVIDERS
+            });
             let gaps: Vec<&str> = txids
                 .iter()
                 .filter(|t| !answer.results.iter().any(|d| d.txid == **t))
@@ -2435,20 +2567,20 @@ impl WalletServices for Services {
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
         let hash = self.hash_output_script(locking_script);
         let outpoint = format!("{}.{}", txid, vout);
-        let unspent_set = match self
-            .get_utxo_status(&hash, None, Some(&outpoint), false)
+        let (unspent_set, carried) = match self
+            .utxo_ladder(&hash, None, Some(&outpoint), false)
             .await
         {
-            Ok(result) => {
+            Ok((result, carried)) => {
                 let verdict = UtxoVerdict::from_status(&result);
                 if verdict == UtxoVerdict::Unknown {
                     tracing::debug!(outpoint = %outpoint, error = ?result.error, "is_utxo: could not look");
                 }
-                verdict
+                (verdict, carried)
             }
             Err(e) => {
                 tracing::debug!(outpoint = %outpoint, error = %e, "is_utxo: could not look");
-                UtxoVerdict::Unknown
+                (UtxoVerdict::Unknown, None)
             }
         };
         // A spender bound by its own bytes stands on one provider, even
@@ -2456,7 +2588,7 @@ impl WalletServices for Services {
         // (2026-10-22: WhatsOnChain's `/spent` named a mempool spender of an
         // outpoint BananaBlocks answered `spent: false` for), and the
         // spender's bytes are the evidence.
-        let evidence = self.spend_evidence(txid, vout).await;
+        let evidence = self.spend_evidence(txid, vout, carried).await;
         if unspent_set == UtxoVerdict::UnspentHint && evidence != SpendEvidence::None {
             tracing::warn!(outpoint = %outpoint, evidence = ?evidence, "is_utxo: explorers list the output as unspent, and a spender its bytes bind is named; the spender stands");
         }
@@ -3031,23 +3163,6 @@ mod tests {
         assert_eq!(first.results[0].depth, Some(299));
     }
 
-    /// The 2026-09-02 phantom shape: Arcade `SEEN_MULTIPLE_NODES` for hours,
-    /// WhatsOnChain 404. The chain index decides: `unknown`, so the
-    /// reconciler's alive check and climb see the absence instead of the
-    /// broadcaster's word.
-    #[test]
-    fn test_a_broadcasters_known_the_chain_index_never_saw_is_unknown() {
-        let mut first = status_result("ArcadeV2", vec![detail("x", "known")]);
-        let mut decided = HashSet::new();
-        let woc = status_result("WhatsOnChain", vec![detail("x", "unknown")]);
-        merge_status_results(&mut first, woc, true, &mut decided);
-        assert_eq!(statuses(&first), vec![("x", "unknown")]);
-        // A second chain index that does not know it either changes nothing.
-        let bitails = status_result("Bitails", vec![detail("x", "unknown")]);
-        merge_status_results(&mut first, bitails, true, &mut decided);
-        assert_eq!(statuses(&first), vec![("x", "unknown")]);
-    }
-
     /// Among chain indexes, one that knows the transaction beats one that
     /// does not, in either order; and a chain index's `known` is never
     /// downgraded by a later chain index's `unknown`.
@@ -3144,7 +3259,9 @@ mod tests {
         async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
             self.asked.lock().unwrap().push(txids.to_vec());
             if self.fail {
-                return Err(Error::NetworkError("down".to_string()));
+                return Err(Error::ServiceError(
+                    "HTTP 500 Internal Server Error".to_string(),
+                ));
             }
             Ok(GetStatusForTxidsResult {
                 name: "mock".to_string(),
@@ -3258,6 +3375,172 @@ mod tests {
             vec![vec!["phantom".to_string()]],
             "the second chain index only about what is still not mined"
         );
+    }
+
+    /// The 2026-09-02 phantom shape, at the ladder: Arcade
+    /// `SEEN_MULTIPLE_NODES` (`known`) for hours, WhatsOnChain 404
+    /// (`unknown`). After WhatsOnChain alone the broadcaster's `known`
+    /// holds (one chain index's absence never stands alone); only when
+    /// WhatsOnChain and Bitails both say `unknown` is it `unknown`, which
+    /// the reconciler's alive check and respend gate act on.
+    #[tokio::test]
+    async fn test_a_broadcasters_known_the_chain_index_never_saw_is_unknown() {
+        let txids = vec!["x".to_string()];
+        let after_woc_alone = services_with_status_providers(vec![
+            (
+                "ArcadeV2",
+                MockStatusProvider::new(false, vec![detail("x", "known")]),
+            ),
+            ("WhatsOnChain", MockStatusProvider::new(true, vec![])),
+        ]);
+        let result = after_woc_alone
+            .get_status_for_txids(&txids, false)
+            .await
+            .unwrap();
+        assert_eq!(statuses(&result), vec![("x", "known")]);
+        assert_eq!(result.error, None);
+
+        let after_both = services_with_status_providers(vec![
+            (
+                "ArcadeV2",
+                MockStatusProvider::new(false, vec![detail("x", "known")]),
+            ),
+            ("WhatsOnChain", MockStatusProvider::new(true, vec![])),
+            ("Bitails", MockStatusProvider::new(true, vec![])),
+        ]);
+        let result = after_both
+            .get_status_for_txids(&txids, false)
+            .await
+            .unwrap();
+        assert_eq!(result.status, "success");
+        assert_eq!(statuses(&result), vec![("x", "unknown")]);
+        assert_eq!(result.error, None);
+    }
+
+    /// One chain index's `unknown` with the other faulted is "could not
+    /// look", never a clean `unknown` (review 2 H1 of #43: bsv-wallet-cli's
+    /// respend gate takes a clean `unknown` as leave to post a competitor).
+    #[tokio::test]
+    async fn test_one_chain_index_unknown_and_a_fault_is_could_not_look() {
+        let services = services_with_status_providers(vec![
+            ("WhatsOnChain", MockStatusProvider::new(true, vec![])),
+            ("Bitails", MockStatusProvider::failing(true)),
+        ]);
+        let result = services
+            .get_status_for_txids(&["x".to_string()], false)
+            .await
+            .unwrap();
+        assert_eq!(result.status, "error");
+        assert!(result.results.is_empty(), "{:?}", result.results);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("could not look: no chain index answered x")
+        );
+    }
+
+    /// Arcade `known`, WhatsOnChain `unknown`, Bitails 500: the broadcaster
+    /// holds the transaction and only one chain index says it is absent.
+    #[tokio::test]
+    async fn test_a_broadcasters_known_against_one_unknown_and_a_fault_is_known() {
+        let services = services_with_status_providers(vec![
+            (
+                "ArcadeV2",
+                MockStatusProvider::new(false, vec![detail("x", "known")]),
+            ),
+            ("WhatsOnChain", MockStatusProvider::new(true, vec![])),
+            ("Bitails", MockStatusProvider::failing(true)),
+        ]);
+        let result = services
+            .get_status_for_txids(&["x".to_string()], false)
+            .await
+            .unwrap();
+        assert_eq!(result.status, "success");
+        assert_eq!(statuses(&result), vec![("x", "known")]);
+        assert_eq!(result.error, None);
+    }
+
+    /// Arcade `known`, WhatsOnChain and Bitails `unknown`: two chain
+    /// indexes' clean absence is a negative from two, and it stands
+    /// against the broadcaster's word.
+    #[tokio::test]
+    async fn test_two_chain_indexes_unknown_override_a_broadcasters_known() {
+        let services = services_with_status_providers(vec![
+            (
+                "ArcadeV2",
+                MockStatusProvider::new(false, vec![detail("x", "known")]),
+            ),
+            ("WhatsOnChain", MockStatusProvider::new(true, vec![])),
+            ("Bitails", MockStatusProvider::new(true, vec![])),
+        ]);
+        let result = services
+            .get_status_for_txids(&["x".to_string()], false)
+            .await
+            .unwrap();
+        assert_eq!(statuses(&result), vec![("x", "unknown")]);
+        assert_eq!(result.error, None);
+    }
+
+    /// The verdict does not depend on which provider is asked first (review
+    /// 2 M1 of #43): over Arcade, WhatsOnChain and Bitails each answering
+    /// `known`, `unknown` or a fault, the answer from the default order and
+    /// from one on (`use_next`, WhatsOnChain first) is the same, and it is
+    /// the rule: `known` when any provider holds the transaction and fewer
+    /// than two chain indexes say `unknown`; `unknown` on two chain
+    /// indexes' `unknown`; otherwise "could not look".
+    #[tokio::test]
+    async fn test_the_status_verdict_is_the_same_from_either_start() {
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum Says {
+            Known,
+            Unknown,
+            Fault,
+        }
+        let provider = |chain_index: bool, says: Says| match says {
+            Says::Known => MockStatusProvider::new(chain_index, vec![detail("x", "known")]),
+            Says::Unknown => MockStatusProvider::new(chain_index, vec![]),
+            Says::Fault => MockStatusProvider::failing(chain_index),
+        };
+        let all = [Says::Known, Says::Unknown, Says::Fault];
+        for arcade in all {
+            for woc in all {
+                for bitails in all {
+                    let absent = [woc, bitails]
+                        .iter()
+                        .filter(|s| **s == Says::Unknown)
+                        .count();
+                    let held = [arcade, woc, bitails].contains(&Says::Known);
+                    let expected = if absent == 2 {
+                        Some("unknown")
+                    } else if held {
+                        Some("known")
+                    } else {
+                        None
+                    };
+                    for use_next in [false, true] {
+                        let services = services_with_status_providers(vec![
+                            ("ArcadeV2", provider(false, arcade)),
+                            ("WhatsOnChain", provider(true, woc)),
+                            ("Bitails", provider(true, bitails)),
+                        ]);
+                        let result = services
+                            .get_status_for_txids(&["x".to_string()], use_next)
+                            .await
+                            .unwrap();
+                        let got = result.results.first().map(|d| d.status.as_str());
+                        assert_eq!(
+                            got, expected,
+                            "Arcade {arcade:?}, WhatsOnChain {woc:?}, Bitails {bitails:?}, use_next {use_next}"
+                        );
+                        assert_eq!(
+                            result.error.is_some(),
+                            expected.is_none(),
+                            "could not look exactly when there is no verdict: {:?}",
+                            result.error
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Every chain index down: the broadcaster's `known` stands (a held

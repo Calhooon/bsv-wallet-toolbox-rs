@@ -243,8 +243,24 @@ impl BananaBlocks {
         output_format: Option<GetUtxoStatusOutputFormat>,
         outpoint: Option<&str>,
     ) -> Result<GetUtxoStatusResult> {
+        self.get_utxo_status_with_txo(output, output_format, outpoint)
+            .await
+            .0
+    }
+
+    /// [`Self::get_utxo_status`], with the `/txo` answer it read (`None`
+    /// when no output was read: no outpoint, or a fault before a whole
+    /// body). The answer's `spend` is the outpoint's whatever script was
+    /// asked, so `is_utxo`'s `spend_evidence` takes the spender from here
+    /// instead of asking `/txo` a second time.
+    pub(crate) async fn get_utxo_status_with_txo(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> (Result<GetUtxoStatusResult>, Option<Txo>) {
         let Some(outpoint) = outpoint else {
-            return Ok(GetUtxoStatusResult {
+            let result = Ok(GetUtxoStatusResult {
                 name: BANANABLOCKS_NAME.to_string(),
                 status: "error".to_string(),
                 is_utxo: None,
@@ -253,23 +269,35 @@ impl BananaBlocks {
                     "BananaBlocks answers an outpoint, not a script's unspent set".to_string(),
                 ),
             });
+            return (result, None);
         };
-        let asked = convert_script_hash(output, output_format)?.to_ascii_lowercase();
-        let (txid, vout) = parse_outpoint(outpoint)?;
-        let txo = self.get_txo(txid, vout).await?;
-        if txo.script_hash != asked {
-            return Err(Error::ServiceError(format!(
+        let asked = match convert_script_hash(output, output_format) {
+            Ok(asked) => asked.to_ascii_lowercase(),
+            Err(e) => return (Err(e), None),
+        };
+        let (txid, vout) = match parse_outpoint(outpoint) {
+            Ok(parsed) => parsed,
+            Err(e) => return (Err(e), None),
+        };
+        let txo = match self.get_txo(txid, vout).await {
+            Ok(txo) => txo,
+            Err(e) => return (Err(e), None),
+        };
+        let result = if txo.script_hash != asked {
+            Err(Error::ServiceError(format!(
                 "BananaBlocks txo {outpoint}: its script hashes to {}, not the asked {asked}",
                 txo.script_hash
-            )));
-        }
-        Ok(GetUtxoStatusResult {
-            name: BANANABLOCKS_NAME.to_string(),
-            status: "success".to_string(),
-            is_utxo: Some(txo.spend == OutpointSpend::Unspent),
-            details: Vec::new(),
-            error: None,
-        })
+            )))
+        } else {
+            Ok(GetUtxoStatusResult {
+                name: BANANABLOCKS_NAME.to_string(),
+                status: "success".to_string(),
+                is_utxo: Some(txo.spend == OutpointSpend::Unspent),
+                details: Vec::new(),
+                error: None,
+            })
+        };
+        (result, Some(txo))
     }
 
     // =========================================================================
