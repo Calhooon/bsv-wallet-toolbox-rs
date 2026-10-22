@@ -380,7 +380,7 @@ mod tests {
 
     // Helper: mock Bitails /block/height/{height} endpoint (under /bitails).
     async fn mock_bitails_header(
-        server: &mut mockito::ServerGuard,
+        server: &mut crate::services::MockServer,
         height: u32,
         merkle_root: &str,
     ) -> mockito::Mock {
@@ -399,7 +399,7 @@ mod tests {
 
     // Helper: mock ChainTracks /findHeaderHexForHeight endpoint.
     async fn mock_ct_header(
-        server: &mut mockito::ServerGuard,
+        server: &mut crate::services::MockServer,
         height: u32,
         merkle_root: &str,
     ) -> mockito::Mock {
@@ -419,7 +419,10 @@ mod tests {
     }
 
     // Helper: mock ChainTracks returning success but no value (sync gap).
-    async fn mock_ct_not_found(server: &mut mockito::ServerGuard, height: u32) -> mockito::Mock {
+    async fn mock_ct_not_found(
+        server: &mut crate::services::MockServer,
+        height: u32,
+    ) -> mockito::Mock {
         server
             .mock(
                 "GET",
@@ -433,7 +436,7 @@ mod tests {
     }
 
     // Helper: mock ChainTracks returning HTTP error.
-    async fn mock_ct_error(server: &mut mockito::ServerGuard, height: u32) -> mockito::Mock {
+    async fn mock_ct_error(server: &mut crate::services::MockServer, height: u32) -> mockito::Mock {
         server
             .mock(
                 "GET",
@@ -447,7 +450,7 @@ mod tests {
 
     // Helper: mock WoC /block/height/{height} endpoint.
     async fn mock_woc_header(
-        server: &mut mockito::ServerGuard,
+        server: &mut crate::services::MockServer,
         height: u32,
         merkle_root: &str,
     ) -> mockito::Mock {
@@ -466,7 +469,10 @@ mod tests {
     }
 
     // Helper: mock WoC returning 404.
-    async fn mock_woc_not_found(server: &mut mockito::ServerGuard, height: u32) -> mockito::Mock {
+    async fn mock_woc_not_found(
+        server: &mut crate::services::MockServer,
+        height: u32,
+    ) -> mockito::Mock {
         server
             .mock("GET", format!("/block/height/{}", height).as_str())
             .with_status(404)
@@ -477,7 +483,7 @@ mod tests {
 
     // Helper: mock WoC returning 429.
     async fn mock_woc_rate_limited(
-        server: &mut mockito::ServerGuard,
+        server: &mut crate::services::MockServer,
         height: u32,
     ) -> mockito::Mock {
         server
@@ -499,8 +505,8 @@ mod tests {
     /// header service is back, its answer is the answer.
     #[tokio::test]
     async fn one_explorers_root_is_never_a_verified_root() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
         let asked = r("the root one explorer names");
 
         let ct_down = mock_ct_error(&mut ct_server, 700).await;
@@ -545,8 +551,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_primary_succeeds_root_matches() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let woc_server = crate::services::mock_server().await;
         let root = "abc123def456";
 
         let _m = mock_ct_header(&mut ct_server, 800000, root).await;
@@ -563,8 +569,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_primary_succeeds_root_mismatch() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
 
         let _ct = mock_ct_header(&mut ct_server, 800000, "real_root").await;
         // WoC also returns the real root (not what caller asked for)
@@ -582,8 +588,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_primary_fails_fallback_succeeds() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
         let root = r("abc123def456");
 
         let _ct = mock_ct_error(&mut ct_server, 943495).await;
@@ -602,8 +608,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_primary_fails_fallback_root_mismatch() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
 
         let _ct = mock_ct_error(&mut ct_server, 943495).await;
         let _woc = mock_woc_header(&mut woc_server, 943495, &r("actual_root")).await;
@@ -624,8 +630,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_both_fail_returns_an_error_not_a_verdict() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
 
         let _ct = mock_ct_error(&mut ct_server, 943495).await;
         let _woc = mock_woc_not_found(&mut woc_server, 943495).await;
@@ -652,8 +658,8 @@ mod tests {
     /// Err.
     #[tokio::test]
     async fn the_four_arms_of_the_fallback_tracker() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
 
         // (a)
         let _a = mock_ct_header(&mut ct_server, 1, "root_a").await;
@@ -727,8 +733,8 @@ mod tests {
     /// in the proof path. Down is an error; a definite answer stands.
     #[tokio::test]
     async fn the_default_tracker_never_takes_an_explorers_root() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
 
         // The header service is down; the explorer names the asked root.
         let _a_ct = mock_ct_error(&mut ct_server, 900).await;
@@ -766,8 +772,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_hit_skips_providers() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let woc_server = crate::services::mock_server().await;
         let root = "cached_root_123";
 
         // Only allow one hit on ChainTracks
@@ -800,8 +806,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_stores_fallback_results() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
         let root = r("fallback_root");
 
         // ChainTracks has a gap; both explorers have the header
@@ -838,8 +844,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_primary_not_found_triggers_fallback() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
         let root = r("gap_root");
 
         // ChainTracks sync gap: {"status":"success"} with no value
@@ -859,8 +865,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_woc_rate_limited_behind_a_primary_error_is_an_error() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let mut woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let mut woc_server = crate::services::mock_server().await;
 
         let _ct = mock_ct_error(&mut ct_server, 943495).await;
         let _woc = mock_woc_rate_limited(&mut woc_server, 943495).await;
@@ -878,8 +884,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_mismatch_different_root() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let woc_server = crate::services::mock_server().await;
         let real_root = "real_root_abc";
 
         let _ct = mock_ct_header(&mut ct_server, 800000, real_root).await;
@@ -901,8 +907,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_current_height_delegates_to_primary() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let woc_server = crate::services::mock_server().await;
 
         let _m = ct_server
             .mock("GET", "/getPresentHeight")
@@ -942,8 +948,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_case_insensitive() {
-        let mut ct_server = mockito::Server::new_async().await;
-        let woc_server = mockito::Server::new_async().await;
+        let mut ct_server = crate::services::mock_server().await;
+        let woc_server = crate::services::mock_server().await;
         let root = "AbCdEf123456";
 
         // First call with exact case — primary succeeds, caches lowercase

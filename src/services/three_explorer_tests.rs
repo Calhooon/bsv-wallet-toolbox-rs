@@ -118,7 +118,7 @@ async fn rate_limited_rungs_are_not_retried_after_a_sleep() {
 
 struct RawScene {
     services: Services,
-    _servers: Vec<mockito::ServerGuard>,
+    _servers: Vec<crate::services::MockServer>,
     mocks: Vec<mockito::Mock>,
 }
 
@@ -131,7 +131,7 @@ async fn raw_scene(
     let mut servers = Vec::new();
     let mut mocks = Vec::new();
     for (status, body) in [woc, bb, bitails] {
-        let mut server = mockito::Server::new_async().await;
+        let mut server = crate::services::mock_server().await;
         let mut mock = server
             .mock("GET", format!("/tx/{txid}/hex").as_str())
             .with_status(status)
@@ -223,10 +223,10 @@ async fn bananablocks_serves_a_proof_the_header_service_accepts() {
     root.reverse();
     let root = hex::encode(root);
 
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let bitails = mockito::Server::new_async().await;
-    let mut ct = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let bitails = crate::services::mock_server().await;
+    let mut ct = crate::services::mock_server().await;
     let _w = woc
         .mock("GET", format!("/tx/{a}/proof/tsc").as_str())
         .with_status(404)
@@ -299,9 +299,9 @@ async fn bananablocks_serves_a_proof_the_header_service_accepts() {
 #[tokio::test]
 async fn bananablocks_answers_the_status_when_the_others_could_not_look() {
     let txid = "ab".repeat(32);
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let _w = woc
         .mock("POST", "/txs/status")
         .with_status(429)
@@ -342,9 +342,9 @@ async fn bananablocks_answers_the_status_when_the_others_could_not_look() {
 #[tokio::test]
 async fn bananablocks_unknown_never_replaces_a_chain_indexs_known() {
     let txid = "ab".repeat(32);
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let _w = woc
         .mock("POST", "/txs/status")
         .with_status(200)
@@ -384,10 +384,10 @@ async fn bananablocks_unknown_never_replaces_a_chain_indexs_known() {
 #[tokio::test]
 async fn bananablocks_names_the_spender_when_whatsonchain_does_not() {
     let (spender, spender_hex) = a_spender_of(UTXO_TXID, 0);
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let bitails = mockito::Server::new_async().await;
-    let ct = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let bitails = crate::services::mock_server().await;
+    let ct = crate::services::mock_server().await;
     let script_hash = {
         let mut h = sha256(UTXO_SCRIPT);
         h.reverse();
@@ -439,7 +439,7 @@ async fn bananablocks_names_the_spender_when_whatsonchain_does_not() {
 async fn an_unspent_verdict_costs_one_bananablocks_request() {
     let f = utxo_services(Says::Unspent, Says::Unspent, Says::Unspent).await;
     let (mut woc, _unspent) = f.woc;
-    let ct = mockito::Server::new_async().await;
+    let ct = crate::services::mock_server().await;
     let _spent = woc
         .mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
         .with_status(404)
@@ -467,9 +467,9 @@ async fn an_unspent_verdict_costs_one_bananablocks_request() {
 /// would come back the same, so neither is asked again and nothing sleeps.
 #[tokio::test]
 async fn a_deterministic_fault_is_not_asked_again() {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let hash = script_hash_be(UTXO_SCRIPT);
     let malformed = woc
         .mock("GET", format!("/script/{hash}/unspent/all").as_str())
@@ -589,7 +589,7 @@ where
     assert!(cut.to_string().contains("read failed"), "{cut}");
     assert_eq!(FaultKind::of_error(&cut), FaultKind::Transient, "{cut}");
 
-    let mut server = mockito::Server::new_async().await;
+    let mut server = crate::services::mock_server().await;
     let _m = server
         .mock("GET", mockito::Matcher::Any)
         .with_status(200)
@@ -643,10 +643,10 @@ async fn a_bitails_unspent_body_cut_short_is_transient_a_malformed_one_determini
 #[tokio::test]
 async fn a_bananablocks_spender_its_bytes_do_not_bear_out_is_dropped() {
     let (spender, spender_hex) = a_spender_of(UTXO_TXID, 1);
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let bitails = mockito::Server::new_async().await;
-    let ct = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let bitails = crate::services::mock_server().await;
+    let ct = crate::services::mock_server().await;
     let _spent = woc
         .mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
         .with_status(404)
@@ -686,7 +686,7 @@ async fn a_bananablocks_spender_its_bytes_do_not_bear_out_is_dropped() {
 #[tokio::test]
 async fn a_whatsonchain_429_is_a_fault_at_once_not_a_sleeping_retry() {
     let txid = "ab".repeat(32);
-    let mut server = mockito::Server::new_async().await;
+    let mut server = crate::services::mock_server().await;
     let route = server
         .mock("GET", format!("/tx/{txid}/hex").as_str())
         .with_status(429)
@@ -720,7 +720,7 @@ async fn a_whatsonchain_429_is_a_fault_at_once_not_a_sleeping_retry() {
 #[tokio::test]
 async fn a_whatsonchain_broadcast_429_is_an_error_at_once_not_five_sleeps() {
     let (_, hex) = a_spender_of(UTXO_TXID, 0);
-    let mut server = mockito::Server::new_async().await;
+    let mut server = crate::services::mock_server().await;
     let route = server
         .mock("POST", "/tx/raw")
         .with_status(429)
@@ -749,7 +749,7 @@ async fn a_whatsonchain_broadcast_429_is_an_error_at_once_not_five_sleeps() {
 #[tokio::test]
 async fn the_woc_api_key_header_is_sent() {
     let txid = "ab".repeat(32);
-    let mut server = mockito::Server::new_async().await;
+    let mut server = crate::services::mock_server().await;
     let route = server
         .mock("GET", format!("/tx/{txid}/hex").as_str())
         .match_header("woc-api-key", "mainnet_k")
@@ -779,8 +779,8 @@ fn script_hash_be(script: &[u8]) -> String {
 }
 
 async fn empty_unspent_set(
-    woc: &mut mockito::ServerGuard,
-    bitails: &mut mockito::ServerGuard,
+    woc: &mut crate::services::MockServer,
+    bitails: &mut crate::services::MockServer,
     script: &[u8],
 ) -> (mockito::Mock, mockito::Mock) {
     let hash = script_hash_be(script);
@@ -811,7 +811,7 @@ async fn whatsonchain_names_a_spender_bananablocks_says_unspent_the_spender_stan
     for bitails_says in [Says::Unspent, Says::NotListed, Says::Fault] {
         let f = utxo_services(Says::NotListed, Says::Unspent, bitails_says).await;
         let (mut woc, _not_listed) = f.woc;
-        let ct = mockito::Server::new_async().await;
+        let ct = crate::services::mock_server().await;
         let _spent = woc
             .mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
             .with_status(200)
@@ -882,9 +882,9 @@ async fn the_empty_script_never_comes_back_unspent() {
 #[tokio::test]
 async fn the_status_ladder_with_both_chain_indexes_down_and_a_bananablocks_404_could_not_look() {
     let txid = "ab".repeat(32);
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let _w = woc
         .mock("POST", "/txs/status")
         .with_status(429)
@@ -926,9 +926,9 @@ async fn the_status_ladder_with_both_chain_indexes_down_and_a_bananablocks_404_c
 #[tokio::test]
 async fn bananablocks_known_beats_a_lone_whatsonchain_unknown() {
     let txid = "ab".repeat(32);
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let _w = woc
         .mock("POST", "/txs/status")
         .with_status(200)
@@ -1008,7 +1008,7 @@ async fn an_empty_bucket_skips_bananablocks_mid_ladder() {
 async fn a_broadcast_inside_an_earlier_retry_after_makes_no_request() {
     let (_, hex) = a_spender_of(UTXO_TXID, 0);
     let txid = "ab".repeat(32);
-    let mut server = mockito::Server::new_async().await;
+    let mut server = crate::services::mock_server().await;
     let _get = server
         .mock("GET", format!("/tx/{txid}/hex").as_str())
         .with_status(429)
@@ -1054,10 +1054,10 @@ async fn a_broadcast_inside_an_earlier_retry_after_makes_no_request() {
 async fn a_whatsonchain_spent_fault_leads_spend_evidence_to_bananablocks() {
     let (spender, spender_hex) = a_spender_of(UTXO_TXID, 0);
     for (status, retry_after) in [(500, None), (429, Some("30"))] {
-        let mut woc = mockito::Server::new_async().await;
-        let mut bb = mockito::Server::new_async().await;
-        let bitails = mockito::Server::new_async().await;
-        let ct = mockito::Server::new_async().await;
+        let mut woc = crate::services::mock_server().await;
+        let mut bb = crate::services::mock_server().await;
+        let bitails = crate::services::mock_server().await;
+        let ct = crate::services::mock_server().await;
         let mut spent = woc
             .mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
             .with_status(status);
@@ -1105,7 +1105,7 @@ async fn a_whatsonchain_status_429_on_a_later_chunk_keeps_the_earlier_answers() 
         .iter()
         .map(|t| format!(r#"{{"txid":"{t}","confirmations":3}}"#))
         .collect();
-    let mut woc = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
     let _first = woc
         .mock("POST", "/txs/status")
         .match_body(mockito::Matcher::Regex(txids[0].clone()))
@@ -1133,7 +1133,7 @@ async fn a_whatsonchain_status_429_on_a_later_chunk_keeps_the_earlier_answers() 
     );
 
     // Through the ladder: Bitails is asked about the five left out only.
-    let mut woc = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
     let _first = woc
         .mock("POST", "/txs/status")
         .match_body(mockito::Matcher::Regex(txids[0].clone()))
@@ -1147,8 +1147,8 @@ async fn a_whatsonchain_status_429_on_a_later_chunk_keeps_the_earlier_answers() 
         .with_status(429)
         .create_async()
         .await;
-    let mut bitails = mockito::Server::new_async().await;
-    let bb = mockito::Server::new_async().await;
+    let mut bitails = crate::services::mock_server().await;
+    let bb = crate::services::mock_server().await;
     let mut asked = Vec::new();
     for t in &txids[20..] {
         asked.push(
@@ -1363,7 +1363,7 @@ fn bananablocks_first_page() -> mockito::Matcher {
 }
 
 async fn woc_lists_for(
-    server: &mut mockito::ServerGuard,
+    server: &mut crate::services::MockServer,
     route_hash: &str,
     lists: Lists,
 ) -> mockito::Mock {
@@ -1381,7 +1381,7 @@ async fn woc_lists_for(
 }
 
 async fn bitails_lists_for(
-    server: &mut mockito::ServerGuard,
+    server: &mut crate::services::MockServer,
     route_hash: &str,
     lists: Lists,
 ) -> mockito::Mock {
@@ -1397,7 +1397,10 @@ async fn bitails_lists_for(
     mock.create_async().await
 }
 
-async fn bananablocks_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mockito::Mock {
+async fn bananablocks_lists(
+    server: &mut crate::services::MockServer,
+    lists: Lists,
+) -> mockito::Mock {
     let mock = server.mock("GET", bananablocks_first_page());
     let mock = match lists {
         Lists::These(_) | Lists::Raw(_) => mock
@@ -1410,13 +1413,12 @@ async fn bananablocks_lists(server: &mut mockito::ServerGuard, lists: Lists) -> 
     mock.create_async().await
 }
 
-/// A scene holds three of mockito's pooled servers (a pool of 20 on
-/// macOS): a test drops one before it builds the next, or parallel tests
-/// wait on the pool for good.
+/// A scene's three servers are `mock_server`s, outside mockito's
+/// pool, so no scene waits on another however many tests run at once.
 struct LeadScene {
     services: Services,
     /// WhatsOnChain, Bitails, BananaBlocks: a test adds its later pages.
-    servers: [mockito::ServerGuard; 3],
+    servers: [crate::services::MockServer; 3],
     woc: mockito::Mock,
     bitails: mockito::Mock,
     bananablocks: mockito::Mock,
@@ -1435,9 +1437,9 @@ async fn lead_scene_for(
     bananablocks: Lists,
 ) -> LeadScene {
     let route_hash = route_hash_of(script_hex);
-    let mut w = mockito::Server::new_async().await;
-    let mut t = mockito::Server::new_async().await;
-    let mut b = mockito::Server::new_async().await;
+    let mut w = crate::services::mock_server().await;
+    let mut t = crate::services::mock_server().await;
+    let mut b = crate::services::mock_server().await;
     let woc = woc_lists_for(&mut w, &route_hash, woc).await;
     let bitails = bitails_lists_for(&mut t, &route_hash, bitails).await;
     let bananablocks = bananablocks_lists(&mut b, bananablocks).await;
@@ -1582,7 +1584,6 @@ async fn a_malformed_list_leaves_the_good_one() {
     assert_eq!(leads.faults[0].0, "WhatsOnChain");
     s.woc.expect(1).assert_async().await;
 
-    drop(s.servers);
     let s = lead_scene(
         Lists::These(&[('a', 0)]),
         Lists::Malformed,
@@ -1631,7 +1632,6 @@ async fn bananablocks_lists_a_p2pkh_script_by_its_address() {
 
     // WhatsOnChain and Bitails rate limited, BananaBlocks malformed:
     // nothing answered.
-    drop(s.servers);
     let s = lead_scene(Lists::Status(429), Lists::Status(429), Lists::Malformed).await;
     let err = s
         .services
@@ -1644,7 +1644,6 @@ async fn bananablocks_lists_a_p2pkh_script_by_its_address() {
     );
 
     // BananaBlocks alone answering is enough to look.
-    drop(s.servers);
     let s = lead_scene(
         Lists::Status(429),
         Lists::Status(404),
@@ -1882,7 +1881,6 @@ async fn a_full_bitails_page_is_read_on_or_partial() {
     second.assert_async().await;
 
     // The next page is rate limited: cut short.
-    drop(s.servers);
     let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
     s.bitails.remove_async().await;
     s.servers[1]
@@ -1908,7 +1906,6 @@ async fn a_full_bitails_page_is_read_on_or_partial() {
     assert!(leads.faults.is_empty(), "{:?}", leads.faults);
 
     // Every page full: the cap's pages are read, and Bitails is partial.
-    drop(s.servers);
     let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
     s.bitails.remove_async().await;
     let every_page = s.servers[1]
@@ -1923,6 +1920,13 @@ async fn a_full_bitails_page_is_read_on_or_partial() {
         .expect(LEAD_PAGES_MAX)
         .create_async()
         .await;
+    let past_the_cap = s.servers[1]
+        .mock("GET", bitails_past_the_cap(&route))
+        .with_status(200)
+        .with_body(bitails_page(&route, &[(lead_txid('e'), 4)]))
+        .expect(1)
+        .create_async()
+        .await;
     let leads = s
         .services
         .get_utxo_leads(&lead_hash_le(&s.services), None)
@@ -1931,6 +1935,57 @@ async fn a_full_bitails_page_is_read_on_or_partial() {
     assert_eq!(leads.leads.len(), 1000);
     assert_eq!(leads.partial, vec!["Bitails"]);
     every_page.assert_async().await;
+    past_the_cap.assert_async().await;
+}
+
+/// The one question past Bitails' page cap: `limit=1&from=10000`.
+fn bitails_past_the_cap(route_hash: &str) -> mockito::Matcher {
+    mockito::Matcher::Regex(format!(
+        r"^/scripthash/{route_hash}/unspent\?limit=1&from={}$",
+        LEAD_PAGES_MAX * 1000
+    ))
+}
+
+/// A Bitails list of exactly 10,000: ten full pages, then the question
+/// past the cap answers an empty list, so the list is complete, as
+/// WhatsOnChain and BananaBlocks would say of the same list.
+#[tokio::test]
+async fn a_bitails_list_of_exactly_ten_thousand_is_complete() {
+    let route = lead_route_hash();
+    let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
+    s.bitails.remove_async().await;
+    let mut pages = Vec::new();
+    for page in 0..LEAD_PAGES_MAX {
+        pages.push(
+            s.servers[1]
+                .mock("GET", bitails_page_at(&route, page * 1000))
+                .with_status(200)
+                .with_body(bitails_page(&route, &a_full_page(page * 1000)))
+                .expect(1)
+                .create_async()
+                .await,
+        );
+    }
+    let past_the_cap = s.servers[1]
+        .mock("GET", bitails_past_the_cap(&route))
+        .with_status(200)
+        .with_body(bitails_page(&route, &[]))
+        .expect(1)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(leads.leads.len(), 10_000);
+    assert_eq!(leads.answered, vec!["WhatsOnChain", "Bitails"]);
+    assert!(leads.partial.is_empty(), "{:?}", leads.partial);
+    assert!(leads.faults.is_empty(), "{:?}", leads.faults);
+    for page in pages {
+        page.assert_async().await;
+    }
+    past_the_cap.assert_async().await;
 }
 
 /// WhatsOnChain's list is read by its `nextPageToken` (`?token=`, carried
@@ -1999,4 +2054,286 @@ async fn a_closed_gate_is_skipped_without_a_request() {
     }
     s.woc.expect(1).assert_async().await;
     s.bitails.expect(2).assert_async().await;
+}
+
+/// One txid in uppercase from WhatsOnChain and in lowercase from Bitails
+/// is one outpoint: one lead, its txid lowercased, listed by both.
+#[tokio::test]
+async fn one_txid_in_two_cases_is_one_lead_listed_by_both() {
+    static UPPER: [(&str, u32); 1] = [(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        0,
+    )];
+    let s = lead_scene(
+        Lists::Raw(&UPPER),
+        Lists::These(&[('a', 0)]),
+        Lists::These(&[]),
+    )
+    .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(leads.leads.len(), 1, "{:?}", leads.leads);
+    assert_eq!(leads.leads[0].txid, lead_txid('a'));
+    assert_eq!(leads.leads[0].vout, 0);
+    assert_eq!(leads.leads[0].listed_by, vec!["WhatsOnChain", "Bitails"]);
+}
+
+/// `explorer` is the one fault: not answered, not partial, none of its
+/// leads stand, and `others` are the leads.
+fn assert_faulted(leads: &UtxoLeads, explorer: &str, others: Vec<(char, u32, Vec<&str>)>) {
+    assert!(
+        !leads.answered.iter().any(|n| n == explorer),
+        "{:?}",
+        leads.answered
+    );
+    assert_eq!(
+        leads
+            .faults
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>(),
+        vec![explorer],
+        "{:?}",
+        leads.faults
+    );
+    assert!(leads.partial.is_empty(), "{:?}", leads.partial);
+    assert_eq!(leads_of(leads), others);
+}
+
+/// A later WhatsOnChain page that was read and does not parse faults the
+/// whole explorer (deterministic: asked once), and its first page's leads
+/// are dropped.
+#[tokio::test]
+async fn a_malformed_later_whatsonchain_page_faults_the_explorer() {
+    let route = lead_route_hash();
+    let mut s = lead_scene(
+        Lists::These(&[]),
+        Lists::These(&[('b', 1)]),
+        Lists::These(&[]),
+    )
+    .await;
+    s.woc.remove_async().await;
+    s.servers[0]
+        .mock("GET", woc_first_page(&route))
+        .with_status(200)
+        .with_body(woc_page(&route, &[(lead_txid('a'), 0)], Some("next")))
+        .create_async()
+        .await;
+    let second = s.servers[0]
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(format!(r"^/script/{route}/unspent/all\?token=next$")),
+        )
+        .with_status(200)
+        .with_body("<html>busy</html>")
+        .expect(1)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_faulted(&leads, "WhatsOnChain", vec![('b', 1, vec!["Bitails"])]);
+    second.assert_async().await;
+}
+
+/// A later Bitails page that was read and does not parse faults the whole
+/// explorer, and its first page's 1000 leads are dropped.
+#[tokio::test]
+async fn a_malformed_later_bitails_page_faults_the_explorer() {
+    let route = lead_route_hash();
+    let mut s = lead_scene(
+        Lists::These(&[('a', 0)]),
+        Lists::These(&[]),
+        Lists::These(&[]),
+    )
+    .await;
+    s.bitails.remove_async().await;
+    s.servers[1]
+        .mock("GET", bitails_page_at(&route, 0))
+        .with_status(200)
+        .with_body(bitails_page(&route, &a_full_page(0)))
+        .create_async()
+        .await;
+    let second = s.servers[1]
+        .mock("GET", bitails_page_at(&route, 1000))
+        .with_status(200)
+        .with_body(r#"{"unspent":"soon"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_faulted(&leads, "Bitails", vec![('a', 0, vec!["WhatsOnChain"])]);
+    second.assert_async().await;
+}
+
+/// A later BananaBlocks page that was read and does not parse faults the
+/// whole explorer, and its first page's leads are dropped.
+#[tokio::test]
+async fn a_malformed_later_bananablocks_page_faults_the_explorer() {
+    let mut s = lead_scene(
+        Lists::These(&[('a', 0)]),
+        Lists::These(&[]),
+        Lists::These(&[]),
+    )
+    .await;
+    s.bananablocks.remove_async().await;
+    s.servers[2]
+        .mock("GET", bananablocks_first_page())
+        .with_status(200)
+        .with_body(bananablocks_page(&[(lead_txid('d'), 3)], Some("more")))
+        .create_async()
+        .await;
+    let second = s.servers[2]
+        .mock("GET", bananablocks_later_page())
+        .with_status(200)
+        .with_body(r#"{"utxos":[]}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script))
+        .await
+        .unwrap();
+    assert!(leads.answered.iter().any(|n| n == "Bitails"));
+    assert_faulted(&leads, "BananaBlocks", vec![('a', 0, vec!["WhatsOnChain"])]);
+    second.assert_async().await;
+}
+
+/// BananaBlocks' page after the cursor `more`.
+fn bananablocks_later_page() -> mockito::Matcher {
+    mockito::Matcher::Regex(format!(
+        r"^/address/{LEAD_ADDRESS}/utxos\?limit=1000&cursor=more$"
+    ))
+}
+
+/// A bad txid on page 2 is that explorer's malformed answer as on page 1:
+/// the whole explorer faults (asked once), page 1's leads dropped.
+#[tokio::test]
+async fn a_bad_txid_on_a_later_page_faults_the_explorer() {
+    let route = lead_route_hash();
+    let mut s = lead_scene(
+        Lists::These(&[]),
+        Lists::These(&[('b', 1)]),
+        Lists::These(&[]),
+    )
+    .await;
+    s.woc.remove_async().await;
+    s.servers[0]
+        .mock("GET", woc_first_page(&route))
+        .with_status(200)
+        .with_body(woc_page(&route, &[(lead_txid('a'), 0)], Some("next")))
+        .create_async()
+        .await;
+    let second = s.servers[0]
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(format!(r"^/script/{route}/unspent/all\?token=next$")),
+        )
+        .with_status(200)
+        .with_body(woc_page(&route, &[("zz".to_string(), 0)], None))
+        .expect(1)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_faulted(&leads, "WhatsOnChain", vec![('b', 1, vec!["Bitails"])]);
+    assert!(
+        leads.faults[0].1.contains("not 64 hex characters"),
+        "{:?}",
+        leads.faults
+    );
+    second.assert_async().await;
+}
+
+/// A 429 on WhatsOnChain's later page cuts its list short without a
+/// sleep: answered, page 1's leads taken, in `partial`, not in `faults`.
+#[tokio::test]
+async fn a_429_on_a_later_whatsonchain_page_is_partial_without_a_sleep() {
+    let route = lead_route_hash();
+    let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
+    s.woc.remove_async().await;
+    s.servers[0]
+        .mock("GET", woc_first_page(&route))
+        .with_status(200)
+        .with_body(woc_page(&route, &[(lead_txid('a'), 0)], Some("next")))
+        .create_async()
+        .await;
+    let second = s.servers[0]
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(format!(r"^/script/{route}/unspent/all\?token=next$")),
+        )
+        .with_status(429)
+        .with_header("retry-after", "30")
+        .expect(1)
+        .create_async()
+        .await;
+    let started = Instant::now();
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "a 429 is not slept on: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(leads_of(&leads), vec![('a', 0, vec!["WhatsOnChain"])]);
+    assert_eq!(leads.answered, vec!["WhatsOnChain", "Bitails"]);
+    assert_eq!(leads.partial, vec!["WhatsOnChain"]);
+    assert!(leads.faults.is_empty(), "{:?}", leads.faults);
+    second.assert_async().await;
+}
+
+/// A 429 on BananaBlocks' later page cuts its list short without a sleep.
+#[tokio::test]
+async fn a_429_on_a_later_bananablocks_page_is_partial_without_a_sleep() {
+    let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
+    s.bananablocks.remove_async().await;
+    s.servers[2]
+        .mock("GET", bananablocks_first_page())
+        .with_status(200)
+        .with_body(bananablocks_page(&[(lead_txid('d'), 3)], Some("more")))
+        .create_async()
+        .await;
+    let second = s.servers[2]
+        .mock("GET", bananablocks_later_page())
+        .with_status(429)
+        .with_header("retry-after", "30")
+        .expect(1)
+        .create_async()
+        .await;
+    let started = Instant::now();
+    let leads = s
+        .services
+        .get_utxo_leads(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script))
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "a 429 is not slept on: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(leads_of(&leads), vec![('d', 3, vec!["BananaBlocks"])]);
+    assert_eq!(
+        leads.answered,
+        vec!["WhatsOnChain", "Bitails", "BananaBlocks"]
+    );
+    assert_eq!(leads.partial, vec!["BananaBlocks"]);
+    assert!(leads.faults.is_empty(), "{:?}", leads.faults);
+    second.assert_async().await;
 }

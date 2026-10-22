@@ -698,11 +698,17 @@ impl Bitails {
     /// pages by offset and says nothing of more, so a full page (1000) is
     /// followed by the next and a shorter one ends the list (probed
     /// 2026-10-22, read-only: a script with 2,719 unspent outputs came as
-    /// 1000, 1000 and 719). Each page goes through the gate, at most
-    /// [`LEAD_PAGES_MAX`] pages; a full last page is the list cut short. On
-    /// the first page a non-200 is a fault (`HTTP <code>`: a 5xx stays
-    /// transient); a later page that could not be read cuts the list short;
-    /// a page that was read and does not parse is a malformed answer.
+    /// 1000, 1000 and 719). This assumes Bitails honours `limit=1000`, which
+    /// rests on that one probe: a page it capped below the limit would read
+    /// as the end, so a first page shorter than the limit is the end of the
+    /// list. Each page goes through the gate, at most [`LEAD_PAGES_MAX`]
+    /// pages; when the last of them is full, one more question
+    /// (`limit=1&from=10000`, through the gate) tells a list of exactly
+    /// 10,000 (an empty answer: complete) from a longer one (anything else,
+    /// a fault included: cut short). On the first page a non-200 is a fault
+    /// (`HTTP <code>`: a 5xx stays transient); a later page that could not
+    /// be read cuts the list short; a page that was read and does not parse
+    /// is a malformed answer.
     pub async fn list_script_unspent(
         &self,
         output: &str,
@@ -764,7 +770,49 @@ impl Bitails {
                 return Ok(list);
             }
         }
-        Ok(list.capped())
+        if self.lists_past_the_cap(&script_hash).await {
+            return Ok(list.capped());
+        }
+        Ok(list)
+    }
+
+    /// Whether Bitails lists anything past the page cap's last output:
+    /// `false` only for a 200 whose list is empty; any other answer, or a
+    /// question the gate holds back, is `true` (the list is cut short).
+    async fn lists_past_the_cap(&self, script_hash: &str) -> bool {
+        let url = format!(
+            "{}scripthash/{}/unspent?limit=1&from={}",
+            self.base_url,
+            script_hash,
+            LEAD_PAGES_MAX * BITAILS_LEAD_PAGE
+        );
+        if self.gate.admit().is_err() {
+            return true;
+        }
+        let Ok(response) = self
+            .client
+            .get(&url)
+            .headers(self.get_headers())
+            .send()
+            .await
+        else {
+            return true;
+        };
+        if self
+            .gate
+            .check(response.status(), response.headers())
+            .is_err()
+            || response.status() != StatusCode::OK
+        {
+            return true;
+        }
+        let Ok(body) = response.bytes().await else {
+            return true;
+        };
+        !matches!(
+            serde_json::from_slice::<BitailsUnspentResponse>(&body),
+            Ok(data) if data.unspent.is_empty()
+        )
     }
 
     // =========================================================================

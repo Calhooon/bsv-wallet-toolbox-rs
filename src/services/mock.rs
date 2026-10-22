@@ -847,9 +847,10 @@ impl WalletServices for MockWalletServices {
     }
 
     /// The configured `get_utxo_leads_response`; unset, the leads are
-    /// `get_utxo_status_response`'s `details`, each listed by its provider
-    /// (an error or a non-`success` answer is
-    /// [`Error::NoExplorerAnswered`]).
+    /// `get_utxo_status_response`'s `details` (read, not called: its count
+    /// and sequence position stay), lowercased and one per outpoint as
+    /// `Services` merges them, each listed by its provider (an error or a
+    /// non-`success` answer is [`Error::NoExplorerAnswered`]).
     async fn get_utxo_leads(
         &self,
         script_hash: &str,
@@ -862,26 +863,40 @@ impl WalletServices for MockWalletServices {
                 response.resolve(call_index)
             })
         };
+        // Unset: `get_utxo_status_response` read where its sequence stands,
+        // not a `get_utxo_status` call (its count and position do not move).
+        let fallback = || {
+            let call_index = self.get_call_index("get_utxo_status");
+            self.get_utxo_status_response
+                .lock()
+                .unwrap()
+                .resolve(call_index)
+        };
         let result = match configured {
             Some(result) => result,
-            None => match self
-                .get_utxo_status(script_hash, output_format, None, false)
-                .await
-            {
-                Ok(status) if status.status == "success" => Ok(UtxoLeads {
-                    leads: status
-                        .details
-                        .iter()
-                        .map(|d| UtxoLead {
-                            txid: d.txid.clone(),
+            None => match fallback() {
+                Ok(status) if status.status == "success" => {
+                    // As `Services` merges: one lead per outpoint, its txid
+                    // lowercased.
+                    let mut leads: Vec<UtxoLead> = Vec::new();
+                    for d in &status.details {
+                        let txid = d.txid.to_ascii_lowercase();
+                        if leads.iter().any(|l| l.txid == txid && l.vout == d.index) {
+                            continue;
+                        }
+                        leads.push(UtxoLead {
+                            txid,
                             vout: d.index,
                             satoshis: Some(d.satoshis),
                             listed_by: vec![status.name.clone()],
-                        })
-                        .collect(),
-                    answered: vec![status.name.clone()],
-                    ..Default::default()
-                }),
+                        });
+                    }
+                    Ok(UtxoLeads {
+                        leads,
+                        answered: vec![status.name.clone()],
+                        ..Default::default()
+                    })
+                }
                 Ok(status) => Err(Error::NoExplorerAnswered {
                     faults: vec![(
                         status.name.clone(),
@@ -1698,5 +1713,56 @@ mod tests {
             mock.get_utxo_leads("hash", None).await,
             Err(Error::NoExplorerAnswered { .. })
         ));
+    }
+
+    /// The leads fallback reads `get_utxo_status_response` without calling
+    /// `get_utxo_status`: its count and sequence position do not move. Its
+    /// txids are lowercased and one outpoint listed twice is one lead.
+    #[tokio::test]
+    async fn the_mock_leads_fallback_reads_the_status_response_as_services_merges() {
+        let detail =
+            |txid: String, index: u32, satoshis: u64| crate::services::traits::UtxoDetail {
+                txid,
+                index,
+                satoshis,
+                height: None,
+            };
+        let answer = |name: &str, details| GetUtxoStatusResult {
+            name: name.to_string(),
+            status: "success".to_string(),
+            is_utxo: Some(true),
+            details,
+            error: None,
+        };
+        let mock = MockWalletServices::builder()
+            .get_utxo_status_response(MockResponse::Sequence(vec![
+                MockResponse::Success(answer(
+                    "First",
+                    vec![
+                        detail("AB".repeat(32), 1, 700),
+                        detail("ab".repeat(32), 1, 700),
+                        detail("cd".repeat(32), 0, 5),
+                    ],
+                )),
+                MockResponse::Success(answer("Second", vec![])),
+            ]))
+            .build();
+        let leads = mock.get_utxo_leads("hash", None).await.unwrap();
+        assert_eq!(
+            leads
+                .leads
+                .iter()
+                .map(|l| (l.txid.clone(), l.vout))
+                .collect::<Vec<_>>(),
+            vec![("ab".repeat(32), 1), ("cd".repeat(32), 0)]
+        );
+        assert_eq!(mock.call_count("get_utxo_status"), 0);
+        // The sequence has not moved: the next status call is its first.
+        let status = mock
+            .get_utxo_status("hash", None, None, false)
+            .await
+            .unwrap();
+        assert_eq!(status.name, "First");
+        assert_eq!(mock.call_count("get_utxo_status"), 1);
     }
 }
