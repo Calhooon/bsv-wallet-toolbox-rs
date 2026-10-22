@@ -1590,12 +1590,15 @@ pub(crate) fn status_detail(txid: &str, info: &ArcadeTxInfo) -> TxStatusDetail {
         return detail;
     }
     match verdict {
-        // RECEIVED .. SEEN_MULTIPLE_NODES, and STUMP_PROCESSING (in a block,
-        // the proof not built): known, not yet proven.
-        ArcadeVerdict::Pending | ArcadeVerdict::Seen | ArcadeVerdict::InBlock => {
-            TxStatusDetail::new(txid, "known", Some(0))
-        }
-        // UNKNOWN / PENDING_RETRY (no network verdict), REJECTED /
+        // SEEN_ON_NETWORK, SEEN_MULTIPLE_NODES, and STUMP_PROCESSING (in a
+        // block, the proof not built): the network holds it, known, not yet
+        // proven. The module's rule: gate spendability on SEEN_ON_NETWORK.
+        ArcadeVerdict::Seen | ArcadeVerdict::InBlock => TxStatusDetail::new(txid, "known", Some(0)),
+        // RECEIVED, SENT_TO_NETWORK, ACCEPTED_BY_NETWORK: Arcade holds it,
+        // the network may not; a hint that promotes nothing (a "known" here
+        // made a transaction the network never held `unproven` and its
+        // change spendable: bsv-low #831, bsv-wallet-toolbox-rs #42 point
+        // 2). UNKNOWN / PENDING_RETRY (no network verdict), REJECTED /
         // DOUBLE_SPEND_ATTEMPTED, an ORPHAN word, an undefined word: no proof
         // is coming from here, and the transaction is not known to be in a
         // mempool.
@@ -1874,15 +1877,13 @@ mod tests {
     }
 
     #[test]
-    fn test_status_detail_in_flight_is_known_and_fatal_is_unknown() {
+    fn test_status_detail_seen_is_known_holding_and_fatal_are_unknown() {
         let txid = "aa".repeat(32);
 
         for status in [
-            statuses::RECEIVED,
-            statuses::SENT_TO_NETWORK,
-            statuses::ACCEPTED_BY_NETWORK,
             statuses::SEEN_ON_NETWORK,
             statuses::SEEN_MULTIPLE_NODES,
+            statuses::STUMP_PROCESSING,
         ] {
             let doc = ArcadeTxInfo {
                 txid: txid.clone(),
@@ -1890,12 +1891,17 @@ mod tests {
                 ..Default::default()
             };
             let detail = status_detail(&txid, &doc);
-            assert_eq!(detail.status, "known", "{} is in the mempool", status);
+            assert_eq!(detail.status, "known", "{} is held by the network", status);
             assert_eq!(detail.depth, Some(0));
             assert!(detail.merkle_path.is_none());
         }
 
+        // Arcade holds it, the network may not: a hint that promotes
+        // nothing (bsv-wallet-toolbox-rs #42 point 2).
         for status in [
+            statuses::RECEIVED,
+            statuses::SENT_TO_NETWORK,
+            statuses::ACCEPTED_BY_NETWORK,
             statuses::REJECTED,
             statuses::DOUBLE_SPEND_ATTEMPTED,
             "SOME_FUTURE_STATUS",

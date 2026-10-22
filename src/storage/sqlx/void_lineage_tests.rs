@@ -22,7 +22,9 @@ use super::reorg_tests::{
 use super::StorageSqlx;
 use crate::monitor::tasks::ArcadeEventsTask;
 use crate::services::mock::{MockResponse, MockWalletServices, MockWalletServicesBuilder};
-use crate::services::providers::arcade::{statuses, ArcadeStatusEvent};
+use crate::services::providers::arcade::{
+    status_detail, statuses, ArcadeStatusEvent, ArcadeTxInfo,
+};
 use crate::services::traits::{
     GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult, PostBeefResult,
     PostTxResultForTxid,
@@ -362,6 +364,84 @@ async fn a_known_from_one_status_source_promotes_a_refused_parent_and_its_change
         pick(&s, &l).await.unwrap().contains(&l.p),
         "P0 funds the next action"
     );
+}
+
+/// Arcade's status document for `txid` carrying `word`, read through the
+/// provider's own mapping (`status_detail`), as the one status source.
+fn arcade_status(txid: &str, word: &str) -> MockResponse<GetStatusForTxidsResult> {
+    let info: ArcadeTxInfo =
+        serde_json::from_value(serde_json::json!({ "txid": txid, "txStatus": word })).unwrap();
+    MockResponse::Success(GetStatusForTxidsResult {
+        name: "ArcadeV2".to_string(),
+        status: "success".to_string(),
+        error: None,
+        results: vec![status_detail(txid, &info)],
+    })
+}
+
+/// #831's root (#42 point 2): ARC answers SEEN_IN_ORPHAN_MEMPOOL and Arcade's
+/// status document for P says RECEIVED (Arcade holds it, the network may
+/// not). A holding word is a hint: P stays `sending` / `unsent`, C locked,
+/// and P0 funds nothing. Each of the three holding words, one store each.
+/// At 0.11.0 RECEIVED answered "known" and P was promoted to `unproven`.
+#[tokio::test]
+async fn arcade_received_alone_promotes_nothing() {
+    for word in [
+        statuses::RECEIVED,
+        statuses::SENT_TO_NETWORK,
+        statuses::ACCEPTED_BY_NETWORK,
+    ] {
+        let s = storage().await;
+        let l = seed(&s, None).await;
+        set(
+            &s,
+            MockWalletServicesBuilder::default()
+                .post_beef_response(MockResponse::Success(vec![courier(
+                    "ARC", &l.p, "error", true,
+                )]))
+                .get_status_for_txids_response(arcade_status(&l.p, word)),
+        );
+        s.send_waiting_transactions(std::time::Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(
+            words(&s, &l.p).await,
+            ("sending".into(), "unsent".into()),
+            "{word}"
+        );
+        assert_eq!(
+            output(&s, l.c).await,
+            (false, Some(l.p_id)),
+            "{word}: C locked"
+        );
+        assert_eq!(pick(&s, &l).await, None, "{word}: P0 funds nothing");
+    }
+}
+
+/// The network word does promote: Arcade's SEEN_ON_NETWORK (and
+/// STUMP_PROCESSING, in a block) for P is a status source holding it.
+#[tokio::test]
+async fn arcade_seen_on_network_promotes() {
+    for word in [statuses::SEEN_ON_NETWORK, statuses::STUMP_PROCESSING] {
+        let s = storage().await;
+        let l = seed(&s, None).await;
+        set(
+            &s,
+            MockWalletServicesBuilder::default()
+                .post_beef_response(MockResponse::Success(vec![courier(
+                    "ARC", &l.p, "error", true,
+                )]))
+                .get_status_for_txids_response(arcade_status(&l.p, word)),
+        );
+        s.send_waiting_transactions(std::time::Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(
+            words(&s, &l.p).await,
+            ("unproven".into(), "unmined".into()),
+            "{word}"
+        );
+    }
 }
 
 /// Step 3 (R mined, no courier names R): the proof pass never asks for R; P
