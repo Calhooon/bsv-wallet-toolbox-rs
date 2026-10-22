@@ -3288,6 +3288,81 @@ mod tests {
         }
     }
 
+    /// 0.11.1's Arcade rule through 0.12.0's status ladder (#42 point 2 on
+    /// #43's ladder): a holding word (`RECEIVED`, `SENT_TO_NETWORK`,
+    /// `ACCEPTED_BY_NETWORK`) is `unknown` from `status_detail`, and a
+    /// broadcaster's `unknown` is a gap: no verdict alone, never an absence
+    /// vote, never over a chain index's answer. A SEEN word is a `known`
+    /// that two chain indexes' `unknown`s still turn to `unknown`.
+    #[tokio::test]
+    async fn arcades_holding_word_is_a_gap_in_the_status_ladder() {
+        use crate::services::providers::arcade::{status_detail, statuses};
+        let txid = "cd".repeat(32);
+        let arcade = |word: &str| {
+            let info: crate::services::providers::ArcadeTxInfo =
+                serde_json::from_value(serde_json::json!({ "txid": txid, "txStatus": word }))
+                    .unwrap();
+            MockStatusProvider::new(false, vec![status_detail(&txid, &info)])
+        };
+        let ask = |providers: Vec<(&str, StdArc<MockStatusProvider>)>| {
+            let services = services_with_status_providers(providers);
+            let txid = txid.clone();
+            async move {
+                let result = services.get_status_for_txids(&[txid], false).await.unwrap();
+                result.results.first().map(|d| d.status.clone())
+            }
+        };
+        for word in [
+            statuses::RECEIVED,
+            statuses::SENT_TO_NETWORK,
+            statuses::ACCEPTED_BY_NETWORK,
+        ] {
+            // Alone (both chain indexes fault): could not look, not known.
+            let got = ask(vec![
+                ("ArcadeV2", arcade(word)),
+                ("WhatsOnChain", MockStatusProvider::failing(true)),
+                ("Bitails", MockStatusProvider::failing(true)),
+            ])
+            .await;
+            assert_eq!(got, None, "{word} alone promotes nothing");
+            // A chain index's known stands.
+            let got = ask(vec![
+                ("ArcadeV2", arcade(word)),
+                (
+                    "WhatsOnChain",
+                    MockStatusProvider::new(true, vec![detail(&txid, "known")]),
+                ),
+                ("Bitails", MockStatusProvider::failing(true)),
+            ])
+            .await;
+            assert_eq!(got.as_deref(), Some("known"), "{word}");
+            // Two chain indexes' unknown is the absence.
+            let got = ask(vec![
+                ("ArcadeV2", arcade(word)),
+                ("WhatsOnChain", MockStatusProvider::new(true, vec![])),
+                ("Bitails", MockStatusProvider::new(true, vec![])),
+            ])
+            .await;
+            assert_eq!(got.as_deref(), Some("unknown"), "{word}");
+        }
+        for word in [statuses::SEEN_ON_NETWORK, statuses::SEEN_MULTIPLE_NODES] {
+            let got = ask(vec![
+                ("ArcadeV2", arcade(word)),
+                ("WhatsOnChain", MockStatusProvider::failing(true)),
+                ("Bitails", MockStatusProvider::new(true, vec![])),
+            ])
+            .await;
+            assert_eq!(got.as_deref(), Some("known"), "{word} against one unknown");
+            let got = ask(vec![
+                ("ArcadeV2", arcade(word)),
+                ("WhatsOnChain", MockStatusProvider::new(true, vec![])),
+                ("Bitails", MockStatusProvider::new(true, vec![])),
+            ])
+            .await;
+            assert_eq!(got.as_deref(), Some("unknown"), "{word} against two");
+        }
+    }
+
     fn services_with_status_providers(
         providers: Vec<(&str, StdArc<MockStatusProvider>)>,
     ) -> Services {
