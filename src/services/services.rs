@@ -816,8 +816,10 @@ impl Services {
         utxo_status_services.add("Bitails", StdArc::clone(&bitails) as UtxoStatusProvider);
 
         // getStatusForTxids: Arcade (when configured) → WoC → Bitails →
-        // BananaBlocks (one request per txid against a 60-a-minute budget,
-        // so last: asked only about what no earlier provider placed mined)
+        // BananaBlocks (one request per txid against its bucket, a burst of
+        // 30 refilled at 0.5/s, so 60 in the first minute and 30 a minute
+        // sustained, under BananaBlocks' 80; so last: asked only about what
+        // no earlier provider placed mined)
         //
         // Rule 28 (T11, T12): "mined" is a proof; "known to the mempool"
         // and "unknown" have no header or proof answer, so the two
@@ -1268,7 +1270,9 @@ impl Services {
     /// The ladder of `get_utxo_status` (its doc there is the rule), with
     /// the outpoint's spend a rung read on the way (BananaBlocks' `/txo`):
     /// `is_utxo` hands it to `spend_evidence`, so an unspent verdict costs
-    /// at most one BananaBlocks request.
+    /// one BananaBlocks request when it answers; after a fault
+    /// `spend_evidence` asks it once more (up to three with a 5xx retried
+    /// in the ladder).
     async fn utxo_ladder(
         &self,
         output: &str,
@@ -3382,7 +3386,8 @@ mod tests {
     /// (`unknown`). After WhatsOnChain alone the broadcaster's `known`
     /// holds (one chain index's absence never stands alone); only when
     /// WhatsOnChain and Bitails both say `unknown` is it `unknown`, which
-    /// the reconciler's alive check and respend gate act on.
+    /// the reconciler's alive check acts on; the respend gate's own
+    /// broadcaster check refuses while Arcade still answers SEEN.
     #[tokio::test]
     async fn test_a_broadcasters_known_the_chain_index_never_saw_is_unknown() {
         let txids = vec!["x".to_string()];
@@ -3541,6 +3546,114 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The status ladder over all 81 rows (review 3 of #43): Arcade,
+    /// WhatsOnChain and Bitails each answering `known`, `unknown` or a
+    /// fault, and BananaBlocks (the real provider, against a fixture in
+    /// every row) answering `known`, a 404 or a 500; asked from each of the
+    /// four starting rungs, each with and without `use_next`. The reading
+    /// is the rule: `mined` wins (no row here holds one); WhatsOnChain and
+    /// Bitails both `unknown` is `unknown`; else any provider's `known` is
+    /// `known`; else "could not look".
+    #[tokio::test]
+    async fn test_the_status_verdict_is_the_rule_over_all_81_rows_from_both_starts() {
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum Says {
+            Known,
+            Unknown,
+            Fault,
+        }
+        let txid = "ab".repeat(32);
+        let provider = |chain_index: bool, says: Says| match says {
+            Says::Known => MockStatusProvider::new(chain_index, vec![detail(&txid, "known")]),
+            Says::Unknown => MockStatusProvider::new(chain_index, vec![]),
+            Says::Fault => MockStatusProvider::failing(chain_index),
+        };
+        let all = [Says::Known, Says::Unknown, Says::Fault];
+        let mut bb = mockito::Server::new_async().await;
+        let mut rows = 0;
+        for bananablocks in all {
+            let _b = match bananablocks {
+                Says::Known => bb
+                    .mock("GET", format!("/tx/{txid}").as_str())
+                    .with_status(200)
+                    .with_body(format!(
+                        r#"{{"txid":"{txid}","block_hash":"","block_height":0}}"#
+                    )),
+                Says::Unknown => bb
+                    .mock("GET", format!("/tx/{txid}").as_str())
+                    .with_status(404),
+                Says::Fault => bb
+                    .mock("GET", format!("/tx/{txid}").as_str())
+                    .with_status(500),
+            }
+            .create_async()
+            .await;
+            for arcade in all {
+                for woc in all {
+                    for bitails in all {
+                        rows += 1;
+                        let expected = if woc == Says::Unknown && bitails == Says::Unknown {
+                            Some("unknown")
+                        } else if [arcade, woc, bitails, bananablocks].contains(&Says::Known) {
+                            Some("known")
+                        } else {
+                            None
+                        };
+                        for start in 0..4 {
+                            for use_next in [false, true] {
+                                let mut services = Services::mainnet().unwrap();
+                                let mut collection = ServiceCollection::new("getStatusForTxids");
+                                collection.add(
+                                    "ArcadeV2",
+                                    provider(false, arcade) as StatusForTxidsProvider,
+                                );
+                                collection.add(
+                                    "WhatsOnChain",
+                                    provider(true, woc) as StatusForTxidsProvider,
+                                );
+                                collection.add(
+                                    "Bitails",
+                                    provider(true, bitails) as StatusForTxidsProvider,
+                                );
+                                collection.add(
+                                    "BananaBlocks",
+                                    StdArc::new(BananaBlocks::with_base_unshared(&bb.url()))
+                                        as StatusForTxidsProvider,
+                                );
+                                for _ in 0..start {
+                                    collection.next();
+                                }
+                                services.get_status_for_txids_services = RwLock::new(collection);
+                                let result = services
+                                    .get_status_for_txids(std::slice::from_ref(&txid), use_next)
+                                    .await
+                                    .unwrap();
+                                let row = format!(
+                                    "Arcade {arcade:?}, WhatsOnChain {woc:?}, Bitails {bitails:?}, \
+                                     BananaBlocks {bananablocks:?}, start {start}, use_next {use_next}: \
+                                     {result:?}"
+                                );
+                                let got = result.results.first().map(|d| d.status.as_str());
+                                assert_eq!(got, expected, "{row}");
+                                assert_eq!(result.error.is_some(), expected.is_none(), "{row}");
+                                assert_eq!(
+                                    result.status,
+                                    if expected.is_some() {
+                                        "success"
+                                    } else {
+                                        "error"
+                                    },
+                                    "{row}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(rows, 81);
     }
 
     /// Every chain index down: the broadcaster's `known` stands (a held

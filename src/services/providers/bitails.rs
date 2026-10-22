@@ -637,9 +637,15 @@ impl Bitails {
             return Ok(could_not_look(format!("HTTP {}", response.status())));
         }
 
-        let data: BitailsUnspentResponse = response
-            .json()
+        // A body cut short (a timeout, a dropped connection) is a failed
+        // request, transient; a body that arrived and does not parse would
+        // parse the same way again. (reqwest's `json()` reports both as a
+        // decode error, so the body is read first.)
+        let body = response
+            .bytes()
             .await
+            .map_err(|e| Error::NetworkError(format!("Unspent set read failed: {}", e)))?;
+        let data: BitailsUnspentResponse = serde_json::from_slice(&body)
             .map_err(|e| Error::ServiceError(format!("Failed to parse unspent set: {}", e)))?;
 
         let details: Vec<UtxoDetail> = data

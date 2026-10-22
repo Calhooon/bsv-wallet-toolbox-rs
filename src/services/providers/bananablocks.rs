@@ -14,9 +14,10 @@
 //!   merkle root (`"targetType":"merkleRoot"`); `/proof/tsc` is no route
 //!
 //! No key; the host advertises 80 requests a minute (`x-ratelimit-limit:
-//! 80`), and this crate keeps to 60 a minute per process (a token bucket
-//! one process shares, [`RateGate::shared`]); a 429 is a fault returned at
-//! once with its Retry-After, never slept on.
+//! 80`), and this crate paces itself with a token bucket one process shares
+//! ([`RateGate::shared`]): a burst of 30 refilled at 0.5/s, so 60 in the
+//! first minute and 30 a minute sustained, under BananaBlocks' 80; a 429 is
+//! a fault returned at once with its Retry-After, never slept on.
 //!
 //! BananaBlocks' index misses some mempool spends (2026-10-22: an outpoint
 //! WhatsOnChain's mempool shows spent answered `spent: false`, twice), so
@@ -49,8 +50,10 @@ pub const BANANABLOCKS_MAINNET_URL: &str = "https://bananablocks.com/api/v1";
 /// BananaBlocks testnet API base.
 pub const BANANABLOCKS_TESTNET_URL: &str = "https://test.bananablocks.com/api/v1";
 
-/// The pace this crate keeps with BananaBlocks: requests a minute, per
-/// process, no key (the host advertises 80, `x-ratelimit-limit: 80`).
+/// The budget of the bucket this crate paces BananaBlocks with, per
+/// process, no key: a burst of 30 refilled at 0.5/s, so 60 in the first
+/// minute and 30 a minute sustained, under BananaBlocks' 80
+/// (`x-ratelimit-limit: 80`).
 pub const BANANABLOCKS_PER_MINUTE: u32 = 60;
 
 /// The name this provider answers under (results, notes, call history).
@@ -801,7 +804,8 @@ mod tests {
         route.assert_async().await;
     }
 
-    /// 60 a minute: the burst is 30, and the 31st call at once is a
+    /// The bucket: a burst of 30 refilled at 0.5/s (60 in the first
+    /// minute, 30 a minute sustained), and the 31st call at once is a
     /// rate-limit fault without a request.
     #[tokio::test]
     async fn the_provider_paces_itself_at_sixty_a_minute() {

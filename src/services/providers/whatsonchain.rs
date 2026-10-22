@@ -597,9 +597,15 @@ impl WhatsOnChain {
             });
         }
 
-        let data: WocUtxoStatusResponse = response
-            .json()
+        // A body cut short (a timeout, a dropped connection) is a failed
+        // request, transient; a body that arrived and does not parse would
+        // parse the same way again. (reqwest's `json()` reports both as a
+        // decode error, so the body is read first.)
+        let body = response
+            .bytes()
             .await
+            .map_err(|e| Error::NetworkError(format!("UTXO response read failed: {}", e)))?;
+        let data: WocUtxoStatusResponse = serde_json::from_slice(&body)
             .map_err(|e| Error::ServiceError(format!("Failed to parse UTXO response: {}", e)))?;
 
         let details: Vec<UtxoDetail> = data

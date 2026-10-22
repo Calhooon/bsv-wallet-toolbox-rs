@@ -181,7 +181,7 @@ GorillaPool's independent explorer, the third of the read ladders beside WhatsOn
 | `get_merkle_path(txid)` | `GET {base}/tx/{txid}` then `/tx/{txid}/proof` | no block: not mined; 404 at `/tx`: not indexed (inconclusive, never "not mined"); mined: the TSC proof (`targetType: merkleRoot`), its nodes folded to its root, handed on with the block hash as target for the ladder's header-service check. `/proof/tsc` is no route |
 | `get_status_for_txids(txids)` | `GET {base}/tx/{txid}` each | in a block `mined` depth 1, no block `known`, 404 `unknown`; a fault stops the batch and leaves the rest out; the ladder treats it as not a chain index (its index lags the mempool) |
 
-**Pace:** no key; at most 60 requests in any minute per process for one base (`pace::RateGate::shared`, a token bucket: 30 at once, 30 more over the minute; the host advertises 80). With no token left, or inside a 429's Retry-After (60 s when none is sent), a call is `Error::RateLimited` without a request. Never sleeps.
+**Pace:** no key; one token bucket per process for one base (`pace::RateGate::shared`): a burst of 30 refilled at 0.5/s, so 60 in the first minute and 30 a minute sustained, under BananaBlocks' 80. With no token left, or inside a 429's Retry-After (60 s when none is sent), a call is `Error::RateLimited` without a request. Never sleeps.
 
 **Rule:** a fault is "could not look", never "unspent" or "absent": only a 200 with the documented shape answers.
 

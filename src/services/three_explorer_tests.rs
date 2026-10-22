@@ -431,10 +431,10 @@ async fn bananablocks_names_the_spender_when_whatsonchain_does_not() {
     names.expect(1).assert_async().await;
 }
 
-/// An unspent verdict costs at most one BananaBlocks request (review 2 L3
-/// of #43): `/txo` read as a rung of the unspent question is the spender
-/// question's answer too, and where the ladder did not reach BananaBlocks
-/// `spend_evidence` asks it once. Three calls, one from each start.
+/// An unspent verdict costs one BananaBlocks request when it answers
+/// (review 2 L3 of #43): `/txo` read as a rung of the unspent question is
+/// the spender question's answer too, and where the ladder did not reach
+/// BananaBlocks `spend_evidence` asks it once. Three calls, one from each start.
 #[tokio::test]
 async fn an_unspent_verdict_costs_one_bananablocks_request() {
     let f = utxo_services(Says::Unspent, Says::Unspent, Says::Unspent).await;
@@ -551,6 +551,91 @@ fn a_fault_is_transient_only_for_an_outage() {
         retry_after_secs: 30,
     };
     assert_eq!(FaultKind::of_error(&limited), FaultKind::RateLimited);
+}
+
+/// A server that answers every request with a 200 promising a 1000-byte
+/// body, sends a few bytes of it and drops the connection.
+async fn a_body_cut_short() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let _ = socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                      content-length: 1000\r\n\r\n{\"result\":[",
+                )
+                .await;
+            let _ = socket.shutdown().await;
+        }
+    });
+    url
+}
+
+/// The unspent-set read's two body faults, by provider (review 3 L1 of
+/// #43): a body cut short is a failed request, transient (asked again in
+/// the retry round); a body that arrived malformed is deterministic.
+async fn the_body_faults_are_told_apart<F, Fut>(read: F)
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<GetUtxoStatusResult>>,
+{
+    let cut = read(a_body_cut_short().await)
+        .await
+        .expect_err("a body cut short is a fault");
+    assert!(cut.to_string().contains("read failed"), "{cut}");
+    assert_eq!(FaultKind::of_error(&cut), FaultKind::Transient, "{cut}");
+
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", mockito::Matcher::Any)
+        .with_status(200)
+        .with_body("not json")
+        .create_async()
+        .await;
+    let malformed = read(format!("{}/", server.url()))
+        .await
+        .expect_err("a malformed body is a fault");
+    assert!(
+        malformed.to_string().contains("Failed to parse"),
+        "{malformed}"
+    );
+    assert_eq!(
+        FaultKind::of_error(&malformed),
+        FaultKind::Deterministic,
+        "{malformed}"
+    );
+}
+
+#[tokio::test]
+async fn a_whatsonchain_unspent_body_cut_short_is_transient_a_malformed_one_deterministic() {
+    the_body_faults_are_told_apart(|url| async move {
+        WhatsOnChain::with_base_url(Chain::Main, url.trim_end_matches('/'))
+            .get_utxo_status(
+                &hex::encode(UTXO_SCRIPT),
+                Some(GetUtxoStatusOutputFormat::Script),
+                None,
+            )
+            .await
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_bitails_unspent_body_cut_short_is_transient_a_malformed_one_deterministic() {
+    the_body_faults_are_told_apart(|url| async move {
+        crate::services::providers::Bitails::with_base_url(Chain::Main, &url)
+            .get_utxo_status(
+                &hex::encode(UTXO_SCRIPT),
+                Some(GetUtxoStatusOutputFormat::Script),
+                None,
+            )
+            .await
+    })
+    .await;
 }
 
 /// BananaBlocks' named spender whose bytes do not spend the outpoint is
