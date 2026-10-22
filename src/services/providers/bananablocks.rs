@@ -12,6 +12,10 @@
 //! - `GET {base}/tx/{txid}`: `block_hash` / `block_height` once mined
 //! - `GET {base}/tx/{txid}/proof`: a TSC proof whose `target` is the block's
 //!   merkle root (`"targetType":"merkleRoot"`); `/proof/tsc` is no route
+//! - `GET {base}/address/{address}/utxos?limit=1000`: an address's unspent
+//!   outputs (`items` of `txid`, `vout`, `value`), LEADS for
+//!   `Services::get_utxo_leads`; BananaBlocks lists by address, never by
+//!   script hash
 //!
 //! No key; the host advertises 80 requests a minute (`x-ratelimit-limit:
 //! 80`), and this crate paces itself with a token bucket one process shares
@@ -37,7 +41,7 @@ use crate::services::providers::pace::RateGate;
 use crate::services::traits::{
     convert_script_hash, merkle_path_note, validate_txid, GetMerklePathResult, GetRawTxResult,
     GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, TxStatusDetail,
-    NOTE_PROOF,
+    UtxoDetail, NOTE_PROOF,
 };
 use crate::services::Chain;
 use crate::{Error, Result};
@@ -58,6 +62,10 @@ pub const BANANABLOCKS_PER_MINUTE: u32 = 60;
 
 /// The name this provider answers under (results, notes, call history).
 pub const BANANABLOCKS_NAME: &str = "BananaBlocks";
+
+/// The page an address's unspent list is asked for (`?limit=`): the host
+/// serves up to 1000 an answer (probed 2026-10-22; 20 when none is given).
+pub const BANANABLOCKS_LEAD_PAGE: usize = 1000;
 
 /// How long a 429 without a Retry-After closes the rung: BananaBlocks'
 /// budget is a minute's.
@@ -304,6 +312,31 @@ impl BananaBlocks {
     }
 
     // =========================================================================
+    // Address unspent list (leads)
+    // =========================================================================
+
+    /// The unspent outputs BananaBlocks lists for a P2PKH address:
+    /// `GET /address/{address}/utxos?limit=1000`, the first page (newest
+    /// first). LEADS for `Services::get_utxo_leads`, never a verdict.
+    /// BananaBlocks lists by address only: no route takes a script hash
+    /// (probed 2026-10-22: `/script/…`, `/scripthash/…`, `/script_hash/…`
+    /// are 404), so only a P2PKH script handed as itself can be asked here.
+    ///
+    /// Only a 200 with an `items` list of `{txid, vout, value}` answers (an
+    /// address never seen answers `{"items":[],"hasMore":false}`); a 404, a
+    /// 429, a 5xx, a malformed body are faults, never an empty list. A first
+    /// page with `hasMore` is still an answer: the leads it holds.
+    pub async fn list_address_unspent(&self, address: &str) -> Result<Vec<UtxoDetail>> {
+        let (status, body) = self
+            .get(&format!(
+                "{}/address/{}/utxos?limit={}",
+                self.base_url, address, BANANABLOCKS_LEAD_PAGE
+            ))
+            .await?;
+        parse_address_utxos(status, &body, address)
+    }
+
+    // =========================================================================
     // Merkle Path
     // =========================================================================
 
@@ -502,6 +535,65 @@ pub(crate) fn parse_txo_body(
         None => return Err(bad("no boolean `spent` (schema drift?)")),
     };
     Ok(Txo { script_hash, spend })
+}
+
+/// The `/address/{address}/utxos` rule: only a 200 whose `items` are each a
+/// 64-hex `txid`, a `vout` and a `value` answers.
+pub(crate) fn parse_address_utxos(
+    status: StatusCode,
+    body: &str,
+    address: &str,
+) -> Result<Vec<UtxoDetail>> {
+    let bad = |why: &str| {
+        Error::ServiceError(format!(
+            "BananaBlocks address {address} utxos: {why}: {}",
+            excerpt(body)
+        ))
+    };
+    if status != StatusCode::OK {
+        return Err(bad(&format!("HTTP {status}")));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| bad(&format!("bad json: {e}")))?;
+    let items = v
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| bad("no `items` list (schema drift?)"))?;
+    if v.get("hasMore").and_then(serde_json::Value::as_bool) == Some(true) {
+        tracing::info!(
+            address = %address,
+            listed = items.len(),
+            "BananaBlocks lists more unspent outputs than its first page; the page's leads are taken"
+        );
+    }
+    items
+        .iter()
+        .map(|item| {
+            let txid = item
+                .get("txid")
+                .and_then(|t| t.as_str())
+                .filter(|t| is_hex64(t))
+                .ok_or_else(|| bad("an item without a 64-hex txid"))?;
+            let vout = item
+                .get("vout")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| bad("an item without a vout"))?;
+            let satoshis = item
+                .get("value")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| bad("an item without a value"))?;
+            Ok(UtxoDetail {
+                txid: txid.to_ascii_lowercase(),
+                index: vout,
+                satoshis,
+                height: item
+                    .get("block_height")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|h| u32::try_from(h).ok()),
+            })
+        })
+        .collect()
 }
 
 /// `GET /tx/{txid}` → the block `(hash, height)` it is in, `None` when it is
@@ -1260,5 +1352,48 @@ mod tests {
             .unwrap(),
             "79f8aaee78f918ac6588ec3f308732549e61caacf9fb9489d46938f834b2a557"
         );
+    }
+
+    /// The address list's live shapes (2026-10-22): a page with `hasMore`
+    /// is an answer (its leads), an address never seen answers an empty
+    /// list; anything else is a fault, never an empty list.
+    #[test]
+    fn the_address_list_answers_only_in_its_documented_shape() {
+        let address = "1MVzmKLnHNJ9Dkv7xb8iQUzy2mKrJNzTcH";
+        let page = r#"{"items":[{"txid":"b4ebcb258d4ac9b7811ae032ec66a68437a6f370b14bccd8b29b3f4665ab0600","vout":1,"value":1945,"script_type":"p2pkh","block_height":972200,"block_time":1792697684}],"cursor":"OTcyMjAwOjE6MDA=","hasMore":true}"#;
+        let listed = parse_address_utxos(StatusCode::OK, page, address).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].txid,
+            "b4ebcb258d4ac9b7811ae032ec66a68437a6f370b14bccd8b29b3f4665ab0600"
+        );
+        assert_eq!(
+            (listed[0].index, listed[0].satoshis, listed[0].height),
+            (1, 1945, Some(972200))
+        );
+        let never_seen = r#"{"items":[],"hasMore":false}"#;
+        assert!(parse_address_utxos(StatusCode::OK, never_seen, address)
+            .unwrap()
+            .is_empty());
+
+        for (status, body) in [
+            (StatusCode::NOT_FOUND, "404 page not found"),
+            (StatusCode::INTERNAL_SERVER_ERROR, ""),
+            (StatusCode::OK, "<html></html>"),
+            (StatusCode::OK, r#"{"utxos":[]}"#),
+            (
+                StatusCode::OK,
+                r#"{"items":[{"txid":"zz","vout":0,"value":1}]}"#,
+            ),
+            (
+                StatusCode::OK,
+                r#"{"items":[{"txid":"b4ebcb258d4ac9b7811ae032ec66a68437a6f370b14bccd8b29b3f4665ab0600","value":1}]}"#,
+            ),
+        ] {
+            assert!(
+                parse_address_utxos(status, body, address).is_err(),
+                "{status} {body}"
+            );
+        }
     }
 }

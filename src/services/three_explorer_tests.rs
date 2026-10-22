@@ -1246,3 +1246,366 @@ async fn two_services_share_one_gate_per_host() {
     ));
     assert!(started.elapsed() < Duration::from_millis(500));
 }
+
+// =============================================================================
+// getUtxoLeads: discovery, not a verdict (the CLI's sync, its review's M1)
+// =============================================================================
+
+/// A deposit address's script: P2PKH to `1MVzmKLnHNJ9Dkv7xb8iQUzy2mKrJNzTcH`
+/// (the output BananaBlocks served for the probe of 2026-10-22).
+const LEAD_SCRIPT_HEX: &str = "76a914e0de61b233403b703ef20fb6b0f5dc0389b5c48a88ac";
+const LEAD_ADDRESS: &str = "1MVzmKLnHNJ9Dkv7xb8iQUzy2mKrJNzTcH";
+
+fn lead_txid(c: char) -> String {
+    c.to_string().repeat(64)
+}
+
+/// The script hash as the explorers' routes carry it.
+fn lead_route_hash() -> String {
+    let mut hash = sha256(&hex::decode(LEAD_SCRIPT_HEX).unwrap());
+    hash.reverse();
+    hex::encode(hash)
+}
+
+/// The script hash as `get_utxo_leads` is asked by default (`HashLE`).
+fn lead_hash_le(services: &Services) -> String {
+    services.hash_output_script(&hex::decode(LEAD_SCRIPT_HEX).unwrap())
+}
+
+/// What a lead source's fixture answers.
+enum Lists {
+    /// A 200 listing these `(txid char, vout)`, 1000 sats each.
+    These(&'static [(char, u32)]),
+    /// A 200 whose body does not parse.
+    Malformed,
+    /// This HTTP status (a 429 carries `Retry-After: 30`).
+    Status(usize),
+}
+
+async fn woc_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mockito::Mock {
+    let path = format!("/script/{}/unspent/all", lead_route_hash());
+    let mock = server.mock("GET", path.as_str());
+    let mock = match lists {
+        Lists::These(outputs) => {
+            let result: Vec<String> = outputs
+                .iter()
+                .map(|(c, vout)| {
+                    format!(
+                        r#"{{"height":900000,"tx_pos":{vout},"tx_hash":"{}","value":1000}}"#,
+                        lead_txid(*c)
+                    )
+                })
+                .collect();
+            mock.with_status(200).with_body(format!(
+                r#"{{"script":"{}","result":[{}]}}"#,
+                lead_route_hash(),
+                result.join(",")
+            ))
+        }
+        Lists::Malformed => mock.with_status(200).with_body("<html>busy</html>"),
+        Lists::Status(429) => mock.with_status(429).with_header("retry-after", "30"),
+        Lists::Status(status) => mock.with_status(status),
+    };
+    mock.create_async().await
+}
+
+async fn bitails_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mockito::Mock {
+    let path = format!("/scripthash/{}/unspent", lead_route_hash());
+    let mock = server.mock("GET", path.as_str());
+    let mock = match lists {
+        Lists::These(outputs) => {
+            let unspent: Vec<String> = outputs
+                .iter()
+                .map(|(c, vout)| {
+                    format!(
+                        r#"{{"txid":"{}","vout":{vout},"satoshis":1000,"blockheight":900000}}"#,
+                        lead_txid(*c)
+                    )
+                })
+                .collect();
+            mock.with_status(200).with_body(format!(
+                r#"{{"scripthash":"{}","unspent":[{}]}}"#,
+                lead_route_hash(),
+                unspent.join(",")
+            ))
+        }
+        Lists::Malformed => mock.with_status(200).with_body(r#"{"unspent":"soon"}"#),
+        Lists::Status(429) => mock.with_status(429).with_header("retry-after", "30"),
+        Lists::Status(status) => mock.with_status(status),
+    };
+    mock.create_async().await
+}
+
+async fn bananablocks_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mockito::Mock {
+    let mock = server.mock(
+        "GET",
+        mockito::Matcher::Regex(format!(r"^/address/{LEAD_ADDRESS}/utxos")),
+    );
+    let mock = match lists {
+        Lists::These(outputs) => {
+            let items: Vec<String> = outputs
+                .iter()
+                .map(|(c, vout)| {
+                    format!(
+                        r#"{{"txid":"{}","vout":{vout},"value":1000,"script_type":"p2pkh","block_height":900000}}"#,
+                        lead_txid(*c)
+                    )
+                })
+                .collect();
+            mock.with_status(200).with_body(format!(
+                r#"{{"items":[{}],"hasMore":false}}"#,
+                items.join(",")
+            ))
+        }
+        Lists::Malformed => mock.with_status(200).with_body(r#"{"utxos":[]}"#),
+        Lists::Status(429) => mock.with_status(429).with_header("retry-after", "30"),
+        Lists::Status(status) => mock.with_status(status),
+    };
+    mock.create_async().await
+}
+
+struct LeadScene {
+    services: Services,
+    _servers: [mockito::ServerGuard; 3],
+    woc: mockito::Mock,
+    bitails: mockito::Mock,
+    bananablocks: mockito::Mock,
+}
+
+async fn lead_scene(woc: Lists, bitails: Lists, bananablocks: Lists) -> LeadScene {
+    let mut w = mockito::Server::new_async().await;
+    let mut t = mockito::Server::new_async().await;
+    let mut b = mockito::Server::new_async().await;
+    let woc = woc_lists(&mut w, woc).await;
+    let bitails = bitails_lists(&mut t, bitails).await;
+    let bananablocks = bananablocks_lists(&mut b, bananablocks).await;
+    let services = services_with_three(ServicesOptions::mainnet(), &w.url(), &b.url(), &t.url());
+    LeadScene {
+        services,
+        _servers: [w, t, b],
+        woc,
+        bitails,
+        bananablocks,
+    }
+}
+
+/// `(txid char, vout, listed_by)` of each lead, in order.
+fn leads_of(leads: &UtxoLeads) -> Vec<(char, u32, Vec<&str>)> {
+    leads
+        .leads
+        .iter()
+        .map(|l| {
+            (
+                l.txid.chars().next().unwrap(),
+                l.vout,
+                l.listed_by.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect()
+}
+
+/// The union keyed by outpoint: WhatsOnChain lists A and B, Bitails B and
+/// C; the leads are A, B, C, each naming every explorer that listed it.
+/// Asked by script hash, BananaBlocks (which lists by address) is not
+/// asked.
+#[tokio::test]
+async fn the_leads_are_the_union_of_every_explorers_list() {
+    let s = lead_scene(
+        Lists::These(&[('a', 0), ('b', 1)]),
+        Lists::These(&[('b', 1), ('c', 2)]),
+        Lists::These(&[('d', 0)]),
+    )
+    .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        leads_of(&leads),
+        vec![
+            ('a', 0, vec!["WhatsOnChain"]),
+            ('b', 1, vec!["WhatsOnChain", "Bitails"]),
+            ('c', 2, vec!["Bitails"]),
+        ]
+    );
+    assert_eq!(leads.answered, vec!["WhatsOnChain", "Bitails"]);
+    assert!(leads.faults.is_empty(), "{:?}", leads.faults);
+    assert_eq!(leads.leads[0].satoshis, Some(1000));
+    s.bananablocks.expect(0).assert_async().await;
+}
+
+/// One explorer's list is enough to look: WhatsOnChain's 429 is recorded
+/// as its fault, not slept on and not asked again, and Bitails' list is
+/// the leads.
+#[tokio::test]
+async fn a_429_leaves_the_other_explorers_list_without_a_sleep() {
+    let s = lead_scene(
+        Lists::Status(429),
+        Lists::These(&[('b', 1), ('c', 2)]),
+        Lists::These(&[]),
+    )
+    .await;
+    let started = Instant::now();
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "a 429 is not slept on: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        leads_of(&leads),
+        vec![('b', 1, vec!["Bitails"]), ('c', 2, vec!["Bitails"])]
+    );
+    assert_eq!(leads.answered, vec!["Bitails"]);
+    assert_eq!(leads.faults.len(), 1, "{:?}", leads.faults);
+    assert_eq!(leads.faults[0].0, "WhatsOnChain");
+    assert!(
+        leads.faults[0].1.contains("Rate limited"),
+        "{:?}",
+        leads.faults
+    );
+    s.woc.expect(1).assert_async().await;
+}
+
+/// No explorer answered at all: "could not look", an error and never an
+/// empty list. The 5xx is transient (asked once more in the retry round),
+/// the 429 is not.
+#[tokio::test]
+async fn every_explorer_faulting_is_could_not_look() {
+    let s = lead_scene(Lists::Status(500), Lists::Status(429), Lists::These(&[])).await;
+    let err = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap_err();
+    match &err {
+        Error::NoExplorerAnswered { faults } => {
+            let names: Vec<&str> = faults.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(names, vec!["WhatsOnChain", "Bitails"], "{faults:?}");
+        }
+        other => panic!("expected NoExplorerAnswered, got {other:?}"),
+    }
+    assert!(
+        err.to_string()
+            .starts_with("Could not look: no explorer answered: "),
+        "{err}"
+    );
+    s.woc.expect(2).assert_async().await;
+    s.bitails.expect(1).assert_async().await;
+}
+
+/// A malformed list is that explorer's fault (deterministic: not asked
+/// again), never an empty list; the other explorer's good list is the
+/// leads. Either way round.
+#[tokio::test]
+async fn a_malformed_list_leaves_the_good_one() {
+    let s = lead_scene(
+        Lists::Malformed,
+        Lists::These(&[('c', 2)]),
+        Lists::These(&[]),
+    )
+    .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(leads_of(&leads), vec![('c', 2, vec!["Bitails"])]);
+    assert_eq!(leads.answered, vec!["Bitails"]);
+    assert_eq!(leads.faults[0].0, "WhatsOnChain");
+    s.woc.expect(1).assert_async().await;
+
+    let s = lead_scene(
+        Lists::These(&[('a', 0)]),
+        Lists::Malformed,
+        Lists::These(&[]),
+    )
+    .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(leads_of(&leads), vec![('a', 0, vec!["WhatsOnChain"])]);
+    assert_eq!(leads.answered, vec!["WhatsOnChain"]);
+    assert_eq!(leads.faults[0].0, "Bitails");
+    s.bitails.expect(1).assert_async().await;
+}
+
+/// BananaBlocks lists by address: asked with the P2PKH script itself, it
+/// is the third lead source (its address route), and its list joins the
+/// union; an empty list from an explorer is an answer.
+#[tokio::test]
+async fn bananablocks_lists_a_p2pkh_script_by_its_address() {
+    let s = lead_scene(
+        Lists::These(&[('a', 0)]),
+        Lists::These(&[]),
+        Lists::These(&[('a', 0), ('d', 3)]),
+    )
+    .await;
+    let leads = s
+        .services
+        .get_utxo_leads(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script))
+        .await
+        .unwrap();
+    assert_eq!(
+        leads_of(&leads),
+        vec![
+            ('a', 0, vec!["WhatsOnChain", "BananaBlocks"]),
+            ('d', 3, vec!["BananaBlocks"]),
+        ]
+    );
+    assert_eq!(
+        leads.answered,
+        vec!["WhatsOnChain", "Bitails", "BananaBlocks"]
+    );
+    s.bananablocks.expect(1).assert_async().await;
+
+    // WhatsOnChain and Bitails rate limited, BananaBlocks malformed:
+    // nothing answered.
+    let s = lead_scene(Lists::Status(429), Lists::Status(429), Lists::Malformed).await;
+    let err = s
+        .services
+        .get_utxo_leads(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::NoExplorerAnswered { faults } if faults.len() == 3),
+        "{err:?}"
+    );
+
+    // BananaBlocks alone answering is enough to look.
+    let s = lead_scene(
+        Lists::Status(429),
+        Lists::Status(404),
+        Lists::These(&[('d', 3)]),
+    )
+    .await;
+    let leads = s
+        .services
+        .get_utxo_leads(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script))
+        .await
+        .unwrap();
+    assert_eq!(leads_of(&leads), vec![('d', 3, vec!["BananaBlocks"])]);
+    assert_eq!(leads.answered, vec!["BananaBlocks"]);
+}
+
+/// A script that is not P2PKH has no address: BananaBlocks is not asked.
+#[tokio::test]
+async fn a_script_with_no_address_is_not_asked_of_bananablocks() {
+    let services = Services::mainnet().unwrap();
+    assert_eq!(
+        services.p2pkh_address(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script)),
+        Some(LEAD_ADDRESS.to_string())
+    );
+    assert_eq!(
+        services.p2pkh_address("6a0568656c6c6f", Some(GetUtxoStatusOutputFormat::Script)),
+        None
+    );
+    assert_eq!(services.p2pkh_address(&lead_hash_le(&services), None), None);
+}

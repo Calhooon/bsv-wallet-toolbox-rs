@@ -103,6 +103,19 @@ pub enum Error {
         retry_after_secs: u64,
     },
 
+    /// No explorer answered a lead question (`get_utxo_leads`): every one
+    /// asked faulted. "Could not look", never "no outputs". The Display
+    /// begins exactly `Could not look: no explorer answered: `, then each
+    /// explorer's fault.
+    #[error(
+        "Could not look: no explorer answered: {}",
+        .faults.iter().map(|(explorer, fault)| format!("{explorer}: {fault}")).collect::<Vec<_>>().join("; ")
+    )]
+    NoExplorerAnswered {
+        /// Each explorer asked and its fault, in the order asked.
+        faults: Vec<(String, String)>,
+    },
+
     // ===================
     // Transaction errors
     // ===================

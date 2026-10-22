@@ -119,6 +119,46 @@ header service, as it does for every courier's proof. The probe's proof for
 block 972169 folded to the root that two Chaintracks deployments hold.
 `/tx/{txid}/proof/tsc` is no route.
 
+### `GET /address/{address}/utxos`: an address's unspent outputs (leads)
+
+Probed 2026-10-22 (read-only, paced). BananaBlocks lists unspent outputs by
+**address only**. No route takes a script hash: `/script/{hash}`,
+`/script/{hash}/utxos` (big- and little-endian), `/script/{hash}/unspent`,
+`/scripthash/{hash}/utxos`, `/script_hash/{hash}/utxos`,
+`/scripts/{hash}/utxos` and `/hash/{hash}/utxos` are all `404 page not
+found`, as are `/address/{address}/unspent`, `/address/{address}/history`,
+`/openapi.json`, `/swagger.json` and `/docs`.
+
+200 (trimmed; newest first, a page of 20 unless `?limit=` asks for more; the
+host served `limit=1000`):
+
+```json
+{"items":[{"txid":"b4ebcb258d4ac9b7811ae032ec66a68437a6f370b14bccd8b29b3f4665ab0600","vout":1,
+  "value":1945,"script_type":"p2pkh","block_height":972200,"block_time":1792697684}, …],
+ "cursor":"OTcyMjAwOjE6…","hasMore":true}
+```
+
+`?cursor=` takes the next page. An address never seen answers
+`{"items":[],"hasMore":false}`. `GET /address/{address}` gives a summary
+(`balance`, `utxo_count`, `tx_count`, and a `freshness` block with the
+`indexed_height`).
+
+How the crate reads it (`BananaBlocks::list_address_unspent`, behind
+`Services::get_utxo_leads`): the first page with `limit=1000`, as LEADS, never
+a verdict. Only a 200 whose `items` each carry a 64-hex `txid`, a `vout` and a
+`value` answers; a 404, a 429, a 5xx or another shape is a fault, never an
+empty list. A page with `hasMore` is still an answer (its leads; logged).
+Because no address is derived from a hash, BananaBlocks is a lead source only
+when the caller hands the script itself (`GetUtxoStatusOutputFormat::Script`)
+and the script is P2PKH; asked by script hash, it is not asked.
+
+Not seen: an unconfirmed output still unspent in this list. In the probe an
+address paid by a WhatsOnChain-mempool transaction did not list that output,
+but `/txo` showed it already spent in the mempool (`spend_scope:
+"unconfirmed"`), so its absence was right; whether the list carries mempool
+outputs is unconfirmed. A lead missing here may be in WhatsOnChain's or
+Bitails' list, which is why every explorer is asked and the union kept.
+
 ## The mempool gap
 
 BananaBlocks' index misses some mempool spends. On 2026-10-22 transaction
