@@ -13,7 +13,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::locked_inputs::locked_verdict_label;
+use super::locked_inputs::{LOCKED_VERDICT_SPENT_PROVEN, LOCKED_VERDICT_UNKNOWN};
 use crate::error::{Error, Result, StoreBusyReason};
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{GetRawTxResult, UtxoVerdict, WalletServices};
@@ -3408,8 +3408,9 @@ pub enum RetireOutcome {
     /// `unmined`/`unproven`, nothing released.
     Alive,
     /// Retired: req → the given terminal status, tx → `failed`, its own
-    /// outputs unspendable; `restored` inputs were in an explorer's unspent
-    /// set (a hint) and released, `kept` were not and stay locked.
+    /// outputs unspendable; `kept` inputs stay locked. `restored` is 0
+    /// since 0.11.1: no explorer's unspent set releases an input on this
+    /// path (bsv-wallet-toolbox-rs #42 point 5).
     Retired { restored: u32, kept: u32 },
 }
 
@@ -3427,6 +3428,9 @@ pub(crate) enum RetireBasis<'a> {
     CompetitorProven {
         /// The competitor's txid.
         competitor: &'a str,
+        /// The outpoints of ours the competitor's bytes spend (`txid`,
+        /// `vout`): lost to it, locked for good (`spent-proven`).
+        lost: &'a [(String, u32)],
     },
 }
 
@@ -3453,10 +3457,14 @@ impl StorageSqlx {
     ///    for [`RetireBasis::Undelivered`]: on
     ///    [`RetireBasis::CompetitorProven`] the competitor's checked proof
     ///    is the chain's word and no `known` outranks it, AND
-    /// 2. that input is hinted unspent by `services.is_utxo`: an error or
-    ///    `false` keeps it locked (`spent_by` intact, `spendable = 0`). An
-    ///    unknown must never release money; a locked coin is recoverable by
-    ///    an operator, a double-spent one is not.
+    /// 2. a node's verdict releases it. No explorer's word does (an unspent
+    ///    set is a hint, and a coin a mined competitor spent reads unspent
+    ///    at a lagging explorer: bsv-wallet-toolbox-rs #42 point 5), so this
+    ///    path releases nothing: every input stays locked (`spent_by`
+    ///    intact, `spendable = 0`). An input the competitor's checked proof
+    ///    spends is lost, scheduled `spent-proven` (terminal); every other
+    ///    input is scheduled for the locked-input re-check. The descendants'
+    ///    outside inputs are kept and scheduled the same way.
     ///
     /// The tx's own outputs (change) are marked unspendable and the tx
     /// `failed` so its phantom change never funds — and orphans — a new tx.
@@ -3480,7 +3488,7 @@ impl StorageSqlx {
                     return Ok(RetireOutcome::Alive);
                 }
             }
-            RetireBasis::CompetitorProven { competitor } => {
+            RetireBasis::CompetitorProven { competitor, .. } => {
                 tracing::info!(
                     txid = %txid,
                     competitor = %competitor,
@@ -3519,7 +3527,13 @@ impl StorageSqlx {
         .execute(&mut *self.writer_conn().await?)
         .await?;
 
-        // Its inputs: released one by one, each on a chain verification.
+        // Its inputs: none released (a node's verdict releases a coin; an
+        // explorer's unspent set does not). Lost to a proven competitor, or
+        // kept for the re-check.
+        let lost: &[(String, u32)] = match basis {
+            RetireBasis::CompetitorProven { lost, .. } => lost,
+            RetireBasis::Undelivered => &[],
+        };
         let input_rows = sqlx::query(
             r#"
             SELECT o.output_id, t.txid AS source_txid, o.vout, o.locking_script
@@ -3531,39 +3545,30 @@ impl StorageSqlx {
         .bind(transaction_id)
         .fetch_all(self.pool())
         .await?;
-        let mut restored = 0u32;
         let mut kept = 0u32;
         for input_row in &input_rows {
             let output_id: i64 = input_row.get("output_id");
             let source_txid: String = input_row.get("source_txid");
             let vout: i32 = input_row.get("vout");
-            let locking_script: Option<Vec<u8>> = input_row.get("locking_script");
-            let script = locking_script.as_deref().unwrap_or(&[]);
-            let verdict = services.is_utxo(&source_txid, vout as u32, script).await;
-            if verdict == UtxoVerdict::Unknown {
+            kept += 1;
+            let is_lost = lost
+                .iter()
+                .any(|(t, v)| *v as i64 == vout as i64 && t.eq_ignore_ascii_case(&source_txid));
+            if is_lost {
+                self.schedule_locked_input_check(output_id, LOCKED_VERDICT_SPENT_PROVEN)
+                    .await;
                 tracing::warn!(
-                    "send_waiting: is_utxo({}:{}) could not look: input stays LOCKED (an unknown never releases)",
-                    source_txid, vout
+                    txid = %txid,
+                    outpoint = %format!("{}:{}", source_txid, vout),
+                    "retire: input spent by the proven competitor: lost, locked for good"
                 );
-            }
-            let unspent = verdict.is_unspent_hint();
-            if unspent {
-                sqlx::query(
-                    "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
-                )
-                .bind(now)
-                .bind(output_id)
-                .execute(&mut *self.writer_conn().await?)
-                .await?;
-                restored += 1;
             } else {
-                kept += 1;
-                self.schedule_locked_input_check(output_id, locked_verdict_label(verdict))
+                self.schedule_locked_input_check(output_id, LOCKED_VERDICT_UNKNOWN)
                     .await;
                 tracing::info!(
-                    "send_waiting: input {}:{} in no unspent set: NOT restoring",
-                    source_txid,
-                    vout
+                    txid = %txid,
+                    outpoint = %format!("{}:{}", source_txid, vout),
+                    "retire: input stays LOCKED (no explorer's word releases it), re-checked later"
                 );
             }
         }
@@ -3579,12 +3584,14 @@ impl StorageSqlx {
         // No provider skips it again, and everything this wallet built on
         // it is a phantom too (the poisoned chain, 2026-09-02).
         self.mark_broadcast_rejected_quiet(txid).await;
+        // No services: the descendants' outside inputs are kept and
+        // scheduled, never released on an explorer's word.
         let (descendants_restored, descendants_kept) = self
-            .retire_poisoned_descendants(Some(services), txid, transaction_id, now)
+            .retire_poisoned_descendants(None, txid, transaction_id, now)
             .await?;
 
         Ok(RetireOutcome::Retired {
-            restored: restored + descendants_restored,
+            restored: descendants_restored,
             kept: kept + descendants_kept,
         })
     }
@@ -3621,7 +3628,8 @@ impl StorageSqlx {
     ///
     /// Same path, same guarantees as `Self::retire_undeliverable_tx`: the tx
     /// is alive-checked first (known/mined ⇒ promoted, nothing released), then
-    /// each input is released ONLY on its own `services.is_utxo` verification,
+    /// every input stays locked and is scheduled for the locked-input
+    /// re-check (no explorer's word releases it at retire),
     /// the tx's own outputs go unspendable and the tx is `failed` with its req
     /// at `req_status` (`"invalid"` for a dropped broadcast, `"doubleSpend"`
     /// for a named competitor). The unfail canary keeps re-verifying `invalid`
@@ -3943,6 +3951,8 @@ impl StorageSqlx {
 
     /// Does `competitor` spend one of the inputs of `our_raw_tx`, by its own
     /// bytes, and is it mined, by its proof checked against our headers?
+    /// `Some` with the outpoints of ours it spends (`txid`, `vout`), lost to
+    /// it, when it is; `None` otherwise.
     ///
     /// The existing proof path's two asks (`get_raw_tx`, `get_merkle_path`,
     /// the sources the proof pass asks) and the check of
@@ -3956,53 +3966,52 @@ impl StorageSqlx {
         our_raw_tx: &[u8],
         competitor: &str,
         gate: u32,
-    ) -> bool {
-        let Some(tracker) = self.get_chain_tracker().await else {
-            return false;
-        };
-        let Ok(ours) = bsv_rs::transaction::Transaction::from_binary(our_raw_tx) else {
-            return false;
-        };
+    ) -> Option<Vec<(String, u32)>> {
+        let tracker = self.get_chain_tracker().await?;
+        let ours = bsv_rs::transaction::Transaction::from_binary(our_raw_tx).ok()?;
         let raw = match services.get_raw_tx(competitor, false).await {
             Ok(GetRawTxResult {
                 raw_tx: Some(raw), ..
             }) => raw,
-            _ => return false,
+            _ => return None,
         };
-        let Ok(theirs) = bsv_rs::transaction::Transaction::from_binary(&raw) else {
-            return false;
-        };
+        let theirs = bsv_rs::transaction::Transaction::from_binary(&raw).ok()?;
         if !theirs.id().eq_ignore_ascii_case(competitor) {
             tracing::warn!(
                 competitor = %competitor,
                 "competitor proof ask: the bytes served are not the competitor's; dropped"
             );
-            return false;
+            return None;
         }
-        let spends_ours = theirs.inputs.iter().any(|theirs_in| {
-            ours.inputs.iter().any(|ours_in| {
-                theirs_in.source_output_index == ours_in.source_output_index
-                    && matches!(
-                        (theirs_in.get_source_txid(), ours_in.get_source_txid()),
-                        (Ok(a), Ok(b)) if a.eq_ignore_ascii_case(&b)
-                    )
+        let lost: Vec<(String, u32)> = ours
+            .inputs
+            .iter()
+            .filter_map(|ours_in| {
+                let source = ours_in.get_source_txid().ok()?;
+                theirs
+                    .inputs
+                    .iter()
+                    .any(|theirs_in| {
+                        theirs_in.source_output_index == ours_in.source_output_index
+                            && matches!(theirs_in.get_source_txid(), Ok(a) if a.eq_ignore_ascii_case(&source))
+                    })
+                    .then(|| (source.to_ascii_lowercase(), ours_in.source_output_index))
             })
-        });
-        if !spends_ours {
+            .collect();
+        if lost.is_empty() {
             tracing::warn!(
                 competitor = %competitor,
                 "competitor proof ask: the competitor's bytes spend none of our inputs; no evidence"
             );
-            return false;
+            return None;
         }
         let merkle_path = match services.get_merkle_path(competitor, false).await {
-            Ok(found) => match found.merkle_path {
-                Some(path) => path,
-                None => return false,
-            },
-            Err(_) => return false,
+            Ok(found) => found.merkle_path?,
+            Err(_) => return None,
         };
-        competitor_proof_meets_our_header(&*tracker, competitor, &merkle_path, gate).await
+        competitor_proof_meets_our_header(&*tracker, competitor, &merkle_path, gate)
+            .await
+            .then_some(lost)
     }
 
     /// The proof path's first step (bsv-stack-lean #66): every request with
@@ -4036,10 +4045,10 @@ impl StorageSqlx {
                 continue;
             };
             for competitor in queued_competitors(&history) {
-                if !self
+                let Some(lost) = self
                     .competitor_is_proven(services.as_ref(), &raw_tx, &competitor, gate)
                     .await
-                {
+                else {
                     tracing::info!(
                         txid = %txid,
                         competitor = %competitor,
@@ -4047,7 +4056,7 @@ impl StorageSqlx {
                         "competitor proof ask: no checked proof of a conflicting spend; no word, asked again next pass"
                     );
                     continue;
-                }
+                };
                 let outcome = self
                     .retire_undeliverable_tx(
                         services.as_ref(),
@@ -4057,6 +4066,7 @@ impl StorageSqlx {
                         "doubleSpend",
                         RetireBasis::CompetitorProven {
                             competitor: &competitor,
+                            lost: &lost,
                         },
                         chrono::Utc::now(),
                     )

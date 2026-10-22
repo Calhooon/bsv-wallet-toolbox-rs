@@ -3,7 +3,8 @@
 //! verification comes back definitively absent.
 //!
 //! Real SQLite, mock chain oracle. Every cell checks the three invariants:
-//! alive-check first, per-input verified release only, own outputs never fund
+//! alive-check first, no input released at retire (no explorer's word
+//! releases one: bsv-wallet-toolbox-rs #42 point 5), own outputs never fund
 //! again.
 
 #![cfg(feature = "sqlite")]
@@ -176,9 +177,11 @@ fn alive_oracle() -> MockWalletServices {
 }
 
 #[tokio::test]
-async fn absent_tx_with_a_verified_unspent_input_is_failed_and_the_input_released() {
+async fn absent_tx_is_failed_and_an_explorers_unspent_input_stays_locked() {
     let s = seed().await;
     // Default mock: status lookup finds nothing (not alive), is_utxo → true.
+    // The explorer's unspent set is not asked: the input stays locked and
+    // is scheduled for the locked-input re-check.
     let services = MockWalletServices::new();
 
     let outcome = s
@@ -189,8 +192,8 @@ async fn absent_tx_with_a_verified_unspent_input_is_failed_and_the_input_release
     assert_eq!(
         outcome,
         Some(RetireOutcome::Retired {
-            restored: 1,
-            kept: 0
+            restored: 0,
+            kept: 1
         })
     );
 
@@ -199,17 +202,18 @@ async fn absent_tx_with_a_verified_unspent_input_is_failed_and_the_input_release
         req_status_attempts(&s.storage).await,
         ("invalid".to_string(), 1)
     );
-    assert_eq!(
-        output_state(&s.storage, s.input_output_id).await,
-        (1, None),
-        "the verified-unspent input is back in coin selection"
+    let (spendable, spent_by) = output_state(&s.storage, s.input_output_id).await;
+    assert_eq!(spendable, 0, "the input stays locked");
+    assert!(
+        spent_by.is_some(),
+        "the input stays locked to the failed tx"
     );
     assert_eq!(
         output_state(&s.storage, s.own_output_id).await,
         (0, None),
         "the failed tx's own change never funds anything again"
     );
-    assert!(services.call_count("is_utxo") >= 1);
+    assert_eq!(services.call_count("is_utxo"), 0, "no explorer asked");
 }
 
 #[tokio::test]

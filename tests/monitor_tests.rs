@@ -1343,17 +1343,19 @@ mod monitor_integration {
         );
     }
 
-    /// The honest release still works: an input the chain oracle verifies
-    /// UNSPENT is returned to coin selection when the host retires the tx
-    /// after the 466 hint.
+    /// No release on an explorer's word (bsv-wallet-toolbox-rs #42 point
+    /// 5): an input an explorer lists as unspent stays locked when the host
+    /// retires the tx after the 466 hint (a coin a mined competitor spent
+    /// reads unspent at a lagging explorer); it is scheduled for the
+    /// locked-input re-check.
     #[tokio::test]
-    async fn invalid_after_retries_restores_only_verified_unspent_inputs() {
+    async fn invalid_after_retries_keeps_an_explorers_unspent_input_locked() {
         use bsv_wallet_toolbox_rs::services::mock::MockResponse;
         let storage0 = StorageSqlx::in_memory().await.expect("in_memory");
         let storage_key = "02".to_string() + &"ab".repeat(32);
         storage0.migrate("t", &storage_key).await.expect("migrate");
         storage0.make_available().await.expect("avail");
-        let (child, _child_id, parent_out, _) = seed_parent_child(&storage0, "unsent", 0).await;
+        let (child, child_id, parent_out, _) = seed_parent_child(&storage0, "unsent", 0).await;
         let mock = MockWalletServices::builder()
             .post_beef_response(MockResponse::Success(vec![broadcaster_verdict(
                 &child, "466", false, false,
@@ -1380,8 +1382,13 @@ mod monitor_integration {
         assert_eq!((t.as_str(), r.as_str()), ("failed", "invalid"));
         assert_eq!(
             output_lock(&storage, parent_out).await,
-            (1, None),
-            "a VERIFIED-unspent input is released"
+            (0, Some(child_id)),
+            "an explorer's unspent word releases nothing at retire"
+        );
+        assert_eq!(
+            storage.locked_inputs_pending().await.expect("pending"),
+            1,
+            "the input is scheduled for the re-check"
         );
     }
 
