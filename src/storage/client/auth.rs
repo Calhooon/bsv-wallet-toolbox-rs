@@ -181,7 +181,7 @@ pub async fn create_nonce<W: WalletInterface>(
 
     // Compute HMAC of the random bytes
     let protocol = Protocol::new(SecurityLevel::App, NONCE_PROTOCOL_ID);
-    let key_id = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &random_bytes);
+    let key_id = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, random_bytes);
 
     let hmac_result = wallet
         .create_hmac(
@@ -213,7 +213,7 @@ pub async fn create_nonce<W: WalletInterface>(
 pub fn create_simple_nonce() -> String {
     let mut nonce_bytes = [0u8; NONCE_TOTAL_SIZE];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &nonce_bytes)
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, nonce_bytes)
 }
 
 /// Returns the current Unix timestamp in milliseconds.
@@ -298,6 +298,7 @@ pub fn create_signing_data(
 /// * `nonce` - Nonce string
 /// * `server_identity_key` - Server's identity key (optional)
 /// * `originator` - Application originator
+#[allow(clippy::too_many_arguments)]
 pub async fn sign_request<W: WalletInterface>(
     wallet: &W,
     method: &str,
