@@ -19,9 +19,11 @@ No key. `ServicesOptions::with_bananablocks_base(url)` moves the base,
 ## Rate limit
 
 Every answer carries `x-ratelimit-limit: 80` and `x-ratelimit-remaining`.
-The host's budget is 80 requests a minute. This crate keeps to 60 a minute
-per process: one token bucket (30 at once, 30 more over the minute) shared
-by every provider the process builds for one base (`RateGate::shared`). The
+The host's budget is 80 requests a minute. This crate paces itself per
+process with one token bucket: a burst of 30 refilled at 0.5/s, so 60 in
+the first minute and 30 a minute sustained, under BananaBlocks' 80. The
+bucket is shared by every provider the process builds for one base
+(`RateGate::shared`). The
 daemon builds two `Services` per tenant, so a gate per `Services` would
 double the rate. A 429 closes the rung for its `Retry-After` (60 s when none
 is sent). Inside that window a call is `Error::RateLimited` and makes no
@@ -92,7 +94,9 @@ How the ladder reads it (`get_utxo_status`):
   transaction. `spend_evidence` binds that name by the spender's own bytes.
   When the ladder already read `/txo` for the outpoint, `spend_evidence`
   takes the `spent_txid` from that answer instead of asking again, so an
-  unspent verdict costs at most one BananaBlocks request.
+  unspent verdict costs one BananaBlocks request when it answers; after a
+  fault `spend_evidence` asks it once more (up to three with a 5xx retried
+  in the ladder).
 - A 404 (`TXO not found`), a malformed body or a script mismatch is a
   deterministic fault: the ladder's retry round does not ask again. Only a
   5xx, a timeout or a transport failure is retried, once, after 2 s.

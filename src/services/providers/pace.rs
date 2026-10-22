@@ -6,8 +6,10 @@
 //! once ([`Error::RateLimited`], carrying the Retry-After seconds) and the
 //! rung is closed until Retry-After passes: a call inside that window is
 //! the same fault without a request. A provider with a published request
-//! budget (BananaBlocks: 60 a minute, no key) also paces itself with a
-//! token bucket, and a call with no token left is that fault too.
+//! budget (BananaBlocks, no key: a burst of 30 refilled at 0.5/s, so 60 in
+//! the first minute and 30 a minute sustained, under BananaBlocks' 80) also
+//! paces itself with a token bucket, and a call with no token left is that
+//! fault too.
 //!
 //! A gate is the process's, not a `Services`'s: [`RateGate::shared`] hands
 //! every provider built for one host (one base URL, one key) the same gate,
@@ -48,7 +50,9 @@ struct TokenBucket {
 impl TokenBucket {
     /// A bucket that lets at most `per_minute` requests through in any 60 s
     /// window: half the budget as the burst, the other half refilled over
-    /// the minute (burst + refill = the budget).
+    /// the minute (burst + refill = the budget). So the full budget is the
+    /// first minute's; sustained, it is the refill, half the budget a
+    /// minute (BananaBlocks' 60: 60 in the first minute, 30 a minute after).
     fn per_minute(per_minute: u32, now: Instant) -> Self {
         let budget = f64::from(per_minute.max(2));
         let capacity = (budget / 2.0).floor();
@@ -107,7 +111,8 @@ impl RateGate {
         )
     }
 
-    /// Pace the provider at most `per_minute` requests in any minute.
+    /// Pace the provider at most `per_minute` requests in any minute: that
+    /// many in the first, half that many a minute sustained.
     pub fn with_per_minute(mut self, per_minute: u32) -> Self {
         self.bucket = Some(Mutex::new(TokenBucket::per_minute(
             per_minute,
@@ -248,7 +253,8 @@ mod tests {
         assert!(gate.check(StatusCode::NOT_FOUND, &HeaderMap::new()).is_ok());
     }
 
-    /// 60 a minute: no window of 60 s lets more than 60 through.
+    /// A budget of 60 (a burst of 30 refilled at 0.5/s): no window of 60 s
+    /// lets more than 60 through, and sustained it is 30 a minute.
     #[test]
     fn the_bucket_lets_at_most_its_budget_through_in_any_minute() {
         let start = Instant::now();
