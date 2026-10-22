@@ -8,8 +8,15 @@
 //! the same fault without a request. A provider with a published request
 //! budget (BananaBlocks: 60 a minute, no key) also paces itself with a
 //! token bucket, and a call with no token left is that fault too.
+//!
+//! A gate is the process's, not a `Services`'s: [`RateGate::shared`] hands
+//! every provider built for one host (one base URL, one key) the same gate,
+//! so a process that builds several `Services` (the daemon builds two per
+//! tenant, `serve-fleet` one pair per tenant) spends one budget per host,
+//! and a 429 one of them met closes the rung for all of them.
 
-use std::sync::{Mutex, MutexGuard};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use reqwest::header::{HeaderMap, RETRY_AFTER};
@@ -20,6 +27,10 @@ use crate::{Error, Result};
 /// The longest a Retry-After closes a rung: a larger or garbled value from
 /// the host is held to this.
 pub const MAX_RETRY_AFTER_SECS: u64 = 600;
+
+/// The process's gates, one per host key (see [`RateGate::shared`]).
+static GATES: LazyLock<Mutex<HashMap<String, Arc<RateGate>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -82,6 +93,18 @@ impl RateGate {
             blocked_until: Mutex::new(None),
             bucket: None,
         }
+    }
+
+    /// The process's gate for `key` (a provider's base URL, and its key
+    /// when the budget is a key's), made on first use with `make`. Every
+    /// provider built for the same key in this process shares it: one token
+    /// bucket and one Retry-After window, however many `Services` hold it.
+    pub fn shared(key: &str, make: impl FnOnce() -> RateGate) -> Arc<RateGate> {
+        Arc::clone(
+            lock(&GATES)
+                .entry(key.to_string())
+                .or_insert_with(|| Arc::new(make())),
+        )
     }
 
     /// Pace the provider at most `per_minute` requests in any minute.

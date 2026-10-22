@@ -971,18 +971,30 @@ pub struct GetUtxoStatusResult {
 /// - `Spent` is a fact, written only by proof: the spending transaction's
 ///   own bytes name the outpoint, and its merkle path meets the header
 ///   service's header. A provider that names the spender is its courier.
-/// - `UnspentHint` is one provider listing the outpoint in an unspent set.
+/// - `UnspentHint` is two explorers each answering cleanly that the
+///   outpoint is unspent.
 /// - `SpentHint` is unproven: two explorers agreeing the outpoint is not in
-///   the unspent set, or a named spender whose proof is not held yet.
-/// - one explorer's negative, a fault or an outage is `Unknown`.
+///   the unspent set, or a named spender bound by its own bytes whose proof
+///   is not held yet (a bound spender stands on one provider).
+/// - one explorer's answer either way, a fault or an outage is `Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UtxoVerdict {
-    /// A provider lists the outpoint in an unspent set. A hint, from any
-    /// provider and from any number of them: no header or proof says an
-    /// output is unspent, so this is never a chain fact. For our own
-    /// devices' spends our own storage is the verdict; this answers only
-    /// "no stranger's spend is known". A locked input may be released on
-    /// it, because a wrong hint costs one refused broadcast and no coin.
+    /// Two explorers each answer cleanly that the outpoint is unspent
+    /// (the owner's rule of 2026-10-22, bsv-wallet-cli#50: a negative,
+    /// "unspent" as much as "absent", needs a second provider's clean
+    /// answer). Still a hint: no header or proof says an output is unspent,
+    /// so this is never a chain fact. For our own devices' spends our own
+    /// storage is the verdict; this answers only "no stranger's spend is
+    /// known".
+    ///
+    /// One explorer is not enough because the callers that act on this
+    /// restore or release coins: `un_fail` restores a failed transaction's
+    /// outputs as spendable, `poisoned_chain` and `locked_inputs` release
+    /// inputs, and bsv-wallet-cli's `probe_input_spend` releases a locked
+    /// input. A wrong hint there is a phantom coin the wallet offers and
+    /// counts, not one refused broadcast; and one index can miss a mempool
+    /// spend (BananaBlocks answered `spent: false` for an outpoint
+    /// WhatsOnChain's mempool showed spent).
     UnspentHint,
     /// Spent on chain, proven: the spender's bytes name the outpoint and
     /// its merkle path meets the header service's header.

@@ -47,6 +47,15 @@ const EXPLORER_HEADER_SOURCES: usize = 2;
 /// Bitails) a negative is two of the three.
 pub const UTXO_NEGATIVE_PROVIDERS: usize = 2;
 
+/// How many explorers must each answer "unspent" before `get_utxo_status`
+/// returns that answer. "Unspent" is a negative too ("no spender"), and
+/// the owner's rule (2026-10-22, bsv-wallet-cli#50) gives every negative a
+/// second provider's clean answer: one explorer's index can miss a mempool
+/// spend (BananaBlocks answered `spent: false` for an outpoint
+/// WhatsOnChain's mempool showed spent), and the callers that act on an
+/// unspent restore or release coins.
+pub const UTXO_POSITIVE_PROVIDERS: usize = 2;
+
 /// The code a ladder's call history records for a provider's error: a rate
 /// limit (a 429, or the rung closed by an earlier one's Retry-After) apart
 /// from every other fault.
@@ -318,11 +327,11 @@ impl RawTxService for BananaBlocks {
 impl UtxoStatusService for BananaBlocks {
     async fn get_utxo_status(
         &self,
-        _output: &str,
-        _format: Option<GetUtxoStatusOutputFormat>,
+        output: &str,
+        format: Option<GetUtxoStatusOutputFormat>,
         outpoint: Option<&str>,
     ) -> Result<GetUtxoStatusResult> {
-        self.get_utxo_status(outpoint).await
+        self.get_utxo_status(output, format, outpoint).await
     }
 
     fn needs_outpoint(&self) -> bool {
@@ -480,9 +489,13 @@ impl ScriptHashHistoryService for Bitails {
 ///   broadcaster's stale `known` for a transaction the chain never saw
 ///   becomes `unknown` (the 2026-09-02 phantoms: Arcade `SEEN_MULTIPLE_NODES`
 ///   for hours, WhatsOnChain 404);
-/// * a broadcaster's `known` only fills a slot no chain index has decided
-///   (a gap), never overriding a chain index; its `unknown` never replaces
-///   anything (its inbox is not the chain).
+/// * a broadcaster's (or BananaBlocks') `known` fills a slot no chain index
+///   has decided (a gap) and takes a slot at `unknown` (one provider's
+///   "absent" never stands against a second provider that holds the
+///   transaction), but never overrides a chain index's `known`; its
+///   `unknown` never replaces anything (its inbox is not the chain);
+/// * a txid the earlier answer left out (a provider that stopped early)
+///   takes the later provider's answer as it is.
 ///
 /// So a chain index that knows a transaction beats one that does not, and a
 /// broadcaster's word stands only where no chain index could answer at all
@@ -494,19 +507,20 @@ fn merge_status_results(
     decided: &mut HashSet<String>,
 ) {
     for detail in from.results {
-        let Some(slot) = into.results.iter_mut().find(|d| d.txid == detail.txid) else {
-            continue;
-        };
         let already_decided = decided.contains(&detail.txid);
         if from_is_chain_index {
             decided.insert(detail.txid.clone());
         }
+        let Some(slot) = into.results.iter_mut().find(|d| d.txid == detail.txid) else {
+            into.results.push(detail);
+            continue;
+        };
         if slot.status == "mined" {
             continue;
         }
         let take = match detail.status.as_str() {
             "mined" => true,
-            "known" => from_is_chain_index || !already_decided,
+            "known" => from_is_chain_index || !already_decided || slot.status == "unknown",
             _ => from_is_chain_index && !already_decided,
         };
         if take {
@@ -1110,6 +1124,7 @@ impl Services {
 }
 
 /// What we hold about a stranger's spend of one outpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpendEvidence {
     /// The spender's bytes name the outpoint and its merkle path met the
     /// header service's header: a chain fact.
@@ -1129,7 +1144,7 @@ impl Services {
     ///
     /// 1. A provider names the spender: a word, and the provider a courier.
     ///    WhatsOnChain (`/tx/{txid}/{vout}/spent`) and BananaBlocks
-    ///    (`/txo/{txid}/{vout}/spend`) are each the other's fallback: a
+    ///    (`/txo/{txid}/{vout}`'s `spent_txid`) are each the other's fallback: a
     ///    fault, no name, or a name its bytes do not bear out moves to the
     ///    next.
     /// 2. The named transaction's bytes (bound to its txid by `get_raw_tx`)
@@ -1955,24 +1970,32 @@ impl WalletServices for Services {
     /// prove inclusion, never that an output is unspent, and our own
     /// outputs table knows only the spends we made, so the explorers
     /// (WhatsOnChain, BananaBlocks, Bitails) are asked, each the others'
-    /// fallback (the owner's word of 2026-10-22, bsv-wallet-cli#50). The
-    /// shape:
+    /// fallback (the owner's word of 2026-10-22, bsv-wallet-cli#50: a
+    /// negative, "unspent" or "absent", needs a second provider's clean
+    /// answer; "could not look" is never "nothing there"). The shape:
     ///
     /// * the start rotates, one explorer on from the last call's;
-    /// * a positive (the outpoint is in an explorer's unspent set, or
-    ///   BananaBlocks says `spent: false`) is returned from the first
-    ///   explorer that gives it;
-    /// * a negative is returned only when [`UTXO_NEGATIVE_PROVIDERS`]
+    /// * an unspent (the outpoint is in WhatsOnChain's or Bitails' unspent
+    ///   set for the script, or BananaBlocks says `spent: false` for an
+    ///   output whose script is the asked one) is returned only when
+    ///   [`UTXO_POSITIVE_PROVIDERS`] explorers give it (two of the three);
+    /// * a "not listed" is returned only when [`UTXO_NEGATIVE_PROVIDERS`]
     ///   explorers give it (two of the three);
-    /// * a fault (a 429, a timeout, a 5xx, a malformed body, a rung closed
-    ///   by an earlier 429's Retry-After) is "could not look" and moves the
+    /// * the ladder keeps asking until two agree or no rung is left, so
+    ///   the verdict does not depend on where the rotation started;
+    /// * a fault (a 429, a timeout, a 5xx, a malformed body, a BananaBlocks
+    ///   output whose script is not the asked one, a rung closed by an
+    ///   earlier 429's Retry-After) is "could not look" and moves the
     ///   question to the next rung within the same call, before any retry
     ///   round; a rate-limited rung costs no request and no wait;
     /// * BananaBlocks answers an outpoint only: for a question without one
     ///   it is not applicable, neither asked nor counted;
-    /// * anything else (an outage, one negative no second explorer
-    ///   confirmed) is `status: "error"` with `is_utxo: None`: "could not
-    ///   look", never "nothing there".
+    /// * anything else (an outage, one unspent and one not listed, a lone
+    ///   answer no second explorer gave) is `status: "error"` with
+    ///   `is_utxo: None`: "could not look".
+    ///
+    /// A spender named and bound by its own bytes (`is_utxo`'s
+    /// `spend_evidence`) stands on one provider: the bytes are the evidence.
     async fn get_utxo_status(
         &self,
         output: &str,
@@ -2004,7 +2027,8 @@ impl WalletServices for Services {
         }
 
         let mut last_error = None;
-        // The explorers that answered "not in the unspent set".
+        // The explorers that answered "unspent", and "not in the unspent set".
+        let mut positives: Vec<GetUtxoStatusResult> = Vec::new();
         let mut negatives: Vec<GetUtxoStatusResult> = Vec::new();
         // The explorers still owed an answer (a fault is asked once more).
         let mut pending: Vec<&(String, String, UtxoStatusProvider)> = all_services.iter().collect();
@@ -2019,27 +2043,18 @@ impl WalletServices for Services {
                     .get_utxo_status(output, output_format, outpoint)
                     .await
                 {
-                    Ok(result) if result.status == "success" && result.is_utxo == Some(true) => {
+                    Ok(result) if result.status == "success" && result.is_utxo.is_some() => {
                         call.mark_success(None);
                         lock_write(&self.get_utxo_status_services)?
                             .add_call_success(provider_name, call);
-                        if let Some(negative) = negatives.first() {
-                            tracing::warn!(
-                                output = %output,
-                                outpoint = ?outpoint,
-                                unspent_by = %provider_name,
-                                not_listed_by = %negative.name,
-                                "get_utxo_status: the explorers disagree; the positive stands (a negative needs two)"
-                            );
-                        }
-                        return Ok(result);
-                    }
-                    Ok(result) if result.status == "success" && result.is_utxo == Some(false) => {
-                        call.mark_success(None);
-                        lock_write(&self.get_utxo_status_services)?
-                            .add_call_success(provider_name, call);
-                        negatives.push(result);
-                        if negatives.len() >= UTXO_NEGATIVE_PROVIDERS {
+                        let agreeing = if result.is_utxo == Some(true) {
+                            positives.push(result);
+                            positives.len() >= UTXO_POSITIVE_PROVIDERS
+                        } else {
+                            negatives.push(result);
+                            negatives.len() >= UTXO_NEGATIVE_PROVIDERS
+                        };
+                        if agreeing {
                             break 'rounds;
                         }
                     }
@@ -2077,21 +2092,55 @@ impl WalletServices for Services {
             }
         }
 
-        if negatives.len() >= UTXO_NEGATIVE_PROVIDERS {
-            let names: Vec<String> = negatives.iter().map(|n| n.name.clone()).collect();
-            let mut result = negatives.swap_remove(0);
-            result.name = names.join("+");
-            return Ok(result);
+        let names = |answers: &[GetUtxoStatusResult]| -> String {
+            answers
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join("+")
+        };
+        if !positives.is_empty() && !negatives.is_empty() {
+            tracing::warn!(
+                output = %output,
+                outpoint = ?outpoint,
+                unspent_by = %names(&positives),
+                not_listed_by = %names(&negatives),
+                "get_utxo_status: the explorers disagree"
+            );
+        }
+        for (answers, needed) in [
+            (&mut positives, UTXO_POSITIVE_PROVIDERS),
+            (&mut negatives, UTXO_NEGATIVE_PROVIDERS),
+        ] {
+            if answers.len() >= needed {
+                let name = names(answers);
+                let mut result = answers.swap_remove(0);
+                result.name = name;
+                return Ok(result);
+            }
         }
 
-        // Could not look. One explorer's negative is named, never returned.
-        let error = match negatives.first() {
-            Some(negative) => Some(format!(
-                "could not look: {} does not list the output as unspent and no second explorer confirmed it ({})",
-                negative.name,
-                last_error.as_deref().unwrap_or("no other explorer answered")
-            )),
-            None => last_error,
+        // Could not look. A lone answer is named, never returned.
+        let lone = |answers: &[GetUtxoStatusResult], what: &str| -> Option<String> {
+            (!answers.is_empty()).then(|| format!("{} {}", names(answers), what))
+        };
+        let said: Vec<String> = [
+            lone(&positives, "lists the output as unspent"),
+            lone(&negatives, "does not list the output as unspent"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let error = if said.is_empty() {
+            last_error
+        } else {
+            Some(format!(
+                "could not look: {} and no second explorer confirmed it ({})",
+                said.join("; "),
+                last_error
+                    .as_deref()
+                    .unwrap_or("no other explorer answered")
+            ))
         };
         Ok(GetUtxoStatusResult {
             name: "Services".to_string(),
@@ -2150,11 +2199,15 @@ impl WalletServices for Services {
             // question; the chain index answers the rest.
             let pending: Vec<String> = match &answer {
                 None => txids.to_vec(),
-                Some(previous) => previous
-                    .results
+                Some(previous) => txids
                     .iter()
-                    .filter(|d| d.status != "mined")
-                    .map(|d| d.txid.clone())
+                    .filter(|txid| {
+                        !previous
+                            .results
+                            .iter()
+                            .any(|d| &d.txid == *txid && d.status == "mined")
+                    })
+                    .cloned()
                     .collect(),
             };
             if pending.is_empty() {
@@ -2228,7 +2281,39 @@ impl WalletServices for Services {
             }
         }
 
-        if let Some(answer) = answer {
+        if let Some(mut answer) = answer {
+            // An `unknown` no chain index gave (a broadcaster's inbox, or
+            // BananaBlocks' index, which lags the mempool) is a gap, not
+            // "absent": it is left out, and so is a txid no provider
+            // answered (one stopped early); the answer says it could not
+            // look for those.
+            answer
+                .results
+                .retain(|d| d.status != "unknown" || decided.contains(&d.txid));
+            let gaps: Vec<&str> = txids
+                .iter()
+                .filter(|t| !answer.results.iter().any(|d| d.txid == **t))
+                .map(String::as_str)
+                .collect();
+            answer.error = if gaps.is_empty() {
+                None
+            } else {
+                tracing::debug!(txids = ?gaps, error = ?last_error, "get_status_for_txids: no chain index answered");
+                Some(format!(
+                    "could not look: no chain index answered {}",
+                    gaps.join(", ")
+                ))
+            };
+            if answer.results.is_empty() {
+                answer.status = "error".to_string();
+            }
+            // In the order asked.
+            answer.results.sort_by_key(|d| {
+                txids
+                    .iter()
+                    .position(|t| *t == d.txid)
+                    .unwrap_or(usize::MAX)
+            });
             return Ok(answer);
         }
 
@@ -2336,12 +2421,17 @@ impl WalletServices for Services {
         hex::encode(hash)
     }
 
-    /// The stranger's spend (Rule 28, the irreducible case). An outpoint in
-    /// an explorer's unspent set is `UnspentHint`. Otherwise the spend is asked
-    /// for as a proof: `Spent` only when the spending transaction's own
-    /// bytes name the outpoint and its merkle path meets the header
+    /// The stranger's spend (Rule 28, the irreducible case). Two explorers
+    /// each answering "unspent" is `UnspentHint`. Otherwise the spend is
+    /// asked for as a proof: `Spent` only when the spending transaction's
+    /// own bytes name the outpoint and its merkle path meets the header
     /// service's header. Two explorers agreeing "not unspent", or a bound
-    /// spender with no proof held, is `SpentHint`; anything else `Unknown`.
+    /// spender with no proof held (one provider's name is enough: its bytes
+    /// are the evidence), is `SpentHint`; anything else `Unknown`. An empty
+    /// `locking_script` (none stored) is asked as the empty script's hash:
+    /// no explorer lists an output under it, and BananaBlocks' answer for
+    /// an output with another script is a fault, so it is never
+    /// `UnspentHint`.
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
         let hash = self.hash_output_script(locking_script);
         let outpoint = format!("{}.{}", txid, vout);
@@ -2361,10 +2451,16 @@ impl WalletServices for Services {
                 UtxoVerdict::Unknown
             }
         };
-        if unspent_set == UtxoVerdict::UnspentHint {
-            return unspent_set;
+        // A spender bound by its own bytes stands on one provider, even
+        // against two unspent answers: an index can miss a mempool spend
+        // (2026-10-22: WhatsOnChain's `/spent` named a mempool spender of an
+        // outpoint BananaBlocks answered `spent: false` for), and the
+        // spender's bytes are the evidence.
+        let evidence = self.spend_evidence(txid, vout).await;
+        if unspent_set == UtxoVerdict::UnspentHint && evidence != SpendEvidence::None {
+            tracing::warn!(outpoint = %outpoint, evidence = ?evidence, "is_utxo: explorers list the output as unspent, and a spender its bytes bind is named; the spender stands");
         }
-        match self.spend_evidence(txid, vout).await {
+        match evidence {
             SpendEvidence::Proven => UtxoVerdict::Spent,
             SpendEvidence::Bound => UtxoVerdict::SpentHint,
             SpendEvidence::None => unspent_set,
@@ -2971,7 +3067,10 @@ mod tests {
     }
 
     /// A broadcaster asked after a chain index (the round-robin rotation)
-    /// fills gaps and carries proofs, but never overrides the chain index.
+    /// fills gaps and carries proofs, but never overrides the chain index's
+    /// `known`; its `known` against the chain index's `unknown` is a second
+    /// provider contradicting a lone "absent", which never stands alone
+    /// (the owner's rule; review M2 of #43).
     #[test]
     fn test_a_broadcaster_never_overrides_a_chain_index() {
         let mut first = status_result(
@@ -2994,8 +3093,8 @@ mod tests {
         merge_status_results(&mut first, arcade, false, &mut decided);
         assert_eq!(
             statuses(&first),
-            vec![("a", "unknown"), ("b", "known"), ("c", "mined")],
-            "no override, no downgrade, mined with its proof taken"
+            vec![("a", "known"), ("b", "known"), ("c", "mined")],
+            "a lone absent yields, no downgrade, mined with its proof taken"
         );
 
         // With no chain index having decided, the broadcaster's known fills

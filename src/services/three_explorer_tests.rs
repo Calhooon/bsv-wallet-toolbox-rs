@@ -6,7 +6,8 @@
 //! without a request until Retry-After passes. Local fixtures only.
 
 use super::rule_28_tests::{
-    a_spender_of, services_with_three, utxo_services, utxo_status, Says, UTXO_SCRIPT, UTXO_TXID,
+    a_spender_of, bananablocks_txo_body, services_with_three, sorted_names, utxo_services,
+    utxo_status, Says, UTXO_SCRIPT, UTXO_TXID,
 };
 use super::*;
 use crate::services::providers::WhatsOnChainConfig;
@@ -30,7 +31,7 @@ fn utxo_history(services: &Services) -> crate::services::ServiceCallHistory {
         .unwrap()
 }
 
-/// A 429 on the first rung reaches the second within the same call, with
+/// A 429 on the first rung reaches the others within the same call, with
 /// no sleep (WhatsOnChain slept 2 s twice before 0.12.0), and the call
 /// history records the rate limit apart from other faults.
 #[tokio::test]
@@ -41,7 +42,7 @@ async fn a_429_on_the_first_rung_reaches_the_second_without_a_sleep() {
     let elapsed = started.elapsed();
     assert_eq!(
         (result.status.as_str(), result.is_utxo, result.name.as_str()),
-        ("success", Some(true), "BananaBlocks"),
+        ("success", Some(true), "BananaBlocks+Bitails"),
         "{result:?}"
     );
     assert!(
@@ -49,7 +50,7 @@ async fn a_429_on_the_first_rung_reaches_the_second_without_a_sleep() {
         "a 429 is not slept on: {elapsed:?}"
     );
     f.woc.1.expect(1).assert_async().await;
-    f.bitails.1.expect(0).assert_async().await;
+    f.bitails.1.expect(1).assert_async().await;
 
     let woc = calls(&utxo_history(&f.services), "WhatsOnChain");
     assert_eq!(woc.len(), 1);
@@ -374,7 +375,7 @@ async fn bananablocks_unknown_never_replaces_a_chain_indexs_known() {
 }
 
 // =============================================================================
-// spend_evidence: BananaBlocks' spentTxid beside WhatsOnChain's spent route
+// spend_evidence: BananaBlocks' spent_txid beside WhatsOnChain's spent route
 // =============================================================================
 
 /// WhatsOnChain names no spender; BananaBlocks names one whose bytes spend
@@ -410,9 +411,9 @@ async fn bananablocks_names_the_spender_when_whatsonchain_does_not() {
         .create_async()
         .await;
     let names = bb
-        .mock("GET", format!("/txo/{UTXO_TXID}/0/spend").as_str())
+        .mock("GET", format!("/txo/{UTXO_TXID}/0").as_str())
         .with_status(200)
-        .with_body(format!(r#"{{"spent":true,"spentTxid":"{spender}"}}"#))
+        .with_body(bananablocks_txo_body(Some(&spender)))
         .create_async()
         .await;
     let services = services_with_three(
@@ -450,9 +451,9 @@ async fn a_bananablocks_spender_its_bytes_do_not_bear_out_is_dropped() {
         .create_async()
         .await;
     let _names = bb
-        .mock("GET", format!("/txo/{UTXO_TXID}/0/spend").as_str())
+        .mock("GET", format!("/txo/{UTXO_TXID}/0").as_str())
         .with_status(200)
-        .with_body(format!(r#"{{"spent":true,"spentTxid":"{spender}"}}"#))
+        .with_body(bananablocks_txo_body(Some(&spender)))
         .create_async()
         .await;
     let services = services_with_three(
@@ -556,4 +557,484 @@ async fn the_woc_api_key_header_is_sent() {
     );
     assert!(woc.get_raw_tx(&txid).await.unwrap().is_not_found());
     route.assert_async().await;
+}
+
+// =============================================================================
+// The owner's rule, applied (review of #43, answer 9)
+// =============================================================================
+
+/// The big-endian hash the explorers' script routes carry for `script`.
+fn script_hash_be(script: &[u8]) -> String {
+    let mut h = sha256(script);
+    h.reverse();
+    hex::encode(h)
+}
+
+async fn empty_unspent_set(
+    woc: &mut mockito::ServerGuard,
+    bitails: &mut mockito::ServerGuard,
+    script: &[u8],
+) -> (mockito::Mock, mockito::Mock) {
+    let hash = script_hash_be(script);
+    let w = woc
+        .mock("GET", format!("/script/{hash}/unspent/all").as_str())
+        .with_status(200)
+        .with_body(format!(r#"{{"script":"{hash}","result":[]}}"#))
+        .create_async()
+        .await;
+    let t = bitails
+        .mock("GET", format!("/scripthash/{hash}/unspent").as_str())
+        .with_status(200)
+        .with_body(format!(r#"{{"scripthash":"{hash}","unspent":[]}}"#))
+        .create_async()
+        .await;
+    (w, t)
+}
+
+/// The review's live counterexample (2026-10-22) as a fixture: WhatsOnChain's
+/// `/spent` names a mempool spender (`659e6e1d…` of `826718bf…:0` live; the
+/// fixture's spender is built, so its bytes are held) while BananaBlocks
+/// answers `spent: false`. Whatever Bitails says, even a lagging "unspent"
+/// that makes two unspent answers, the verdict is the bound spender,
+/// never unspent.
+#[tokio::test]
+async fn whatsonchain_names_a_spender_bananablocks_says_unspent_the_spender_stands() {
+    let (spender, spender_hex) = a_spender_of(UTXO_TXID, 0);
+    for bitails_says in [Says::Unspent, Says::NotListed, Says::Fault] {
+        let f = utxo_services(Says::NotListed, Says::Unspent, bitails_says).await;
+        let (mut woc, _not_listed) = f.woc;
+        let ct = mockito::Server::new_async().await;
+        let _spent = woc
+            .mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
+            .with_status(200)
+            .with_body(format!(r#"{{"txid":"{spender}","vin":0}}"#))
+            .create_async()
+            .await;
+        let _raw = woc
+            .mock("GET", format!("/tx/{spender}/hex").as_str())
+            .with_status(200)
+            .with_body(&spender_hex)
+            .create_async()
+            .await;
+        let services = services_with_three(
+            ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+            &woc.url(),
+            &f.bananablocks.0.url(),
+            &f.bitails.0.url(),
+        );
+        assert_eq!(
+            services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await,
+            UtxoVerdict::SpentHint,
+            "Bitails {bitails_says:?}"
+        );
+    }
+}
+
+/// `is_utxo` with no stored script (`un_fail` passes `&[]`): BananaBlocks'
+/// `spent: false` is for an output whose script is not the empty one, so
+/// it is a fault, never `UnspentHint`; with the others down it is
+/// "could not look", and with their empty sets "not listed".
+#[tokio::test]
+async fn the_empty_script_never_comes_back_unspent() {
+    // The others could not look: before the fix, BananaBlocks alone was
+    // `UnspentHint`.
+    let f = utxo_services(Says::Fault, Says::Unspent, Says::RateLimited).await;
+    assert_eq!(
+        f.services.is_utxo(UTXO_TXID, 0, &[]).await,
+        UtxoVerdict::Unknown
+    );
+    let bb = calls(&utxo_history(&f.services), "BananaBlocks");
+    assert!(
+        bb.iter().all(|c| c
+            .error
+            .as_ref()
+            .is_some_and(|e| e.message.contains("not the asked"))),
+        "the mismatch is a fault: {bb:?}"
+    );
+
+    // The others answer for the empty script's hash: nothing listed.
+    let f = utxo_services(Says::Fault, Says::Unspent, Says::Fault).await;
+    let (mut woc, _) = f.woc;
+    let (mut bitails, _) = f.bitails;
+    let _sets = empty_unspent_set(&mut woc, &mut bitails, &[]).await;
+    let services = services_with_three(
+        ServicesOptions::mainnet(),
+        &woc.url(),
+        &f.bananablocks.0.url(),
+        &bitails.url(),
+    );
+    let verdict = services.is_utxo(UTXO_TXID, 0, &[]).await;
+    assert!(!verdict.is_unspent_hint(), "{verdict:?}");
+}
+
+/// The status ladder with both chain indexes faulting and BananaBlocks'
+/// 404: BananaBlocks' `unknown` is a gap (its index lags the mempool), not
+/// "absent": the txid is left out and the answer says it could not look
+/// (it was a clean `unknown` before the fix: review H2).
+#[tokio::test]
+async fn the_status_ladder_with_both_chain_indexes_down_and_a_bananablocks_404_could_not_look() {
+    let txid = "ab".repeat(32);
+    let mut woc = mockito::Server::new_async().await;
+    let mut bb = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let _w = woc
+        .mock("POST", "/txs/status")
+        .with_status(429)
+        .create_async()
+        .await;
+    let _t = bitails
+        .mock("GET", format!("/tx/{txid}").as_str())
+        .with_status(500)
+        .create_async()
+        .await;
+    let _b = bb
+        .mock("GET", format!("/tx/{txid}").as_str())
+        .with_status(404)
+        .create_async()
+        .await;
+    let services = services_with_three(
+        ServicesOptions::mainnet(),
+        &woc.url(),
+        &bb.url(),
+        &bitails.url(),
+    );
+    let result = services
+        .get_status_for_txids(std::slice::from_ref(&txid), false)
+        .await
+        .unwrap();
+    assert!(result.results.is_empty(), "{result:?}");
+    assert_eq!(result.status, "error", "{result:?}");
+    assert!(
+        result.error.as_deref().is_some_and(|e| e
+            .contains("could not look: no chain index answered")
+            && e.contains(&txid)),
+        "{result:?}"
+    );
+}
+
+/// BananaBlocks' `known` against WhatsOnChain's `unknown` (Bitails down):
+/// one provider's "absent" never stands against a second that holds the
+/// transaction (review M2).
+#[tokio::test]
+async fn bananablocks_known_beats_a_lone_whatsonchain_unknown() {
+    let txid = "ab".repeat(32);
+    let mut woc = mockito::Server::new_async().await;
+    let mut bb = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let _w = woc
+        .mock("POST", "/txs/status")
+        .with_status(200)
+        .with_body(format!(r#"[{{"txid":"{txid}","error":"unknown"}}]"#))
+        .create_async()
+        .await;
+    let _t = bitails
+        .mock("GET", format!("/tx/{txid}").as_str())
+        .with_status(500)
+        .create_async()
+        .await;
+    let _b = bb
+        .mock("GET", format!("/tx/{txid}").as_str())
+        .with_status(200)
+        .with_body(format!(
+            r#"{{"txid":"{txid}","block_hash":"","block_height":0}}"#
+        ))
+        .create_async()
+        .await;
+    let services = services_with_three(
+        ServicesOptions::mainnet(),
+        &woc.url(),
+        &bb.url(),
+        &bitails.url(),
+    );
+    let result = services
+        .get_status_for_txids(std::slice::from_ref(&txid), false)
+        .await
+        .unwrap();
+    assert_eq!(result.results.len(), 1, "{result:?}");
+    assert_eq!(result.results[0].status, "known", "{result:?}");
+    assert_eq!(result.error, None, "{result:?}");
+}
+
+/// BananaBlocks' token bucket runs dry mid-ladder: its rung is a rate-limit
+/// fault without a request, recorded `RATE_LIMITED`, and the ladder takes
+/// its answer from the two others, at once.
+#[tokio::test]
+async fn an_empty_bucket_skips_bananablocks_mid_ladder() {
+    let f = utxo_services(Says::NotListed, Says::Unspent, Says::NotListed).await;
+    let gate = f.services.bananablocks.as_ref().unwrap().rate_gate();
+    for start in 0..3 {
+        while gate.admit().is_ok() {}
+        {
+            let mut collection = lock_write(&f.services.get_utxo_status_services).unwrap();
+            while collection.current_name() != Some("WhatsOnChain") {
+                collection.next();
+            }
+            for _ in 0..start {
+                collection.next();
+            }
+        }
+        let started = Instant::now();
+        let result = utxo_status(&f.services).await;
+        assert_eq!(
+            (
+                result.status.as_str(),
+                result.is_utxo,
+                sorted_names(&result)
+            ),
+            ("success", Some(false), "Bitails+WoC".to_string()),
+            "start {start}: {result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(1000));
+    }
+    f.bananablocks.1.expect(0).assert_async().await;
+    let bb = calls(&utxo_history(&f.services), "BananaBlocks");
+    assert!(!bb.is_empty());
+    assert!(bb
+        .iter()
+        .all(|c| c.error.as_ref().is_some_and(|e| e.code == "RATE_LIMITED")));
+}
+
+/// A broadcast while the rung is closed by an earlier Retry-After (a GET's
+/// 429): a service error at once, and no request is made.
+#[tokio::test]
+async fn a_broadcast_inside_an_earlier_retry_after_makes_no_request() {
+    let (_, hex) = a_spender_of(UTXO_TXID, 0);
+    let txid = "ab".repeat(32);
+    let mut server = mockito::Server::new_async().await;
+    let _get = server
+        .mock("GET", format!("/tx/{txid}/hex").as_str())
+        .with_status(429)
+        .with_header("retry-after", "30")
+        .create_async()
+        .await;
+    let post = server
+        .mock("POST", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let woc = WhatsOnChain::with_base_url(Chain::Main, &server.url());
+    assert!(matches!(
+        woc.get_raw_tx(&txid).await,
+        Err(Error::RateLimited { .. })
+    ));
+    let result = woc.post_raw_tx(&hex).await.unwrap();
+    assert!(result.service_error, "{result:?}");
+    assert!(!result.double_spend);
+
+    let bitails = Bitails::with_base_url(Chain::Main, &server.url());
+    let _bitails_get = server
+        .mock("GET", format!("/tx/{txid}").as_str())
+        .with_status(429)
+        .with_header("retry-after", "30")
+        .create_async()
+        .await;
+    let _ = bitails
+        .get_status_for_txids(std::slice::from_ref(&txid))
+        .await;
+    let result = bitails.broadcast(&hex::decode(&hex).unwrap()).await;
+    assert!(
+        matches!(result, Err(Error::RateLimited { .. })),
+        "{result:?}"
+    );
+    post.assert_async().await;
+}
+
+/// A WhatsOnChain fault on `/spent` (a 500 or a 429, not a 404) leads
+/// `spend_evidence` to BananaBlocks, whose named spender is bound by its
+/// bytes.
+#[tokio::test]
+async fn a_whatsonchain_spent_fault_leads_spend_evidence_to_bananablocks() {
+    let (spender, spender_hex) = a_spender_of(UTXO_TXID, 0);
+    for (status, retry_after) in [(500, None), (429, Some("30"))] {
+        let mut woc = mockito::Server::new_async().await;
+        let mut bb = mockito::Server::new_async().await;
+        let bitails = mockito::Server::new_async().await;
+        let ct = mockito::Server::new_async().await;
+        let mut spent = woc
+            .mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
+            .with_status(status);
+        if let Some(secs) = retry_after {
+            spent = spent.with_header("retry-after", secs);
+        }
+        let _spent = spent.create_async().await;
+        let _raw = bb
+            .mock("GET", format!("/tx/{spender}/hex").as_str())
+            .with_status(200)
+            .with_body(&spender_hex)
+            .create_async()
+            .await;
+        let names = bb
+            .mock("GET", format!("/txo/{UTXO_TXID}/0").as_str())
+            .with_status(200)
+            .with_body(bananablocks_txo_body(Some(&spender)))
+            .expect_at_least(1)
+            .create_async()
+            .await;
+        let services = services_with_three(
+            ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+            &woc.url(),
+            &bb.url(),
+            &bitails.url(),
+        );
+        assert_eq!(
+            services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await,
+            UtxoVerdict::SpentHint,
+            "WhatsOnChain {status}"
+        );
+        assert!(names.matched_async().await);
+    }
+}
+
+/// WhatsOnChain's status meets a 429 on its second chunk of 20: the first
+/// chunk's answers are kept with the error set, the rest left out (review
+/// L2); the ladder asks the next rung about the txids left out.
+#[tokio::test]
+async fn a_whatsonchain_status_429_on_a_later_chunk_keeps_the_earlier_answers() {
+    let txids: Vec<String> = (0..25u8)
+        .map(|i| format!("{:02x}", i + 1).repeat(32))
+        .collect();
+    let mined: Vec<String> = txids[..20]
+        .iter()
+        .map(|t| format!(r#"{{"txid":"{t}","confirmations":3}}"#))
+        .collect();
+    let mut woc = mockito::Server::new_async().await;
+    let _first = woc
+        .mock("POST", "/txs/status")
+        .match_body(mockito::Matcher::Regex(txids[0].clone()))
+        .with_status(200)
+        .with_body(format!("[{}]", mined.join(",")))
+        .create_async()
+        .await;
+    let _second = woc
+        .mock("POST", "/txs/status")
+        .match_body(mockito::Matcher::Regex(txids[20].clone()))
+        .with_status(429)
+        .with_header("retry-after", "30")
+        .create_async()
+        .await;
+    let provider = WhatsOnChain::with_base_url(Chain::Main, &woc.url());
+    let partial = provider.get_status_for_txids(&txids).await.unwrap();
+    assert_eq!(partial.results.len(), 20, "{partial:?}");
+    assert!(partial.results.iter().all(|d| d.status == "mined"));
+    assert!(
+        partial
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("stopped early") && e.contains("Rate limited")),
+        "{partial:?}"
+    );
+
+    // Through the ladder: Bitails is asked about the five left out only.
+    let mut woc = mockito::Server::new_async().await;
+    let _first = woc
+        .mock("POST", "/txs/status")
+        .match_body(mockito::Matcher::Regex(txids[0].clone()))
+        .with_status(200)
+        .with_body(format!("[{}]", mined.join(",")))
+        .create_async()
+        .await;
+    let _second = woc
+        .mock("POST", "/txs/status")
+        .match_body(mockito::Matcher::Regex(txids[20].clone()))
+        .with_status(429)
+        .create_async()
+        .await;
+    let mut bitails = mockito::Server::new_async().await;
+    let bb = mockito::Server::new_async().await;
+    let mut asked = Vec::new();
+    for t in &txids[20..] {
+        asked.push(
+            bitails
+                .mock("GET", format!("/tx/{t}").as_str())
+                .with_status(200)
+                .with_body(format!(r#"{{"txid":"{t}"}}"#))
+                .expect(1)
+                .create_async()
+                .await,
+        );
+    }
+    let never = bitails
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(format!("/tx/({})", txids[..20].join("|"))),
+        )
+        .expect(0)
+        .create_async()
+        .await;
+    let services = services_with_three(
+        ServicesOptions::mainnet(),
+        &woc.url(),
+        &bb.url(),
+        &bitails.url(),
+    );
+    let result = services.get_status_for_txids(&txids, false).await.unwrap();
+    let statuses: Vec<(&str, &str)> = result
+        .results
+        .iter()
+        .map(|d| (d.txid.as_str(), d.status.as_str()))
+        .collect();
+    let expected: Vec<(&str, &str)> = txids
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.as_str(), if i < 20 { "mined" } else { "known" }))
+        .collect();
+    assert_eq!(statuses, expected);
+    assert_eq!(result.error, None, "{result:?}");
+    for m in asked {
+        m.assert_async().await;
+    }
+    never.assert_async().await;
+}
+
+/// A Bitails 429 is a rate-limit fault at once (review L1): the utxo
+/// ladder's retry round does not ask it again, though it re-asks the
+/// rungs that faulted otherwise.
+#[tokio::test]
+async fn a_bitails_429_is_not_asked_again_in_the_retry_round() {
+    let f = utxo_services(Says::Fault, Says::Fault, Says::RateLimited).await;
+    let result = utxo_status(&f.services).await;
+    assert_eq!((result.status.as_str(), result.is_utxo), ("error", None));
+    f.woc.1.expect(2).assert_async().await;
+    f.bananablocks.1.expect(2).assert_async().await;
+    f.bitails.1.expect(1).assert_async().await;
+    let bitails = calls(&utxo_history(&f.services), "Bitails");
+    assert_eq!(bitails.len(), 1);
+    assert_eq!(bitails[0].error.as_ref().unwrap().code, "RATE_LIMITED");
+}
+
+/// Two `Services` in one process (the daemon builds two per tenant) share
+/// one gate per explorer host: one budget, and a 429 one met closes the
+/// rung for the other without a request (review M3).
+#[tokio::test]
+async fn two_services_share_one_gate_per_host() {
+    // Never reached: the gate stops the call before a request.
+    let base = "http://127.0.0.1:9/two-services-share-one-gate";
+    let options = || ServicesOptions::mainnet().with_bananablocks_base(base);
+    let a = Services::with_options(Chain::Main, options()).unwrap();
+    let b = Services::with_options(Chain::Main, options()).unwrap();
+    let (a_bb, b_bb) = (
+        a.bananablocks.as_ref().unwrap(),
+        b.bananablocks.as_ref().unwrap(),
+    );
+    assert!(StdArc::ptr_eq(a_bb.rate_gate(), b_bb.rate_gate()));
+    assert!(StdArc::ptr_eq(
+        a.whatsonchain.rate_gate(),
+        b.whatsonchain.rate_gate()
+    ));
+    let keyed =
+        Services::with_options(Chain::Main, options().with_woc_api_key("another-key")).unwrap();
+    assert!(
+        !StdArc::ptr_eq(a.whatsonchain.rate_gate(), keyed.whatsonchain.rate_gate()),
+        "a key is its own budget"
+    );
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::RETRY_AFTER, "120".parse().unwrap());
+    let _ = a_bb.rate_gate().close(&headers);
+    let started = Instant::now();
+    assert!(matches!(
+        b_bb.get_spend(UTXO_TXID, 0).await,
+        Err(Error::RateLimited { .. })
+    ));
+    assert!(started.elapsed() < Duration::from_millis(500));
 }

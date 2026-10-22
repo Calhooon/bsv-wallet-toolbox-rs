@@ -14,7 +14,10 @@
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+
+use crate::services::providers::pace::RateGate;
 
 #[cfg(feature = "break-glass-script-history")]
 use crate::services::traits::{
@@ -27,7 +30,7 @@ use crate::services::traits::{
 };
 use crate::services::Chain;
 use crate::{Error, Result};
-use bsv_rs::primitives::sha256d;
+use bsv_rs::primitives::{sha256, sha256d};
 
 /// Bitails mainnet API URL.
 pub const BITAILS_MAINNET_URL: &str = "https://api.bitails.io/";
@@ -73,6 +76,9 @@ impl BitailsConfig {
 /// a guard on the negative, not a limit on anything.
 pub const BITAILS_UNSPENT_PAGE: usize = 100;
 
+/// How long a 429 without a Retry-After closes the Bitails rung.
+const BITAILS_DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(1);
+
 /// Bitails service provider.
 pub struct Bitails {
     client: Client,
@@ -80,6 +86,11 @@ pub struct Bitails {
     #[allow(dead_code)]
     chain: Chain,
     api_key: Option<String>,
+    /// A 429 is [`Error::RateLimited`] at once and closes the rung until its
+    /// Retry-After passes, so no ladder sleeps on it (the utxo ladder's
+    /// retry round skips a rate-limited rung). The process's gate for this
+    /// base and key ([`RateGate::shared`]).
+    gate: Arc<RateGate>,
 }
 
 impl Bitails {
@@ -96,20 +107,35 @@ impl Bitails {
             .build()
             .map_err(|e| Error::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
 
+        let gate_key = match config.api_key.as_deref().filter(|k| !k.is_empty()) {
+            Some(key) => format!(
+                "Bitails {base_url} key:{}",
+                hex::encode(&sha256(key.as_bytes())[..8])
+            ),
+            None => format!("Bitails {base_url}"),
+        };
         Ok(Self {
             client,
             base_url,
             chain,
             api_key: config.api_key,
+            gate: RateGate::shared(&gate_key, Self::gate),
         })
+    }
+
+    fn gate() -> RateGate {
+        RateGate::new("Bitails", BITAILS_DEFAULT_RETRY_AFTER)
     }
 
     /// The provider at another API base: a local fixture standing in for
     /// the explorer, so a test can count the requests that reach it.
     #[cfg(test)]
     pub(crate) fn with_base_url(chain: Chain, base_url: &str) -> Self {
+        // A gate of its own: fixture servers are recycled, so a gate keyed
+        // by their URL would carry one test's 429 into the next.
         let mut bitails = Self::new(chain, BitailsConfig::default()).expect("client");
         bitails.base_url = format!("{}/", base_url.trim_end_matches('/'));
+        bitails.gate = Arc::new(Self::gate());
         bitails
     }
 
@@ -147,6 +173,8 @@ impl Bitails {
     pub async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
         let url = format!("{}tx/{}/hex", self.base_url, txid);
 
+        self.gate.admit()?;
+
         let response = self
             .client
             .get(&url)
@@ -154,6 +182,8 @@ impl Bitails {
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+        self.gate.check(response.status(), response.headers())?;
 
         match response.status() {
             StatusCode::OK => {
@@ -206,6 +236,8 @@ impl Bitails {
     pub async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
         let url = format!("{}tx/{}/proof/tsc", self.base_url, txid);
 
+        self.gate.admit()?;
+
         let response = self
             .client
             .get(&url)
@@ -213,6 +245,8 @@ impl Bitails {
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+        self.gate.check(response.status(), response.headers())?;
 
         match response.status() {
             StatusCode::OK => {
@@ -261,6 +295,8 @@ impl Bitails {
 
         let body = serde_json::json!({ "raws": raws });
 
+        self.gate.admit()?;
+
         let response = self
             .client
             .post(&url)
@@ -270,6 +306,8 @@ impl Bitails {
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+        self.gate.check(response.status(), response.headers())?;
 
         match response.status() {
             StatusCode::OK | StatusCode::CREATED => {
@@ -498,6 +536,8 @@ impl Bitails {
     pub async fn get_block_header_by_hash(&self, hash: &str) -> Result<Option<BlockHeader>> {
         let url = format!("{}block/{}", self.base_url, hash);
 
+        self.gate.admit()?;
+
         let response = self
             .client
             .get(&url)
@@ -505,6 +545,8 @@ impl Bitails {
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+        self.gate.check(response.status(), response.headers())?;
 
         match response.status() {
             StatusCode::OK => {
@@ -579,6 +621,8 @@ impl Bitails {
 
         let url = format!("{}scripthash/{}/unspent", self.base_url, script_hash);
 
+        self.gate.admit()?;
+
         let response = self
             .client
             .get(&url)
@@ -586,6 +630,8 @@ impl Bitails {
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+        self.gate.check(response.status(), response.headers())?;
 
         if response.status() != StatusCode::OK {
             return Ok(could_not_look(format!("HTTP {}", response.status())));
@@ -655,6 +701,8 @@ impl Bitails {
 
         let url = format!("{}address/scripthash/{}/history", self.base_url, hash_be);
 
+        self.gate.admit()?;
+
         let response = self
             .client
             .get(&url)
@@ -662,6 +710,8 @@ impl Bitails {
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+        self.gate.check(response.status(), response.headers())?;
 
         match response.status() {
             StatusCode::OK => {
@@ -758,6 +808,8 @@ impl Bitails {
     async fn get_tx_info(&self, txid: &str) -> Result<Option<BitailsTxInfo>> {
         let url = format!("{}tx/{}", self.base_url, txid);
 
+        self.gate.admit()?;
+
         let response = self
             .client
             .get(&url)
@@ -765,6 +817,8 @@ impl Bitails {
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+
+        self.gate.check(response.status(), response.headers())?;
 
         match response.status() {
             StatusCode::OK => {
