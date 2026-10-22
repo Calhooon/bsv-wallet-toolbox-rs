@@ -55,6 +55,8 @@ mod reorg_tests;
 mod sibling_bump_tests;
 mod storage_sqlx;
 mod sync;
+#[cfg(test)]
+mod void_lineage_tests;
 
 pub use crate::storage::broadcast::{
     classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome,

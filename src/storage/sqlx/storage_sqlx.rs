@@ -3413,6 +3413,23 @@ pub enum RetireOutcome {
     Retired { restored: u32, kept: u32 },
 }
 
+/// What a `StorageSqlx::retire_undeliverable_tx` call stands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetireBasis<'a> {
+    /// No chain evidence in hand: a host's or a broadcaster's verdict that
+    /// the transaction never reached the network. A status source holding
+    /// it (known/mined) outranks the verdict: promoted, nothing retired.
+    Undelivered,
+    /// A named competitor's bytes spend one of our inputs and its merkle
+    /// path met our header (`competitor_is_proven`): the proof is the word,
+    /// and no status source's `known` outranks it (bsv-wallet-toolbox-rs
+    /// #42 point 1).
+    CompetitorProven {
+        /// The competitor's txid.
+        competitor: &'a str,
+    },
+}
+
 impl StorageSqlx {
     /// THE RELEASE RULE (2026-08-29) — the ONE path that may give a
     /// broadcast-failed transaction's inputs back to coin selection.
@@ -3432,7 +3449,10 @@ impl StorageSqlx {
     /// Rule: an input is released ONLY when
     /// 1. the tx is NOT alive per the status service
     ///    (`reconcile_tx_status_via_services`: known/mined ⇒
-    ///    [`RetireOutcome::Alive`], promoted, nothing touched), AND
+    ///    [`RetireOutcome::Alive`], promoted, nothing touched), asked only
+    ///    for [`RetireBasis::Undelivered`]: on
+    ///    [`RetireBasis::CompetitorProven`] the competitor's checked proof
+    ///    is the chain's word and no `known` outranks it, AND
     /// 2. that input is hinted unspent by `services.is_utxo`: an error or
     ///    `false` keeps it locked (`spent_by` intact, `spendable = 0`). An
     ///    unknown must never release money; a locked coin is recoverable by
@@ -3440,6 +3460,7 @@ impl StorageSqlx {
     ///
     /// The tx's own outputs (change) are marked unspendable and the tx
     /// `failed` so its phantom change never funds — and orphans — a new tx.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn retire_undeliverable_tx(
         &self,
         services: &dyn WalletServices,
@@ -3447,13 +3468,25 @@ impl StorageSqlx {
         proven_tx_req_id: i64,
         attempts: i64,
         req_status: &str,
+        basis: RetireBasis<'_>,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<RetireOutcome> {
-        if self
-            .promote_if_alive(services, txid, proven_tx_req_id, now)
-            .await?
-        {
-            return Ok(RetireOutcome::Alive);
+        match basis {
+            RetireBasis::Undelivered => {
+                if self
+                    .promote_if_alive(services, txid, proven_tx_req_id, now)
+                    .await?
+                {
+                    return Ok(RetireOutcome::Alive);
+                }
+            }
+            RetireBasis::CompetitorProven { competitor } => {
+                tracing::info!(
+                    txid = %txid,
+                    competitor = %competitor,
+                    "retire on a competitor's checked proof: no status source is asked (a known never outranks the proof)"
+                );
+            }
         }
 
         sqlx::query("UPDATE proven_tx_reqs SET status = ?, attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
@@ -3616,6 +3649,7 @@ impl StorageSqlx {
             proven_tx_req_id,
             attempts.saturating_add(1),
             req_status,
+            RetireBasis::Undelivered,
             chrono::Utc::now(),
         )
         .await
@@ -4021,6 +4055,9 @@ impl StorageSqlx {
                         proven_tx_req_id,
                         attempts,
                         "doubleSpend",
+                        RetireBasis::CompetitorProven {
+                            competitor: &competitor,
+                        },
                         chrono::Utc::now(),
                     )
                     .await?;
