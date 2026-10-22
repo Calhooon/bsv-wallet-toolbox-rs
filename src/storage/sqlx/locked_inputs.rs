@@ -1,9 +1,11 @@
 //! Locked inputs of failed transactions, re-checked with backoff (migration
 //! `003_locked_input_checks`).
 //!
-//! THE RELEASE RULE keeps an input locked when the chain cannot vouch for it
-//! at retire time (`is_utxo` unknown, rate-limited, or false). That is the
-//! safe direction, but it must not be the final word: on 2026-09-02 (beta,
+//! THE RELEASE RULE keeps every input of a retired transaction locked at
+//! retire time: no explorer's unspent set releases one there
+//! (bsv-wallet-toolbox-rs #42 point 5), and an input a proven competitor
+//! spent is scheduled `spent-proven`, terminal. That is the safe direction,
+//! but it must not be the final word: on 2026-09-02 (beta,
 //! w0) 224,575 sats sat on the output a phantom root had spent, kept locked
 //! by one inconclusive lookup, and nothing ever retried.
 //!

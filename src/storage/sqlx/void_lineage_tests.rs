@@ -21,7 +21,7 @@ use super::reorg_tests::{
     child_spending, insert_proven, mark_checked, open_gate, seed_user, single_leaf_bump, storage,
     txid_of, COINBASE_HEX, COINBASE_TXID,
 };
-use super::StorageSqlx;
+use super::{RetireOutcome, StorageSqlx};
 use crate::error::Error;
 use crate::monitor::tasks::ArcadeEventsTask;
 use crate::services::mock::{MockResponse, MockWalletServices, MockWalletServicesBuilder};
@@ -742,4 +742,96 @@ async fn send_waiting_posts_nothing_over_a_failed_parent() {
         .unwrap();
     assert!(!posted(&mock), "nothing posted over a failed parent");
     assert_eq!(words(&s, &d).await, ("sending".into(), "unsent".into()));
+}
+
+async fn check_verdict(s: &StorageSqlx, output_id: i64) -> Option<String> {
+    sqlx::query_scalar("SELECT last_verdict FROM locked_input_checks WHERE output_id = ?")
+        .bind(output_id)
+        .fetch_optional(s.pool())
+        .await
+        .unwrap()
+        .flatten()
+}
+
+/// #42 point 5, the host's retire by txid: P never reached the network, no
+/// status source holds it, and an explorer lists C (which a mined
+/// competitor spent) as unspent. C stays locked to P, scheduled for the
+/// re-check, never released at retire on the explorer's word. At 0.11.0
+/// `is_utxo`'s unspent hint gave C back to coin selection.
+#[tokio::test]
+async fn the_hosts_retire_releases_nothing_on_an_explorers_unspent_word() {
+    let s = storage().await;
+    let l = seed(&s, None).await;
+    let mock = set(
+        &s,
+        MockWalletServicesBuilder::default()
+            .get_status_for_txids_response(status_source(&l.p, "unknown"))
+            .is_utxo_response(MockResponse::Success(true)),
+    );
+    let outcome = s
+        .retire_undeliverable_txid(mock.as_ref(), &l.p, "invalid")
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        Some(RetireOutcome::Retired {
+            restored: 0,
+            kept: 1
+        })
+    );
+    assert_eq!(words(&s, &l.p).await, ("failed".into(), "invalid".into()));
+    assert_eq!(
+        output(&s, l.c).await,
+        (false, Some(l.p_id)),
+        "C stays locked"
+    );
+    assert_eq!(check_verdict(&s, l.c).await.as_deref(), Some("unknown"));
+    assert!(
+        !mock.call_history().iter().any(|c| c.method == "is_utxo"),
+        "no explorer asked at retire"
+    );
+}
+
+/// #42 point 5, the competitor's proof: R's checked proof spends C, and an
+/// explorer still lists C as unspent. C stays locked and is lost to R
+/// (`spent-proven`, terminal: the re-check never asks about it again). At
+/// 0.11.0 the explorer's hint released C.
+#[tokio::test]
+async fn a_coin_a_proven_competitor_spent_is_lost_whatever_an_explorer_says() {
+    let s = storage().await;
+    let l = seed(&s, Some("unproven")).await;
+    let r = competitor_spending(COINBASE_TXID);
+    let r_txid = txid_of(&r);
+    set(&s, MockWalletServicesBuilder::default());
+    apply_rejected_naming(&s, &l.p, &r_txid).await;
+    let mut tracker = MockChainTracker::new(1000);
+    tracker.add_root(900, r_txid.clone());
+    s.set_chain_tracker(Arc::new(tracker)).await;
+    open_gate(&s, 1000).await;
+    set(
+        &s,
+        serving(&r, Some(single_leaf_bump(900, &r_txid)))
+            .get_status_for_txids_response(status_source(&l.p, "unknown"))
+            .is_utxo_response(MockResponse::Success(true)),
+    );
+    s.synchronize_transaction_statuses().await.unwrap();
+    assert_eq!(
+        words(&s, &l.p).await,
+        ("failed".into(), "doubleSpend".into())
+    );
+    assert_eq!(
+        output(&s, l.c).await,
+        (false, Some(l.p_id)),
+        "C stays locked"
+    );
+    assert_eq!(
+        check_verdict(&s, l.c).await.as_deref(),
+        Some("spent-proven"),
+        "C lost to R"
+    );
+    assert_eq!(
+        s.locked_inputs_pending().await.unwrap(),
+        0,
+        "nothing left to re-check"
+    );
 }
