@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.12.0] - 2026-10-22
+
+BananaBlocks as the third explorer in the services' ladders, and a fault moves to the next rung (bsv-wallet-cli#50). The owner's word of 2026-10-22: each chain scanner has its own rate limits, so when one fails we go to the next; every chain question that leaves our services asks WhatsOnChain, BananaBlocks and Bitails as each other's fallbacks; a negative ("unspent", "absent") needs a second provider's clean answer; "could not look" is never read as "nothing there". Bitails is pruned and retired its per-output spend data, so before this an unspent verdict rested on WhatsOnChain alone. A minor, 0.12.0: a new provider, new `ServicesOptions` methods and field, and a new `Error` variant (`Error` is `#[non_exhaustive]`).
+
+### Added
+
+- `services::providers::BananaBlocks` (GorillaPool's explorer; mainnet `https://bananablocks.com/api/v1`, testnet `https://test.bananablocks.com/api/v1`, no key), live-probed 2026-10-22 (the endpoints and shapes are in the PR): `get_raw_tx` (`/tx/{txid}/hex`, the bytes must hash to the txid), `get_spend` (`/txo/{txid}/{vout}/spend`: 200 `{"spent":false}` a clean unspent, 200 `{"spent":true,"spentTxid":<64 hex>}` the spender; a 404, 429, 5xx, malformed body, or a spender that is not 64 hex is a fault, the overlay's `parse_bananablocks_spent` rule), `get_merkle_path` (`/tx/{txid}` then `/tx/{txid}/proof`, a TSC proof whose target is the merkle root; its nodes must fold to that root, and it is handed on with the block hash so the ladder checks it against the header service like every courier's; the probe's proof for block 972169 folds to the root two Chaintracks deployments hold; a 404 at `/tx` is "not indexed", inconclusive, never "not mined"), `get_status_for_txids` (`/tx/{txid}` each).
+- `services::providers::RateGate` (`pace.rs`): a 429 is `Error::RateLimited { provider, retry_after_secs }` returned at once, never slept on, and the rung is skipped without a request until its Retry-After passes (seconds or an HTTP date, held to 600 s). BananaBlocks also paces itself at 60 requests in any minute (a token bucket: 30 at once, 30 over the minute).
+- `Error::RateLimited { provider, retry_after_secs }`; the ladders record it in the call history with code `RATE_LIMITED`, apart from `ERROR`.
+- `ServicesOptions::bananablocks_base` (`None` = the chain's default, empty = off), `with_bananablocks_base(url)`, `without_bananablocks()`, `bananablocks_base_for(chain)`. On by default for main and test. `Services::bananablocks` holds the provider.
+- `NOTE_INCONCLUSIVE` gains `getMerklePathNotIndexed` (BananaBlocks' 404 at `/tx/{txid}`): a reorg re-prove never demotes a proof on it.
+
+### Changed
+
+- The ladders: `get_raw_tx` WhatsOnChain -> BananaBlocks -> Bitails; `get_merkle_path` (Arcade ->) WhatsOnChain -> BananaBlocks -> Bitails; `get_utxo_status` WhatsOnChain, BananaBlocks, Bitails with the rotating start over the three, a positive from any one, a negative from two of the three (`UTXO_NEGATIVE_PROVIDERS` stays 2); `get_status_for_txids` (Arcade ->) WhatsOnChain -> Bitails -> BananaBlocks, BananaBlocks not a chain index (its index lags the mempool: its `unknown` is a gap, its `known` a word).
+- BananaBlocks answers an outpoint only: for a `get_utxo_status` question without an outpoint it is not applicable, neither asked nor counted as a negative or a fault.
+- A fault on one rung moves the question to the next within the same call, before any retry round; `get_utxo_status`'s retry round does not re-ask a rate-limited rung.
+- `spend_evidence` (behind `is_utxo`) asks WhatsOnChain's `/tx/{txid}/{vout}/spent` and then BananaBlocks' `spentTxid`, each the other's fallback, each name bound by the spender's own bytes as before.
+- WhatsOnChain no longer sleeps on a 429: a GET slept 2 s and retried twice, a broadcast slept 2 s up to five times; now the 429 is `Error::RateLimited` at once (a broadcast's `PostTxResultForTxid` with `service_error: true`, note `postRawTxRateLimited`), and the rung is skipped until Retry-After passes (1 s when none is sent). No test pinned the sleeping retry.
+- WhatsOnChain sends a configured API key as `woc-api-key` as well as `Authorization: Bearer` (the header the WhatsOnChain docs and the overlay's production reads use).
+- `cargo clippy --all-features --all-targets -D warnings` is clean on clippy 1.98 (`storage/client`: two needless borrows, `sign_request`'s eight arguments allowed, an unused test helper removed, a `vec!` that is an array).
+
 ## [0.11.2] - 2026-10-22
 
 - The publish of 0.11.1's content: the `v0.11.1` tag fired no Release run (the push event after a rate-limited hour created no workflow run, and the tag cannot be moved or deleted under the repository's rules), so this patch carries the same tree and publishes it; no code change (RELEASING.md step 8: tag the next patch).

@@ -21,8 +21,9 @@ use crate::services::Chain;
 use crate::services::{
     collection::{ServiceCall, ServiceCollection},
     providers::{
-        Arc, Arcade, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
-        ChaintracksServiceClient, FallbackChainTracker, WhatsOnChain, WhatsOnChainConfig,
+        Arc, Arcade, BananaBlocks, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
+        ChaintracksConfig, ChaintracksServiceClient, FallbackChainTracker, WhatsOnChain,
+        WhatsOnChainConfig,
     },
     traits::{
         BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
@@ -42,8 +43,19 @@ const EXPLORER_HEADER_SOURCES: usize = 2;
 
 /// How many explorers must each answer "not in the unspent set" before
 /// `get_utxo_status` returns that negative (Rule 28: a negative needs a
-/// second provider).
+/// second provider). With three explorers (WhatsOnChain, BananaBlocks,
+/// Bitails) a negative is two of the three.
 pub const UTXO_NEGATIVE_PROVIDERS: usize = 2;
+
+/// The code a ladder's call history records for a provider's error: a rate
+/// limit (a 429, or the rung closed by an earlier one's Retry-After) apart
+/// from every other fault.
+fn call_error_code(e: &Error) -> &'static str {
+    match e {
+        Error::RateLimited { .. } => "RATE_LIMITED",
+        _ => "ERROR",
+    }
+}
 
 /// Post BEEF mode for handling multiple broadcast services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -112,6 +124,10 @@ pub struct Services {
 
     /// Bitails provider.
     pub bitails: StdArc<Bitails>,
+
+    /// BananaBlocks provider: the third explorer of the read ladders, `None`
+    /// when [`ServicesOptions::without_bananablocks`] turned it off.
+    pub bananablocks: Option<StdArc<BananaBlocks>>,
 
     /// Block Header Service provider (optional).
     pub bhs: Option<StdArc<BlockHeaderService>>,
@@ -217,6 +233,14 @@ trait UtxoStatusService {
         format: Option<GetUtxoStatusOutputFormat>,
         outpoint: Option<&str>,
     ) -> Result<GetUtxoStatusResult>;
+
+    /// Whether this provider answers only an outpoint (BananaBlocks: a
+    /// spend status by outpoint, no script's unspent set). For a question
+    /// without an outpoint such a provider is not applicable: not asked,
+    /// and never counted, as a negative or as a fault.
+    fn needs_outpoint(&self) -> bool {
+        false
+    }
 }
 
 #[async_trait]
@@ -273,6 +297,51 @@ impl MerklePathService for Arcade {
 impl RawTxService for WhatsOnChain {
     async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
         self.get_raw_tx(txid).await
+    }
+}
+
+#[async_trait]
+impl MerklePathService for BananaBlocks {
+    async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
+        self.get_merkle_path(txid).await
+    }
+}
+
+#[async_trait]
+impl RawTxService for BananaBlocks {
+    async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
+        self.get_raw_tx(txid).await
+    }
+}
+
+#[async_trait]
+impl UtxoStatusService for BananaBlocks {
+    async fn get_utxo_status(
+        &self,
+        _output: &str,
+        _format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> Result<GetUtxoStatusResult> {
+        self.get_utxo_status(outpoint).await
+    }
+
+    fn needs_outpoint(&self) -> bool {
+        true
+    }
+}
+
+#[async_trait]
+impl StatusForTxidsService for BananaBlocks {
+    async fn get_status_for_txids(&self, txids: &[String]) -> Result<GetStatusForTxidsResult> {
+        self.get_status_for_txids(txids).await
+    }
+
+    /// BananaBlocks' index lags the mempool (on the 2026-10-22 probe a
+    /// transaction WhatsOnChain held in its mempool was a 404 here), so its
+    /// `unknown` is a gap and its `known` a word, as a broadcaster's; its
+    /// `mined` stands as every provider's does.
+    fn is_chain_index(&self) -> bool {
+        false
     }
 }
 
@@ -469,17 +538,22 @@ impl Services {
             timeout_secs: None,
         };
         let bitails = StdArc::new(Bitails::new(chain, bitails_config)?);
-        Self::with_explorers(chain, options, whatsonchain, bitails)
+        let bananablocks = match options.bananablocks_base_for(chain) {
+            Some(base) => Some(StdArc::new(BananaBlocks::with_base(&base, None)?)),
+            None => None,
+        };
+        Self::with_explorers(chain, options, whatsonchain, bitails, bananablocks)
     }
 
-    /// `with_options` over the two explorer providers given: every
-    /// collection and the break-glass tracker are built from these two, so
-    /// a test can stand local fixtures in their place.
+    /// `with_options` over the explorer providers given: every collection
+    /// and the break-glass tracker are built from these, so a test can
+    /// stand local fixtures in their place.
     fn with_explorers(
         chain: Chain,
         options: ServicesOptions,
         whatsonchain: StdArc<WhatsOnChain>,
         bitails: StdArc<Bitails>,
+        bananablocks: Option<StdArc<BananaBlocks>>,
     ) -> Result<Self> {
         // Arcade V2 mode (explicit flag — never inferred from the URL): the
         // configured arc_url IS the Arcade endpoint. Build the Arcade
@@ -559,7 +633,8 @@ impl Services {
 
         // Build service collections
 
-        // getMerklePath: Arcade (when configured) → WoC → Bitails
+        // getMerklePath: Arcade (when configured) → WoC → BananaBlocks →
+        // Bitails
         //
         // Rule 28 (T6, T7): the two explorers are break-glass couriers of
         // a proof nobody pushed to us; the proof is believed for its root
@@ -581,16 +656,22 @@ impl Services {
             "WhatsOnChain",
             StdArc::clone(&whatsonchain) as MerklePathProvider,
         );
+        if let Some(ref bb) = bananablocks {
+            merkle_path_services.add("BananaBlocks", StdArc::clone(bb) as MerklePathProvider);
+        }
         merkle_path_services.add("Bitails", StdArc::clone(&bitails) as MerklePathProvider);
 
-        // getRawTx: WoC, Bitails. Rule 28 (T8, T9): break-glass couriers of
-        // a foreign ancestor's bytes no store of ours holds; the bytes are
-        // bound to the txid.
+        // getRawTx: WoC, BananaBlocks, Bitails (pruned, last). Rule 28 (T8,
+        // T9): break-glass couriers of a foreign ancestor's bytes no store of
+        // ours holds; the bytes are bound to the txid.
         let mut raw_tx_services = ServiceCollection::new("getRawTx");
         raw_tx_services.add(
             "WhatsOnChain",
             StdArc::clone(&whatsonchain) as RawTxProvider,
         );
+        if let Some(ref bb) = bananablocks {
+            raw_tx_services.add("BananaBlocks", StdArc::clone(bb) as RawTxProvider);
+        }
         raw_tx_services.add("Bitails", StdArc::clone(&bitails) as RawTxProvider);
 
         // postBeef: TAAL → GorillaPool → Bitails → WoC
@@ -632,18 +713,23 @@ impl Services {
             StdArc::clone(&whatsonchain) as PostBeefProvider,
         );
 
-        // getUtxoStatus: WoC, Bitails. Rule 28 (T10), the irreducible case:
-        // headers and proofs prove inclusion, never that an output is
-        // unspent, so the explorers are asked, each the other's fallback
-        // (a rotating start, a negative only from both).
+        // getUtxoStatus: WoC, BananaBlocks, Bitails. Rule 28 (T10), the
+        // irreducible case: headers and proofs prove inclusion, never that
+        // an output is unspent, so the explorers are asked, each the others'
+        // fallback (a rotating start, a negative only from two).
         let mut utxo_status_services = ServiceCollection::new("getUtxoStatus");
         utxo_status_services.add(
             "WhatsOnChain",
             StdArc::clone(&whatsonchain) as UtxoStatusProvider,
         );
+        if let Some(ref bb) = bananablocks {
+            utxo_status_services.add("BananaBlocks", StdArc::clone(bb) as UtxoStatusProvider);
+        }
         utxo_status_services.add("Bitails", StdArc::clone(&bitails) as UtxoStatusProvider);
 
-        // getStatusForTxids: Arcade (when configured) → WoC → Bitails
+        // getStatusForTxids: Arcade (when configured) → WoC → Bitails →
+        // BananaBlocks (one request per txid against a 60-a-minute budget,
+        // so last: asked only about what no earlier provider placed mined)
         //
         // Rule 28 (T11, T12): "mined" is a proof; "known to the mempool"
         // and "unknown" have no header or proof answer, so the two
@@ -665,6 +751,10 @@ impl Services {
             StdArc::clone(&whatsonchain) as StatusForTxidsProvider,
         );
         status_for_txids_services.add("Bitails", StdArc::clone(&bitails) as StatusForTxidsProvider);
+        if let Some(ref bb) = bananablocks {
+            status_for_txids_services
+                .add("BananaBlocks", StdArc::clone(bb) as StatusForTxidsProvider);
+        }
 
         // getScriptHashHistory: WoC, Bitails. Rule 28 (T13, T14): every
         // transaction that touched a script is a chain scan; no header,
@@ -695,6 +785,7 @@ impl Services {
             arc_gorillapool,
             arcade,
             bitails,
+            bananablocks,
             bhs,
             chaintracks,
             get_merkle_path_services: RwLock::new(merkle_path_services),
@@ -1037,6 +1128,10 @@ impl Services {
     /// headers).
     ///
     /// 1. A provider names the spender: a word, and the provider a courier.
+    ///    WhatsOnChain (`/tx/{txid}/{vout}/spent`) and BananaBlocks
+    ///    (`/txo/{txid}/{vout}/spend`) are each the other's fallback: a
+    ///    fault, no name, or a name its bytes do not bear out moves to the
+    ///    next.
     /// 2. The named transaction's bytes (bound to its txid by `get_raw_tx`)
     ///    must have an input that is this outpoint: a fact about the bytes.
     /// 3. `get_merkle_path` returns a path only after its root met the
@@ -1048,22 +1143,61 @@ impl Services {
         if self.chaintracks.is_none() {
             return SpendEvidence::None;
         }
-        let spender = match self.whatsonchain.get_spender(txid, vout).await {
-            Ok(Some(spender)) => spender,
-            Ok(None) => return SpendEvidence::None,
-            Err(e) => {
-                tracing::debug!(txid = %txid, vout, error = %e, "spend evidence: could not ask for a spender");
-                return SpendEvidence::None;
+        let mut named: HashSet<String> = HashSet::new();
+        let woc = self.whatsonchain.get_spender(txid, vout).await;
+        if let Some(spender) = self.named_spender("WhatsOnChain", txid, vout, woc, &mut named) {
+            if let Some(found) = self.bind_spender(txid, vout, &spender).await {
+                return found;
             }
-        };
-        let raw_tx = match self.get_raw_tx(&spender, false).await {
+        }
+        if let Some(bb) = &self.bananablocks {
+            let answer = bb.get_spend(txid, vout).await.map(|spend| match spend {
+                crate::services::providers::OutpointSpend::SpentBy(spender) => Some(spender),
+                crate::services::providers::OutpointSpend::Unspent => None,
+            });
+            if let Some(spender) =
+                self.named_spender("BananaBlocks", txid, vout, answer, &mut named)
+            {
+                if let Some(found) = self.bind_spender(txid, vout, &spender).await {
+                    return found;
+                }
+            }
+        }
+        SpendEvidence::None
+    }
+
+    /// A provider's answer to "who spent this outpoint" as a name to bind,
+    /// once per name (a second source naming the same spender adds no
+    /// evidence and costs no second fetch).
+    fn named_spender(
+        &self,
+        provider: &str,
+        txid: &str,
+        vout: u32,
+        answer: Result<Option<String>>,
+        named: &mut HashSet<String>,
+    ) -> Option<String> {
+        match answer {
+            Ok(Some(spender)) if named.insert(spender.clone()) => Some(spender),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::debug!(txid = %txid, vout, provider, error = %e, "spend evidence: could not ask for a spender");
+                None
+            }
+        }
+    }
+
+    /// Steps 2 and 3 for one named spender: `None` when its bytes are not
+    /// held or do not name the outpoint (the name is dropped).
+    async fn bind_spender(&self, txid: &str, vout: u32, spender: &str) -> Option<SpendEvidence> {
+        let raw_tx = match self.get_raw_tx(spender, false).await {
             Ok(GetRawTxResult {
                 raw_tx: Some(raw_tx),
                 ..
             }) => raw_tx,
             _ => {
                 tracing::debug!(txid = %txid, vout, spender = %spender, "spend evidence: the named spender's bytes are not held");
-                return SpendEvidence::None;
+                return None;
             }
         };
         let names_the_outpoint = bsv_rs::transaction::Transaction::from_binary(&raw_tx)
@@ -1083,12 +1217,12 @@ impl Services {
                 spender = %spender,
                 "spend evidence: the named spender's bytes do not spend the outpoint; the name is dropped"
             );
-            return SpendEvidence::None;
+            return None;
         }
-        match self.get_merkle_path(&spender, false).await {
+        Some(match self.get_merkle_path(spender, false).await {
             Ok(found) if found.merkle_path.is_some() => SpendEvidence::Proven,
             _ => SpendEvidence::Bound,
-        }
+        })
     }
 }
 
@@ -1308,7 +1442,7 @@ impl WalletServices for Services {
                     }
                 }
                 Err(e) => {
-                    call.mark_error(&e.to_string(), "ERROR");
+                    call.mark_error(&e.to_string(), call_error_code(&e));
                     lock_write(&self.get_raw_tx_services)?.add_call_error(&provider_name, call);
                     faults.push(format!("{}: {}", provider_name, e));
                 }
@@ -1609,7 +1743,7 @@ impl WalletServices for Services {
                     }
                 }
                 Err(e) => {
-                    call.mark_error(&e.to_string(), "ERROR");
+                    call.mark_error(&e.to_string(), call_error_code(&e));
                     lock_write(&self.get_merkle_path_services)?
                         .add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
@@ -1754,7 +1888,7 @@ impl WalletServices for Services {
                             }
                         }
                         Err(e) => {
-                            call.mark_error(&e.to_string(), "ERROR");
+                            call.mark_error(&e.to_string(), call_error_code(&e));
                             lock_write(&self.post_beef_services)?
                                 .add_call_error(&provider_name, call);
                         }
@@ -1805,7 +1939,7 @@ impl WalletServices for Services {
                             results.push(r);
                         }
                         Err(e) => {
-                            call.mark_error(&e.to_string(), "ERROR");
+                            call.mark_error(&e.to_string(), call_error_code(&e));
                             lock_write(&self.post_beef_services)?
                                 .add_call_error(provider_name, call);
                         }
@@ -1819,17 +1953,26 @@ impl WalletServices for Services {
 
     /// Break-glass (Rule 28, T10): is an output unspent. Headers and proofs
     /// prove inclusion, never that an output is unspent, and our own
-    /// outputs table knows only the spends we made, so the explorers are
-    /// asked. The shape:
+    /// outputs table knows only the spends we made, so the explorers
+    /// (WhatsOnChain, BananaBlocks, Bitails) are asked, each the others'
+    /// fallback (the owner's word of 2026-10-22, bsv-wallet-cli#50). The
+    /// shape:
     ///
     /// * the start rotates, one explorer on from the last call's;
-    /// * a positive (the outpoint is in an explorer's unspent set) is
-    ///   returned from the first explorer that gives it;
+    /// * a positive (the outpoint is in an explorer's unspent set, or
+    ///   BananaBlocks says `spent: false`) is returned from the first
+    ///   explorer that gives it;
     /// * a negative is returned only when [`UTXO_NEGATIVE_PROVIDERS`]
-    ///   explorers both give it;
-    /// * anything else (a fault, an outage, one negative the other could
-    ///   not confirm) is `status: "error"` with `is_utxo: None`: "could
-    ///   not look", never "nothing there".
+    ///   explorers give it (two of the three);
+    /// * a fault (a 429, a timeout, a 5xx, a malformed body, a rung closed
+    ///   by an earlier 429's Retry-After) is "could not look" and moves the
+    ///   question to the next rung within the same call, before any retry
+    ///   round; a rate-limited rung costs no request and no wait;
+    /// * BananaBlocks answers an outpoint only: for a question without one
+    ///   it is not applicable, neither asked nor counted;
+    /// * anything else (an outage, one negative no second explorer
+    ///   confirmed) is `status: "error"` with `is_utxo: None`: "could not
+    ///   look", never "nothing there".
     async fn get_utxo_status(
         &self,
         output: &str,
@@ -1849,6 +1992,12 @@ impl WalletServices for Services {
             services.next();
             from_current
         };
+        // A provider that answers only an outpoint is not applicable to a
+        // script's question: not asked, never counted.
+        let all_services: Vec<(String, String, UtxoStatusProvider)> = all_services
+            .into_iter()
+            .filter(|(_, _, service)| outpoint.is_some() || !service.needs_outpoint())
+            .collect();
 
         if all_services.is_empty() {
             return Err(Error::NoServicesAvailable);
@@ -1880,7 +2029,7 @@ impl WalletServices for Services {
                                 outpoint = ?outpoint,
                                 unspent_by = %provider_name,
                                 not_listed_by = %negative.name,
-                                "get_utxo_status: the explorers disagree; the positive stands (a negative needs both)"
+                                "get_utxo_status: the explorers disagree; the positive stands (a negative needs two)"
                             );
                         }
                         return Ok(result);
@@ -1906,11 +2055,15 @@ impl WalletServices for Services {
                         unanswered.push(entry);
                     }
                     Err(e) => {
-                        call.mark_error(&e.to_string(), "ERROR");
+                        call.mark_error(&e.to_string(), call_error_code(&e));
                         lock_write(&self.get_utxo_status_services)?
                             .add_call_error(provider_name, call);
                         last_error = Some(format!("{}: {}", provider_name, e));
-                        unanswered.push(entry);
+                        // A rate-limited rung stays closed for its
+                        // Retry-After: the retry round does not ask it.
+                        if !matches!(e, Error::RateLimited { .. }) {
+                            unanswered.push(entry);
+                        }
                     }
                 }
             }
@@ -2067,7 +2220,7 @@ impl WalletServices for Services {
                     last_error = result.error.clone();
                 }
                 Err(e) => {
-                    call.mark_error(&e.to_string(), "ERROR");
+                    call.mark_error(&e.to_string(), call_error_code(&e));
                     lock_write(&self.get_status_for_txids_services)?
                         .add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
@@ -2125,7 +2278,7 @@ impl WalletServices for Services {
                     last_error = result.error.clone();
                 }
                 Err(e) => {
-                    call.mark_error(&e.to_string(), "ERROR");
+                    call.mark_error(&e.to_string(), call_error_code(&e));
                     lock_write(&self.get_script_hash_history_services)?
                         .add_call_error(&provider_name, call);
                     last_error = Some(e.to_string());
@@ -2473,6 +2626,10 @@ impl WalletServices for Services {
 mod rule_28_tests;
 
 #[cfg(test)]
+#[path = "three_explorer_tests.rs"]
+mod three_explorer_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::providers::ArcadeConfig;
@@ -2621,12 +2778,12 @@ mod tests {
 
         assert_eq!(
             provider_order(&services.get_merkle_path_services),
-            vec!["ArcadeV2", "WhatsOnChain", "Bitails"],
+            vec!["ArcadeV2", "WhatsOnChain", "BananaBlocks", "Bitails"],
             "a wallet on Arcade must not touch WoC for a proof Arcade has"
         );
         assert_eq!(
             provider_order(&services.get_status_for_txids_services),
-            vec!["ArcadeV2", "WhatsOnChain", "Bitails"],
+            vec!["ArcadeV2", "WhatsOnChain", "Bitails", "BananaBlocks"],
         );
     }
 
@@ -2637,11 +2794,70 @@ mod tests {
         assert!(services.arcade.is_none());
         assert_eq!(
             provider_order(&services.get_merkle_path_services),
-            vec!["WhatsOnChain", "Bitails"],
+            vec!["WhatsOnChain", "BananaBlocks", "Bitails"],
         );
         assert_eq!(
             provider_order(&services.get_status_for_txids_services),
-            vec!["WhatsOnChain", "Bitails"],
+            vec!["WhatsOnChain", "Bitails", "BananaBlocks"],
+        );
+    }
+
+    /// The three explorers in every read ladder, BananaBlocks on by default
+    /// on both chains (test.bananablocks.com serves testnet), off with an
+    /// empty base, and at the base given.
+    #[test]
+    fn bananablocks_is_the_third_explorer_and_can_be_turned_off() {
+        for chain in [Chain::Main, Chain::Test] {
+            let services = Services::new(chain).unwrap();
+            assert_eq!(
+                provider_order(&services.get_raw_tx_services),
+                vec!["WhatsOnChain", "BananaBlocks", "Bitails"],
+                "{chain:?}"
+            );
+            assert_eq!(
+                provider_order(&services.get_utxo_status_services),
+                vec!["WhatsOnChain", "BananaBlocks", "Bitails"],
+                "{chain:?}"
+            );
+        }
+        assert_eq!(
+            Services::testnet()
+                .unwrap()
+                .bananablocks
+                .as_ref()
+                .map(|bb| bb.base_url().to_string()),
+            Some(crate::services::providers::BANANABLOCKS_TESTNET_URL.to_string())
+        );
+
+        let off = Services::with_options(
+            Chain::Main,
+            ServicesOptions::mainnet().without_bananablocks(),
+        )
+        .unwrap();
+        assert!(off.bananablocks.is_none());
+        for order in [
+            provider_order(&off.get_raw_tx_services),
+            provider_order(&off.get_utxo_status_services),
+            provider_order(&off.get_merkle_path_services),
+            provider_order(&off.get_status_for_txids_services),
+        ] {
+            assert!(!order.iter().any(|p| p == "BananaBlocks"), "{order:?}");
+        }
+        let empty = Services::with_options(
+            Chain::Main,
+            ServicesOptions::mainnet().with_bananablocks_base("  "),
+        )
+        .unwrap();
+        assert!(empty.bananablocks.is_none(), "an empty base is off");
+
+        let mirror = Services::with_options(
+            Chain::Main,
+            ServicesOptions::mainnet().with_bananablocks_base("https://mirror.example/api/v1/"),
+        )
+        .unwrap();
+        assert_eq!(
+            mirror.bananablocks.as_ref().unwrap().base_url(),
+            "https://mirror.example/api/v1"
         );
     }
 

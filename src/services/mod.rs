@@ -7,6 +7,7 @@
 //!   merkle path and batch status provider, so a wallet reads its own proofs
 //!   from its own broadcaster instead of a third-party indexer
 //! - Bitails - Alternative merkle proof provider
+//! - BananaBlocks - GorillaPool's explorer, the third rung of the read ladders
 //!
 //! # Architecture
 //!
@@ -85,9 +86,10 @@ pub use collection::{
 pub use providers::{
     arcade_status_rank, beef_to_ef_batch, beef_to_ef_batch_skipping, is_fatal_status,
     missing_parent_hint, Arc, ArcConfig, Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent,
-    ArcadeTxInfo, BhsConfig, Bitails, BitailsConfig, BlockHeaderService, ChaintracksConfig,
-    ChaintracksServiceClient, EfBatch, EfBatchEntry, FallbackChainTracker, SseEvent,
-    SseFrameParser, WhatsOnChain, WhatsOnChainConfig, ARCADE_STATUS_CONCURRENCY, ARCADE_V2_MAINNET,
+    ArcadeTxInfo, BananaBlocks, BhsConfig, Bitails, BitailsConfig, BlockHeaderService,
+    ChaintracksConfig, ChaintracksServiceClient, EfBatch, EfBatchEntry, FallbackChainTracker,
+    SseEvent, SseFrameParser, WhatsOnChain, WhatsOnChainConfig, ARCADE_STATUS_CONCURRENCY,
+    ARCADE_V2_MAINNET,
 };
 pub use services::Services;
 
@@ -99,6 +101,15 @@ pub struct ServicesOptions {
 
     /// Bitails API key (optional)
     pub bitails_api_key: Option<String>,
+
+    /// BananaBlocks API base: `None` is the chain's default
+    /// (`https://bananablocks.com/api/v1` on main,
+    /// `https://test.bananablocks.com/api/v1` on test), an empty string
+    /// leaves BananaBlocks out of every ladder. No key exists for it.
+    ///
+    /// Set via [`ServicesOptions::with_bananablocks_base`]; turn it off with
+    /// [`ServicesOptions::without_bananablocks`].
+    pub bananablocks_base: Option<String>,
 
     /// ARC URL for TAAL
     pub arc_url: String,
@@ -166,6 +177,7 @@ impl Default for ServicesOptions {
         Self {
             whatsonchain_api_key: None,
             bitails_api_key: None,
+            bananablocks_base: None,
             arc_url: "https://arc.taal.com".to_string(),
             arc_config: None,
             arc_gorillapool_url: Some("https://arc.gorillapool.io".to_string()),
@@ -209,6 +221,34 @@ impl ServicesOptions {
     pub fn with_bitails_api_key(mut self, key: impl Into<String>) -> Self {
         self.bitails_api_key = Some(key.into());
         self
+    }
+
+    /// Point BananaBlocks at another API base (a mirror, a fixture). An
+    /// empty base leaves it out of every ladder.
+    pub fn with_bananablocks_base(mut self, url: impl Into<String>) -> Self {
+        self.bananablocks_base = Some(url.into());
+        self
+    }
+
+    /// Leave BananaBlocks out of every ladder (the same as an empty base).
+    pub fn without_bananablocks(mut self) -> Self {
+        self.bananablocks_base = Some(String::new());
+        self
+    }
+
+    /// The BananaBlocks API base for `chain`, `None` when it is turned off.
+    pub fn bananablocks_base_for(&self, chain: Chain) -> Option<String> {
+        match self.bananablocks_base.as_deref() {
+            Some(base) if base.trim().is_empty() => None,
+            Some(base) => Some(base.trim().to_string()),
+            None => Some(
+                match chain {
+                    Chain::Main => providers::BANANABLOCKS_MAINNET_URL,
+                    Chain::Test => providers::BANANABLOCKS_TESTNET_URL,
+                }
+                .to_string(),
+            ),
+        }
     }
 
     /// Set ARC URL and config.

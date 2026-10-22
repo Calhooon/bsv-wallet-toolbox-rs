@@ -6,14 +6,34 @@
 use super::*;
 use crate::services::traits::{BlockHeader, WalletServices};
 
-/// `Services` with both explorers pointed at local fixtures, in every
-/// collection and in the break-glass tracker.
+/// `Services` with WhatsOnChain and Bitails pointed at local fixtures, in
+/// every collection and in the break-glass tracker, and BananaBlocks off.
 fn services_with_explorers(options: ServicesOptions, woc_url: &str, bitails_url: &str) -> Services {
     Services::with_explorers(
         Chain::Main,
         options,
         StdArc::new(WhatsOnChain::with_base_url(Chain::Main, woc_url)),
         StdArc::new(Bitails::with_base_url(Chain::Main, bitails_url)),
+        None,
+    )
+    .unwrap()
+}
+
+/// `Services` with all three explorers pointed at local fixtures.
+pub(super) fn services_with_three(
+    options: ServicesOptions,
+    woc_url: &str,
+    bananablocks_url: &str,
+    bitails_url: &str,
+) -> Services {
+    Services::with_explorers(
+        Chain::Main,
+        options,
+        StdArc::new(WhatsOnChain::with_base_url(Chain::Main, woc_url)),
+        StdArc::new(Bitails::with_base_url(Chain::Main, bitails_url)),
+        Some(StdArc::new(
+            BananaBlocks::with_base(bananablocks_url, None).unwrap(),
+        )),
     )
     .unwrap()
 }
@@ -222,12 +242,18 @@ async fn the_bitails_status_read_asks_no_explorer_for_the_tip() {
 // =============================================================================
 //
 // Headers and proofs prove inclusion, never that an output is unspent, so
-// the unspent set of a script is asked of the explorers. The shape: each is
-// the other's fallback, the start rotates, a negative needs both, and
-// "could not look" is never "spent".
+// the unspent set of a script is asked of the explorers. The shape (the
+// owner's word of 2026-10-22, bsv-wallet-cli#50): WhatsOnChain, BananaBlocks
+// and Bitails are each the others' fallback, the start rotates, a negative
+// needs two of the three, a fault moves to the next rung, and "could not
+// look" is never "spent".
 
-const UTXO_TXID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const UTXO_SCRIPT: &[u8] = &[0x76, 0xa9, 0x14, 0x01, 0x02, 0x88, 0xac];
+pub(super) const UTXO_TXID: &str =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+pub(super) const UTXO_SCRIPT: &[u8] = &[0x76, 0xa9, 0x14, 0x01, 0x02, 0x88, 0xac];
+/// The transaction BananaBlocks names as the spender when it says spent.
+pub(super) const BB_SPENDER: &str =
+    "2222222222222222222222222222222222222222222222222222222222222222";
 
 /// The script hash of `UTXO_SCRIPT` as the explorers' routes carry it.
 fn utxo_script_hash_be() -> String {
@@ -236,15 +262,26 @@ fn utxo_script_hash_be() -> String {
     hex::encode(hash)
 }
 
-/// What an explorer fixture says about the script's unspent set.
-#[derive(Clone, Copy)]
-enum Says {
-    /// The outpoint `UTXO_TXID:0` is in the unspent set.
+/// What an explorer fixture says about the outpoint `UTXO_TXID:0`.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Says {
+    /// Unspent: in the script's unspent set (WhatsOnChain, Bitails), or
+    /// `{"spent": false}` (BananaBlocks).
     Unspent,
-    /// The unspent set is empty.
+    /// Not unspent: the unspent set is empty, or BananaBlocks names a
+    /// spender.
     NotListed,
     /// HTTP 500.
     Fault,
+    /// HTTP 429 with `Retry-After: 30`.
+    RateLimited,
+}
+
+fn fault_or_limit(mock: mockito::Mock, says: Says) -> mockito::Mock {
+    match says {
+        Says::RateLimited => mock.with_status(429).with_header("retry-after", "30"),
+        _ => mock.with_status(500),
+    }
 }
 
 async fn woc_unspent(server: &mut mockito::ServerGuard, says: Says) -> mockito::Mock {
@@ -260,7 +297,7 @@ async fn woc_unspent(server: &mut mockito::ServerGuard, says: Says) -> mockito::
             r#"{{"script":"{}","result":[]}}"#,
             utxo_script_hash_be()
         )),
-        Says::Fault => mock.with_status(500),
+        Says::Fault | Says::RateLimited => fault_or_limit(mock, says),
     };
     mock.create_async().await
 }
@@ -278,106 +315,269 @@ async fn bitails_unspent(server: &mut mockito::ServerGuard, says: Says) -> mocki
             r#"{{"scripthash":"{}","unspent":[]}}"#,
             utxo_script_hash_be()
         )),
-        Says::Fault => mock.with_status(500),
+        Says::Fault | Says::RateLimited => fault_or_limit(mock, says),
     };
     mock.create_async().await
 }
 
-/// `Services` over two explorer fixtures that answer as given.
-async fn utxo_services(
-    woc_says: Says,
-    bitails_says: Says,
-) -> (
-    Services,
-    (mockito::ServerGuard, mockito::Mock),
-    (mockito::ServerGuard, mockito::Mock),
-) {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
-    let w = woc_unspent(&mut woc, woc_says).await;
-    let b = bitails_unspent(&mut bitails, bitails_says).await;
-    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
-    (services, (woc, w), (bitails, b))
+pub(super) async fn bananablocks_spend(
+    server: &mut mockito::ServerGuard,
+    says: Says,
+) -> mockito::Mock {
+    let path = format!("/txo/{}/0/spend", UTXO_TXID);
+    let mock = server.mock("GET", path.as_str());
+    let mock = match says {
+        Says::Unspent => mock.with_status(200).with_body(format!(
+            r#"{{"spent":false,"txid":"{}","vout":0}}"#,
+            UTXO_TXID
+        )),
+        Says::NotListed => mock.with_status(200).with_body(format!(
+            r#"{{"spendScope":"confirmed","spent":true,"spentTxid":"{}","txid":"{}","vout":0}}"#,
+            BB_SPENDER, UTXO_TXID
+        )),
+        Says::Fault | Says::RateLimited => fault_or_limit(mock, says),
+    };
+    mock.create_async().await
 }
 
-async fn utxo_status(services: &Services) -> GetUtxoStatusResult {
+/// The three explorer fixtures of a T10 scene, each with its route's mock.
+pub(super) struct ThreeExplorers {
+    pub services: Services,
+    pub woc: (mockito::ServerGuard, mockito::Mock),
+    pub bananablocks: (mockito::ServerGuard, mockito::Mock),
+    pub bitails: (mockito::ServerGuard, mockito::Mock),
+}
+
+/// `Services` over three explorer fixtures that answer as given, in the
+/// ladder's order: WhatsOnChain, BananaBlocks, Bitails.
+pub(super) async fn utxo_services(
+    woc_says: Says,
+    bb_says: Says,
+    bitails_says: Says,
+) -> ThreeExplorers {
+    let mut woc = mockito::Server::new_async().await;
+    let mut bb = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let w = woc_unspent(&mut woc, woc_says).await;
+    let b = bananablocks_spend(&mut bb, bb_says).await;
+    let t = bitails_unspent(&mut bitails, bitails_says).await;
+    let services = services_with_three(
+        ServicesOptions::mainnet(),
+        &woc.url(),
+        &bb.url(),
+        &bitails.url(),
+    );
+    ThreeExplorers {
+        services,
+        woc: (woc, w),
+        bananablocks: (bb, b),
+        bitails: (bitails, t),
+    }
+}
+
+pub(super) async fn utxo_status(services: &Services) -> GetUtxoStatusResult {
+    utxo_status_next(services, false).await
+}
+
+pub(super) async fn utxo_status_next(services: &Services, use_next: bool) -> GetUtxoStatusResult {
     let hash = services.hash_output_script(UTXO_SCRIPT);
     let outpoint = format!("{}.0", UTXO_TXID);
     services
-        .get_utxo_status(&hash, None, Some(&outpoint), false)
+        .get_utxo_status(&hash, None, Some(&outpoint), use_next)
         .await
         .unwrap()
 }
 
 /// T10: one explorer's "not in the unspent list" is not "spent" while the
-/// other could not look.
+/// other two could not look.
 #[tokio::test]
-async fn one_explorers_negative_is_not_spent_while_the_other_could_not_look() {
-    let (services, _woc, _bitails) = utxo_services(Says::NotListed, Says::Fault).await;
-    let result = utxo_status(&services).await;
-    assert_ne!(
-        result.is_utxo,
-        Some(false),
-        "a negative needs the second provider: {result:?}"
-    );
-    assert_eq!(result.status, "error", "could not look: {result:?}");
+async fn one_negative_and_two_faults_is_could_not_look() {
+    for (woc, bb, bitails) in [
+        (Says::NotListed, Says::Fault, Says::Fault),
+        (Says::Fault, Says::NotListed, Says::RateLimited),
+        (Says::RateLimited, Says::RateLimited, Says::NotListed),
+    ] {
+        let f = utxo_services(woc, bb, bitails).await;
+        let result = utxo_status(&f.services).await;
+        assert_ne!(
+            result.is_utxo,
+            Some(false),
+            "WoC {woc:?}, BananaBlocks {bb:?}, Bitails {bitails:?}: a negative needs a second provider: {result:?}"
+        );
+        assert_eq!(result.status, "error", "could not look: {result:?}");
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("no second explorer confirmed it")),
+            "the lone negative is named: {result:?}"
+        );
+    }
 }
 
-/// T10: the second explorer is asked after a negative, and its positive
-/// stands.
+/// T10: a positive from any one of the three stands, whatever the others
+/// said before it.
 #[tokio::test]
-async fn the_second_explorers_positive_stands_after_a_negative() {
-    let (services, _woc, _bitails) = utxo_services(Says::NotListed, Says::Unspent).await;
-    let result = utxo_status(&services).await;
-    assert_eq!(result.status, "success", "{result:?}");
-    assert_eq!(result.is_utxo, Some(true), "{result:?}");
+async fn a_positive_from_any_one_explorer_stands() {
+    for (woc, bb, bitails) in [
+        (Says::Unspent, Says::Fault, Says::Fault),
+        (Says::NotListed, Says::Unspent, Says::Fault),
+        (Says::Fault, Says::RateLimited, Says::Unspent),
+        (Says::RateLimited, Says::NotListed, Says::Unspent),
+    ] {
+        let f = utxo_services(woc, bb, bitails).await;
+        let result = utxo_status(&f.services).await;
+        assert_eq!(
+            (result.status.as_str(), result.is_utxo),
+            ("success", Some(true)),
+            "WoC {woc:?}, BananaBlocks {bb:?}, Bitails {bitails:?}: {result:?}"
+        );
+    }
 }
 
-/// T10: two explorers that both leave the outpoint out of the unspent set
-/// are the negative.
+/// T10: two explorers that leave the outpoint out of the unspent set are
+/// the negative, whichever two of the three they are; the result names
+/// both.
 #[tokio::test]
-async fn two_explorers_negatives_are_spent() {
-    let (services, _woc, _bitails) = utxo_services(Says::NotListed, Says::NotListed).await;
-    let result = utxo_status(&services).await;
-    assert_eq!(result.status, "success", "{result:?}");
-    assert_eq!(result.is_utxo, Some(false), "{result:?}");
+async fn a_negative_needs_two_of_the_three() {
+    for (woc, bb, bitails, names) in [
+        (
+            Says::NotListed,
+            Says::NotListed,
+            Says::Fault,
+            "WoC+BananaBlocks",
+        ),
+        (Says::NotListed, Says::Fault, Says::NotListed, "WoC+Bitails"),
+        (
+            Says::RateLimited,
+            Says::NotListed,
+            Says::NotListed,
+            "BananaBlocks+Bitails",
+        ),
+    ] {
+        let f = utxo_services(woc, bb, bitails).await;
+        let result = utxo_status(&f.services).await;
+        assert_eq!(
+            (result.status.as_str(), result.is_utxo),
+            ("success", Some(false)),
+            "WoC {woc:?}, BananaBlocks {bb:?}, Bitails {bitails:?}: {result:?}"
+        );
+        assert_eq!(result.name, names, "{result:?}");
+    }
 }
 
-/// T10: the start rotates. With both explorers listing the outpoint, each
-/// call ends at its first answer, and two calls reach one explorer each.
+/// T10: the start rotates over the three. With every explorer listing the
+/// outpoint, each call ends at its first answer, and three calls reach one
+/// explorer each.
 #[tokio::test]
-async fn the_utxo_read_rotates_its_starting_explorer() {
-    let (services, (_woc, w), (_bitails, b)) = utxo_services(Says::Unspent, Says::Unspent).await;
-    assert_eq!(utxo_status(&services).await.is_utxo, Some(true));
-    assert_eq!(utxo_status(&services).await.is_utxo, Some(true));
-    w.expect(1).assert_async().await;
-    b.expect(1).assert_async().await;
+async fn the_utxo_read_rotates_its_starting_explorer_over_three() {
+    let f = utxo_services(Says::Unspent, Says::Unspent, Says::Unspent).await;
+    for _ in 0..3 {
+        assert_eq!(utxo_status(&f.services).await.is_utxo, Some(true));
+    }
+    f.woc.1.expect(1).assert_async().await;
+    f.bananablocks.1.expect(1).assert_async().await;
+    f.bitails.1.expect(1).assert_async().await;
 }
 
 /// T10: an outage is "could not look", never "spent" (`is_utxo` answered
 /// `false` for it, and four callers read that as spent).
 #[tokio::test]
 async fn an_outage_is_could_not_look_never_spent() {
-    let (services, _woc, _bitails) = utxo_services(Says::Fault, Says::Fault).await;
-    let answer = services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
+    let f = utxo_services(Says::Fault, Says::RateLimited, Says::Fault).await;
+    let answer = f.services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await;
     assert_eq!(answer, UtxoVerdict::Unknown, "an outage read as {answer:?}");
 }
 
-/// T10: the answers of `is_utxo` from the explorers' unspent sets alone,
-/// one per row of what the two say. Their agreement on a negative is the
-/// hint tier, never `Spent` (the second pass).
+/// T10: the answers of `is_utxo` from the explorers alone, one row per
+/// what WhatsOnChain, BananaBlocks and Bitails say. Agreement on a negative
+/// is the hint tier, never `Spent` (the second pass); the three answers
+/// mean what they meant with two explorers.
 #[tokio::test]
 async fn is_utxo_gives_the_three_answers() {
-    for (woc_says, bitails_says, expected) in [
-        (Says::Unspent, Says::Fault, UtxoVerdict::UnspentHint),
-        (Says::NotListed, Says::Unspent, UtxoVerdict::UnspentHint),
-        (Says::NotListed, Says::NotListed, UtxoVerdict::SpentHint),
-        (Says::NotListed, Says::Fault, UtxoVerdict::Unknown),
-        (Says::Fault, Says::NotListed, UtxoVerdict::Unknown),
+    for (woc, bb, bitails, expected) in [
+        // A positive from any one.
+        (
+            Says::Unspent,
+            Says::Fault,
+            Says::Fault,
+            UtxoVerdict::UnspentHint,
+        ),
+        (
+            Says::NotListed,
+            Says::Unspent,
+            Says::Fault,
+            UtxoVerdict::UnspentHint,
+        ),
+        (
+            Says::Fault,
+            Says::NotListed,
+            Says::Unspent,
+            UtxoVerdict::UnspentHint,
+        ),
+        // A negative from two.
+        (
+            Says::NotListed,
+            Says::NotListed,
+            Says::Fault,
+            UtxoVerdict::SpentHint,
+        ),
+        (
+            Says::NotListed,
+            Says::RateLimited,
+            Says::NotListed,
+            UtxoVerdict::SpentHint,
+        ),
+        (
+            Says::Fault,
+            Says::NotListed,
+            Says::NotListed,
+            UtxoVerdict::SpentHint,
+        ),
+        // One negative is could not look.
+        (
+            Says::NotListed,
+            Says::Fault,
+            Says::Fault,
+            UtxoVerdict::Unknown,
+        ),
+        (
+            Says::Fault,
+            Says::NotListed,
+            Says::Fault,
+            UtxoVerdict::Unknown,
+        ),
+        (
+            Says::RateLimited,
+            Says::Fault,
+            Says::NotListed,
+            UtxoVerdict::Unknown,
+        ),
     ] {
-        let (services, _woc, _bitails) = utxo_services(woc_says, bitails_says).await;
-        assert_eq!(services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await, expected);
+        let f = utxo_services(woc, bb, bitails).await;
+        assert_eq!(
+            f.services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await,
+            expected,
+            "WoC {woc:?}, BananaBlocks {bb:?}, Bitails {bitails:?}"
+        );
     }
+}
+
+/// T10: BananaBlocks answers an outpoint only. A script's question (no
+/// outpoint) does not ask it and never counts it: WhatsOnChain's lone
+/// negative stays "could not look" with Bitails down, BananaBlocks or no.
+#[tokio::test]
+async fn bananablocks_is_not_asked_a_scripts_question() {
+    let f = utxo_services(Says::NotListed, Says::NotListed, Says::Fault).await;
+    let hash = f.services.hash_output_script(UTXO_SCRIPT);
+    let result = f
+        .services
+        .get_utxo_status(&hash, None, None, false)
+        .await
+        .unwrap();
+    assert_eq!(result.status, "error", "{result:?}");
+    assert_eq!(result.is_utxo, None, "{result:?}");
+    f.bananablocks.1.expect(0).assert_async().await;
 }
 
 /// T10: a Bitails body that is not an unspent list, and a list long enough
@@ -745,7 +945,7 @@ async fn a_raw_tx_both_explorers_lack_is_not_found() {
 
 /// A transaction with one input, spending `source_txid:source_vout`: its
 /// txid and its bytes in hex.
-fn a_spender_of(source_txid: &str, source_vout: u32) -> (String, String) {
+pub(super) fn a_spender_of(source_txid: &str, source_vout: u32) -> (String, String) {
     use bsv_rs::script::{LockingScript, UnlockingScript};
     use bsv_rs::transaction::{Transaction, TransactionInput, TransactionOutput};
     let mut tx = Transaction::new();

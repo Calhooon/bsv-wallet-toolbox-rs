@@ -4,14 +4,17 @@
 //! - WhatsOnChain - Primary UTXO and transaction data provider
 //! - ARC - Transaction broadcasting service (TAAL, GorillaPool)
 //! - Bitails - Alternative merkle proof provider
+//! - BananaBlocks - GorillaPool's explorer, the third rung of the read ladders
 //! - BHS - Block Header Service for header lookups and merkle root validation
 
 pub mod arc;
 pub mod arcade;
+pub mod bananablocks;
 pub mod bhs;
 pub mod bitails;
 pub mod chaintracks_client;
 pub mod fallback_chain_tracker;
+pub mod pace;
 pub mod whatsonchain;
 
 pub use arc::{Arc, ArcConfig};
@@ -20,8 +23,13 @@ pub use arcade::{
     missing_parent_hint, Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent, ArcadeTxInfo,
     EfBatch, EfBatchEntry, SseEvent, SseFrameParser, ARCADE_STATUS_CONCURRENCY, ARCADE_V2_MAINNET,
 };
+pub use bananablocks::{
+    BananaBlocks, OutpointSpend, BANANABLOCKS_MAINNET_URL, BANANABLOCKS_NAME,
+    BANANABLOCKS_PER_MINUTE, BANANABLOCKS_TESTNET_URL,
+};
 pub use bhs::{BhsConfig, BlockHeaderService};
 pub use bitails::{Bitails, BitailsConfig};
 pub use chaintracks_client::{ChaintracksConfig, ChaintracksServiceClient};
 pub use fallback_chain_tracker::FallbackChainTracker;
+pub use pace::RateGate;
 pub use whatsonchain::{WhatsOnChain, WhatsOnChainConfig};

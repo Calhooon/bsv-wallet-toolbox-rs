@@ -607,8 +607,10 @@ pub const NOTE_REFUTED: &str = "getMerklePathInvalidRoot";
 /// The note kind a provider writes when it served a path.
 pub const NOTE_PROOF: &str = "getMerklePathSuccess";
 
-/// Note kinds that are inconclusive (known, no path).
-pub const NOTE_INCONCLUSIVE: &[&str] = &["getMerklePathNoPath"];
+/// Note kinds that are inconclusive: known with no path, or not known to
+/// the provider's index at all (BananaBlocks' 404 at `/tx/{txid}`, which
+/// says nothing about the chain).
+pub const NOTE_INCONCLUSIVE: &[&str] = &["getMerklePathNoPath", "getMerklePathNotIndexed"];
 
 /// Build one per-provider note (`what`, `name`, `when`, optional `error`).
 pub fn merkle_path_note(
