@@ -107,9 +107,9 @@ pub use bsv_rs::wallet::{
 // Re-export Services types
 pub use services::{
     arcade_status_rank, beef_to_ef_batch, is_fatal_status, AdaptiveTimeoutConfig, Arc, ArcConfig,
-    Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent, ArcadeTxInfo, BhsConfig, Bitails,
-    BitailsConfig, BlockHeader, BlockHeaderService, BsvExchangeRate, Chain, FallbackChainTracker,
-    FiatCurrency, FiatExchangeRates, GetMerklePathResult, GetRawTxResult,
+    Arcade, ArcadeConfig, ArcadeSseClient, ArcadeStatusEvent, ArcadeTxInfo, BananaBlocks,
+    BhsConfig, Bitails, BitailsConfig, BlockHeader, BlockHeaderService, BsvExchangeRate, Chain,
+    FallbackChainTracker, FiatCurrency, FiatExchangeRates, GetMerklePathResult, GetRawTxResult,
     GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
     GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, ScriptHistoryItem,
     ServiceCallHistory, ServiceCollection, Services, ServicesOptions, TxStatusDetail, UtxoDetail,

@@ -21,6 +21,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::lock_utils::{lock_read, lock_write};
+use crate::services::providers::pace::RateGate;
 use crate::services::traits::{
     validate_txid, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
     GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult,
@@ -36,6 +37,14 @@ pub const WOC_MAINNET_URL: &str = "https://api.whatsonchain.com/v1/bsv/main";
 
 /// Base URL for WhatsOnChain testnet API.
 pub const WOC_TESTNET_URL: &str = "https://api.whatsonchain.com/v1/bsv/test";
+
+/// How long a 429 without a Retry-After closes the WhatsOnChain rung: the
+/// free tier's budget is 3 requests a second.
+const WOC_DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(1);
+
+/// The header WhatsOnChain reads an API key from (its docs; the overlay's
+/// production reads send it). `Authorization` is sent as well, as before.
+pub const WOC_API_KEY_HEADER: &str = "woc-api-key";
 
 /// Configuration for WhatsOnChain provider.
 #[derive(Debug, Clone, Default)]
@@ -65,6 +74,8 @@ pub struct WhatsOnChain {
     chain: Chain,
     api_key: Option<String>,
     exchange_rate: RwLock<Option<BsvExchangeRate>>,
+    /// A 429 closes the rung until its Retry-After passes; never slept on.
+    gate: RateGate,
 }
 
 impl WhatsOnChain {
@@ -87,6 +98,7 @@ impl WhatsOnChain {
             chain,
             api_key: config.api_key,
             exchange_rate: RwLock::new(None),
+            gate: RateGate::new("WhatsOnChain", WOC_DEFAULT_RETRY_AFTER),
         })
     }
 
@@ -99,7 +111,17 @@ impl WhatsOnChain {
     /// the explorer, so a test can count the requests that reach it.
     #[cfg(test)]
     pub(crate) fn with_base_url(chain: Chain, base_url: &str) -> Self {
-        let mut woc = Self::new(chain, WhatsOnChainConfig::default()).expect("client");
+        Self::with_base_url_and_config(chain, base_url, WhatsOnChainConfig::default())
+    }
+
+    /// [`Self::with_base_url`] with a config (an API key).
+    #[cfg(test)]
+    pub(crate) fn with_base_url_and_config(
+        chain: Chain,
+        base_url: &str,
+        config: WhatsOnChainConfig,
+    ) -> Self {
+        let mut woc = Self::new(chain, config).expect("client");
         woc.base_url = base_url.trim_end_matches('/').to_string();
         woc
     }
@@ -115,32 +137,31 @@ impl WhatsOnChain {
                     "Authorization",
                     format!("Bearer {}", api_key).parse().unwrap(),
                 );
+                if let Ok(value) = api_key.parse() {
+                    headers.insert(WOC_API_KEY_HEADER, value);
+                }
             }
         }
 
         headers
     }
 
-    /// Make a GET request with retry on rate limiting.
-    async fn get_with_retry(&self, url: &str) -> Result<reqwest::Response> {
-        let mut retries = 0;
-        loop {
-            let response = self
-                .client
-                .get(url)
-                .headers(self.get_headers())
-                .send()
-                .await
-                .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
-
-            if response.status() == StatusCode::TOO_MANY_REQUESTS && retries < 2 {
-                retries += 1;
-                sleep(Duration::from_secs(2)).await;
-                continue;
-            }
-
-            return Ok(response);
-        }
+    /// One GET through the rate gate. A 429 is not slept on: it is
+    /// [`Error::RateLimited`] at once, carrying its Retry-After, and the
+    /// rung is skipped without a request until that passes, so the ladder
+    /// moves to the next explorer (the owner's word of 2026-10-22,
+    /// bsv-wallet-cli#50). Before 0.12.0 this slept 2 s and retried twice.
+    async fn get_once(&self, url: &str) -> Result<reqwest::Response> {
+        self.gate.admit()?;
+        let response = self
+            .client
+            .get(url)
+            .headers(self.get_headers())
+            .send()
+            .await
+            .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+        self.gate.check(response.status(), response.headers())?;
+        Ok(response)
     }
 
     // =========================================================================
@@ -158,7 +179,7 @@ impl WhatsOnChain {
     pub async fn get_raw_tx(&self, txid: &str) -> Result<GetRawTxResult> {
         let url = format!("{}/tx/{}/hex", self.base_url, txid);
 
-        let response = self.get_with_retry(&url).await?;
+        let response = self.get_once(&url).await?;
 
         match response.status() {
             StatusCode::OK => {
@@ -211,7 +232,7 @@ impl WhatsOnChain {
     pub async fn get_merkle_path(&self, txid: &str) -> Result<GetMerklePathResult> {
         let url = format!("{}/tx/{}/proof/tsc", self.base_url, txid);
 
-        let response = self.get_with_retry(&url).await?;
+        let response = self.get_once(&url).await?;
 
         match response.status() {
             StatusCode::OK => {
@@ -309,113 +330,123 @@ impl WhatsOnChain {
 
         let body = serde_json::json!({ "txhex": raw_tx_hex });
 
-        let mut retries = 0;
-        loop {
-            let response = self
-                .client
-                .post(&url)
-                .headers(self.get_headers())
-                .header("Content-Type", "application/json")
-                .header("Accept", "text/plain")
-                .json(&body)
-                .send()
-                .await;
+        // A 429 (or the rung closed by an earlier one's Retry-After) is a
+        // fault returned at once, never slept on: the broadcast ladder moves
+        // to its next provider. Before 0.12.0 this slept 2 s, five times.
+        let rate_limited = |e: Error| PostTxResultForTxid {
+            txid: txid.clone(),
+            status: "error".to_string(),
+            double_spend: false,
+            orphan_mempool: false,
+            competing_txs: None,
+            data: Some(e.to_string()),
+            service_error: true,
+            block_hash: None,
+            block_height: None,
+            notes: vec![make_note("postRawTxRateLimited")],
+        };
+        if let Err(e) = self.gate.admit() {
+            return Ok(rate_limited(e));
+        }
 
-            match response {
-                Ok(resp) if resp.status() == StatusCode::TOO_MANY_REQUESTS && retries < 5 => {
-                    retries += 1;
-                    sleep(Duration::from_secs(2)).await;
-                    continue;
-                }
-                Ok(resp) if resp.status().is_success() => {
+        let response = self
+            .client
+            .post(&url)
+            .headers(self.get_headers())
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/plain")
+            .json(&body)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status() == StatusCode::TOO_MANY_REQUESTS => {
+                Ok(rate_limited(self.gate.close(resp.headers())))
+            }
+            Ok(resp) if resp.status().is_success() => Ok(PostTxResultForTxid {
+                txid: txid.clone(),
+                status: "success".to_string(),
+                double_spend: false,
+                orphan_mempool: false,
+                competing_txs: None,
+                data: None,
+                service_error: false,
+                block_hash: None,
+                block_height: None,
+                notes: vec![make_note("postRawTxSuccess")],
+            }),
+            Ok(resp) => {
+                let body = resp.text().await.unwrap_or_default();
+                if body.contains("mempool-conflict") {
+                    return Ok(PostTxResultForTxid {
+                        txid: txid.clone(),
+                        status: "error".to_string(),
+                        double_spend: true,
+                        orphan_mempool: false,
+                        competing_txs: None,
+                        data: Some("txn-mempool-conflict".to_string()),
+                        service_error: false,
+                        block_hash: None,
+                        block_height: None,
+                        notes: vec![make_note("postRawTxDoubleSpend")],
+                    });
+                } else if body.contains("Missing inputs") {
+                    // Missing inputs = orphan mempool (parent not propagated),
+                    // NOT a double-spend.
+                    return Ok(PostTxResultForTxid {
+                        txid: txid.clone(),
+                        status: "error".to_string(),
+                        double_spend: false,
+                        orphan_mempool: true,
+                        competing_txs: None,
+                        data: Some("Missing inputs".to_string()),
+                        service_error: false,
+                        block_hash: None,
+                        block_height: None,
+                        notes: vec![make_note("postRawTxOrphanMempool")],
+                    });
+                } else if body.contains("already-in-mempool")
+                    || body.contains("already in the mempool")
+                {
                     return Ok(PostTxResultForTxid {
                         txid: txid.clone(),
                         status: "success".to_string(),
                         double_spend: false,
                         orphan_mempool: false,
                         competing_txs: None,
-                        data: None,
+                        data: Some("already-in-mempool".to_string()),
                         service_error: false,
                         block_hash: None,
                         block_height: None,
-                        notes: vec![make_note("postRawTxSuccess")],
+                        notes: vec![make_note("postRawTxSuccessAlreadyInMempool")],
                     });
                 }
-                Ok(resp) => {
-                    let body = resp.text().await.unwrap_or_default();
-                    if body.contains("mempool-conflict") {
-                        return Ok(PostTxResultForTxid {
-                            txid: txid.clone(),
-                            status: "error".to_string(),
-                            double_spend: true,
-                            orphan_mempool: false,
-                            competing_txs: None,
-                            data: Some("txn-mempool-conflict".to_string()),
-                            service_error: false,
-                            block_hash: None,
-                            block_height: None,
-                            notes: vec![make_note("postRawTxDoubleSpend")],
-                        });
-                    } else if body.contains("Missing inputs") {
-                        // Missing inputs = orphan mempool (parent not propagated),
-                        // NOT a double-spend.
-                        return Ok(PostTxResultForTxid {
-                            txid: txid.clone(),
-                            status: "error".to_string(),
-                            double_spend: false,
-                            orphan_mempool: true,
-                            competing_txs: None,
-                            data: Some("Missing inputs".to_string()),
-                            service_error: false,
-                            block_hash: None,
-                            block_height: None,
-                            notes: vec![make_note("postRawTxOrphanMempool")],
-                        });
-                    } else if body.contains("already-in-mempool")
-                        || body.contains("already in the mempool")
-                    {
-                        return Ok(PostTxResultForTxid {
-                            txid: txid.clone(),
-                            status: "success".to_string(),
-                            double_spend: false,
-                            orphan_mempool: false,
-                            competing_txs: None,
-                            data: Some("already-in-mempool".to_string()),
-                            service_error: false,
-                            block_hash: None,
-                            block_height: None,
-                            notes: vec![make_note("postRawTxSuccessAlreadyInMempool")],
-                        });
-                    }
 
-                    return Ok(PostTxResultForTxid {
-                        txid: txid.clone(),
-                        status: "error".to_string(),
-                        double_spend: false,
-                        orphan_mempool: false,
-                        competing_txs: None,
-                        data: Some(body),
-                        service_error: true,
-                        block_hash: None,
-                        block_height: None,
-                        notes: vec![make_note("postRawTxError")],
-                    });
-                }
-                Err(e) => {
-                    return Ok(PostTxResultForTxid {
-                        txid: txid.clone(),
-                        status: "error".to_string(),
-                        double_spend: false,
-                        orphan_mempool: false,
-                        competing_txs: None,
-                        data: Some(e.to_string()),
-                        service_error: true,
-                        block_hash: None,
-                        block_height: None,
-                        notes: vec![make_note("postRawTxCatch")],
-                    });
-                }
+                Ok(PostTxResultForTxid {
+                    txid: txid.clone(),
+                    status: "error".to_string(),
+                    double_spend: false,
+                    orphan_mempool: false,
+                    competing_txs: None,
+                    data: Some(body),
+                    service_error: true,
+                    block_hash: None,
+                    block_height: None,
+                    notes: vec![make_note("postRawTxError")],
+                })
             }
+            Err(e) => Ok(PostTxResultForTxid {
+                txid: txid.clone(),
+                status: "error".to_string(),
+                double_spend: false,
+                orphan_mempool: false,
+                competing_txs: None,
+                data: Some(e.to_string()),
+                service_error: true,
+                block_hash: None,
+                block_height: None,
+                notes: vec![make_note("postRawTxCatch")],
+            }),
         }
     }
 
@@ -529,7 +560,7 @@ impl WhatsOnChain {
 
         let url = format!("{}/script/{}/unspent/all", self.base_url, script_hash);
 
-        let response = self.get_with_retry(&url).await?;
+        let response = self.get_once(&url).await?;
 
         if !response.status().is_success() {
             return Ok(GetUtxoStatusResult {
@@ -599,7 +630,7 @@ impl WhatsOnChain {
     pub async fn get_spender(&self, txid: &str, vout: u32) -> Result<Option<String>> {
         let url = format!("{}/tx/{}/{}/spent", self.base_url, txid, vout);
 
-        let response = self.get_with_retry(&url).await?;
+        let response = self.get_once(&url).await?;
 
         match response.status() {
             StatusCode::OK => {
@@ -650,6 +681,7 @@ impl WhatsOnChain {
         for chunk in txids.chunks(CHUNK_SIZE) {
             let body = serde_json::json!({ "txids": chunk });
 
+            self.gate.admit()?;
             let response = self
                 .client
                 .post(&url)
@@ -659,6 +691,7 @@ impl WhatsOnChain {
                 .send()
                 .await
                 .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+            self.gate.check(response.status(), response.headers())?;
 
             if !response.status().is_success() {
                 return Ok(GetStatusForTxidsResult {
@@ -739,7 +772,7 @@ impl WhatsOnChain {
 
         let url = format!("{}/script/{}/confirmed/history", self.base_url, hash_be);
 
-        let response = self.get_with_retry(&url).await?;
+        let response = self.get_once(&url).await?;
 
         match response.status() {
             StatusCode::OK => {
@@ -783,7 +816,7 @@ impl WhatsOnChain {
 
         let url = format!("{}/script/{}/unconfirmed/history", self.base_url, hash_be);
 
-        let response = self.get_with_retry(&url).await?;
+        let response = self.get_once(&url).await?;
 
         match response.status() {
             StatusCode::OK => {
@@ -842,7 +875,7 @@ impl WhatsOnChain {
     pub async fn get_block_header_by_hash(&self, hash: &str) -> Result<Option<BlockHeader>> {
         let url = format!("{}/block/{}/header", self.base_url, hash);
 
-        let response = self.get_with_retry(&url).await?;
+        let response = self.get_once(&url).await?;
 
         match response.status() {
             StatusCode::OK => {
@@ -881,7 +914,7 @@ impl WhatsOnChain {
 
         let url = format!("{}/exchangerate", self.base_url);
 
-        let response = self.get_with_retry(&url).await?;
+        let response = self.get_once(&url).await?;
 
         if !response.status().is_success() {
             return Err(Error::ServiceError(format!(

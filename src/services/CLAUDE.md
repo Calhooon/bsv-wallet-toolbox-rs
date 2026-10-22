@@ -213,6 +213,7 @@ Configuration for service providers:
 pub struct ServicesOptions {
     pub whatsonchain_api_key: Option<String>,
     pub bitails_api_key: Option<String>,
+    pub bananablocks_base: Option<String>, // None = the chain's default, "" = off
     pub arc_url: String,
     pub arc_config: Option<ArcConfig>,
     pub arc_gorillapool_url: Option<String>,
@@ -230,6 +231,8 @@ pub struct ServicesOptions {
 - `ServicesOptions::mainnet()` / `testnet()` - Create with defaults
 - `with_woc_api_key(key)` - Set WhatsOnChain API key
 - `with_bitails_api_key(key)` - Set Bitails API key
+- `with_bananablocks_base(url)` - BananaBlocks API base (default per chain; empty = off)
+- `without_bananablocks()` - Leave BananaBlocks out of every ladder
 - `with_arc(url, config)` - Set TAAL ARC configuration
 - `with_gorillapool(url, config)` - Set GorillaPool ARC configuration
 - `with_bhs_url(url)` - Set Block Header Service URL
@@ -351,13 +354,15 @@ The `Services` constructor sets up provider priority for each operation:
 
 | Operation | Provider Order |
 |-----------|----------------|
-| `get_merkle_path` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails |
-| `get_raw_tx` | WhatsOnChain -> Bitails |
+| `get_merkle_path` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> BananaBlocks -> Bitails |
+| `get_raw_tx` | WhatsOnChain -> BananaBlocks -> Bitails |
 | `post_beef` | ArcadeV2 (opt-in, first) -> TAAL ARC -> GorillaPool ARC -> Bitails -> WhatsOnChain; with a `BroadcastMemory` attached, the last accepting provider is tried first (never ahead of Arcade unless it is Arcade) |
-| `get_utxo_status` | WhatsOnChain <-> Bitails, a rotating start; a positive from the first that gives it, a negative only from both, anything else `status: "error"` (could not look) |
-| `get_status_for_txids` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails; each provider after the first is asked about every txid no earlier provider placed as `mined` (`unknown` is a gap, not a verdict, and a broadcaster's `known` is its word, not the chain's: a chain index's `mined`/`known`/`unknown` replaces it; Arcade's `known` stands only when no chain index answered) |
+| `get_utxo_status` | WhatsOnChain -> BananaBlocks -> Bitails, a rotating start; a positive from the first that gives it, a negative only from two, anything else `status: "error"` (could not look); BananaBlocks answers an outpoint only (not asked a script's question) |
+| `get_status_for_txids` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails -> BananaBlocks (not a chain index: its index lags the mempool); each provider after the first is asked about every txid no earlier provider placed as `mined` (`unknown` is a gap, not a verdict, and a broadcaster's `known` is its word, not the chain's: a chain index's `mined`/`known`/`unknown` replaces it; Arcade's `known` stands only when no chain index answered) |
 | `get_script_hash_history` | WhatsOnChain -> Bitails (feature `break-glass-script-history`, off by default: a chain scan) |
 | `get_height` | Chaintracks tip header -> BHS -> error; no explorer (not via ServiceCollection) |
+
+**The ladder's rule (0.12.0; the owner's word of 2026-10-22, bsv-wallet-cli#50).** Every chain question that leaves our services asks WhatsOnChain, BananaBlocks and Bitails as each other's fallbacks, because each scanner has its own rate limits. A fault (a 429, a timeout, a 5xx, a malformed body, bytes that do not hash to the txid) is "could not look": it moves the question to the next rung within the same call, before any retry round, and is never read as "unspent" or "absent". A negative needs a second provider's clean answer (`UTXO_NEGATIVE_PROVIDERS = 2`: two of the three). No provider sleeps on a 429: it is `Error::RateLimited` at once, carrying the Retry-After, recorded in the call history with code `RATE_LIMITED`, and that rung is skipped without a request until Retry-After passes (the utxo ladder's retry round does not re-ask it). BananaBlocks paces itself at 60 requests a minute; `ServicesOptions::with_bananablocks_base(url)` moves it, `without_bananablocks()` (or an empty base) turns it off. `spend_evidence` asks WhatsOnChain's `/tx/{txid}/{vout}/spent` and then BananaBlocks' `spentTxid`, each name bound by the spender's own bytes.
 
 Note: `get_height` asks the header service only (Rule 28): the Chaintracks tip header's height, then BHS, then an error. No explorer is asked.
 
@@ -375,8 +380,8 @@ when Arcade is not configured.
 Primary data provider for most operations:
 - **Mainnet:** `https://api.whatsonchain.com/v1/bsv/main`
 - **Testnet:** `https://api.whatsonchain.com/v1/bsv/test`
-- Optional API key for rate limit bypass
-- Auto-retry on 429 (rate limited)
+- Optional API key for rate limit bypass (sent as `woc-api-key` and `Authorization`)
+- A 429 is `Error::RateLimited` at once, never slept on; the rung is skipped until Retry-After passes
 - Exchange rate caching
 - Chain info for height queries
 
@@ -434,6 +439,14 @@ Alternative provider:
 - Block header by hash and by height
 - Current height endpoint
 
+### BananaBlocks (providers/bananablocks.rs, 0.12.0)
+
+GorillaPool's explorer, the third rung of the read ladders:
+- **Mainnet:** `https://bananablocks.com/api/v1`
+- **Testnet:** `https://test.bananablocks.com/api/v1`
+- Raw tx (`/tx/{txid}/hex`, bound to the txid), outpoint spend (`/txo/{txid}/{vout}/spend`), TSC proof (`/tx/{txid}/proof`, target the merkle root), tx status (`/tx/{txid}`)
+- No key; 60 requests a minute (token bucket); a 429 closes the rung for its Retry-After
+
 ### BlockHeaderService (providers/bhs.rs)
 
 Dedicated block header lookup service:
@@ -484,19 +497,20 @@ These are implemented by the provider types and used via type-erased `Arc<dyn Tr
 
 **Trait implementations by provider:**
 
-| Trait | WhatsOnChain | ARC | Arcade | Bitails |
-|-------|:---:|:---:|:---:|:---:|
-| `MerklePathService` | Y | Y | Y | Y |
-| `RawTxService` | Y | - | - | Y |
-| `PostBeefService` | Y | Y | Y | Y |
-| `UtxoStatusService` | Y | - | - | - |
-| `StatusForTxidsService` | Y | - | Y | Y |
-| `ScriptHashHistoryService` | Y | - | - | Y |
+| Trait | WhatsOnChain | ARC | Arcade | Bitails | BananaBlocks |
+|-------|:---:|:---:|:---:|:---:|:---:|
+| `MerklePathService` | Y | Y | Y | Y | Y |
+| `RawTxService` | Y | - | - | Y | Y |
+| `PostBeefService` | Y | Y | Y | Y | - |
+| `UtxoStatusService` | Y | - | - | Y | Y (outpoint only) |
+| `StatusForTxidsService` | Y | - | Y | Y | Y |
+| `ScriptHashHistoryService` | Y | - | - | Y | - |
 
 ## Error Handling
 
 All methods return `Result<T>` with these error variants:
 - `Error::NoServicesAvailable` - No providers configured for operation
+- `Error::RateLimited { provider, retry_after_secs }` - A provider's 429 (or its own pace): a fault, never an answer
 - `Error::NetworkError` - HTTP request failed
 - `Error::ServiceError` - Provider returned error
 - `Error::BroadcastFailed` - Transaction broadcast explicitly failed

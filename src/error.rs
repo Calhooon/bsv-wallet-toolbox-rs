@@ -90,6 +90,19 @@ pub enum Error {
     #[error("No services available")]
     NoServicesAvailable,
 
+    /// A provider is rate limited: it answered 429 (or its own pace has no
+    /// request left), so it was not asked, or its answer is not one. A
+    /// fault ("could not look"), never an answer: the ladder moves to the
+    /// next rung, and the provider is skipped without a request until
+    /// `retry_after_secs` have passed.
+    #[error("Rate limited: {provider}: retry after {retry_after_secs}s")]
+    RateLimited {
+        /// The provider that is rate limited.
+        provider: String,
+        /// Seconds until the provider may be asked again.
+        retry_after_secs: u64,
+    },
+
     // ===================
     // Transaction errors
     // ===================

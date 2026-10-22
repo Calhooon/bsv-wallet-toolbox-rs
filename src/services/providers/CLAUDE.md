@@ -19,6 +19,7 @@ The providers are designed to be used through the `WalletServices` trait defined
 | `WhatsOnChain` | Full-featured blockchain explorer API | Mainnet, Testnet | UTXO queries, raw tx retrieval, script history |
 | `Arc` | Transaction broadcasting (mAPI) | TAAL, GorillaPool | BEEF transaction broadcasting with callbacks |
 | `Bitails` | Alternative merkle proof provider | Mainnet, Testnet | TSC merkle proofs, tx history |
+| `BananaBlocks` | GorillaPool's explorer, the third rung of the read ladders (0.12.0) | Mainnet (`bananablocks.com/api/v1`), Testnet (`test.bananablocks.com/api/v1`) | Raw tx, outpoint spend status, TSC proof, tx status; no key, 60 req/min |
 | `BlockHeaderService` | Block Header Service (BHS) | Mainnet, Testnet | Header lookups, merkle root validation |
 
 ## Provider Details
@@ -44,7 +45,7 @@ WhatsOnChain::new(Chain::Test, WhatsOnChainConfig::with_api_key("key"))?;
 |--------|-------------|
 | `get_raw_tx(txid)` | Retrieve raw transaction bytes |
 | `get_merkle_path(txid)` | Get TSC merkle proof |
-| `post_raw_tx(hex)` | Broadcast raw transaction (with retry on 429) |
+| `post_raw_tx(hex)` | Broadcast raw transaction (a 429 is an error at once) |
 | `post_beef(beef, txids)` | Parse BEEF, extract raw txs, broadcast sequentially with 1s delay |
 | `get_utxo_status(output, format, outpoint)` | Check UTXO status for script hash |
 | `get_status_for_txids(txids)` | Batch query transaction statuses (POST) |
@@ -58,7 +59,7 @@ WhatsOnChain::new(Chain::Test, WhatsOnChainConfig::with_api_key("key"))?;
 - Mainnet: `https://api.whatsonchain.com/v1/bsv/main`
 - Testnet: `https://api.whatsonchain.com/v1/bsv/test`
 
-**Rate Limiting:** Built-in retry with 2-second backoff on HTTP 429 responses (up to 2 retries for GET, 5 for POST).
+**Rate Limiting (0.12.0):** a 429 is never slept on. It is `Error::RateLimited { retry_after_secs }` at once (a broadcast's `PostTxResultForTxid` with `service_error: true`), and the rung is skipped without a request until Retry-After passes (1 s when the host sends none). Before 0.12.0 a GET slept 2 s and retried twice, a POST five times. An API key is sent as `woc-api-key` and as `Authorization: Bearer`.
 
 **BEEF Handling:** Parses BEEF via `Beef::from_binary()`, finds each txid with `find_txid()`, extracts raw tx bytes, and broadcasts each via `post_raw_tx` with 1-second delays between transactions.
 
@@ -162,6 +163,32 @@ Bitails::new(Chain::Test, BitailsConfig::with_api_key("key"))?;
 
 **Internal Features:**
 - `parse_block_header()` - Parses 80-byte raw headers into `BlockHeader` structs
+
+---
+
+### BananaBlocks (`bananablocks.rs`, 0.12.0)
+
+GorillaPool's independent explorer, the third of the read ladders beside WhatsOnChain and Bitails (the owner's word of 2026-10-22, bsv-wallet-cli#50). Live-probed 2026-10-22; the parsing rules are the overlay's (`parse_bananablocks_spent`, in production since 2026-09-04).
+
+**Struct:** `BananaBlocks` (`BananaBlocks::new(chain)`, `BananaBlocks::with_base(url, timeout_secs)`)
+
+| Method | Endpoint | Answer |
+|--------|----------|--------|
+| `get_raw_tx(txid)` | `GET {base}/tx/{txid}/hex` | bytes that hash to the txid; other bytes a fault; 404 not found |
+| `get_spend(txid, vout)` | `GET {base}/txo/{txid}/{vout}/spend` | 200 `{"spent":false}` unspent; 200 `{"spent":true,"spentTxid":<64 hex>}` the spender; 404, 429, 5xx, malformed, a spender not 64 hex: a fault |
+| `get_utxo_status(outpoint)` | the spend route | an outpoint only: `spent:false` a positive, a spender a negative; no outpoint is "not applicable" (`status: "error"`, no request) |
+| `get_merkle_path(txid)` | `GET {base}/tx/{txid}` then `/tx/{txid}/proof` | no block: not mined; 404 at `/tx`: not indexed (inconclusive, never "not mined"); mined: the TSC proof (`targetType: merkleRoot`), its nodes folded to its root, handed on with the block hash as target for the ladder's header-service check. `/proof/tsc` is no route |
+| `get_status_for_txids(txids)` | `GET {base}/tx/{txid}` each | in a block `mined` depth 1, no block `known`, 404 `unknown`; a fault stops the batch and leaves the rest out; the ladder treats it as not a chain index (its index lags the mempool) |
+
+**Pace:** no key; at most 60 requests in any minute per provider (`pace::RateGate`, a token bucket: 30 at once, 30 more over the minute). With no token left, or inside a 429's Retry-After (60 s when none is sent), a call is `Error::RateLimited` without a request. Never sleeps.
+
+**Rule:** a fault is "could not look", never "unspent" or "absent": only a 200 with the documented shape answers.
+
+---
+
+### Rate gate (`pace.rs`, 0.12.0)
+
+`RateGate::new(provider, default_retry_after)` (`.with_per_minute(n)` for a token bucket): `admit()` before a request, `check(status, headers)` after. A 429 closes the rung for its `Retry-After` (seconds or an HTTP date, held to 600 s) and returns `Error::RateLimited`; the ladder records it with code `RATE_LIMITED` and moves on. Used by WhatsOnChain and BananaBlocks.
 
 ---
 
@@ -312,7 +339,9 @@ cargo test services::providers::bhs
 ```rust
 pub use arc::{Arc, ArcConfig};
 pub use bhs::{BhsConfig, BlockHeaderService};
+pub use bananablocks::{BananaBlocks, OutpointSpend, BANANABLOCKS_MAINNET_URL, BANANABLOCKS_TESTNET_URL, ...};
 pub use bitails::{Bitails, BitailsConfig};
+pub use pace::RateGate;
 pub use whatsonchain::{WhatsOnChain, WhatsOnChainConfig};
 ```
 
