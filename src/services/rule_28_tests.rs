@@ -62,8 +62,8 @@ fn header_frame(height: u32) -> String {
 
 /// The two explorers' tip routes, each expecting no request.
 async fn explorer_tips_never_asked(
-    woc: &mut mockito::ServerGuard,
-    bitails: &mut mockito::ServerGuard,
+    woc: &mut crate::services::MockServer,
+    bitails: &mut crate::services::MockServer,
 ) -> (mockito::Mock, mockito::Mock) {
     let w = woc
         .mock("GET", "/chain/info")
@@ -86,9 +86,9 @@ async fn explorer_tips_never_asked(
 /// same source as the tip hash. No explorer is asked while it answers.
 #[tokio::test]
 async fn get_height_is_the_header_services_tip_and_asks_no_explorer() {
-    let mut ct = mockito::Server::new_async().await;
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut ct = crate::services::mock_server().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let tip = ct
         .mock("GET", "/findChainTipHeaderHex")
         .with_status(200)
@@ -113,8 +113,8 @@ async fn get_height_is_the_header_services_tip_and_asks_no_explorer() {
 /// look"), never an explorer's number.
 #[tokio::test]
 async fn get_height_without_a_header_service_is_an_error_not_an_explorers_word() {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let (w, b) = explorer_tips_never_asked(&mut woc, &mut bitails).await;
 
     let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
@@ -154,8 +154,8 @@ fn a_default_build_wires_no_script_hash_history_scan() {
 #[cfg(feature = "break-glass-script-history")]
 #[tokio::test]
 async fn the_break_glass_scan_answers_when_built_in() {
-    let mut woc = mockito::Server::new_async().await;
-    let bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let bitails = crate::services::mock_server().await;
     let hash_le = format!("{}{}", "00".repeat(31), "01");
     let hash_be = format!("01{}", "00".repeat(31));
     let _confirmed = woc
@@ -203,7 +203,7 @@ async fn the_break_glass_scan_answers_when_built_in() {
 /// answer that matters ("in a block") is in the transaction's own record.
 #[tokio::test]
 async fn the_bitails_status_read_asks_no_explorer_for_the_tip() {
-    let mut bitails = mockito::Server::new_async().await;
+    let mut bitails = crate::services::mock_server().await;
     let txid = "ab".repeat(32);
     let tip = bitails
         .mock("GET", "/network/info")
@@ -284,7 +284,7 @@ fn fault_or_limit(mock: mockito::Mock, says: Says) -> mockito::Mock {
     }
 }
 
-async fn woc_unspent(server: &mut mockito::ServerGuard, says: Says) -> mockito::Mock {
+async fn woc_unspent(server: &mut crate::services::MockServer, says: Says) -> mockito::Mock {
     let path = format!("/script/{}/unspent/all", utxo_script_hash_be());
     let mock = server.mock("GET", path.as_str());
     let mock = match says {
@@ -302,7 +302,7 @@ async fn woc_unspent(server: &mut mockito::ServerGuard, says: Says) -> mockito::
     mock.create_async().await
 }
 
-async fn bitails_unspent(server: &mut mockito::ServerGuard, says: Says) -> mockito::Mock {
+async fn bitails_unspent(server: &mut crate::services::MockServer, says: Says) -> mockito::Mock {
     let path = format!("/scripthash/{}/unspent", utxo_script_hash_be());
     let mock = server.mock("GET", path.as_str());
     let mock = match says {
@@ -335,7 +335,7 @@ pub(super) fn bananablocks_txo_body(spender: Option<&str>) -> String {
 }
 
 pub(super) async fn bananablocks_spend(
-    server: &mut mockito::ServerGuard,
+    server: &mut crate::services::MockServer,
     says: Says,
 ) -> mockito::Mock {
     let path = format!("/txo/{}/0", UTXO_TXID);
@@ -353,9 +353,9 @@ pub(super) async fn bananablocks_spend(
 /// The three explorer fixtures of a T10 scene, each with its route's mock.
 pub(super) struct ThreeExplorers {
     pub services: Services,
-    pub woc: (mockito::ServerGuard, mockito::Mock),
-    pub bananablocks: (mockito::ServerGuard, mockito::Mock),
-    pub bitails: (mockito::ServerGuard, mockito::Mock),
+    pub woc: (crate::services::MockServer, mockito::Mock),
+    pub bananablocks: (crate::services::MockServer, mockito::Mock),
+    pub bitails: (crate::services::MockServer, mockito::Mock),
 }
 
 /// `Services` over three explorer fixtures that answer as given, in the
@@ -365,9 +365,9 @@ pub(super) async fn utxo_services(
     bb_says: Says,
     bitails_says: Says,
 ) -> ThreeExplorers {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bb = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let w = woc_unspent(&mut woc, woc_says).await;
     let b = bananablocks_spend(&mut bb, bb_says).await;
     let t = bitails_unspent(&mut bitails, bitails_says).await;
@@ -466,7 +466,7 @@ pub(super) async fn utxo_services_from(answers: [Says; 3], start: usize) -> Thre
 /// One row of the rule's table on three shared fixture servers: its own
 /// outpoint and script, so its routes are its own.
 async fn rule_row(
-    servers: &mut [mockito::ServerGuard; 3],
+    servers: &mut [crate::services::MockServer; 3],
     row: u8,
     answers: [Says; 3],
 ) -> (String, Vec<u8>, Vec<mockito::Mock>) {
@@ -531,9 +531,9 @@ async fn the_utxo_verdict_is_the_rule_from_every_start() {
         Says::RateLimited,
     ];
     let mut servers = [
-        mockito::Server::new_async().await,
-        mockito::Server::new_async().await,
-        mockito::Server::new_async().await,
+        crate::services::mock_server().await,
+        crate::services::mock_server().await,
+        crate::services::mock_server().await,
     ];
     let mut rows = Vec::new();
     let mut _mocks = Vec::new();
@@ -792,7 +792,7 @@ async fn a_bitails_answer_that_is_not_a_whole_unspent_list_is_could_not_look() {
     let outpoint = format!("{}.0", UTXO_TXID);
     let path = format!("/scripthash/{}/unspent", utxo_script_hash_be());
 
-    let mut server = mockito::Server::new_async().await;
+    let mut server = crate::services::mock_server().await;
     let _m = server
         .mock("GET", path.as_str())
         .with_status(200)
@@ -808,7 +808,7 @@ async fn a_bitails_answer_that_is_not_a_whole_unspent_list_is_could_not_look() {
         "a body with no unspent list is a fault"
     );
 
-    let mut server = mockito::Server::new_async().await;
+    let mut server = crate::services::mock_server().await;
     let page: Vec<String> = (0..crate::services::providers::bitails::BITAILS_UNSPENT_PAGE)
         .map(|i| {
             format!(
@@ -832,7 +832,7 @@ async fn a_bitails_answer_that_is_not_a_whole_unspent_list_is_could_not_look() {
     assert_eq!(result.status, "error");
     assert_eq!(result.is_utxo, None);
 
-    let mut server = mockito::Server::new_async().await;
+    let mut server = crate::services::mock_server().await;
     let _m = server
         .mock("GET", path.as_str())
         .with_status(404)
@@ -911,8 +911,8 @@ fn break_glass_services(woc_url: &str, bitails_url: &str) -> Services {
 /// through `?` and Bitails was never asked).
 #[tokio::test]
 async fn a_whatsonchain_fault_falls_through_to_bitails_for_a_header() {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let (bytes, header) = a_header(900_000, 1);
     let _w = woc
         .mock("GET", format!("/block/{}/header", header.hash).as_str())
@@ -940,8 +940,8 @@ async fn a_whatsonchain_fault_falls_through_to_bitails_for_a_header() {
 /// reads reach one explorer each.
 #[tokio::test]
 async fn the_header_read_rotates_its_starting_explorer() {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let (bytes, header) = a_header(900_000, 2);
     let w = woc
         .mock("GET", format!("/block/{}/header", header.hash).as_str())
@@ -978,8 +978,8 @@ async fn a_missing_header_needs_both_explorers_and_the_answer_is_bound_to_the_ha
     let bitails_path = format!("/block/{}", header.hash);
 
     // Both say there is no such header: NotFound.
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let _w = woc
         .mock("GET", woc_path.as_str())
         .with_status(404)
@@ -997,8 +997,8 @@ async fn a_missing_header_needs_both_explorers_and_the_answer_is_bound_to_the_ha
     }
 
     // One says so, the other could not look: not NotFound, on either start.
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let _w = woc
         .mock("GET", woc_path.as_str())
         .with_status(404)
@@ -1016,8 +1016,8 @@ async fn a_missing_header_needs_both_explorers_and_the_answer_is_bound_to_the_ha
     }
 
     // Each explorer answers with another block's header: no answer.
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let _w = woc
         .mock("GET", woc_path.as_str())
         .with_status(200)
@@ -1048,8 +1048,8 @@ async fn a_missing_header_needs_both_explorers_and_the_answer_is_bound_to_the_ha
 /// so the explorers are not asked and no proof is returned.
 #[tokio::test]
 async fn no_proof_is_fetched_from_an_explorer_without_a_header_service() {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let txid = "ab".repeat(32);
     let w = woc
         .mock("GET", format!("/tx/{}/proof/tsc", txid).as_str())
@@ -1085,7 +1085,7 @@ async fn no_proof_is_fetched_from_an_explorer_without_a_header_service() {
 // =============================================================================
 
 async fn raw_tx_fixture(
-    server: &mut mockito::ServerGuard,
+    server: &mut crate::services::MockServer,
     txid: &str,
     status: usize,
 ) -> mockito::Mock {
@@ -1103,8 +1103,8 @@ async fn raw_tx_fixture(
 async fn a_raw_tx_fault_is_not_erased_by_the_other_explorers_not_found() {
     let txid = "ab".repeat(32);
     for (woc_status, bitails_status) in [(500, 404), (404, 500)] {
-        let mut woc = mockito::Server::new_async().await;
-        let mut bitails = mockito::Server::new_async().await;
+        let mut woc = crate::services::mock_server().await;
+        let mut bitails = crate::services::mock_server().await;
         let _w = raw_tx_fixture(&mut woc, &txid, woc_status).await;
         let _b = raw_tx_fixture(&mut bitails, &txid, bitails_status).await;
         let services =
@@ -1125,8 +1125,8 @@ async fn a_raw_tx_fault_is_not_erased_by_the_other_explorers_not_found() {
 #[tokio::test]
 async fn a_raw_tx_both_explorers_lack_is_not_found() {
     let txid = "ab".repeat(32);
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
     let _w = raw_tx_fixture(&mut woc, &txid, 404).await;
     let _b = raw_tx_fixture(&mut bitails, &txid, 404).await;
     let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
@@ -1195,14 +1195,14 @@ struct SpendScene {
 struct SpendFixtures {
     services: Services,
     spent_route: mockito::Mock,
-    _servers: Vec<mockito::ServerGuard>,
+    _servers: Vec<crate::services::MockServer>,
     _mocks: Vec<mockito::Mock>,
 }
 
 async fn spend_scene(scene: SpendScene) -> SpendFixtures {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
-    let mut ct = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
+    let mut ct = crate::services::mock_server().await;
     let mut mocks = vec![
         woc_unspent(&mut woc, scene.woc_unspent).await,
         bitails_unspent(&mut bitails, scene.bitails_unspent).await,
@@ -1427,9 +1427,9 @@ async fn a_bound_spender_is_a_hint_when_the_unspent_sets_could_not_be_read() {
 /// with none named the answer is `UnspentHint`.
 #[tokio::test]
 async fn two_unspent_answers_still_ask_for_a_spender() {
-    let mut woc = mockito::Server::new_async().await;
-    let mut bitails = mockito::Server::new_async().await;
-    let ct = mockito::Server::new_async().await;
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
+    let ct = crate::services::mock_server().await;
     let _w = woc_unspent(&mut woc, Says::Unspent).await;
     let _b = bitails_unspent(&mut bitails, Says::Unspent).await;
     let spent_path = format!("/tx/{}/0/spent", UTXO_TXID);

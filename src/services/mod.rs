@@ -40,6 +40,60 @@ pub mod providers;
 pub mod services;
 pub mod traits;
 
+/// A mock server for a test, never waited on. mockito's shared pool
+/// (20 servers on macOS) makes a test wait for a free server, and a test
+/// that takes two or more one at a time holds some while it waits for the
+/// rest: at 16 or more test threads those tests wait on each other for
+/// good. These servers are built outside that pool
+/// (`Server::new_with_opts_async`) and recycled through a free list of our
+/// own, so a test takes a free one or builds one at once; a server's
+/// listener thread lives until the test binary exits, and the free list
+/// keeps their number at the most ever held at one time.
+#[cfg(test)]
+pub(crate) async fn mock_server() -> MockServer {
+    let recycled = FREE_MOCK_SERVERS.lock().unwrap().pop();
+    let server = match recycled {
+        Some(server) => server,
+        None => mockito::Server::new_with_opts_async(mockito::ServerOpts::default()).await,
+    };
+    MockServer(Some(server))
+}
+
+#[cfg(test)]
+static FREE_MOCK_SERVERS: std::sync::Mutex<Vec<mockito::Server>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// A [`mock_server`]: dereferences to the server, and goes back to the
+/// free list, its mocks cleared, when dropped.
+#[cfg(test)]
+pub(crate) struct MockServer(Option<mockito::Server>);
+
+#[cfg(test)]
+impl std::ops::Deref for MockServer {
+    type Target = mockito::Server;
+
+    fn deref(&self) -> &mockito::Server {
+        self.0.as_ref().unwrap()
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for MockServer {
+    fn deref_mut(&mut self) -> &mut mockito::Server {
+        self.0.as_mut().unwrap()
+    }
+}
+
+#[cfg(test)]
+impl Drop for MockServer {
+    fn drop(&mut self) {
+        if let Some(mut server) = self.0.take() {
+            server.reset();
+            FREE_MOCK_SERVERS.lock().unwrap().push(server);
+        }
+    }
+}
+
 pub use broadcast_memory::{
     apply_sticky_provider_order, is_global_provider, ladder_step, oldest_stale_ancestor,
     seen_set_from_records, unproven_ancestors_in_beef, BroadcastMemory, BroadcastSeenRecord,
