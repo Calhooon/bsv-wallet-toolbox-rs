@@ -266,6 +266,40 @@ pub trait WalletServices: Send + Sync {
     /// fault is `Unknown`.
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict;
 
+    /// The outputs the explorers list under a script: LEADS for discovery
+    /// (bsv-wallet-cli's `sync` finding a deposit address's payments), never
+    /// a verdict.
+    ///
+    /// A different question from [`Self::get_utxo_status`] and
+    /// [`Self::is_utxo`]: a verdict that an output is unspent needs two
+    /// explorers' clean answers, but a lead is acted on only after the
+    /// caller has verified the output by its transaction's bytes and its
+    /// proof against the header service, so one explorer's list is enough
+    /// to look, and the union of every explorer's list is the fullest look.
+    /// A lead is not [`UtxoVerdict::UnspentHint`]: nothing here releases,
+    /// stores or spends anything.
+    ///
+    /// `script_hash` is read in `output_format` as `get_utxo_status` reads
+    /// it (`HashLE` when `None`; `Script` takes the script's hex). Every
+    /// explorer that serves an unspent list is asked through its shared
+    /// rate gate; a fault moves on at once (a transient one, a 5xx or a
+    /// timeout, is asked once more in the retry round; a 429 or a
+    /// deterministic one is not). [`Error::NoExplorerAnswered`] ("could not
+    /// look") only when no explorer answered at all.
+    ///
+    /// The default answers that error: an implementation with no lead
+    /// source need not write one.
+    async fn get_utxo_leads(
+        &self,
+        script_hash: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+    ) -> Result<UtxoLeads> {
+        let _ = (script_hash, output_format);
+        Err(Error::NoExplorerAnswered {
+            faults: vec![("WalletServices".to_string(), "no lead source".to_string())],
+        })
+    }
+
     /// Check if nLockTime is final (raw nLockTime value).
     ///
     /// This is the simple version that accepts just the raw u32 nLockTime value.
@@ -1047,6 +1081,41 @@ pub struct UtxoDetail {
     /// Block height (if confirmed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+}
+
+/// One output an explorer lists under a script: a LEAD, never a verdict.
+///
+/// Not [`UtxoVerdict::UnspentHint`]: one explorer's list is enough to look
+/// (discovery), and nothing is acted on until the caller has the output's
+/// transaction bytes and its proof checked against the header service
+/// (bsv-wallet-cli's receive does both before it stores anything).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UtxoLead {
+    /// The output's transaction ID.
+    pub txid: String,
+    /// The output's index.
+    pub vout: u32,
+    /// The value the first explorer that listed it gave (a word too; the
+    /// transaction's bytes are the value).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub satoshis: Option<u64>,
+    /// Every explorer that listed it, in the order asked.
+    pub listed_by: Vec<String>,
+}
+
+/// The answer of [`WalletServices::get_utxo_leads`]: the union of every
+/// answering explorer's unspent list, keyed by outpoint.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UtxoLeads {
+    /// The outputs listed, each once, in the order first listed.
+    pub leads: Vec<UtxoLead>,
+    /// The explorers that answered (an empty list is an answer).
+    pub answered: Vec<String>,
+    /// The explorers that faulted, each with its last fault: they could not
+    /// look, so an output missing from `leads` may still exist.
+    pub faults: Vec<(String, String)>,
 }
 
 // =============================================================================

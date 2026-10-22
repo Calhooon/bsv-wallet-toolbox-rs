@@ -29,7 +29,7 @@ use crate::services::{
         BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
         GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, TxStatusDetail,
-        UtxoVerdict, WalletServices,
+        UtxoDetail, UtxoLead, UtxoLeads, UtxoVerdict, WalletServices,
     },
     ServicesOptions,
 };
@@ -1194,6 +1194,171 @@ impl Services {
         }
 
         Ok(FiatExchangeRates::new(rates))
+    }
+}
+
+/// An explorer `get_utxo_leads` asks for a script's unspent list.
+enum LeadSource {
+    /// `/script/{hash}/unspent/all`.
+    WhatsOnChain,
+    /// `/scripthash/{hash}/unspent`.
+    Bitails,
+    /// `/address/{address}/utxos`: BananaBlocks lists by address only, so
+    /// it is a lead source only for a P2PKH script handed as itself.
+    BananaBlocks(String),
+}
+
+impl LeadSource {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::WhatsOnChain => "WhatsOnChain",
+            Self::Bitails => "Bitails",
+            Self::BananaBlocks(_) => "BananaBlocks",
+        }
+    }
+}
+
+/// An explorer's script answer as a list: only a `success` is one; any
+/// other is the explorer's fault, carried as its message (`HTTP <code>`
+/// keeps a 5xx transient).
+fn listed(result: GetUtxoStatusResult) -> Result<Vec<UtxoDetail>> {
+    if result.status == "success" {
+        Ok(result.details)
+    } else {
+        Err(Error::ServiceError(
+            result.error.unwrap_or_else(|| "no answer".to_string()),
+        ))
+    }
+}
+
+impl Services {
+    /// The P2PKH address of `output` when it is a script handed as itself
+    /// (`GetUtxoStatusOutputFormat::Script`): BananaBlocks' unspent lists
+    /// are by address. `None` for a hash (no address is derived from one)
+    /// or any other script.
+    fn p2pkh_address(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+    ) -> Option<String> {
+        if output_format != Some(GetUtxoStatusOutputFormat::Script) {
+            return None;
+        }
+        let script = bsv_rs::script::Script::from_binary(&hex::decode(output).ok()?).ok()?;
+        let hash = script.extract_pubkey_hash()?;
+        bsv_rs::script::Address::new_from_public_key_hash(&hash, self.chain == Chain::Main)
+            .ok()
+            .map(|address| address.to_string())
+    }
+
+    /// One lead source's list, through its shared rate gate.
+    async fn lead_list(
+        &self,
+        source: &LeadSource,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+    ) -> Result<Vec<UtxoDetail>> {
+        match source {
+            LeadSource::WhatsOnChain => listed(
+                self.whatsonchain
+                    .get_utxo_status(output, output_format, None)
+                    .await?,
+            ),
+            LeadSource::Bitails => listed(
+                self.bitails
+                    .get_utxo_status(output, output_format, None)
+                    .await?,
+            ),
+            LeadSource::BananaBlocks(address) => match &self.bananablocks {
+                Some(bb) => bb.list_address_unspent(address).await,
+                None => Err(Error::NoServicesAvailable),
+            },
+        }
+    }
+
+    /// `get_utxo_leads` (its trait doc is the rule): every lead source
+    /// asked, a transient fault once more after the retry round's pause,
+    /// the answers' union keyed by outpoint.
+    async fn utxo_leads(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+    ) -> Result<UtxoLeads> {
+        // A malformed question is the caller's error, not an explorer's
+        // fault.
+        crate::services::traits::convert_script_hash(output, output_format)?;
+        let mut sources = vec![LeadSource::WhatsOnChain, LeadSource::Bitails];
+        if self.bananablocks.is_some() {
+            if let Some(address) = self.p2pkh_address(output, output_format) {
+                sources.push(LeadSource::BananaBlocks(address));
+            }
+        }
+
+        let mut lists: Vec<Option<Vec<UtxoDetail>>> = sources.iter().map(|_| None).collect();
+        let mut faults: Vec<Option<String>> = sources.iter().map(|_| None).collect();
+        let mut pending: Vec<usize> = (0..sources.len()).collect();
+        // One retry round, for transient faults only (see `FaultKind`).
+        for retry in 0..2 {
+            let mut unanswered = Vec::new();
+            for i in pending {
+                match self.lead_list(&sources[i], output, output_format).await {
+                    Ok(list) => {
+                        lists[i] = Some(list);
+                        faults[i] = None;
+                    }
+                    Err(e) => {
+                        tracing::debug!(explorer = sources[i].name(), error = %e, "get_utxo_leads: could not look");
+                        if FaultKind::of_error(&e) == FaultKind::Transient {
+                            unanswered.push(i);
+                        }
+                        faults[i] = Some(e.to_string());
+                    }
+                }
+            }
+            pending = unanswered;
+            if pending.is_empty() {
+                break;
+            }
+            if retry < 1 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        }
+
+        let mut answer = UtxoLeads::default();
+        for (i, source) in sources.iter().enumerate() {
+            if let Some(fault) = faults[i].take() {
+                answer.faults.push((source.name().to_string(), fault));
+            }
+            let Some(list) = lists[i].take() else {
+                continue;
+            };
+            answer.answered.push(source.name().to_string());
+            for detail in list {
+                match answer
+                    .leads
+                    .iter_mut()
+                    .find(|l| l.vout == detail.index && l.txid.eq_ignore_ascii_case(&detail.txid))
+                {
+                    Some(lead) => {
+                        if !lead.listed_by.iter().any(|n| n == source.name()) {
+                            lead.listed_by.push(source.name().to_string());
+                        }
+                    }
+                    None => answer.leads.push(UtxoLead {
+                        txid: detail.txid.to_ascii_lowercase(),
+                        vout: detail.index,
+                        satoshis: Some(detail.satoshis),
+                        listed_by: vec![source.name().to_string()],
+                    }),
+                }
+            }
+        }
+        if answer.answered.is_empty() {
+            return Err(Error::NoExplorerAnswered {
+                faults: answer.faults,
+            });
+        }
+        Ok(answer)
     }
 }
 
@@ -2555,6 +2720,14 @@ impl WalletServices for Services {
         let hash = sha256(script);
         // Return LE hex (default format for getUtxoStatus)
         hex::encode(hash)
+    }
+
+    async fn get_utxo_leads(
+        &self,
+        script_hash: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+    ) -> Result<UtxoLeads> {
+        self.utxo_leads(script_hash, output_format).await
     }
 
     /// The stranger's spend (Rule 28, the irreducible case). Two explorers

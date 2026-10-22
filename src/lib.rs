@@ -113,7 +113,7 @@ pub use services::{
     GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
     GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, ScriptHistoryItem,
     ServiceCallHistory, ServiceCollection, Services, ServicesOptions, TxStatusDetail, UtxoDetail,
-    WalletServices, WhatsOnChain, WhatsOnChainConfig, ARCADE_V2_MAINNET,
+    UtxoLead, UtxoLeads, WalletServices, WhatsOnChain, WhatsOnChainConfig, ARCADE_V2_MAINNET,
 };
 
 // Broadcast acceptance memory (reduced sends + sticky provider order)
