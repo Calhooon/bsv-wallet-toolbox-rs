@@ -76,7 +76,7 @@ pub use traits::{
     GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
     GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefDelivery,
     PostBeefResult, PostTxResultForTxid, ScriptHistoryItem, ServicesCallHistory, TxStatusDetail,
-    UtxoDetail, UtxoLead, UtxoLeads, UtxoVerdict, WalletServices,
+    UnspentPages, UtxoDetail, UtxoLead, UtxoLeads, UtxoVerdict, WalletServices, LEAD_PAGES_MAX,
 };
 
 pub use collection::{

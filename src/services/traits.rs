@@ -279,6 +279,18 @@ pub trait WalletServices: Send + Sync {
     /// A lead is not [`UtxoVerdict::UnspentHint`]: nothing here releases,
     /// stores or spends anything.
     ///
+    /// The fullest look has limits. Each explorer's list is read page by
+    /// page (1000 outputs a page; WhatsOnChain by `nextPageToken`, Bitails
+    /// by `from`, BananaBlocks by `cursor`), each page through the gate, at
+    /// most [`LEAD_PAGES_MAX`] pages (10,000 outputs) an explorer. An
+    /// explorer whose list was cut short, at the page cap or by a later
+    /// page that could not be read, keeps the pages it gave and is named in
+    /// [`UtxoLeads::partial`]: an output past its pages may exist.
+    /// [`UtxoLeads::answered`] means "answered", never "listed everything";
+    /// `partial` means "cut short". A list holding a txid that is not 64
+    /// hex characters, on any page, is that explorer's malformed answer (a
+    /// deterministic fault): none of its leads are taken.
+    ///
     /// `script_hash` is read in `output_format` as `get_utxo_status` reads
     /// it (`HashLE` when `None`; `Script` takes the script's hex). Every
     /// explorer that serves an unspent list is asked through its shared
@@ -1116,6 +1128,64 @@ pub struct UtxoLeads {
     /// The explorers that faulted, each with its last fault: they could not
     /// look, so an output missing from `leads` may still exist.
     pub faults: Vec<(String, String)>,
+    /// The explorers in `answered` whose list was cut short (the page cap,
+    /// or a later page that could not be read): their leads are the pages
+    /// read, and an output past them may still exist.
+    #[serde(default)]
+    pub partial: Vec<String>,
+}
+
+/// The most pages of one explorer's unspent list
+/// [`WalletServices::get_utxo_leads`] reads: 10 pages of 1000, 10,000
+/// outputs. A list longer than that is cut short ([`UtxoLeads::partial`]).
+pub const LEAD_PAGES_MAX: usize = 10;
+
+/// One explorer's unspent list as [`WalletServices::get_utxo_leads`] reads
+/// it: every page up to [`LEAD_PAGES_MAX`].
+#[derive(Debug, Clone, Default)]
+pub struct UnspentPages {
+    /// Every output the pages read list, in the explorer's order.
+    pub details: Vec<UtxoDetail>,
+    /// Why the list was cut short (the page cap reached while the explorer
+    /// had more, or a later page that could not be read); `None` when the
+    /// explorer said it had no more.
+    pub cut_short: Option<String>,
+}
+
+impl UnspentPages {
+    /// A page that could not be read (a transport fault, a 429, an HTTP
+    /// status): on the first page it is the explorer's fault; a later one
+    /// cuts the list short, and the pages read stand.
+    pub(crate) fn unread(mut self, page: usize, fault: Error) -> Result<Self> {
+        if page == 0 {
+            return Err(fault);
+        }
+        self.cut_short = Some(format!("page {}: {fault}", page + 1));
+        Ok(self)
+    }
+
+    /// The page cap reached while the explorer had more.
+    pub(crate) fn capped(mut self) -> Self {
+        self.cut_short = Some(format!(
+            "the page cap ({LEAD_PAGES_MAX} pages) was reached with more listed"
+        ));
+        self
+    }
+}
+
+/// A query value percent-encoded (every byte but RFC 3986's unreserved):
+/// an explorer's page cursor or token is carried back as it came, never as
+/// query syntax.
+pub(crate) fn query_value(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 // =============================================================================

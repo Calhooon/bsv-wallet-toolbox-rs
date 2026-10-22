@@ -144,13 +144,21 @@ host served `limit=1000`):
 `indexed_height`).
 
 How the crate reads it (`BananaBlocks::list_address_unspent`, behind
-`Services::get_utxo_leads`): the first page with `limit=1000`, as LEADS, never
-a verdict. Only a 200 whose `items` each carry a 64-hex `txid`, a `vout` and a
-`value` answers; a 404, a 429, a 5xx or another shape is a fault, never an
-empty list. A page with `hasMore` is still an answer (its leads; logged).
-Because no address is derived from a hash, BananaBlocks is a lead source only
-when the caller hands the script itself (`GetUtxoStatusOutputFormat::Script`)
-and the script is P2PKH; asked by script hash, it is not asked.
+`Services::get_utxo_leads`): pages of `limit=1000`, then `&cursor=` (carried
+back percent-encoded) while `hasMore`, each page through the gate, at most
+10 pages (`LEAD_PAGES_MAX`), as LEADS, never a verdict. A second probe
+(2026-10-22, an address with 2,720 unspent outputs) served 1000 with
+`hasMore` and a cursor, and the cursor's page another 1000. Only a 200 whose
+`items` each carry a 64-hex `txid`, a `vout` and a `value` answers; on the
+first page a 404, a 429, a 5xx or another shape is a fault, never an empty
+list; a `hasMore` without a cursor is malformed. A later page that could not
+be read, or the cap reached with `hasMore`, cuts the list short:
+BananaBlocks is in `UtxoLeads::partial` with the pages' leads. An item whose
+`script_type` is given and is not `p2pkh` is left out. Because no address is
+derived from a hash, BananaBlocks is a lead source only when the caller
+hands the script itself (`GetUtxoStatusOutputFormat::Script`) and the script
+is exactly `76a914<20>88ac`; asked by script hash, or with any other script
+(a non-minimal push of the same hash included), it is not asked.
 
 Not seen: an unconfirmed output still unspent in this list. In the probe an
 address paid by a WhatsOnChain-mempool transaction did not list that output,
