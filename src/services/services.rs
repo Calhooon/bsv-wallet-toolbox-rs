@@ -29,7 +29,7 @@ use crate::services::{
         BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
         GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, TxStatusDetail,
-        UtxoDetail, UtxoLead, UtxoLeads, UtxoVerdict, WalletServices,
+        UnspentPages, UtxoLead, UtxoLeads, UtxoVerdict, WalletServices,
     },
     ServicesOptions,
 };
@@ -1218,24 +1218,14 @@ impl LeadSource {
     }
 }
 
-/// An explorer's script answer as a list: only a `success` is one; any
-/// other is the explorer's fault, carried as its message (`HTTP <code>`
-/// keeps a 5xx transient).
-fn listed(result: GetUtxoStatusResult) -> Result<Vec<UtxoDetail>> {
-    if result.status == "success" {
-        Ok(result.details)
-    } else {
-        Err(Error::ServiceError(
-            result.error.unwrap_or_else(|| "no answer".to_string()),
-        ))
-    }
-}
-
 impl Services {
     /// The P2PKH address of `output` when it is a script handed as itself
     /// (`GetUtxoStatusOutputFormat::Script`): BananaBlocks' unspent lists
-    /// are by address. `None` for a hash (no address is derived from one)
-    /// or any other script.
+    /// are by address. Only the exact 25-byte template `76a914<20>88ac`
+    /// has one: a non-minimal push of the same hash (`76a94c14<20>88ac`)
+    /// is another script, whose outputs BananaBlocks' address list is not.
+    /// `None` for a hash (no address is derived from one) or any other
+    /// script.
     fn p2pkh_address(
         &self,
         output: &str,
@@ -1244,36 +1234,54 @@ impl Services {
         if output_format != Some(GetUtxoStatusOutputFormat::Script) {
             return None;
         }
-        let script = bsv_rs::script::Script::from_binary(&hex::decode(output).ok()?).ok()?;
-        let hash = script.extract_pubkey_hash()?;
+        let script = hex::decode(output).ok()?;
+        let hash: [u8; 20] = match script.as_slice() {
+            [0x76, 0xa9, 0x14, hash @ .., 0x88, 0xac] => hash.try_into().ok()?,
+            _ => return None,
+        };
         bsv_rs::script::Address::new_from_public_key_hash(&hash, self.chain == Chain::Main)
             .ok()
             .map(|address| address.to_string())
     }
 
-    /// One lead source's list, through its shared rate gate.
+    /// One lead source's list, each page through its shared rate gate. A
+    /// list holding a txid that is not 64 hex characters is the explorer's
+    /// malformed answer (deterministic): a lead's txid is put in a path
+    /// later (`/tx/{txid}/hex`), so `zz` or `../x` is never passed on.
     async fn lead_list(
         &self,
         source: &LeadSource,
         output: &str,
         output_format: Option<GetUtxoStatusOutputFormat>,
-    ) -> Result<Vec<UtxoDetail>> {
-        match source {
-            LeadSource::WhatsOnChain => listed(
+    ) -> Result<UnspentPages> {
+        let list = match source {
+            LeadSource::WhatsOnChain => {
                 self.whatsonchain
-                    .get_utxo_status(output, output_format, None)
-                    .await?,
-            ),
-            LeadSource::Bitails => listed(
+                    .list_script_unspent(output, output_format)
+                    .await?
+            }
+            LeadSource::Bitails => {
                 self.bitails
-                    .get_utxo_status(output, output_format, None)
-                    .await?,
-            ),
+                    .list_script_unspent(output, output_format)
+                    .await?
+            }
             LeadSource::BananaBlocks(address) => match &self.bananablocks {
-                Some(bb) => bb.list_address_unspent(address).await,
-                None => Err(Error::NoServicesAvailable),
+                Some(bb) => bb.list_address_unspent(address).await?,
+                None => return Err(Error::NoServicesAvailable),
             },
+        };
+        if let Some(bad) = list
+            .details
+            .iter()
+            .find(|d| d.txid.len() != 64 || !d.txid.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(Error::ServiceError(format!(
+                "{} listed a txid that is not 64 hex characters: {:?}",
+                source.name(),
+                bad.txid.chars().take(80).collect::<String>()
+            )));
         }
+        Ok(list)
     }
 
     /// `get_utxo_leads` (its trait doc is the rule): every lead source
@@ -1294,7 +1302,7 @@ impl Services {
             }
         }
 
-        let mut lists: Vec<Option<Vec<UtxoDetail>>> = sources.iter().map(|_| None).collect();
+        let mut lists: Vec<Option<UnspentPages>> = sources.iter().map(|_| None).collect();
         let mut faults: Vec<Option<String>> = sources.iter().map(|_| None).collect();
         let mut pending: Vec<usize> = (0..sources.len()).collect();
         // One retry round, for transient faults only (see `FaultKind`).
@@ -1325,6 +1333,8 @@ impl Services {
         }
 
         let mut answer = UtxoLeads::default();
+        // Each outpoint's place in `answer.leads`: lists run to 10,000 each.
+        let mut at: HashMap<(String, u32), usize> = HashMap::new();
         for (i, source) in sources.iter().enumerate() {
             if let Some(fault) = faults[i].take() {
                 answer.faults.push((source.name().to_string(), fault));
@@ -1333,23 +1343,28 @@ impl Services {
                 continue;
             };
             answer.answered.push(source.name().to_string());
-            for detail in list {
-                match answer
-                    .leads
-                    .iter_mut()
-                    .find(|l| l.vout == detail.index && l.txid.eq_ignore_ascii_case(&detail.txid))
-                {
-                    Some(lead) => {
+            if let Some(why) = list.cut_short {
+                tracing::info!(explorer = source.name(), why = %why, "get_utxo_leads: a list cut short");
+                answer.partial.push(source.name().to_string());
+            }
+            for detail in list.details {
+                let txid = detail.txid.to_ascii_lowercase();
+                match at.get(&(txid.clone(), detail.index)) {
+                    Some(&n) => {
+                        let lead = &mut answer.leads[n];
                         if !lead.listed_by.iter().any(|n| n == source.name()) {
                             lead.listed_by.push(source.name().to_string());
                         }
                     }
-                    None => answer.leads.push(UtxoLead {
-                        txid: detail.txid.to_ascii_lowercase(),
-                        vout: detail.index,
-                        satoshis: Some(detail.satoshis),
-                        listed_by: vec![source.name().to_string()],
-                    }),
+                    None => {
+                        at.insert((txid.clone(), detail.index), answer.leads.len());
+                        answer.leads.push(UtxoLead {
+                            txid,
+                            vout: detail.index,
+                            satoshis: Some(detail.satoshis),
+                            listed_by: vec![source.name().to_string()],
+                        });
+                    }
                 }
             }
         }
@@ -3498,6 +3513,15 @@ mod tests {
             ])
             .await;
             assert_eq!(got, None, "{word} alone promotes nothing");
+            // One chain index's unknown and the other's fault: the holding
+            // word is never the second absence vote.
+            let got = ask(vec![
+                ("ArcadeV2", arcade(word)),
+                ("WhatsOnChain", MockStatusProvider::new(true, vec![])),
+                ("Bitails", MockStatusProvider::failing(true)),
+            ])
+            .await;
+            assert_eq!(got, None, "{word} is never an absence vote");
             // A chain index's known stands.
             let got = ask(vec![
                 ("ArcadeV2", arcade(word)),

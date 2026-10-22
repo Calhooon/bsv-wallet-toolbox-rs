@@ -26,8 +26,8 @@ use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 use crate::services::traits::{
     BlockHeader, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,
     GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
-    GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, UtxoVerdict,
-    WalletServices,
+    GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, UtxoLead, UtxoLeads,
+    UtxoVerdict, WalletServices,
 };
 use crate::{Error, Result};
 
@@ -192,6 +192,10 @@ pub struct MockWalletServices {
     /// Whether a negative `is_utxo` answer stands for a proven spend.
     spends_are_proven: bool,
 
+    /// Response for get_utxo_leads calls; `None` derives it from
+    /// `get_utxo_status_response`.
+    get_utxo_leads_response: Mutex<Option<MockResponse<UtxoLeads>>>,
+
     /// What `get_broadcaster_statuses` answers (empty by default: no
     /// broadcaster asked).
     broadcaster_statuses: Vec<(String, crate::services::BroadcastStatus)>,
@@ -326,6 +330,7 @@ pub struct MockWalletServicesBuilder {
     get_script_hash_history_response: MockResponse<GetScriptHashHistoryResult>,
     is_utxo_response: Option<MockResponse<bool>>,
     spends_are_proven: bool,
+    get_utxo_leads_response: Option<MockResponse<UtxoLeads>>,
     broadcaster_statuses: Vec<(String, crate::services::BroadcastStatus)>,
 }
 
@@ -375,6 +380,7 @@ impl Default for MockWalletServicesBuilder {
             }),
             is_utxo_response: None,
             spends_are_proven: false,
+            get_utxo_leads_response: None,
             broadcaster_statuses: Vec::new(),
         }
     }
@@ -528,6 +534,15 @@ impl MockWalletServicesBuilder {
         self
     }
 
+    /// Set the response for get_utxo_leads calls. Unset, the leads are
+    /// derived from `get_utxo_status_response`: a success's `details`
+    /// listed by its provider, any other answer
+    /// [`Error::NoExplorerAnswered`].
+    pub fn get_utxo_leads_response(mut self, response: MockResponse<UtxoLeads>) -> Self {
+        self.get_utxo_leads_response = Some(response);
+        self
+    }
+
     /// Set what `get_broadcaster_statuses` answers, as `(provider name,
     /// ladder status)` for every txid.
     pub fn broadcaster_statuses(
@@ -553,6 +568,7 @@ impl MockWalletServicesBuilder {
             get_script_hash_history_response: Mutex::new(self.get_script_hash_history_response),
             is_utxo_response: Mutex::new(self.is_utxo_response),
             spends_are_proven: self.spends_are_proven,
+            get_utxo_leads_response: Mutex::new(self.get_utxo_leads_response),
             broadcaster_statuses: self.broadcaster_statuses,
             call_history: Mutex::new(Vec::new()),
             call_counts: Mutex::new(HashMap::new()),
@@ -828,6 +844,61 @@ impl WalletServices for MockWalletServices {
     ) -> Vec<(String, crate::services::BroadcastStatus)> {
         self.record_call("get_broadcaster_statuses", vec![txid.to_string()], true);
         self.broadcaster_statuses.clone()
+    }
+
+    /// The configured `get_utxo_leads_response`; unset, the leads are
+    /// `get_utxo_status_response`'s `details`, each listed by its provider
+    /// (an error or a non-`success` answer is
+    /// [`Error::NoExplorerAnswered`]).
+    async fn get_utxo_leads(
+        &self,
+        script_hash: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+    ) -> Result<UtxoLeads> {
+        let configured = {
+            let response = self.get_utxo_leads_response.lock().unwrap();
+            response.as_ref().map(|response| {
+                let call_index = self.get_call_index("get_utxo_leads");
+                response.resolve(call_index)
+            })
+        };
+        let result = match configured {
+            Some(result) => result,
+            None => match self
+                .get_utxo_status(script_hash, output_format, None, false)
+                .await
+            {
+                Ok(status) if status.status == "success" => Ok(UtxoLeads {
+                    leads: status
+                        .details
+                        .iter()
+                        .map(|d| UtxoLead {
+                            txid: d.txid.clone(),
+                            vout: d.index,
+                            satoshis: Some(d.satoshis),
+                            listed_by: vec![status.name.clone()],
+                        })
+                        .collect(),
+                    answered: vec![status.name.clone()],
+                    ..Default::default()
+                }),
+                Ok(status) => Err(Error::NoExplorerAnswered {
+                    faults: vec![(
+                        status.name.clone(),
+                        status.error.unwrap_or_else(|| "no answer".to_string()),
+                    )],
+                }),
+                Err(e) => Err(Error::NoExplorerAnswered {
+                    faults: vec![("MockProvider".to_string(), e.to_string())],
+                }),
+            },
+        };
+        self.record_call(
+            "get_utxo_leads",
+            vec![script_hash.to_string(), format!("{:?}", output_format)],
+            result.is_ok(),
+        );
+        result
     }
 
     /// The configured `is_utxo_response`: `true` is unspent, `false` is
@@ -1566,5 +1637,66 @@ mod tests {
         let results = r.unwrap();
         assert!(!results[0].is_success());
         assert!(results[0].txid_results[0].double_spend);
+    }
+
+    /// `get_utxo_leads` is drivable: a configured response is answered as
+    /// is; unset, the leads are `get_utxo_status_response`'s details listed
+    /// by its provider, and a fault there is "could not look".
+    #[tokio::test]
+    async fn the_mock_answers_leads_as_configured_or_from_the_status_response() {
+        let txid = "ab".repeat(32);
+        let configured = UtxoLeads {
+            leads: vec![UtxoLead {
+                txid: txid.clone(),
+                vout: 3,
+                satoshis: Some(500),
+                listed_by: vec!["WhatsOnChain".to_string()],
+            }],
+            answered: vec!["WhatsOnChain".to_string()],
+            faults: vec![("Bitails".to_string(), "HTTP 500".to_string())],
+            partial: vec!["WhatsOnChain".to_string()],
+        };
+        let mock = MockWalletServices::builder()
+            .get_utxo_leads_response(MockResponse::Success(configured.clone()))
+            .build();
+        assert_eq!(mock.get_utxo_leads("hash", None).await.unwrap(), configured);
+        assert_eq!(mock.call_count("get_utxo_leads"), 1);
+
+        let mock = MockWalletServices::builder()
+            .get_utxo_status_response(MockResponse::Success(GetUtxoStatusResult {
+                name: "WoC".to_string(),
+                status: "success".to_string(),
+                is_utxo: Some(true),
+                details: vec![crate::services::traits::UtxoDetail {
+                    txid: txid.clone(),
+                    index: 1,
+                    satoshis: 700,
+                    height: Some(900_000),
+                }],
+                error: None,
+            }))
+            .build();
+        let leads = mock.get_utxo_leads("hash", None).await.unwrap();
+        assert_eq!(leads.answered, vec!["WoC"]);
+        assert_eq!(
+            leads.leads,
+            vec![UtxoLead {
+                txid,
+                vout: 1,
+                satoshis: Some(700),
+                listed_by: vec!["WoC".to_string()],
+            }]
+        );
+
+        let mock = MockWalletServices::builder()
+            .get_utxo_status_response(MockResponse::Error(
+                MockErrorKind::NetworkError,
+                "down".to_string(),
+            ))
+            .build();
+        assert!(matches!(
+            mock.get_utxo_leads("hash", None).await,
+            Err(Error::NoExplorerAnswered { .. })
+        ));
     }
 }

@@ -26,7 +26,7 @@ use crate::services::traits::{
 use crate::services::traits::{
     validate_txid, BlockHeader, GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult,
     GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult, PostTxResultForTxid,
-    TxStatusDetail, UtxoDetail,
+    TxStatusDetail, UnspentPages, UtxoDetail, LEAD_PAGES_MAX,
 };
 use crate::services::Chain;
 use crate::{Error, Result};
@@ -75,6 +75,11 @@ impl BitailsConfig {
 /// not look". A wallet's output scripts hold one or a few outputs; this is
 /// a guard on the negative, not a limit on anything.
 pub const BITAILS_UNSPENT_PAGE: usize = 100;
+
+/// The page an unspent list is read in for leads (`?limit=`): Bitails
+/// serves at most 1000 an answer, and 1000 when no limit is given (probed
+/// 2026-10-22); `from=` is the offset of the next page.
+pub const BITAILS_LEAD_PAGE: usize = 1000;
 
 /// How long a 429 without a Retry-After closes the Bitails rung.
 const BITAILS_DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(1);
@@ -684,6 +689,82 @@ impl Bitails {
             details,
             error: None,
         })
+    }
+
+    /// The unspent outputs Bitails lists under a script: LEADS for
+    /// `Services::get_utxo_leads`, never a verdict.
+    ///
+    /// `GET scripthash/{hash}/unspent?limit=1000&from={offset}`: Bitails
+    /// pages by offset and says nothing of more, so a full page (1000) is
+    /// followed by the next and a shorter one ends the list (probed
+    /// 2026-10-22, read-only: a script with 2,719 unspent outputs came as
+    /// 1000, 1000 and 719). Each page goes through the gate, at most
+    /// [`LEAD_PAGES_MAX`] pages; a full last page is the list cut short. On
+    /// the first page a non-200 is a fault (`HTTP <code>`: a 5xx stays
+    /// transient); a later page that could not be read cuts the list short;
+    /// a page that was read and does not parse is a malformed answer.
+    pub async fn list_script_unspent(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+    ) -> Result<UnspentPages> {
+        let script_hash = crate::services::traits::convert_script_hash(output, output_format)?;
+        let mut list = UnspentPages::default();
+        for page in 0..LEAD_PAGES_MAX {
+            let url = format!(
+                "{}scripthash/{}/unspent?limit={}&from={}",
+                self.base_url,
+                script_hash,
+                BITAILS_LEAD_PAGE,
+                page * BITAILS_LEAD_PAGE
+            );
+            if let Err(e) = self.gate.admit() {
+                return list.unread(page, e);
+            }
+            let response = match self
+                .client
+                .get(&url)
+                .headers(self.get_headers())
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(e) => {
+                    let fault = Error::NetworkError(format!("Request failed: {}", e));
+                    return list.unread(page, fault);
+                }
+            };
+            if let Err(e) = self.gate.check(response.status(), response.headers()) {
+                return list.unread(page, e);
+            }
+            if response.status() != StatusCode::OK {
+                let fault = Error::ServiceError(format!(
+                    "Bitails unspent list: HTTP {}",
+                    response.status()
+                ));
+                return list.unread(page, fault);
+            }
+            let body = match response.bytes().await {
+                Ok(body) => body,
+                Err(e) => {
+                    let fault = Error::NetworkError(format!("Unspent set read failed: {}", e));
+                    return list.unread(page, fault);
+                }
+            };
+            let data: BitailsUnspentResponse = serde_json::from_slice(&body)
+                .map_err(|e| Error::ServiceError(format!("Failed to parse unspent set: {}", e)))?;
+            let full = data.unspent.len() >= BITAILS_LEAD_PAGE;
+            list.details.extend(data.unspent.iter().map(|u| UtxoDetail {
+                txid: u.txid.clone(),
+                index: u.vout,
+                satoshis: u.satoshis,
+                height: u.blockheight,
+            }));
+            if !full {
+                return Ok(list);
+            }
+        }
+        Ok(list.capped())
     }
 
     // =========================================================================

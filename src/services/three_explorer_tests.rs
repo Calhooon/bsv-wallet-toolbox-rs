@@ -11,7 +11,7 @@ use super::rule_28_tests::{
 };
 use super::*;
 use crate::services::providers::WhatsOnChainConfig;
-use crate::services::traits::WalletServices;
+use crate::services::traits::{WalletServices, LEAD_PAGES_MAX};
 use std::time::{Duration, Instant};
 
 /// The recorded calls of `provider` in a ladder's call history.
@@ -1262,7 +1262,11 @@ fn lead_txid(c: char) -> String {
 
 /// The script hash as the explorers' routes carry it.
 fn lead_route_hash() -> String {
-    let mut hash = sha256(&hex::decode(LEAD_SCRIPT_HEX).unwrap());
+    route_hash_of(LEAD_SCRIPT_HEX)
+}
+
+fn route_hash_of(script_hex: &str) -> String {
+    let mut hash = sha256(&hex::decode(script_hex).unwrap());
     hash.reverse();
     hex::encode(hash)
 }
@@ -1276,31 +1280,98 @@ fn lead_hash_le(services: &Services) -> String {
 enum Lists {
     /// A 200 listing these `(txid char, vout)`, 1000 sats each.
     These(&'static [(char, u32)]),
+    /// A 200 listing these `(txid as given, vout)`.
+    Raw(&'static [(&'static str, u32)]),
     /// A 200 whose body does not parse.
     Malformed,
     /// This HTTP status (a 429 carries `Retry-After: 30`).
     Status(usize),
 }
 
-async fn woc_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mockito::Mock {
-    let path = format!("/script/{}/unspent/all", lead_route_hash());
-    let mock = server.mock("GET", path.as_str());
+/// `(txid, vout)` pairs from a fixture's list.
+fn outputs_of(lists: &Lists) -> Vec<(String, u32)> {
+    match lists {
+        Lists::These(outputs) => outputs.iter().map(|(c, v)| (lead_txid(*c), *v)).collect(),
+        Lists::Raw(outputs) => outputs.iter().map(|(t, v)| (t.to_string(), *v)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A WhatsOnChain unspent page: `next` is its `nextPageToken`.
+fn woc_page(route_hash: &str, outputs: &[(String, u32)], next: Option<&str>) -> String {
+    let result: Vec<String> = outputs
+        .iter()
+        .map(|(txid, vout)| {
+            format!(r#"{{"height":900000,"tx_pos":{vout},"tx_hash":"{txid}","value":1000}}"#)
+        })
+        .collect();
+    let next = next
+        .map(|t| format!(r#","nextPageToken":"{t}""#))
+        .unwrap_or_default();
+    format!(
+        r#"{{"script":"{route_hash}","result":[{}]{next},"error":""}}"#,
+        result.join(",")
+    )
+}
+
+/// A Bitails unspent page.
+fn bitails_page(route_hash: &str, outputs: &[(String, u32)]) -> String {
+    let unspent: Vec<String> = outputs
+        .iter()
+        .map(|(txid, vout)| {
+            format!(r#"{{"txid":"{txid}","vout":{vout},"satoshis":1000,"blockheight":900000}}"#)
+        })
+        .collect();
+    format!(
+        r#"{{"scripthash":"{route_hash}","unspent":[{}]}}"#,
+        unspent.join(",")
+    )
+}
+
+/// A BananaBlocks address page: `cursor` set means `hasMore`.
+fn bananablocks_page(outputs: &[(String, u32)], cursor: Option<&str>) -> String {
+    let items: Vec<String> = outputs
+        .iter()
+        .map(|(txid, vout)| {
+            format!(
+                r#"{{"txid":"{txid}","vout":{vout},"value":1000,"script_type":"p2pkh","block_height":900000}}"#
+            )
+        })
+        .collect();
+    match cursor {
+        Some(c) => format!(
+            r#"{{"items":[{}],"cursor":"{c}","hasMore":true}}"#,
+            items.join(",")
+        ),
+        None => format!(r#"{{"items":[{}],"hasMore":false}}"#, items.join(",")),
+    }
+}
+
+/// The first page's route of each explorer, query pinned.
+fn woc_first_page(route_hash: &str) -> mockito::Matcher {
+    mockito::Matcher::Regex(format!(r"^/script/{route_hash}/unspent/all$"))
+}
+
+fn bitails_page_at(route_hash: &str, from: usize) -> mockito::Matcher {
+    mockito::Matcher::Regex(format!(
+        r"^/scripthash/{route_hash}/unspent\?limit=1000&from={from}$"
+    ))
+}
+
+fn bananablocks_first_page() -> mockito::Matcher {
+    mockito::Matcher::Regex(format!(r"^/address/{LEAD_ADDRESS}/utxos\?limit=1000$"))
+}
+
+async fn woc_lists_for(
+    server: &mut mockito::ServerGuard,
+    route_hash: &str,
+    lists: Lists,
+) -> mockito::Mock {
+    let mock = server.mock("GET", woc_first_page(route_hash));
     let mock = match lists {
-        Lists::These(outputs) => {
-            let result: Vec<String> = outputs
-                .iter()
-                .map(|(c, vout)| {
-                    format!(
-                        r#"{{"height":900000,"tx_pos":{vout},"tx_hash":"{}","value":1000}}"#,
-                        lead_txid(*c)
-                    )
-                })
-                .collect();
-            mock.with_status(200).with_body(format!(
-                r#"{{"script":"{}","result":[{}]}}"#,
-                lead_route_hash(),
-                result.join(",")
-            ))
+        Lists::These(_) | Lists::Raw(_) => {
+            mock.with_status(200)
+                .with_body(woc_page(route_hash, &outputs_of(&lists), None))
         }
         Lists::Malformed => mock.with_status(200).with_body("<html>busy</html>"),
         Lists::Status(429) => mock.with_status(429).with_header("retry-after", "30"),
@@ -1309,26 +1380,16 @@ async fn woc_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mockito::
     mock.create_async().await
 }
 
-async fn bitails_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mockito::Mock {
-    let path = format!("/scripthash/{}/unspent", lead_route_hash());
-    let mock = server.mock("GET", path.as_str());
+async fn bitails_lists_for(
+    server: &mut mockito::ServerGuard,
+    route_hash: &str,
+    lists: Lists,
+) -> mockito::Mock {
+    let mock = server.mock("GET", bitails_page_at(route_hash, 0));
     let mock = match lists {
-        Lists::These(outputs) => {
-            let unspent: Vec<String> = outputs
-                .iter()
-                .map(|(c, vout)| {
-                    format!(
-                        r#"{{"txid":"{}","vout":{vout},"satoshis":1000,"blockheight":900000}}"#,
-                        lead_txid(*c)
-                    )
-                })
-                .collect();
-            mock.with_status(200).with_body(format!(
-                r#"{{"scripthash":"{}","unspent":[{}]}}"#,
-                lead_route_hash(),
-                unspent.join(",")
-            ))
-        }
+        Lists::These(_) | Lists::Raw(_) => mock
+            .with_status(200)
+            .with_body(bitails_page(route_hash, &outputs_of(&lists))),
         Lists::Malformed => mock.with_status(200).with_body(r#"{"unspent":"soon"}"#),
         Lists::Status(429) => mock.with_status(429).with_header("retry-after", "30"),
         Lists::Status(status) => mock.with_status(status),
@@ -1337,26 +1398,11 @@ async fn bitails_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mocki
 }
 
 async fn bananablocks_lists(server: &mut mockito::ServerGuard, lists: Lists) -> mockito::Mock {
-    let mock = server.mock(
-        "GET",
-        mockito::Matcher::Regex(format!(r"^/address/{LEAD_ADDRESS}/utxos")),
-    );
+    let mock = server.mock("GET", bananablocks_first_page());
     let mock = match lists {
-        Lists::These(outputs) => {
-            let items: Vec<String> = outputs
-                .iter()
-                .map(|(c, vout)| {
-                    format!(
-                        r#"{{"txid":"{}","vout":{vout},"value":1000,"script_type":"p2pkh","block_height":900000}}"#,
-                        lead_txid(*c)
-                    )
-                })
-                .collect();
-            mock.with_status(200).with_body(format!(
-                r#"{{"items":[{}],"hasMore":false}}"#,
-                items.join(",")
-            ))
-        }
+        Lists::These(_) | Lists::Raw(_) => mock
+            .with_status(200)
+            .with_body(bananablocks_page(&outputs_of(&lists), None)),
         Lists::Malformed => mock.with_status(200).with_body(r#"{"utxos":[]}"#),
         Lists::Status(429) => mock.with_status(429).with_header("retry-after", "30"),
         Lists::Status(status) => mock.with_status(status),
@@ -1364,25 +1410,41 @@ async fn bananablocks_lists(server: &mut mockito::ServerGuard, lists: Lists) -> 
     mock.create_async().await
 }
 
+/// A scene holds three of mockito's pooled servers (a pool of 20 on
+/// macOS): a test drops one before it builds the next, or parallel tests
+/// wait on the pool for good.
 struct LeadScene {
     services: Services,
-    _servers: [mockito::ServerGuard; 3],
+    /// WhatsOnChain, Bitails, BananaBlocks: a test adds its later pages.
+    servers: [mockito::ServerGuard; 3],
     woc: mockito::Mock,
     bitails: mockito::Mock,
     bananablocks: mockito::Mock,
 }
 
 async fn lead_scene(woc: Lists, bitails: Lists, bananablocks: Lists) -> LeadScene {
+    lead_scene_for(LEAD_SCRIPT_HEX, woc, bitails, bananablocks).await
+}
+
+/// A scene whose WhatsOnChain and Bitails list under `script_hex`'s hash
+/// (BananaBlocks' fixture stays at the lead address).
+async fn lead_scene_for(
+    script_hex: &str,
+    woc: Lists,
+    bitails: Lists,
+    bananablocks: Lists,
+) -> LeadScene {
+    let route_hash = route_hash_of(script_hex);
     let mut w = mockito::Server::new_async().await;
     let mut t = mockito::Server::new_async().await;
     let mut b = mockito::Server::new_async().await;
-    let woc = woc_lists(&mut w, woc).await;
-    let bitails = bitails_lists(&mut t, bitails).await;
+    let woc = woc_lists_for(&mut w, &route_hash, woc).await;
+    let bitails = bitails_lists_for(&mut t, &route_hash, bitails).await;
     let bananablocks = bananablocks_lists(&mut b, bananablocks).await;
     let services = services_with_three(ServicesOptions::mainnet(), &w.url(), &b.url(), &t.url());
     LeadScene {
         services,
-        _servers: [w, t, b],
+        servers: [w, t, b],
         woc,
         bitails,
         bananablocks,
@@ -1520,6 +1582,7 @@ async fn a_malformed_list_leaves_the_good_one() {
     assert_eq!(leads.faults[0].0, "WhatsOnChain");
     s.woc.expect(1).assert_async().await;
 
+    drop(s.servers);
     let s = lead_scene(
         Lists::These(&[('a', 0)]),
         Lists::Malformed,
@@ -1568,6 +1631,7 @@ async fn bananablocks_lists_a_p2pkh_script_by_its_address() {
 
     // WhatsOnChain and Bitails rate limited, BananaBlocks malformed:
     // nothing answered.
+    drop(s.servers);
     let s = lead_scene(Lists::Status(429), Lists::Status(429), Lists::Malformed).await;
     let err = s
         .services
@@ -1580,6 +1644,7 @@ async fn bananablocks_lists_a_p2pkh_script_by_its_address() {
     );
 
     // BananaBlocks alone answering is enough to look.
+    drop(s.servers);
     let s = lead_scene(
         Lists::Status(429),
         Lists::Status(404),
@@ -1595,17 +1660,343 @@ async fn bananablocks_lists_a_p2pkh_script_by_its_address() {
     assert_eq!(leads.answered, vec!["BananaBlocks"]);
 }
 
-/// A script that is not P2PKH has no address: BananaBlocks is not asked.
+/// A script that is not the exact P2PKH template has no address:
+/// BananaBlocks is not asked (no request at all), and WhatsOnChain's and
+/// Bitails' lists by the script's hash still answer. An OP_RETURN has no
+/// address; a non-minimal push of the lead's hash (`76a94c14<20>88ac`) is
+/// another script, whose outputs the address list is not.
 #[tokio::test]
 async fn a_script_with_no_address_is_not_asked_of_bananablocks() {
+    let non_minimal = LEAD_SCRIPT_HEX.replacen("76a914", "76a94c14", 1);
+    for script in ["6a0568656c6c6f", non_minimal.as_str()] {
+        let mut s = lead_scene_for(
+            script,
+            Lists::These(&[('a', 0)]),
+            Lists::These(&[]),
+            Lists::These(&[('d', 3)]),
+        )
+        .await;
+        let any_request = s.servers[2]
+            .mock("GET", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let leads = s
+            .services
+            .get_utxo_leads(script, Some(GetUtxoStatusOutputFormat::Script))
+            .await
+            .unwrap();
+        assert_eq!(leads_of(&leads), vec![('a', 0, vec!["WhatsOnChain"])]);
+        assert_eq!(leads.answered, vec!["WhatsOnChain", "Bitails"], "{script}");
+        s.bananablocks.expect(0).assert_async().await;
+        any_request.assert_async().await;
+    }
+
     let services = Services::mainnet().unwrap();
     assert_eq!(
         services.p2pkh_address(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script)),
         Some(LEAD_ADDRESS.to_string())
     );
     assert_eq!(
-        services.p2pkh_address("6a0568656c6c6f", Some(GetUtxoStatusOutputFormat::Script)),
+        services.p2pkh_address(&non_minimal, Some(GetUtxoStatusOutputFormat::Script)),
+        None
+    );
+    assert_eq!(
+        services.p2pkh_address(
+            &format!("{LEAD_SCRIPT_HEX}00"),
+            Some(GetUtxoStatusOutputFormat::Script)
+        ),
         None
     );
     assert_eq!(services.p2pkh_address(&lead_hash_le(&services), None), None);
+    // Testnet's version byte (0x6f): the same hash is an `m`/`n` address.
+    let testnet = Services::testnet().unwrap();
+    assert_eq!(
+        testnet.p2pkh_address(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script)),
+        Some("n21x4NRm6PjPzsPjgA76EQDHtkvZE1khzd".to_string())
+    );
+}
+
+/// A txid that is not 64 hex characters makes that explorer's list a
+/// malformed answer (deterministic: asked once), never a lead: `zz` and
+/// `../x` would be put in a path later. The other explorer's list stands.
+#[tokio::test]
+async fn a_bad_txid_is_that_explorers_malformed_answer() {
+    static ZZ: [(&str, u32); 2] = [
+        (
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            0,
+        ),
+        ("zz", 0),
+    ];
+    static DOTS: [(&str, u32); 1] = [("../x", 1)];
+    for bad in [&ZZ[..], &DOTS[..]] {
+        let s = lead_scene(
+            Lists::Raw(bad),
+            Lists::These(&[('b', 1)]),
+            Lists::These(&[]),
+        )
+        .await;
+        let leads = s
+            .services
+            .get_utxo_leads(&lead_hash_le(&s.services), None)
+            .await
+            .unwrap();
+        assert_eq!(leads_of(&leads), vec![('b', 1, vec!["Bitails"])]);
+        assert_eq!(leads.answered, vec!["Bitails"]);
+        assert_eq!(leads.faults.len(), 1, "{:?}", leads.faults);
+        assert_eq!(leads.faults[0].0, "WhatsOnChain");
+        assert!(
+            leads.faults[0].1.contains("not 64 hex characters"),
+            "{:?}",
+            leads.faults
+        );
+        s.woc.expect(1).assert_async().await;
+    }
+}
+
+/// BananaBlocks' list is read by its cursor while `hasMore`: both pages'
+/// leads are in the one union, the cursor carried back percent-encoded,
+/// and a list that ended is not partial.
+#[tokio::test]
+async fn bananablocks_pages_by_its_cursor() {
+    let mut s = lead_scene(
+        Lists::These(&[('a', 0)]),
+        Lists::These(&[]),
+        Lists::These(&[]),
+    )
+    .await;
+    // The scene's first page gives way to this test's pages.
+    s.bananablocks.remove_async().await;
+    let first = s.servers[2]
+        .mock("GET", bananablocks_first_page())
+        .with_status(200)
+        .with_body(bananablocks_page(
+            &[(lead_txid('a'), 0), (lead_txid('d'), 3)],
+            Some("OTcy+/=1"),
+        ))
+        .expect(1)
+        .create_async()
+        .await;
+    let second = s.servers[2]
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(format!(
+                r"^/address/{LEAD_ADDRESS}/utxos\?limit=1000&cursor=OTcy%2B%2F%3D1$"
+            )),
+        )
+        .with_status(200)
+        .with_body(bananablocks_page(&[(lead_txid('e'), 4)], None))
+        .expect(1)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script))
+        .await
+        .unwrap();
+    assert_eq!(
+        leads_of(&leads),
+        vec![
+            ('a', 0, vec!["WhatsOnChain", "BananaBlocks"]),
+            ('d', 3, vec!["BananaBlocks"]),
+            ('e', 4, vec!["BananaBlocks"]),
+        ]
+    );
+    assert!(leads.partial.is_empty(), "{:?}", leads.partial);
+    first.assert_async().await;
+    second.assert_async().await;
+}
+
+/// At the page cap BananaBlocks is in `partial`: still answered, its pages'
+/// leads taken, and exactly the cap's pages asked.
+#[tokio::test]
+async fn bananablocks_at_the_page_cap_is_partial() {
+    let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
+    s.bananablocks.remove_async().await;
+    let every_page = s.servers[2]
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(format!(
+                r"^/address/{LEAD_ADDRESS}/utxos\?limit=1000(&cursor=more)?$"
+            )),
+        )
+        .with_status(200)
+        .with_body(bananablocks_page(&[(lead_txid('d'), 3)], Some("more")))
+        .expect(LEAD_PAGES_MAX)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script))
+        .await
+        .unwrap();
+    assert_eq!(leads_of(&leads), vec![('d', 3, vec!["BananaBlocks"])]);
+    assert_eq!(
+        leads.answered,
+        vec!["WhatsOnChain", "Bitails", "BananaBlocks"]
+    );
+    assert_eq!(leads.partial, vec!["BananaBlocks"]);
+    assert!(leads.faults.is_empty(), "{:?}", leads.faults);
+    every_page.assert_async().await;
+}
+
+/// 1000 distinct outputs, `(txid, vout)` with txid `{n:064x}`.
+fn a_full_page(offset: usize) -> Vec<(String, u32)> {
+    (offset..offset + 1000)
+        .map(|n| (format!("{n:064x}"), 0))
+        .collect()
+}
+
+/// Bitails says nothing of more: a full page (1000) is followed by the
+/// next (`from=1000`); a shorter one ends the list. A full page whose next
+/// could not be read (a 429) cuts Bitails' list short: Bitails answered,
+/// its page's leads are taken, and it is in `partial`, not in `faults`.
+/// At the page cap it is partial too.
+#[tokio::test]
+async fn a_full_bitails_page_is_read_on_or_partial() {
+    let route = lead_route_hash();
+    // The next page ends the list.
+    let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
+    s.bitails.remove_async().await;
+    s.servers[1]
+        .mock("GET", bitails_page_at(&route, 0))
+        .with_status(200)
+        .with_body(bitails_page(&route, &a_full_page(0)))
+        .create_async()
+        .await;
+    let second = s.servers[1]
+        .mock("GET", bitails_page_at(&route, 1000))
+        .with_status(200)
+        .with_body(bitails_page(&route, &[(lead_txid('e'), 4)]))
+        .expect(1)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(leads.leads.len(), 1001);
+    assert!(leads.partial.is_empty(), "{:?}", leads.partial);
+    second.assert_async().await;
+
+    // The next page is rate limited: cut short.
+    drop(s.servers);
+    let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
+    s.bitails.remove_async().await;
+    s.servers[1]
+        .mock("GET", bitails_page_at(&route, 0))
+        .with_status(200)
+        .with_body(bitails_page(&route, &a_full_page(0)))
+        .create_async()
+        .await;
+    s.servers[1]
+        .mock("GET", bitails_page_at(&route, 1000))
+        .with_status(429)
+        .with_header("retry-after", "30")
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(leads.leads.len(), 1000);
+    assert_eq!(leads.answered, vec!["WhatsOnChain", "Bitails"]);
+    assert_eq!(leads.partial, vec!["Bitails"]);
+    assert!(leads.faults.is_empty(), "{:?}", leads.faults);
+
+    // Every page full: the cap's pages are read, and Bitails is partial.
+    drop(s.servers);
+    let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
+    s.bitails.remove_async().await;
+    let every_page = s.servers[1]
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(format!(
+                r"^/scripthash/{route}/unspent\?limit=1000&from=\d+$"
+            )),
+        )
+        .with_status(200)
+        .with_body(bitails_page(&route, &a_full_page(0)))
+        .expect(LEAD_PAGES_MAX)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(leads.leads.len(), 1000);
+    assert_eq!(leads.partial, vec!["Bitails"]);
+    every_page.assert_async().await;
+}
+
+/// WhatsOnChain's list is read by its `nextPageToken` (`?token=`, carried
+/// back percent-encoded): both pages' leads are in the union.
+#[tokio::test]
+async fn whatsonchain_pages_by_its_token() {
+    let route = lead_route_hash();
+    let mut s = lead_scene(Lists::These(&[]), Lists::These(&[]), Lists::These(&[])).await;
+    s.woc.remove_async().await;
+    s.servers[0]
+        .mock("GET", woc_first_page(&route))
+        .with_status(200)
+        .with_body(woc_page(&route, &[(lead_txid('a'), 0)], Some("00ff/+")))
+        .create_async()
+        .await;
+    let second = s.servers[0]
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(format!(r"^/script/{route}/unspent/all\?token=00ff%2F%2B$")),
+        )
+        .with_status(200)
+        .with_body(woc_page(&route, &[(lead_txid('b'), 1)], None))
+        .expect(1)
+        .create_async()
+        .await;
+    let leads = s
+        .services
+        .get_utxo_leads(&lead_hash_le(&s.services), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        leads_of(&leads),
+        vec![
+            ('a', 0, vec!["WhatsOnChain"]),
+            ('b', 1, vec!["WhatsOnChain"])
+        ]
+    );
+    assert!(leads.partial.is_empty(), "{:?}", leads.partial);
+    second.assert_async().await;
+}
+
+/// A gate closed by an earlier 429 is skipped without a request: the
+/// second look asks WhatsOnChain nothing (its Retry-After of 30 s has not
+/// passed), records it as rate limited, and Bitails' list still answers.
+#[tokio::test]
+async fn a_closed_gate_is_skipped_without_a_request() {
+    let s = lead_scene(
+        Lists::Status(429),
+        Lists::These(&[('b', 1)]),
+        Lists::These(&[]),
+    )
+    .await;
+    for _ in 0..2 {
+        let leads = s
+            .services
+            .get_utxo_leads(&lead_hash_le(&s.services), None)
+            .await
+            .unwrap();
+        assert_eq!(leads_of(&leads), vec![('b', 1, vec!["Bitails"])]);
+        assert_eq!(leads.faults[0].0, "WhatsOnChain");
+        assert!(
+            leads.faults[0].1.contains("Rate limited"),
+            "{:?}",
+            leads.faults
+        );
+    }
+    s.woc.expect(1).assert_async().await;
+    s.bitails.expect(2).assert_async().await;
 }

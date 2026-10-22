@@ -25,9 +25,9 @@ use tokio::time::sleep;
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::providers::pace::RateGate;
 use crate::services::traits::{
-    validate_txid, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
+    query_value, validate_txid, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
     GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, PostBeefResult,
-    PostTxResultForTxid, TxStatusDetail, UtxoDetail,
+    PostTxResultForTxid, TxStatusDetail, UnspentPages, UtxoDetail, LEAD_PAGES_MAX,
 };
 #[cfg(feature = "break-glass-script-history")]
 use crate::services::traits::{GetScriptHashHistoryResult, ScriptHistoryItem};
@@ -645,6 +645,66 @@ impl WhatsOnChain {
         })
     }
 
+    /// The unspent outputs WhatsOnChain lists under a script: LEADS for
+    /// `Services::get_utxo_leads`, never a verdict.
+    ///
+    /// `GET /script/{hash}/unspent/all` answers up to 1000 and a
+    /// `nextPageToken` while there are more; `?token=` takes the next page
+    /// (probed 2026-10-22, read-only: a script with 2,719 unspent outputs
+    /// came as 1000, 1000 and 719, the last page without a token). Each
+    /// page goes through the gate, at most [`LEAD_PAGES_MAX`] pages. On the
+    /// first page a non-2xx is a fault (`HTTP <code>`: a 5xx stays
+    /// transient); a later page that could not be read cuts the list short;
+    /// a page that was read and does not parse is a malformed answer.
+    pub async fn list_script_unspent(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+    ) -> Result<UnspentPages> {
+        let script_hash = crate::services::traits::convert_script_hash(output, output_format)?;
+        let mut list = UnspentPages::default();
+        let mut token: Option<String> = None;
+        for page in 0..LEAD_PAGES_MAX {
+            let mut url = format!("{}/script/{}/unspent/all", self.base_url, script_hash);
+            if let Some(token) = &token {
+                url.push_str("?token=");
+                url.push_str(&query_value(token));
+            }
+            let response = match self.get_once(&url).await {
+                Ok(response) => response,
+                Err(e) => return list.unread(page, e),
+            };
+            if !response.status().is_success() {
+                let fault = Error::ServiceError(format!(
+                    "WhatsOnChain unspent list: HTTP {}",
+                    response.status()
+                ));
+                return list.unread(page, fault);
+            }
+            let body = match response.bytes().await {
+                Ok(body) => body,
+                Err(e) => {
+                    let fault = Error::NetworkError(format!("UTXO response read failed: {}", e));
+                    return list.unread(page, fault);
+                }
+            };
+            let data: WocUtxoStatusResponse = serde_json::from_slice(&body).map_err(|e| {
+                Error::ServiceError(format!("Failed to parse UTXO response: {}", e))
+            })?;
+            list.details.extend(data.result.iter().map(|u| UtxoDetail {
+                txid: u.tx_hash.clone(),
+                index: u.tx_pos,
+                satoshis: u.value,
+                height: Some(u.height),
+            }));
+            match data.next_page_token.filter(|t| !t.is_empty()) {
+                Some(next) => token = Some(next),
+                None => return Ok(list),
+            }
+        }
+        Ok(list.capped())
+    }
+
     /// The transaction an explorer names as the spender of `txid:vout`.
     ///
     /// Break-glass (Rule 28, the stranger's spend): who spent an output of
@@ -1022,6 +1082,9 @@ impl Serialize for WocTscProof {
 struct WocUtxoStatusResponse {
     script: String,
     result: Vec<WocUtxoItem>,
+    /// The next page's token, while there are more (`?token=`).
+    #[serde(rename = "nextPageToken", default)]
+    next_page_token: Option<String>,
 }
 
 #[allow(dead_code)]

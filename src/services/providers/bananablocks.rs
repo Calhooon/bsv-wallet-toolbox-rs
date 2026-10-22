@@ -39,9 +39,9 @@ use std::time::Duration;
 
 use crate::services::providers::pace::RateGate;
 use crate::services::traits::{
-    convert_script_hash, merkle_path_note, validate_txid, GetMerklePathResult, GetRawTxResult,
-    GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, TxStatusDetail,
-    UtxoDetail, NOTE_PROOF,
+    convert_script_hash, merkle_path_note, query_value, validate_txid, GetMerklePathResult,
+    GetRawTxResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult,
+    TxStatusDetail, UnspentPages, UtxoDetail, LEAD_PAGES_MAX, NOTE_PROOF,
 };
 use crate::services::Chain;
 use crate::{Error, Result};
@@ -316,24 +316,58 @@ impl BananaBlocks {
     // =========================================================================
 
     /// The unspent outputs BananaBlocks lists for a P2PKH address:
-    /// `GET /address/{address}/utxos?limit=1000`, the first page (newest
-    /// first). LEADS for `Services::get_utxo_leads`, never a verdict.
-    /// BananaBlocks lists by address only: no route takes a script hash
-    /// (probed 2026-10-22: `/script/…`, `/scripthash/…`, `/script_hash/…`
-    /// are 404), so only a P2PKH script handed as itself can be asked here.
+    /// `GET /address/{address}/utxos?limit=1000`, then `&cursor=` while the
+    /// answer says `hasMore`, each page through the gate, at most
+    /// [`LEAD_PAGES_MAX`] pages. LEADS for `Services::get_utxo_leads`,
+    /// never a verdict. BananaBlocks lists by address only: no route takes
+    /// a script hash (probed 2026-10-22: `/script/…`, `/scripthash/…`,
+    /// `/script_hash/…` are 404), so only a P2PKH script handed as itself
+    /// can be asked here.
     ///
     /// Only a 200 with an `items` list of `{txid, vout, value}` answers (an
-    /// address never seen answers `{"items":[],"hasMore":false}`); a 404, a
-    /// 429, a 5xx, a malformed body are faults, never an empty list. A first
-    /// page with `hasMore` is still an answer: the leads it holds.
-    pub async fn list_address_unspent(&self, address: &str) -> Result<Vec<UtxoDetail>> {
-        let (status, body) = self
-            .get(&format!(
+    /// address never seen answers `{"items":[],"hasMore":false}`); on the
+    /// first page a 404, a 429, a 5xx, a malformed body are faults, never
+    /// an empty list. A later page that could not be read (a transport
+    /// fault, a 429, another status) cuts the list short; a later page that
+    /// was read and is malformed is the explorer's malformed answer. The
+    /// page cap reached with `hasMore` still set cuts it short too.
+    pub async fn list_address_unspent(&self, address: &str) -> Result<UnspentPages> {
+        let mut list = UnspentPages::default();
+        let mut cursor: Option<String> = None;
+        for page in 0..LEAD_PAGES_MAX {
+            let mut url = format!(
                 "{}/address/{}/utxos?limit={}",
                 self.base_url, address, BANANABLOCKS_LEAD_PAGE
-            ))
-            .await?;
-        parse_address_utxos(status, &body, address)
+            );
+            if let Some(cursor) = &cursor {
+                url.push_str("&cursor=");
+                url.push_str(&query_value(cursor));
+            }
+            let (status, body) = match self.get(&url).await {
+                Ok(answer) => answer,
+                Err(e) => return list.unread(page, e),
+            };
+            if status != StatusCode::OK {
+                return list.unread(
+                    page,
+                    Error::ServiceError(format!(
+                        "BananaBlocks address {address} utxos: HTTP {status}"
+                    )),
+                );
+            }
+            let (details, next) = parse_address_utxos(status, &body, address)?;
+            list.details.extend(details);
+            match next {
+                Some(next) => cursor = Some(next),
+                None => return Ok(list),
+            }
+        }
+        tracing::info!(
+            address = %address,
+            listed = list.details.len(),
+            "BananaBlocks lists more unspent outputs than the page cap; the pages' leads are taken"
+        );
+        Ok(list.capped())
     }
 
     // =========================================================================
@@ -538,12 +572,15 @@ pub(crate) fn parse_txo_body(
 }
 
 /// The `/address/{address}/utxos` rule: only a 200 whose `items` are each a
-/// 64-hex `txid`, a `vout` and a `value` answers.
+/// 64-hex `txid`, a `vout` and a `value` answers; the next page's cursor
+/// when `hasMore` (a `hasMore` without a cursor is malformed). An item
+/// whose `script_type` is given and is not `p2pkh` is another script's
+/// output, not this address's P2PKH one: it is left out.
 pub(crate) fn parse_address_utxos(
     status: StatusCode,
     body: &str,
     address: &str,
-) -> Result<Vec<UtxoDetail>> {
+) -> Result<(Vec<UtxoDetail>, Option<String>)> {
     let bad = |why: &str| {
         Error::ServiceError(format!(
             "BananaBlocks address {address} utxos: {why}: {}",
@@ -559,15 +596,24 @@ pub(crate) fn parse_address_utxos(
         .get("items")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| bad("no `items` list (schema drift?)"))?;
-    if v.get("hasMore").and_then(serde_json::Value::as_bool) == Some(true) {
-        tracing::info!(
-            address = %address,
-            listed = items.len(),
-            "BananaBlocks lists more unspent outputs than its first page; the page's leads are taken"
-        );
-    }
-    items
+    let next = if v.get("hasMore").and_then(serde_json::Value::as_bool) == Some(true) {
+        Some(
+            v.get("cursor")
+                .and_then(serde_json::Value::as_str)
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| bad("`hasMore` without a cursor"))?
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let details = items
         .iter()
+        .filter(|item| {
+            item.get("script_type")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|t| t.eq_ignore_ascii_case("p2pkh"))
+        })
         .map(|item| {
             let txid = item
                 .get("txid")
@@ -593,7 +639,8 @@ pub(crate) fn parse_address_utxos(
                     .and_then(|h| u32::try_from(h).ok()),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((details, next))
 }
 
 /// `GET /tx/{txid}` → the block `(hash, height)` it is in, `None` when it is
@@ -1361,7 +1408,8 @@ mod tests {
     fn the_address_list_answers_only_in_its_documented_shape() {
         let address = "1MVzmKLnHNJ9Dkv7xb8iQUzy2mKrJNzTcH";
         let page = r#"{"items":[{"txid":"b4ebcb258d4ac9b7811ae032ec66a68437a6f370b14bccd8b29b3f4665ab0600","vout":1,"value":1945,"script_type":"p2pkh","block_height":972200,"block_time":1792697684}],"cursor":"OTcyMjAwOjE6MDA=","hasMore":true}"#;
-        let listed = parse_address_utxos(StatusCode::OK, page, address).unwrap();
+        let (listed, next) = parse_address_utxos(StatusCode::OK, page, address).unwrap();
+        assert_eq!(next.as_deref(), Some("OTcyMjAwOjE6MDA="));
         assert_eq!(listed.len(), 1);
         assert_eq!(
             listed[0].txid,
@@ -1372,9 +1420,16 @@ mod tests {
             (1, 1945, Some(972200))
         );
         let never_seen = r#"{"items":[],"hasMore":false}"#;
-        assert!(parse_address_utxos(StatusCode::OK, never_seen, address)
-            .unwrap()
-            .is_empty());
+        let (listed, next) = parse_address_utxos(StatusCode::OK, never_seen, address).unwrap();
+        assert!(listed.is_empty() && next.is_none());
+        // Another script type under the address is not its P2PKH output.
+        let mixed = r#"{"items":[{"txid":"b4ebcb258d4ac9b7811ae032ec66a68437a6f370b14bccd8b29b3f4665ab0600","vout":1,"value":1945,"script_type":"p2pk"},{"txid":"b4ebcb258d4ac9b7811ae032ec66a68437a6f370b14bccd8b29b3f4665ab0600","vout":2,"value":5}],"hasMore":false}"#;
+        let (listed, _) = parse_address_utxos(StatusCode::OK, mixed, address).unwrap();
+        assert_eq!(
+            listed.iter().map(|d| d.index).collect::<Vec<_>>(),
+            vec![2],
+            "a p2pk item is left out, an item with no script_type kept"
+        );
 
         for (status, body) in [
             (StatusCode::NOT_FOUND, "404 page not found"),
@@ -1385,6 +1440,7 @@ mod tests {
                 StatusCode::OK,
                 r#"{"items":[{"txid":"zz","vout":0,"value":1}]}"#,
             ),
+            (StatusCode::OK, r#"{"items":[],"hasMore":true}"#),
             (
                 StatusCode::OK,
                 r#"{"items":[{"txid":"b4ebcb258d4ac9b7811ae032ec66a68437a6f370b14bccd8b29b3f4665ab0600","value":1}]}"#,
