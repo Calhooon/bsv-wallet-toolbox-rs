@@ -14,12 +14,15 @@ use bsv_rs::transaction::{Beef, MockChainTracker};
 use chrono::{Duration, Utc};
 use sqlx::Row;
 
-use super::create_action::{allocate_change_input, find_or_insert_output_basket};
+use super::create_action::{
+    allocate_change_input, find_or_insert_output_basket, rebuild_beef_for_broadcast,
+};
 use super::reorg_tests::{
-    child_spending, open_gate, seed_user, single_leaf_bump, storage, txid_of, COINBASE_HEX,
-    COINBASE_TXID,
+    child_spending, insert_proven, mark_checked, open_gate, seed_user, single_leaf_bump, storage,
+    txid_of, COINBASE_HEX, COINBASE_TXID,
 };
 use super::StorageSqlx;
+use crate::error::Error;
 use crate::monitor::tasks::ArcadeEventsTask;
 use crate::services::mock::{MockResponse, MockWalletServices, MockWalletServicesBuilder};
 use crate::services::providers::arcade::{
@@ -30,7 +33,7 @@ use crate::services::traits::{
     PostTxResultForTxid,
 };
 use crate::services::{TxStatusDetail, WalletServices};
-use crate::storage::traits::WalletStorageProvider;
+use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
 use crate::storage::MonitorStorage;
 
 fn competitor_spending(parent_txid: &str) -> Vec<u8> {
@@ -535,7 +538,8 @@ async fn a_checked_competitor_proof_outranks_a_known_word() {
 
 /// R named and proven, no status source holds P: the evidence path. P
 /// `failed` / `doubleSpend`, C kept (spent by R), P's descendants retired:
-/// D `failed` / `invalid`, D's change dead.
+/// D `failed` / `invalid`, D's change dead. Then the BEEF builder over D
+/// refuses the lineage.
 #[tokio::test]
 async fn a_checked_competitor_proof_retires_the_lineage() {
     let s = storage().await;
@@ -571,4 +575,171 @@ async fn a_checked_competitor_proof_retires_the_lineage() {
         None,
         "nothing of the lineage funds an action"
     );
+
+    // The BEEF builder over D (a pre-signed refund spending D's change)
+    // refuses the dead lineage (#42 point 4; at 0.11.0 it assembled D and
+    // P's bytes and the post went out).
+    let mut conn = s.pool().acquire().await.unwrap();
+    let refused =
+        rebuild_beef_for_broadcast(&mut conn, s.writer(), std::slice::from_ref(&d), Some(&s)).await;
+    match refused {
+        Err(Error::FailedAncestor { txid }) => assert_eq!(txid, d),
+        other => panic!("expected FailedAncestor, got {other:?}"),
+    }
+}
+
+/// A non-change output (a pot, a receipt) of `owner` at `vout`, spendable.
+async fn insert_pot(s: &StorageSqlx, l: &Lineage, owner: i64, txid: &str, vout: u32) -> i64 {
+    let old = Utc::now() - Duration::days(2);
+    sqlx::query_scalar(
+        "INSERT INTO outputs (user_id, transaction_id, basket_id, spendable, change, vout, satoshis, provided_by, purpose, type, txid, locking_script, created_at, updated_at) \
+         VALUES (?, ?, ?, 1, 0, ?, 5000, 'you', '', 'custom', ?, x'51', ?, ?) RETURNING output_id",
+    )
+    .bind(l.user_id)
+    .bind(owner)
+    .bind(l.basket_id)
+    .bind(vout)
+    .bind(txid)
+    .bind(old)
+    .bind(old)
+    .fetch_one(s.writer())
+    .await
+    .unwrap()
+}
+
+/// createAction spending `txid:vout` explicitly, one 100 sat output.
+fn spend_args(txid: &str, vout: u32) -> bsv_rs::wallet::CreateActionArgs {
+    use bsv_rs::wallet::{CreateActionInput, CreateActionOutput, Outpoint};
+    let mut id = [0u8; 32];
+    id.copy_from_slice(&hex::decode(txid).unwrap());
+    bsv_rs::wallet::CreateActionArgs {
+        description: "spend a pot".to_string(),
+        input_beef: None,
+        inputs: Some(vec![CreateActionInput {
+            outpoint: Outpoint { txid: id, vout },
+            input_description: "the pot".to_string(),
+            unlocking_script: None,
+            unlocking_script_length: Some(107),
+            sequence_number: None,
+        }]),
+        outputs: Some(vec![CreateActionOutput {
+            locking_script: vec![0x51],
+            satoshis: 100,
+            output_description: "a payment".to_string(),
+            basket: None,
+            custom_instructions: None,
+            tags: None,
+        }]),
+        lock_time: None,
+        version: None,
+        labels: None,
+        options: None,
+    }
+}
+
+async fn action_rows(s: &StorageSqlx) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE description = 'spend a pot'")
+        .fetch_one(s.pool())
+        .await
+        .unwrap()
+}
+
+fn posted(mock: &MockWalletServices) -> bool {
+    mock.call_history().iter().any(|c| c.method == "post_beef")
+}
+
+/// C's source (the coinbase) proven and its root checked, so the walk ends
+/// there and only P's status decides the BEEF.
+async fn prove_coinbase(s: &StorageSqlx) {
+    let coinbase = hex::decode(COINBASE_HEX).unwrap();
+    let bump = single_leaf_bump(900, COINBASE_TXID);
+    insert_proven(s, COINBASE_TXID, 900, &"bb".repeat(32), &coinbase, &bump).await;
+    mark_checked(s, COINBASE_TXID, 900).await;
+}
+
+async fn fail(s: &StorageSqlx, transaction_id: i64) {
+    sqlx::query("UPDATE transactions SET status = 'failed' WHERE transaction_id = ?")
+        .bind(transaction_id)
+        .execute(s.writer())
+        .await
+        .unwrap();
+}
+
+/// #42 point 4, the explicit input: a pot of P (spendable = 1, P `failed`)
+/// spent by name. createAction refuses it with the typed error before
+/// anything is written or posted. At 0.11.0 the check read only the flag.
+#[tokio::test]
+async fn create_action_refuses_an_input_whose_creator_is_failed() {
+    let s = storage().await;
+    let l = seed(&s, None).await;
+    prove_coinbase(&s).await;
+    fail(&s, l.p_id).await;
+    insert_pot(&s, &l, l.p_id, &l.p, 1).await;
+    let mock = set(&s, MockWalletServicesBuilder::default());
+    let (_, auth) = seed_user(&s).await;
+    let refused = WalletStorageWriter::create_action(&s, &auth, spend_args(&l.p, 1)).await;
+    match refused {
+        Err(Error::FailedAncestor { txid }) => assert_eq!(txid, l.p),
+        other => panic!("expected FailedAncestor, got {other:?}"),
+    }
+    assert_eq!(action_rows(&s).await, 0, "the action wrote nothing");
+    assert!(!posted(&mock), "nothing posted");
+}
+
+/// #42 point 4, the walk: D (`unproven`) spends P's change and P is
+/// `failed` (a descendant retire not yet finished). A pot of D spent by
+/// name: the BEEF walk reaches P and refuses it, nothing written or posted.
+/// At 0.11.0 the walk assembled P's bytes.
+#[tokio::test]
+async fn create_action_refuses_a_child_of_a_failed_parent() {
+    let s = storage().await;
+    let l = seed(&s, Some("unproven")).await;
+    prove_coinbase(&s).await;
+    fail(&s, l.p_id).await;
+    let (d, d_id, _) = l.d.clone().unwrap();
+    insert_pot(&s, &l, d_id, &d, 1).await;
+    let mock = set(&s, MockWalletServicesBuilder::default());
+    let (_, auth) = seed_user(&s).await;
+    let refused = WalletStorageWriter::create_action(&s, &auth, spend_args(&d, 1)).await;
+    match refused {
+        Err(Error::FailedAncestor { txid }) => assert_eq!(txid, l.p),
+        other => panic!("expected FailedAncestor, got {other:?}"),
+    }
+    assert_eq!(action_rows(&s).await, 0, "the action wrote nothing");
+    assert!(!posted(&mock), "nothing posted");
+}
+
+/// #42 point 4, the re-send: D's request is `unsent` and P is `failed`.
+/// send-waiting's rebuild refuses the lineage and does not fall back to
+/// the stored inputBEEF (which carries P): nothing is posted. At 0.11.0
+/// the fallback posted D over P.
+#[tokio::test]
+async fn send_waiting_posts_nothing_over_a_failed_parent() {
+    let s = storage().await;
+    let l = seed(&s, Some("sending")).await;
+    let (d, _, _) = l.d.clone().unwrap();
+    fail(&s, l.p_id).await;
+    sqlx::query("UPDATE proven_tx_reqs SET status = 'invalid' WHERE txid = ?")
+        .bind(&l.p)
+        .execute(s.writer())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent' WHERE txid = ?")
+        .bind(&d)
+        .execute(s.writer())
+        .await
+        .unwrap();
+    let mock = set(
+        &s,
+        MockWalletServicesBuilder::default()
+            .post_beef_response(MockResponse::Success(vec![courier(
+                "ARC", &d, "error", true,
+            )]))
+            .get_status_for_txids_response(status_source(&d, "unknown")),
+    );
+    s.send_waiting_transactions(std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(!posted(&mock), "nothing posted over a failed parent");
+    assert_eq!(words(&s, &d).await, ("sending".into(), "unsent".into()));
 }

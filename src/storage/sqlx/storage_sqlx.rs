@@ -5287,6 +5287,17 @@ impl MonitorStorage for StorageSqlx {
                 .await
                 {
                     Ok(b) => b,
+                    // A failed ancestor: the stored inputBEEF carries the
+                    // same dead lineage, so there is no fallback and no
+                    // post (bsv-wallet-toolbox-rs #42 point 4).
+                    Err(e @ Error::FailedAncestor { .. }) => {
+                        tracing::warn!(
+                            txid = %req.txid,
+                            marker = "failed_ancestor_not_posted",
+                            "send_waiting: {e}; not posted"
+                        );
+                        continue;
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "send_waiting: rebuild_beef_for_broadcast failed for {}: {e}",

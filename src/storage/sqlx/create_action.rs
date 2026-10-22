@@ -1548,6 +1548,16 @@ async fn validate_and_extend_inputs(
                         i, txid, vout
                     )));
                 }
+                // A failed creator's output is a phantom, whatever its flag
+                // says (bsv-wallet-toolbox-rs #42 point 4).
+                let creator: Option<String> =
+                    sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
+                        .bind(out.transaction_id)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                if creator.as_deref() == Some("failed") {
+                    return Err(Error::FailedAncestor { txid });
+                }
             }
 
             let unlocking_script_length = input
@@ -4078,9 +4088,15 @@ pub(super) fn read_var_int_for_beef(data: &[u8], offset: &mut usize) -> Result<u
 /// * `storage` - The storage backend to query
 /// * `txid` - The transaction ID (hex string)
 ///
+/// A transaction this wallet holds as `failed` with no proof is refused
+/// (`Error::FailedAncestor`): its bytes never enter a BEEF, so nothing
+/// built on a dead lineage is assembled or broadcast (bsv-wallet-toolbox-rs
+/// #42 point 4). A proof in `proven_txs` outranks the word.
+///
 /// # Returns
 /// * `Ok(Some(BeefTxData))` - Transaction data if found
 /// * `Ok(None)` - If transaction not found in any table
+/// * `Err(Error::FailedAncestor)` - If the transaction is `failed` here
 pub(super) async fn get_tx_with_proof(
     conn: &mut SqliteConnection,
     txid: &str,
@@ -4107,12 +4123,16 @@ pub(super) async fn get_tx_with_proof(
         }));
     }
 
-    // Try transactions table - check both raw_tx and input_beef
+    // Try transactions table - check both raw_tx and input_beef. A row
+    // that is not failed is read before a failed one (the same txid under
+    // two users).
     let tx_row = sqlx::query(
         r#"
-        SELECT raw_tx, input_beef
+        SELECT raw_tx, input_beef, status
         FROM transactions
         WHERE txid = ?
+        ORDER BY status = 'failed'
+        LIMIT 1
         "#,
     )
     .bind(txid)
@@ -4120,6 +4140,12 @@ pub(super) async fn get_tx_with_proof(
     .await?;
 
     if let Some(row) = tx_row {
+        let status: String = row.get("status");
+        if status == "failed" {
+            return Err(Error::FailedAncestor {
+                txid: txid.to_string(),
+            });
+        }
         let raw_tx: Option<Vec<u8>> = row.get("raw_tx");
         let input_beef: Option<Vec<u8>> = row.get("input_beef");
 
