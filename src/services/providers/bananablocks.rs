@@ -6,15 +6,23 @@
 //! Provides, live-probed 2026-10-22:
 //! - `GET {base}/tx/{txid}/hex`: the raw transaction (text hex); the bytes
 //!   must hash to the txid
-//! - `GET {base}/txo/{txid}/{vout}/spend`: `{"spent":false}` or
-//!   `{"spent":true,"spentTxid":<64 hex>}`, an outpoint's spend status
+//! - `GET {base}/txo/{txid}/{vout}`: the output, with its `script_pubkey`
+//!   (hex), `spent` and, when spent, `spent_txid` and `spend_scope`; an
+//!   outpoint's spend status, bound to the asked script by the script's hash
 //! - `GET {base}/tx/{txid}`: `block_hash` / `block_height` once mined
 //! - `GET {base}/tx/{txid}/proof`: a TSC proof whose `target` is the block's
 //!   merkle root (`"targetType":"merkleRoot"`); `/proof/tsc` is no route
 //!
-//! No key; 60 requests a minute per provider (a token bucket), and a 429 is
-//! a fault returned at once with its Retry-After, never slept on
-//! ([`RateGate`]).
+//! No key; the host advertises 80 requests a minute (`x-ratelimit-limit:
+//! 80`), and this crate keeps to 60 a minute per process (a token bucket
+//! one process shares, [`RateGate::shared`]); a 429 is a fault returned at
+//! once with its Retry-After, never slept on.
+//!
+//! BananaBlocks' index misses some mempool spends (2026-10-22: an outpoint
+//! WhatsOnChain's mempool shows spent answered `spent: false`, twice), so
+//! its `spent: false` is never an answer alone: the utxo ladder takes an
+//! unspent only from two explorers. The probe notes are
+//! `docs/providers/bananablocks.md`.
 //!
 //! # API Endpoints
 //!
@@ -26,12 +34,14 @@ use std::time::Duration;
 
 use crate::services::providers::pace::RateGate;
 use crate::services::traits::{
-    merkle_path_note, validate_txid, GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult,
-    GetUtxoStatusResult, TxStatusDetail, NOTE_PROOF,
+    convert_script_hash, merkle_path_note, validate_txid, GetMerklePathResult, GetRawTxResult,
+    GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, TxStatusDetail,
+    NOTE_PROOF,
 };
 use crate::services::Chain;
 use crate::{Error, Result};
-use bsv_rs::primitives::sha256d;
+use bsv_rs::primitives::{sha256, sha256d};
+use std::sync::Arc;
 
 /// BananaBlocks mainnet API base.
 pub const BANANABLOCKS_MAINNET_URL: &str = "https://bananablocks.com/api/v1";
@@ -39,7 +49,8 @@ pub const BANANABLOCKS_MAINNET_URL: &str = "https://bananablocks.com/api/v1";
 /// BananaBlocks testnet API base.
 pub const BANANABLOCKS_TESTNET_URL: &str = "https://test.bananablocks.com/api/v1";
 
-/// BananaBlocks' published budget: requests a minute, no key.
+/// The pace this crate keeps with BananaBlocks: requests a minute, per
+/// process, no key (the host advertises 80, `x-ratelimit-limit: 80`).
 pub const BANANABLOCKS_PER_MINUTE: u32 = 60;
 
 /// The name this provider answers under (results, notes, call history).
@@ -54,16 +65,27 @@ const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
 pub enum OutpointSpend {
     /// `{"spent": false}`: no spender this index can see.
     Unspent,
-    /// `{"spent": true, "spentTxid": ...}`: the named spender (a word; its
+    /// `{"spent": true, "spent_txid": ...}`: the named spender (a word; its
     /// bytes bind it).
     SpentBy(String),
+}
+
+/// One output as `GET /txo/{txid}/{vout}` gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Txo {
+    /// The big-endian sha256 of the output's locking script (the hash the
+    /// explorers' script routes carry), from its `script_pubkey`.
+    pub script_hash: String,
+    /// Its spend.
+    pub spend: OutpointSpend,
 }
 
 /// BananaBlocks service provider.
 pub struct BananaBlocks {
     client: Client,
     base_url: String,
-    gate: RateGate,
+    /// The process's gate for this base URL ([`RateGate::shared`]).
+    gate: Arc<RateGate>,
 }
 
 impl BananaBlocks {
@@ -76,9 +98,29 @@ impl BananaBlocks {
         Self::with_base(base, None)
     }
 
-    /// The provider at another API base (a mirror, or a local fixture in a
-    /// test). `timeout_secs` defaults to 30, as every explorer's.
+    /// The provider at another API base (a mirror). `timeout_secs` defaults
+    /// to 30, as every explorer's. Every provider this process builds for
+    /// one base shares one gate: one budget, one Retry-After window.
     pub fn with_base(base_url: &str, timeout_secs: Option<u64>) -> Result<Self> {
+        let base_url = base_url.trim_end_matches('/');
+        let gate = RateGate::shared(&format!("{BANANABLOCKS_NAME} {base_url}"), Self::gate);
+        Self::with_gate(base_url, timeout_secs, gate)
+    }
+
+    /// A provider with a gate of its own, not the process's: a local
+    /// fixture in a test (fixture servers are recycled, so a gate keyed by
+    /// their URL would carry one test's 429 into the next).
+    #[cfg(test)]
+    pub(crate) fn with_base_unshared(base_url: &str) -> Self {
+        Self::with_gate(base_url, None, Arc::new(Self::gate())).expect("client")
+    }
+
+    fn gate() -> RateGate {
+        RateGate::new(BANANABLOCKS_NAME, DEFAULT_RETRY_AFTER)
+            .with_per_minute(BANANABLOCKS_PER_MINUTE)
+    }
+
+    fn with_gate(base_url: &str, timeout_secs: Option<u64>, gate: Arc<RateGate>) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs.unwrap_or(30)))
             .build()
@@ -86,9 +128,13 @@ impl BananaBlocks {
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-            gate: RateGate::new(BANANABLOCKS_NAME, DEFAULT_RETRY_AFTER)
-                .with_per_minute(BANANABLOCKS_PER_MINUTE),
+            gate,
         })
+    }
+
+    /// The gate this provider's requests pass (the process's for its base).
+    pub fn rate_gate(&self) -> &Arc<RateGate> {
+        &self.gate
     }
 
     /// The API base (no trailing slash).
@@ -160,26 +206,43 @@ impl BananaBlocks {
     // Outpoint spend
     // =========================================================================
 
-    /// An outpoint's spend status from `/txo/{txid}/{vout}/spend`. Only a
-    /// 200 with a boolean `spent` answers: `false` is a clean unspent,
-    /// `true` with a well-formed `spentTxid` names the spender. A 404 (the
-    /// index does not know the transaction), a 429, a 5xx, a malformed
-    /// body, a `spent: true` without a 64-hex spender (or naming the
-    /// outpoint's own transaction) are faults, never "unspent".
-    pub async fn get_spend(&self, txid: &str, vout: u32) -> Result<OutpointSpend> {
+    /// One output from `GET /txo/{txid}/{vout}`. Only a 200 with the
+    /// documented shape answers: a `script_pubkey` (hex; with a
+    /// `script_hash` beside it the two must agree), a boolean `spent`, and
+    /// for `spent: true` a 64-hex `spent_txid` that is not the outpoint's
+    /// own transaction. A 404 (the index does not know the output), a 429,
+    /// a 5xx, a malformed body are faults, never "unspent".
+    pub async fn get_txo(&self, txid: &str, vout: u32) -> Result<Txo> {
         let (status, body) = self
-            .get(&format!("{}/txo/{}/{}/spend", self.base_url, txid, vout))
+            .get(&format!("{}/txo/{}/{}", self.base_url, txid, vout))
             .await?;
-        parse_spend_body(status, &body, txid)
+        parse_txo_body(status, &body, txid, vout)
+    }
+
+    /// An outpoint's spend status ([`Self::get_txo`]'s `spend`): the name
+    /// `spend_evidence` binds by the spender's bytes.
+    pub async fn get_spend(&self, txid: &str, vout: u32) -> Result<OutpointSpend> {
+        Ok(self.get_txo(txid, vout).await?.spend)
     }
 
     /// The outpoint question of `getUtxoStatus` (Rule 28, T10). BananaBlocks
     /// answers an outpoint directly; it has no script's unspent set, so a
     /// question without an outpoint is not one it answers (the ladder does
     /// not ask it; asked directly, the answer is `status: "error"`, never
-    /// a negative). `{"spent": false}` is a positive; a named spender is a
-    /// negative (which the ladder takes only with a second explorer's).
-    pub async fn get_utxo_status(&self, outpoint: Option<&str>) -> Result<GetUtxoStatusResult> {
+    /// a negative).
+    ///
+    /// The answer is about the asked output only when the output's script
+    /// hashes to the asked hash (`output` in `output_format`, as every
+    /// explorer reads it): another script, the empty script included, is a
+    /// fault, so an outpoint whose script is not held never comes back
+    /// unspent from here. `spent: false` is a positive, a named spender a
+    /// negative; the ladder takes either only with a second explorer's.
+    pub async fn get_utxo_status(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+    ) -> Result<GetUtxoStatusResult> {
         let Some(outpoint) = outpoint else {
             return Ok(GetUtxoStatusResult {
                 name: BANANABLOCKS_NAME.to_string(),
@@ -191,15 +254,19 @@ impl BananaBlocks {
                 ),
             });
         };
+        let asked = convert_script_hash(output, output_format)?.to_ascii_lowercase();
         let (txid, vout) = parse_outpoint(outpoint)?;
-        let is_utxo = match self.get_spend(txid, vout).await? {
-            OutpointSpend::Unspent => true,
-            OutpointSpend::SpentBy(_) => false,
-        };
+        let txo = self.get_txo(txid, vout).await?;
+        if txo.script_hash != asked {
+            return Err(Error::ServiceError(format!(
+                "BananaBlocks txo {outpoint}: its script hashes to {}, not the asked {asked}",
+                txo.script_hash
+            )));
+        }
         Ok(GetUtxoStatusResult {
             name: BANANABLOCKS_NAME.to_string(),
             status: "success".to_string(),
-            is_utxo: Some(is_utxo),
+            is_utxo: Some(txo.spend == OutpointSpend::Unspent),
             details: Vec::new(),
             error: None,
         })
@@ -340,44 +407,70 @@ fn excerpt(body: &str) -> &str {
     &body[..cut]
 }
 
-/// The `/txo/{txid}/{vout}/spend` rule (the overlay's
-/// `parse_bananablocks_spent`, in production since 2026-09-04): only a 200
-/// with a boolean `spent` answers.
-pub(crate) fn parse_spend_body(
+/// The `/txo/{txid}/{vout}` rule: only a 200 with the documented shape
+/// answers (the overlay's `parse_bananablocks_spent` rule for `spent`, and
+/// the output's script hash for the binding to the asked script).
+pub(crate) fn parse_txo_body(
     status: StatusCode,
     body: &str,
     outpoint_txid: &str,
-) -> Result<OutpointSpend> {
-    if status != StatusCode::OK {
-        return Err(Error::ServiceError(format!(
-            "BananaBlocks spend: HTTP {}: {}",
-            status,
-            excerpt(body)
-        )));
-    }
-    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| {
+    vout: u32,
+) -> Result<Txo> {
+    let bad = |why: &str| {
         Error::ServiceError(format!(
-            "BananaBlocks spend: bad json: {}: {}",
-            e,
+            "BananaBlocks txo {outpoint_txid}.{vout}: {why}: {}",
             excerpt(body)
         ))
-    })?;
-    match v.get("spent").and_then(serde_json::Value::as_bool) {
-        Some(false) => Ok(OutpointSpend::Unspent),
-        Some(true) => match v.get("spentTxid").and_then(|t| t.as_str()) {
-            Some(t) if is_hex64(t) && !t.eq_ignore_ascii_case(outpoint_txid) => {
-                Ok(OutpointSpend::SpentBy(t.to_ascii_lowercase()))
-            }
-            _ => Err(Error::ServiceError(format!(
-                "BananaBlocks spend: spent:true without a well-formed spentTxid: {}",
-                excerpt(body)
-            ))),
-        },
-        None => Err(Error::ServiceError(format!(
-            "BananaBlocks spend: no boolean `spent` (schema drift?): {}",
-            excerpt(body)
-        ))),
+    };
+    if status != StatusCode::OK {
+        return Err(bad(&format!("HTTP {status}")));
     }
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| bad(&format!("bad json: {e}")))?;
+    if let Some(index) = v.get("index") {
+        if index.as_u64() != Some(u64::from(vout)) {
+            return Err(bad("the body is about another output"));
+        }
+    }
+    let from_script = match v.get("script_pubkey") {
+        None => None,
+        Some(script) => {
+            let bytes = script
+                .as_str()
+                .and_then(|h| hex::decode(h).ok())
+                .ok_or_else(|| bad("script_pubkey is not hex"))?;
+            let mut hash = sha256(&bytes).to_vec();
+            hash.reverse();
+            Some(hex::encode(hash))
+        }
+    };
+    let given = match v.get("script_hash") {
+        None => None,
+        Some(h) => Some(
+            h.as_str()
+                .filter(|h| is_hex64(h))
+                .map(str::to_ascii_lowercase)
+                .ok_or_else(|| bad("script_hash is not 64 hex"))?,
+        ),
+    };
+    let script_hash = match (from_script, given) {
+        (Some(a), Some(b)) if a != b => {
+            return Err(bad("script_hash is not the hash of script_pubkey"))
+        }
+        (Some(h), _) | (None, Some(h)) => h,
+        (None, None) => return Err(bad("no script (schema drift?)")),
+    };
+    let spend = match v.get("spent").and_then(serde_json::Value::as_bool) {
+        Some(false) => OutpointSpend::Unspent,
+        Some(true) => match v.get("spent_txid").and_then(|t| t.as_str()) {
+            Some(t) if is_hex64(t) && !t.eq_ignore_ascii_case(outpoint_txid) => {
+                OutpointSpend::SpentBy(t.to_ascii_lowercase())
+            }
+            _ => return Err(bad("spent:true without a well-formed spent_txid")),
+        },
+        None => return Err(bad("no boolean `spent` (schema drift?)")),
+    };
+    Ok(Txo { script_hash, spend })
 }
 
 /// `GET /tx/{txid}` → the block `(hash, height)` it is in, `None` when it is
@@ -512,20 +605,49 @@ mod tests {
 
     const OUT: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const SPENDER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+    /// The output's locking script, as `/txo` carries it (`script_pubkey`).
+    const SCRIPT: &str = "76a914e0de61b233403b703ef20fb6b0f5dc0389b5c48a88ac";
+
+    /// The script's hash in the three formats a `get_utxo_status` asks in:
+    /// little-endian (sha256 as computed), big-endian (reversed), the script.
+    fn asked(format: GetUtxoStatusOutputFormat) -> String {
+        let le = sha256(&hex::decode(SCRIPT).unwrap()).to_vec();
+        match format {
+            GetUtxoStatusOutputFormat::HashLE => hex::encode(&le),
+            GetUtxoStatusOutputFormat::HashBE => {
+                let mut be = le;
+                be.reverse();
+                hex::encode(be)
+            }
+            GetUtxoStatusOutputFormat::Script => SCRIPT.to_string(),
+        }
+    }
+
+    fn unspent_body() -> String {
+        format!(
+            r#"{{"value":1945,"index":0,"script_pubkey":"{SCRIPT}","script_type":"p2pkh","spent":false}}"#
+        )
+    }
+
+    fn spent_body(spender: &str) -> String {
+        format!(
+            r#"{{"value":1945,"index":0,"script_pubkey":"{SCRIPT}","spent_txid":"{spender}","spent":true,"spend_scope":"confirmed"}}"#
+        )
+    }
 
     async fn fixture() -> (mockito::ServerGuard, BananaBlocks) {
         let server = mockito::Server::new_async().await;
-        let bb = BananaBlocks::with_base(&server.url(), None).unwrap();
+        let bb = BananaBlocks::with_base_unshared(&server.url());
         (server, bb)
     }
 
-    async fn spend_route(
+    async fn txo_route(
         server: &mut mockito::ServerGuard,
         status: usize,
         body: &str,
     ) -> mockito::Mock {
         server
-            .mock("GET", format!("/txo/{OUT}/0/spend").as_str())
+            .mock("GET", format!("/txo/{OUT}/0").as_str())
             .with_status(status)
             .with_body(body)
             .create_async()
@@ -533,61 +655,83 @@ mod tests {
     }
 
     /// The live shapes (2026-10-22): `spent:false` is a clean unspent, and
-    /// `spent:true` with a 64-hex `spentTxid` names the spender (lowered).
+    /// `spent:true` with a 64-hex `spent_txid` names the spender (lowered);
+    /// the script hash is the big-endian sha256 of `script_pubkey`.
     #[tokio::test]
-    async fn the_spend_answers_unspent_and_names_a_spender() {
+    async fn the_txo_answers_unspent_and_names_a_spender() {
+        let be = asked(GetUtxoStatusOutputFormat::HashBE);
         let (mut server, bb) = fixture().await;
-        let _m = spend_route(
-            &mut server,
-            200,
-            &format!(r#"{{"spent":false,"txid":"{OUT}","vout":0}}"#),
-        )
-        .await;
-        assert_eq!(bb.get_spend(OUT, 0).await.unwrap(), OutpointSpend::Unspent);
+        let _m = txo_route(&mut server, 200, &unspent_body()).await;
+        assert_eq!(
+            bb.get_txo(OUT, 0).await.unwrap(),
+            Txo {
+                script_hash: be.clone(),
+                spend: OutpointSpend::Unspent
+            }
+        );
 
         let (mut server, bb) = fixture().await;
-        let _m = spend_route(
-            &mut server,
-            200,
-            &format!(
-                r#"{{"spendScope":"confirmed","spent":true,"spentTxid":"{}","txid":"{OUT}","vout":0}}"#,
-                SPENDER.to_ascii_uppercase()
-            ),
-        )
-        .await;
+        let _m = txo_route(&mut server, 200, &spent_body(&SPENDER.to_ascii_uppercase())).await;
         assert_eq!(
             bb.get_spend(OUT, 0).await.unwrap(),
             OutpointSpend::SpentBy(SPENDER.to_string())
         );
+
+        // A `script_hash` beside the script must be its hash.
+        let (mut server, bb) = fixture().await;
+        let body = format!(r#"{{"script_hash":"{be}","script_pubkey":"{SCRIPT}","spent":false}}"#);
+        let _m = txo_route(&mut server, 200, &body).await;
+        assert_eq!(bb.get_txo(OUT, 0).await.unwrap().script_hash, be);
     }
 
-    /// Every other spend answer is a fault ("could not look"), never
-    /// "unspent": a 404 (the index does not know the transaction), a 5xx,
-    /// a malformed body, no boolean `spent`, `spent:true` without a
+    /// Every other txo answer is a fault ("could not look"), never
+    /// "unspent": a 404 (the index does not know the output), a 5xx, a
+    /// malformed body, no script, a `script_hash` that is not the script's,
+    /// another output's body, no boolean `spent`, `spent:true` without a
     /// spender, a spender that is not 64 hex, one naming the outpoint's own
     /// transaction.
     #[tokio::test]
-    async fn every_other_spend_answer_is_a_fault() {
-        let not_hex = format!(r#"{{"spent":true,"spentTxid":"{}"}}"#, "zz".repeat(32));
-        let short = r#"{"spent":true,"spentTxid":"abcd"}"#.to_string();
-        let itself = format!(r#"{{"spent":true,"spentTxid":"{OUT}"}}"#);
+    async fn every_other_txo_answer_is_a_fault() {
+        let with = |rest: &str| format!(r#"{{"script_pubkey":"{SCRIPT}",{rest}}}"#);
         for (status, body) in [
-            (404, r#"{"error":"Transaction not found"}"#.to_string()),
+            (404, r#"{"error":"TXO not found"}"#.to_string()),
             (500, "boom".to_string()),
             (502, String::new()),
             (200, "<html>".to_string()),
             (200, "{}".to_string()),
-            (200, r#"{"spent":"false"}"#.to_string()),
-            (200, r#"{"spent":true}"#.to_string()),
-            (200, not_hex),
-            (200, short),
-            (200, itself),
+            (200, r#"{"spent":false}"#.to_string()),
+            (200, r#"{"script_pubkey":"zz","spent":false}"#.to_string()),
+            (
+                200,
+                with(&format!(
+                    r#""script_hash":"{}","spent":false"#,
+                    "ab".repeat(32)
+                )),
+            ),
+            (200, with(r#""index":1,"spent":false"#)),
+            (200, with(r#""spent":"false""#)),
+            (200, with(r#""spent":true"#)),
+            (
+                200,
+                with(&format!(
+                    r#""spent":true,"spent_txid":"{}""#,
+                    "zz".repeat(32)
+                )),
+            ),
+            (200, with(r#""spent":true,"spent_txid":"abcd""#)),
+            (200, with(&format!(r#""spent":true,"spent_txid":"{OUT}""#))),
         ] {
             let (mut server, bb) = fixture().await;
-            let _m = spend_route(&mut server, status, &body).await;
+            let _m = txo_route(&mut server, status, &body).await;
             let answer = bb.get_spend(OUT, 0).await;
             assert!(answer.is_err(), "{status} {body}: {answer:?}");
-            let utxo = bb.get_utxo_status(Some(&format!("{OUT}.0"))).await;
+            let utxo = bb
+                .get_utxo_status(
+                    &asked(GetUtxoStatusOutputFormat::HashLE),
+                    None,
+                    Some(&format!("{OUT}.0")),
+                )
+                .await;
             assert!(utxo.is_err(), "{status} {body}: {utxo:?}");
         }
     }
@@ -598,7 +742,7 @@ mod tests {
     async fn a_429_is_a_fault_at_once_and_the_rung_is_skipped_until_retry_after() {
         let (mut server, bb) = fixture().await;
         let route = server
-            .mock("GET", format!("/txo/{OUT}/0/spend").as_str())
+            .mock("GET", format!("/txo/{OUT}/0").as_str())
             .with_status(429)
             .with_header("retry-after", "17")
             .expect(1)
@@ -635,9 +779,9 @@ mod tests {
     async fn the_provider_paces_itself_at_sixty_a_minute() {
         let (mut server, bb) = fixture().await;
         let route = server
-            .mock("GET", format!("/txo/{OUT}/0/spend").as_str())
+            .mock("GET", format!("/txo/{OUT}/0").as_str())
             .with_status(200)
-            .with_body(r#"{"spent":false}"#)
+            .with_body(unspent_body())
             .expect(30)
             .create_async()
             .await;
@@ -651,24 +795,41 @@ mod tests {
         route.assert_async().await;
     }
 
-    /// The outpoint question: `spent:false` is a positive, a spender a
-    /// negative; a script's question (no outpoint) is not one it answers,
-    /// and asks nothing.
+    /// The outpoint question, in each format the asked output comes in:
+    /// `spent:false` is a positive and a spender a negative, both only for
+    /// the asked script; a script's question (no outpoint) is not one it
+    /// answers, and asks nothing.
     #[tokio::test]
-    async fn the_utxo_answer_is_by_outpoint_only() {
+    async fn the_utxo_answer_is_by_outpoint_and_for_the_asked_script_only() {
+        let outpoint = format!("{OUT}.0");
+        for format in [
+            GetUtxoStatusOutputFormat::HashLE,
+            GetUtxoStatusOutputFormat::HashBE,
+            GetUtxoStatusOutputFormat::Script,
+        ] {
+            let (mut server, bb) = fixture().await;
+            let _m = txo_route(&mut server, 200, &unspent_body()).await;
+            let r = bb
+                .get_utxo_status(&asked(format), Some(format), Some(&outpoint))
+                .await
+                .unwrap();
+            assert_eq!(
+                (r.status.as_str(), r.is_utxo),
+                ("success", Some(true)),
+                "{format:?}"
+            );
+        }
+        // No format is little-endian.
         let (mut server, bb) = fixture().await;
-        let _m = spend_route(&mut server, 200, r#"{"spent":false}"#).await;
-        let r = bb.get_utxo_status(Some(&format!("{OUT}.0"))).await.unwrap();
-        assert_eq!((r.status.as_str(), r.is_utxo), ("success", Some(true)));
-
-        let (mut server, bb) = fixture().await;
-        let _m = spend_route(
-            &mut server,
-            200,
-            &format!(r#"{{"spent":true,"spentTxid":"{SPENDER}"}}"#),
-        )
-        .await;
-        let r = bb.get_utxo_status(Some(&format!("{OUT}.0"))).await.unwrap();
+        let _m = txo_route(&mut server, 200, &spent_body(SPENDER)).await;
+        let r = bb
+            .get_utxo_status(
+                &asked(GetUtxoStatusOutputFormat::HashLE),
+                None,
+                Some(&outpoint),
+            )
+            .await
+            .unwrap();
         assert_eq!((r.status.as_str(), r.is_utxo), ("success", Some(false)));
 
         let (mut server, bb) = fixture().await;
@@ -677,10 +838,71 @@ mod tests {
             .expect(0)
             .create_async()
             .await;
-        let r = bb.get_utxo_status(None).await.unwrap();
+        let r = bb
+            .get_utxo_status(&asked(GetUtxoStatusOutputFormat::HashLE), None, None)
+            .await
+            .unwrap();
         assert_eq!((r.status.as_str(), r.is_utxo), ("error", None));
-        assert!(bb.get_utxo_status(Some("nonsense")).await.is_err());
+        assert!(bb
+            .get_utxo_status(
+                &asked(GetUtxoStatusOutputFormat::HashLE),
+                None,
+                Some("nonsense")
+            )
+            .await
+            .is_err());
         route.assert_async().await;
+    }
+
+    /// Another script's hash (a big-endian hash asked as little-endian, the
+    /// empty script `is_utxo` asks with when none is stored) is a fault,
+    /// never a positive, though the index says `spent: false`.
+    #[tokio::test]
+    async fn a_script_hash_mismatch_is_a_fault_never_unspent() {
+        let outpoint = format!("{OUT}.0");
+        let empty_script_le = hex::encode(sha256(&[]));
+        for (output, format) in [
+            (asked(GetUtxoStatusOutputFormat::HashBE), None),
+            (
+                asked(GetUtxoStatusOutputFormat::HashLE),
+                Some(GetUtxoStatusOutputFormat::HashBE),
+            ),
+            (empty_script_le, None),
+            (String::new(), Some(GetUtxoStatusOutputFormat::Script)),
+        ] {
+            let (mut server, bb) = fixture().await;
+            let _m = txo_route(&mut server, 200, &unspent_body()).await;
+            let r = bb.get_utxo_status(&output, format, Some(&outpoint)).await;
+            match r {
+                Err(Error::ServiceError(e)) => assert!(e.contains("not the asked"), "{e}"),
+                other => panic!("{output} {format:?}: a mismatch is a fault: {other:?}"),
+            }
+        }
+    }
+
+    /// Two providers built for one base share the process's gate: a 429
+    /// one met closes the rung for the other, with no request (the daemon
+    /// builds two `Services` per tenant).
+    #[tokio::test]
+    async fn providers_for_one_base_share_one_gate() {
+        // Never reached: the gate stops the call before a request.
+        let base = "http://127.0.0.1:9/bananablocks-shared-gate-test";
+        let a = BananaBlocks::with_base(base, None).unwrap();
+        let b = BananaBlocks::with_base(&format!("{base}/"), None).unwrap();
+        let other = BananaBlocks::with_base("http://127.0.0.1:9/another-base", None).unwrap();
+        assert!(Arc::ptr_eq(a.rate_gate(), b.rate_gate()));
+        assert!(!Arc::ptr_eq(a.rate_gate(), other.rate_gate()));
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "120".parse().unwrap());
+        let _ = a.rate_gate().close(&headers);
+        let started = Instant::now();
+        match b.get_spend(OUT, 0).await {
+            Err(Error::RateLimited {
+                retry_after_secs, ..
+            }) => assert!((119..=120).contains(&retry_after_secs)),
+            other => panic!("the shared rung is closed: {other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     /// A one-input transaction and its txid.

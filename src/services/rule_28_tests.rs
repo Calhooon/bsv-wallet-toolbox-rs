@@ -31,9 +31,9 @@ pub(super) fn services_with_three(
         options,
         StdArc::new(WhatsOnChain::with_base_url(Chain::Main, woc_url)),
         StdArc::new(Bitails::with_base_url(Chain::Main, bitails_url)),
-        Some(StdArc::new(
-            BananaBlocks::with_base(bananablocks_url, None).unwrap(),
-        )),
+        Some(StdArc::new(BananaBlocks::with_base_unshared(
+            bananablocks_url,
+        ))),
     )
     .unwrap()
 }
@@ -320,21 +320,31 @@ async fn bitails_unspent(server: &mut mockito::ServerGuard, says: Says) -> mocki
     mock.create_async().await
 }
 
+/// BananaBlocks' `/txo/{txid}/{vout}` body for `UTXO_TXID:0` (script
+/// `UTXO_SCRIPT`), unspent or spent by `spender`.
+pub(super) fn bananablocks_txo_body(spender: Option<&str>) -> String {
+    let script = hex::encode(UTXO_SCRIPT);
+    match spender {
+        None => format!(
+            r#"{{"value":1000,"index":0,"script_pubkey":"{script}","script_type":"p2pkh","spent":false}}"#
+        ),
+        Some(spender) => format!(
+            r#"{{"value":1000,"index":0,"script_pubkey":"{script}","script_type":"p2pkh","spent_txid":"{spender}","spent":true,"spend_scope":"confirmed"}}"#
+        ),
+    }
+}
+
 pub(super) async fn bananablocks_spend(
     server: &mut mockito::ServerGuard,
     says: Says,
 ) -> mockito::Mock {
-    let path = format!("/txo/{}/0/spend", UTXO_TXID);
+    let path = format!("/txo/{}/0", UTXO_TXID);
     let mock = server.mock("GET", path.as_str());
     let mock = match says {
-        Says::Unspent => mock.with_status(200).with_body(format!(
-            r#"{{"spent":false,"txid":"{}","vout":0}}"#,
-            UTXO_TXID
-        )),
-        Says::NotListed => mock.with_status(200).with_body(format!(
-            r#"{{"spendScope":"confirmed","spent":true,"spentTxid":"{}","txid":"{}","vout":0}}"#,
-            BB_SPENDER, UTXO_TXID
-        )),
+        Says::Unspent => mock.with_status(200).with_body(bananablocks_txo_body(None)),
+        Says::NotListed => mock
+            .with_status(200)
+            .with_body(bananablocks_txo_body(Some(BB_SPENDER))),
         Says::Fault | Says::RateLimited => fault_or_limit(mock, says),
     };
     mock.create_async().await
@@ -415,22 +425,202 @@ async fn one_negative_and_two_faults_is_could_not_look() {
     }
 }
 
-/// T10: a positive from any one of the three stands, whatever the others
-/// said before it.
+/// What the owner's rule gives for three answers (WhatsOnChain,
+/// BananaBlocks, Bitails): an unspent from two, a not-listed from two,
+/// anything else "could not look".
+fn the_rule(answers: [Says; 3]) -> (&'static str, Option<bool>) {
+    let count = |want: fn(&Says) -> bool| answers.iter().filter(|a| want(a)).count();
+    let unspent = count(|a| matches!(a, Says::Unspent));
+    let not_listed = count(|a| matches!(a, Says::NotListed));
+    if unspent >= UTXO_POSITIVE_PROVIDERS {
+        ("success", Some(true))
+    } else if not_listed >= UTXO_NEGATIVE_PROVIDERS {
+        ("success", Some(false))
+    } else {
+        ("error", None)
+    }
+}
+
+/// The `+`-joined names of an agreeing answer, sorted (they come in the
+/// order asked, which the start moves).
+pub(super) fn sorted_names(result: &GetUtxoStatusResult) -> String {
+    let mut names: Vec<&str> = result.name.split('+').collect();
+    names.sort_unstable();
+    names.join("+")
+}
+
+/// The three explorer fixtures with the rotation's start moved `start`
+/// rungs on (0 WhatsOnChain, 1 BananaBlocks, 2 Bitails).
+pub(super) async fn utxo_services_from(answers: [Says; 3], start: usize) -> ThreeExplorers {
+    let f = utxo_services(answers[0], answers[1], answers[2]).await;
+    {
+        let mut collection = lock_write(&f.services.get_utxo_status_services).unwrap();
+        for _ in 0..start {
+            collection.next();
+        }
+    }
+    f
+}
+
+/// One row of the rule's table on three shared fixture servers: its own
+/// outpoint and script, so its routes are its own.
+async fn rule_row(
+    servers: &mut [mockito::ServerGuard; 3],
+    row: u8,
+    answers: [Says; 3],
+) -> (String, Vec<u8>, Vec<mockito::Mock>) {
+    let txid = format!("{:02x}", row + 1).repeat(32);
+    let script = vec![0x51, 0x01, row];
+    let mut be = sha256(&script).to_vec();
+    be.reverse();
+    let be = hex::encode(be);
+    let script_hex = hex::encode(&script);
+    let [woc, bb, bitails] = servers;
+    let fault = |mock: mockito::Mock, says: Says| match says {
+        Says::RateLimited => mock.with_status(429).with_header("retry-after", "30"),
+        _ => mock.with_status(500),
+    };
+    let w = woc.mock("GET", format!("/script/{be}/unspent/all").as_str());
+    let w = match answers[0] {
+        Says::Unspent => w.with_body(format!(
+            r#"{{"script":"{be}","result":[{{"height":1,"tx_pos":0,"tx_hash":"{txid}","value":1}}]}}"#
+        )),
+        Says::NotListed => w.with_body(format!(r#"{{"script":"{be}","result":[]}}"#)),
+        says => fault(w, says),
+    };
+    let b = bb.mock("GET", format!("/txo/{txid}/0").as_str());
+    let b = match answers[1] {
+        Says::Unspent => b.with_body(format!(
+            r#"{{"script_pubkey":"{script_hex}","spent":false}}"#
+        )),
+        Says::NotListed => b.with_body(format!(
+            r#"{{"script_pubkey":"{script_hex}","spent":true,"spent_txid":"{BB_SPENDER}"}}"#
+        )),
+        says => fault(b, says),
+    };
+    let t = bitails.mock("GET", format!("/scripthash/{be}/unspent").as_str());
+    let t = match answers[2] {
+        Says::Unspent => t.with_body(format!(
+            r#"{{"unspent":[{{"txid":"{txid}","vout":0,"satoshis":1}}]}}"#
+        )),
+        Says::NotListed => t.with_body(r#"{"unspent":[]}"#),
+        says => fault(t, says),
+    };
+    let mocks = vec![
+        w.create_async().await,
+        b.create_async().await,
+        t.create_async().await,
+    ];
+    (txid, script, mocks)
+}
+
+/// T10, the owner's rule (2026-10-22): every combination of unspent, not
+/// listed, a fault and a rate limit from the three explorers gives the
+/// rule's verdict, from each of the three starts (the verdict does not
+/// depend on where the rotation began: review M1 of #43). Among them:
+/// P+2N is not listed (the positive is never the answer, wherever it
+/// sits), P+N+F and P+2F (the positive BananaBlocks', or any one's) could
+/// not look, 2P unspent.
 #[tokio::test]
-async fn a_positive_from_any_one_explorer_stands() {
-    for (woc, bb, bitails) in [
-        (Says::Unspent, Says::Fault, Says::Fault),
-        (Says::NotListed, Says::Unspent, Says::Fault),
-        (Says::Fault, Says::RateLimited, Says::Unspent),
-        (Says::RateLimited, Says::NotListed, Says::Unspent),
-    ] {
-        let f = utxo_services(woc, bb, bitails).await;
+async fn the_utxo_verdict_is_the_rule_from_every_start() {
+    let says = [
+        Says::Unspent,
+        Says::NotListed,
+        Says::Fault,
+        Says::RateLimited,
+    ];
+    let mut servers = [
+        mockito::Server::new_async().await,
+        mockito::Server::new_async().await,
+        mockito::Server::new_async().await,
+    ];
+    let mut rows = Vec::new();
+    let mut _mocks = Vec::new();
+    for woc in says {
+        for bb in says {
+            for bitails in says {
+                let answers = [woc, bb, bitails];
+                let (txid, script, mocks) = rule_row(&mut servers, rows.len() as u8, answers).await;
+                _mocks.extend(mocks);
+                rows.push((answers, txid, script));
+            }
+        }
+    }
+    let urls: Vec<String> = servers.iter().map(|s| s.url()).collect();
+    for start in 0..3 {
+        // Concurrently: a row with a fault pending sleeps its retry round.
+        let verdicts = futures::future::join_all(rows.iter().map(|(answers, txid, script)| {
+            let urls = &urls;
+            async move {
+                let services =
+                    services_with_three(ServicesOptions::mainnet(), &urls[0], &urls[1], &urls[2]);
+                {
+                    let mut collection = lock_write(&services.get_utxo_status_services).unwrap();
+                    for _ in 0..start {
+                        collection.next();
+                    }
+                }
+                let hash = services.hash_output_script(script);
+                let result = services
+                    .get_utxo_status(&hash, None, Some(&format!("{txid}.0")), false)
+                    .await
+                    .unwrap();
+                (*answers, result)
+            }
+        }))
+        .await;
+        for (answers, result) in verdicts {
+            assert_eq!(
+                (result.status.as_str(), result.is_utxo),
+                the_rule(answers),
+                "WoC {:?}, BananaBlocks {:?}, Bitails {:?}, start {start}: {result:?}",
+                answers[0],
+                answers[1],
+                answers[2]
+            );
+        }
+    }
+}
+
+/// T10: a lone unspent stands nowhere: BananaBlocks' `spent: false` with
+/// two explorers that do not list the output is "not listed", and with a
+/// fault beside it, or two, "could not look" naming the lone unspent.
+#[tokio::test]
+async fn a_lone_unspent_is_never_the_answer() {
+    for start in 0..3 {
+        let f = utxo_services_from([Says::NotListed, Says::Unspent, Says::NotListed], start).await;
         let result = utxo_status(&f.services).await;
         assert_eq!(
-            (result.status.as_str(), result.is_utxo),
-            ("success", Some(true)),
-            "WoC {woc:?}, BananaBlocks {bb:?}, Bitails {bitails:?}: {result:?}"
+            (
+                result.status.as_str(),
+                result.is_utxo,
+                sorted_names(&result)
+            ),
+            ("success", Some(false), "Bitails+WoC".to_string()),
+            "start {start}: {result:?}"
+        );
+        // From BananaBlocks' start (1) its unspent comes first and the
+        // ladder asks on until the two others agree.
+        if start == 1 {
+            for rung in [&f.woc.1, &f.bananablocks.1, &f.bitails.1] {
+                assert!(rung.matched_async().await, "every rung asked");
+            }
+        }
+    }
+    for answers in [
+        [Says::Fault, Says::Unspent, Says::NotListed],
+        [Says::RateLimited, Says::Unspent, Says::Fault],
+    ] {
+        let f = utxo_services_from(answers, 0).await;
+        let result = utxo_status(&f.services).await;
+        assert_eq!((result.status.as_str(), result.is_utxo), ("error", None));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("BananaBlocks lists the output as unspent")
+                    && e.contains("no second explorer confirmed it")),
+            "{answers:?}: {result:?}"
         );
     }
 }
@@ -467,17 +657,17 @@ async fn a_negative_needs_two_of_the_three() {
 }
 
 /// T10: the start rotates over the three. With every explorer listing the
-/// outpoint, each call ends at its first answer, and three calls reach one
-/// explorer each.
+/// outpoint, each call ends at the second answer, and three calls (starts
+/// WhatsOnChain, BananaBlocks, Bitails) reach each explorer twice.
 #[tokio::test]
 async fn the_utxo_read_rotates_its_starting_explorer_over_three() {
     let f = utxo_services(Says::Unspent, Says::Unspent, Says::Unspent).await;
     for _ in 0..3 {
         assert_eq!(utxo_status(&f.services).await.is_utxo, Some(true));
     }
-    f.woc.1.expect(1).assert_async().await;
-    f.bananablocks.1.expect(1).assert_async().await;
-    f.bitails.1.expect(1).assert_async().await;
+    f.woc.1.expect(2).assert_async().await;
+    f.bananablocks.1.expect(2).assert_async().await;
+    f.bitails.1.expect(2).assert_async().await;
 }
 
 /// T10: an outage is "could not look", never "spent" (`is_utxo` answered
@@ -496,24 +686,37 @@ async fn an_outage_is_could_not_look_never_spent() {
 #[tokio::test]
 async fn is_utxo_gives_the_three_answers() {
     for (woc, bb, bitails, expected) in [
-        // A positive from any one.
+        // An unspent from two.
         (
             Says::Unspent,
-            Says::Fault,
-            Says::Fault,
-            UtxoVerdict::UnspentHint,
-        ),
-        (
-            Says::NotListed,
             Says::Unspent,
             Says::Fault,
             UtxoVerdict::UnspentHint,
         ),
         (
-            Says::Fault,
+            Says::Unspent,
             Says::NotListed,
             Says::Unspent,
             UtxoVerdict::UnspentHint,
+        ),
+        // A lone unspent is could not look.
+        (
+            Says::Unspent,
+            Says::Fault,
+            Says::Fault,
+            UtxoVerdict::Unknown,
+        ),
+        (
+            Says::NotListed,
+            Says::Unspent,
+            Says::Fault,
+            UtxoVerdict::Unknown,
+        ),
+        (
+            Says::Fault,
+            Says::RateLimited,
+            Says::Unspent,
+            UtxoVerdict::Unknown,
         ),
         // A negative from two.
         (
@@ -1218,9 +1421,11 @@ async fn a_bound_spender_is_a_hint_when_the_unspent_sets_could_not_be_read() {
     assert_eq!(answer, UtxoVerdict::SpentHint);
 }
 
-/// An outpoint in an unspent set asks for no spender.
+/// Two unspent answers still ask for a spender (a bound spender stands on
+/// one provider, even against them: an index can miss a mempool spend);
+/// with none named the answer is `UnspentHint`.
 #[tokio::test]
-async fn an_outpoint_in_an_unspent_set_asks_for_no_spender() {
+async fn two_unspent_answers_still_ask_for_a_spender() {
     let mut woc = mockito::Server::new_async().await;
     let mut bitails = mockito::Server::new_async().await;
     let ct = mockito::Server::new_async().await;
@@ -1230,7 +1435,7 @@ async fn an_outpoint_in_an_unspent_set_asks_for_no_spender() {
     let spent_route = woc
         .mock("GET", spent_path.as_str())
         .with_status(404)
-        .expect(0)
+        .expect(1)
         .create_async()
         .await;
     let services = services_with_explorers(

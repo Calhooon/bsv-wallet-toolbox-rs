@@ -16,8 +16,10 @@
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+use bsv_rs::primitives::sha256;
 use tokio::time::sleep;
 
 use crate::lock_utils::{lock_read, lock_write};
@@ -75,7 +77,8 @@ pub struct WhatsOnChain {
     api_key: Option<String>,
     exchange_rate: RwLock<Option<BsvExchangeRate>>,
     /// A 429 closes the rung until its Retry-After passes; never slept on.
-    gate: RateGate,
+    /// The process's gate for this base and key ([`RateGate::shared`]).
+    gate: Arc<RateGate>,
 }
 
 impl WhatsOnChain {
@@ -92,14 +95,33 @@ impl WhatsOnChain {
             .build()
             .map_err(|e| Error::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
 
+        // One gate per host and key in the process: a key is its own
+        // budget, so the key's fingerprint (never the key) is in the name.
+        let gate_key = match config.api_key.as_deref().filter(|k| !k.is_empty()) {
+            Some(key) => format!(
+                "WhatsOnChain {base_url} key:{}",
+                hex::encode(&sha256(key.as_bytes())[..8])
+            ),
+            None => format!("WhatsOnChain {base_url}"),
+        };
         Ok(Self {
             client,
             base_url,
             chain,
             api_key: config.api_key,
             exchange_rate: RwLock::new(None),
-            gate: RateGate::new("WhatsOnChain", WOC_DEFAULT_RETRY_AFTER),
+            gate: RateGate::shared(&gate_key, Self::gate),
         })
+    }
+
+    fn gate() -> RateGate {
+        RateGate::new("WhatsOnChain", WOC_DEFAULT_RETRY_AFTER)
+    }
+
+    /// The gate this provider's requests pass (the process's for its base
+    /// and key).
+    pub fn rate_gate(&self) -> &Arc<RateGate> {
+        &self.gate
     }
 
     /// The API base for this provider's chain.
@@ -121,8 +143,11 @@ impl WhatsOnChain {
         base_url: &str,
         config: WhatsOnChainConfig,
     ) -> Self {
+        // A gate of its own: fixture servers are recycled, so a gate keyed
+        // by their URL would carry one test's 429 into the next.
         let mut woc = Self::new(chain, config).expect("client");
         woc.base_url = base_url.trim_end_matches('/').to_string();
+        woc.gate = Arc::new(Self::gate());
         woc
     }
 
@@ -677,39 +702,26 @@ impl WhatsOnChain {
         // Chunk at 20 txids per request (Go reference: slices.Chunk(txIDs, 20))
         const CHUNK_SIZE: usize = 20;
         let mut all_data: Vec<WocTxStatus> = Vec::with_capacity(txids.len());
+        // The txids of the chunks answered; a fault on a later chunk keeps
+        // these and leaves the rest out (no word about them).
+        let mut answered: usize = 0;
+        let mut fault: Option<String> = None;
 
         for chunk in txids.chunks(CHUNK_SIZE) {
-            let body = serde_json::json!({ "txids": chunk });
-
-            self.gate.admit()?;
-            let response = self
-                .client
-                .post(&url)
-                .headers(self.get_headers())
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
-            self.gate.check(response.status(), response.headers())?;
-
-            if !response.status().is_success() {
-                return Ok(GetStatusForTxidsResult {
-                    name: "WoC".to_string(),
-                    status: "error".to_string(),
-                    error: Some(format!("HTTP {}", response.status())),
-                    results: Vec::new(),
-                });
+            match self.status_chunk(&url, chunk).await {
+                Ok(data) => {
+                    all_data.extend(data);
+                    answered += chunk.len();
+                }
+                Err(e) if answered == 0 => return Err(e),
+                Err(e) => {
+                    fault = Some(format!("stopped early: {}", e));
+                    break;
+                }
             }
-
-            let data: Vec<WocTxStatus> = response.json().await.map_err(|e| {
-                Error::ServiceError(format!("Failed to parse status response: {}", e))
-            })?;
-
-            all_data.extend(data);
         }
 
-        let results: Vec<TxStatusDetail> = txids
+        let results: Vec<TxStatusDetail> = txids[..answered]
             .iter()
             .map(|txid| {
                 let d = all_data.iter().find(|d| d.txid == *txid);
@@ -745,9 +757,36 @@ impl WhatsOnChain {
         Ok(GetStatusForTxidsResult {
             name: "WoC".to_string(),
             status: "success".to_string(),
-            error: None,
+            error: fault,
             results,
         })
+    }
+
+    /// One chunk of `get_status_for_txids` through the gate: a 429, a
+    /// non-success status or a body that is not the status list is a fault.
+    async fn status_chunk(&self, url: &str, chunk: &[String]) -> Result<Vec<WocTxStatus>> {
+        let body = serde_json::json!({ "txids": chunk });
+        self.gate.admit()?;
+        let response = self
+            .client
+            .post(url)
+            .headers(self.get_headers())
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::NetworkError(format!("Request failed: {}", e)))?;
+        self.gate.check(response.status(), response.headers())?;
+        if !response.status().is_success() {
+            return Err(Error::ServiceError(format!(
+                "WoC status failed with HTTP {}",
+                response.status()
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| Error::ServiceError(format!("Failed to parse status response: {}", e)))
     }
 
     // =========================================================================
