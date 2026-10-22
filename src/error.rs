@@ -132,6 +132,20 @@ pub enum Error {
         missing: Vec<String>,
     },
 
+    /// A transaction this wallet retired (`failed`: a double spend's loser,
+    /// a transaction the network refused or never held) is the creator of
+    /// an explicit input or an ancestor the BEEF walk reaches: nothing built
+    /// on it is assembled or broadcast (bsv-wallet-toolbox-rs #42 point 4).
+    /// Refused before any post; the action wrote nothing. The Display begins
+    /// exactly `Failed ancestor: `, then the failed transaction's txid.
+    #[error(
+        "Failed ancestor: {txid} is failed in this wallet; nothing built on it is assembled or broadcast"
+    )]
+    FailedAncestor {
+        /// The failed transaction's txid.
+        txid: String,
+    },
+
     // ===================
     // Validation errors
     // ===================
