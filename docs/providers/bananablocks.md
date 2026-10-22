@@ -90,6 +90,12 @@ How the ladder reads it (`get_utxo_status`):
   not held therefore never comes back unspent from here.
 - `spent: true` needs a 64-hex `spent_txid` that is not the outpoint's own
   transaction. `spend_evidence` binds that name by the spender's own bytes.
+  When the ladder already read `/txo` for the outpoint, `spend_evidence`
+  takes the `spent_txid` from that answer instead of asking again, so an
+  unspent verdict costs at most one BananaBlocks request.
+- A 404 (`TXO not found`), a malformed body or a script mismatch is a
+  deterministic fault: the ladder's retry round does not ask again. Only a
+  5xx, a timeout or a transport failure is retried, once, after 2 s.
 - `/txo/{txid}/{vout}/spend` (`{"spent":false}` or
   `{"spent":true,"spentTxid":…}`) also answers, but carries no script. The
   crate no longer asks it.
@@ -126,6 +132,9 @@ The consequences in the code:
   negative, "unspent" or "absent", needs a second provider).
 - `is_utxo` asks for a spender even after two unspent answers. A spender
   bound by its own bytes stands on one provider.
-- In `get_status_for_txids`, BananaBlocks is not a chain index. Its
-  `unknown` is a gap: it is left out, and the answer says "could not look".
-  Its `known` takes a slot another provider left at `unknown`.
+- In `get_status_for_txids`, BananaBlocks is not a chain index. Its 404
+  (`unknown`) is a gap, never an absence vote: it is left out, and the
+  answer says "could not look". Its `known` holds against one chain
+  index's `unknown`; a transaction's absence stands only when WhatsOnChain
+  and Bitails both answer `unknown`, and then it stands against any
+  `known`, BananaBlocks' or a broadcaster's.

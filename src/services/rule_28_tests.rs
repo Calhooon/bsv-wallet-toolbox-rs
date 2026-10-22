@@ -427,14 +427,15 @@ async fn one_negative_and_two_faults_is_could_not_look() {
 
 /// What the owner's rule gives for three answers (WhatsOnChain,
 /// BananaBlocks, Bitails): an unspent from two, a not-listed from two,
-/// anything else "could not look".
+/// anything else "could not look". The 2 is written out, not read from
+/// the constants under test, so a change to them fails here.
 fn the_rule(answers: [Says; 3]) -> (&'static str, Option<bool>) {
     let count = |want: fn(&Says) -> bool| answers.iter().filter(|a| want(a)).count();
     let unspent = count(|a| matches!(a, Says::Unspent));
     let not_listed = count(|a| matches!(a, Says::NotListed));
-    if unspent >= UTXO_POSITIVE_PROVIDERS {
+    if unspent >= 2 {
         ("success", Some(true))
-    } else if not_listed >= UTXO_NEGATIVE_PROVIDERS {
+    } else if not_listed >= 2 {
         ("success", Some(false))
     } else {
         ("error", None)

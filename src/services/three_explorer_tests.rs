@@ -426,8 +426,131 @@ async fn bananablocks_names_the_spender_when_whatsonchain_does_not() {
         services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await,
         UtxoVerdict::SpentHint
     );
-    // Once as the unspent question's rung, once as the spender's name.
-    names.expect(2).assert_async().await;
+    // Once, as the unspent question's rung: `spend_evidence` takes the
+    // spender from that answer (review 2 L3 of #43).
+    names.expect(1).assert_async().await;
+}
+
+/// An unspent verdict costs at most one BananaBlocks request (review 2 L3
+/// of #43): `/txo` read as a rung of the unspent question is the spender
+/// question's answer too, and where the ladder did not reach BananaBlocks
+/// `spend_evidence` asks it once. Three calls, one from each start.
+#[tokio::test]
+async fn an_unspent_verdict_costs_one_bananablocks_request() {
+    let f = utxo_services(Says::Unspent, Says::Unspent, Says::Unspent).await;
+    let (mut woc, _unspent) = f.woc;
+    let ct = mockito::Server::new_async().await;
+    let _spent = woc
+        .mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
+        .with_status(404)
+        .create_async()
+        .await;
+    let services = services_with_three(
+        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        &woc.url(),
+        &f.bananablocks.0.url(),
+        &f.bitails.0.url(),
+    );
+    for start in 0..3 {
+        assert_eq!(
+            services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await,
+            UtxoVerdict::UnspentHint,
+            "call {start}"
+        );
+    }
+    f.bananablocks.1.expect(3).assert_async().await;
+}
+
+/// The retry round re-asks a transient fault only (review 2 L2 of #43): a
+/// BananaBlocks 404 (the index does not know the output: an answer, not
+/// an outage) and a WhatsOnChain body that is not the unspent set's shape
+/// would come back the same, so neither is asked again and nothing sleeps.
+#[tokio::test]
+async fn a_deterministic_fault_is_not_asked_again() {
+    let mut woc = mockito::Server::new_async().await;
+    let mut bb = mockito::Server::new_async().await;
+    let mut bitails = mockito::Server::new_async().await;
+    let hash = script_hash_be(UTXO_SCRIPT);
+    let malformed = woc
+        .mock("GET", format!("/script/{hash}/unspent/all").as_str())
+        .with_status(200)
+        .with_body("not json")
+        .create_async()
+        .await;
+    let not_indexed = bb
+        .mock("GET", format!("/txo/{UTXO_TXID}/0").as_str())
+        .with_status(404)
+        .with_body("TXO not found")
+        .create_async()
+        .await;
+    let _not_listed = bitails
+        .mock("GET", format!("/scripthash/{hash}/unspent").as_str())
+        .with_status(200)
+        .with_body(format!(r#"{{"scripthash":"{hash}","unspent":[]}}"#))
+        .create_async()
+        .await;
+    let services = services_with_three(
+        ServicesOptions::mainnet(),
+        &woc.url(),
+        &bb.url(),
+        &bitails.url(),
+    );
+    let started = Instant::now();
+    let result = utxo_status(&services).await;
+    assert_eq!((result.status.as_str(), result.is_utxo), ("error", None));
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "no retry round, no sleep: {:?}",
+        started.elapsed()
+    );
+    malformed.expect(1).assert_async().await;
+    not_indexed.expect(1).assert_async().await;
+}
+
+/// The fault classes the retry round tells apart (review 2 L2 of #43).
+#[test]
+fn a_fault_is_transient_only_for_an_outage() {
+    let transient = [
+        Error::NetworkError("Request failed: operation timed out".to_string()),
+        Error::NetworkError("BananaBlocks request failed: connection refused".to_string()),
+        Error::ServiceError("BananaBlocks txo ab.0: HTTP 503 Service Unavailable: ".to_string()),
+    ];
+    for e in &transient {
+        assert_eq!(FaultKind::of_error(e), FaultKind::Transient, "{e}");
+    }
+    for message in ["HTTP 500 Internal Server Error", "HTTP 408 Request Timeout"] {
+        assert_eq!(
+            FaultKind::of_message(message),
+            FaultKind::Transient,
+            "{message}"
+        );
+    }
+
+    let deterministic = [
+        Error::ServiceError(
+            "BananaBlocks txo ab.0: its script hashes to 11, not the asked 22".to_string(),
+        ),
+        Error::ServiceError("BananaBlocks txo ab.0: HTTP 404 Not Found: TXO not found".to_string()),
+        Error::ServiceError("BananaBlocks txo ab.0: bad json: expected value: x".to_string()),
+        Error::ServiceError("Failed to parse UTXO response: expected value".to_string()),
+        Error::InvalidArgument("outpoint ab: not txid.vout".to_string()),
+    ];
+    for e in &deterministic {
+        assert_eq!(FaultKind::of_error(e), FaultKind::Deterministic, "{e}");
+    }
+    for message in ["HTTP 404 Not Found", "HTTP 400 Bad Request", "no answer"] {
+        assert_eq!(
+            FaultKind::of_message(message),
+            FaultKind::Deterministic,
+            "{message}"
+        );
+    }
+
+    let limited = Error::RateLimited {
+        provider: "Bitails".to_string(),
+        retry_after_secs: 30,
+    };
+    assert_eq!(FaultKind::of_error(&limited), FaultKind::RateLimited);
 }
 
 /// BananaBlocks' named spender whose bytes do not spend the outpoint is
