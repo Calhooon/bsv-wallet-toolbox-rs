@@ -1456,15 +1456,6 @@ mod tests {
         assert!(json.contains("\"id\":1"));
     }
 
-    // Helper to create a JSON-RPC success response
-    fn rpc_success<T: Serialize>(id: u64, result: T) -> serde_json::Value {
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "result": result,
-            "id": id
-        })
-    }
-
     // Helper to create a JSON-RPC error response
     #[allow(dead_code)]
     fn rpc_error(id: u64, code: i32, message: &str) -> serde_json::Value {
@@ -2308,7 +2299,7 @@ mod tests {
     fn test_all_22_methods_documented() {
         // This test documents all 22 JSON-RPC methods that must be implemented
         // No Auth (7 methods):
-        let no_auth_methods = vec![
+        let no_auth_methods = [
             "makeAvailable",    // Initialize storage
             "destroy",          // Delete all data
             "migrate",          // Run migrations
