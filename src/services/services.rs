@@ -3083,6 +3083,10 @@ mod rule_28_tests;
 mod three_explorer_tests;
 
 #[cfg(test)]
+#[path = "header_ladder_tests.rs"]
+mod header_ladder_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::providers::ArcadeConfig;
