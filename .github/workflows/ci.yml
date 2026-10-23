@@ -239,10 +239,10 @@ jobs:
           fail_ci_if_error: false
 
   # The public API against the last release tag before this commit. The
-  # release type is read from Cargo.toml's version against the tag's, so a
-  # breaking change fails unless the version is a major bump (on 0.x, the
-  # minor). Neither this job nor `dependents` is a required context yet, and
-  # neither runs on a tag, so neither gates a publish.
+  # comparison always checks a minor release, whatever Cargo.toml says. Only
+  # the owner's api-break PR label permits a reported break. Neither this job
+  # nor `dependents` is a required context yet, and neither runs on a tag, so
+  # neither gates a publish.
   semver:
     name: semver
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -275,12 +275,27 @@ jobs:
 
       # HEAD^: the last tag before this commit, never a tag on the commit itself.
       - name: Check the public API against the last release
+        env:
+          API_BREAK: ${{ contains(github.event.pull_request.labels.*.name, 'api-break') }}
         run: |
           set -euo pipefail
           base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^)"
           version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "bsv-wallet-toolbox-rs") | .version')"
           echo "baseline ${base}, Cargo.toml ${version}"
-          cargo semver-checks --baseline-rev "$base"
+          report="$RUNNER_TEMP/semver-checks.log"
+          if cargo semver-checks --baseline-rev "$base" --release-type minor --color never 2>&1 | tee "$report"; then
+            exit 0
+          else
+            status=$?
+          fi
+          # The breaks as one annotation: %, CR and LF escaped as the runner reads them.
+          breaks="$(sed -n '/^--- failure /,$p' "$report" |
+            awk '{ gsub(/%/, "%25"); gsub(/\r/, "%0D"); printf "%s%%0A", $0 }')"
+          if [ "$API_BREAK" = "true" ] && [ -n "$breaks" ]; then
+            echo "::notice title=Owner-approved API break::api-break against ${base}: ${breaks}"
+            exit 0
+          fi
+          exit "$status"
 
   # Every dependent in docs/DEPENDENTS.md whose ci column is `yes`, cloned at
   # its default branch, built and tested against this tree as a path
