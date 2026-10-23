@@ -1,0 +1,92 @@
+{
+  "about": "WhatsOnChain 429 with no Retry-After: its default window closes the rung for the second call.",
+  "ladder": "get_status_for_txids",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "POST /txs/status",
+          "answers": [
+            {
+              "status": 429
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "blockHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "blockHeight": 900000,
+                "txid": "abababababababababababababababababababababababababababababababab"
+              },
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    },
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "Bitails",
+          "results": [
+            {
+              "depth": 1,
+              "status": "mined",
+              "txid": "abababababababababababababababababababababababababababababababab"
+            }
+          ],
+          "status": "success"
+        }
+      },
+      {
+        "ok": {
+          "name": "Bitails",
+          "results": [
+            {
+              "depth": 1,
+              "status": "mined",
+              "txid": "abababababababababababababababababababababababababababababababab"
+            }
+          ],
+          "status": "success"
+        }
+      }
+    ],
+    "requests": {
+      "Bitails": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 2
+      },
+      "WhatsOnChain": {
+        "POST /txs/status": 1
+      }
+    }
+  }
+}

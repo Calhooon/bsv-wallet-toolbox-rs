@@ -1,0 +1,81 @@
+{
+  "about": "WhatsOnChain unknown, Bitails 500, BananaBlocks 404: one chain index's negative is not the answer; could not look.",
+  "ladder": "get_status_for_txids",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "POST /txs/status",
+          "answers": [
+            {
+              "status": 200,
+              "json": [
+                {
+                  "error": "unknown",
+                  "txid": "abababababababababababababababababababababababababababababababab"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 500
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "error": "could not look: no chain index answered abababababababababababababababababababababababababababababababab",
+          "name": "WoC",
+          "results": [],
+          "status": "error"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "Bitails": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "WhatsOnChain": {
+        "POST /txs/status": 1
+      }
+    }
+  }
+}

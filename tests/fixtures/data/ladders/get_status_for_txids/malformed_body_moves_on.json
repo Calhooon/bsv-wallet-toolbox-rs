@@ -1,0 +1,74 @@
+{
+  "about": "WhatsOnChain 200 not a status list: a fault; Bitails places it.",
+  "ladder": "get_status_for_txids",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "POST /txs/status",
+          "answers": [
+            {
+              "status": 200,
+              "body": "<html>busy</html>"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "blockHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "blockHeight": 900000,
+                "txid": "abababababababababababababababababababababababababababababababab"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "Bitails",
+          "results": [
+            {
+              "depth": 1,
+              "status": "mined",
+              "txid": "abababababababababababababababababababababababababababababababab"
+            }
+          ],
+          "status": "success"
+        }
+      }
+    ],
+    "requests": {
+      "Bitails": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "WhatsOnChain": {
+        "POST /txs/status": 1
+      }
+    }
+  }
+}
