@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- The header ladders `get_chain_tip_header` and `get_header_for_height` (chaintracks, then BHS) report the rungs' errors (#47): when no rung gives a header the answer is `<call>: no header service answered (chaintracks: <error>; bhs: <error>)`, naming each configured rung that failed, as `get_height` beside them already kept its last rung's error. `<call>: no header service configured` is answered only when chaintracks and BHS are both unconfigured. Before, both ladders answered "no header service configured" whenever every rung failed, so a caller (the monitor's new-header task, a spend gate's "headers unavailable") read "not configured" for "could not look" and could not tell a timeout from a reset or a 5xx. Each rung's failure is logged at `warn` (it was `debug`); a rung that answers after a failed one logs nothing new. The ladders' order and how often a rung is asked are unchanged. Tests: `header_ladder_tests` (a failing chaintracks with no BHS is its error, nothing configured is "not configured", a failing chaintracks then an answering BHS is the header, both failing names both, an answering chaintracks asks no BHS; for both ladders).
+
 ## [0.12.0] - 2026-10-22
 
 BananaBlocks as the third explorer in the services' ladders, and a fault moves to the next rung (bsv-wallet-cli#50). The owner's word of 2026-10-22: each chain scanner has its own rate limits, so when one fails we go to the next; every chain question that leaves our services asks WhatsOnChain, BananaBlocks and Bitails as each other's fallbacks; a negative ("unspent", "absent") needs a second provider's clean answer; "could not look" is never read as "nothing there". Bitails is pruned and retired its per-output spend data, so before this an unspent verdict rested on WhatsOnChain alone. A minor, 0.12.0: a new provider, new `ServicesOptions` methods and field, new `Error` variants (`RateLimited`, `NoExplorerAnswered`; `Error` is `#[non_exhaustive]`), and a new `WalletServices` method with a default body (`get_utxo_leads`).
