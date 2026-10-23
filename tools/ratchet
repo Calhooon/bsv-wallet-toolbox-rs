@@ -1,0 +1,655 @@
+#!/usr/bin/env python3
+"""The ratchet: code-health numbers of this tree that may only fall (#55).
+
+    tools/ratchet           measure the tree, print one JSON object
+    tools/ratchet --write   measure and write the baseline tools/ratchet.json
+    tools/ratchet --check   measure and fail (exit 1) when a number rises above
+                            the baseline, printing each rise; a fall is printed
+                            and accepted (the PR that earns it rewrites the
+                            baseline by hand or with --write)
+
+Standard library only. The numbers, in the order of the JSON:
+
+clippy_pedantic          distinct warnings of `cargo clippy --all-targets
+                         --message-format=json -- -W clippy::pedantic -A
+                         clippy::all`, one per (lint, file, line), files of
+                         this repository only; the total and per lint.
+unwraps_outside_tests    `.unwrap()` and `.expect(` in src/ outside test code;
+                         the total and per file.
+files_over_800           src/ files over 800 lines (newline count, as wc -l).
+functions_over_60        `fn` items in src/ outside test code whose span, the
+                         `fn` line to the closing brace, passes 60 lines.
+cognitive_complexity     `clippy::cognitive_complexity` warnings at the
+                         threshold in clippy.toml (25).
+duplicated_blocks        jscpd's clone count over src/ when jscpd is on the
+                         PATH, else null with a `skipped` note. Never installed.
+undocumented_public_items  rustc's `missing_docs` warnings on src/ files,
+                         from the same clippy run (`-W missing_docs`).
+env_reads                `env::var(` / `env::var_os(` calls in src/ outside
+                         test code (`std::env::var` matches too).
+
+The clippy numbers come from one run carrying every flag:
+`-W clippy::pedantic -A clippy::all -W clippy::cognitive_complexity
+-W missing_docs`; the three groups are disjoint, so each count equals the one
+its own run gives. RUSTFLAGS is removed from cargo's environment (a
+`-D warnings` there turns the warnings into errors and stops the build).
+
+Test code is found by a scan, not by the compiler. A source file is lexed
+(comments, strings and char literals blanked, offsets kept); an item carrying
+`#[cfg(test)]` (or a cfg that requires `test`, as `all(test, ...)`; never
+`not(test)`), `#[test]` or `#[<path>::test]` is test code to the end of the
+item: the brace that closes it, or the `;` that ends it. A file is test code
+when the module tree from src/lib.rs reaches it through such a `mod x;` (with
+`#[path]` honoured). Its limits: a cfg spelled through a macro, an
+`#[cfg_attr(...)]`, a test helper outside a cfg(test) item, and an attribute on
+a struct field or match arm (the scan runs to the enclosing item's end) are
+not told apart; a src/ file the tree does not reach is scanned as non-test and
+listed under `unreached_files`.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+BASELINE = ROOT / "tools" / "ratchet.json"
+FILE_LIMIT = 800
+FN_LIMIT = 60
+CLIPPY_FLAGS = [
+    "-W",
+    "clippy::pedantic",
+    "-A",
+    "clippy::all",
+    "-W",
+    "clippy::cognitive_complexity",
+    "-W",
+    "missing_docs",
+]
+
+# The numbers --check gates on: (section, key).
+GATED = [
+    ("clippy_pedantic", "total"),
+    ("unwraps_outside_tests", "total"),
+    ("files_over_800", "count"),
+    ("functions_over_60", "count"),
+    ("cognitive_complexity", "count"),
+    ("duplicated_blocks", "count"),
+    ("undocumented_public_items", "count"),
+    ("env_reads", "total"),
+]
+# Per-key tables shown under a gated rise, so the rise names its file or lint.
+DETAIL = {
+    "clippy_pedantic": "by_lint",
+    "unwraps_outside_tests": "by_file",
+    "files_over_800": "files",
+    "functions_over_60": "functions",
+    "cognitive_complexity": "by_file",
+    "undocumented_public_items": "by_file",
+    "env_reads": "by_file",
+}
+
+
+# ---------------------------------------------------------------- lexing
+
+
+def blank(text):
+    """Comments and the insides of string and char literals as spaces.
+
+    Offsets and newlines are kept, so a match in the result points into the
+    source.
+    """
+    out = list(text)
+    n = len(text)
+    i = 0
+
+    def wipe(a, b):
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
+
+    ident = re.compile(r"[A-Za-z0-9_]")
+    while i < n:
+        c = text[i]
+        if c == "/" and text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            wipe(i, j)
+            i = j
+        elif c == "/" and text.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            wipe(i, j)
+            i = j
+        elif c in "rb" and (i == 0 or not ident.match(text[i - 1])):
+            m = re.compile(r'b?r(#*)"').match(text, i)
+            if m:
+                close = '"' + m.group(1)
+                j = text.find(close, m.end())
+                j = n if j < 0 else j
+                wipe(m.end(), j)
+                i = j + len(close)
+            else:
+                i += 1  # b"..." and b'.' are taken at their quote
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            wipe(i + 1, j)
+            i = j + 1
+        elif c == "'":
+            # A char literal ('x', '\n', '\u{..}') or a lifetime ('a).
+            if i + 1 < n and text[i + 1] == "\\":
+                j = i + 2
+                while j < n and text[j] != "'":
+                    j += 1
+                wipe(i + 1, j)
+                i = j + 1
+            elif i + 2 < n and text[i + 2] == "'":
+                wipe(i + 1, i + 2)
+                i += 3
+            else:
+                i += 1
+        else:
+            i += 1
+    return "".join(out)
+
+
+def match_close(code, i):
+    """The index after the bracket closing the one at `i`."""
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    stack = [pairs[code[i]]]
+    j = i + 1
+    while j < len(code) and stack:
+        c = code[j]
+        if c in pairs:
+            stack.append(pairs[c])
+        elif c in ")]}":
+            stack.pop()
+        j += 1
+    return j
+
+
+def item_end(code, i):
+    """The end of the item starting at `i`: its closing brace or its `;`."""
+    depth = 0
+    j = i
+    while j < len(code):
+        c = code[j]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                return j  # the enclosing block closes first
+            depth -= 1
+            if depth == 0 and c == "}":
+                return j + 1
+        elif c == ";" and depth == 0:
+            return j + 1
+        j += 1
+    return j
+
+
+ATTR = re.compile(r"#\s*\[")
+INNER_ATTR = re.compile(r"#\s*!\s*\[")
+
+
+def cfg_requires_test(pred):
+    """Whether a cfg predicate holds only under `test`."""
+    pred = pred.strip()
+    if pred == "test":
+        return True
+    m = re.fullmatch(r"(all|any|not)\s*\((.*)\)", pred, re.S)
+    if not m:
+        return False
+    args = split_args(m.group(2))
+    if m.group(1) == "all":
+        return any(cfg_requires_test(a) for a in args)
+    if m.group(1) == "any":
+        return bool(args) and all(cfg_requires_test(a) for a in args)
+    return False
+
+
+def split_args(s):
+    parts, depth, cur = [], 0, ""
+    for c in s:
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        if c == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += c
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def is_test_attr(body):
+    body = re.sub(r"\s+", "", body)
+    if body == "test" or re.fullmatch(r"[\w:]+::test(\(.*\))?", body):
+        return True
+    m = re.fullmatch(r"cfg\((.*)\)", body)
+    return bool(m) and cfg_requires_test(m.group(1))
+
+
+def attrs_at(code, i):
+    """The outer attributes from `i`: [(start, end, body)], then the item start."""
+    found = []
+    while True:
+        m = ATTR.match(code, i)
+        if not m:
+            ws = re.compile(r"\s+").match(code, i)
+            if ws and ATTR.match(code, ws.end()):
+                i = ws.end()
+                continue
+            return found, i
+        end = match_close(code, m.end() - 1)
+        found.append((i, end, code[m.end() : end - 1]))
+        i = end
+        ws = re.compile(r"\s*").match(code, i)
+        i = ws.end()
+
+
+class Source:
+    """One src/ file: its text, its blanked code and its test ranges."""
+
+    def __init__(self, path):
+        self.path = path
+        self.rel = path.relative_to(ROOT).as_posix()
+        self.text = path.read_text(encoding="utf-8")
+        self.code = blank(self.text)
+        self.test_file = False
+        self.ranges = []
+        self.attrs = {}
+        whole = INNER_ATTR.search(self.code)
+        while whole:
+            end = match_close(self.code, whole.end() - 1)
+            if is_test_attr(self.code[whole.end() : end - 1]):
+                self.test_file = True
+            whole = INNER_ATTR.search(self.code, end)
+        i = 0
+        while True:
+            m = ATTR.search(self.code, i)
+            if not m:
+                break
+            attrs, start = attrs_at(self.code, m.start())
+            self.attrs[start] = attrs
+            if any(is_test_attr(b) for _, _, b in attrs):
+                end = item_end(self.code, start)
+                self.ranges.append((m.start(), end))
+                i = max(end, start + 1)
+            else:
+                i = start if start > m.start() else m.end()
+
+    def in_test(self, pos):
+        return self.test_file or any(a <= pos < b for a, b in self.ranges)
+
+    def line(self, pos):
+        return self.text.count("\n", 0, pos) + 1
+
+
+# ---------------------------------------------------------- module tree
+
+MOD_DECL = re.compile(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+MOD_INLINE = re.compile(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{")
+
+
+def walk_modules(sources):
+    """Mark files reached through a test `mod x;`; return the unreached."""
+    by_path = {s.path: s for s in sources}
+    seen = set()
+
+    def visit(path, test):
+        src = by_path.get(path)
+        if src is None or path in seen:
+            return
+        seen.add(path)
+        src.test_file = src.test_file or test
+        own_dir = path.parent
+        if path.name not in ("lib.rs", "main.rs", "mod.rs"):
+            own_dir = own_dir / path.stem
+        inline = [
+            (m.group(1), m.end() - 1, match_close(src.code, m.end() - 1))
+            for m in MOD_INLINE.finditer(src.code)
+        ]
+        for m in MOD_DECL.finditer(src.code):
+            line_start = src.code.rfind("\n", 0, m.start()) + 1
+            first = re.compile(r"\s*").match(src.code, line_start).end()
+            attrs = src.attrs.get(first, [])
+            explicit = None
+            for a, b, body in attrs:
+                if re.fullmatch(r'\s*path\s*=\s*".*"\s*', body, re.S):
+                    explicit = re.search(r'"([^"]*)"', src.text[a:b]).group(1)
+            nest = [name for name, a, b in inline if a < m.start() < b]
+            test = src.in_test(m.start()) or any(is_test_attr(b) for _, _, b in attrs)
+            name = m.group(1)
+            if explicit:
+                base = path.parent.joinpath(*nest)
+                targets = [base / explicit]
+            else:
+                base = own_dir.joinpath(*nest)
+                targets = [base / f"{name}.rs", base / name / "mod.rs"]
+            for t in targets:
+                t = Path(os.path.normpath(t))
+                if t in by_path:
+                    visit(t, test or src.test_file)
+                    break
+
+    for root in ("lib.rs", "main.rs"):
+        visit(ROOT / "src" / root, False)
+    bins = ROOT / "src" / "bin"
+    if bins.is_dir():
+        for p in sorted(bins.glob("*.rs")):
+            visit(p, False)
+    return sorted(s.rel for s in sources if s.path not in seen)
+
+
+# ---------------------------------------------------------------- scans
+
+
+def source_files():
+    paths = sorted((ROOT / "src").rglob("*.rs"))
+    return [Source(p) for p in paths]
+
+
+UNWRAP = re.compile(r"\.\s*unwrap\s*\(\s*\)")
+EXPECT = re.compile(r"\.\s*expect\s*\(")
+ENV_READ = re.compile(r"\benv\s*::\s*var(?:_os)?\s*\(")
+FN_ITEM = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def scan_unwraps(sources):
+    by_file, unwraps, expects = {}, 0, 0
+    for s in sources:
+        u = sum(1 for m in UNWRAP.finditer(s.code) if not s.in_test(m.start()))
+        e = sum(1 for m in EXPECT.finditer(s.code) if not s.in_test(m.start()))
+        if u + e:
+            by_file[s.rel] = u + e
+        unwraps += u
+        expects += e
+    return {
+        "total": unwraps + expects,
+        "unwrap": unwraps,
+        "expect": expects,
+        "by_file": dict(sorted(by_file.items())),
+    }
+
+
+def scan_files(sources):
+    lines = {s.rel: s.text.count("\n") for s in sources}
+    over = sorted(
+        ((p, n) for p, n in lines.items() if n > FILE_LIMIT), key=lambda x: (-x[1], x[0])
+    )
+    return {
+        "limit": FILE_LIMIT,
+        "count": len(over),
+        "src_files": len(lines),
+        "src_lines": sum(lines.values()),
+        "files": {p: n for p, n in over},
+    }
+
+
+def scan_functions(sources):
+    found = []
+    for s in sources:
+        code = s.code
+        for m in FN_ITEM.finditer(code):
+            if s.in_test(m.start()):
+                continue
+            depth, j = 0, m.end()
+            while j < len(code):
+                c = code[j]
+                if c in "([":
+                    depth += 1
+                elif c in ")]":
+                    depth -= 1
+                elif depth == 0 and c in "{;":
+                    break
+                j += 1
+            if j >= len(code) or code[j] == ";":
+                continue
+            end = match_close(code, j)
+            n = s.line(end - 1) - s.line(m.start()) + 1
+            if n > FN_LIMIT:
+                found.append((s.rel, m.group(1), n))
+    found.sort(key=lambda x: (x[0], x[1], -x[2]))
+    return {
+        "limit": FN_LIMIT,
+        "count": len(found),
+        "functions": [f"{p}::{name} {n}" for p, name, n in found],
+    }
+
+
+def scan_env(sources):
+    reads = []
+    for s in sources:
+        for m in ENV_READ.finditer(s.code):
+            if s.in_test(m.start()):
+                continue
+            arg = re.match(r'\s*"([^"]*)"', s.text[m.end() :])
+            reads.append((s.rel, arg.group(1) if arg else "<expr>"))
+    reads.sort()
+    by_file = {}
+    for p, _ in reads:
+        by_file[p] = by_file.get(p, 0) + 1
+    return {
+        "total": len(reads),
+        "by_file": by_file,
+        "names": sorted({name for _, name in reads}),
+    }
+
+
+# ---------------------------------------------------------------- cargo
+
+
+def cargo_env():
+    env = dict(os.environ)
+    env.pop("RUSTFLAGS", None)
+    env.pop("CARGO_ENCODED_RUSTFLAGS", None)
+    env["CARGO_TERM_COLOR"] = "never"
+    return env
+
+
+def clippy_version():
+    out = subprocess.run(
+        ["cargo", "clippy", "--version"],
+        cwd=ROOT,
+        env=cargo_env(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip()
+
+
+def clippy_diagnostics():
+    cmd = ["cargo", "clippy", "--all-targets", "--message-format=json", "--"]
+    cmd += CLIPPY_FLAGS
+    proc = subprocess.run(
+        cmd, cwd=ROOT, env=cargo_env(), capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr[-4000:])
+        sys.exit(f"ratchet: `{' '.join(cmd)}` failed ({proc.returncode})")
+    seen = set()
+    for line in proc.stdout.splitlines():
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if msg.get("reason") != "compiler-message":
+            continue
+        diag = msg["message"]
+        code = (diag.get("code") or {}).get("code")
+        if not code or diag.get("level") not in ("warning", "error"):
+            continue
+        span = next((s for s in diag.get("spans", []) if s.get("is_primary")), None)
+        if span is None:
+            continue
+        path = Path(span["file_name"])
+        if not path.is_absolute():
+            path = ROOT / path
+        try:
+            rel = Path(os.path.normpath(path)).relative_to(ROOT).as_posix()
+        except ValueError:
+            continue  # a dependency's file
+        seen.add((code, rel, span["line_start"]))
+    return sorted(seen)
+
+
+def counted(diags, keep, key):
+    table = {}
+    for d in diags:
+        if keep(d):
+            k = key(d)
+            table[k] = table.get(k, 0) + 1
+    return dict(sorted(table.items())), sum(table.values())
+
+
+def scan_clippy(diags):
+    pedantic, p_total = counted(
+        diags,
+        lambda d: d[0].startswith("clippy::") and d[0] != "clippy::cognitive_complexity",
+        lambda d: d[0],
+    )
+    cognitive, c_total = counted(
+        diags, lambda d: d[0] == "clippy::cognitive_complexity", lambda d: d[1]
+    )
+    docs, m_total = counted(
+        diags, lambda d: d[0] == "missing_docs" and d[1].startswith("src/"), lambda d: d[1]
+    )
+    return (
+        {"total": p_total, "by_lint": pedantic},
+        {"threshold": cognitive_threshold(), "count": c_total, "by_file": cognitive},
+        {
+            "method": "cargo clippy --all-targets -- -W missing_docs, src/ files, one per (file, line)",
+            "count": m_total,
+            "by_file": docs,
+        },
+    )
+
+
+def cognitive_threshold():
+    text = (ROOT / "clippy.toml").read_text(encoding="utf-8")
+    m = re.search(r"^cognitive-complexity-threshold\s*=\s*(\d+)", text, re.M)
+    return int(m.group(1)) if m else 25
+
+
+def scan_jscpd():
+    exe = shutil.which("jscpd")
+    if not exe:
+        return {"count": None, "skipped": "jscpd not on PATH"}
+    with tempfile.TemporaryDirectory() as out:
+        subprocess.run(
+            [exe, "--silent", "--format", "rust", "--reporters", "json", "--output", out, "src"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        )
+        report = json.loads((Path(out) / "jscpd-report.json").read_text())
+    return {"count": report["statistics"]["total"]["clones"], "tool": "jscpd"}
+
+
+# ---------------------------------------------------------------- report
+
+
+def measure():
+    sources = source_files()
+    unreached = walk_modules(sources)
+    pedantic, cognitive, docs = scan_clippy(clippy_diagnostics())
+    unwraps = scan_unwraps(sources)
+    unwraps["unreached_files"] = unreached
+    return {
+        "tool": "tools/ratchet 1",
+        "toolchain": clippy_version(),
+        "features": "default",
+        "clippy_pedantic": pedantic,
+        "unwraps_outside_tests": unwraps,
+        "files_over_800": scan_files(sources),
+        "functions_over_60": scan_functions(sources),
+        "cognitive_complexity": cognitive,
+        "duplicated_blocks": scan_jscpd(),
+        "undocumented_public_items": docs,
+        "env_reads": scan_env(sources),
+    }
+
+
+def dump(report):
+    return json.dumps(report, indent=2, ensure_ascii=False) + "\n"
+
+
+def as_table(value):
+    """A detail entry as {key: number}: dicts as they are, lists as present (1)."""
+    if isinstance(value, dict):
+        return value
+    table = {}
+    for entry in value or []:
+        key = re.sub(r" \d+$", "", entry)
+        table[key] = table.get(key, 0) + 1
+    return table
+
+
+def check(now, base):
+    rises, falls = [], []
+    if now.get("toolchain") != base.get("toolchain"):
+        print(f"note: toolchain {now.get('toolchain')!r}, baseline {base.get('toolchain')!r}")
+    for section, key in GATED:
+        a = (base.get(section) or {}).get(key)
+        b = (now.get(section) or {}).get(key)
+        if a is None or b is None:
+            if a != b:
+                print(f"note: {section}.{key} baseline {a}, now {b}: not compared")
+            continue
+        if b == a:
+            continue
+        line = f"{section}.{key}: {a} -> {b} ({b - a:+d})"
+        (rises if b > a else falls).append(line)
+        if b > a and section in DETAIL:
+            t0 = as_table(base[section].get(DETAIL[section]))
+            t1 = as_table(now[section].get(DETAIL[section]))
+            for k in sorted(set(t0) | set(t1)):
+                x, y = t0.get(k, 0), t1.get(k, 0)
+                if y > x:
+                    rises.append(f"    {k}: {x} -> {y} ({y - x:+d})")
+    for line in falls:
+        print(f"fell (accepted; rewrite tools/ratchet.json in this PR): {line}")
+    for line in rises:
+        print(f"ROSE: {line}" if not line.startswith("    ") else line)
+    if rises:
+        print("ratchet: red; a number rose above tools/ratchet.json")
+        return 1
+    print("ratchet: green; no number above tools/ratchet.json")
+    return 0
+
+
+def main(argv):
+    mode = argv[1] if len(argv) > 1 else ""
+    if mode not in ("", "--write", "--check") or len(argv) > 2:
+        sys.exit(__doc__.split("\n\n")[1])
+    report = measure()
+    if mode == "--write":
+        BASELINE.write_text(dump(report), encoding="utf-8")
+        print(f"wrote {BASELINE.relative_to(ROOT)}")
+        return 0
+    if mode == "--check":
+        base = json.loads(BASELINE.read_text(encoding="utf-8"))
+        return check(report, base)
+    sys.stdout.write(dump(report))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
