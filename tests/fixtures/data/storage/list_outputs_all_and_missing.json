@@ -1,0 +1,191 @@
+{
+  "calls": [
+    {
+      "args": {
+        "basket": "assets",
+        "include": "locking scripts",
+        "includeCustomInstructions": true,
+        "includeLabels": true,
+        "includeTags": true,
+        "limit": 10,
+        "offset": 0,
+        "tagQueryMode": "all",
+        "tags": ["red","blue"]
+      },
+      "method": "list_outputs"
+    },
+    {"args":{"basket":"absent","limit":10,"offset":0},"method":"list_outputs"}
+  ],
+  "expected": [
+    {
+      "result": {
+        "ok": {
+          "outputs": [
+            {
+              "labels": ["shared","beta"],
+              "lockingScript": "51",
+              "outpoint": "<txid:1>.0",
+              "satoshis": 21,
+              "spendable": true,
+              "tags": ["red","blue"]
+            }
+          ],
+          "totalOutputs": 1
+        }
+      },
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1},
+          {"basket_id":2,"is_deleted":0,"minimum_desired_utxo_value":10000,"name":"assets","number_of_desired_utxos":6,"user_id":1},
+          {"basket_id":3,"is_deleted":0,"minimum_desired_utxo_value":10000,"name":"other","number_of_desired_utxos":6,"user_id":1}
+        ],
+        "output_tags": [
+          {"is_deleted":0,"output_tag_id":1,"tag":"red","user_id":1},
+          {"is_deleted":0,"output_tag_id":2,"tag":"fresh","user_id":1},
+          {"is_deleted":0,"output_tag_id":3,"tag":"blue","user_id":1},
+          {"is_deleted":0,"output_tag_id":4,"tag":"green","user_id":1}
+        ],
+        "output_tags_map": [
+          {"is_deleted":0,"output_id":1,"output_tag_id":1,"output_tag_map_id":1},
+          {"is_deleted":0,"output_id":1,"output_tag_id":2,"output_tag_map_id":2},
+          {"is_deleted":0,"output_id":2,"output_tag_id":3,"output_tag_map_id":3},
+          {"is_deleted":0,"output_id":3,"output_tag_id":1,"output_tag_map_id":4},
+          {"is_deleted":0,"output_id":3,"output_tag_id":3,"output_tag_map_id":5},
+          {"is_deleted":0,"output_id":4,"output_tag_id":1,"output_tag_map_id":6},
+          {"is_deleted":0,"output_id":5,"output_tag_id":4,"output_tag_map_id":7}
+        ],
+        "outputs": [
+          {"basket_id":2,"change":0,"custom_instructions":"alpha instructions","derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"alpha output 0","output_id":1,"provided_by":"you","purpose":"","satoshis":11,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":1,"txid":"<txid:2>","type":"custom","user_id":1,"vout":0},
+          {"basket_id":2,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"alpha output 1","output_id":2,"provided_by":"you","purpose":"","satoshis":12,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":1,"txid":"<txid:2>","type":"custom","user_id":1,"vout":1},
+          {"basket_id":2,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"beta output 0","output_id":3,"provided_by":"you","purpose":"","satoshis":21,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":2,"txid":"<txid:1>","type":"custom","user_id":1,"vout":0},
+          {"basket_id":3,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"beta output 1","output_id":4,"provided_by":"you","purpose":"","satoshis":22,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":2,"txid":"<txid:1>","type":"custom","user_id":1,"vout":1},
+          {"basket_id":2,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"gamma output 0","output_id":5,"provided_by":"you","purpose":"","satoshis":31,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":3,"txid":"<txid:3>","type":"custom","user_id":1,"vout":0}
+        ],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [],
+        "proven_txs": [
+          {"block_hash":"<txid:4>","height":100000,"idx":0,"merkle_path":{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]},"merkle_root":"<txid:2>","proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":11},{"lockingScript":"51","satoshis":12}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},
+          {"block_hash":"<txid:4>","height":100001,"idx":0,"merkle_path":{"blockHeight":100001,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]},"merkle_root":"<txid:1>","proven_tx_id":2,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0102","vout":4294967295}],"lockTime":1,"outputs":[{"lockingScript":"51","satoshis":21},{"lockingScript":"51","satoshis":22}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"},
+          {"block_hash":"<txid:4>","height":100002,"idx":0,"merkle_path":{"blockHeight":100002,"path":[[{"duplicate":false,"hash":"<txid:3>","offset":0,"txid":true}]]},"merkle_root":"<txid:3>","proven_tx_id":3,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0103","vout":4294967295}],"lockTime":2,"outputs":[{"lockingScript":"51","satoshis":31}],"txid":"<txid:3>","version":1},"txid":"<txid:3>"}
+        ],
+        "sync_states": [],
+        "transactions": [
+          {"description":"seed alpha","input_beef":null,"is_outgoing":0,"lock_time":0,"proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":11},{"lockingScript":"51","satoshis":12}],"txid":"<txid:2>","version":1},"reference":"<reference:1>","satoshis":23,"status":"completed","transaction_id":1,"txid":"<txid:2>","user_id":1,"version":1},
+          {"description":"seed beta","input_beef":null,"is_outgoing":0,"lock_time":1,"proven_tx_id":2,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0102","vout":4294967295}],"lockTime":1,"outputs":[{"lockingScript":"51","satoshis":21},{"lockingScript":"51","satoshis":22}],"txid":"<txid:1>","version":1},"reference":"<reference:2>","satoshis":43,"status":"completed","transaction_id":2,"txid":"<txid:1>","user_id":1,"version":1},
+          {"description":"seed gamma","input_beef":null,"is_outgoing":0,"lock_time":2,"proven_tx_id":3,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0103","vout":4294967295}],"lockTime":2,"outputs":[{"lockingScript":"51","satoshis":31}],"txid":"<txid:3>","version":1},"reference":"<reference:3>","satoshis":31,"status":"completed","transaction_id":3,"txid":"<txid:3>","user_id":1,"version":1}
+        ],
+        "tx_labels": [
+          {"is_deleted":0,"label":"shared","tx_label_id":1,"user_id":1},
+          {"is_deleted":0,"label":"alpha","tx_label_id":2,"user_id":1},
+          {"is_deleted":0,"label":"beta","tx_label_id":3,"user_id":1},
+          {"is_deleted":0,"label":"gamma","tx_label_id":4,"user_id":1}
+        ],
+        "tx_labels_map": [
+          {"is_deleted":0,"transaction_id":1,"tx_label_id":1,"tx_label_map_id":1},
+          {"is_deleted":0,"transaction_id":1,"tx_label_id":2,"tx_label_map_id":2},
+          {"is_deleted":0,"transaction_id":2,"tx_label_id":1,"tx_label_map_id":3},
+          {"is_deleted":0,"transaction_id":2,"tx_label_id":3,"tx_label_map_id":4},
+          {"is_deleted":0,"transaction_id":3,"tx_label_id":4,"tx_label_map_id":5}
+        ],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": []
+    },
+    {
+      "result": {"ok":{"outputs":[],"totalOutputs":0}},
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1},
+          {"basket_id":2,"is_deleted":0,"minimum_desired_utxo_value":10000,"name":"assets","number_of_desired_utxos":6,"user_id":1},
+          {"basket_id":3,"is_deleted":0,"minimum_desired_utxo_value":10000,"name":"other","number_of_desired_utxos":6,"user_id":1}
+        ],
+        "output_tags": [
+          {"is_deleted":0,"output_tag_id":1,"tag":"red","user_id":1},
+          {"is_deleted":0,"output_tag_id":2,"tag":"fresh","user_id":1},
+          {"is_deleted":0,"output_tag_id":3,"tag":"blue","user_id":1},
+          {"is_deleted":0,"output_tag_id":4,"tag":"green","user_id":1}
+        ],
+        "output_tags_map": [
+          {"is_deleted":0,"output_id":1,"output_tag_id":1,"output_tag_map_id":1},
+          {"is_deleted":0,"output_id":1,"output_tag_id":2,"output_tag_map_id":2},
+          {"is_deleted":0,"output_id":2,"output_tag_id":3,"output_tag_map_id":3},
+          {"is_deleted":0,"output_id":3,"output_tag_id":1,"output_tag_map_id":4},
+          {"is_deleted":0,"output_id":3,"output_tag_id":3,"output_tag_map_id":5},
+          {"is_deleted":0,"output_id":4,"output_tag_id":1,"output_tag_map_id":6},
+          {"is_deleted":0,"output_id":5,"output_tag_id":4,"output_tag_map_id":7}
+        ],
+        "outputs": [
+          {"basket_id":2,"change":0,"custom_instructions":"alpha instructions","derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"alpha output 0","output_id":1,"provided_by":"you","purpose":"","satoshis":11,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":1,"txid":"<txid:2>","type":"custom","user_id":1,"vout":0},
+          {"basket_id":2,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"alpha output 1","output_id":2,"provided_by":"you","purpose":"","satoshis":12,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":1,"txid":"<txid:2>","type":"custom","user_id":1,"vout":1},
+          {"basket_id":2,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"beta output 0","output_id":3,"provided_by":"you","purpose":"","satoshis":21,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":2,"txid":"<txid:1>","type":"custom","user_id":1,"vout":0},
+          {"basket_id":3,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"beta output 1","output_id":4,"provided_by":"you","purpose":"","satoshis":22,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":2,"txid":"<txid:1>","type":"custom","user_id":1,"vout":1},
+          {"basket_id":2,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"gamma output 0","output_id":5,"provided_by":"you","purpose":"","satoshis":31,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":3,"txid":"<txid:3>","type":"custom","user_id":1,"vout":0}
+        ],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [],
+        "proven_txs": [
+          {"block_hash":"<txid:4>","height":100000,"idx":0,"merkle_path":{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]},"merkle_root":"<txid:2>","proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":11},{"lockingScript":"51","satoshis":12}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},
+          {"block_hash":"<txid:4>","height":100001,"idx":0,"merkle_path":{"blockHeight":100001,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]},"merkle_root":"<txid:1>","proven_tx_id":2,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0102","vout":4294967295}],"lockTime":1,"outputs":[{"lockingScript":"51","satoshis":21},{"lockingScript":"51","satoshis":22}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"},
+          {"block_hash":"<txid:4>","height":100002,"idx":0,"merkle_path":{"blockHeight":100002,"path":[[{"duplicate":false,"hash":"<txid:3>","offset":0,"txid":true}]]},"merkle_root":"<txid:3>","proven_tx_id":3,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0103","vout":4294967295}],"lockTime":2,"outputs":[{"lockingScript":"51","satoshis":31}],"txid":"<txid:3>","version":1},"txid":"<txid:3>"}
+        ],
+        "sync_states": [],
+        "transactions": [
+          {"description":"seed alpha","input_beef":null,"is_outgoing":0,"lock_time":0,"proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":11},{"lockingScript":"51","satoshis":12}],"txid":"<txid:2>","version":1},"reference":"<reference:1>","satoshis":23,"status":"completed","transaction_id":1,"txid":"<txid:2>","user_id":1,"version":1},
+          {"description":"seed beta","input_beef":null,"is_outgoing":0,"lock_time":1,"proven_tx_id":2,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0102","vout":4294967295}],"lockTime":1,"outputs":[{"lockingScript":"51","satoshis":21},{"lockingScript":"51","satoshis":22}],"txid":"<txid:1>","version":1},"reference":"<reference:2>","satoshis":43,"status":"completed","transaction_id":2,"txid":"<txid:1>","user_id":1,"version":1},
+          {"description":"seed gamma","input_beef":null,"is_outgoing":0,"lock_time":2,"proven_tx_id":3,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0103","vout":4294967295}],"lockTime":2,"outputs":[{"lockingScript":"51","satoshis":31}],"txid":"<txid:3>","version":1},"reference":"<reference:3>","satoshis":31,"status":"completed","transaction_id":3,"txid":"<txid:3>","user_id":1,"version":1}
+        ],
+        "tx_labels": [
+          {"is_deleted":0,"label":"shared","tx_label_id":1,"user_id":1},
+          {"is_deleted":0,"label":"alpha","tx_label_id":2,"user_id":1},
+          {"is_deleted":0,"label":"beta","tx_label_id":3,"user_id":1},
+          {"is_deleted":0,"label":"gamma","tx_label_id":4,"user_id":1}
+        ],
+        "tx_labels_map": [
+          {"is_deleted":0,"transaction_id":1,"tx_label_id":1,"tx_label_map_id":1},
+          {"is_deleted":0,"transaction_id":1,"tx_label_id":2,"tx_label_map_id":2},
+          {"is_deleted":0,"transaction_id":2,"tx_label_id":1,"tx_label_map_id":3},
+          {"is_deleted":0,"transaction_id":2,"tx_label_id":3,"tx_label_map_id":4},
+          {"is_deleted":0,"transaction_id":3,"tx_label_id":4,"tx_label_map_id":5}
+        ],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": []
+    }
+  ],
+  "inputs": {
+    "baskets": [{"desired":1,"minimum":1000,"name":"default"}],
+    "transactions": [
+      {
+        "labels": ["shared","alpha"],
+        "name": "alpha",
+        "outputs": [
+          {"basket":"assets","custom_instructions":"alpha instructions","satoshis":11,"tags":["red","fresh"]},
+          {"basket":"assets","satoshis":12,"tags":["blue"]}
+        ]
+      },
+      {
+        "labels": ["shared","beta"],
+        "name": "beta",
+        "outputs": [{"basket":"assets","satoshis":21,"tags":["red","blue"]},{"basket":"other","satoshis":22,"tags":["red"]}]
+      },
+      {"labels":["gamma"],"name":"gamma","outputs":[{"basket":"assets","satoshis":31,"tags":["green"]}]}
+    ],
+    "user": "Alice"
+  },
+  "issue": 53,
+  "name": "list_outputs_all_and_missing"
+}
