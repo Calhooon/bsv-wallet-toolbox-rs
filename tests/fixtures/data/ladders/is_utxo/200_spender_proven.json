@@ -1,0 +1,162 @@
+{
+  "about": "The named spender's bytes spend the outpoint and its proof meets the header service's header: Spent.",
+  "ladder": "is_utxo",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "result": [],
+                "script": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8"
+              }
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90",
+                "vin": 0
+              }
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 200,
+              "body": "01000000011111111111111111111111111111111111111111111111111111111111111111000000000100ffffffff018403000000000000015100000000"
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/proof/tsc",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "nodes": [
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ],
+                "target": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "txOrId": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "script_pubkey": "76a914010288ac",
+                "script_type": "p2pkh",
+                "spend_scope": "confirmed",
+                "spent": true,
+                "spent_txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90",
+                "value": 1000
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    },
+    {
+      "name": "Chaintracks",
+      "routes": [
+        {
+          "route": "GET /findHeaderHexForBlockHash?hash=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "status": "success",
+                "value": {
+                  "bits": 486604799,
+                  "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                  "height": 900123,
+                  "merkleRoot": "e0606b643f2402c9f6526afae9c6306f6ffc009c3607a833de3cd5ea17e56aff",
+                  "nonce": 1,
+                  "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "time": 1700000000,
+                  "version": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "route": "GET /findHeaderHexForHeight?height=900123",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "status": "success",
+                "value": {
+                  "bits": 486604799,
+                  "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                  "height": 900123,
+                  "merkleRoot": "e0606b643f2402c9f6526afae9c6306f6ffc009c3607a833de3cd5ea17e56aff",
+                  "nonce": 1,
+                  "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "time": 1700000000,
+                  "version": 1
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "locking_script": "76a914010288ac",
+      "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+      "vout": 0
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "verdict": "Spent"
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 1
+      },
+      "Chaintracks": {
+        "GET /findHeaderHexForBlockHash?hash=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": 1,
+        "GET /findHeaderHexForHeight?height=900123": 1
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 1,
+        "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent": 1,
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1,
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/proof/tsc": 1
+      }
+    }
+  }
+}

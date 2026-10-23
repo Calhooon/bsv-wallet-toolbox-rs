@@ -1,0 +1,114 @@
+{
+  "about": "Two say spent, the named spender's bytes are 404 everywhere: the name is dropped, the two negatives stand: SpentHint, no spender.",
+  "ladder": "is_utxo",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "result": [],
+                "script": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8"
+              }
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "script_pubkey": "76a914010288ac",
+                "script_type": "p2pkh",
+                "spend_scope": "confirmed",
+                "spent": true,
+                "spent_txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90",
+                "value": 1000
+              }
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Chaintracks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "locking_script": "76a914010288ac",
+      "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+      "vout": 0
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "verdict": "SpentHint"
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1,
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 1
+      },
+      "Bitails": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 1,
+        "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent": 1,
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      }
+    }
+  }
+}

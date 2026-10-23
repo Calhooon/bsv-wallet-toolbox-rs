@@ -1,0 +1,95 @@
+{
+  "about": "WhatsOnChain not JSON, BananaBlocks unspent, Bitails not listed; no spender: Unknown.",
+  "ladder": "is_utxo",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 200,
+              "body": "not json"
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "script_pubkey": "76a914010288ac",
+                "script_type": "p2pkh",
+                "spent": false,
+                "value": 1000
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "scripthash": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8",
+                "unspent": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Chaintracks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "locking_script": "76a914010288ac",
+      "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+      "vout": 0
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "verdict": "Unknown"
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 1
+      },
+      "Bitails": {
+        "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent": 1
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 1,
+        "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent": 1
+      }
+    }
+  }
+}

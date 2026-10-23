@@ -1,0 +1,99 @@
+{
+  "about": "WhatsOnChain 429 with no Retry-After: the default window, the same closed rung on the second call.",
+  "ladder": "get_utxo_status",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 429
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "script_pubkey": "76a914010288ac",
+                "script_type": "p2pkh",
+                "spent": false,
+                "value": 1000
+              },
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "scripthash": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8",
+                "unspent": []
+              },
+              "times": 2
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "outpoint": "1111111111111111111111111111111111111111111111111111111111111111.0",
+      "output": "b898c5bd0c912186f83eb542a6b6ad6009281ed65714030b828aa4246c978c79"
+    },
+    {
+      "outpoint": "1111111111111111111111111111111111111111111111111111111111111111.0",
+      "output": "b898c5bd0c912186f83eb542a6b6ad6009281ed65714030b828aa4246c978c79"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "details": [],
+          "error": "could not look: BananaBlocks lists the output as unspent; Bitails does not list the output as unspent and no second explorer confirmed it (WhatsOnChain: Rate limited: WhatsOnChain: retry after 1s)",
+          "name": "Services",
+          "status": "error"
+        }
+      },
+      {
+        "ok": {
+          "details": [],
+          "error": "could not look: BananaBlocks lists the output as unspent; Bitails does not list the output as unspent and no second explorer confirmed it (WhatsOnChain: Rate limited: WhatsOnChain: retry after 1s)",
+          "name": "Services",
+          "status": "error"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 2
+      },
+      "Bitails": {
+        "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent": 2
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 1
+      }
+    }
+  }
+}

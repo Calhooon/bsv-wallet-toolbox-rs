@@ -1,0 +1,77 @@
+{
+  "about": "Every explorer 500 twice: could not look, never spent; each asked once more in the retry round.",
+  "ladder": "get_utxo_status",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 500,
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 500,
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent",
+          "answers": [
+            {
+              "status": 500,
+              "times": 2
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "outpoint": "1111111111111111111111111111111111111111111111111111111111111111.0",
+      "output": "b898c5bd0c912186f83eb542a6b6ad6009281ed65714030b828aa4246c978c79"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "details": [],
+          "error": "Bitails: HTTP 500 Internal Server Error",
+          "name": "Services",
+          "status": "error"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 2
+      },
+      "Bitails": {
+        "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent": 2
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 2
+      }
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "about": "Every explorer 500 (asked once more), no spender named: Unknown, never spent.",
+  "ladder": "is_utxo",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 500,
+              "times": 2
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent",
+          "answers": [
+            {
+              "status": 500
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 500,
+              "times": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent",
+          "answers": [
+            {
+              "status": 500,
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Chaintracks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "locking_script": "76a914010288ac",
+      "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+      "vout": 0
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "verdict": "Unknown"
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 3
+      },
+      "Bitails": {
+        "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent": 2
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 2,
+        "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent": 1
+      }
+    }
+  }
+}

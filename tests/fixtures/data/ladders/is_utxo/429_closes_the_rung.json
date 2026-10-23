@@ -1,0 +1,116 @@
+{
+  "about": "WhatsOnChain 429 with Retry-After on every route: BananaBlocks and Bitails unspent decide; the second call asks WhatsOnChain nothing.",
+  "ladder": "is_utxo",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent",
+          "answers": [
+            {
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "script_pubkey": "76a914010288ac",
+                "script_type": "p2pkh",
+                "spent": false,
+                "value": 1000
+              },
+              "times": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "scripthash": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8",
+                "unspent": [
+                  {
+                    "blockheight": 900000,
+                    "satoshis": 1000,
+                    "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+                    "vout": 0
+                  }
+                ]
+              },
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Chaintracks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "locking_script": "76a914010288ac",
+      "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+      "vout": 0
+    },
+    {
+      "locking_script": "76a914010288ac",
+      "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+      "vout": 0
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "verdict": "UnspentHint"
+      },
+      {
+        "verdict": "UnspentHint"
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 2
+      },
+      "Bitails": {
+        "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent": 2
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 1
+      }
+    }
+  }
+}
