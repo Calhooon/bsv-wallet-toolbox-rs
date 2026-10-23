@@ -1,0 +1,88 @@
+{
+  "about": "WhatsOnChain and Bitails answer 404 (two clean negatives), BananaBlocks does not index it: no proof, the notes name each.",
+  "ladder": "get_merkle_path",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Chaintracks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "Services",
+          "notes": [
+            {
+              "name": "WoC",
+              "what": "getMerklePathNotFound"
+            },
+            {
+              "name": "BananaBlocks",
+              "what": "getMerklePathNotIndexed"
+            },
+            {
+              "name": "Bitails",
+              "what": "getMerklePathNotFound"
+            }
+          ]
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 1
+      },
+      "Bitails": {
+        "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc": 1
+      },
+      "WhatsOnChain": {
+        "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc": 1
+      }
+    }
+  }
+}

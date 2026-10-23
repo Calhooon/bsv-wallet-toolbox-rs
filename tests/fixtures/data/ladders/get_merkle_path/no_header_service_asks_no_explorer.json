@@ -1,0 +1,75 @@
+{
+  "about": "No header service configured: no proof can be checked, so no explorer is asked and none is returned.",
+  "ladder": "get_merkle_path",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "nodes": [
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ],
+                "target": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "txOrId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "nodes": [
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ],
+                "target": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "txOrId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "error": "no header service configured (chaintracks_url): a merkle proof cannot be checked, so none is fetched or returned",
+          "name": "Services",
+          "notes": [
+            {
+              "error": "no header service configured (chaintracks_url): a merkle proof cannot be checked, so none is fetched or returned",
+              "name": "Services",
+              "what": "getMerklePathTrackerError"
+            }
+          ]
+        }
+      }
+    ],
+    "requests": {}
+  }
+}

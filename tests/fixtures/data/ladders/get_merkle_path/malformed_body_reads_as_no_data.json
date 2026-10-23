@@ -1,0 +1,157 @@
+{
+  "about": "WhatsOnChain 200 with a body that is not a proof: today read as getMerklePathNoData (a clean not-mined note), Bitails serves the proof. Pinned as it is; a malformed body is a fault by the ladder's rule (finding).",
+  "ladder": "get_merkle_path",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc",
+          "answers": [
+            {
+              "status": 200,
+              "body": "<html>busy</html>"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "nodes": [
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ],
+                "target": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "txOrId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Chaintracks",
+      "routes": [
+        {
+          "route": "GET /findHeaderHexForBlockHash?hash=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "status": "success",
+                "value": {
+                  "bits": 486604799,
+                  "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "height": 900000,
+                  "merkleRoot": "fb76b78e0fae95e9804262321cd913f27a1f41b799f3b0b7b93f37393b0d9d49",
+                  "nonce": 1,
+                  "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "time": 1700000000,
+                  "version": 1
+                }
+              },
+              "times": 1
+            }
+          ]
+        },
+        {
+          "route": "GET /findHeaderHexForHeight?height=900000",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "status": "success",
+                "value": {
+                  "bits": 486604799,
+                  "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "height": 900000,
+                  "merkleRoot": "fb76b78e0fae95e9804262321cd913f27a1f41b799f3b0b7b93f37393b0d9d49",
+                  "nonce": 1,
+                  "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "time": 1700000000,
+                  "version": 1
+                }
+              },
+              "times": 1
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "header": {
+            "bits": 486604799,
+            "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "height": 900000,
+            "merkle_root": "fb76b78e0fae95e9804262321cd913f27a1f41b799f3b0b7b93f37393b0d9d49",
+            "nonce": 1,
+            "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "time": 1700000000,
+            "version": 1
+          },
+          "merkle_path": "fea0bb0d0001020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "name": "BitailsTsc",
+          "notes": [
+            {
+              "name": "WoC",
+              "what": "getMerklePathNoData"
+            },
+            {
+              "name": "BananaBlocks",
+              "what": "getMerklePathNotIndexed"
+            },
+            {
+              "name": "Bitails",
+              "what": "getMerklePathSuccess"
+            }
+          ]
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 1
+      },
+      "Bitails": {
+        "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc": 1
+      },
+      "Chaintracks": {
+        "GET /findHeaderHexForBlockHash?hash=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": 1,
+        "GET /findHeaderHexForHeight?height=900000": 1
+      },
+      "WhatsOnChain": {
+        "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc": 1
+      }
+    }
+  }
+}
