@@ -1,14 +1,16 @@
 name: CI
 
-# The machine gate. Branch protection on main requires four of the check names
-# below: `Test Suite (ubuntu-latest, stable)`, `Clippy`, `Rustfmt`, `vectors`.
-# Renaming one of those jobs removes its context and blocks every PR until the
-# protection is updated. Every action is pinned by commit sha.
+# The machine gate. Two branches are protected, `main` (the stable line) and
+# `beta` (the programme's line, RELEASING.md), and each requires the same five
+# check names below: `Test Suite (ubuntu-latest, stable)`, `Clippy`, `Rustfmt`,
+# `vectors`, `locks`. Renaming one of those jobs removes its context and blocks
+# every PR into both branches until the protection is updated. Every action is
+# pinned by commit sha.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, beta]
   push:
-    branches: [main]
+    branches: [main, beta]
   # release.yml runs the same jobs on a tag before it publishes.
   workflow_call:
 
