@@ -50,6 +50,18 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# A check with nothing to check is a failure, never a pass.
+if [ ! -f "$LIST" ]; then
+  echo "no table: $LIST is missing" >&2
+  exit 2
+fi
+for marker in begin end; do
+  if ! grep -qF "<!-- dependents-check:$marker -->" "$LIST"; then
+    echo "no table: $LIST has no <!-- dependents-check:$marker --> marker" >&2
+    exit 2
+  fi
+done
+
 # The tree's own version, which the rewritten dependency must resolve to.
 tree_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$TREE/Cargo.toml" | head -n1)"
 
@@ -240,8 +252,14 @@ while IFS='|' read -r crate clone dir inci testcmd; do
   run_one "$crate" "$clone" "$dir" "$testcmd"
 done < <(rows)
 
-if [ -n "$only" ] && [ "$any" -eq 0 ]; then
-  echo "no row named $only in $LIST" >&2
+if [ "$any" -eq 0 ]; then
+  if [ -n "$only" ]; then
+    echo "empty selection: no row named $only to run in $LIST" >&2
+  elif [ "$ci" -eq 1 ]; then
+    echo "empty selection: no row of $LIST has ci yes" >&2
+  else
+    echo "empty selection: the table in $LIST has no rows" >&2
+  fi
   exit 2
 fi
 
