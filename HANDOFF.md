@@ -11,19 +11,21 @@ The captain's record of the north-star programme (epic #80). Re-orient from this
 
 ## Wave 1 (launched 2026-10-23, Phase 0, the oracle)
 
-| lane | issue | base | state |
+| lane | issue | PR | state (2026-10-23 late) |
 |---|---|---|---|
-| oracle-52-beta-line | #52 | origin/beta | running |
-| oracle-53a-door-fixtures | #53 | origin/beta | running |
-| oracle-53b-ladder-fixtures | #53 | origin/beta | running |
-| oracle-54-benches (owns Cargo.toml) | #54 | origin/beta | running |
-| oracle-55-ratchet | #55 | origin/beta | running |
-| oracle-56-arch-tests | #56 | origin/beta | running |
-| oracle-57-mutants | #57 | origin/beta | running |
-| oracle-58-fuzz | #58 | origin/beta | stopped by the Codex provider's classifier at its first turn (openai-2, box); per cca rule 18 it is recorded, not retried; the owner names its next model |
-| oracle-59-dependents | #59 | origin/beta | running |
-| oracle-60-north-star | #60 | origin/beta | running |
-| main-mock-spender-setter | the CLI's ask | origin/main | running; a quick fix on main; the 0.13.1 version and tag are the owner's |
+| oracle-52-beta-line | #52 | #81 | landed on beta (rebase merge, tip 6317222); review on Codex: merge, no findings; #52 closed |
+| main-mock-spender-setter | the CLI's ask | #84 | landed on main (ff0be45); review on Codex: merge; synced into beta by #88; the 0.13.1 tag is the owner's |
+| oracle-53a-door-fixtures | #53 | #87 | draft; review on Claude in flight; finding to reproduce: list_outputs offset 99 reports total 99 |
+| oracle-53b-ladder-fixtures | #53 | #91 | draft; review on Codex in flight; replay is under `cargo test --lib ladder_fixtures` because a mock-base `Services` constructor is a public shape (owner's word); findings filed #92, #93 |
+| oracle-54-benches (owns Cargo.toml) | #54 | #86 | draft; its ci.yml is invalid (`runner.temp` in a job-level env), fix lane `oracle-54-fix` running; review relaunch after the fix |
+| oracle-55-ratchet | #55 | #90 | draft; review on Codex in flight; finding filed #89 (src/utils.rs unreachable) |
+| oracle-56-arch-tests | #56 | #83 | draft; review on Claude: fix (ceilings never fail on slack; aliased reqwest, var_os, lowercase SQL, matches! evade); fix lane `oracle-56-fix` running |
+| oracle-57-mutants | #57 | none | the lane ended with no commits and no report; relaunched as `oracle-57-mutants-b` |
+| oracle-58-fuzz | #58 | none | stopped by the Codex provider's classifier at its first turn; per cca rule 18 the owner names its next model |
+| oracle-59-dependents | #59 | #85 | draft; review on Codex: fix (semver job let a break through at 0.14.0; integration tests not run; silent table read; a forbidden word); fix lane `oracle-59-fix` running; dolphinmilk stays out of CI by the captain's decision, tracked in #94 |
+| oracle-60-north-star | #60 | #82 | draft; its review lane ended with no report; relaunched as `oracle-60-review-b` |
+
+Lessons of the wave: a lane that arms a background job and ends its turn leaves no report (three did); every brief now says foreground only, REPORT last. A review brief built with a base ref containing a slash broke the substitution; `|` is the delimiter now. The fix briefs for 54 and 56 went out without the shared rules (the checkout was on main, where docs/lanes does not exist); briefs are built from `git show captain/wave-1-records:docs/lanes/README.md`. Reviews run on the other provider than the code lane (Claude code, Codex review, and the reverse), per the epic's "a different model reads the diff cold".
 
 Landing order: #52 lands first (it gives `beta` its CI); then the rest one at a time after a cold review lane (the diff and the issue only, never the lane's report); `tests/fixtures/main.rs` from 53a and 53b is merged by hand (two `mod` lines). Four stale `cli44-toolbox-review` records sit blocked with no account from an earlier wave; not this programme's.
 
