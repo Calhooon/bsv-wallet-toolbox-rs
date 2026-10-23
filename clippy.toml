@@ -8,3 +8,8 @@ disallowed-methods = [
     { path = "sqlx::Connection::begin", reason = "a deferred BEGIN on a connection; open write transactions with StorageSqlx::write_tx" },
     { path = "sqlx::Acquire::begin", reason = "a deferred BEGIN; open write transactions with StorageSqlx::write_tx" },
 ]
+
+# The threshold of `clippy::cognitive_complexity` (a nursery lint, off unless
+# named) that tools/ratchet counts at (#55). 25 is clippy's default, written
+# here so the ratchet's number does not move with it.
+cognitive-complexity-threshold = 25
