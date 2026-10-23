@@ -1,0 +1,79 @@
+{
+  "about": "A 429, a timeout and a 500: no bytes and could_not_look.",
+  "ladder": "get_raw_tx",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 200,
+              "body": "01000000011111111111111111111111111111111111111111111111111111111111111111000000000100ffffffff018403000000000000015100000000",
+              "delay_ms": 3000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 500
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "could_not_look": true,
+          "error": "WhatsOnChain: Rate limited: WhatsOnChain: retry after 30s; BananaBlocks: Network error: BananaBlocks request failed: error sending request for url (<BananaBlocks>/tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex); Bitails: Service error: Bitails getRawTx failed with status 500 Internal Server Error",
+          "name": "Services",
+          "raw_tx": null,
+          "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      },
+      "Bitails": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      },
+      "WhatsOnChain": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      }
+    }
+  }
+}

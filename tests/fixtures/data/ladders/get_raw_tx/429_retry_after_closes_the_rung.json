@@ -1,0 +1,75 @@
+{
+  "about": "WhatsOnChain 429 with Retry-After: BananaBlocks answers; on the second call WhatsOnChain's closed rung costs no request.",
+  "ladder": "get_raw_tx",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 200,
+              "body": "01000000011111111111111111111111111111111111111111111111111111111111111111000000000100ffffffff018403000000000000015100000000",
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+    },
+    {
+      "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "BananaBlocks",
+          "raw_tx": "01000000011111111111111111111111111111111111111111111111111111111111111111000000000100ffffffff018403000000000000015100000000",
+          "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+        }
+      },
+      {
+        "ok": {
+          "name": "BananaBlocks",
+          "raw_tx": "01000000011111111111111111111111111111111111111111111111111111111111111111000000000100ffffffff018403000000000000015100000000",
+          "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 2
+      },
+      "WhatsOnChain": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      }
+    }
+  }
+}

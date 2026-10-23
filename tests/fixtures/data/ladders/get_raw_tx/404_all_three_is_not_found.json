@@ -1,0 +1,72 @@
+{
+  "about": "Every explorer answers 404 cleanly: not found, and could_not_look is false.",
+  "ladder": "get_raw_tx",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "Services",
+          "raw_tx": null,
+          "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      },
+      "Bitails": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      },
+      "WhatsOnChain": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      }
+    }
+  }
+}
