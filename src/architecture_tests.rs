@@ -136,7 +136,12 @@ fn sql_stays_in_storage_sqlx() {
 
 fn env_sites(t: &[Token<'_>]) -> Vec<usize> {
     (0..t.len())
-        .filter(|&i| sequence(t, i, &["env", "::", "var"]))
+        .filter(|&i| {
+            sequence(t, i, &["env", "::"])
+                && t.get(i + 2).is_some_and(|v| {
+                    v.kind == Kind::Code && matches!(v.text, "var" | "var_os" | "vars" | "vars_os")
+                })
+        })
         .map(|i| t[i].line)
         .collect()
 }
@@ -145,8 +150,14 @@ fn env_sites(t: &[Token<'_>]) -> Vec<usize> {
 fn environment_reads_stay_in_config() {
     let sample = "#[cfg(all(test, feature = \"x\"))] fn test() { std::env::var(\"ignored\"); }\n#[cfg(any(test, feature = \"x\"))] fn both() { std::env::var(\"seen\"); }\n#[cfg(not(test))] fn prod() { env :: var(\"seen\"); }";
     assert_eq!(env_sites(&production(&lex(sample)).0), [2, 3]);
+    assert_eq!(
+        env_sites(&lex(
+            "std::env::var_os(\"x\");\nenv::vars();\nstd::env::vars_os();\nlet text = \"env::vars()\";"
+        )),
+        [1, 2, 3]
+    );
     enforce(
-        "env::var outside config",
+        "environment read outside config",
         scan(env_sites, |p| CONFIG_MODULES.contains(&p)),
         &[],
     );
