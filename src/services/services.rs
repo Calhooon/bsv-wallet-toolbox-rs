@@ -26,7 +26,7 @@ use crate::services::{
         WhatsOnChain, WhatsOnChainConfig,
     },
     traits::{
-        BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
+        BlockHeader, BoundSpender, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
         GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
         GetUtxoStatusResult, NLockTimeInput, PostBeefResult, ServicesCallHistory, TxStatusDetail,
         UnspentPages, UtxoLead, UtxoLeads, UtxoVerdict, WalletServices,
@@ -1378,14 +1378,15 @@ impl Services {
 }
 
 /// What we hold about a stranger's spend of one outpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SpendEvidence {
-    /// The spender's bytes name the outpoint and its merkle path met the
-    /// header service's header: a chain fact.
-    Proven,
-    /// The spender's bytes name the outpoint; no proof of it is held (not
-    /// mined yet, or no courier served a path the header service accepts).
-    Bound,
+    /// The spender (its txid) whose bytes name the outpoint and whose
+    /// merkle path met the header service's header: a chain fact.
+    Proven(String),
+    /// The spender (its txid) whose bytes name the outpoint; no proof of it
+    /// is held (not mined yet, or no courier served a path the header
+    /// service accepts).
+    Bound(String),
     /// No spender named, or a name its own bytes do not bear out.
     None,
 }
@@ -1671,8 +1672,8 @@ impl Services {
             return None;
         }
         Some(match self.get_merkle_path(spender, false).await {
-            Ok(found) if found.merkle_path.is_some() => SpendEvidence::Proven,
-            _ => SpendEvidence::Bound,
+            Ok(found) if found.merkle_path.is_some() => SpendEvidence::Proven(spender.to_string()),
+            _ => SpendEvidence::Bound(spender.to_string()),
         })
     }
 }
@@ -2790,6 +2791,20 @@ impl WalletServices for Services {
     /// an output with another script is a fault, so it is never
     /// `UnspentHint`.
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
+        self.is_utxo_with_spender(txid, vout, locking_script)
+            .await
+            .0
+    }
+
+    /// `is_utxo`'s one pass, with the spender `spend_evidence` bound named
+    /// beside the verdict (bsv-wallet-toolbox-rs#44): no request is added,
+    /// the name is the one the ladder already bound by bytes.
+    async fn is_utxo_with_spender(
+        &self,
+        txid: &str,
+        vout: u32,
+        locking_script: &[u8],
+    ) -> (UtxoVerdict, Option<BoundSpender>) {
         let hash = self.hash_output_script(locking_script);
         let outpoint = format!("{}.{}", txid, vout);
         let (unspent_set, carried) = match self
@@ -2818,9 +2833,21 @@ impl WalletServices for Services {
             tracing::warn!(outpoint = %outpoint, evidence = ?evidence, "is_utxo: explorers list the output as unspent, and a spender its bytes bind is named; the spender stands");
         }
         match evidence {
-            SpendEvidence::Proven => UtxoVerdict::Spent,
-            SpendEvidence::Bound => UtxoVerdict::SpentHint,
-            SpendEvidence::None => unspent_set,
+            SpendEvidence::Proven(txid) => (
+                UtxoVerdict::Spent,
+                Some(BoundSpender {
+                    txid,
+                    confirmed: true,
+                }),
+            ),
+            SpendEvidence::Bound(txid) => (
+                UtxoVerdict::SpentHint,
+                Some(BoundSpender {
+                    txid,
+                    confirmed: false,
+                }),
+            ),
+            SpendEvidence::None => (unspent_set, None),
         }
     }
 
