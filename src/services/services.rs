@@ -3142,6 +3142,10 @@ mod three_explorer_tests;
 mod header_ladder_tests;
 
 #[cfg(test)]
+#[path = "ladder_fixtures_tests.rs"]
+mod ladder_fixtures_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::providers::ArcadeConfig;

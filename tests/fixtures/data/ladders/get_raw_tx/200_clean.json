@@ -1,0 +1,49 @@
+{
+  "about": "WhatsOnChain serves bytes that hash to the txid: the answer; no other explorer is asked.",
+  "ladder": "get_raw_tx",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 200,
+              "body": "01000000011111111111111111111111111111111111111111111111111111111111111111000000000100ffffffff018403000000000000015100000000"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "WoC",
+          "raw_tx": "01000000011111111111111111111111111111111111111111111111111111111111111111000000000100ffffffff018403000000000000015100000000",
+          "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+        }
+      }
+    ],
+    "requests": {
+      "WhatsOnChain": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "about": "BananaBlocks serves another transaction's bytes beside two 404s: a fault, so could_not_look, never the wrong bytes.",
+  "ladder": "get_raw_tx",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 200,
+              "body": "01000000011111111111111111111111111111111111111111111111111111111111111111010000000100ffffffff018403000000000000015100000000"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "could_not_look": true,
+          "error": "BananaBlocks: Validation error: Computed txid 7f6d30f453d1344bb48d9264bc2c9be578e3c9a53461bd88cda006d54cc0a228 doesn't match expected 7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90",
+          "name": "Services",
+          "raw_tx": null,
+          "txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      },
+      "Bitails": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      },
+      "WhatsOnChain": {
+        "GET /tx/7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90/hex": 1
+      }
+    }
+  }
+}

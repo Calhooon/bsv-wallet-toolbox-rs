@@ -1,0 +1,571 @@
+//! The services ladders, replayed from fixtures (bsv-wallet-toolbox-rs#53).
+//!
+//! Each file `tests/fixtures/data/ladders/<ladder>/<name>.json` is one
+//! scene: the ladder; the providers configured, in the ladder's order, with
+//! each one's answers per route as a mockito script; the calls; and
+//! `expected`, each call's result (normalized) and the requests that
+//! reached each provider, by route, over all the calls. The replay stands a
+//! local server in each provider's place, builds `Services` over them,
+//! makes the calls and compares. Nothing touches the network.
+//!
+//! WhatsOnChain and Bitails are in every `Services`, so every fixture names
+//! them (with no routes where the ladder never asks them); BananaBlocks,
+//! Chaintracks and BHS are configured only when named.
+//!
+//! A route is `"<METHOD> <path and query>"`. An answer is a `status`,
+//! `headers`, and a `body` (text) or `json`. `times` (default 1) is how many
+//! requests it serves, in order; the route's last answer serves every
+//! request after. `delay_ms` holds the answer back past the explorers'
+//! client timeout ([`CLIENT_TIMEOUT_SECS`]): a timeout. `cut` sends the body and
+//! drops the connection before the end: a body cut short. A request no
+//! route scripts is answered 501 and counted as `UNSCRIPTED <method>
+//! <path>`, so a request the fixture did not expect is a difference too.
+//!
+//! The results name each local server `<Provider>`; a fixture never holds
+//! a port. `LADDER_FIXTURES_BLESS=1` writes each fixture's `expected` from
+//! the replay instead of comparing: read the diff against the rules
+//! `services.rs` documents (a fault is "could not look", a negative needs
+//! two clean answers, a closed rung costs no request), never take it as
+//! the rule.
+//!
+//! The host gives two names: `toolbox` (the crate) and `services_at`.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use super::services_at;
+use super::toolbox::services::traits::{GetUtxoStatusOutputFormat, WalletServices};
+use super::toolbox::services::{Services, ServicesOptions};
+
+/// The explorers' client timeout in a replay: a `delay_ms` past it is a
+/// timeout.
+const CLIENT_TIMEOUT_SECS: u64 = 2;
+
+/// How many fixtures replay at once, each worker on servers of its own.
+const WORKERS: usize = 8;
+
+/// Every provider a fixture can name, in the order the servers are built.
+const PROVIDERS: [&str; 5] = [
+    "WhatsOnChain",
+    "BananaBlocks",
+    "Bitails",
+    "Chaintracks",
+    "BHS",
+];
+
+/// The ladders, each with its providers in the order the ladder asks them.
+const LADDERS: [(&str, &[&str]); 9] = [
+    ("get_raw_tx", &["WhatsOnChain", "BananaBlocks", "Bitails"]),
+    (
+        "get_merkle_path",
+        &["WhatsOnChain", "BananaBlocks", "Bitails", "Chaintracks"],
+    ),
+    (
+        "get_utxo_status",
+        &["WhatsOnChain", "BananaBlocks", "Bitails"],
+    ),
+    (
+        "get_status_for_txids",
+        &["WhatsOnChain", "Bitails", "BananaBlocks"],
+    ),
+    (
+        "is_utxo",
+        &["WhatsOnChain", "BananaBlocks", "Bitails", "Chaintracks"],
+    ),
+    (
+        "is_utxo_with_spender",
+        &["WhatsOnChain", "BananaBlocks", "Bitails", "Chaintracks"],
+    ),
+    (
+        "get_utxo_leads",
+        &["WhatsOnChain", "Bitails", "BananaBlocks"],
+    ),
+    (
+        "get_header_for_height",
+        &["Chaintracks", "BHS", "WhatsOnChain", "Bitails"],
+    ),
+    (
+        "get_chain_tip_header",
+        &["Chaintracks", "BHS", "WhatsOnChain", "Bitails"],
+    ),
+];
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Fixture {
+    about: String,
+    ladder: String,
+    providers: Vec<Provider>,
+    calls: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected: Option<Expected>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Provider {
+    name: String,
+    routes: Vec<Route>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Route {
+    route: String,
+    answers: Vec<Answer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Answer {
+    status: usize,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    json: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    times: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delay_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cut: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Expected {
+    results: Vec<Value>,
+    requests: BTreeMap<String, BTreeMap<String, usize>>,
+}
+
+/// Requests seen, by provider and route.
+type Counts = Arc<Mutex<BTreeMap<String, BTreeMap<String, usize>>>>;
+
+fn count(counts: &Counts, provider: &str, route: String) {
+    *counts
+        .lock()
+        .unwrap()
+        .entry(provider.to_string())
+        .or_default()
+        .entry(route)
+        .or_default() += 1;
+}
+
+fn fixture_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data/ladders")
+}
+
+/// Every fixture file, sorted, so a replay's report reads the same twice.
+fn fixture_files() -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for dir in std::fs::read_dir(fixture_root()).expect("the ladder fixtures") {
+        let dir = dir.unwrap().path();
+        if !dir.is_dir() {
+            continue;
+        }
+        for file in std::fs::read_dir(&dir).unwrap() {
+            let file = file.unwrap().path();
+            if file.extension().is_some_and(|e| e == "json") {
+                files.push(file);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// The fixture's shape: a known ladder in its own directory, known
+/// providers in the ladder's order, WhatsOnChain and Bitails named.
+fn check_shape(path: &Path, fixture: &Fixture) -> Result<(), String> {
+    let order = LADDERS
+        .iter()
+        .find(|(name, _)| *name == fixture.ladder)
+        .map(|(_, order)| *order)
+        .ok_or_else(|| format!("unknown ladder {:?}", fixture.ladder))?;
+    let dir = path.parent().and_then(Path::file_name).unwrap_or_default();
+    if dir != fixture.ladder.as_str() {
+        return Err(format!("ladder {:?} filed under {:?}", fixture.ladder, dir));
+    }
+    let named: Vec<&str> = fixture.providers.iter().map(|p| p.name.as_str()).collect();
+    let in_order: Vec<&str> = order
+        .iter()
+        .copied()
+        .filter(|n| named.contains(n))
+        .collect();
+    if named != in_order {
+        return Err(format!(
+            "providers {named:?}: the ladder's order is {order:?}, each once"
+        ));
+    }
+    for required in ["WhatsOnChain", "Bitails"] {
+        if !named.contains(&required) {
+            return Err(format!("{required} is in every Services: name it"));
+        }
+    }
+    if fixture.calls.is_empty() {
+        return Err("no calls".to_string());
+    }
+    Ok(())
+}
+
+/// One worker's servers, one per provider, reset between fixtures.
+struct Servers(Vec<(&'static str, mockito::Server)>);
+
+impl Servers {
+    async fn new() -> Self {
+        let mut servers = Vec::new();
+        for name in PROVIDERS {
+            // Outside mockito's pool: a worker holds five at once.
+            let server = mockito::Server::new_with_opts_async(mockito::ServerOpts::default()).await;
+            servers.push((name, server));
+        }
+        Servers(servers)
+    }
+
+    fn url(&self, provider: &str) -> String {
+        self.0
+            .iter()
+            .find(|(name, _)| *name == provider)
+            .map(|(_, server)| server.url())
+            .unwrap()
+    }
+}
+
+/// Stand up the fixture's script on the servers; the mocks returned must
+/// live through the calls.
+async fn script(
+    fixture: &Fixture,
+    servers: &mut Servers,
+    counts: &Counts,
+) -> Result<Vec<mockito::Mock>, String> {
+    let mut mocks = Vec::new();
+    for (name, server) in servers.0.iter_mut() {
+        server.reset();
+        // Made before the routes, wanting no request: it answers only what
+        // no route scripts (mockito takes the earliest match still owed a
+        // request, else the latest match).
+        for method in ["GET", "POST"] {
+            let seen = Arc::clone(counts);
+            let provider = name.to_string();
+            let mock = server
+                .mock(method, mockito::Matcher::Any)
+                .with_status_code_from_request(move |req| {
+                    let route = format!("UNSCRIPTED {} {}", req.method(), req.path_and_query());
+                    count(&seen, &provider, route);
+                    501
+                })
+                .expect(0)
+                .create_async()
+                .await;
+            mocks.push(mock);
+        }
+        let Some(provider) = fixture.providers.iter().find(|p| p.name == *name) else {
+            continue;
+        };
+        for route in &provider.routes {
+            let (method, path) = route
+                .route
+                .split_once(' ')
+                .ok_or_else(|| format!("route {:?} is not \"METHOD path\"", route.route))?;
+            if route.answers.is_empty() {
+                return Err(format!("route {:?} has no answers", route.route));
+            }
+            for answer in &route.answers {
+                mocks.push(
+                    mock_answer(server, name, method, path, &route.route, answer, counts).await?,
+                );
+            }
+        }
+    }
+    Ok(mocks)
+}
+
+async fn mock_answer(
+    server: &mut mockito::Server,
+    provider: &str,
+    method: &str,
+    path: &str,
+    route: &str,
+    answer: &Answer,
+    counts: &Counts,
+) -> Result<mockito::Mock, String> {
+    let body: Vec<u8> = match (&answer.body, &answer.json) {
+        (Some(_), Some(_)) => return Err(format!("{route}: a body or json, not both")),
+        (Some(text), None) => text.clone().into_bytes(),
+        (None, Some(value)) => serde_json::to_vec(value).unwrap(),
+        (None, None) => Vec::new(),
+    };
+    let seen = Arc::clone(counts);
+    let (provider, key, status) = (provider.to_string(), route.to_string(), answer.status);
+    // A delay holds the status line back: the client sees no answer at all.
+    let delay = answer.delay_ms.map(Duration::from_millis);
+    let mut mock = server
+        .mock(method, path)
+        .with_status_code_from_request(move |_| {
+            count(&seen, &provider, key.clone());
+            if let Some(delay) = delay {
+                std::thread::sleep(delay);
+            }
+            status
+        })
+        .expect(answer.times.unwrap_or(1));
+    for (name, value) in &answer.headers {
+        mock = mock.with_header(name.as_str(), value);
+    }
+    mock = if answer.cut {
+        mock.with_chunked_body(move |w| {
+            w.write_all(&body)?;
+            Err(std::io::Error::other("the body cut short"))
+        })
+    } else {
+        mock.with_body(body)
+    };
+    Ok(mock.create_async().await)
+}
+
+fn arg<'a>(call: &'a Value, key: &str) -> Result<&'a Value, String> {
+    call.get(key)
+        .ok_or_else(|| format!("call {call} has no {key:?}"))
+}
+
+fn str_arg<'a>(call: &'a Value, key: &str) -> Result<&'a str, String> {
+    arg(call, key)?
+        .as_str()
+        .ok_or_else(|| format!("{key:?} is not a string"))
+}
+
+fn use_next(call: &Value) -> bool {
+    call.get("use_next")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn format_arg(call: &Value) -> Result<Option<GetUtxoStatusOutputFormat>, String> {
+    Ok(match call.get("format").and_then(Value::as_str) {
+        None => None,
+        Some("hashLE") => Some(GetUtxoStatusOutputFormat::HashLE),
+        Some("hashBE") => Some(GetUtxoStatusOutputFormat::HashBE),
+        Some("script") => Some(GetUtxoStatusOutputFormat::Script),
+        Some(other) => return Err(format!("unknown format {other:?}")),
+    })
+}
+
+/// A call's outcome: `{"ok": <result>}` or `{"err": "<error>"}`.
+fn outcome<T: Serialize>(result: super::toolbox::Result<T>) -> Value {
+    match result {
+        Ok(value) => json!({ "ok": serde_json::to_value(value).unwrap() }),
+        Err(e) => json!({ "err": e.to_string() }),
+    }
+}
+
+/// One call of the ladder, its result normalized: merkle path notes lose
+/// their clock (`when`).
+async fn call_ladder(services: &Services, ladder: &str, call: &Value) -> Result<Value, String> {
+    Ok(match ladder {
+        "get_raw_tx" => outcome(
+            services
+                .get_raw_tx(str_arg(call, "txid")?, use_next(call))
+                .await,
+        ),
+        "get_merkle_path" => {
+            let mut result = outcome(
+                services
+                    .get_merkle_path(str_arg(call, "txid")?, use_next(call))
+                    .await,
+            );
+            if let Some(notes) = result
+                .pointer_mut("/ok/notes")
+                .and_then(Value::as_array_mut)
+            {
+                for note in notes {
+                    if let Some(note) = note.as_object_mut() {
+                        note.remove("when");
+                    }
+                }
+            }
+            result
+        }
+        "get_utxo_status" => outcome(
+            services
+                .get_utxo_status(
+                    str_arg(call, "output")?,
+                    format_arg(call)?,
+                    call.get("outpoint").and_then(Value::as_str),
+                    use_next(call),
+                )
+                .await,
+        ),
+        "get_status_for_txids" => {
+            let txids: Vec<String> = serde_json::from_value(arg(call, "txids")?.clone())
+                .map_err(|e| format!("txids: {e}"))?;
+            outcome(services.get_status_for_txids(&txids, use_next(call)).await)
+        }
+        "is_utxo" | "is_utxo_with_spender" => {
+            let txid = str_arg(call, "txid")?;
+            let vout = arg(call, "vout")?.as_u64().ok_or("vout is not a number")? as u32;
+            let script = hex::decode(str_arg(call, "locking_script")?)
+                .map_err(|e| format!("locking_script: {e}"))?;
+            if ladder == "is_utxo" {
+                json!({ "verdict": format!("{:?}", services.is_utxo(txid, vout, &script).await) })
+            } else {
+                let (verdict, spender) = services.is_utxo_with_spender(txid, vout, &script).await;
+                json!({
+                    "verdict": format!("{verdict:?}"),
+                    "spender": spender.map(|s| json!({ "txid": s.txid, "confirmed": s.confirmed })),
+                })
+            }
+        }
+        "get_utxo_leads" => outcome(
+            services
+                .get_utxo_leads(str_arg(call, "output")?, format_arg(call)?)
+                .await,
+        ),
+        "get_header_for_height" => {
+            let height = arg(call, "height")?
+                .as_u64()
+                .ok_or("height is not a number")? as u32;
+            outcome(
+                services
+                    .get_header_for_height(height)
+                    .await
+                    .map(hex::encode),
+            )
+        }
+        "get_chain_tip_header" => outcome(services.get_chain_tip_header().await),
+        other => return Err(format!("unknown ladder {other:?}")),
+    })
+}
+
+/// Replay one fixture on a worker's servers.
+async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, String> {
+    let counts: Counts = Arc::default();
+    let _mocks = script(fixture, servers, &counts).await?;
+    let named = |name: &str| fixture.providers.iter().any(|p| p.name == name);
+    let mut options = ServicesOptions::mainnet();
+    if named("Chaintracks") {
+        options = options.with_chaintracks_url(servers.url("Chaintracks"));
+    }
+    if named("BHS") {
+        options = options.with_bhs_url(servers.url("BHS"));
+    }
+    let bananablocks = named("BananaBlocks").then(|| servers.url("BananaBlocks"));
+    let services = services_at(
+        options,
+        &servers.url("WhatsOnChain"),
+        &servers.url("Bitails"),
+        bananablocks.as_deref(),
+        CLIENT_TIMEOUT_SECS,
+    );
+
+    let mut results = Vec::new();
+    for call in &fixture.calls {
+        results.push(call_ladder(&services, &fixture.ladder, call).await?);
+    }
+    let requests = counts.lock().unwrap().clone();
+
+    // Each server's address becomes its provider's name.
+    let mut text = serde_json::to_string(&results).unwrap();
+    for name in PROVIDERS {
+        let url = servers.url(name);
+        text = text.replace(&url, &format!("<{name}>"));
+        text = text.replace(url.trim_start_matches("http://"), &format!("<{name}>"));
+    }
+    if text.contains("127.0.0.1") || text.contains("localhost") {
+        return Err(format!("a local address survived normalizing: {text}"));
+    }
+    Ok(Expected {
+        results: serde_json::from_str(&text).unwrap(),
+        requests,
+    })
+}
+
+/// A fixture file as written: two-space JSON and a final newline.
+fn fixture_text(fixture: &Fixture) -> String {
+    let mut text = serde_json::to_string_pretty(fixture).unwrap();
+    text.push('\n');
+    text
+}
+
+/// Every ladder fixture replayed: each call's result and each provider's
+/// requests by route are the fixture's `expected`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ladder_fixtures_replay() {
+    let bless = std::env::var_os("LADDER_FIXTURES_BLESS").is_some_and(|v| v == "1");
+    let files = fixture_files();
+    assert!(
+        !files.is_empty(),
+        "no ladder fixtures under {:?}",
+        fixture_root()
+    );
+    let queue = Arc::new(Mutex::new(files.into_iter().collect::<VecDeque<_>>()));
+
+    let mut workers = Vec::new();
+    for _ in 0..WORKERS {
+        let queue = Arc::clone(&queue);
+        workers.push(tokio::spawn(async move {
+            let mut servers = Servers::new().await;
+            let mut done = Vec::new();
+            loop {
+                let Some(path) = queue.lock().unwrap().pop_front() else {
+                    break;
+                };
+                let text = std::fs::read_to_string(&path).unwrap();
+                let outcome = match serde_json::from_str::<Fixture>(&text) {
+                    Err(e) => Err(format!("does not parse: {e}")),
+                    Ok(fixture) => match check_shape(&path, &fixture) {
+                        Err(e) => Err(e),
+                        Ok(()) => replay(&fixture, &mut servers)
+                            .await
+                            .map(|actual| (fixture, actual)),
+                    },
+                };
+                done.push((path, outcome));
+            }
+            done
+        }));
+    }
+    let mut replayed = Vec::new();
+    for worker in workers {
+        replayed.extend(worker.await.unwrap());
+    }
+    replayed.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut failures = Vec::new();
+    let total = replayed.len();
+    for (path, outcome) in replayed {
+        let name = path
+            .strip_prefix(fixture_root())
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        match outcome {
+            Err(e) => failures.push(format!("{name}: {e}")),
+            Ok((mut fixture, actual)) => {
+                if bless {
+                    fixture.expected = Some(actual);
+                    std::fs::write(&path, fixture_text(&fixture)).unwrap();
+                } else if fixture.expected.as_ref() != Some(&actual) {
+                    failures.push(format!(
+                        "{name}: {}\n--- expected\n{}\n+++ replayed\n{}",
+                        fixture.about,
+                        serde_json::to_string_pretty(&fixture.expected).unwrap(),
+                        serde_json::to_string_pretty(&actual).unwrap()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {total} ladder fixtures differ:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
