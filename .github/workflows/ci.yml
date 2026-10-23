@@ -421,3 +421,35 @@ jobs:
 
       - name: The scoreboard table matches its sources
         run: python3 tools/scoreboard-write --check
+
+  # The numbers that may only fall (#55): tools/ratchet measures the tree and
+  # fails when one rises above tools/ratchet.json. The toolchain is the one the
+  # baseline was measured with (its `toolchain` key), so a new clippy's lints
+  # do not read as a rise; move both together. Not a required context yet.
+  ratchet:
+    name: ratchet
+    runs-on: ubuntu-latest
+    # The script drops RUSTFLAGS from cargo's environment: it counts warnings,
+    # and the workflow's -Dwarnings would stop the build at the first.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: "1.98.1"
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-ratchet-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            ubuntu-ratchet-
+
+      - name: No number above the baseline
+        run: python3 tools/ratchet --check
