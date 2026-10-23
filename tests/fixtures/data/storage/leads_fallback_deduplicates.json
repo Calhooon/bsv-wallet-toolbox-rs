@@ -1,0 +1,134 @@
+{
+  "calls": [
+    {"format":"script","method":"get_utxo_leads","script":"51"},
+    {"format":"script","method":"get_utxo_leads","script":"51"}
+  ],
+  "expected": [
+    {
+      "result": {
+        "ok": {
+          "answered": ["fixture-explorer"],
+          "faults": [],
+          "leads": [
+            {"listedBy":["fixture-explorer"],"satoshis":123,"txid":"<txid:1>","vout":4},
+            {"listedBy":["fixture-explorer"],"satoshis":456,"txid":"<txid:2>","vout":2}
+          ],
+          "partial": []
+        }
+      },
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1}
+        ],
+        "output_tags": [],
+        "output_tags_map": [],
+        "outputs": [
+          {"basket_id":1,"change":1,"custom_instructions":null,"derivation_prefix":"Pg==","derivation_suffix":"Sg==","locking_script":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","output_description":"funding output 0","output_id":1,"provided_by":"storage","purpose":"change","satoshis":100000,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":1,"txid":"<txid:3>","type":"P2PKH","user_id":1,"vout":0}
+        ],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [],
+        "proven_txs": [
+          {"block_hash":"<txid:4>","height":100000,"idx":0,"merkle_path":{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:3>","offset":0,"txid":true}]]},"merkle_root":"<txid:3>","proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:3>","version":1},"txid":"<txid:3>"}
+        ],
+        "sync_states": [],
+        "transactions": [
+          {"description":"seed funding","input_beef":null,"is_outgoing":0,"lock_time":0,"proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:3>","version":1},"reference":"<reference:1>","satoshis":100000,"status":"completed","transaction_id":1,"txid":"<txid:3>","user_id":1,"version":1}
+        ],
+        "tx_labels": [],
+        "tx_labels_map": [],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": [{"args":["51","Some(Script)"],"method":"get_utxo_leads","success":true}]
+    },
+    {
+      "result": {
+        "ok": {
+          "answered": ["fixture-explorer"],
+          "faults": [],
+          "leads": [
+            {"listedBy":["fixture-explorer"],"satoshis":123,"txid":"<txid:1>","vout":4},
+            {"listedBy":["fixture-explorer"],"satoshis":456,"txid":"<txid:2>","vout":2}
+          ],
+          "partial": []
+        }
+      },
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1}
+        ],
+        "output_tags": [],
+        "output_tags_map": [],
+        "outputs": [
+          {"basket_id":1,"change":1,"custom_instructions":null,"derivation_prefix":"Pg==","derivation_suffix":"Sg==","locking_script":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","output_description":"funding output 0","output_id":1,"provided_by":"storage","purpose":"change","satoshis":100000,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":1,"txid":"<txid:3>","type":"P2PKH","user_id":1,"vout":0}
+        ],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [],
+        "proven_txs": [
+          {"block_hash":"<txid:4>","height":100000,"idx":0,"merkle_path":{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:3>","offset":0,"txid":true}]]},"merkle_root":"<txid:3>","proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:3>","version":1},"txid":"<txid:3>"}
+        ],
+        "sync_states": [],
+        "transactions": [
+          {"description":"seed funding","input_beef":null,"is_outgoing":0,"lock_time":0,"proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:5>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:3>","version":1},"reference":"<reference:1>","satoshis":100000,"status":"completed","transaction_id":1,"txid":"<txid:3>","user_id":1,"version":1}
+        ],
+        "tx_labels": [],
+        "tx_labels_map": [],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": [
+        {"args":["51","Some(Script)"],"method":"get_utxo_leads","success":true},
+        {"args":["51","Some(Script)"],"method":"get_utxo_leads","success":true}
+      ]
+    }
+  ],
+  "inputs": {
+    "baskets": [{"desired":1,"minimum":1000,"name":"default"}],
+    "services": {
+      "get_utxo_status": {
+        "kind": "success",
+        "value": {
+          "details": [
+            {
+              "height": 100,
+              "index": 4,
+              "satoshis": 123,
+              "txid": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
+            },
+            {
+              "height": 100,
+              "index": 4,
+              "satoshis": 123,
+              "txid": "abababababababababababababababababababababababababababababababab"
+            },
+            {
+              "height": 100,
+              "index": 2,
+              "satoshis": 456,
+              "txid": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+            }
+          ],
+          "is_utxo": true,
+          "name": "fixture-explorer",
+          "status": "success"
+        }
+      }
+    },
+    "transactions": [{"name":"funding","outputs":[{"basket":"default","change":true,"satoshis":100000}]}],
+    "user": "Alice"
+  },
+  "issue": 53,
+  "name": "leads_fallback_deduplicates"
+}

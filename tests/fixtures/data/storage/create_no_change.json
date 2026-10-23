@@ -1,0 +1,131 @@
+{
+  "calls": [
+    {
+      "args": {
+        "description": "Recorded storage payment",
+        "inputs": [{"inputDescription":"Caller complete input","outpoint":"$outpoint:covenant.0","unlockingScript":"51"}],
+        "options": {"noSend":true,"randomizeOutputs":false,"signAndProcess":true},
+        "outputs": [{"lockingScript":"51","outputDescription":"Recorded recipient","satoshis":4500}]
+      },
+      "as": "draft",
+      "method": "create_action",
+      "sign": true
+    }
+  ],
+  "expected": [
+    {
+      "result": {
+        "ok": {
+          "created": {
+            "derivationPrefix": "<derivation:1>",
+            "inputBeef": {
+              "atomicTxid": null,
+              "bumps": [{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]}],
+              "transactions": [
+                {
+                  "bumpIndex": 0,
+                  "transaction": {
+                    "inputs": [{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0101","vout":4294967295}],
+                    "lockTime": 0,
+                    "outputs": [{"lockingScript":"51","satoshis":5000}],
+                    "txid": "<txid:1>",
+                    "version": 1
+                  },
+                  "txid": "<txid:1>"
+                }
+              ],
+              "version": 4022206466
+            },
+            "inputs": [
+              {
+                "derivationPrefix": null,
+                "derivationSuffix": null,
+                "inputType": "custom",
+                "providedBy": "you",
+                "senderIdentityKey": null,
+                "sourceLockingScript": "51",
+                "sourceSatoshis": 5000,
+                "sourceTransaction": null,
+                "sourceTxid": "<txid:1>",
+                "sourceVout": 0,
+                "spendingDescription": "Caller complete input",
+                "unlockingScriptLength": 1,
+                "vin": 0
+              }
+            ],
+            "lockTime": 0,
+            "noSendChangeOutputVouts": [],
+            "outputs": [
+              {
+                "basket": null,
+                "customInstructions": null,
+                "derivationSuffix": null,
+                "lockingScript": "51",
+                "outputDescription": "Recorded recipient",
+                "providedBy": "you",
+                "purpose": null,
+                "satoshis": 4500,
+                "tags": [],
+                "vout": 0
+              }
+            ],
+            "reference": "<reference:2>",
+            "version": 1
+          },
+          "processed": {
+            "rawTx": {
+              "inputs": [{"sequence":4294967295,"sourceTxid":"<txid:1>","unlockingScript":"51","vout":0}],
+              "lockTime": 0,
+              "outputs": [{"lockingScript":"51","satoshis":4500}],
+              "txid": "<txid:3>",
+              "version": 1
+            },
+            "results": {"log":null,"notDelayedResults":null,"sendWithResults":[]},
+            "txid": "<txid:3>"
+          }
+        }
+      },
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1}
+        ],
+        "output_tags": [],
+        "output_tags_map": [],
+        "outputs": [
+          {"basket_id":null,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"covenant output 0","output_id":1,"provided_by":"you","purpose":"","satoshis":5000,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":0,"spending_description":"Caller complete input","spent_by":2,"transaction_id":1,"txid":"<txid:1>","type":"custom","user_id":1,"vout":0},
+          {"basket_id":null,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"Recorded recipient","output_id":2,"provided_by":"you","purpose":"","satoshis":4500,"script_length":1,"script_offset":"<output-offset:0>","sender_identity_key":null,"sequence_number":null,"spendable":0,"spending_description":null,"spent_by":null,"transaction_id":2,"txid":"<txid:3>","type":"custom","user_id":1,"vout":0}
+        ],
+        "proof_root_checks": [{"height":100000,"merkle_root":"<txid:1>","txid":"<txid:1>"}],
+        "proven_tx_reqs": [
+          {"attempts":0,"batch":null,"history":{},"input_beef":{"atomicTxid":null,"bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":5000}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"notified":0,"notify":{"transactionIds":[2]},"proven_tx_id":null,"proven_tx_req_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:1>","unlockingScript":"51","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":4500}],"txid":"<txid:3>","version":1},"status":"nosend","txid":"<txid:3>"}
+        ],
+        "proven_txs": [
+          {"block_hash":"<txid:4>","height":100000,"idx":0,"merkle_path":{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]},"merkle_root":"<txid:1>","proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":5000}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}
+        ],
+        "sync_states": [],
+        "transactions": [
+          {"description":"seed covenant","input_beef":null,"is_outgoing":0,"lock_time":0,"proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":5000}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":5000,"status":"completed","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1},
+          {"description":"Recorded storage payment","input_beef":null,"is_outgoing":1,"lock_time":0,"proven_tx_id":null,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:1>","unlockingScript":"51","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":4500}],"txid":"<txid:3>","version":1},"reference":"<reference:2>","satoshis":0,"status":"nosend","transaction_id":2,"txid":"<txid:3>","user_id":1,"version":1}
+        ],
+        "tx_labels": [],
+        "tx_labels_map": [],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": []
+    }
+  ],
+  "inputs": {
+    "baskets": [{"desired":1,"minimum":1000,"name":"default"}],
+    "transactions": [{"name":"covenant","outputs":[{"satoshis":5000,"script":"51"}]}],
+    "user": "Alice"
+  },
+  "issue": 53,
+  "name": "create_no_change"
+}

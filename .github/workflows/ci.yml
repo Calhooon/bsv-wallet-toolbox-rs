@@ -152,6 +152,28 @@ jobs:
           cargo test --features sqlite --lib services::providers::arcade::tests::every_arcade_word_has_the_verdict_of_its_class -- --exact | tee word-table.log
           grep -q 'test result: ok. 1 passed' word-table.log
 
+  fixtures:
+    name: fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      # This library currently ignores Cargo.lock. Honor a committed lock
+      # when present; otherwise resolve once before the locked replay.
+      - name: Prepare dependency lock
+        run: |
+          if ! test -f Cargo.lock; then
+            cargo generate-lockfile
+          fi
+
+      - name: Replay golden fixtures
+        run: cargo test --test fixtures --locked
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest
