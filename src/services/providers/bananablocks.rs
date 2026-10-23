@@ -123,7 +123,13 @@ impl BananaBlocks {
     /// their URL would carry one test's 429 into the next).
     #[cfg(test)]
     pub(crate) fn with_base_unshared(base_url: &str) -> Self {
-        Self::with_gate(base_url, None, Arc::new(Self::gate())).expect("client")
+        Self::with_base_unshared_timeout(base_url, None)
+    }
+
+    /// [`Self::with_base_unshared`] with a client timeout.
+    #[cfg(test)]
+    pub(crate) fn with_base_unshared_timeout(base_url: &str, timeout_secs: Option<u64>) -> Self {
+        Self::with_gate(base_url, timeout_secs, Arc::new(Self::gate())).expect("client")
     }
 
     fn gate() -> RateGate {

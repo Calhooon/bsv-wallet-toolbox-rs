@@ -136,9 +136,19 @@ impl Bitails {
     /// the explorer, so a test can count the requests that reach it.
     #[cfg(any(test, feature = "bench-support"))]
     pub(crate) fn with_base_url(chain: Chain, base_url: &str) -> Self {
+        Self::with_base_url_and_config(chain, base_url, BitailsConfig::default())
+    }
+
+    /// [`Self::with_base_url`] with a config (a client timeout).
+    #[cfg(test)]
+    pub(crate) fn with_base_url_and_config(
+        chain: Chain,
+        base_url: &str,
+        config: BitailsConfig,
+    ) -> Self {
         // A gate of its own: fixture servers are recycled, so a gate keyed
         // by their URL would carry one test's 429 into the next.
-        let mut bitails = Self::new(chain, BitailsConfig::default()).expect("client");
+        let mut bitails = Self::new(chain, config).expect("client");
         bitails.base_url = format!("{}/", base_url.trim_end_matches('/'));
         bitails.gate = Arc::new(Self::gate());
         bitails
