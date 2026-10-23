@@ -214,7 +214,7 @@ def item_end(code, i):
             depth += 1
         elif c in ")]}":
             if depth == 0:
-                return j  # the enclosing block closes first
+                return j  # the enclosing block closes before the item ends
             depth -= 1
             if depth == 0 and c == "}":
                 return j + 1
@@ -366,8 +366,8 @@ def walk_modules(sources):
         ]
         for m in MOD_DECL.finditer(src.code):
             line_start = src.code.rfind("\n", 0, m.start()) + 1
-            first = re.compile(r"\s*").match(src.code, line_start).end()
-            attrs = src.attrs.get(first, [])
+            lead = re.compile(r"\s*").match(src.code, line_start).end()
+            attrs = src.attrs.get(lead, [])
             explicit = None
             for a, b, body in attrs:
                 if re.fullmatch(r'\s*path\s*=\s*".*"\s*', body, re.S):
