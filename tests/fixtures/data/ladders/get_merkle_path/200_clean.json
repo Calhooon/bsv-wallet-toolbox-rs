@@ -1,0 +1,124 @@
+{
+  "about": "WhatsOnChain serves a proof whose root meets the header service's header: a BUMP; no other explorer is asked.",
+  "ladder": "get_merkle_path",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "nodes": [
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ],
+                "target": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "txOrId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    },
+    {
+      "name": "Chaintracks",
+      "routes": [
+        {
+          "route": "GET /findHeaderHexForBlockHash?hash=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "status": "success",
+                "value": {
+                  "bits": 486604799,
+                  "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "height": 900000,
+                  "merkleRoot": "fb76b78e0fae95e9804262321cd913f27a1f41b799f3b0b7b93f37393b0d9d49",
+                  "nonce": 1,
+                  "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "time": 1700000000,
+                  "version": 1
+                }
+              },
+              "times": 1
+            }
+          ]
+        },
+        {
+          "route": "GET /findHeaderHexForHeight?height=900000",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "status": "success",
+                "value": {
+                  "bits": 486604799,
+                  "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "height": 900000,
+                  "merkleRoot": "fb76b78e0fae95e9804262321cd913f27a1f41b799f3b0b7b93f37393b0d9d49",
+                  "nonce": 1,
+                  "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "time": 1700000000,
+                  "version": 1
+                }
+              },
+              "times": 1
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "header": {
+            "bits": 486604799,
+            "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "height": 900000,
+            "merkle_root": "fb76b78e0fae95e9804262321cd913f27a1f41b799f3b0b7b93f37393b0d9d49",
+            "nonce": 1,
+            "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "time": 1700000000,
+            "version": 1
+          },
+          "merkle_path": "fea0bb0d0001020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "name": "WoCTsc",
+          "notes": [
+            {
+              "name": "WoC",
+              "what": "getMerklePathSuccess"
+            }
+          ]
+        }
+      }
+    ],
+    "requests": {
+      "Chaintracks": {
+        "GET /findHeaderHexForBlockHash?hash=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": 1,
+        "GET /findHeaderHexForHeight?height=900000": 1
+      },
+      "WhatsOnChain": {
+        "GET /tx/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/proof/tsc": 1
+      }
+    }
+  }
+}
