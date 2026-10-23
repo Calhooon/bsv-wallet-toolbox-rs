@@ -61,7 +61,9 @@ const ERROR_CEILINGS: &[(&str, usize)] = &[
 
 // All these public answers are owned by services (today in traits.rs,
 // broadcast_memory.rs and providers/arcade.rs), not by the callers acting on
-// them. Reads, match patterns and comparisons are allowed at the boundary.
+// them. Constructing a value includes associated constructors, even when they
+// return it inside Option/Result: new/default/parse/from*/try_from calls count.
+// Reads, predicates, accessors, match patterns and comparisons are allowed.
 const SERVICE_ANSWERS: &[&str] = &[
     "UtxoVerdict",
     "BoundSpender",
@@ -84,7 +86,10 @@ const SERVICE_ANSWERS: &[&str] = &[
 
 // #62 separates the storage adapters; #63 keeps unknown answers typed.
 // The existing no-services fallback may shrink, never spread.
-const ANSWER_CEILINGS: &[(&str, usize)] = &[("src/storage/sqlx/poisoned_chain.rs", 1)];
+const ANSWER_CEILINGS: &[(&str, usize)] = &[
+    ("src/storage/sqlx/broadcast_seen.rs", 2), // BroadcastStatus::parse
+    ("src/storage/sqlx/poisoned_chain.rs", 1),
+];
 
 fn http_sites(t: &[Token<'_>]) -> Vec<usize> {
     (0..t.len())
@@ -461,7 +466,13 @@ fn answer_sites(t: &[Token<'_>]) -> Vec<usize> {
                 i + 1
             } else if code(t, i + 1, "::")
                 && t.get(i + 2).is_some_and(|v| {
-                    v.text.starts_with(char::is_uppercase) || matches!(v.text, "new" | "default")
+                    v.kind == Kind::Code
+                        && (v.text.starts_with(char::is_uppercase)
+                            || (code(t, i + 3, "(")
+                                && (matches!(
+                                    v.text,
+                                    "new" | "default" | "parse" | "from" | "try_from"
+                                ) || v.text.starts_with("from_"))))
                 })
             {
                 i + 3
@@ -481,6 +492,16 @@ fn answer_sites(t: &[Token<'_>]) -> Vec<usize> {
 fn service_answers_are_only_built_by_services() {
     let sample = "match v { UtxoVerdict::Spent => (), UtxoVerdict::Unknown => () }\nlet ok = matches!(v, UtxoVerdict::Spent | UtxoVerdict::Unknown);\nif v == UtxoVerdict::SpentHint {}\nlet forged = UtxoVerdict::Spent;\nlet bound = BoundSpender { txid, confirmed: true };\nlet result = GetRawTxResult { ..old };";
     assert_eq!(answer_sites(&lex(sample)), [4, 5, 6]);
+    let constructors = concat!(
+        "let v = BroadcastStatus::parse(\"seen\");\n",
+        "let v = UtxoVerdict::from_status(&result);\n",
+        "let v = BroadcastStatus::from_arc_status(\"MINED\");\n",
+        "let v = BroadcastStatus::from_arcade_status(\"MINED\");\n",
+        "let read = BroadcastStatus::is_negative(status);\n",
+        "let read = BroadcastStatus::as_str(status);\n",
+        "let parser = BroadcastStatus::parse;\n",
+    );
+    assert_eq!(answer_sites(&lex(constructors)), [1, 2, 3, 4]);
     enforce(
         "service answer constructed outside services",
         scan(answer_sites, |p| p.starts_with("src/services/")),
