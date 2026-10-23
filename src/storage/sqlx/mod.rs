@@ -60,6 +60,9 @@ mod sync;
 #[cfg(test)]
 mod void_lineage_tests;
 
+#[cfg(feature = "sqlite")]
+pub(crate) use create_action::benchmark_allocate_change_input;
+
 pub use crate::storage::broadcast::{
     classify_broadcast_results, validate_beef_for_broadcast, BroadcastOutcome,
 };

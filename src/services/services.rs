@@ -636,7 +636,7 @@ impl Services {
     /// `with_options` over the explorer providers given: every collection
     /// and the break-glass tracker are built from these, so a test can
     /// stand local fixtures in their place.
-    fn with_explorers(
+    pub(crate) fn with_explorers(
         chain: Chain,
         options: ServicesOptions,
         whatsonchain: StdArc<WhatsOnChain>,

@@ -134,7 +134,7 @@ impl Bitails {
 
     /// The provider at another API base: a local fixture standing in for
     /// the explorer, so a test can count the requests that reach it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "sqlite"))]
     pub(crate) fn with_base_url(chain: Chain, base_url: &str) -> Self {
         // A gate of its own: fixture servers are recycled, so a gate keyed
         // by their URL would carry one test's 429 into the next.

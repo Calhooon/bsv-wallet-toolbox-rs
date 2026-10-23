@@ -72,6 +72,11 @@ pub mod storage;
 pub mod tsc_proof;
 pub mod wallet;
 
+// Unstable access for the offline performance harness, outside the wallet API.
+#[doc(hidden)]
+#[cfg(feature = "sqlite")]
+pub mod benchmark_support;
+
 pub use error::{Error, Result, StoreBusyReason};
 
 // Re-export storage types
