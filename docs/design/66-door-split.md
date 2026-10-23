@@ -284,3 +284,16 @@ For the owner (a public API shape):
 4. **The bench (PR #86's `benches/door.rs`).** `allocate_and_sign_{coins}_coins_{offered}_offered` beside `create_action_offering_{coins}_coins_{offered}_offered`, and `broadcast_against_mock`; `tools/bench-compare` against `benches/baseline.json`, the baseline rewritten in its own commit. The CLI's spends-per-second bench is the CLI's #86 exit test `[D]`.
 5. **The mutation floor (#57's lane).** `cargo mutants` over the two new functions: the mutants that must die are the dropped post, the dropped status write, a `Post` arm swapped, `into_result` answering `unproven` with no post, and the lock released before the commit. Each is caught by 2 or 3.
 6. **The gate.** `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib`, `cargo test --test fixtures`, with `RUSTFLAGS=-Dwarnings`; a CHANGELOG line under `## [Unreleased]` for the two public methods and the `Signed` type.
+
+## 9. The keeper's readings (2026-10-23)
+
+The four questions of section 7 for the keeper, answered by captain-bsv-stack-lean by message and recorded on the stack's rulings page. No new word is needed; the readings stand unless the owner says otherwise.
+
+1. `sending` on the transaction and `unsent` on the request before any post are the machine's `built` (wallet.md:94). The charter has no word for "built, a post intended" and wants none: the intent to post is the host's own state, never a word of the action (T5).
+2. One `Signed` type carrying `Post::Template` is acceptable on two conditions: the template's action word is `unknown` (the reference's `unsigned`), and `broadcast` refuses a template with a host error that writes no word; a template is never posted, the move to `built` is the signing. The type's name is the owner's question 5.
+3. The abort on the no-BEEF fault after `built` is the row at wallet.md:95: `abandoned`, the outputs `void`, the wallet's own act, no broadcaster asked, refused once the action is announced or later. It runs in its own short write transaction (S9).
+4. `attempts` is a count, not a word (wallet.md:39). Incrementing it at the process step before any post is fine; nothing may move on its value.
+
+On the whole: the split meets S9 and B1 and changes no transition, so no charter row moves. Whether the composition keeps today's lock span across the post is the owner's call (question 6).
+
+What this fixes for the implementing lane beyond sections 2 to 6: `broadcast` on a `Post::Template` is a typed refusal that writes nothing (question 9 for the template case; for `NoSend` and `Delayed` the composition still needs the result unchanged, which the owner decides); the no-BEEF abort runs in its own short write transaction.
