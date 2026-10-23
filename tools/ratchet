@@ -38,7 +38,9 @@ Test code is found by a scan, not by the compiler. A source file is lexed
 (comments, strings and char literals blanked, offsets kept); an item carrying
 `#[cfg(test)]` (or a cfg that requires `test`, as `all(test, ...)`; never
 `not(test)`), `#[test]` or `#[<path>::test]` is test code to the end of the
-item: the brace that closes it, or the `;` that ends it. A file is test code
+item: the brace that closes it, or the `;` that ends it. An inner
+`#![cfg(test)]` makes test code of the module it opens: the whole file at the
+top of a file, else the enclosing `{ ... }` block, and nothing after it closes. A file is test code
 when the module tree from src/lib.rs reaches it through such a `mod x;` (with
 `#[path]` honoured). Its limits: a cfg spelled through a macro, an
 `#[cfg_attr(...)]`, a test helper outside a cfg(test) item, and an attribute on
@@ -200,6 +202,17 @@ def item_end(code, i):
     return j
 
 
+def enclosing_brace(code, i):
+    """The index of the innermost `{` still open at `i`, or None at the top."""
+    stack = []
+    for j in range(i):
+        if code[j] == "{":
+            stack.append(j)
+        elif code[j] == "}" and stack:
+            stack.pop()
+    return stack[-1] if stack else None
+
+
 ATTR = re.compile(r"#\s*\[")
 INNER_ATTR = re.compile(r"#\s*!\s*\[")
 
@@ -278,7 +291,11 @@ class Source:
         while whole:
             end = match_close(self.code, whole.end() - 1)
             if is_test_attr(self.code[whole.end() : end - 1]):
-                self.test_file = True
+                opener = enclosing_brace(self.code, whole.start())
+                if opener is None:
+                    self.test_file = True  # at the top of the file: all of it
+                else:
+                    self.ranges.append((opener, match_close(self.code, opener)))
             whole = INNER_ATTR.search(self.code, end)
         i = 0
         while True:
