@@ -32,18 +32,23 @@ env:
 jobs:
   # Advisory context, not required by branch protection. This baseline belongs
   # to the Linux runner; laptop numbers are never compared with it. Until the
-  # captain records a Linux candidate, comparison fails with "baseline pending".
+  # captain records a Linux baseline, the job logs a candidate and defers comparison.
   bench:
     name: bench
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/door-target
-      CRITERION_HOME: ${{ runner.temp }}/door-criterion
-      TMPDIR: ${{ runner.temp }}
       DOOR_BENCH_SAMPLES: '10'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set benchmark paths
+        run: |
+          {
+            echo "CARGO_TARGET_DIR=$RUNNER_TEMP/door-target"
+            echo "CRITERION_HOME=$RUNNER_TEMP/door-criterion"
+            echo "TMPDIR=$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
@@ -64,7 +69,13 @@ jobs:
           cat "$RUNNER_TEMP/baseline-linux.json"
 
       - name: Compare p99 with the stored Linux baseline
-        run: tools/bench-compare "$CRITERION_HOME" --profile linux
+        run: |
+          baseline_status="$(python3 -c 'import json; print(json.load(open("benches/baseline.json"))["profiles"]["linux"]["status"])')"
+          if [ "$baseline_status" = pending ]; then
+            echo "::notice::Linux baseline pending; review and commit the Linux candidate above to enable regression checks."
+          else
+            tools/bench-compare "$CRITERION_HOME" --profile linux
+          fi
 
   test:
     name: Test Suite
