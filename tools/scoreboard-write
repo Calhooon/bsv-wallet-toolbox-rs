@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Update the north-star table from local JSON; see docs/NORTH-STAR.md."""
+
+import argparse
+import datetime
+import hashlib
+import json
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+import re
+import sys
+
+
+BEGIN = "<!-- scoreboard:begin -->"
+END = "<!-- scoreboard:end -->"
+SOURCES = ("benches/baseline.json", "tools/ratchet.json")
+# key: (label, target, source index). Units belong to the key and label.
+METRICS = {
+    "door_1000_p99_ms": (
+        "Door, 1,000 coins, p99 (ms)", "Track alongside 10,000 coins; #54", 0),
+    "door_10000_p99_ms": (
+        "Door, 10,000 coins, p99 (ms)", "< 3 ms, no network; #54", 0),
+    "allocate_and_sign_p99_ms": (
+        "Allocate and sign, p99 (ms)", "< 2 ms; #66", 0),
+    "ladder_p99_ms": (
+        "Ladder verdict, p99 (ms), maximum across rungs", "Each rung < 1 ms; #54", 0),
+    "ladder_request_count": (
+        "Ladder requests per call, maximum across cases", "Pinned per case; #53, #54", 0),
+    "beef_10mb_verify_ms": (
+        "Verify 10 MB BEEF (ms)", "Track time; #54, #58", 0),
+    "beef_10mb_peak_bytes": (
+        "Verify 10 MB BEEF, peak memory (bytes)", "Flat memory as input grows; #58", 0),
+    "writer_door_p99_ms": (
+        "Door with monitor beside it, p99 (ms)", "Unchanged from door baseline; #69", 0),
+    "explorer_calls_per_block": (
+        "Explorer calls per block", "Bounded by re-ask schedule; #72", 0),
+    "files_over_800": (
+        "Rust files over 800 lines (count)", "0; #55, #61, #62", 1),
+    "max_file_lines": (
+        "Largest Rust file (lines)", "<= 800; #55, #61, #62", 1),
+    "unwraps_outside_tests": (
+        "Unwrap/expect outside tests (count)", "0; #55, #56", 1),
+    "mutation_score_pct": (
+        "Door and ladders mutation score (%)", ">= 80; #57", 1),
+    "undocumented_public_items": (
+        "Undocumented public items (count)", "0; #55", 1),
+    "dependent_pin_min": (
+        "Direct dependents, oldest toolbox pin", "Current minor or dated plan; #59", 1),
+    "dependent_pin_max": (
+        "Direct dependents, newest toolbox pin", "Current minor or dated plan; #59", 1),
+}
+LADDERS = {"ladder_p99_ms", "ladder_request_count"}
+PINS = {"dependent_pin_min", "dependent_pin_max"}
+COUNTS = {
+    "ladder_request_count", "beef_10mb_peak_bytes", "explorer_calls_per_block",
+    "files_over_800", "max_file_lines", "unwraps_outside_tests",
+    "undocumented_public_items",
+}
+HEADER = "| Measure | Observed | Target / issue | JSON metric |\n|---|---|---|---|\n"
+
+
+def metric_key(key):
+    base, separator, case = key.partition("/")
+    if base not in METRICS:
+        raise ValueError("unknown scoreboard metric: " + key)
+    if separator and (base not in LADDERS or not re.fullmatch(r"[A-Za-z0-9_.:/-]+", case)):
+        raise ValueError("invalid ladder case: " + key)
+    return base, case
+
+
+def measurement_date(value):
+    if not isinstance(value, str):
+        raise ValueError("measured_at must be an ISO date")
+    day = datetime.date.fromisoformat(value)
+    if day.isoformat() != value:
+        raise ValueError("measured_at must use YYYY-MM-DD")
+    return value
+
+
+def number(base, value):
+    if base in PINS:
+        if not isinstance(value, str) or not re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", value):
+            raise ValueError(base + " must be a version string")
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(base + " must be a nonnegative number")
+    try:
+        result = Decimal(str(value))
+    except InvalidOperation as error:
+        raise ValueError(base + " must be a number") from error
+    if not result.is_finite() or result < 0:
+        raise ValueError(base + " must be finite and nonnegative")
+    if base in COUNTS and result != result.to_integral_value():
+        raise ValueError(base + " must be a whole number")
+    if base == "mutation_score_pct" and result > 100:
+        raise ValueError("mutation_score_pct must be <= 100")
+    value = format(result, "f")
+    return value.rstrip("0").rstrip(".") if "." in value else value
+
+
+def observed(base, value):
+    if value == "not yet measured":
+        return value
+    match = re.fullmatch(r"measured (\d{4}-\d{2}-\d{2}): (.+)", value)
+    if not match:
+        raise ValueError("invalid observation for " + base)
+    day, amount = match.groups()
+    return "measured " + measurement_date(day) + ": " + number(base, amount)
+
+
+def parse_table(block):
+    values = {key: "not yet measured" for key in METRICS}
+    seen = set()
+    for line in block.splitlines():
+        if not line.startswith("|") or line in HEADER.splitlines():
+            continue
+        columns = [part.strip() for part in line.split("|")]
+        if len(columns) != 6 or columns[0] or columns[-1]:
+            raise ValueError("scoreboard row must have four cells")
+        key = columns[4].strip("`")
+        base, _ = metric_key(key)
+        if key in seen:
+            raise ValueError("duplicate scoreboard metric: " + key)
+        seen.add(key)
+        values[key] = observed(base, columns[2])
+    return values
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key: " + key)
+        result[key] = value
+    return result
+
+
+def update_values(root, values):
+    count = 0
+    for index, name in enumerate(SOURCES):
+        path = root / name
+        if not path.exists():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        if not isinstance(payload, dict):
+            raise ValueError(name + " must contain an object")
+        metrics = payload.get("metrics", payload)
+        if not isinstance(metrics, dict):
+            raise ValueError(name + ": metrics must be an object")
+        for key, (label, target, source) in METRICS.items():
+            if source != index or key not in metrics or metrics[key] is None:
+                continue
+            day = measurement_date(payload.get("measured_at"))
+            amount = metrics[key]
+            if key in LADDERS:
+                if not isinstance(amount, dict):
+                    raise ValueError(key + " must map operation/provider/case names to numbers")
+                for case, value in amount.items():
+                    metric_key(key + "/" + case)
+                    values[key + "/" + case] = "measured " + day + ": " + number(key, value)
+                if amount:
+                    amount = max(Decimal(number(key, value)) for value in amount.values())
+                    values[key] = "measured " + day + ": " + number(key, str(amount))
+            else:
+                values[key] = "measured " + day + ": " + number(key, amount)
+        count += 1
+    return count
+
+
+def render_table(values):
+    table = HEADER
+    for key, (label, target, source) in METRICS.items():
+        keys = [key] + sorted(k for k in values if k.startswith(key + "/"))
+        for row_key in keys:
+            _, case = metric_key(row_key)
+            row_label = label if not case else label.split(", maximum")[0] + ": `" + case + "`"
+            table += "| " + " | ".join((row_label, values[row_key], target, "`" + row_key + "`")) + " |\n"
+    digest = hashlib.sha256(table.encode("utf-8")).hexdigest()
+    return "\n" + table + "\n<!-- scoreboard:sha256 " + digest + " -->\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="report drift without writing")
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent,
+                        help="repository root (also useful for isolated fixtures)")
+    args = parser.parse_args()
+    try:
+        path = args.root / "docs/NORTH-STAR.md"
+        document = path.read_bytes().decode("utf-8")
+        if document.count(BEGIN) != 1 or document.count(END) != 1:
+            raise ValueError("expected one scoreboard marker pair")
+        before, remainder = document.split(BEGIN)
+        block, after = remainder.split(END)
+        values = parse_table(block)
+        count = update_values(args.root, values)
+        updated = before + BEGIN + render_table(values) + END + after
+        if args.check:
+            if updated != document:
+                print("scoreboard check failed: table drift; run tools/scoreboard-write", file=sys.stderr)
+                return 1
+            print(f"scoreboard check passed ({count} source files)")
+        elif updated == document:
+            print(f"scoreboard unchanged ({count} source files)")
+        else:
+            path.write_bytes(updated.encode("utf-8"))
+            print(f"scoreboard updated ({count} source files)")
+        return 0
+    except (OSError, UnicodeError, ValueError) as error:
+        print("scoreboard error: " + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
