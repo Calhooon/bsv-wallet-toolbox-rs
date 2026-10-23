@@ -434,7 +434,7 @@ jobs:
     name: ratchet
     runs-on: ubuntu-latest
     # The script drops RUSTFLAGS from cargo's environment: it counts warnings,
-    # and the workflow's -Dwarnings would stop the build at the first.
+    # and the workflow's -Dwarnings would stop the build at any one of them.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
