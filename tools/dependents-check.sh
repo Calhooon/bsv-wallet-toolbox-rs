@@ -17,7 +17,7 @@
 # Usage: tools/dependents-check.sh [--ci] [--only CRATE] [--from CRATE=DIR]...
 #   --ci          run only the rows whose ci column is `yes`
 #   --only CRATE  run one row
-#   --from C=DIR  take crate C's repository from the local DIR (copied first)
+#   --from C=DIR  take crate C's repository from the local DIR (a copy is built; DIR is never written)
 # Environment: DEPENDENTS_WORK (scratch, default $RUNNER_TEMP or $TMPDIR),
 #   DEPENDENTS_TARGET_DIR (cargo target root, default inside the scratch).
 # Exits non-zero when any dependent fails to build or test.
