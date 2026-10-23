@@ -30,6 +30,42 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
+  # Advisory context, not required by branch protection. This baseline belongs
+  # to the Linux runner; laptop numbers are never compared with it. Until the
+  # captain records a Linux candidate, comparison fails with "baseline pending".
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/door-target
+      CRITERION_HOME: ${{ runner.temp }}/door-criterion
+      TMPDIR: ${{ runner.temp }}
+      DOOR_BENCH_SAMPLES: '10'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Test the comparison gate
+        run: python3 tests/bench_compare_test.py
+
+      - name: Measure the door and local explorer ladders
+        run: cargo bench --bench door
+
+      # Keep the measured candidate in the log so the captain can record the
+      # runner's numbers without borrowing the laptop profile or guessing.
+      - name: Record the Linux candidate
+        run: |
+          tools/bench-compare "$CRITERION_HOME" --baseline "$RUNNER_TEMP/baseline-linux.json" --profile linux --machine ubuntu-latest --write
+          cat "$RUNNER_TEMP/baseline-linux.json"
+
+      - name: Compare p99 with the stored Linux baseline
+        run: tools/bench-compare "$CRITERION_HOME" --profile linux
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}

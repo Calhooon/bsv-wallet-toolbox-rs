@@ -1,0 +1,92 @@
+{
+  "method": "individual_wall_time_linear_interpolation_v1",
+  "profiles": {
+    "laptop": {
+      "architecture": "arm64",
+      "benchmarks": {
+        "allocate_change_input_10000": {
+          "p50_ns": 1375333.0,
+          "p99_ns": 1473587.0,
+          "samples": 715
+        },
+        "create_action_offering_10000_coins_10000_offered": {
+          "p50_ns": 4895166.5,
+          "p99_ns": 5314352.44,
+          "samples": 220
+        },
+        "create_action_offering_10000_coins_100_offered": {
+          "p50_ns": 1854000.0,
+          "p99_ns": 2028016.87,
+          "samples": 440
+        },
+        "create_action_offering_1000_coins_100_offered": {
+          "p50_ns": 560937.5,
+          "p99_ns": 607880.04,
+          "samples": 1430
+        },
+        "create_action_process_action_10000": {
+          "p50_ns": 3219750.0,
+          "p99_ns": 3542887.999999999,
+          "samples": 275
+        },
+        "get_raw_tx_200": {
+          "p50_ns": 120416.0,
+          "p99_ns": 192345.00000000003,
+          "samples": 10725
+        },
+        "get_raw_tx_404": {
+          "p50_ns": 326708.0,
+          "p99_ns": 4212456.919999998,
+          "samples": 1925
+        },
+        "internalize_action_stored_proof_10000": {
+          "p50_ns": 7412000.0,
+          "p99_ns": 24896109.99999989,
+          "samples": 165
+        },
+        "is_utxo_could_not_look": {
+          "p50_ns": 454062.5,
+          "p99_ns": 695984.0799999984,
+          "samples": 2200
+        },
+        "is_utxo_spent": {
+          "p50_ns": 554125.0,
+          "p99_ns": 1274741.1400000025,
+          "samples": 1155
+        },
+        "is_utxo_spent_hint": {
+          "p50_ns": 636000.0,
+          "p99_ns": 1111417.72,
+          "samples": 1485
+        },
+        "is_utxo_unspent": {
+          "p50_ns": 278709.0,
+          "p99_ns": 462681.99999999965,
+          "samples": 3245
+        },
+        "list_outputs_10000": {
+          "p50_ns": 14193354.5,
+          "p99_ns": 14693373.94,
+          "samples": 110
+        },
+        "seed_10000": {
+          "p50_ns": 63750750.5,
+          "p99_ns": 65364186.95999999,
+          "samples": 20
+        }
+      },
+      "date": "2026-10-23",
+      "machine": "box",
+      "status": "measured",
+      "system": "Darwin"
+    },
+    "linux": {
+      "benchmarks": {},
+      "date": null,
+      "machine": "ubuntu-latest",
+      "status": "pending"
+    }
+  },
+  "schema_version": 1,
+  "unit": "nanoseconds"
+}
