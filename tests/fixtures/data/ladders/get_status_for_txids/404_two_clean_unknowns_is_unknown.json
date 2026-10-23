@@ -80,6 +80,17 @@
       "WhatsOnChain": {
         "POST /txs/status": 1
       }
+    },
+    "request_bodies": {
+      "WhatsOnChain": {
+        "POST /txs/status": [
+          {
+            "txids": [
+              "abababababababababababababababababababababababababababababababab"
+            ]
+          }
+        ]
+      }
     }
   }
 }
