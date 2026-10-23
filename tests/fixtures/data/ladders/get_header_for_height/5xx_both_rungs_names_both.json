@@ -1,0 +1,60 @@
+{
+  "about": "Chaintracks 502 and BHS 504: the error names each rung's error.",
+  "ladder": "get_header_for_height",
+  "providers": [
+    {
+      "name": "Chaintracks",
+      "routes": [
+        {
+          "route": "GET /findHeaderHexForHeight?height=900002",
+          "answers": [
+            {
+              "status": 502
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BHS",
+      "routes": [
+        {
+          "route": "GET /api/v1/chain/header/byHeight?height=900002",
+          "answers": [
+            {
+              "status": 504
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "WhatsOnChain",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "height": 900002
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "err": "Service error: get_header_for_height: no header service answered (chaintracks: Service error: Chaintracks findHeaderHexForHeight failed: HTTP 502 Bad Gateway; bhs: Service error: BHS header_by_height failed: HTTP 504 Gateway Timeout)"
+      }
+    ],
+    "requests": {
+      "BHS": {
+        "GET /api/v1/chain/header/byHeight?height=900002": 1
+      },
+      "Chaintracks": {
+        "GET /findHeaderHexForHeight?height=900002": 1
+      }
+    }
+  }
+}

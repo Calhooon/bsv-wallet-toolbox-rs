@@ -1,0 +1,77 @@
+{
+  "about": "Chaintracks 404: its error, then BHS answers.",
+  "ladder": "get_chain_tip_header",
+  "providers": [
+    {
+      "name": "Chaintracks",
+      "routes": [
+        {
+          "route": "GET /findChainTipHeaderHex",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BHS",
+      "routes": [
+        {
+          "route": "GET /api/v1/chain/header/tip",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "bits": 402917821,
+                "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "height": 900002,
+                "merkle_root": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "nonce": 42,
+                "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "time": 1700000000,
+                "version": 536870912
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "WhatsOnChain",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {}
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "bits": 402917821,
+          "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "height": 900002,
+          "merkle_root": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "nonce": 42,
+          "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "time": 1700000000,
+          "version": 536870912
+        }
+      }
+    ],
+    "requests": {
+      "BHS": {
+        "GET /api/v1/chain/header/tip": 1
+      },
+      "Chaintracks": {
+        "GET /findChainTipHeaderHex": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "about": "Neither configured: not configured, no explorer asked.",
+  "ladder": "get_header_for_height",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "height": 900002
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "err": "Service error: get_header_for_height: no header service configured"
+      }
+    ],
+    "requests": {}
+  }
+}

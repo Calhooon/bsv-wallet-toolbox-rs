@@ -1,0 +1,72 @@
+{
+  "about": "Chaintracks' body cut short: an error, BHS answers.",
+  "ladder": "get_header_for_height",
+  "providers": [
+    {
+      "name": "Chaintracks",
+      "routes": [
+        {
+          "route": "GET /findHeaderHexForHeight?height=900002",
+          "answers": [
+            {
+              "status": 200,
+              "body": "{\"status\":\"succ",
+              "cut": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BHS",
+      "routes": [
+        {
+          "route": "GET /api/v1/chain/header/byHeight?height=900002",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "bits": 402917821,
+                "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "height": 900002,
+                "merkle_root": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "nonce": 42,
+                "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "time": 1700000000,
+                "version": 536870912
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "WhatsOnChain",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "height": 900002
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": "000000200000000000000000000000000000000000000000000000000000000000000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00f15365bd0904182a000000"
+      }
+    ],
+    "requests": {
+      "BHS": {
+        "GET /api/v1/chain/header/byHeight?height=900002": 1
+      },
+      "Chaintracks": {
+        "GET /findHeaderHexForHeight?height=900002": 1
+      }
+    }
+  }
+}
