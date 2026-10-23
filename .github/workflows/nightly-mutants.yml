@@ -1,0 +1,112 @@
+name: Nightly mutants
+
+# Informational schedule, never a required branch protection context.
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-mutants-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_TARGET_DIR: ${{ runner.temp }}/mutants-target
+  RUSTFLAGS: -Dwarnings
+  TMPDIR: ${{ runner.temp }}
+
+jobs:
+  mutants:
+    name: Mutants shard ${{ matrix.shard }}/8
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Cache tool and registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/mutants-tools
+          key: ${{ runner.os }}-mutants-27.1.0-${{ hashFiles('Cargo.toml') }}
+
+      - name: Install cargo-mutants
+        run: |
+          cargo install --root "$RUNNER_TEMP/mutants-tools" --version 27.1.0 --locked cargo-mutants
+          echo "$RUNNER_TEMP/mutants-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Inventory all mutants
+        run: |
+          mkdir -p "$RUNNER_TEMP/mutation"
+          cargo mutants --list --json > "$RUNNER_TEMP/mutation/catalog.json"
+
+      - name: Run mutation shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if cargo mutants --in-place --shard "$SHARD/8" --sharding round-robin --output "$RUNNER_TEMP/mutation"; then
+            result=0
+          else
+            result=$?
+          fi
+          echo "cargo-mutants exit: $result" > "$RUNNER_TEMP/mutation/exit.txt"
+          # Misses and timeouts are measured here; the aggregate enforces floors.
+          case "$result" in
+            0|2|3) exit 0 ;;
+            *) exit "$result" ;;
+          esac
+
+      - name: Summarize shard
+        if: always()
+        run: |
+          python3 tools/mutants-score --report-only \
+            --catalog "$RUNNER_TEMP/mutation/catalog.json" \
+            "$RUNNER_TEMP/mutation/mutants.out/outcomes.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutants-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutation/
+          if-no-files-found: error
+          retention-days: 14
+
+  scores:
+    name: Mutation scores
+    needs: mutants
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download all shards
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: mutants-*
+          path: ${{ runner.temp }}/mutants-results
+
+      - name: Enforce per-file floors and publish table
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tools/mutants-score \
+            --catalog "$RUNNER_TEMP/mutants-results/mutants-0/catalog.json" \
+            "$RUNNER_TEMP"/mutants-results/mutants-*/mutants.out/outcomes.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"

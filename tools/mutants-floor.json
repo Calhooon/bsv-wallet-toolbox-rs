@@ -1,0 +1,125 @@
+{
+  "_comment": "Score = caught / (caught + missed + timeout). Unviable mutants are excluded. Null awaits measurement; it is never a passing floor.",
+  "files": {
+    "src/storage/sqlx/create_action.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/storage/sqlx/process_action.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/storage/sqlx/internalize_action.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/services.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/arc.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/arcade.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/bananablocks.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/bhs.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/bitails.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/chaintracks_client.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/fallback_chain_tracker.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/mod.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/pace.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/services/providers/whatsonchain.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/arcade_events.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/check_for_proofs.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/check_no_sends.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/clock.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/compact_beef.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/fail_abandoned.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/mod.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/monitor_call_history.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/new_header.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/purge.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/reorg.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/review_proven_txs.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/review_status.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/send_waiting.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/sync_when_idle.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    },
+    "src/monitor/tasks/unfail.rs": {
+      "floor": null,
+      "_comment": "Issue to file under #57: measure this file and raise its floor to 80."
+    }
+  }
+}
