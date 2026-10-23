@@ -24,7 +24,7 @@ use bsv_rs::primitives::sha256;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 
 use crate::services::traits::{
-    BlockHeader, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,
+    BlockHeader, BoundSpender, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,
     GetScriptHashHistoryResult, GetStatusForTxidsResult, GetUtxoStatusOutputFormat,
     GetUtxoStatusResult, NLockTimeInput, PostBeefResult, PostTxResultForTxid, UtxoLead, UtxoLeads,
     UtxoVerdict, WalletServices,
@@ -192,6 +192,10 @@ pub struct MockWalletServices {
     /// Whether a negative `is_utxo` answer stands for a proven spend.
     spends_are_proven: bool,
 
+    /// Response for is_utxo_with_spender calls; `None` answers
+    /// `is_utxo`'s verdict and no spender.
+    is_utxo_with_spender_response: Mutex<Option<MockResponse<SpenderAnswer>>>,
+
     /// Response for get_utxo_leads calls; `None` derives it from
     /// `get_utxo_status_response`.
     get_utxo_leads_response: Mutex<Option<MockResponse<UtxoLeads>>>,
@@ -218,6 +222,9 @@ pub struct MockWalletServices {
     /// synthetic tip at the configured height, else 80 zero bytes).
     headers_by_height: Mutex<HashMap<u32, BlockHeader>>,
 }
+
+/// What `is_utxo_with_spender` answers: the verdict and the bound spender.
+type SpenderAnswer = (UtxoVerdict, Option<BoundSpender>);
 
 /// A deterministic header at `height` whose `hash` is the hash of its
 /// bytes, as a real header service serves it.
@@ -262,6 +269,15 @@ impl MockWalletServices {
             .lock()
             .unwrap()
             .insert(header.height, header);
+    }
+
+    /// Set what `is_utxo_with_spender` answers (see the builder's
+    /// `is_utxo_with_spender_response`).
+    pub fn set_is_utxo_with_spender_response(
+        &self,
+        response: MockResponse<(UtxoVerdict, Option<BoundSpender>)>,
+    ) {
+        *self.is_utxo_with_spender_response.lock().unwrap() = Some(response);
     }
 
     /// Create a MockWalletServices with all-success defaults.
@@ -330,6 +346,7 @@ pub struct MockWalletServicesBuilder {
     get_script_hash_history_response: MockResponse<GetScriptHashHistoryResult>,
     is_utxo_response: Option<MockResponse<bool>>,
     spends_are_proven: bool,
+    is_utxo_with_spender_response: Option<MockResponse<(UtxoVerdict, Option<BoundSpender>)>>,
     get_utxo_leads_response: Option<MockResponse<UtxoLeads>>,
     broadcaster_statuses: Vec<(String, crate::services::BroadcastStatus)>,
 }
@@ -380,6 +397,7 @@ impl Default for MockWalletServicesBuilder {
             }),
             is_utxo_response: None,
             spends_are_proven: false,
+            is_utxo_with_spender_response: None,
             get_utxo_leads_response: None,
             broadcaster_statuses: Vec::new(),
         }
@@ -534,6 +552,18 @@ impl MockWalletServicesBuilder {
         self
     }
 
+    /// Set the response for is_utxo_with_spender calls: the verdict and
+    /// the bound spender beside it (an error answers `Unknown` and no
+    /// spender). Unset, the call answers `is_utxo`'s verdict and `None`,
+    /// as the trait's default does.
+    pub fn is_utxo_with_spender_response(
+        mut self,
+        response: MockResponse<(UtxoVerdict, Option<BoundSpender>)>,
+    ) -> Self {
+        self.is_utxo_with_spender_response = Some(response);
+        self
+    }
+
     /// Set the response for get_utxo_leads calls. Unset, the leads are
     /// derived from `get_utxo_status_response`: a success's `details`
     /// listed by its provider, any other answer
@@ -568,6 +598,7 @@ impl MockWalletServicesBuilder {
             get_script_hash_history_response: Mutex::new(self.get_script_hash_history_response),
             is_utxo_response: Mutex::new(self.is_utxo_response),
             spends_are_proven: self.spends_are_proven,
+            is_utxo_with_spender_response: Mutex::new(self.is_utxo_with_spender_response),
             get_utxo_leads_response: Mutex::new(self.get_utxo_leads_response),
             broadcaster_statuses: self.broadcaster_statuses,
             call_history: Mutex::new(Vec::new()),
@@ -962,6 +993,40 @@ impl WalletServices for MockWalletServices {
         }
     }
 
+    /// The configured `is_utxo_with_spender_response` (an error answers
+    /// `Unknown` and no spender). With none configured it answers
+    /// `is_utxo`'s verdict and `None`, as the trait's default does, and
+    /// that `is_utxo` call is recorded beside this one.
+    async fn is_utxo_with_spender(
+        &self,
+        txid: &str,
+        vout: u32,
+        locking_script: &[u8],
+    ) -> (UtxoVerdict, Option<BoundSpender>) {
+        let args = vec![
+            txid.to_string(),
+            format!("{}", vout),
+            format!("script_len={}", locking_script.len()),
+        ];
+        let configured = {
+            let response = self.is_utxo_with_spender_response.lock().unwrap();
+            response.as_ref().map(|response| {
+                let call_index = self.get_call_index("is_utxo_with_spender");
+                response.resolve(call_index)
+            })
+        };
+        let (answer, success) = match configured {
+            Some(Ok(answer)) => (answer, true),
+            Some(Err(_)) => ((UtxoVerdict::Unknown, None), false),
+            None => {
+                let verdict = self.is_utxo(txid, vout, locking_script).await;
+                ((verdict, None), verdict != UtxoVerdict::Unknown)
+            }
+        };
+        self.record_call("is_utxo_with_spender", args, success);
+        answer
+    }
+
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool> {
         self.record_call(
             "n_lock_time_is_final",
@@ -1014,6 +1079,7 @@ impl WalletServices for MockWalletServices {
 mod tests {
     use super::*;
     use crate::services::collection::{ServiceCall, ServiceCollection};
+    use crate::services::traits::BoundSpender;
     use std::sync::Arc;
 
     // =========================================================================
@@ -1764,5 +1830,77 @@ mod tests {
             .unwrap();
         assert_eq!(status.name, "First");
         assert_eq!(mock.call_count("get_utxo_status"), 1);
+    }
+
+    #[tokio::test]
+    async fn the_mock_answers_a_set_spender_and_records_the_call() {
+        let spender = BoundSpender {
+            txid: "cd".repeat(32),
+            confirmed: true,
+        };
+        let mock = MockWalletServices::builder()
+            .is_utxo_with_spender_response(MockResponse::Success((
+                UtxoVerdict::Spent,
+                Some(spender.clone()),
+            )))
+            .build();
+        let txid = "ab".repeat(32);
+        assert_eq!(
+            mock.is_utxo_with_spender(&txid, 2, &[0x51]).await,
+            (UtxoVerdict::Spent, Some(spender))
+        );
+        let history = mock.call_history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].method, "is_utxo_with_spender");
+        assert_eq!(
+            history[0].args,
+            vec![txid, "2".to_string(), "script_len=1".to_string()]
+        );
+        assert!(history[0].success);
+        assert_eq!(mock.call_count("is_utxo_with_spender"), 1);
+        assert_eq!(mock.call_count("is_utxo"), 0);
+
+        // The setter replaces it on a built mock; an error is `Unknown`.
+        let unconfirmed = BoundSpender {
+            txid: "ef".repeat(32),
+            confirmed: false,
+        };
+        mock.set_is_utxo_with_spender_response(MockResponse::Sequence(vec![
+            MockResponse::Success((UtxoVerdict::SpentHint, Some(unconfirmed.clone()))),
+            MockResponse::Error(MockErrorKind::NetworkError, "down".to_string()),
+        ]));
+        mock.reset_history();
+        assert_eq!(
+            mock.is_utxo_with_spender("ab", 0, &[]).await,
+            (UtxoVerdict::SpentHint, Some(unconfirmed))
+        );
+        assert_eq!(
+            mock.is_utxo_with_spender("ab", 0, &[]).await,
+            (UtxoVerdict::Unknown, None)
+        );
+        let history = mock.call_history();
+        assert_eq!(history.len(), 2);
+        assert!(history[0].success);
+        assert!(!history[1].success);
+    }
+
+    #[tokio::test]
+    async fn the_mock_unset_answers_is_utxos_verdict_and_no_spender() {
+        let mock = MockWalletServices::builder()
+            .is_utxo_response(MockResponse::Success(false))
+            .spends_are_proven(true)
+            .build();
+        assert_eq!(
+            mock.is_utxo_with_spender("ab", 0, &[]).await,
+            (UtxoVerdict::Spent, None)
+        );
+        assert_eq!(mock.call_count("is_utxo"), 1);
+        assert_eq!(mock.call_count("is_utxo_with_spender"), 1);
+
+        let mock = MockWalletServices::new();
+        assert_eq!(
+            mock.is_utxo_with_spender("ab", 0, &[]).await,
+            (UtxoVerdict::UnspentHint, None)
+        );
     }
 }
