@@ -131,7 +131,11 @@ impl BananaBlocks {
             .with_per_minute(BANANABLOCKS_PER_MINUTE)
     }
 
-    fn with_gate(base_url: &str, timeout_secs: Option<u64>, gate: Arc<RateGate>) -> Result<Self> {
+    pub(crate) fn with_gate(
+        base_url: &str,
+        timeout_secs: Option<u64>,
+        gate: Arc<RateGate>,
+    ) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs.unwrap_or(30)))
             .build()

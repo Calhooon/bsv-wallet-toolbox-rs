@@ -81,6 +81,12 @@ futures = "0.3"
 tokio-test = "0.4"
 tempfile = "3"
 mockito = "1.4"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "door"
+harness = false
+required-features = ["sqlite"]
 
 [[example]]
 name = "basic_wallet"
