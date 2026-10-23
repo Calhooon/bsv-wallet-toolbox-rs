@@ -109,7 +109,11 @@ fn sql_sites(t: &[Token<'_>]) -> Vec<usize> {
                     .is_some_and(|v| matches!(v.text, "query" | "query_as" | "query_scalar")))
                 || (t[i].kind == Kind::String
                     && t[i].text.split_whitespace().next().is_some_and(|s| {
-                        matches!(s, "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "CREATE")
+                        [
+                            "select", "insert", "update", "delete", "create", "pragma", "with",
+                        ]
+                        .iter()
+                        .any(|keyword| s.eq_ignore_ascii_case(keyword))
                     }))
         })
         .map(|i| t[i].line)
@@ -123,6 +127,12 @@ fn sql_stays_in_storage_sqlx() {
             "sqlx :: query_as::<_, T>(r###\"SELECT x\"###);\nlet s = \"UPDATE things\"; // SELECT"
         )),
         [1, 1, 2]
+    );
+    assert_eq!(
+        sql_sites(&lex(
+            "\"select 1\";\n\"insert into t values (1)\";\n\"update t set x = 1\";\n\"delete from t\";\n\"create table t (x int)\";\n\"PrAgMa foreign_keys\";\n\"WiTh t as (select 1) select * from t\";"
+        )),
+        [1, 2, 3, 4, 5, 6, 7]
     );
     let mut sites = scan(sql_sites, |p| p.starts_with("src/storage/sqlx/"));
     for src in source_files()
