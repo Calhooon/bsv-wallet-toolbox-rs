@@ -1450,3 +1450,200 @@ async fn two_unspent_answers_still_ask_for_a_spender() {
     );
     spent_route.assert_async().await;
 }
+
+// =============================================================================
+// is_utxo_with_spender (#44): the bound spender beside the verdict, one pass
+// =============================================================================
+
+/// A proven spend names its spender, confirmed; the verdict is `is_utxo`'s.
+#[tokio::test]
+async fn a_proven_spend_answers_its_spender_confirmed() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::Fault,
+        bitails_unspent: Says::Fault,
+        spender_spends: Some((UTXO_TXID, 0)),
+        proven: true,
+        header_service: true,
+    })
+    .await;
+    let (spender, _) = a_spender_of(UTXO_TXID, 0);
+    let (verdict, bound) = f
+        .services
+        .is_utxo_with_spender(UTXO_TXID, 0, UTXO_SCRIPT)
+        .await;
+    assert_eq!(verdict, UtxoVerdict::Spent);
+    assert_eq!(
+        bound,
+        Some(BoundSpender {
+            txid: spender,
+            confirmed: true,
+        })
+    );
+    f.spent_route.assert_async().await;
+}
+
+/// A bound spender with no proof held names its spender, not confirmed:
+/// the verdict is `SpentHint`.
+#[tokio::test]
+async fn an_unproven_bound_spender_answers_its_spender_unconfirmed() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::NotListed,
+        bitails_unspent: Says::NotListed,
+        spender_spends: Some((UTXO_TXID, 0)),
+        proven: false,
+        header_service: true,
+    })
+    .await;
+    let (spender, _) = a_spender_of(UTXO_TXID, 0);
+    let (verdict, bound) = f
+        .services
+        .is_utxo_with_spender(UTXO_TXID, 0, UTXO_SCRIPT)
+        .await;
+    assert_eq!(verdict, UtxoVerdict::SpentHint);
+    assert_eq!(
+        bound,
+        Some(BoundSpender {
+            txid: spender,
+            confirmed: false,
+        })
+    );
+}
+
+/// Two unspent answers and no spender named: `UnspentHint`, no spender.
+#[tokio::test]
+async fn an_unspent_answers_no_spender() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::Unspent,
+        bitails_unspent: Says::Unspent,
+        spender_spends: None,
+        proven: false,
+        header_service: true,
+    })
+    .await;
+    assert_eq!(
+        f.services
+            .is_utxo_with_spender(UTXO_TXID, 0, UTXO_SCRIPT)
+            .await,
+        (UtxoVerdict::UnspentHint, None)
+    );
+    f.spent_route.assert_async().await;
+}
+
+/// One explorer names a spender whose bytes spend another outpoint: the
+/// name is dropped, so no spender is answered, even with its proof real;
+/// the explorers' agreement stands as `SpentHint`.
+#[tokio::test]
+async fn a_name_its_bytes_refuse_answers_no_spender() {
+    let f = spend_scene(SpendScene {
+        woc_unspent: Says::NotListed,
+        bitails_unspent: Says::NotListed,
+        spender_spends: Some((UTXO_TXID, 1)),
+        proven: true,
+        header_service: true,
+    })
+    .await;
+    assert_eq!(
+        f.services
+            .is_utxo_with_spender(UTXO_TXID, 0, UTXO_SCRIPT)
+            .await,
+        (UtxoVerdict::SpentHint, None)
+    );
+}
+
+/// One pass of the three explorers' ladder for an outpoint WhatsOnChain
+/// and BananaBlocks both name a bound, unproven spender of, each route
+/// counted: WhatsOnChain's unspent set, BananaBlocks' `/txo` (the second
+/// "not listed", and the carried spender), WhatsOnChain's `/spent`, and
+/// the spender's bytes from WhatsOnChain: four requests. Bitails is not
+/// reached, BananaBlocks is not asked again for the name it gave, and no
+/// second raw read is made.
+async fn one_pass(with_spender: bool) -> (UtxoVerdict, Option<BoundSpender>) {
+    let (spender, spender_hex) = a_spender_of(UTXO_TXID, 0);
+    let mut woc = crate::services::mock_server().await;
+    let mut bb = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
+    let ct = crate::services::mock_server().await;
+    let routes = vec![
+        woc_unspent(&mut woc, Says::NotListed).await.expect(1),
+        bb.mock("GET", format!("/txo/{UTXO_TXID}/0").as_str())
+            .with_status(200)
+            .with_body(bananablocks_txo_body(Some(&spender)))
+            .expect(1)
+            .create_async()
+            .await,
+        bitails_unspent(&mut bitails, Says::NotListed)
+            .await
+            .expect(0),
+        woc.mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
+            .with_status(200)
+            .with_body(format!(r#"{{"txid":"{}","vin":0}}"#, spender))
+            .expect(1)
+            .create_async()
+            .await,
+        woc.mock("GET", format!("/tx/{spender}/hex").as_str())
+            .with_status(200)
+            .with_body(&spender_hex)
+            .expect(1)
+            .create_async()
+            .await,
+        bb.mock("GET", format!("/tx/{spender}/hex").as_str())
+            .with_status(200)
+            .with_body(&spender_hex)
+            .expect(0)
+            .create_async()
+            .await,
+        bitails
+            .mock("GET", format!("/tx/{spender}/hex").as_str())
+            .with_status(200)
+            .with_body(&spender_hex)
+            .expect(0)
+            .create_async()
+            .await,
+    ];
+    let mut services = services_with_three(
+        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        &woc.url(),
+        &bb.url(),
+        &bitails.url(),
+    );
+    let mut couriers = ServiceCollection::new("getMerklePath");
+    let courier: MerklePathProvider = StdArc::new(FixedProof(GetMerklePathResult {
+        name: Some("courier".to_string()),
+        merkle_path: None,
+        header: None,
+        error: None,
+        notes: vec![],
+    }));
+    couriers.add("courier", courier);
+    services.get_merkle_path_services = RwLock::new(couriers);
+
+    let answer = if with_spender {
+        services
+            .is_utxo_with_spender(UTXO_TXID, 0, UTXO_SCRIPT)
+            .await
+    } else {
+        (services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await, None)
+    };
+    for route in &routes {
+        route.assert_async().await;
+    }
+    answer
+}
+
+/// The request count per probe is `is_utxo`'s: the spender comes back
+/// from the same four requests, none added (#44).
+#[tokio::test]
+async fn the_spender_costs_no_request_beyond_is_utxo() {
+    let (spender, _) = a_spender_of(UTXO_TXID, 0);
+    assert_eq!(one_pass(false).await, (UtxoVerdict::SpentHint, None));
+    assert_eq!(
+        one_pass(true).await,
+        (
+            UtxoVerdict::SpentHint,
+            Some(BoundSpender {
+                txid: spender,
+                confirmed: false,
+            })
+        )
+    );
+}
