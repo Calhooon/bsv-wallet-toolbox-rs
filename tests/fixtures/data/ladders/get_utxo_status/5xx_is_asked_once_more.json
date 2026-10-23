@@ -1,0 +1,109 @@
+{
+  "about": "WhatsOnChain and BananaBlocks 500, Bitails unspent: the retry round asks WhatsOnChain again, its unspent makes two and ends the round before BananaBlocks.",
+  "ladder": "get_utxo_status",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 500
+            },
+            {
+              "status": 200,
+              "json": {
+                "result": [
+                  {
+                    "height": 900000,
+                    "tx_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+                    "tx_pos": 0,
+                    "value": 1000
+                  }
+                ],
+                "script": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 500
+            },
+            {
+              "status": 500
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "scripthash": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8",
+                "unspent": [
+                  {
+                    "blockheight": 900000,
+                    "satoshis": 1000,
+                    "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+                    "vout": 0
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "outpoint": "1111111111111111111111111111111111111111111111111111111111111111.0",
+      "output": "b898c5bd0c912186f83eb542a6b6ad6009281ed65714030b828aa4246c978c79"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "details": [
+            {
+              "height": 900000,
+              "index": 0,
+              "satoshis": 1000,
+              "txid": "1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "is_utxo": true,
+          "name": "Bitails+WoC",
+          "status": "success"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 1
+      },
+      "Bitails": {
+        "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent": 1
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 2
+      }
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "about": "WhatsOnChain 200 not JSON (deterministic), BananaBlocks spent, Bitails unspent: could not look, WhatsOnChain asked once.",
+  "ladder": "get_utxo_status",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all",
+          "answers": [
+            {
+              "status": 200,
+              "body": "not json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "index": 0,
+                "script_pubkey": "76a914010288ac",
+                "script_type": "p2pkh",
+                "spend_scope": "confirmed",
+                "spent": true,
+                "spent_txid": "7275287e1aa1ccb7c27ab001033b18beeaaf6982e64dc7691bd4ed60e679af90",
+                "value": 1000
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "scripthash": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8",
+                "unspent": [
+                  {
+                    "blockheight": 900000,
+                    "satoshis": 1000,
+                    "txid": "1111111111111111111111111111111111111111111111111111111111111111",
+                    "vout": 0
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "outpoint": "1111111111111111111111111111111111111111111111111111111111111111.0",
+      "output": "b898c5bd0c912186f83eb542a6b6ad6009281ed65714030b828aa4246c978c79"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "details": [],
+          "error": "could not look: Bitails lists the output as unspent; BananaBlocks does not list the output as unspent and no second explorer confirmed it (WhatsOnChain: Service error: Failed to parse UTXO response: expected ident at line 1 column 2)",
+          "name": "Services",
+          "status": "error"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 1
+      },
+      "Bitails": {
+        "GET /scripthash/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent": 1
+      },
+      "WhatsOnChain": {
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 1
+      }
+    }
+  }
+}
