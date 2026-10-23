@@ -1,0 +1,117 @@
+{
+  "about": "Bitails 200 with an unspent list that is not a list: deterministic, asked once; the others stand.",
+  "ladder": "get_utxo_leads",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8/unspent/all",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "error": "",
+                "result": [
+                  {
+                    "height": 900000,
+                    "tx_hash": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+                    "tx_pos": 0,
+                    "value": 1000
+                  }
+                ],
+                "script": "5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8/unspent?limit=1000&from=0",
+          "answers": [
+            {
+              "status": 200,
+              "body": "{\"unspent\":\"soon\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /address/16L5yRNPTuciSgXGHqYwn9N6NeoKqopAu/utxos?limit=1000",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "hasMore": false,
+                "items": [
+                  {
+                    "block_height": 900000,
+                    "script_type": "p2pkh",
+                    "txid": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+                    "value": 1000,
+                    "vout": 0
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "format": "script",
+      "output": "76a9140102030405060708090a0b0c0d0e0f101112131488ac"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "answered": [
+            "WhatsOnChain",
+            "BananaBlocks"
+          ],
+          "faults": [
+            [
+              "Bitails",
+              "Service error: Failed to parse unspent set: invalid type: string \"soon\", expected a sequence at line 1 column 17"
+            ]
+          ],
+          "leads": [
+            {
+              "listedBy": [
+                "WhatsOnChain",
+                "BananaBlocks"
+              ],
+              "satoshis": 1000,
+              "txid": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+              "vout": 0
+            }
+          ],
+          "partial": []
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /address/16L5yRNPTuciSgXGHqYwn9N6NeoKqopAu/utxos?limit=1000": 1
+      },
+      "Bitails": {
+        "GET /scripthash/5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8/unspent?limit=1000&from=0": 1
+      },
+      "WhatsOnChain": {
+        "GET /script/5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8/unspent/all": 1
+      }
+    }
+  }
+}
