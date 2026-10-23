@@ -55,9 +55,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/mutation"
           cargo mutants --list --json > "$RUNNER_TEMP/mutation/catalog.json"
 
+      - name: Fetch and compile test dependencies
+        run: cargo test --lib --no-run
+
       - name: Run mutation shard
         env:
           SHARD: ${{ matrix.shard }}
+          CARGO_NET_OFFLINE: 'true'
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1,::1
         run: |
           if cargo mutants --in-place --shard "$SHARD/8" --sharding round-robin --output "$RUNNER_TEMP/mutation"; then
             result=0

@@ -12,6 +12,9 @@ duplicate mutants, unsupported outcomes and missing floor entries fail the gate.
 the existing CI's Rust stable toolchain and action commits; artifact actions are
 also pinned by commit. No credentials beyond read access are requested. The
 workflow writes artifacts and job summaries, and opens no issues or pull requests.
+Dependencies are fetched before mutation testing. Mutation builds are offline;
+an unreachable loopback proxy blocks accidental external HTTP while allowing
+the local mock servers.
 
 ## Measurement
 
