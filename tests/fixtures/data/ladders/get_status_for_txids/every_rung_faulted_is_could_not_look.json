@@ -1,0 +1,80 @@
+{
+  "about": "A 429, a 500 and a timeout: no answer, status error.",
+  "ladder": "get_status_for_txids",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "POST /txs/status",
+          "answers": [
+            {
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 500
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 200,
+              "body": "",
+              "delay_ms": 3000
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "error": "Network error: BananaBlocks request failed: error sending request for url (<BananaBlocks>/tx/abababababababababababababababababababababababababababababababab)",
+          "name": "Services",
+          "results": [],
+          "status": "error"
+        }
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "Bitails": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "WhatsOnChain": {
+        "POST /txs/status": 1
+      }
+    }
+  }
+}

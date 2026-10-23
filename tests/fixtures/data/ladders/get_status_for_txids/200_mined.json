@@ -1,0 +1,64 @@
+{
+  "about": "WhatsOnChain places the transaction in a block: mined ends the question; no other provider is asked.",
+  "ladder": "get_status_for_txids",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "POST /txs/status",
+          "answers": [
+            {
+              "status": 200,
+              "json": [
+                {
+                  "blockhash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "blockheight": 900000,
+                  "confirmations": 3,
+                  "txid": "abababababababababababababababababababababababababababababababab"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "WoC",
+          "results": [
+            {
+              "depth": 3,
+              "status": "mined",
+              "txid": "abababababababababababababababababababababababababababababababab"
+            }
+          ],
+          "status": "success"
+        }
+      }
+    ],
+    "requests": {
+      "WhatsOnChain": {
+        "POST /txs/status": 1
+      }
+    }
+  }
+}
