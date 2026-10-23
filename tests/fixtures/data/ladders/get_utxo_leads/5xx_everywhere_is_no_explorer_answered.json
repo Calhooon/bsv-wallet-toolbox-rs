@@ -1,0 +1,72 @@
+{
+  "about": "Every explorer 500 twice: an error naming each fault, never an empty list.",
+  "ladder": "get_utxo_leads",
+  "providers": [
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "GET /script/5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8/unspent/all",
+          "answers": [
+            {
+              "status": 500,
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /scripthash/5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8/unspent?limit=1000&from=0",
+          "answers": [
+            {
+              "status": 500,
+              "times": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /address/16L5yRNPTuciSgXGHqYwn9N6NeoKqopAu/utxos?limit=1000",
+          "answers": [
+            {
+              "status": 500,
+              "times": 2
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "format": "script",
+      "output": "76a9140102030405060708090a0b0c0d0e0f101112131488ac"
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "err": "Could not look: no explorer answered: WhatsOnChain: Service error: WhatsOnChain unspent list: HTTP 500 Internal Server Error; Bitails: Service error: Bitails unspent list: HTTP 500 Internal Server Error; BananaBlocks: Service error: BananaBlocks address 16L5yRNPTuciSgXGHqYwn9N6NeoKqopAu utxos: HTTP 500 Internal Server Error"
+      }
+    ],
+    "requests": {
+      "BananaBlocks": {
+        "GET /address/16L5yRNPTuciSgXGHqYwn9N6NeoKqopAu/utxos?limit=1000": 2
+      },
+      "Bitails": {
+        "GET /scripthash/5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8/unspent?limit=1000&from=0": 2
+      },
+      "WhatsOnChain": {
+        "GET /script/5546fc69d399ef99854c132abb060381cc159dbec67c496a6f0e0dbf12e83ae8/unspent/all": 2
+      }
+    }
+  }
+}
