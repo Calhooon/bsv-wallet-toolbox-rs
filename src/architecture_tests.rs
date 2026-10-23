@@ -53,6 +53,10 @@ const ERROR_CEILINGS: &[(&str, usize)] = &[
     ("src/services/providers/bitails.rs", 2),
     ("src/services/providers/whatsonchain.rs", 8),
     ("src/storage/client/storage_client.rs", 4),
+    // The textual scrutinee check also sees txid.to_string() in typed
+    // request arguments, even though the matched result is not error text.
+    ("src/storage/sqlx/poisoned_chain.rs", 1),
+    ("src/storage/sqlx/storage_sqlx.rs", 1),
 ];
 
 // All these public answers are owned by services (today in traits.rs,
@@ -235,6 +239,30 @@ fn error_expression(t: &[Token<'_>], names: &BTreeSet<&str>) -> bool {
     named && !unrelated_field
 }
 
+fn match_scrutinee(t: &[Token<'_>], i: usize) -> Option<(usize, usize)> {
+    let (start, limit, separator) = if code(t, i, "match") {
+        (i + 1, t.len(), "{")
+    } else if sequence(t, i, &["matches", "!"])
+        && ["(", "[", "{"].iter().any(|open| code(t, i + 2, open))
+    {
+        (i + 3, group_end(t, i + 2) - 1, ",")
+    } else {
+        return None;
+    };
+    let mut end = start;
+    while end < limit {
+        if code(t, end, separator) {
+            return Some((start, end));
+        }
+        end = if ["(", "[", "{"].iter().any(|open| code(t, end, open)) {
+            group_end(t, end)
+        } else {
+            end + 1
+        };
+    }
+    None
+}
+
 fn error_sites(t: &[Token<'_>]) -> Vec<usize> {
     let mut tainted: BTreeSet<&str> = t
         .iter()
@@ -305,6 +333,18 @@ fn error_sites(t: &[Token<'_>]) -> Vec<usize> {
     }
     let mut lines = Vec::new();
     for i in 0..t.len() {
+        if let Some((start, end)) = match_scrutinee(t, i) {
+            let expression = &t[start..end];
+            // Inspect the scrutinee only: typed error patterns and text rendered
+            // inside match arms or pattern guards are not text classifications.
+            if (0..expression.len()).any(|j| {
+                sequence(expression, j, &[".", "to_string", "(", ")"])
+                    || code(expression, j, "message")
+                    || code(expression, j, "msg")
+            }) {
+                lines.push(t[i].line);
+            }
+        }
         let method = (code(t, i, "starts_with") || code(t, i, "contains"))
             && i > 0
             && code(t, i - 1, ".")
@@ -346,6 +386,19 @@ fn errors_are_not_classified_by_text() {
         )),
         [1]
     );
+    let matches = concat!(
+        "matches!(e.to_string().as_str(), \"busy\" | \"locked\");\n",
+        "match e.to_string().as_str() { \"busy\" => true, _ => false }\n",
+        "matches!(e.message.as_str(), \"busy\");\n",
+        "match e.message { \"busy\" => true, _ => false }\n",
+        "match e { Error::Busy => (), _ => () }\n",
+        "matches!(e, Error::Busy);\n",
+        "match e { _ => e.to_string() }\n",
+        "matches!(v, _ if name.to_string() == \"busy\");\n",
+        "matches!{wrap(e.to_string(), other), \"busy\"};\n",
+        "match message { \"busy\" => true, _ => false }\n",
+    );
+    assert_eq!(error_sites(&lex(matches)), [1, 2, 3, 4, 9, 10]);
     enforce(
         "error classified by text",
         scan(error_sites, |_| false),
