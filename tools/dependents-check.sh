@@ -12,7 +12,9 @@
 #      printed;
 #   4. `cargo build --locked`, falling back to `cargo build` with a note when
 #      the lock still needs a change (or the dependent commits no lock);
-#   5. `cargo test --lib` (`--bins` with a note when the crate has no library).
+#   5. `cargo test --locked`, every target (`cargo test` when the build was
+#      unlocked); a row's test column may name a narrower command, with the
+#      reason in its reason column.
 #
 # Usage: tools/dependents-check.sh [--ci] [--only CRATE] [--from CRATE=DIR]...
 #   --ci          run only the rows whose ci column is `yes`
@@ -42,7 +44,7 @@ while [ $# -gt 0 ]; do
     --ci) ci=1 ;;
     --only) only="$2"; shift ;;
     --from) froms+=("$2"); shift ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/{ /^#/p; }' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -61,11 +63,11 @@ from_for() {
   done
 }
 
-# The rows of the check table: crate|clone|dir|ci
+# The rows of the check table: crate|clone|dir|ci|test
 rows() {
   sed -n '/<!-- dependents-check:begin -->/,/<!-- dependents-check:end -->/p' "$LIST" |
     grep '^| ' | sed '1d' |
-    awk -F'|' '{ for (i = 2; i <= 5; i++) { gsub(/^ +| +$/, "", $i) } print $2 "|" $3 "|" $4 "|" $5 }'
+    awk -F'|' '{ for (i = 2; i <= 6; i++) { gsub(/^ +| +$/, "", $i) } print $2 "|" $3 "|" $4 "|" $5 "|" $6 }'
 }
 
 # Rewrite every dependency on $PKG in the given manifest to `path = "$TREE"`,
@@ -102,7 +104,7 @@ declare -a summary=()
 status=0
 
 run_one() {
-  local crate="$1" clone="$2" dir="$3"
+  local crate="$1" clone="$2" dir="$3" testcmd="$4"
   local src dest from
   dest="$WORK/$crate"
   rm -rf "$dest"
@@ -205,17 +207,17 @@ run_one() {
     fi
   fi
 
+  # Every target by default: a test the build does not reach is not a test.
   if [ "${build#ok}" != "$build" ]; then
-    local has_lib
-    has_lib="$(cd "$src" && cargo metadata --no-deps --format-version 1 |
-      jq --arg m "$(pwd -P)/Cargo.toml" '[.packages[] | select(.manifest_path == $m) | .targets[] | select(.kind | index("lib") or index("rlib"))] | length')"
-    local what="--lib"
-    if [ "$has_lib" -eq 0 ]; then
-      what="--bins"
-      note="${note:+$note; }no library; tested --bins"
-      echo "   NOTE: no library target; cargo test --bins"
+    local what="cargo test --locked"
+    if [ -n "$testcmd" ] && [ "$testcmd" != "default" ]; then
+      what="${testcmd//\`/}"
+      note="${note:+$note; }narrowed: $what"
+    elif [ "$build" = "ok (unlocked)" ]; then
+      what="cargo test"
     fi
-    if (cd "$src" && unset RUSTFLAGS && cargo test $what); then
+    echo "   $what"
+    if (cd "$src" && unset RUSTFLAGS && eval "$what"); then
       test="ok ($what)"
     else
       test="FAIL ($what)"
@@ -227,7 +229,7 @@ run_one() {
 }
 
 any=0
-while IFS='|' read -r crate clone dir inci; do
+while IFS='|' read -r crate clone dir inci testcmd; do
   [ -n "$crate" ] || continue
   if [ -n "$only" ] && [ "$crate" != "$only" ]; then continue; fi
   if [ "$ci" -eq 1 ] && [ "$inci" != "yes" ]; then
@@ -235,7 +237,7 @@ while IFS='|' read -r crate clone dir inci; do
     continue
   fi
   any=1
-  run_one "$crate" "$clone" "$dir"
+  run_one "$crate" "$clone" "$dir" "$testcmd"
 done < <(rows)
 
 if [ -n "$only" ] && [ "$any" -eq 0 ]; then

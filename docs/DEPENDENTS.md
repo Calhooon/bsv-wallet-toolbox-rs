@@ -16,9 +16,12 @@ PR, so this page stays current.
 `tools/dependents-check.sh` reads the table below, clones each dependent at its
 default branch into a scratch directory, rewrites its dependency on this crate
 to a path dependency on the tree under test, and runs `cargo build --locked`
-(falling back to `cargo build` with a note) and `cargo test --lib`. The CI job
-`dependents` runs the rows marked `yes`; a private repository needs a token the
-job does not hold, so its row runs on a laptop with `--from`.
+(falling back to `cargo build` with a note) and `cargo test --locked` on every
+target (`cargo test` when the build fell back). A row whose test column is not
+`default` runs that narrower command instead, and its reason column says why;
+a narrowed row is noted in the summary. The CI job `dependents` runs the rows
+marked `yes`; a private repository needs a token the job does not hold, so its
+row runs on a laptop with `--from`.
 
 What the check found against 0.13.0 on 2026-10-23: `bsv-wallet-cli` at
 `main` builds `--locked` and its library tests pass; `agent-manage` and
@@ -32,9 +35,9 @@ alone, so only this crate and what it newly needs change; the script prints
 that diff. A build that still needs `--locked` relaxed says so in its summary.
 
 <!-- dependents-check:begin -->
-| crate | clone | dir | ci |
-|---|---|---|---|
-| bsv-wallet-cli | https://github.com/Calhooon/bsv-wallet-cli.git | . | yes |
-| agent-manage | https://github.com/Calgooon/agents.git | manage | no: private |
-| dolphin-milk | https://github.com/Calhooon/dolphinmilk.git | . | no: bsv-rs 0.3 |
+| crate | clone | dir | ci | test | reason |
+|---|---|---|---|---|---|
+| bsv-wallet-cli | https://github.com/Calhooon/bsv-wallet-cli.git | . | yes | default | |
+| agent-manage | https://github.com/Calgooon/agents.git | manage | no: private | default | |
+| dolphin-milk | https://github.com/Calhooon/dolphinmilk.git | . | no: bsv-rs 0.3 | default | |
 <!-- dependents-check:end -->
