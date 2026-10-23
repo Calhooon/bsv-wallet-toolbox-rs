@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Compare per-call p99 estimates emitted by the door Criterion harness."""
+
+import argparse
+import datetime
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import sys
+
+METHOD = "individual_wall_time_linear_interpolation_v1"
+DEFAULT_BASELINE = Path(__file__).resolve().parent.parent / "benches/baseline.json"
+
+
+def read_json(path):
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def positive(value, context):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{context}: expected a number")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{context}: expected a finite positive number")
+    return value
+
+
+def measurements(directory):
+    run = read_json(directory / "door-run.json")
+    if run.get("finished") is not True:
+        raise ValueError("benchmark run did not finish; refusing partial or stale output")
+    names = run.get("benchmarks", [])
+    if not names or len(names) != len(set(names)):
+        raise ValueError("run manifest has no benchmarks or duplicate names")
+    rows = {}
+    for name in names:
+        if not isinstance(name, str) or Path(name).name != name or name in (".", ".."):
+            raise ValueError("invalid benchmark name in run manifest")
+        folder = directory / name / "new"
+        estimates = read_json(folder / "estimates.json")
+        if estimates.get("latency_method") != METHOD:
+            raise ValueError(f"{name}: per-call p50/p99 missing; run cargo bench --bench door")
+        row = {
+            key + "_ns": positive(estimates[key]["point_estimate"], f"{name} {key}")
+            for key in ("p50", "p99")
+        }
+        row["samples"] = positive(estimates["latency_samples"], f"{name} samples")
+        if row["p50_ns"] > row["p99_ns"]:
+            raise ValueError(f"{name}: p50 exceeds p99")
+        rows[name] = row
+    return rows
+
+
+def compare(current, reference, tolerance):
+    if current.keys() != reference.keys():
+        missing = sorted(reference.keys() - current.keys())
+        extra = sorted(current.keys() - reference.keys())
+        raise ValueError(f"benchmark set changed: missing={missing}, extra={extra}")
+    print(f"{'benchmark':52} {'p50 ms':>10} {'p99 ms':>10} {'base p99':>10} {'delta':>9}  result")
+    failures = 0
+    for name, row in sorted(current.items()):
+        base = positive(reference[name]["p99_ns"], f"{name} baseline p99")
+        delta = (row["p99_ns"] / base - 1) * 100
+        failed = row["p99_ns"] > base * (1 + tolerance / 100)
+        failures += failed
+        print(f"{name:52} {row['p50_ns'] / 1e6:10.4f} {row['p99_ns'] / 1e6:10.4f} "
+              f"{base / 1e6:10.4f} {delta:+8.2f}%  {'FAIL' if failed else 'PASS'}")
+    print(f"{'FAIL' if failures else 'PASS'}: {len(current)} benchmarks, "
+          f"{failures} regressions, p99 tolerance {tolerance:g}%")
+    return 1 if failures else 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    default_directory = os.environ.get("CRITERION_HOME")
+    if not default_directory and os.environ.get("CARGO_TARGET_DIR"):
+        default_directory = str(Path(os.environ["CARGO_TARGET_DIR"]) / "criterion")
+    parser.add_argument("directory", nargs="?", type=Path, default=default_directory)
+    parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
+    parser.add_argument("--profile", choices=("linux", "laptop"),
+                        default="linux" if platform.system() == "Linux" else "laptop")
+    parser.add_argument("--machine", default=platform.node(), help="machine label when writing")
+    parser.add_argument("--tolerance", type=float, default=5.0, help="allowed p99 increase in percent")
+    parser.add_argument("--filter", help="compare benchmark names containing this text")
+    parser.add_argument("--write", action="store_true", help="replace this machine profile")
+    args = parser.parse_args(argv)
+    if args.directory is None:
+        parser.error("give the Criterion directory or set CRITERION_HOME/CARGO_TARGET_DIR")
+    if not math.isfinite(args.tolerance) or args.tolerance < 0:
+        parser.error("--tolerance must be finite and nonnegative")
+    if args.write and args.filter:
+        parser.error("--filter cannot be combined with --write")
+
+    try:
+        current = measurements(args.directory)
+        baseline = read_json(args.baseline) if args.baseline.exists() else {
+            "schema_version": 1, "unit": "nanoseconds", "method": METHOD, "profiles": {}
+        }
+        if (baseline.get("schema_version"), baseline.get("unit"), baseline.get("method")) != (
+            1, "nanoseconds", METHOD
+        ):
+            raise ValueError("unsupported baseline schema, units or quantile method")
+        if args.profile == "linux" and platform.system() != "Linux":
+            raise ValueError("the linux profile requires a Linux runner; use --profile laptop")
+        profiles = baseline["profiles"]
+        if args.write:
+            profiles[args.profile] = {
+                "status": "measured", "machine": args.machine,
+                "system": platform.system(), "architecture": platform.machine(),
+                "date": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
+                "benchmarks": current,
+            }
+            args.baseline.parent.mkdir(parents=True, exist_ok=True)
+            args.baseline.write_text(json.dumps(baseline, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            print(f"WROTE {args.baseline}: {args.profile}, {args.machine}, {len(current)} benchmarks")
+        profile = profiles.get(args.profile, {})
+        if profile.get("status") != "measured":
+            raise ValueError(f"{args.profile} baseline pending; capture the Linux runner with --write, "
+                             "then commit its candidate after review; laptop numbers are separate")
+        if profile.get("system") != platform.system() or profile.get("architecture") != platform.machine():
+            raise ValueError("baseline platform differs from this machine; capture the correct profile")
+        reference = profile["benchmarks"]
+        if args.filter:
+            current = {key: row for key, row in current.items() if args.filter in key}
+            reference = {key: row for key, row in reference.items() if args.filter in key}
+            if not current or not reference:
+                raise ValueError("--filter matched no benchmark")
+        print(f"Baseline: {args.profile}, {profile['machine']}, {profile['date']} ({profile['system']}/{profile['architecture']})")
+        return compare(current, reference, args.tolerance)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
