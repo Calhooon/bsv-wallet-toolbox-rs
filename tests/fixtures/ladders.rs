@@ -4,7 +4,9 @@
 //! scene: the ladder; the providers configured, in the ladder's order, with
 //! each one's answers per route as a mockito script; the calls; and
 //! `expected`, each call's result (normalized) and the requests that
-//! reached each provider, by route, over all the calls. The replay stands a
+//! reached each provider, by route, over all the calls. POST request bodies
+//! are parsed JSON with sorted keys and the same txid tokens as the calls;
+//! their order and values must match too. The replay stands a
 //! local server in each provider's place, builds `Services` over them,
 //! makes the calls and compares. Nothing touches the network.
 //!
@@ -143,19 +145,147 @@ struct Answer {
 struct Expected {
     results: Vec<Value>,
     requests: BTreeMap<String, BTreeMap<String, usize>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    request_bodies: BTreeMap<String, BTreeMap<String, Vec<Value>>>,
 }
 
-/// Requests seen, by provider and route.
-type Counts = Arc<Mutex<BTreeMap<String, BTreeMap<String, usize>>>>;
+/// Requests seen, by provider and route, including each POST body in order.
+#[derive(Default)]
+struct Requests {
+    counts: BTreeMap<String, BTreeMap<String, usize>>,
+    bodies: BTreeMap<String, BTreeMap<String, Vec<Value>>>,
+    errors: Vec<String>,
+}
 
-fn count(counts: &Counts, provider: &str, route: String) {
-    *counts
-        .lock()
-        .unwrap()
+type Counts = Arc<Mutex<Requests>>;
+
+fn record(counts: &Counts, provider: &str, route: String, req: &mockito::Request) {
+    let mut requests = counts.lock().unwrap();
+    *requests
+        .counts
         .entry(provider.to_string())
         .or_default()
-        .entry(route)
+        .entry(route.clone())
         .or_default() += 1;
+    if req.method() == "POST" {
+        let body = req
+            .body()
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| serde_json::from_slice::<Value>(bytes).map_err(|e| e.to_string()));
+        match body {
+            Ok(mut body) => {
+                // Calls already use the fixture's txid tokens: keep their
+                // values and array order, sorting only object keys.
+                body.sort_all_objects();
+                requests
+                    .bodies
+                    .entry(provider.to_string())
+                    .or_default()
+                    .entry(route)
+                    .or_default()
+                    .push(body);
+            }
+            Err(e) => requests
+                .errors
+                .push(format!("{provider} {route}: request body is not JSON: {e}")),
+        }
+    }
+}
+
+/// Locate a differing key or array position, including missing/extra keys.
+fn json_difference(expected: &Value, actual: &Value) -> Option<String> {
+    match (expected, actual) {
+        (Value::Object(a), Value::Object(b)) => {
+            for key in a.keys().chain(b.keys()) {
+                let difference = match (a.get(key), b.get(key)) {
+                    (Some(a), Some(b)) => json_difference(a, b),
+                    _ => Some(String::new()),
+                };
+                if let Some(difference) = difference {
+                    return Some(format!("/{key}{difference}"));
+                }
+            }
+            None
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                if let Some(difference) = json_difference(a, b) {
+                    return Some(format!("/{index}{difference}"));
+                }
+            }
+            (a.len() != b.len()).then(|| "/length".to_string())
+        }
+        _ => (expected != actual).then(String::new),
+    }
+}
+
+fn request_body_difference(expected: &Expected, actual: &Expected) -> Option<String> {
+    for (provider, routes) in expected.request_bodies.iter().chain(&actual.request_bodies) {
+        for route in routes.keys() {
+            let bodies = |expected: &Expected| {
+                serde_json::to_value(
+                    expected
+                        .request_bodies
+                        .get(provider)
+                        .and_then(|routes| routes.get(route)),
+                )
+                .unwrap()
+            };
+            let (expected, actual) = (bodies(expected), bodies(actual));
+            if let Some(mut key) = json_difference(&expected, &actual) {
+                if key.is_empty() {
+                    key.push('/');
+                }
+                return Some(format!(
+                    "{provider} {route}: request body differs at {key}: expected {expected}, replayed {actual}"
+                ));
+            }
+        }
+    }
+    None
+}
+
+#[tokio::test]
+async fn ladder_fixtures_post_bodies_are_normalized() {
+    let mut server = mockito::Server::new_async().await;
+    let counts = Counts::default();
+    let answer = serde_json::from_value(json!({ "status": 200, "times": 2 })).unwrap();
+    let mock = mock_answer(
+        &mut server,
+        "WhatsOnChain",
+        "POST",
+        "/other",
+        "POST /other",
+        &answer,
+        &counts,
+    )
+    .await
+    .unwrap();
+    let client = reqwest::Client::new();
+    for body in [
+        r#"{"z":{"b":2,"a":1},"txids":["b","a"]}"#,
+        r#"{ "txids": ["b", "a"], "z": {"a": 1, "b": 2} }"#,
+    ] {
+        let response = client
+            .post(server.url() + "/other")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    }
+    mock.assert_async().await;
+    let recorded = counts.lock().unwrap();
+    assert!(recorded.errors.is_empty());
+    assert_eq!(recorded.counts["WhatsOnChain"]["POST /other"], 2);
+    let bodies = &recorded.bodies["WhatsOnChain"]["POST /other"];
+    assert_eq!(bodies.len(), 2);
+    for body in bodies {
+        assert_eq!(
+            serde_json::to_string(body).unwrap(),
+            r#"{"txids":["b","a"],"z":{"a":1,"b":2}}"#
+        );
+    }
 }
 
 fn fixture_root() -> PathBuf {
@@ -258,7 +388,7 @@ async fn script(
                 .mock(method, mockito::Matcher::Any)
                 .with_status_code_from_request(move |req| {
                     let route = format!("UNSCRIPTED {} {}", req.method(), req.path_and_query());
-                    count(&seen, &provider, route);
+                    record(&seen, &provider, route, req);
                     501
                 })
                 .expect(0)
@@ -308,8 +438,8 @@ async fn mock_answer(
     let delay = answer.delay_ms.map(Duration::from_millis);
     let mut mock = server
         .mock(method, path)
-        .with_status_code_from_request(move |_| {
-            count(&seen, &provider, key.clone());
+        .with_status_code_from_request(move |req| {
+            record(&seen, &provider, key.clone(), req);
             if let Some(delay) = delay {
                 std::thread::sleep(delay);
             }
@@ -468,7 +598,13 @@ async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, St
     for call in &fixture.calls {
         results.push(call_ladder(&services, &fixture.ladder, call).await?);
     }
-    let requests = counts.lock().unwrap().clone();
+    let (requests, request_bodies) = {
+        let recorded = counts.lock().unwrap();
+        if !recorded.errors.is_empty() {
+            return Err(recorded.errors.join("\n"));
+        }
+        (recorded.counts.clone(), recorded.bodies.clone())
+    };
 
     // Each server's address becomes its provider's name.
     let mut text = serde_json::to_string(&results).unwrap();
@@ -483,6 +619,7 @@ async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, St
     Ok(Expected {
         results: serde_json::from_str(&text).unwrap(),
         requests,
+        request_bodies,
     })
 }
 
@@ -552,8 +689,13 @@ async fn ladder_fixtures_replay() {
                     fixture.expected = Some(actual);
                     std::fs::write(&path, fixture_text(&fixture)).unwrap();
                 } else if fixture.expected.as_ref() != Some(&actual) {
+                    let body_difference = fixture
+                        .expected
+                        .as_ref()
+                        .and_then(|expected| request_body_difference(expected, &actual))
+                        .unwrap_or_default();
                     failures.push(format!(
-                        "{name}: {}\n--- expected\n{}\n+++ replayed\n{}",
+                        "{name}: {}\n{body_difference}\n--- expected\n{}\n+++ replayed\n{}",
                         fixture.about,
                         serde_json::to_string_pretty(&fixture.expected).unwrap(),
                         serde_json::to_string_pretty(&actual).unwrap()
