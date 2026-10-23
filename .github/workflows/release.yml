@@ -1,6 +1,9 @@
 name: Release
 
-# A version tag on main publishes the crate; nothing publishes from a laptop (RELEASING.md).
+# A version tag publishes the crate; nothing publishes from a laptop (RELEASING.md).
+# Two lines (RELEASING.md, "The two lines"): a plain vX.Y.Z is main's and must be on main; a
+# vX.Y.Z-beta.N is beta's, must be on beta, and is a prerelease on crates.io (semver) and on GitHub.
+# tools/release-tag-check.sh holds the decision; tools/release-tag-check-test.sh proves it.
 # crates.io trusted publishing: the registry trusts this repository's release.yml and hands the
 # job a short-lived token through OIDC; no token is stored in the repository or its secrets.
 on:
@@ -21,6 +24,9 @@ jobs:
   version:
     name: Tag matches Cargo.toml
     runs-on: ubuntu-latest
+    outputs:
+      line: ${{ steps.check.outputs.line }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -31,24 +37,25 @@ jobs:
         with:
           toolchain: stable
 
-      - name: The tag names the manifest's version
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "bsv-wallet-toolbox-rs") | .version')"
-          echo "tag ${GITHUB_REF_NAME}, Cargo.toml ${version}"
-          if [ "$tag" != "$version" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}"
-            exit 1
-          fi
+      - name: The tag check's own cases
+        run: bash tools/release-tag-check-test.sh
 
-      # Tags are outside branch protection; refuse one that main does not hold.
-      - name: The tagged commit is on main
+      # Tags are outside branch protection; the tag names the manifest's version and its
+      # line, and the line must hold the tagged commit.
+      - name: The tag names the manifest's version and a line that holds the commit
+        id: check
         run: |
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::${GITHUB_SHA} is not on main; tag a commit that merged through a PR"
-            exit 1
-          fi
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "bsv-wallet-toolbox-rs") | .version')"
+          git fetch --no-tags origin main beta
+          branches=()
+          for b in main beta; do
+            if git merge-base --is-ancestor "$GITHUB_SHA" "origin/$b"; then
+              branches+=("$b")
+            fi
+          done
+          echo "tag ${GITHUB_REF_NAME}, Cargo.toml ${version}, ${GITHUB_SHA} on: ${branches[*]:-neither line}"
+          bash tools/release-tag-check.sh "$GITHUB_REF_NAME" "$version" ${branches[@]+"${branches[@]}"} | tee -a "$GITHUB_OUTPUT"
 
   ci:
     name: CI
@@ -79,7 +86,30 @@ jobs:
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
 
+      # A -beta.N version is a prerelease by semver: crates.io never resolves it for a
+      # caller's plain requirement.
       - name: Publish
         run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  github-release:
+    name: GitHub release
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the release, a prerelease for beta's tag
+        run: |
+          set -euo pipefail
+          # main's release leaves "latest" to GitHub's semver pick, so a patch never displaces a newer minor.
+          flags=()
+          if [ "$PRERELEASE" = true ]; then
+            flags=(--prerelease --latest=false)
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$GITHUB_REF_NAME" --notes "See CHANGELOG.md for ${GITHUB_REF_NAME}." ${flags[@]+"${flags[@]}"}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
