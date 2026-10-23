@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `WalletServices::is_utxo_with_spender(txid, vout, locking_script) -> (UtxoVerdict, Option<BoundSpender>)` and `services::BoundSpender { txid, confirmed }` (#44): `is_utxo`'s verdict with the spender its ladder bound beside it. The spender is the one `spend_evidence` already binds by its own bytes; `confirmed` is `true` when its merkle path met the header service's header (the verdict is `Spent`) and `false` when no proof is held (`SpentHint`); every other verdict, and a name its bytes do not bear out, answers `None`. Same pass, same requests, same verdict: `is_utxo` is this call with the spender dropped. A caller that wanted the spender's name (bsv-wallet-cli's `probe_input_spend`) asked WhatsOnChain's `/tx/{txid}/{vout}/spent` and BananaBlocks' `/txo/{txid}/{vout}`, then read the named spender's bytes, before `is_utxo` asked the same routes again: four to six explorer requests an outpoint. On this call it drops its own step and the probe costs one ladder pass (for a bound spender over the three explorers, four requests: the unspent set, `/txo`, `/spent`, the spender's bytes). Option (b) of the issue, a new method beside `is_utxo`, not a field on `UtxoVerdict::Spent`: the enum is `Copy` and bsv-wallet-cli 0.18.0 matches `Spent` and `SpentHint` as unit patterns (`cleanup_abandoned.rs`), so a field would break it. The trait method has a default body (`None` beside `is_utxo`'s verdict), so other implementors need not write one. No new route or request; the ladder's order, the two-explorer rule, a fault's move to the next rung and every verdict's meaning are unchanged. Tests: `a_proven_spend_answers_its_spender_confirmed`, `an_unproven_bound_spender_answers_its_spender_unconfirmed`, `an_unspent_answers_no_spender`, `a_name_its_bytes_refuse_answers_no_spender`, `the_spender_costs_no_request_beyond_is_utxo` (each route counted, the same four for both calls).
+
 ## [0.12.1] - 2026-10-23
 
 ### Changed
@@ -159,8 +165,6 @@ bsv-rs 0.6.0 is the home of the six hand-rolled primitives, and the stack's `den
 - Validate the final `build_input_beef` graph for every assembly, including bodies without BUMPs or a tracker. An invalid assembly returns an error instead of transaction data.
 - Add synthetic regression pins for refusal without storage, recovery of the proven parent, and strict internalization of the wallet's own assembly, with controls for stored structure, final invalid assemblies and the tracker-less local walk. See [toolbox #23](https://github.com/Calhooon/bsv-wallet-toolbox-rs/issues/23).
 - Pin `bsv-rs` to `=0.5.0`, retaining its streaming mining, lone-leaf and work-budget checks. No API or database migration; previously accepted incomplete bodies now fail validation and require complete ancestry.
-
-## [Unreleased]
 
 ## [0.7.5] - 2026-10-12
 
