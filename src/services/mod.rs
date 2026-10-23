@@ -126,7 +126,7 @@ impl Chain {
 
 // Re-export main types
 pub use traits::{
-    BlockHeader, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
+    BlockHeader, BoundSpender, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,
     GetMerklePathResult, GetRawTxResult, GetScriptHashHistoryResult, GetStatusForTxidsResult,
     GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefDelivery,
     PostBeefResult, PostTxResultForTxid, ScriptHistoryItem, ServicesCallHistory, TxStatusDetail,

@@ -266,6 +266,26 @@ pub trait WalletServices: Send + Sync {
     /// fault is `Unknown`.
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict;
 
+    /// [`Self::is_utxo`]'s verdict with the spender its ladder bound, when
+    /// it bound one (bsv-wallet-toolbox-rs#44): the same pass, the same
+    /// requests, the same verdict; only the bound spender's txid is
+    /// returned beside it, so a caller that wants the name does not ask
+    /// the explorers' spender routes itself before calling `is_utxo`.
+    ///
+    /// `Some` only for a spender whose own bytes name the outpoint (then
+    /// the verdict is `Spent` when `confirmed`, else `SpentHint`); `None`
+    /// for every other verdict, and for a name its bytes did not bear out.
+    /// The default answers `None` beside `is_utxo`'s verdict: an
+    /// implementation that binds no spender names none.
+    async fn is_utxo_with_spender(
+        &self,
+        txid: &str,
+        vout: u32,
+        locking_script: &[u8],
+    ) -> (UtxoVerdict, Option<BoundSpender>) {
+        (self.is_utxo(txid, vout, locking_script).await, None)
+    }
+
     /// The outputs the explorers list under a script: LEADS for discovery
     /// (bsv-wallet-cli's `sync` finding a deposit address's payments), never
     /// a verdict.
@@ -1052,6 +1072,20 @@ pub enum UtxoVerdict {
     /// The lookup failed or was inconclusive (rate limit, outage, one
     /// explorer's negative the other could not confirm). Never "spent".
     Unknown,
+}
+
+/// The stranger's spender [`WalletServices::is_utxo_with_spender`] bound:
+/// a provider named it, and its own bytes (bound to `txid` by
+/// `get_raw_tx`) hold the outpoint among their inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundSpender {
+    /// The spending transaction's txid.
+    pub txid: String,
+    /// Its merkle path met the header service's header: the verdict beside
+    /// it is `Spent`. `false`: no proof is held (not mined yet, or no
+    /// courier served a path the header service accepts), and the verdict
+    /// is `SpentHint`.
+    pub confirmed: bool,
 }
 
 impl UtxoVerdict {
