@@ -1,8 +1,8 @@
 //! Source boundaries for #56. These are lexical checks, not Rust type analysis.
 //! Comments, literals used as examples, and test-only items are distinguished
 //! from code. All feature branches are scanned, including disabled backends.
-//! Run with `cargo test --lib architecture_tests -- --nocapture` to see ceilings
-//! that can fall. Never increase a ceiling just to make a new site pass.
+//! Run with `cargo test --lib architecture_tests -- --nocapture` to see counts.
+//! Each ceiling must equal its count; never raise it just to admit a new site.
 //! Baseline: e9857b8 (2026-10-23). T1/T3: scans only local source; T2/T4/T5:
 //! callers cannot grow their authority; T6: each rule has a planted witness.
 

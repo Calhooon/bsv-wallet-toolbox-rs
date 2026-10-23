@@ -363,14 +363,21 @@ pub(super) fn enforce(rule: &str, sites: Sites, ceilings: &[(&str, usize)]) {
     }
     for (path, ceiling) in ceilings {
         let count = sites.get(*path).map_or(0, Vec::len);
-        eprintln!(
-            "{rule}: {path}: {count}/{ceiling}{}",
-            if count < *ceiling {
-                "; lower this ceiling"
-            } else {
-                ""
-            }
+        let line = sites
+            .get(*path)
+            .and_then(|lines| lines.first())
+            .unwrap_or(&1);
+        eprintln!("{rule}: {path}: {count}/{ceiling}");
+        assert_eq!(
+            count, *ceiling,
+            "{path}:{line}: {rule}: ceiling must equal the current count; lower it when sites disappear"
         );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+#[should_panic(expected = "src/removed.rs:1: test rule: ceiling must equal the current count")]
+fn removed_sites_require_a_lower_ceiling() {
+    enforce("test rule", Sites::new(), &[("src/removed.rs", 1)]);
 }
