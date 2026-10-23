@@ -1,0 +1,61 @@
+{
+  "about": "Chaintracks answers the header: BHS is not asked, no explorer ever.",
+  "ladder": "get_header_for_height",
+  "providers": [
+    {
+      "name": "Chaintracks",
+      "routes": [
+        {
+          "route": "GET /findHeaderHexForHeight?height=900002",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "status": "success",
+                "value": {
+                  "bits": 402917821,
+                  "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "height": 900002,
+                  "merkleRoot": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "nonce": 7,
+                  "previousHash": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "time": 1700000000,
+                  "version": 536870912
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BHS",
+      "routes": []
+    },
+    {
+      "name": "WhatsOnChain",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "height": 900002
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": "000000200000000000000000000000000000000000000000000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00f15365bd09041807000000"
+      }
+    ],
+    "requests": {
+      "Chaintracks": {
+        "GET /findHeaderHexForHeight?height=900002": 1
+      }
+    }
+  }
+}
