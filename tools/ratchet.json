@@ -299,8 +299,25 @@
     }
   },
   "duplicated_blocks": {
-    "count": null,
-    "skipped": "jscpd not on PATH"
+    "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
+    "count": 6796,
+    "windows": 69191,
+    "top_pairs": [
+      "src/storage/sqlx/create_action.rs:4020 = src/storage/sqlx/process_action.rs:148 (52 lines)",
+      "src/storage/sqlx/create_action.rs:5441 = src/storage/sqlx/create_action.rs:6304 (39 lines)",
+      "src/storage/sqlx/create_action.rs:5497 = src/storage/sqlx/create_action.rs:6184 (34 lines)",
+      "src/storage/sqlx/create_action.rs:7180 = src/storage/sqlx/create_action.rs:7381 (34 lines)",
+      "src/storage/sqlx/create_action.rs:5351 = src/storage/sqlx/create_action.rs:6970 (33 lines)",
+      "src/storage/sqlx/create_action.rs:4149 = src/storage/sqlx/create_action.rs:4205 (31 lines)",
+      "src/storage/sqlx/create_action.rs:5457 = src/storage/sqlx/create_action.rs:5525 (31 lines)",
+      "src/storage/sqlx/internalize_action.rs:799 = src/storage/sqlx/storage_sqlx.rs:908 (29 lines)",
+      "src/storage/sqlx/internalize_action.rs:799 = src/storage/sqlx/sync.rs:1103 (29 lines)",
+      "src/services/providers/whatsonchain.rs:794 = src/services/providers/whatsonchain.rs:1304 (28 lines)"
+    ],
+    "jscpd": {
+      "count": null,
+      "skipped": "jscpd not on PATH; not compared"
+    }
   },
   "undocumented_public_items": {
     "method": "cargo clippy --all-targets -- -W missing_docs, src/ files, one per (file, line)",
