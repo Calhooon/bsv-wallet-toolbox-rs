@@ -40,8 +40,8 @@ excluded row joins the job when its captain re-pins it onto this crate's
 
 | row | blocker | tracked | joins the job |
 |---|---|---|---|
-| `dolphin-milk` | pins `bsv-rs` 0.3, which does not build against this tree; kept out by the captain's decision on the #59 cold review | tracked in #TBD | when its captain re-pins `bsv-rs` and this crate |
-| `agent-manage` | a private repository (the job holds no token), and it pins `bsv-rs` 0.5.0 | tracked in #TBD | when its captain re-pins `bsv-rs` and this crate; until then it runs on a laptop with `--from` |
+| `dolphin-milk` | pins `bsv-rs` 0.3, which does not build against this tree; kept out by the captain's decision on the #59 cold review | tracked in #94 | when its captain re-pins `bsv-rs` and this crate |
+| `agent-manage` | a private repository (the job holds no token), and it pins `bsv-rs` 0.5.0 | tracked in #94 | when its captain re-pins `bsv-rs` and this crate; until then it runs on a laptop with `--from` |
 
 The lock is moved by `cargo update -p bsv-wallet-toolbox-rs@<locked version>`
 alone, so only this crate and what it newly needs change; the script prints
