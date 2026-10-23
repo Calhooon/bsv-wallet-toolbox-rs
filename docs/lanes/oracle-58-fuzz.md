@@ -1,0 +1,12 @@
+# oracle-58-fuzz (#58)
+
+Repository: bsv-wallet-toolbox-rs. Branch `lane/oracle-58-fuzz` from `origin/beta`. Rules: `docs/lanes/README.md`. Read: `CLAUDE.md`, `src/storage/sqlx/beef_verification.rs`, `src/services/providers/*.rs` (each response parser), the BUMP and merkle-path intake (`get_merkle_path` handling in `services.rs` and the providers), the broadcast-memory decoder (`tests/broadcast_memory_tests.rs` names it), issue #58.
+
+The work:
+- A `fuzz/` crate (`cargo fuzz init`, its own `Cargo.toml` with a path dependency on the crate; the workspace excludes it or it is not a member, so the root `Cargo.toml` is untouched beyond an `exclude = ["fuzz"]` line if cargo demands one; say so and keep it to that line). `cargo-fuzz` under `~/bsv/targets/fuzz-tools`; the nightly toolchain through `rustup run nightly` or `+nightly` if installed, else `rustup toolchain install nightly --profile minimal` is a read you may do; say what you did.
+- Targets, one file each under `fuzz/fuzz_targets/`: `beef_verify` (the BEEF verification path on arbitrary bytes), `parse_woc`, `parse_bitails`, `parse_bananablocks`, `parse_arc`, `parse_arcade`, `parse_bhs`, `parse_chaintracks` (each provider's response parsers on arbitrary bodies, every route the provider parses), `bump_intake` (BUMP and merkle-path bytes), `broadcast_memory_decode`. Where a parser is private, expose it through `#[doc(hidden)] pub mod fuzz_seams` behind a `fuzzing` cargo feature (the feature in the root `Cargo.toml` is the one other edit you may make there; the hidden module is not a public API shape). Each target asserts only "no panic, no abort, bounded memory"; a parser that returns `Err` is a pass.
+- A seed corpus per target under `fuzz/corpus/<target>/` from the existing test fixtures (real provider bodies from `tests/`, a valid BEEF, a valid BUMP), kept small (under 1 MB total).
+- `.github/workflows/nightly-fuzz.yml`: cron and dispatch, nightly toolchain, each target for a bounded time (`-max_total_time=300`), artifacts on a crash containing the input; a crash is an issue with its input (the captain files it).
+- The runs: each target for at least 60 seconds on your machine; the tails in the report; any crash with its input path under `fuzz/artifacts/` (committed if small) and a one-line note of the panic.
+
+Bounds: no fix to a parser in this lane (a crash is a finding, reported, for its own PR); no change to `src/` beyond the hidden seams module under the feature. Eight hours.
