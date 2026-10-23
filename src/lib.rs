@@ -77,6 +77,9 @@ pub mod wallet;
 #[cfg(feature = "bench-support")]
 pub mod benchmark_support;
 
+#[cfg(test)]
+mod architecture_tests;
+
 pub use error::{Error, Result, StoreBusyReason};
 
 // Re-export storage types
