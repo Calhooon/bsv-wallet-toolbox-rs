@@ -7,6 +7,17 @@
                             the baseline, printing each rise; a fall is printed
                             and accepted (the PR that earns it rewrites the
                             baseline by hand or with --write)
+    tools/ratchet --help    this text
+
+The toolchain is pinned. The numbers depend on the clippy version, so an
+unpinned toolchain makes the ratchet drift and go red on every stable release;
+the pin is the measurement's instrument, not a dependency pin. The baseline
+carries the toolchain it was measured with (`rustc`, `toolchain`), and --check
+fails with "re-record the baseline with toolchain X" when the measuring
+toolchain differs, rather than compare numbers of two clippys. Run locally
+with the baseline's toolchain: `RUSTUP_TOOLCHAIN=<rustc> tools/ratchet --check`;
+move the ratchet job's pin in .github/workflows/ci.yml and the baseline (with
+--write) in one PR.
 
 Standard library only. The numbers, in the order of the JSON:
 
@@ -491,6 +502,19 @@ def cargo_env():
     return env
 
 
+def rustc_version():
+    """The release of the rustc cargo runs, as `1.98.1`."""
+    out = subprocess.run(
+        ["rustc", "--version"],
+        cwd=ROOT,
+        env=cargo_env(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.split()[1]
+
+
 def clippy_version():
     out = subprocess.run(
         ["cargo", "clippy", "--version"],
@@ -608,6 +632,7 @@ def measure():
     unwraps["unreached_files"] = unreached
     return {
         "tool": "tools/ratchet 1",
+        "rustc": rustc_version(),
         "toolchain": clippy_version(),
         "features": "default",
         "clippy_pedantic": pedantic,
@@ -638,8 +663,15 @@ def as_table(value):
 
 def check(now, base):
     rises, falls = [], []
-    if now.get("toolchain") != base.get("toolchain"):
-        print(f"note: toolchain {now.get('toolchain')!r}, baseline {base.get('toolchain')!r}")
+    if (now.get("rustc"), now.get("toolchain")) != (base.get("rustc"), base.get("toolchain")):
+        print(f"measured with rustc {now.get('rustc')}, {now.get('toolchain')}")
+        print(f"baseline with rustc {base.get('rustc')}, {base.get('toolchain')}")
+        print(
+            f"ratchet: red; re-record the baseline with toolchain {now.get('rustc')} "
+            "(tools/ratchet --write, and move the ratchet job's pin with it), or run "
+            f"with the baseline's: RUSTUP_TOOLCHAIN={base.get('rustc')} tools/ratchet --check"
+        )
+        return 1
     for section, key in GATED:
         a = (base.get(section) or {}).get(key)
         b = (now.get(section) or {}).get(key)
@@ -671,6 +703,9 @@ def check(now, base):
 
 def main(argv):
     mode = argv[1] if len(argv) > 1 else ""
+    if mode in ("--help", "-h") and len(argv) == 2:
+        sys.stdout.write(__doc__)
+        return 0
     if mode not in ("", "--write", "--check") or len(argv) > 2:
         sys.exit(__doc__.split("\n\n")[1])
     report = measure()

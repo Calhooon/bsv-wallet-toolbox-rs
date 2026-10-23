@@ -423,9 +423,13 @@ jobs:
         run: python3 tools/scoreboard-write --check
 
   # The numbers that may only fall (#55): tools/ratchet measures the tree and
-  # fails when one rises above tools/ratchet.json. The toolchain is the one the
-  # baseline was measured with (its `toolchain` key), so a new clippy's lints
-  # do not read as a rise; move both together. Not a required context yet.
+  # fails when one rises above tools/ratchet.json. The toolchain is pinned to
+  # the one the baseline was measured with (its `rustc` and `toolchain` keys):
+  # the numbers depend on the clippy version, so an unpinned toolchain makes
+  # the ratchet drift and go red on every stable release; the pin is the
+  # measurement's instrument, not a dependency pin. A mismatch fails with
+  # "re-record the baseline with toolchain X"; move the pin and the baseline
+  # in one PR. Not a required context yet.
   ratchet:
     name: ratchet
     runs-on: ubuntu-latest
