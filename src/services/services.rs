@@ -1677,6 +1677,23 @@ impl Services {
     }
 }
 
+/// The answer of a header ladder (`get_chain_tip_header`,
+/// `get_header_for_height`) when no rung gave a header: each configured
+/// rung's error by its name, so "could not look" is never read as "not
+/// configured" (bsv-wallet-toolbox-rs#47). "no header service configured"
+/// only when neither chaintracks nor BHS is configured.
+fn header_ladder_error(call: &str, rung_errors: &[String]) -> String {
+    if rung_errors.is_empty() {
+        format!("{}: no header service configured", call)
+    } else {
+        format!(
+            "{}: no header service answered ({})",
+            call,
+            rung_errors.join("; ")
+        )
+    }
+}
+
 #[async_trait]
 impl WalletServices for Services {
     async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker> {
@@ -1725,41 +1742,57 @@ impl WalletServices for Services {
         // The header service only: chaintracks (first-party), then BHS.
         // Never a courier, so the height and the hash the monitor's header
         // task observes come from one source.
+        let mut rung_errors: Vec<String> = Vec::new();
         if let Some(ref ct) = self.chaintracks {
             match ct.primary().find_chain_tip_header().await {
                 Ok(header) => return Ok(header),
-                Err(e) => tracing::debug!("Chaintracks tip header failed, trying BHS: {}", e),
+                Err(e) => {
+                    tracing::warn!("Chaintracks tip header failed, trying BHS: {}", e);
+                    rung_errors.push(format!("chaintracks: {}", e));
+                }
             }
         }
         if let Some(ref bhs) = self.bhs {
             match bhs.find_chain_tip_header().await {
                 Ok(header) => return Ok(header),
-                Err(e) => tracing::debug!("BHS tip header failed: {}", e),
+                Err(e) => {
+                    tracing::warn!("BHS tip header failed: {}", e);
+                    rung_errors.push(format!("bhs: {}", e));
+                }
             }
         }
-        Err(Error::ServiceError(
-            "get_chain_tip_header: no header service configured".to_string(),
-        ))
+        Err(Error::ServiceError(header_ladder_error(
+            "get_chain_tip_header",
+            &rung_errors,
+        )))
     }
 
     async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>> {
         // Try Chaintracks first
+        let mut rung_errors: Vec<String> = Vec::new();
         if let Some(ref ct) = self.chaintracks {
             match ct.primary().find_header_for_height(height).await {
                 Ok(header) => return Ok(header.to_binary()),
-                Err(e) => tracing::debug!("Chaintracks header failed, trying BHS: {}", e),
+                Err(e) => {
+                    tracing::warn!("Chaintracks header failed, trying BHS: {}", e);
+                    rung_errors.push(format!("chaintracks: {}", e));
+                }
             }
         }
         // Fall back to BHS
         if let Some(ref bhs) = self.bhs {
             match bhs.chain_header_by_height(height).await {
                 Ok(header) => return Ok(header.to_binary()),
-                Err(e) => tracing::debug!("BHS header failed: {}", e),
+                Err(e) => {
+                    tracing::warn!("BHS header failed: {}", e);
+                    rung_errors.push(format!("bhs: {}", e));
+                }
             }
         }
-        Err(Error::ServiceError(
-            "get_header_for_height: no header service configured".to_string(),
-        ))
+        Err(Error::ServiceError(header_ladder_error(
+            "get_header_for_height",
+            &rung_errors,
+        )))
     }
 
     async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader> {
