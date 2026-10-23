@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `MockWalletServicesBuilder::is_utxo_with_spender_response(MockResponse<(UtxoVerdict, Option<BoundSpender>)>)` and `MockWalletServices::set_is_utxo_with_spender_response` (the same, on a built mock), for bsv-wallet-cli: the mock's `is_utxo_with_spender` answers the set response, so a host can test a bound spender against the mock (an error answers `Unknown` and no spender; a `Sequence` is consumed by this call's own count). Every call is recorded in `call_history` as `is_utxo_with_spender`. Unset, it answers as before, `is_utxo`'s verdict and `None` (the trait's default), with that `is_utxo` call recorded beside it; no existing caller's answer moves. Tests: `the_mock_answers_a_set_spender_and_records_the_call`, `the_mock_unset_answers_is_utxos_verdict_and_no_spender`.
+
 ## [0.13.0] - 2026-10-23
 
 ### Added
