@@ -24,7 +24,8 @@ marked `yes`; a private repository needs a token the job does not hold, so its
 row runs on a laptop with `--from`.
 
 What the check found against 0.13.0 on 2026-10-23: `bsv-wallet-cli` at
-`main` builds `--locked` and its library tests pass; `agent-manage` and
+`main` builds `--locked` and `cargo test --locked` passes on every target
+(rerun with every target the same day, at its `5e0dbb0`); `agent-manage` and
 `dolphin-milk` do not build, because each pins an older `bsv-rs` (0.5.0 and
 0.3.x) whose types this crate's `bsv-rs` 0.8 does not accept. Each joins the CI
 job when its captain re-pins `bsv-rs` and this crate (the pin spread is a
