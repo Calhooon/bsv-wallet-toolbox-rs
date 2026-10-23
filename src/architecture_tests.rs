@@ -84,15 +84,16 @@ const ANSWER_CEILINGS: &[(&str, usize)] = &[("src/storage/sqlx/poisoned_chain.rs
 
 fn http_sites(t: &[Token<'_>]) -> Vec<usize> {
     (0..t.len())
-        .filter(|&i| sequence(t, i, &["reqwest", "::"]))
+        // The import is the boundary crossing even when later calls use an alias.
+        .filter(|&i| code(t, i, "reqwest"))
         .map(|i| t[i].line)
         .collect()
 }
 
 #[test]
 fn provider_requests_stay_in_providers() {
-    let sample = "// reqwest::Client\nfn f() { reqwest /* split */ :: Client::new(); }\n#[cfg(test)] mod tests { fn f() { reqwest::get(\"ignored\"); } }\nfn after() { reqwest::get(\"seen\"); }";
-    assert_eq!(http_sites(&production(&lex(sample)).0), [2, 4]);
+    let sample = "// reqwest::Client\nfn f() { reqwest /* split */ :: Client::new(); }\n#[cfg(test)] mod tests { fn f() { reqwest::get(\"ignored\"); } }\nfn after() { reqwest::get(\"seen\"); }\nuse reqwest as x;\nfn alias() { x::Client::new(); }\nuse reqwest;\nlet text = \"reqwest\";";
+    assert_eq!(http_sites(&production(&lex(sample)).0), [2, 4, 5, 7]);
     enforce(
         "HTTP outside services/providers",
         scan(http_sites, |p| p.starts_with("src/services/providers/")),
