@@ -1412,6 +1412,10 @@ impl Services {
     ///
     /// `carried` is BananaBlocks' `/txo` spend the UTXO ladder already read
     /// for this outpoint: when given, BananaBlocks is not asked again.
+    ///
+    /// `Proven` and `Bound` carry the bound spender's txid, which
+    /// `is_utxo_with_spender` returns beside the verdict (#44): a caller
+    /// that wants the name asks no spender route of its own.
     async fn spend_evidence(
         &self,
         txid: &str,

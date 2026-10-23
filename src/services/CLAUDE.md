@@ -110,6 +110,7 @@ pub trait WalletServices: Send + Sync {
     async fn get_fiat_exchange_rate(&self, currency: FiatCurrency, base: Option<FiatCurrency>) -> Result<f64>;
     fn hash_output_script(&self, script: &[u8]) -> String;
     async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict; // UnspentHint (two explorers say unspent, no bound spender) | Spent (by proof only) | SpentHint (two explorers agree, unproven) | Unknown (could not look)
+    async fn is_utxo_with_spender(&self, txid: &str, vout: u32, locking_script: &[u8]) -> (UtxoVerdict, Option<BoundSpender>); // the same pass, the spender spend_evidence bound by bytes { txid, confirmed } beside the verdict (#44); default None
     async fn get_utxo_leads(&self, script_hash: &str, format: Option<GetUtxoStatusOutputFormat>) -> Result<UtxoLeads>; // leads, not a verdict; `partial` names a list cut short (10 pages of 1000 an explorer); default Err(NoExplorerAnswered)
     async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool>;
     async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool>;
