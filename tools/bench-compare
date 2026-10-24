@@ -72,6 +72,15 @@ def compare(current, reference, tolerance):
     return 1 if failures else 0
 
 
+def default_profile():
+    """CI compares against the runner's profile; any other host against its own name."""
+    if os.environ.get("BENCH_PROFILE"):
+        return os.environ["BENCH_PROFILE"]
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return "linux"
+    return platform.node()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     default_directory = os.environ.get("CRITERION_HOME")
@@ -79,8 +88,8 @@ def main(argv=None):
         default_directory = str(Path(os.environ["CARGO_TARGET_DIR"]) / "criterion")
     parser.add_argument("directory", nargs="?", type=Path, default=default_directory)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
-    parser.add_argument("--profile", choices=("linux", "laptop"),
-                        default="linux" if platform.system() == "Linux" else "laptop")
+    parser.add_argument("--profile", default=default_profile(),
+                        help="baseline profile: linux on CI, else this host's name")
     parser.add_argument("--machine", default=platform.node(), help="machine label when writing")
     parser.add_argument("--tolerance", type=float, default=5.0, help="allowed p99 increase in percent")
     parser.add_argument("--filter", help="compare benchmark names containing this text")
@@ -103,8 +112,12 @@ def main(argv=None):
         ):
             raise ValueError("unsupported baseline schema, units or quantile method")
         if args.profile == "linux" and platform.system() != "Linux":
-            raise ValueError("the linux profile requires a Linux runner; use --profile laptop")
+            raise ValueError("the linux profile requires a Linux runner; omit --profile for this host")
         profiles = baseline["profiles"]
+        if not args.write and args.profile not in profiles:
+            # Another host's numbers are not this host's; say so rather than compare.
+            print(f"NOTICE: no profile for {args.profile}; run --write to record one")
+            return 0
         if args.write:
             profiles[args.profile] = {
                 "status": "measured", "machine": args.machine,
@@ -117,8 +130,8 @@ def main(argv=None):
             print(f"WROTE {args.baseline}: {args.profile}, {args.machine}, {len(current)} benchmarks")
         profile = profiles.get(args.profile, {})
         if profile.get("status") != "measured":
-            raise ValueError(f"{args.profile} baseline pending; capture the Linux runner with --write, "
-                             "then commit its candidate after review; laptop numbers are separate")
+            raise ValueError(f"{args.profile} baseline pending; capture it with --write on its host, "
+                             "then commit the candidate after review; other hosts' numbers are separate")
         if profile.get("system") != platform.system() or profile.get("architecture") != platform.machine():
             raise ValueError("baseline platform differs from this machine; capture the correct profile")
         reference = profile["benchmarks"]

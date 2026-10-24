@@ -1,7 +1,7 @@
 {
   "method": "individual_wall_time_linear_interpolation_v1",
   "profiles": {
-    "laptop": {
+    "box": {
       "architecture": "arm64",
       "benchmarks": {
         "allocate_change_input_10000": {

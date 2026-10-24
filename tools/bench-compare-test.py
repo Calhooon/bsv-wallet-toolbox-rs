@@ -22,7 +22,7 @@ class BenchCompareTests(unittest.TestCase):
         self.root = Path(self.scratch.name)
         self.results = self.root / "criterion"
         self.baseline = self.root / "baseline.json"
-        self.profile = "linux" if platform.system() == "Linux" else "laptop"
+        self.profile = "fixture-host"
         self.write_sample("door", 100_000)
         self.write_sample("ladder", 200_000)
         self.manifest(["door", "ladder"])
@@ -42,11 +42,12 @@ class BenchCompareTests(unittest.TestCase):
             "benchmarks": names, "finished": finished,
         }), encoding="utf-8")
 
-    def run_tool(self, *args):
+    def run_tool(self, *args, profile=True):
+        env = {k: v for k, v in os.environ.items() if k not in ("BENCH_PROFILE", "GITHUB_ACTIONS")}
         return subprocess.run([
             sys.executable, str(TOOL), str(self.results), "--baseline", str(self.baseline),
-            "--profile", self.profile, *args,
-        ], capture_output=True, text=True, check=False)
+            *(["--profile", self.profile] if profile else []), *args,
+        ], capture_output=True, text=True, check=False, env=env)
 
     def test_identical_baseline_passes(self):
         result = self.run_tool()
@@ -99,6 +100,20 @@ class BenchCompareTests(unittest.TestCase):
         result = self.run_tool()
         self.assertEqual(result.returncode, 2)
         self.assertIn("baseline pending", result.stderr)
+
+    def test_host_without_a_profile_is_told_not_failed(self):
+        result = self.run_tool(profile=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"no profile for {platform.node()}; run --write to record one", result.stdout)
+        self.assertNotIn("PASS", result.stdout)
+
+    def test_default_profile_is_the_host_name(self):
+        self.profile = platform.node()
+        self.assertEqual(self.run_tool("--write").returncode, 0)
+        self.write_sample("door", 105_001)
+        result = self.run_tool(profile=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"Baseline: {platform.node()}", result.stdout)
 
     def test_different_platform_is_rejected(self):
         data = json.loads(self.baseline.read_text(encoding="utf-8"))

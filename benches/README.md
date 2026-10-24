@@ -7,14 +7,19 @@ export CARGO_TARGET_DIR="$HOME/bsv/targets/oracle-54-benches"
 export CRITERION_HOME="${TMPDIR:?}/oracle-54-criterion"
 export RUSTFLAGS=-Dwarnings
 DOOR_BENCH_SAMPLES=10 cargo bench --bench door --features bench-support
-tools/bench-compare "$CRITERION_HOME" --profile laptop --write
-tools/bench-compare "$CRITERION_HOME" --profile laptop
+tools/bench-compare "$CRITERION_HOME" --write
+tools/bench-compare "$CRITERION_HOME"
 python3 tools/bench-compare-test.py
 ```
 
 When `/Volumes/Lanes` is mounted, keep measurement output under
 `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/oracle-54-benches/` instead of temporary
-storage. `--write` updates only the selected profile in `benches/baseline.json`.
+storage. A profile is keyed by host: off CI the default is this host's name
+(`platform.node()`, or `BENCH_PROFILE` when set), on GitHub Actions it is
+`linux`. The committed `box` profile is the box's; run there with
+`--profile box`. A host with no profile prints `no profile for <host>; run
+--write to record one` and exits 0 rather than compare with another machine.
+`--write` updates only the selected profile in `benches/baseline.json`.
 Use `--baseline PATH` for a candidate that should not replace the stored one.
 `--tolerance 8` permits an eight percent p99 increase; the default is five.
 `--filter NAME` compares one benchmark during a targeted regression witness.
@@ -93,13 +98,13 @@ then remove the sleep and rerun.
 The `bench` job is an advisory context on `ubuntu-latest`, with the reduced
 sample size and output under the runner's temporary directory. It prints a
 candidate Linux profile before comparing with the committed Linux profile.
-It never automatically accepts that candidate. Laptop measurements are stored
+It never automatically accepts that candidate. Other hosts' measurements are stored
 separately and cannot pass a Linux comparison.
 
 The Linux profile is pending until an actual runner supplies it. Its numbers
 are `[D]`, not local measurements. The initial comparison intentionally fails
 with `baseline pending`; after the captain's CI run, copy the logged Linux
-profile into `baseline.json`, preserve the laptop profile, and review and
+profile into `baseline.json`, preserve the other profiles, and review and
 commit it. Keep `bench` out of required branch-protection contexts. The epic's
 3 ms signed-door, 2 ms allocation-and-sign and 1 ms ladder targets are targets,
 not asserted results. Publish actual Linux numbers to the scoreboard after CI.
