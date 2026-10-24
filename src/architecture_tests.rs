@@ -116,6 +116,7 @@ fn sql_sites(t: &[Token<'_>]) -> Vec<usize> {
                     && t[i].text.split_whitespace().next().is_some_and(|s| {
                         [
                             "select", "insert", "update", "delete", "create", "pragma", "with",
+                            "drop", "alter", "replace", "vacuum", "attach", "detach",
                         ]
                         .iter()
                         .any(|keyword| s.eq_ignore_ascii_case(keyword))
@@ -135,9 +136,9 @@ fn sql_stays_in_storage_sqlx() {
     );
     assert_eq!(
         sql_sites(&lex(
-            "\"select 1\";\n\"insert into t values (1)\";\n\"update t set x = 1\";\n\"delete from t\";\n\"create table t (x int)\";\n\"PrAgMa foreign_keys\";\n\"WiTh t as (select 1) select * from t\";"
+            "\"select 1\";\n\"insert into t values (1)\";\n\"update t set x = 1\";\n\"delete from t\";\n\"create table t (x int)\";\n\"PrAgMa foreign_keys\";\n\"WiTh t as (select 1) select * from t\";\n\"DROP TABLE t\";\n\"alter table t add x\";\n\"REPLACE INTO t VALUES (1)\";\n\"VACUUM\";\n\"ATTACH 'x' AS y\";\n\"DETACH y\";"
         )),
-        [1, 2, 3, 4, 5, 6, 7]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     );
     let mut sites = scan(sql_sites, |p| p.starts_with("src/storage/sqlx/"));
     for src in source_files()
@@ -152,9 +153,12 @@ fn sql_stays_in_storage_sqlx() {
 fn env_sites(t: &[Token<'_>]) -> Vec<usize> {
     (0..t.len())
         .filter(|&i| {
+            // A grouped or glob import (`use std::env::{var}`) is the crossing,
+            // since later calls can name `var` bare.
             sequence(t, i, &["env", "::"])
                 && t.get(i + 2).is_some_and(|v| {
-                    v.kind == Kind::Code && matches!(v.text, "var" | "var_os" | "vars" | "vars_os")
+                    v.kind == Kind::Code
+                        && matches!(v.text, "var" | "var_os" | "vars" | "vars_os" | "{" | "*")
                 })
         })
         .map(|i| t[i].line)
@@ -167,9 +171,9 @@ fn environment_reads_stay_in_config() {
     assert_eq!(env_sites(&production(&lex(sample)).0), [2, 3]);
     assert_eq!(
         env_sites(&lex(
-            "std::env::var_os(\"x\");\nenv::vars();\nstd::env::vars_os();\nlet text = \"env::vars()\";"
+            "std::env::var_os(\"x\");\nenv::vars();\nstd::env::vars_os();\nlet text = \"env::vars()\";\nuse std::env::{var};\nuse std::env::*;"
         )),
-        [1, 2, 3]
+        [1, 2, 3, 5, 6]
     );
     enforce(
         "environment read outside config",
@@ -461,14 +465,19 @@ fn pattern(t: &[Token<'_>], start: usize, end: usize) -> bool {
     false
 }
 
-fn return_type(t: &[Token<'_>], i: usize) -> bool {
-    // Follow qualified type paths back to the return arrow, including a
-    // leading ::. A value expression in the body has no such arrow.
+fn path_start(t: &[Token<'_>], i: usize) -> usize {
+    // Follow a qualified type path back to its head, including a leading ::.
     let mut start = i;
-    while start >= 2 && code(t, start - 1, "::") && !code(t, start - 2, "->") {
+    while start >= 2
+        && code(t, start - 1, "::")
+        && t[start - 2].kind == Kind::Code
+        && t[start - 2]
+            .text
+            .starts_with(|c: char| c.is_alphanumeric() || c == '_')
+    {
         start -= 2;
     }
-    (start > 0 && code(t, start - 1, "->")) || (start >= 2 && sequence(t, start - 2, &["->", "::"]))
+    start - usize::from(start > 0 && code(t, start - 1, "::"))
 }
 
 fn answer_sites(t: &[Token<'_>]) -> Vec<usize> {
@@ -477,7 +486,15 @@ fn answer_sites(t: &[Token<'_>]) -> Vec<usize> {
             if t[i].kind != Kind::Code || !SERVICE_ANSWERS.contains(&t[i].text) {
                 return false;
             }
-            if (i > 0 && (code(t, i - 1, "struct") || code(t, i - 1, "enum"))) || return_type(t, i)
+            // Declarations, impl headers and return types name the type without
+            // building it. Open gap: `Self::Variant` inside a foreign
+            // `impl Trait for UtxoVerdict` builds without naming the type; the
+            // rule has no impl context, so such an impl needs review by eye.
+            let start = path_start(t, i);
+            if start > 0
+                && ["struct", "enum", "impl", "for", "->"]
+                    .iter()
+                    .any(|w| code(t, start - 1, w))
             {
                 return false;
             }
@@ -485,8 +502,10 @@ fn answer_sites(t: &[Token<'_>]) -> Vec<usize> {
                 i + 1
             } else if code(t, i + 1, "::")
                 && t.get(i + 2).is_some_and(|v| {
+                    // A glob or grouped import lets later code build bare variants.
                     v.kind == Kind::Code
                         && (v.text.starts_with(char::is_uppercase)
+                            || matches!(v.text, "*" | "{")
                             || (code(t, i + 3, "(")
                                 && (matches!(
                                     v.text,
@@ -519,8 +538,13 @@ fn service_answers_are_only_built_by_services() {
         "let read = BroadcastStatus::is_negative(status);\n",
         "let read = BroadcastStatus::as_str(status);\n",
         "let parser = BroadcastStatus::parse;\n",
+        "use UtxoVerdict::*;\n",
+        "use crate::services::UtxoVerdict::{Spent, Unknown};\n",
+        "impl Display for UtxoVerdict { fn fmt() {} }\n",
+        "impl Planted for crate::services::traits::UtxoVerdict {}\n",
+        "impl UtxoVerdict { fn read(&self) {} }\n",
     );
-    assert_eq!(answer_sites(&lex(constructors)), [1, 2, 3, 4]);
+    assert_eq!(answer_sites(&lex(constructors)), [1, 2, 3, 4, 8, 9]);
     let returns = concat!(
         "fn plain() -> UtxoVerdict { unreachable!() }\n",
         "fn qualified() -> crate::services::traits::UtxoVerdict { unreachable!() }\n",
