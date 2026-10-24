@@ -15,9 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
-  CARGO_TARGET_DIR: ${{ runner.temp }}/mutants-target
   RUSTFLAGS: -Dwarnings
-  TMPDIR: ${{ runner.temp }}
 
 jobs:
   mutants:
@@ -32,6 +30,12 @@ jobs:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The runner context is not available in workflow-level env.
+      - name: Keep build output and scratch in the runner temp
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mutants-target" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master

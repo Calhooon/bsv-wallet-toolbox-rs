@@ -33,8 +33,8 @@ def filename(mutant):
     return mutant["file"]
 
 
-def collect(documents, skipped_baseline=False):
-    counts, seen, problems = {}, set(), []
+def collect(documents, skipped_baseline=False, agreeing_duplicates=False):
+    counts, seen, problems, verdicts = {}, set(), [], {}
     for label, document in documents:
         if not document.get("end_time"):
             problems.append(f"{label}: run has no end_time")
@@ -49,16 +49,18 @@ def collect(documents, skipped_baseline=False):
                 continue
             mutant = row["scenario"]["Mutant"]
             key, file = identity(mutant), filename(mutant)
-            if key in seen:
-                problems.append(f"{label}: duplicate mutant {key}")
-                continue
-            seen.add(key)
             kind = KINDS.get(row["summary"])
             if kind is None:
                 problems.append(f"{label}: unsupported mutant result {row['summary']}")
                 continue
-            counts.setdefault(file, Counter())[kind] += 1
             totals[kind] += 1
+            if key in seen:
+                if not agreeing_duplicates or verdicts[key] != row["summary"]:
+                    problems.append(f"{label}: duplicate mutant {key}")
+                continue
+            seen.add(key)
+            verdicts[key] = row["summary"]
+            counts.setdefault(file, Counter())[kind] += 1
         for kind in KINDS.values():
             if document[kind] != totals[kind]:
                 problems.append(f"{label}: {kind} total disagrees with outcomes")
@@ -67,8 +69,9 @@ def collect(documents, skipped_baseline=False):
     return counts, seen, problems
 
 
-def score_table(documents, floors, catalog, patterns=(), skipped_baseline=False):
-    counts, seen, problems = collect(documents, skipped_baseline)
+def score_table(documents, floors, catalog, patterns=(), skipped_baseline=False,
+                agreeing_duplicates=False):
+    counts, seen, problems = collect(documents, skipped_baseline, agreeing_duplicates)
     expected = {identity(mutant): filename(mutant) for mutant in catalog}
     if len(expected) != len(catalog):
         problems.append("catalog contains duplicate mutants")
@@ -179,6 +182,26 @@ class ScoreTests(unittest.TestCase):
                                   self.floors, self.catalog)
         self.assertTrue(any("duplicate" in p for p in problems))
 
+    def test_agreeing_duplicate_counts_once_with_the_flag(self):
+        b = deepcopy(self.document)
+        b["outcomes"] = b["outcomes"][:2]
+        b.update(total_mutants=1, missed=0, timeout=0, unviable=0)
+        self.floors["files"][self.file]["floor"] = 33
+        docs = [("a", self.document), ("b", b)]
+        self.assertTrue(score_table(docs, self.floors, self.catalog)[1])
+        table, problems = score_table(docs, self.floors, self.catalog, agreeing_duplicates=True)
+        self.assertFalse(problems)
+        self.assertIn("| 1 | 1 | 1 | 1 | 4/4 |", table)
+
+    def test_disagreeing_duplicate_fails_even_with_the_flag(self):
+        b = deepcopy(self.document)
+        b["outcomes"] = b["outcomes"][:2]
+        b["outcomes"][1]["summary"] = "MissedMutant"
+        b.update(total_mutants=1, caught=0, missed=1, timeout=0, unviable=0)
+        _, problems = score_table([("a", self.document), ("b", b)], self.floors,
+                                  self.catalog, agreeing_duplicates=True)
+        self.assertTrue(any("duplicate" in p for p in problems))
+
     def test_disjoint_shards_aggregate(self):
         a, b = deepcopy(self.document), deepcopy(self.document)
         a["outcomes"] = a["outcomes"][:3]
@@ -240,6 +263,10 @@ def main():
     parser.add_argument("--baseline-skipped", action="store_true",
                         help="accept runs made with `--baseline skip` (local per-mutant "
                              "measurement after a separate green baseline); never in the nightly")
+    parser.add_argument("--agreeing-duplicates", action="store_true",
+                        help="count a mutant seen in several local runs once when every "
+                             "verdict agrees (cargo-mutants 27.1 `--re` lets struct-field "
+                             "deletions through); a disagreement still fails")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -252,7 +279,7 @@ def main():
         documents = [(str(path), read_json(path)) for path in paths]
         table, problems = score_table(documents, read_json(args.floors),
                                       read_json(args.catalog), args.file,
-                                      args.baseline_skipped)
+                                      args.baseline_skipped, args.agreeing_duplicates)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"mutants-score: invalid evidence: {error}", file=sys.stderr)
         return 2
