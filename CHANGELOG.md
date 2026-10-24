@@ -9,6 +9,7 @@
 ### Fixed
 
 - `internalize_action` refuses a basket insertion whose `customInstructions` is over 1000 UTF-8 bytes (#138): `Error::ValidationError("customInstructions length must be at most 1000 bytes, got N")`, raised before the BEEF is read or anything is written, so nothing is stored. Bytes (`str::len`), not characters. BRC-100 wallet/0100.md:867 caps the field at 1000 bytes; divergence 1 of the BRCs recon was ruled conform on 2026-10-24, and the reference's `validateBasketInsertion` bounds it the same way. `createAction` outputs are unchanged: the reference's `validateCreateActionOutput` sets no bound there. Tests: `custom_instructions_over_1000_bytes_is_refused_and_1000_is_stored_whole`, fixtures `internalize_custom_instructions_1001_refused`, `internalize_custom_instructions_1000_stored`.
+- The change pick ranks no coin by `LENGTH(input_beef)` and ends every pick on `output_id` (#105, found by bsv-wallet-cli's differential harness, CLI #70): after covering the target, `completed` before `unproven`, and the nearest value, the lower `output_id` wins, as the reference's `allocateChangeInput` ends on `outputId`. A BEEF's length moves by a byte between runs with DER signature lengths, so two coins of equal value and status were spent in a different order on the same keys and chain. Test: `equal_coins_pick_the_lower_output_id_whichever_beef_is_longer`.
 
 ## [0.13.0] - 2026-10-23
 

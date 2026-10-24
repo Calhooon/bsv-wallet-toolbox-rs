@@ -2664,6 +2664,15 @@ pub(super) async fn allocate_change_input(
 }
 
 /// Picks a change input from the default basket as `pick` says.
+///
+/// The order: a coin covering the target before one that does not, a
+/// `completed` coin before an `unproven` one, the nearest value to the
+/// target, then the lower `output_id`. The pick is a function of the
+/// store's rows and never of a byte length (a BEEF's length moves with DER
+/// signature lengths between runs, #105). The reference
+/// (`StorageKnex.allocateChangeInput`) ends every order on `outputId`: an
+/// exact match by `outputId asc`, at or above the target by `satoshis asc,
+/// outputId asc`, below it by `satoshis desc, outputId desc`.
 async fn allocate_change_input_by(
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -2736,8 +2745,8 @@ async fn allocate_change_input_by(
             ORDER BY
                 CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
                 CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
-                LENGTH(COALESCE(t.input_beef, X'')) ASC,
-                ABS(o.satoshis - ?) ASC
+                ABS(o.satoshis - ?) ASC,
+                o.output_id ASC
             LIMIT 1
             "#,
             spendable_clause, pick_clause
