@@ -25,7 +25,7 @@
 //!
 //! The results name each local server `<Provider>`; a fixture never holds
 //! a port. The results lose the wall clock: merkle path notes their `when`,
-//! and every call after the first that says `retry after` its remainder
+//! and every call after the earliest that says `retry after` its remainder
 //! (`retry after <n>s`, the seconds a closed rung has left, which tick on a
 //! slow runner); the call that received the 429 stays exact. The host's
 //! `services_at` holds the explorers' rate gates on one clock that does not
@@ -320,15 +320,15 @@ fn mask_remainder(text: &str) -> String {
 /// A Retry-After remainder is wall-clock: a call made inside a window an
 /// earlier call's 429 opened reports the seconds left, and on a slow runner
 /// a second ticks between the calls (30s, then 29s). So every call after
-/// the first one whose result says `retry after` has its `retry after
+/// the earliest one whose result says `retry after` has its `retry after
 /// <digits>s` masked to `retry after <n>s`; the call that received the 429
 /// reports the header's own value and stays exact. Nothing else is masked.
 fn mask_retry_after_remainders(results: &mut [Value]) {
     let says = |result: &Value| result.to_string().contains(RETRY_AFTER);
-    let Some(first) = results.iter().position(says) else {
+    let Some(earliest) = results.iter().position(says) else {
         return;
     };
-    for result in &mut results[first + 1..] {
+    for result in &mut results[earliest + 1..] {
         *result = serde_json::from_str(&mask_remainder(&result.to_string())).unwrap();
     }
 }
