@@ -1411,8 +1411,11 @@ impl Services {
     /// 3. `get_merkle_path` returns a path only after its root met the
     ///    header service's header at that height: the chain's word.
     ///
-    /// With no header service step 3 cannot be done, so step 1 is not
-    /// asked: nothing is fetched that could not be checked.
+    /// Steps 1 and 2 need no header service; only step 3 does. With none
+    /// configured, or one that does not answer, `get_merkle_path` gives no
+    /// path (with none configured it fetches none) and a bound spender is
+    /// `Bound`: "could not confirm", never "could not look" at the binding
+    /// (#96).
     ///
     /// `carried` is BananaBlocks' `/txo` spend the UTXO ladder already read
     /// for this outpoint: when given, BananaBlocks is not asked again.
@@ -1426,9 +1429,6 @@ impl Services {
         vout: u32,
         carried: Option<OutpointSpend>,
     ) -> SpendEvidence {
-        if self.chaintracks.is_none() {
-            return SpendEvidence::None;
-        }
         let mut named: HashSet<String> = HashSet::new();
         // The last name whose bytes did not bear it out.
         let mut unreadable = SpendEvidence::None;
