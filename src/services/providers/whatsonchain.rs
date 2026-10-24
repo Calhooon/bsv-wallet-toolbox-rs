@@ -23,6 +23,8 @@ use bsv_rs::primitives::sha256;
 use tokio::time::sleep;
 
 use crate::lock_utils::{lock_read, lock_write};
+#[cfg(test)]
+use crate::services::providers::pace::Clock;
 use crate::services::providers::pace::RateGate;
 use crate::services::traits::{
     query_value, validate_txid, BlockHeader, BsvExchangeRate, GetMerklePathResult, GetRawTxResult,
@@ -149,6 +151,13 @@ impl WhatsOnChain {
         woc.base_url = base_url.trim_end_matches('/').to_string();
         woc.gate = Arc::new(Self::gate());
         woc
+    }
+
+    /// This test provider with a gate of its own reading now from `clock`.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: Clock) -> Self {
+        self.gate = Arc::new(Self::gate().with_clock(clock));
+        self
     }
 
     /// Get HTTP headers including optional API key.

@@ -27,7 +27,11 @@
 //! a port. The results lose the wall clock: merkle path notes their `when`,
 //! and every call after the first that says `retry after` its remainder
 //! (`retry after <n>s`, the seconds a closed rung has left, which tick on a
-//! slow runner); the call that received the 429 stays exact. `LADDER_FIXTURES_BLESS=1` writes each fixture's `expected` from
+//! slow runner); the call that received the 429 stays exact. The host's
+//! `services_at` holds the explorers' rate gates on one clock that does not
+//! move during a scene, so a rung a 429 closed for its default second is
+//! still closed for the scene's next call however slow the runner.
+//! `LADDER_FIXTURES_BLESS=1` writes each fixture's `expected` from
 //! the replay instead of comparing: read the diff against the rules
 //! `services.rs` documents (a fault is "could not look", a negative needs
 //! two clean answers, a closed rung costs no request), never take it as
