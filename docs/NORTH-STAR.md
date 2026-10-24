@@ -80,6 +80,8 @@ cases. A 10 MB memory point needs companion input sizes in the bench evidence
 to establish flat memory. This tool transfers observations; #54 and #55 own
 regression decisions. CI integration for those lanes must run the writer after
 producing the JSON, retain the document diff, and check the generated document.
+The `scoreboard` CI job only checks; the write step stays with the producers,
+#54's bench job and #55's ratchet job.
 
 ## The phases and their exits
 
