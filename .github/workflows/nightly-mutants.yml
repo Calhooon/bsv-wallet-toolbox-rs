@@ -1,0 +1,141 @@
+name: Nightly mutants
+
+# Informational schedule, never a required branch protection context.
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# On a schedule github.ref reads the default branch (main), yet the run measures
+# beta: key by the event and the ref checked out, so a scheduled beta run and a
+# dispatched run never share a group.
+concurrency:
+  group: nightly-mutants-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  mutants:
+    name: Mutants shard ${{ matrix.shard }}/16
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1981 mutants at about 90 s each (build plus the whole lib suite) need 16
+        # shards to stay under the job limit.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The floors in tools/mutants-floor.json were measured on beta. A schedule
+          # fires only from the default branch, so this file lives on main (the
+          # stable line) and the scheduled run checks out beta; a dispatch measures
+          # the ref it was given.
+          ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+
+      # The runner context is not available in workflow-level env.
+      - name: Keep build output and scratch in the runner temp
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mutants-target" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Cache tool and registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/mutants-tools
+          key: ${{ runner.os }}-mutants-27.1.0-${{ hashFiles('Cargo.toml') }}
+
+      - name: Install cargo-mutants
+        run: |
+          cargo install --root "$RUNNER_TEMP/mutants-tools" --version 27.1.0 --locked cargo-mutants
+          echo "$RUNNER_TEMP/mutants-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Inventory all mutants
+        run: |
+          mkdir -p "$RUNNER_TEMP/mutation"
+          cargo mutants --list --json > "$RUNNER_TEMP/mutation/catalog.json"
+
+      - name: Fetch and compile test dependencies
+        run: cargo test --lib --no-run
+
+      - name: Run mutation shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          CARGO_NET_OFFLINE: 'true'
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1,::1
+        run: |
+          if cargo mutants --in-place --shard "$SHARD/16" --sharding round-robin --output "$RUNNER_TEMP/mutation"; then
+            result=0
+          else
+            result=$?
+          fi
+          echo "cargo-mutants exit: $result" > "$RUNNER_TEMP/mutation/exit.txt"
+          # Misses and timeouts are measured here; the aggregate enforces floors.
+          case "$result" in
+            0|2|3) exit 0 ;;
+            *) exit "$result" ;;
+          esac
+
+      - name: Summarize shard
+        if: always()
+        run: |
+          python3 tools/mutants-score --report-only \
+            --catalog "$RUNNER_TEMP/mutation/catalog.json" \
+            "$RUNNER_TEMP/mutation/mutants.out/outcomes.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutants-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutation/
+          if-no-files-found: error
+          retention-days: 14
+
+  scores:
+    name: Mutation scores
+    needs: mutants
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The floors in tools/mutants-floor.json were measured on beta. A schedule
+          # fires only from the default branch, so this file lives on main (the
+          # stable line) and the scheduled run checks out beta; a dispatch measures
+          # the ref it was given.
+          ref: ${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+
+      - name: Download all shards
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: mutants-*
+          path: ${{ runner.temp }}/mutants-results
+
+      - name: Enforce per-file floors and publish table
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tools/mutants-score \
+            --catalog "$RUNNER_TEMP/mutants-results/mutants-0/catalog.json" \
+            "$RUNNER_TEMP"/mutants-results/mutants-*/mutants.out/outcomes.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"

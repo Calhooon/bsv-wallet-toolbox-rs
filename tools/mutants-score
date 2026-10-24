@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Score cargo-mutants 27 outcomes; reject incomplete evidence by default."""
+
+import argparse
+from collections import Counter
+from copy import deepcopy
+from fnmatch import fnmatchcase
+import json
+from pathlib import Path
+import sys
+import unittest
+
+
+KINDS = {
+    "CaughtMutant": "caught",
+    "MissedMutant": "missed",
+    "Timeout": "timeout",
+    "Unviable": "unviable",
+}
+
+
+def read_json(path):
+    with path.open(encoding="utf-8") as source:
+        return json.load(source)
+
+
+def identity(mutant):
+    """Use cargo-mutants' full name, including path, line, column and change."""
+    return mutant["name"]
+
+
+def filename(mutant):
+    return mutant["file"]
+
+
+def collect(documents, skipped_baseline=False, agreeing_duplicates=False):
+    counts, seen, problems, verdicts = {}, set(), [], {}
+    for label, document in documents:
+        if not document.get("end_time"):
+            problems.append(f"{label}: run has no end_time")
+        baselines = [row for row in document["outcomes"]
+                     if row["scenario"] == "Baseline"]
+        if any(row["summary"] != "Success" for row in baselines) or (
+                not baselines and not skipped_baseline):
+            problems.append(f"{label}: missing or unsuccessful baseline")
+        totals = Counter()
+        for row in document["outcomes"]:
+            if row["scenario"] == "Baseline":
+                continue
+            mutant = row["scenario"]["Mutant"]
+            key, file = identity(mutant), filename(mutant)
+            kind = KINDS.get(row["summary"])
+            if kind is None:
+                problems.append(f"{label}: unsupported mutant result {row['summary']}")
+                continue
+            totals[kind] += 1
+            if key in seen:
+                if not agreeing_duplicates or verdicts[key] != row["summary"]:
+                    problems.append(f"{label}: duplicate mutant {key}")
+                continue
+            seen.add(key)
+            verdicts[key] = row["summary"]
+            counts.setdefault(file, Counter())[kind] += 1
+        for kind in KINDS.values():
+            if document[kind] != totals[kind]:
+                problems.append(f"{label}: {kind} total disagrees with outcomes")
+        if document["total_mutants"] != sum(totals.values()):
+            problems.append(f"{label}: total_mutants disagrees with outcomes")
+    return counts, seen, problems
+
+
+def score_table(documents, floors, catalog, patterns=(), skipped_baseline=False,
+                agreeing_duplicates=False):
+    counts, seen, problems = collect(documents, skipped_baseline, agreeing_duplicates)
+    expected = {identity(mutant): filename(mutant) for mutant in catalog}
+    if len(expected) != len(catalog):
+        problems.append("catalog contains duplicate mutants")
+    if seen - expected.keys():
+        problems.append("outcomes contain mutants absent from the catalog")
+    selected = {file: entry for file, entry in floors["files"].items()
+                if not patterns or any(fnmatchcase(file, p) for p in patterns)}
+    if not selected:
+        problems.append("no floor files selected")
+    unlisted = set(expected.values()) - floors["files"].keys()
+    if unlisted:
+        problems.append("catalog files have no floor entry: " + ", ".join(sorted(unlisted)))
+    lines = ["| File | Caught | Missed | Timeout | Unviable | Tested/expected | Score | Floor | Result |",
+             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |"]
+    for file, entry in sorted(selected.items()):
+        c = counts.get(file, Counter())
+        total = sum(c.values())
+        wanted = sum(value == file for value in expected.values())
+        denominator = c["caught"] + c["missed"] + c["timeout"]
+        score = f"{100 * c['caught'] / denominator:.2f}%" if denominator else "N/A"
+        floor = entry["floor"]
+        if floor is not None and (type(floor) is not int or not 0 <= floor <= 100):
+            raise ValueError(f"{file}: floor must be an integer from 0 to 100 or null")
+        if total != wanted or any(expected[key] == file for key in expected.keys() - seen):
+            result = "INCOMPLETE"
+        elif wanted == 0:
+            result = "NO MUTANTS"
+        elif not denominator:
+            result = "NO VIABLE MUTANTS"
+        elif floor is None:
+            result = "NEEDS BASELINE"
+        elif c["caught"] * 100 < floor * denominator:
+            result = "BELOW FLOOR"
+        else:
+            result = "PASS"
+        if result not in ("PASS", "NO MUTANTS"):
+            problems.append(f"{file}: {result}")
+        cells = [file, *(str(c[k]) for k in KINDS.values()), f"{total}/{wanted}",
+                 score, str(floor) if floor is not None else "pending", result]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines), problems
+
+
+class ScoreTests(unittest.TestCase):
+    """Executable witnesses for the gate, using the upstream JSON shape."""
+
+    def setUp(self):
+        self.file = "src/example.rs"
+        self.catalog = [{"name": f"{self.file}:{n}:1: mutation {n}",
+                         "file": self.file} for n in range(4)]
+        self.floors = {"files": {self.file: {"floor": 50}}}
+        self.document = {"end_time": "2026-10-23T00:00:00Z", "total_mutants": 4,
+                         "caught": 1, "missed": 1, "timeout": 1, "unviable": 1,
+                         "outcomes": [{"scenario": "Baseline", "summary": "Success"}]}
+        self.document["outcomes"] += [
+            {"scenario": {"Mutant": mutant}, "summary": summary}
+            for mutant, summary in zip(self.catalog, KINDS)]
+
+    def result(self):
+        return score_table([("test", self.document)], self.floors, self.catalog)
+
+    def test_timeouts_are_not_caught_and_unviable_are_excluded(self):
+        table, problems = self.result()
+        self.assertIn("33.33%", table)
+        self.assertIn("BELOW FLOOR", table)
+        self.assertTrue(problems)
+
+    def test_integer_floor_does_not_round_score_up(self):
+        self.floors["files"][self.file]["floor"] = 34
+        self.assertTrue(self.result()[1])
+        self.floors["files"][self.file]["floor"] = 33
+        self.assertFalse(self.result()[1])
+
+    def test_baseline_failure_is_not_a_kill(self):
+        self.document["outcomes"][0]["summary"] = "Failure"
+        self.assertTrue(any("baseline" in p for p in self.result()[1]))
+
+    def test_missing_baseline_is_rejected(self):
+        self.document["outcomes"].pop(0)
+        self.assertTrue(any("baseline" in p for p in self.result()[1]))
+
+    def test_skipped_baseline_needs_the_flag(self):
+        self.document["outcomes"].pop(0)
+        self.floors["files"][self.file]["floor"] = 33
+        self.assertTrue(any("baseline" in p for p in self.result()[1]))
+        _, problems = score_table([("test", self.document)], self.floors, self.catalog,
+                                  skipped_baseline=True)
+        self.assertFalse(problems)
+
+    def test_skipped_baseline_flag_still_rejects_a_failed_one(self):
+        self.document["outcomes"][0]["summary"] = "Failure"
+        _, problems = score_table([("test", self.document)], self.floors, self.catalog,
+                                  skipped_baseline=True)
+        self.assertTrue(any("baseline" in p for p in problems))
+
+    def test_interrupted_run_is_rejected(self):
+        self.document["end_time"] = None
+        self.assertTrue(any("end_time" in p for p in self.result()[1]))
+
+    def test_missing_mutant_is_rejected(self):
+        self.document["outcomes"].pop()
+        self.document["unviable"] -= 1
+        self.document["total_mutants"] -= 1
+        self.assertIn("INCOMPLETE", self.result()[0])
+
+    def test_duplicate_shard_is_rejected(self):
+        _, problems = score_table([("a", self.document), ("b", self.document)],
+                                  self.floors, self.catalog)
+        self.assertTrue(any("duplicate" in p for p in problems))
+
+    def test_agreeing_duplicate_counts_once_with_the_flag(self):
+        b = deepcopy(self.document)
+        b["outcomes"] = b["outcomes"][:2]
+        b.update(total_mutants=1, missed=0, timeout=0, unviable=0)
+        self.floors["files"][self.file]["floor"] = 33
+        docs = [("a", self.document), ("b", b)]
+        self.assertTrue(score_table(docs, self.floors, self.catalog)[1])
+        table, problems = score_table(docs, self.floors, self.catalog, agreeing_duplicates=True)
+        self.assertFalse(problems)
+        self.assertIn("| 1 | 1 | 1 | 1 | 4/4 |", table)
+
+    def test_disagreeing_duplicate_fails_even_with_the_flag(self):
+        b = deepcopy(self.document)
+        b["outcomes"] = b["outcomes"][:2]
+        b["outcomes"][1]["summary"] = "MissedMutant"
+        b.update(total_mutants=1, caught=0, missed=1, timeout=0, unviable=0)
+        _, problems = score_table([("a", self.document), ("b", b)], self.floors,
+                                  self.catalog, agreeing_duplicates=True)
+        self.assertTrue(any("duplicate" in p for p in problems))
+
+    def test_disjoint_shards_aggregate(self):
+        a, b = deepcopy(self.document), deepcopy(self.document)
+        a["outcomes"] = a["outcomes"][:3]
+        b["outcomes"] = b["outcomes"][:1] + b["outcomes"][3:]
+        a.update(total_mutants=2, timeout=0, unviable=0)
+        b.update(total_mutants=2, caught=0, missed=0)
+        self.floors["files"][self.file]["floor"] = 33
+        _, problems = score_table([("a", a), ("b", b)], self.floors, self.catalog)
+        self.assertFalse(problems)
+
+    def test_stale_catalog_is_rejected(self):
+        self.catalog = self.catalog[:-1]
+        self.assertTrue(any("absent" in p for p in self.result()[1]))
+
+    def test_unknown_status_is_rejected(self):
+        self.document["outcomes"][1]["summary"] = "Success"
+        self.assertTrue(any("unsupported" in p for p in self.result()[1]))
+
+    def test_totals_must_agree(self):
+        self.document["caught"] = 2
+        self.assertTrue(any("disagrees" in p for p in self.result()[1]))
+
+    def test_unmeasured_floor_is_explicit(self):
+        self.floors["files"][self.file]["floor"] = None
+        self.assertIn("NEEDS BASELINE", self.result()[0])
+
+    def test_empty_file_is_not_a_fake_hundred_percent(self):
+        self.floors["files"]["src/empty.rs"] = {"floor": None}
+        self.assertIn("0/0 | N/A | pending | NO MUTANTS", self.result()[0])
+
+    def test_new_file_requires_floor_entry(self):
+        self.catalog.append({"name": "new", "file": "src/new.rs"})
+        self.assertTrue(any("no floor entry" in p for p in self.result()[1]))
+
+    def test_no_viable_mutants_is_not_a_pass(self):
+        for row in self.document["outcomes"][1:]:
+            row["summary"] = "Unviable"
+        self.document.update(caught=0, missed=0, timeout=0, unviable=4)
+        self.assertIn("NO VIABLE MUTANTS", self.result()[0])
+
+    def test_file_filter_does_not_hide_run_failure(self):
+        self.document["end_time"] = None
+        _, problems = score_table([("test", self.document)], self.floors,
+                                  self.catalog, ["src/*.rs"])
+        self.assertTrue(any("end_time" in p for p in problems))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("outcomes", nargs="*", type=Path,
+                        help="mutants.out/outcomes.json, one per disjoint shard")
+    parser.add_argument("--floors", type=Path,
+                        default=Path(__file__).with_name("mutants-floor.json"))
+    parser.add_argument("--catalog", type=Path,
+                        help="complete unsharded `cargo mutants --list --json` output")
+    parser.add_argument("--file", action="append", default=[], help="select floor files by glob")
+    parser.add_argument("--report-only", action="store_true",
+                        help="display partial measurements without enforcing floors")
+    parser.add_argument("--baseline-skipped", action="store_true",
+                        help="accept runs made with `--baseline skip` (local per-mutant "
+                             "measurement after a separate green baseline); never in the nightly")
+    parser.add_argument("--agreeing-duplicates", action="store_true",
+                        help="count a mutant seen in several local runs once when every "
+                             "verdict agrees (cargo-mutants 27.1 `--re` lets struct-field "
+                             "deletions through); a disagreement still fails")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(ScoreTests)
+        return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+    if args.catalog is None:
+        parser.error("--catalog is required to detect missing shards and unmeasured files")
+    try:
+        paths = args.outcomes or [Path("mutants.out/outcomes.json")]
+        documents = [(str(path), read_json(path)) for path in paths]
+        table, problems = score_table(documents, read_json(args.floors),
+                                      read_json(args.catalog), args.file,
+                                      args.baseline_skipped, args.agreeing_duplicates)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"mutants-score: invalid evidence: {error}", file=sys.stderr)
+        return 2
+    print(table)
+    print("\nScore = caught / (caught + missed + timeout); unviable excluded.")
+    if problems:
+        print("\n" + "\n".join(f"- {problem}" for problem in problems))
+    if args.report_only:
+        print("\nREPORT ONLY: floors are not enforced; incomplete rows are not full scores.")
+        return 0
+    print("\n" + ("FAIL" if problems else "PASS"))
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
