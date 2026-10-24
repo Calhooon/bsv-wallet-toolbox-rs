@@ -1,0 +1,14 @@
+
+# oracle-56-fix-b (#56, the second cold review's fixes)
+
+Repository: bsv-wallet-toolbox-rs. Your worktree is on branch `lane/oracle-56-fix-b`, cut from `lane/oracle-56-arch-tests` (nine commits past the beta of #52: `src/architecture_tests.rs` 529 lines, `src/architecture_tests/scan.rs` 383 lines, a `mod` line in `lib.rs`). Read both files whole and issue #56.
+
+The second review's findings, one commit each with its plant as proof:
+1. (must) `src/architecture_tests.rs:345-349` and `:56-59`: the match-scrutinee check flags any `.to_string()` in a scrutinee without requiring an error-named receiver, so two moved ceilings record non-sites: `poisoned_chain.rs:219` (`match services.get_status_for_txids(std::slice::from_ref(&txid.to_string()), false).await`) and `storage_sqlx.rs:7043` (`match self.broadcast_records(None, std::slice::from_ref(&txid.to_string())).await`), both a match on a typed Result where the rendered value is a txid. Gate the scrutinee hit on the tainted-receiver test the `starts_with`/`contains`/`==` branch already uses (`error_expression(expression, &tainted)`), so `match e.to_string().as_str()` with a tainted `e` still trips, and return both ceilings to 0. Proof: the two sites no longer count; the `matches!` plant on a tainted `e` still fails the test.
+2. (must) `strip_prefix` on error text evades the prefix rule (planted `e.to_string().strip_prefix("429").is_some()` passed). Add `strip_prefix`, `strip_suffix`, `ends_with`, `find` to the method set. Proof: that plant fails; counts unchanged on the tree (say so, or which moved).
+3. (must, wording) The commit message of a635c07 carries the forbidden word ("first fails at"). Reword it by an interactive-free rebase (`git rebase -i` is not available; use `git commit --amend` after `git rebase --onto` or `GIT_SEQUENCE_EDITOR=` with a script, or re-create the last commit by `git reset --soft HEAD~1` then commit with the new message, since it is the tip). No code change in that commit.
+4. (should, by eye, your call with a sentence each) `use std::env::{var};` then `var(..)` passes the env rule; SQL strings opening with DROP, ALTER, REPLACE, VACUUM, ATTACH are not in the keyword list; `use UtxoVerdict::*` or `Self::Variant` in a foreign impl evade the verdict rule and `impl Trait for UtxoVerdict {` outside services would false-positive. Close what a one-line change closes; write the rest as comments at the rule.
+
+Gate: `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings`; `cargo test --lib architecture_tests -- --nocapture` (every ceiling n/n, the count of tests printed); `cargo test --lib`. No em dash and no "first" in the diff or any commit message (`git log --format=%B origin/beta..HEAD | grep -n -w -i first`).
+
+Bounds: `src/architecture_tests.rs`, `src/architecture_tests/scan.rs`. One hour.
