@@ -181,6 +181,8 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `get_tags_for_output_id()` | Get tags for an output |
 | `admin_stats()` | Get administrative statistics |
 
+Bench seam: `benchmark_allocate_change_input()` (create_action.rs) wraps the test-only allocator for the door bench; it and `benchmark_support::allocate_change_input` compile only under the non-default `bench-support` feature.
+
 ## Commission Tracking
 
 The storage provides commission tracking for monitoring redeemable outputs:
