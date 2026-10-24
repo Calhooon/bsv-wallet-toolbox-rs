@@ -349,7 +349,16 @@ fn error_sites(t: &[Token<'_>]) -> Vec<usize> {
                 lines.push(t[i].line);
             }
         }
-        let method = (code(t, i, "starts_with") || code(t, i, "contains"))
+        let method = [
+            "starts_with",
+            "ends_with",
+            "strip_prefix",
+            "strip_suffix",
+            "contains",
+            "find",
+        ]
+        .iter()
+        .any(|name| code(t, i, name))
             && i > 0
             && code(t, i - 1, ".")
             && code(t, i + 1, "(");
@@ -382,8 +391,8 @@ fn error_sites(t: &[Token<'_>]) -> Vec<usize> {
 
 #[test]
 fn errors_are_not_classified_by_text() {
-    let sample = "fn f(err: Error) {\nlet rendered = err.to_string();\nif rendered.starts_with(\"429\") {}\nif err.message.contains(\"busy\") {}\nif err.to_string() == \"busy\" {}\nif \"busy\" == err.to_string() {}\nif name.starts_with(\"prefix\") {}\n}";
-    assert_eq!(error_sites(&lex(sample)), [3, 4, 5, 6]);
+    let sample = "fn f(err: Error) {\nlet rendered = err.to_string();\nif rendered.starts_with(\"429\") {}\nif err.message.contains(\"busy\") {}\nif err.to_string() == \"busy\" {}\nif \"busy\" == err.to_string() {}\nif name.starts_with(\"prefix\") {}\nif err.to_string().strip_prefix(\"429\").is_some() {}\nif err.to_string().strip_suffix(\"busy\").is_some() {}\nif rendered.ends_with(\"busy\") {}\nif rendered.find(\"busy\").is_some() {}\n}";
+    assert_eq!(error_sites(&lex(sample)), [3, 4, 5, 6, 8, 9, 10, 11]);
     assert_eq!(
         error_sites(&lex(
             "match value { Err(problem) => problem.to_string().contains(\"bad\"), _ => false }"
