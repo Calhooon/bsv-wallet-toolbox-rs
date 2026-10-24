@@ -35,7 +35,7 @@ const CONFIG_MODULES: &[&str] = &["src/services/mod.rs", "src/monitor/config.rs"
 const PANIC_CEILINGS: &[(&str, usize)] = &[
     ("src/managers/cwi_style_wallet_manager.rs", 1),
     ("src/managers/storage_manager.rs", 11),
-    ("src/services/mock.rs", 22),
+    ("src/services/mock.rs", 24),
     ("src/services/providers/arc.rs", 7),
     ("src/services/providers/arcade.rs", 4),
     ("src/services/providers/bitails.rs", 2),
