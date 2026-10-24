@@ -148,6 +148,9 @@ def update_values(root, values):
         metrics = payload.get("metrics", payload)
         if not isinstance(metrics, dict):
             raise ValueError(name + ": metrics must be an object")
+        for key in metrics:
+            if key in METRICS and METRICS[key][2] != index:
+                raise ValueError(name + ": " + key + " belongs in " + SOURCES[METRICS[key][2]])
         for key, (label, target, source) in METRICS.items():
             if source != index or key not in metrics or metrics[key] is None:
                 continue
