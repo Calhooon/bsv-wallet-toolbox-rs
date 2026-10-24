@@ -481,18 +481,24 @@ fn path_start(t: &[Token<'_>], i: usize) -> usize {
 }
 
 fn answer_sites(t: &[Token<'_>]) -> Vec<usize> {
+    let headers = impl_headers(t);
     (0..t.len())
         .filter(|&i| {
             if t[i].kind != Kind::Code || !SERVICE_ANSWERS.contains(&t[i].text) {
                 return false;
             }
-            // Declarations, impl headers and return types name the type without
-            // building it. Open gap: `Self::Variant` inside a foreign
-            // `impl Trait for UtxoVerdict` builds without naming the type; the
-            // rule has no impl context, so such an impl needs review by eye.
+            // An impl header naming an answer, inherent or `impl Trait for`,
+            // is a site: its body builds `Self::Variant` without naming the
+            // type. Open gap: building through inference never names the type
+            // (`.into()`, `From::from`, `<T as Default>::default()`), and the
+            // lexer cannot see it; such calls need review by eye.
+            if headers.iter().any(|&(s, e)| s < i && i < e) {
+                return true;
+            }
+            // Declarations and return types name the type without building it.
             let start = path_start(t, i);
             if start > 0
-                && ["struct", "enum", "impl", "for", "->"]
+                && ["struct", "enum", "->"]
                     .iter()
                     .any(|w| code(t, start - 1, w))
             {
@@ -545,7 +551,10 @@ fn service_answers_are_only_built_by_services() {
         "impl UtxoVerdict { fn read(&self) {} }\n",
         "impl crate::services::UtxoVerdict { pub(crate) fn planted() -> Self { Self::Spent } }\n",
     );
-    assert_eq!(answer_sites(&lex(constructors)), [1, 2, 3, 4, 8, 9, 13]);
+    assert_eq!(
+        answer_sites(&lex(constructors)),
+        [1, 2, 3, 4, 8, 9, 10, 11, 12, 13]
+    );
     let returns = concat!(
         "fn plain() -> UtxoVerdict { unreachable!() }\n",
         "fn qualified() -> crate::services::traits::UtxoVerdict { unreachable!() }\n",
