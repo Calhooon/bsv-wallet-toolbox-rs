@@ -45,7 +45,8 @@ still unmeasured. Pin endpoints describe direct dependents' toolbox requirements
 Python 3 and its standard library suffice. From any directory, run
 `tools/scoreboard-write` using its path in this checkout; the producing CI job
 must then run `tools/scoreboard-write --check`. The latter is read-only and fails on stale
-source values or an edited table, including when both JSON sources are absent.
+source values or an edited table. With both JSON sources absent it checks the
+table against its checksum alone and passes when they match.
 The generated checksum covers the table. Only text between the markers changes.
 An absent source, omitted metric or null metric preserves its existing cell.
 `--root PATH` selects an isolated tree for fixture checks.
