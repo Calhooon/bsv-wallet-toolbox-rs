@@ -60,7 +60,7 @@ Required contexts: `fixtures`, `ratchet`, `scoreboard`, `semver`, `dependents` a
 
 ## Open with the CLI's captain
 
-- Beta tip after Wave 1 is the one to re-run the differential floor on (it read zero differences at 40cabb9).
+- The CLI's differential floor read zero against beta 00c2e94 (2026-10-24 21:36Z: two pairs, 335 calls and 35 commands each, 0 differences; evidence `/Volumes/Lanes/out/bsv-wallet-cli/diff-00c2e94/`), as it did at 40cabb9. The CLI's `refactor` hard-fail (CLI #196) and its side of the customInstructions bound (CLI #157) wait for the 0.13.1 pin that carries #105 and #138; CLI #198 and #199 assumed a bsv-rs 0.8.3 tag and are reread against 0.9.0-beta.1.
 - #138 landed (#139): the door's refusal is `Validation error: customInstructions length must be at most 1000 bytes, got N`; the CLI maps it to 400 `VALIDATION_ERROR`. The wallet-door half is #143.
 - #66's shape: the CLI comments with its handler's call sequence; the toolbox answers with the draft API on the issue; the stack's word before landing (`stack-charter`).
 - #68's shape: reader methods or versioned views, by issue comment.
