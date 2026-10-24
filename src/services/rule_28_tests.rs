@@ -1647,3 +1647,171 @@ async fn the_spender_costs_no_request_beyond_is_utxo() {
         )
     );
 }
+
+// =============================================================================
+// #96: a named spender its bytes cannot bear out is "could not look"; the
+// bytes binding needs no header service
+// =============================================================================
+
+/// A proof courier that serves one fixed answer and counts the asks.
+struct CountedProof {
+    answer: GetMerklePathResult,
+    asked: StdArc<AtomicUsize>,
+}
+
+#[async_trait]
+impl MerklePathService for CountedProof {
+    async fn get_merkle_path(&self, _txid: &str) -> Result<GetMerklePathResult> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        Ok(self.answer.clone())
+    }
+}
+
+/// The scenes of #96. In each, both explorers list the outpoint as unspent
+/// (the answer a host releases on) and WhatsOnChain's `/spent` names a
+/// spender.
+#[derive(Clone, Copy, Debug)]
+enum NamedSpender {
+    /// The spender's bytes route answers 500 at WhatsOnChain and Bitails.
+    BytesFault,
+    /// The spender's bytes are a transaction that spends `UTXO_TXID:1`.
+    BytesSpendAnother,
+}
+
+/// One pass of `scene`, through `is_utxo_with_spender` or `is_utxo` (the
+/// spender then `None`), with every route's request count pinned: the
+/// unspent sets one each, `/spent` one, and the spender's bytes, its proof
+/// and its header as the scene asks them.
+async fn named_spender_pass(
+    scene: NamedSpender,
+    with_spender: bool,
+) -> (UtxoVerdict, Option<BoundSpender>) {
+    let mut woc = crate::services::mock_server().await;
+    let mut bitails = crate::services::mock_server().await;
+    let mut ct = crate::services::mock_server().await;
+    let source_vout = match scene {
+        NamedSpender::BytesSpendAnother => 1,
+        _ => 0,
+    };
+    let (spender, spender_hex) = a_spender_of(UTXO_TXID, source_vout);
+    let woc_bytes = woc.mock("GET", format!("/tx/{spender}/hex").as_str());
+    let bitails_bytes = bitails.mock("GET", format!("/tx/{spender}/hex").as_str());
+    let (woc_bytes, bitails_bytes) = match scene {
+        NamedSpender::BytesFault => (
+            woc_bytes.with_status(500).expect(1),
+            bitails_bytes.with_status(500).expect(1),
+        ),
+        _ => (
+            woc_bytes.with_status(200).with_body(&spender_hex).expect(1),
+            bitails_bytes
+                .with_status(200)
+                .with_body(&spender_hex)
+                .expect(0),
+        ),
+    };
+    let mut routes = vec![
+        woc_unspent(&mut woc, Says::Unspent).await.expect(1),
+        bitails_unspent(&mut bitails, Says::Unspent).await.expect(1),
+        woc.mock("GET", format!("/tx/{UTXO_TXID}/0/spent").as_str())
+            .with_status(200)
+            .with_body(format!(r#"{{"txid":"{}","vin":0}}"#, spender))
+            .expect(1)
+            .create_async()
+            .await,
+        woc_bytes.create_async().await,
+        bitails_bytes.create_async().await,
+    ];
+
+    let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(&spender, SPEND_HEIGHT);
+    let root = bump.compute_root(Some(&spender)).unwrap();
+    let header_asks = 0;
+    routes.push(
+        ct.mock(
+            "GET",
+            format!("/findHeaderHexForHeight?height={}", SPEND_HEIGHT).as_str(),
+        )
+        .with_status(500)
+        .expect(header_asks)
+        .create_async()
+        .await,
+    );
+    let options = ServicesOptions::mainnet().with_chaintracks_url(ct.url());
+    let mut services = services_with_explorers(options, &woc.url(), &bitails.url());
+    let asked = StdArc::new(AtomicUsize::new(0));
+    let courier: MerklePathProvider = StdArc::new(CountedProof {
+        answer: GetMerklePathResult {
+            name: Some("courier".to_string()),
+            merkle_path: Some(bump.to_hex()),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "0".repeat(64),
+                merkle_root: root,
+                time: 1700000000,
+                bits: 486604799,
+                nonce: 12345,
+                hash: "b".repeat(64),
+                height: SPEND_HEIGHT,
+            }),
+            error: None,
+            notes: vec![],
+        },
+        asked: asked.clone(),
+    });
+    let mut couriers = ServiceCollection::new("getMerklePath");
+    couriers.add("courier", courier);
+    services.get_merkle_path_services = RwLock::new(couriers);
+
+    let answer = if with_spender {
+        services
+            .is_utxo_with_spender(UTXO_TXID, 0, UTXO_SCRIPT)
+            .await
+    } else {
+        (services.is_utxo(UTXO_TXID, 0, UTXO_SCRIPT).await, None)
+    };
+    for route in &routes {
+        route.assert_async().await;
+    }
+    let proof_asks = 0;
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        proof_asks,
+        "{scene:?}: the courier's asks"
+    );
+    answer
+}
+
+/// A spender named whose bytes cannot be read (their route faults at both
+/// raw-transaction rungs) is "could not look" for the whole question: never
+/// the unspent sets' `UnspentHint`, which a host releases the coin on.
+#[tokio::test]
+async fn a_named_spender_whose_bytes_fault_answers_unknown() {
+    assert_eq!(
+        named_spender_pass(NamedSpender::BytesFault, true).await,
+        (UtxoVerdict::Unknown, None)
+    );
+}
+
+/// A spender named whose bytes spend another outpoint: the name is not
+/// borne out, so the question could not be looked at; `Unknown`, never
+/// the unspent sets' `UnspentHint`.
+#[tokio::test]
+async fn a_named_spender_whose_bytes_spend_another_outpoint_answers_unknown() {
+    assert_eq!(
+        named_spender_pass(NamedSpender::BytesSpendAnother, true).await,
+        (UtxoVerdict::Unknown, None)
+    );
+}
+
+/// `is_utxo`'s verdict is `is_utxo_with_spender`'s with the spender
+/// dropped, from the same requests, in each scene of #96.
+#[tokio::test]
+async fn is_utxo_is_the_spender_verdict_in_the_scenes_of_96() {
+    for scene in [NamedSpender::BytesFault, NamedSpender::BytesSpendAnother] {
+        let (verdict, _) = named_spender_pass(scene, true).await;
+        assert_eq!(
+            named_spender_pass(scene, false).await,
+            (verdict, None),
+            "{scene:?}"
+        );
+    }
+}
