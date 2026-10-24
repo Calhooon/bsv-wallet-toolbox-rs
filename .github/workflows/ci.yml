@@ -9,6 +9,9 @@ name: CI
 on:
   pull_request:
     branches: [main, beta]
+    # `labeled` and `unlabeled` so the `api-break` label is seen by the semver
+    # job on the run it triggers; a re-run replays the old event payload.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main, beta]
   # release.yml runs the same jobs on a tag before it publishes.
