@@ -17,7 +17,7 @@
 //! tenant, `serve-fleet` one pair per tenant) spends one budget per host,
 //! and a 429 one of them met closes the rung for all of them.
 //!
-//! A gate reads now from its [`Clock`]: the wall clock in production, and
+//! A gate reads now from its `Clock`: the wall clock in production, and
 //! in a test a clock held still (`RateGate::with_clock`), so a replay's
 //! calls all land at one instant of the gate's time. A window is a second
 //! of wall clock when the host sends no Retry-After, and a slow runner can
