@@ -48,14 +48,14 @@ async fn plant(s: &StorageSqlx, user_id: i64, basket_id: i64, tag: &str, beef_le
 
 /// Plants the two coins with the given BEEF lengths, picks for `target`, and
 /// returns (lower output id, higher output id, picked output id).
-async fn pick_with(first_len: usize, second_len: usize, target: u64) -> (i64, i64, i64) {
+async fn pick_with(a_len: usize, b_len: usize, target: u64) -> (i64, i64, i64) {
     let s = StorageSqlx::in_memory().await.unwrap();
     s.migrate("test-wallet", "02test_key").await.unwrap();
     s.make_available().await.unwrap();
     let (user, _) = s.find_or_insert_user("02tiebreak").await.unwrap();
     let basket = s.find_or_create_default_basket(user.user_id).await.unwrap();
-    let a = plant(&s, user.user_id, basket.basket_id, "a1", first_len).await;
-    let b = plant(&s, user.user_id, basket.basket_id, "b2", second_len).await;
+    let a = plant(&s, user.user_id, basket.basket_id, "a1", a_len).await;
+    let b = plant(&s, user.user_id, basket.basket_id, "b2", b_len).await;
     let spender: i64 = sqlx::query_scalar(
         "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, created_at, updated_at) \
          VALUES (?, 'unsigned', 'ref-spender', 1, 0, 1, 0, 'spender', ?, ?, ?) RETURNING transaction_id",
@@ -92,12 +92,12 @@ async fn pick_with(first_len: usize, second_len: usize, target: u64) -> (i64, i6
 async fn equal_coins_pick_the_lower_output_id_whichever_beef_is_longer() {
     for target in [SATS as u64, 500] {
         // The lower id's BEEF one byte longer, then one byte shorter.
-        for (first_len, second_len) in [(1_208, 1_207), (1_207, 1_208)] {
-            let (low, high, picked) = pick_with(first_len, second_len, target).await;
+        for (a_len, b_len) in [(1_208, 1_207), (1_207, 1_208)] {
+            let (low, high, picked) = pick_with(a_len, b_len, target).await;
             assert_ne!(low, high);
             assert_eq!(
                 picked, low,
-                "target {target}, BEEF lengths {first_len}/{second_len}: \
+                "target {target}, BEEF lengths {a_len}/{b_len}: \
                  the pick must be the lower output id, not the shorter BEEF"
             );
         }

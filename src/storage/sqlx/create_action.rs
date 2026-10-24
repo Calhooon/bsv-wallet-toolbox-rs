@@ -2672,7 +2672,9 @@ pub(super) async fn allocate_change_input(
 /// signature lengths between runs, #105). The reference
 /// (`StorageKnex.allocateChangeInput`) ends every order on `outputId`: an
 /// exact match by `outputId asc`, at or above the target by `satoshis asc,
-/// outputId asc`, below it by `satoshis desc, outputId desc`.
+/// outputId asc`, below it by `satoshis desc, outputId desc`. This crate ends
+/// every branch on `output_id ASC`, so below the target it picks the same
+/// value as the reference and the opposite id (#108).
 async fn allocate_change_input_by(
     conn: &mut SqliteConnection,
     user_id: i64,
