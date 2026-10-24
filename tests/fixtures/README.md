@@ -14,7 +14,8 @@ The harness migrates a fresh `StorageSqlx::in_memory()`, creates that user, and
 seeds the recorded baskets, transactions, output metadata, labels and commissions.
 An output's `repeat` expands it into consecutive outputs of the same transaction.
 `store: false` builds an external transaction without putting it in the wallet.
-`spends: "name.vout"` links to an earlier seed. A `proven` seed has a synthetic
+`spends: "name.vout"` links to an earlier seed. A seed's input pushes one byte
+unless `unlocking` gives its unlocking script as hex. A `proven` seed has a synthetic
 single-leaf BUMP; the test tracker accepts only the recorded roots and heights.
 The proof-height gate is explicitly opened to 880000. These proofs are synthetic
 test evidence. They make no claim about a real chain.
