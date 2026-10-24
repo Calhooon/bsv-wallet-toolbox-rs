@@ -1,5 +1,5 @@
 {
-  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. Floor = 80 for a file at or above 80, else the score measured by lane oracle-57-mutants-d (2026-10-24, beta fc343d6) rounded down. Door floors come from a 1/8 sample and are provisional until the first nightly.",
+  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. Floor = 80 for a file at or above 80, else the score measured by lane oracle-57-mutants-d (2026-10-24, beta fc343d6) rounded down. Door floors come from a 1/8 sample and are provisional until the nightly has run once.",
   "files": {
     "src/monitor/tasks/arcade_events.rs": {
       "floor": 47,
@@ -111,15 +111,15 @@
     },
     "src/storage/sqlx/create_action.rs": {
       "floor": 64,
-      "_comment": "Measured 64.71% (44/68) on the 1/8 sample; provisional, confirm from the first nightly. Issue to file: raise src/storage/sqlx/create_action.rs from 64 to 80 (#57 follow-up)."
+      "_comment": "Measured 64.71% (44/68) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/create_action.rs from 64 to 80 (#57 follow-up)."
     },
     "src/storage/sqlx/internalize_action.rs": {
       "floor": 50,
-      "_comment": "Measured 50.00% (6/12) on the 1/8 sample; provisional, confirm from the first nightly. Issue to file: raise src/storage/sqlx/internalize_action.rs from 50 to 80 (#57 follow-up)."
+      "_comment": "Measured 50.00% (6/12) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/internalize_action.rs from 50 to 80 (#57 follow-up)."
     },
     "src/storage/sqlx/process_action.rs": {
       "floor": 61,
-      "_comment": "Measured 61.90% (13/21) on the 1/8 sample; provisional, confirm from the first nightly. Issue to file: raise src/storage/sqlx/process_action.rs from 61 to 80 (#57 follow-up)."
+      "_comment": "Measured 61.90% (13/21) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/process_action.rs from 61 to 80 (#57 follow-up)."
     }
   }
 }
