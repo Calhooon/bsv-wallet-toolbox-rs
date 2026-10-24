@@ -36,6 +36,8 @@ mod beef_verification;
 mod broadcast_seen;
 #[cfg(test)]
 mod broadcaster_hint_tests;
+#[cfg(test)]
+mod change_tiebreak_tests;
 mod create_action;
 mod internalize_action;
 mod locked_inputs;
