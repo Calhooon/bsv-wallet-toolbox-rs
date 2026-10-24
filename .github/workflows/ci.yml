@@ -56,7 +56,7 @@ jobs:
           toolchain: stable
 
       - name: Test the comparison gate
-        run: python3 tests/bench_compare_test.py
+        run: python3 tools/bench-compare-test.py
 
       - name: Measure the door and local explorer ladders
         run: cargo bench --bench door --features bench-support
