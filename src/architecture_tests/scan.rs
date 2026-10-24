@@ -153,6 +153,25 @@ pub(super) fn sequence(t: &[Token<'_>], i: usize, words: &[&str]) -> bool {
         .all(|(n, word)| code(t, i + n, word))
 }
 
+// Token ranges of item impl headers, `impl Type` and `impl Trait for Type`,
+// from `impl` up to the opening brace. `impl Trait` in argument and return
+// position is not an item: it follows `->`, `:`, `&`, `(` or `,`.
+pub(super) fn impl_headers(t: &[Token<'_>]) -> Vec<(usize, usize)> {
+    (0..t.len())
+        .filter(|&i| {
+            code(t, i, "impl")
+                && (i == 0
+                    || ["}", ";", "{", "]", "unsafe", "default"]
+                        .iter()
+                        .any(|w| code(t, i - 1, w)))
+        })
+        .map(|i| {
+            let end = (i..t.len()).find(|&j| code(t, j, "{")).unwrap_or(t.len());
+            (i, end)
+        })
+        .collect()
+}
+
 pub(super) fn group_end(t: &[Token<'_>], start: usize) -> usize {
     let close = match t[start].text {
         "(" => ")",
