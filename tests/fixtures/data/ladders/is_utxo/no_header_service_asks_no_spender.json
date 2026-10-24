@@ -1,5 +1,5 @@
 {
-  "about": "No header service: the spender is never asked (nothing fetched that could not be checked); two unspent: UnspentHint.",
+  "about": "No header service: the probe still asks WhatsOnChain /spent (the bytes binding needs no header, only confirmed does, #96); 404 there names no spender, and two unspent: UnspentHint.",
   "ladder": "is_utxo",
   "providers": [
     {
@@ -21,6 +21,14 @@
                 ],
                 "script": "798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8"
               }
+            }
+          ]
+        },
+        {
+          "route": "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent",
+          "answers": [
+            {
+              "status": 404
             }
           ]
         }
@@ -69,7 +77,8 @@
         "GET /txo/1111111111111111111111111111111111111111111111111111111111111111/0": 1
       },
       "WhatsOnChain": {
-        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 1
+        "GET /script/798c976c24a48a820b031457d61e280960adb6a642b53ef88621910cbdc598b8/unspent/all": 1,
+        "GET /tx/1111111111111111111111111111111111111111111111111111111111111111/0/spent": 1
       }
     }
   }

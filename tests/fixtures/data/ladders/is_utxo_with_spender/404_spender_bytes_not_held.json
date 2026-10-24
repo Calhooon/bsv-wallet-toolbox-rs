@@ -94,7 +94,7 @@
     "results": [
       {
         "spender": null,
-        "verdict": "SpentHint"
+        "verdict": "Unknown"
       }
     ],
     "requests": {
