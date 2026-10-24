@@ -700,7 +700,6 @@ pub async fn internalize_action_internal(
 // Helper Functions
 // =============================================================================
 
-/// Finds an existing transaction by user and txid.
 /// Validates internalize action arguments at the storage door.
 ///
 /// Every basket insertion's `customInstructions` is at most
@@ -723,6 +722,7 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
     Ok(())
 }
 
+/// Finds an existing transaction by user and txid.
 async fn find_existing_transaction(
     conn: &mut SqliteConnection,
     user_id: i64,
