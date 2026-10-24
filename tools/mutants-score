@@ -33,14 +33,15 @@ def filename(mutant):
     return mutant["file"]
 
 
-def collect(documents):
+def collect(documents, skipped_baseline=False):
     counts, seen, problems = {}, set(), []
     for label, document in documents:
         if not document.get("end_time"):
             problems.append(f"{label}: run has no end_time")
         baselines = [row for row in document["outcomes"]
                      if row["scenario"] == "Baseline"]
-        if not baselines or any(row["summary"] != "Success" for row in baselines):
+        if any(row["summary"] != "Success" for row in baselines) or (
+                not baselines and not skipped_baseline):
             problems.append(f"{label}: missing or unsuccessful baseline")
         totals = Counter()
         for row in document["outcomes"]:
@@ -66,8 +67,8 @@ def collect(documents):
     return counts, seen, problems
 
 
-def score_table(documents, floors, catalog, patterns=()):
-    counts, seen, problems = collect(documents)
+def score_table(documents, floors, catalog, patterns=(), skipped_baseline=False):
+    counts, seen, problems = collect(documents, skipped_baseline)
     expected = {identity(mutant): filename(mutant) for mutant in catalog}
     if len(expected) != len(catalog):
         problems.append("catalog contains duplicate mutants")
@@ -149,6 +150,20 @@ class ScoreTests(unittest.TestCase):
         self.document["outcomes"].pop(0)
         self.assertTrue(any("baseline" in p for p in self.result()[1]))
 
+    def test_skipped_baseline_needs_the_flag(self):
+        self.document["outcomes"].pop(0)
+        self.floors["files"][self.file]["floor"] = 33
+        self.assertTrue(any("baseline" in p for p in self.result()[1]))
+        _, problems = score_table([("test", self.document)], self.floors, self.catalog,
+                                  skipped_baseline=True)
+        self.assertFalse(problems)
+
+    def test_skipped_baseline_flag_still_rejects_a_failed_one(self):
+        self.document["outcomes"][0]["summary"] = "Failure"
+        _, problems = score_table([("test", self.document)], self.floors, self.catalog,
+                                  skipped_baseline=True)
+        self.assertTrue(any("baseline" in p for p in problems))
+
     def test_interrupted_run_is_rejected(self):
         self.document["end_time"] = None
         self.assertTrue(any("end_time" in p for p in self.result()[1]))
@@ -222,6 +237,9 @@ def main():
     parser.add_argument("--file", action="append", default=[], help="select floor files by glob")
     parser.add_argument("--report-only", action="store_true",
                         help="display partial measurements without enforcing floors")
+    parser.add_argument("--baseline-skipped", action="store_true",
+                        help="accept runs made with `--baseline skip` (local per-mutant "
+                             "measurement after a separate green baseline); never in the nightly")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -233,7 +251,8 @@ def main():
         paths = args.outcomes or [Path("mutants.out/outcomes.json")]
         documents = [(str(path), read_json(path)) for path in paths]
         table, problems = score_table(documents, read_json(args.floors),
-                                      read_json(args.catalog), args.file)
+                                      read_json(args.catalog), args.file,
+                                      args.baseline_skipped)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"mutants-score: invalid evidence: {error}", file=sys.stderr)
         return 2
