@@ -3595,4 +3595,183 @@ mod tests {
         .unwrap();
         assert_eq!(spendable_count, 1, "the tx's output is not written off");
     }
+
+    // =========================================================================
+    // #103: the paying transaction's unlocking scripts
+    // =========================================================================
+
+    /// The parent's output 0 is `PUSH(abcd) OP_EQUAL`: an unlocking script
+    /// that pushes `abcd` spends it, any other push fails it.
+    const ABCD_EQUAL: &str = "02abcd87";
+
+    /// A header service that counts the requests it answers (Rule 28: the
+    /// door asks for roots, never an explorer).
+    struct CountingTracker {
+        inner: MockChainTracker,
+        requests: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl bsv_rs::transaction::ChainTracker for CountingTracker {
+        async fn is_valid_root_for_height(
+            &self,
+            root: &str,
+            height: u32,
+        ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.is_valid_root_for_height(root, height).await
+        }
+
+        async fn current_height(
+            &self,
+        ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.current_height().await
+        }
+    }
+
+    /// A BRC-29 wallet payment whose unproven paying transaction spends a
+    /// proven parent's `ABCD_EQUAL` output with `unlocking`. Returns the
+    /// AtomicBEEF, the payment's txid, and a tracker that carries the
+    /// parent's root.
+    fn payment_spending_abcd(unlocking: &str) -> (Vec<u8>, String, MockChainTracker) {
+        let mut parent = Transaction::new();
+        parent.version = 1;
+        let mut funding = TransactionInput::new("11".repeat(32), 0);
+        funding.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+        parent.inputs.push(funding);
+        parent.outputs.push(TransactionOutput {
+            satoshis: Some(20_000),
+            locking_script: LockingScript::from_hex(ABCD_EQUAL).unwrap(),
+            change: false,
+        });
+        let parent_txid = parent.id();
+
+        let mut payment = Transaction::new();
+        payment.version = 1;
+        let mut input = TransactionInput::new(parent_txid.clone(), 0);
+        input.unlocking_script = Some(UnlockingScript::from_hex(unlocking).unwrap());
+        payment.inputs.push(input);
+        payment.outputs.push(TransactionOutput {
+            satoshis: Some(10_000),
+            locking_script: LockingScript::from_hex(
+                "76a914000000000000000000000000000000000000000088ac",
+            )
+            .unwrap(),
+            change: false,
+        });
+        let txid = payment.id();
+
+        let bump = MerklePath::from_coinbase_txid(&parent_txid, PROVEN_HEIGHT);
+        let root = bump.compute_root(Some(&parent_txid)).unwrap();
+        let mut beef = Beef::new();
+        let bump_index = beef.merge_bump(bump);
+        beef.merge_raw_tx(parent.to_binary(), Some(bump_index));
+        beef.merge_transaction(payment);
+        let bytes = beef.to_binary_atomic(&txid).unwrap();
+
+        let mut tracker = MockChainTracker::new(PROVEN_HEIGHT + 6);
+        tracker.add_root(PROVEN_HEIGHT, root);
+        (bytes, txid, tracker)
+    }
+
+    /// bsv-rs's verifier on the two payments: the valid one is `Valid`, the
+    /// failing one is `SpendRefused` at its input with the interpreter's
+    /// reason. The failing spend is not `Invalid`: it is none of the
+    /// twenty-four byte kinds `Error::InvalidBeef` carries (#103).
+    #[test]
+    fn the_verifier_refuses_the_failing_spend_and_takes_the_valid_one() {
+        use bsv_rs::transaction::beef_stream::SpendRefusal;
+        use bsv_rs::transaction::{verify_stream, Verdict};
+
+        let (bytes, _, tracker) = payment_spending_abcd("02abcd");
+        let verdict = verify_stream(&bytes[..], &tracker, None).unwrap();
+        assert!(verdict.is_valid(), "the valid payment: {verdict:?}");
+
+        let (bytes, txid, tracker) = payment_spending_abcd("02abce");
+        let verdict = verify_stream(&bytes[..], &tracker, None).unwrap();
+        match verdict {
+            Verdict::SpendRefused {
+                offset,
+                txid: spender,
+                input,
+                why: SpendRefusal::Script(reason),
+            } => {
+                assert_eq!(
+                    bsv_rs::transaction::beef_stream::display_hex(&spender),
+                    txid
+                );
+                assert_eq!(input, Some(0));
+                assert_eq!(offset, 156, "the payment's input 0");
+                assert_eq!(
+                    reason,
+                    "The top stack element must be truthy after script evaluation."
+                );
+            }
+            other => panic!("expected a refused spend, got {other:?}"),
+        }
+    }
+
+    /// Rule 28's pin: the valid unproven payment over a proven parent costs
+    /// the header service one request, the parent's root.
+    #[tokio::test]
+    async fn a_valid_unproven_payment_is_taken_with_one_header_request() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (bytes, txid, inner) = payment_spending_abcd("02abcd");
+        let tracker = Arc::new(CountingTracker {
+            inner,
+            requests: std::sync::atomic::AtomicUsize::new(0),
+        });
+        storage.set_chain_tracker(tracker.clone()).await;
+
+        let result = internalize_action_internal(
+            &storage,
+            user_id,
+            wallet_payment_args(bytes, "a valid unproven payment"),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.base.accepted);
+        assert_eq!(
+            tx_status(&storage, user_id, &txid).await.as_deref(),
+            Some("unproven")
+        );
+        assert_eq!(
+            tracker.requests.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one root, asked once"
+        );
+    }
+
+    /// #103: a BRC-29 wallet payment whose unproven paying transaction
+    /// carries an unlocking script that fails is refused before anything is
+    /// stored: no transaction row, no received coin, no request.
+    #[tokio::test]
+    #[ignore = "#103: red until internalize runs bsv-rs's verifier; the spend refusal's variant is the owner's word"]
+    async fn a_payment_whose_unlocking_script_fails_is_refused() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let (bytes, txid, tracker) = payment_spending_abcd("02abce");
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+
+        let result = internalize_action_internal(
+            &storage,
+            user_id,
+            wallet_payment_args(bytes, "a payment whose script fails"),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a failing unlocking script is refused, got {:?}",
+            result.map(|r| (r.base.accepted, r.txid))
+        );
+        assert_eq!(tx_status(&storage, user_id, &txid).await, None);
+        assert_eq!(req_status(&storage, &txid).await, None);
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
+    }
 }

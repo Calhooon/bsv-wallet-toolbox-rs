@@ -183,7 +183,10 @@ async fn seed_transaction(replay: &mut Replay, seed: &SeedTransaction, index: us
             source_transaction: None,
             source_txid: Some(source_txid),
             source_output_index: vout,
-            unlocking_script: Some(UnlockingScript::from_binary(&[1, (index + 1) as u8])?),
+            unlocking_script: Some(match &seed.unlocking {
+                Some(script) => UnlockingScript::from_binary(&hex::decode(script)?)?,
+                None => UnlockingScript::from_binary(&[1, (index + 1) as u8])?,
+            }),
             unlocking_script_template: None,
             sequence: u32::MAX,
         }],

@@ -37,6 +37,8 @@ pub(super) struct SeedTransaction {
     pub name: String,
     #[serde(default)]
     pub spends: Option<String>,
+    #[serde(default)]
+    pub unlocking: Option<String>,
     pub outputs: Vec<SeedOutput>,
     #[serde(default)]
     pub labels: Vec<String>,
