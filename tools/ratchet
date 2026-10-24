@@ -64,6 +64,7 @@ not told apart; a src/ file the tree does not reach is scanned as non-test and
 listed under `unreached_files`.
 """
 
+import datetime
 import json
 import os
 import re
@@ -437,6 +438,7 @@ def scan_files(sources):
         "count": len(over),
         "src_files": len(lines),
         "src_lines": sum(lines.values()),
+        "max_lines": max(lines.values(), default=0),
         "files": {p: n for p, n in over},
     }
 
@@ -630,14 +632,25 @@ def measure():
     pedantic, cognitive, docs = scan_clippy(clippy_diagnostics())
     unwraps = scan_unwraps(sources)
     unwraps["unreached_files"] = unreached
+    files = scan_files(sources)
     return {
         "tool": "tools/ratchet 1",
         "rustc": rustc_version(),
         "toolchain": clippy_version(),
         "features": "default",
+        # The scoreboard (tools/scoreboard-write, #60) reads these two keys and
+        # nothing else from this file: the day the tree was measured, and the
+        # flat numbers docs/NORTH-STAR.md shows. The gate below ignores both.
+        "measured_at": datetime.date.today().isoformat(),
+        "metrics": {
+            "files_over_800": files["count"],
+            "max_file_lines": files["max_lines"],
+            "unwraps_outside_tests": unwraps["total"],
+            "undocumented_public_items": docs["count"],
+        },
         "clippy_pedantic": pedantic,
         "unwraps_outside_tests": unwraps,
-        "files_over_800": scan_files(sources),
+        "files_over_800": files,
         "functions_over_60": scan_functions(sources),
         "cognitive_complexity": cognitive,
         "duplicated_blocks": scan_duplicates(sources),
