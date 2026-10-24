@@ -74,7 +74,7 @@ pub mod wallet;
 
 // Unstable access for the offline performance harness, outside the wallet API.
 #[doc(hidden)]
-#[cfg(feature = "sqlite")]
+#[cfg(feature = "bench-support")]
 pub mod benchmark_support;
 
 pub use error::{Error, Result, StoreBusyReason};

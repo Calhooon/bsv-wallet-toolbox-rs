@@ -22,6 +22,10 @@ full = ["sqlite", "mysql", "remote"]
 # nothing in this crate calls it; it is for an operator looking for a payment
 # nobody handed over.
 break-glass-script-history = []
+# Off by default and not part of `full`: the hidden `benchmark_support` seams
+# the door Criterion bench drives (`cargo bench --bench door --features
+# bench-support`). No default or `full` build compiles them.
+bench-support = ["sqlite"]
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits
@@ -86,7 +90,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 [[bench]]
 name = "door"
 harness = false
-required-features = ["sqlite"]
+required-features = ["bench-support"]
 
 [[example]]
 name = "basic_wallet"

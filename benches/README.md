@@ -6,7 +6,7 @@ Run from the lane worktree with build and measurement output outside it:
 export CARGO_TARGET_DIR="$HOME/bsv/targets/oracle-54-benches"
 export CRITERION_HOME="${TMPDIR:?}/oracle-54-criterion"
 export RUSTFLAGS=-Dwarnings
-DOOR_BENCH_SAMPLES=10 cargo bench --bench door
+DOOR_BENCH_SAMPLES=10 cargo bench --bench door --features bench-support
 tools/bench-compare "$CRITERION_HOME" --profile laptop --write
 tools/bench-compare "$CRITERION_HOME" --profile laptop
 python3 tests/bench_compare_test.py
@@ -51,7 +51,8 @@ action, outside its timer. Allocation rolls back outside the timer. The
 internalize fixture contains its incoming proof before measurement, and each
 import creates a fresh transaction row rather than timing the merge path.
 
-The hidden `benchmark_support` module delegates allocation to the existing
+The hidden `benchmark_support` module, compiled only under the non-default
+`bench-support` feature (not part of `full`), delegates allocation to the existing
 allocator: its six-argument wrapper was otherwise test-only, and no public
 operation isolates it. The same hidden module redirects every provider used
 by the real ladders to mockito; the existing provider constructors and service
