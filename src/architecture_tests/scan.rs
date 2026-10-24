@@ -155,7 +155,9 @@ pub(super) fn sequence(t: &[Token<'_>], i: usize, words: &[&str]) -> bool {
 
 // Token ranges of item impl headers, `impl Type` and `impl Trait for Type`,
 // from `impl` up to the opening brace. `impl Trait` in argument and return
-// position is not an item: it follows `->`, `:`, `&`, `(` or `,`.
+// position is not an item: it follows `->`, `:`, `&`, `(` or `,`. Any header
+// naming an answer counts, so `impl From<Answer> for Other` (a conversion out,
+// not a construction) is a site too: over-broad on purpose at ceiling 0.
 pub(super) fn impl_headers(t: &[Token<'_>]) -> Vec<(usize, usize)> {
     (0..t.len())
         .filter(|&i| {
