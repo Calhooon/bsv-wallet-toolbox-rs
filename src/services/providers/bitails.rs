@@ -142,7 +142,7 @@ impl Bitails {
     }
 
     /// [`Self::with_base_url`] with a config (a client timeout).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench-support"))]
     pub(crate) fn with_base_url_and_config(
         chain: Chain,
         base_url: &str,
