@@ -81,7 +81,7 @@
       {
         "ok": {
           "details": [],
-          "error": "could not look: BananaBlocks lists the output as unspent; Bitails does not list the output as unspent and no second explorer confirmed it (WhatsOnChain: Rate limited: WhatsOnChain: retry after 30s)",
+          "error": "could not look: BananaBlocks lists the output as unspent; Bitails does not list the output as unspent and no second explorer confirmed it (WhatsOnChain: Rate limited: WhatsOnChain: retry after <n>s)",
           "name": "Services",
           "status": "error"
         }

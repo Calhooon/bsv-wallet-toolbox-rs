@@ -117,7 +117,7 @@
           "faults": [
             [
               "WhatsOnChain",
-              "Rate limited: WhatsOnChain: retry after 30s"
+              "Rate limited: WhatsOnChain: retry after <n>s"
             ]
           ],
           "leads": [

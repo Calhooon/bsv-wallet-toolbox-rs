@@ -24,7 +24,10 @@
 //! <path>`, so a request the fixture did not expect is a difference too.
 //!
 //! The results name each local server `<Provider>`; a fixture never holds
-//! a port. `LADDER_FIXTURES_BLESS=1` writes each fixture's `expected` from
+//! a port. The results lose the wall clock: merkle path notes their `when`,
+//! and every call after the first that says `retry after` its remainder
+//! (`retry after <n>s`, the seconds a closed rung has left, which tick on a
+//! slow runner); the call that received the 429 stays exact. `LADDER_FIXTURES_BLESS=1` writes each fixture's `expected` from
 //! the replay instead of comparing: read the diff against the rules
 //! `services.rs` documents (a fault is "could not look", a negative needs
 //! two clean answers, a closed rung costs no request), never take it as
@@ -286,6 +289,67 @@ async fn ladder_fixtures_post_bodies_are_normalized() {
             r#"{"txids":["b","a"],"z":{"a":1,"b":2}}"#
         );
     }
+}
+
+/// The seconds a closed rung has left, as an error's text gives them.
+const RETRY_AFTER: &str = "retry after ";
+
+/// Every `retry after <digits>s` in `text` with its digits masked.
+fn mask_remainder(text: &str) -> String {
+    let mut masked = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(RETRY_AFTER) {
+        let (head, tail) = rest.split_at(at + RETRY_AFTER.len());
+        masked.push_str(head);
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && tail[digits..].starts_with('s') {
+            masked.push_str("<n>s");
+            rest = &tail[digits + 1..];
+        } else {
+            rest = tail;
+        }
+    }
+    masked.push_str(rest);
+    masked
+}
+
+/// A Retry-After remainder is wall-clock: a call made inside a window an
+/// earlier call's 429 opened reports the seconds left, and on a slow runner
+/// a second ticks between the calls (30s, then 29s). So every call after
+/// the first one whose result says `retry after` has its `retry after
+/// <digits>s` masked to `retry after <n>s`; the call that received the 429
+/// reports the header's own value and stays exact. Nothing else is masked.
+fn mask_retry_after_remainders(results: &mut [Value]) {
+    let says = |result: &Value| result.to_string().contains(RETRY_AFTER);
+    let Some(first) = results.iter().position(says) else {
+        return;
+    };
+    for result in &mut results[first + 1..] {
+        *result = serde_json::from_str(&mask_remainder(&result.to_string())).unwrap();
+    }
+}
+
+#[test]
+fn ladder_fixtures_mask_only_a_later_calls_remainder() {
+    let note =
+        |secs: &str| json!({ "error": format!("Rate limited: WhatsOnChain: retry after {secs}") });
+    let mut expected = vec![note("30s"), note("30s")];
+    let mut replayed = vec![note("30s"), note("29s")];
+    mask_retry_after_remainders(&mut expected);
+    mask_retry_after_remainders(&mut replayed);
+    assert_eq!(expected, replayed);
+    assert_eq!(replayed, vec![note("30s"), note("<n>s")]);
+
+    // The call that received the 429 stays exact.
+    let mut replayed = vec![note("29s"), note("29s")];
+    mask_retry_after_remainders(&mut replayed);
+    assert_ne!(expected, replayed);
+
+    // Only `retry after <digits>s` is masked.
+    assert_eq!(
+        mask_remainder("retry after 7s; retry after soon; retry after 12x; retry after 3s"),
+        "retry after <n>s; retry after soon; retry after 12x; retry after <n>s"
+    );
 }
 
 fn fixture_root() -> PathBuf {
@@ -598,6 +662,7 @@ async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, St
     for call in &fixture.calls {
         results.push(call_ladder(&services, &fixture.ladder, call).await?);
     }
+    mask_retry_after_remainders(&mut results);
     let (requests, request_bodies) = {
         let recorded = counts.lock().unwrap();
         if !recorded.errors.is_empty() {

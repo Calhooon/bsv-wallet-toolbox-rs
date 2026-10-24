@@ -161,7 +161,7 @@
           "name": "BitailsTsc",
           "notes": [
             {
-              "error": "Rate limited: WhatsOnChain: retry after 30s",
+              "error": "Rate limited: WhatsOnChain: retry after <n>s",
               "name": "WhatsOnChain",
               "what": "getMerklePathError"
             },
