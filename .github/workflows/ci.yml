@@ -33,6 +33,11 @@ jobs:
   # Advisory context, not required by branch protection. This baseline belongs
   # to the Linux runner; other hosts' numbers are never compared with it. Until the
   # captain records a Linux baseline, the job logs a candidate and defers comparison.
+  # At DOOR_BENCH_SAMPLES=10 a p99 is close to the maximum of ten batches, and a
+  # 5 percent gate on a shared runner will flap. The job stays advisory until a
+  # Linux profile is recorded and a week of runs shows the spread; the samples
+  # rise within the 25 minute timeout once a cache step exists, and the captain
+  # decides when the context becomes required.
   bench:
     name: bench
     runs-on: ubuntu-latest
