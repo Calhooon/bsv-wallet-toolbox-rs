@@ -16,6 +16,12 @@
 //! so a process that builds several `Services` (the daemon builds two per
 //! tenant, `serve-fleet` one pair per tenant) spends one budget per host,
 //! and a 429 one of them met closes the rung for all of them.
+//!
+//! A gate reads now from its [`Clock`]: the wall clock in production, and
+//! in a test a clock held still (`RateGate::with_clock`), so a replay's
+//! calls all land at one instant of the gate's time. A window is a second
+//! of wall clock when the host sends no Retry-After, and a slow runner can
+//! spend that second between two calls (bsv-wallet-toolbox-rs#53).
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
@@ -36,6 +42,34 @@ static GATES: LazyLock<Mutex<HashMap<String, Arc<RateGate>>>> =
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Where a gate reads now: the wall clock, or (in a test) an instant held
+/// still that moves only when the test advances it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Clock(Option<Arc<Mutex<Instant>>>);
+
+impl Clock {
+    /// A clock held at the wall clock's now until [`Clock::advance`].
+    #[cfg(test)]
+    pub(crate) fn held() -> Self {
+        Self(Some(Arc::new(Mutex::new(Instant::now()))))
+    }
+
+    /// Move a held clock forward by `by`; the wall clock is not moved.
+    #[cfg(test)]
+    pub(crate) fn advance(&self, by: Duration) {
+        if let Some(held) = &self.0 {
+            *lock(held) += by;
+        }
+    }
+
+    fn now(&self) -> Instant {
+        match &self.0 {
+            Some(held) => *lock(held),
+            None => Instant::now(),
+        }
+    }
 }
 
 /// A token bucket: `capacity` requests at once, refilled at `per_sec`.
@@ -85,6 +119,7 @@ pub struct RateGate {
     default_retry_after: Duration,
     blocked_until: Mutex<Option<Instant>>,
     bucket: Option<Mutex<TokenBucket>>,
+    clock: Clock,
 }
 
 impl RateGate {
@@ -96,7 +131,18 @@ impl RateGate {
             default_retry_after,
             blocked_until: Mutex::new(None),
             bucket: None,
+            clock: Clock::default(),
         }
+    }
+
+    /// The gate reading now from `clock` instead of the wall clock.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: Clock) -> Self {
+        if let Some(bucket) = &self.bucket {
+            lock(bucket).last = clock.now();
+        }
+        self.clock = clock;
+        self
     }
 
     /// The process's gate for `key` (a provider's base URL, and its key
@@ -116,7 +162,7 @@ impl RateGate {
     pub fn with_per_minute(mut self, per_minute: u32) -> Self {
         self.bucket = Some(Mutex::new(TokenBucket::per_minute(
             per_minute,
-            Instant::now(),
+            self.clock.now(),
         )));
         self
     }
@@ -124,7 +170,7 @@ impl RateGate {
     /// Before a request: inside a Retry-After window, or with no token
     /// left, the call is [`Error::RateLimited`] and no request is made.
     pub fn admit(&self) -> Result<()> {
-        self.admit_at(Instant::now())
+        self.admit_at(self.clock.now())
     }
 
     fn admit_at(&self, now: Instant) -> Result<()> {
@@ -156,7 +202,7 @@ impl RateGate {
         let secs = retry_after_secs(headers)
             .unwrap_or(self.default_retry_after.as_secs())
             .clamp(1, MAX_RETRY_AFTER_SECS);
-        *lock(&self.blocked_until) = Some(Instant::now() + Duration::from_secs(secs));
+        *lock(&self.blocked_until) = Some(self.clock.now() + Duration::from_secs(secs));
         tracing::info!(
             provider = self.provider,
             retry_after_secs = secs,
@@ -251,6 +297,28 @@ mod tests {
         }
         assert!(gate.check(StatusCode::OK, &headers("5")).is_ok());
         assert!(gate.check(StatusCode::NOT_FOUND, &HeaderMap::new()).is_ok());
+    }
+
+    /// A held clock: a 429 with no Retry-After closes the rung for the
+    /// default second however long the wall clock takes between calls, and
+    /// the rung opens only when the gate's own clock passes the window.
+    #[test]
+    fn a_held_clock_keeps_the_default_window_closed() {
+        let clock = Clock::held();
+        let gate = RateGate::new("Test", Duration::from_secs(1)).with_clock(clock.clone());
+        assert!(gate
+            .check(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new())
+            .is_err());
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(
+            matches!(gate.admit(), Err(Error::RateLimited { .. })),
+            "the wall clock passed the window, the gate's did not"
+        );
+        clock.advance(Duration::from_millis(1100));
+        assert!(
+            gate.admit().is_ok(),
+            "past the window on its clock it opens"
+        );
     }
 
     /// A budget of 60 (a burst of 30 refilled at 0.5/s): no window of 60 s

@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
+use crate::services::providers::pace::Clock;
 use crate::services::providers::pace::RateGate;
 
 #[cfg(feature = "break-glass-script-history")]
@@ -152,6 +154,13 @@ impl Bitails {
         bitails.base_url = format!("{}/", base_url.trim_end_matches('/'));
         bitails.gate = Arc::new(Self::gate());
         bitails
+    }
+
+    /// This test provider with a gate of its own reading now from `clock`.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: Clock) -> Self {
+        self.gate = Arc::new(Self::gate().with_clock(clock));
+        self
     }
 
     /// The API base for this provider's chain (with its trailing slash).

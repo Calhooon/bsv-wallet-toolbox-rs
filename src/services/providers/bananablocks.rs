@@ -37,6 +37,8 @@
 use reqwest::{Client, StatusCode};
 use std::time::Duration;
 
+#[cfg(test)]
+use crate::services::providers::pace::Clock;
 use crate::services::providers::pace::RateGate;
 use crate::services::traits::{
     convert_script_hash, merkle_path_note, query_value, validate_txid, GetMerklePathResult,
@@ -130,6 +132,13 @@ impl BananaBlocks {
     #[cfg(test)]
     pub(crate) fn with_base_unshared_timeout(base_url: &str, timeout_secs: Option<u64>) -> Self {
         Self::with_gate(base_url, timeout_secs, Arc::new(Self::gate())).expect("client")
+    }
+
+    /// This test provider with a gate of its own reading now from `clock`.
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: Clock) -> Self {
+        self.gate = Arc::new(Self::gate().with_clock(clock));
+        self
     }
 
     fn gate() -> RateGate {

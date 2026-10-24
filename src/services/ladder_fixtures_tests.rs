@@ -10,10 +10,14 @@
 use super::*;
 
 use crate as toolbox;
+use crate::services::providers::pace::Clock;
 
 /// `Services` with WhatsOnChain, Bitails and (when given) BananaBlocks at
 /// local fixture bases, each with a gate of its own and a client that
-/// gives up after `timeout_secs`; the rest from `options`.
+/// gives up after `timeout_secs`; the rest from `options`. The three gates
+/// read one clock held still for the scene: a 429 with no Retry-After
+/// closes a rung for a second, and the scene's next call must find it
+/// closed however slow the runner (bsv-wallet-toolbox-rs#53).
 fn services_at(
     options: ServicesOptions,
     woc: &str,
@@ -21,30 +25,37 @@ fn services_at(
     bananablocks: Option<&str>,
     timeout_secs: u64,
 ) -> Services {
+    let clock = Clock::held();
     Services::with_explorers(
         Chain::Main,
         options,
-        StdArc::new(WhatsOnChain::with_base_url_and_config(
-            Chain::Main,
-            woc,
-            WhatsOnChainConfig {
-                api_key: None,
-                timeout_secs: Some(timeout_secs),
-            },
-        )),
-        StdArc::new(Bitails::with_base_url_and_config(
-            Chain::Main,
-            bitails,
-            BitailsConfig {
-                api_key: None,
-                timeout_secs: Some(timeout_secs),
-            },
-        )),
+        StdArc::new(
+            WhatsOnChain::with_base_url_and_config(
+                Chain::Main,
+                woc,
+                WhatsOnChainConfig {
+                    api_key: None,
+                    timeout_secs: Some(timeout_secs),
+                },
+            )
+            .with_clock(clock.clone()),
+        ),
+        StdArc::new(
+            Bitails::with_base_url_and_config(
+                Chain::Main,
+                bitails,
+                BitailsConfig {
+                    api_key: None,
+                    timeout_secs: Some(timeout_secs),
+                },
+            )
+            .with_clock(clock.clone()),
+        ),
         bananablocks.map(|base| {
-            StdArc::new(BananaBlocks::with_base_unshared_timeout(
-                base,
-                Some(timeout_secs),
-            ))
+            StdArc::new(
+                BananaBlocks::with_base_unshared_timeout(base, Some(timeout_secs))
+                    .with_clock(clock),
+            )
         }),
     )
     .unwrap()
