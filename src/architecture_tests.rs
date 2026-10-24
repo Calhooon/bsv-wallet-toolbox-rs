@@ -543,8 +543,9 @@ fn service_answers_are_only_built_by_services() {
         "impl Display for UtxoVerdict { fn fmt() {} }\n",
         "impl Planted for crate::services::traits::UtxoVerdict {}\n",
         "impl UtxoVerdict { fn read(&self) {} }\n",
+        "impl crate::services::UtxoVerdict { pub(crate) fn planted() -> Self { Self::Spent } }\n",
     );
-    assert_eq!(answer_sites(&lex(constructors)), [1, 2, 3, 4, 8, 9]);
+    assert_eq!(answer_sites(&lex(constructors)), [1, 2, 3, 4, 8, 9, 13]);
     let returns = concat!(
         "fn plain() -> UtxoVerdict { unreachable!() }\n",
         "fn qualified() -> crate::services::traits::UtxoVerdict { unreachable!() }\n",
