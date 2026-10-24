@@ -67,7 +67,8 @@ set to the run's date, and keys from the table's JSON column:
 
 These example numbers are synthetic. `benches/baseline.json` supplies latency,
 memory, request and explorer metrics. `tools/ratchet.json` supplies code-health,
-mutation and pin metrics, incorporating the exports of #57 and #59. A flat
+mutation and pin metrics, incorporating the exports of #57 and #59; a metric in
+the other file fails with its key and the file it belongs to. A flat
 object with `measured_at` and metric keys is also accepted; extra keys are ignored.
 Numbers are nonnegative, counts are integers, mutation is a percentage, and pin
 endpoints are version strings such as `0.12.1`. Invalid known values fail before

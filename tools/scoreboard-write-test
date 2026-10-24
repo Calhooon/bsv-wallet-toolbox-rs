@@ -118,6 +118,10 @@ refuse "a duplicate key" "duplicate JSON key: files_over_800" $ratchet \
   '{"measured_at": "2026-10-24", "metrics": {"files_over_800": 1, "files_over_800": 2}}'
 refuse "an array" "must contain an object" $ratchet \
   '[{"measured_at": "2026-10-24", "metrics": {"files_over_800": 1}}]'
+refuse "a metric in the wrong source" "benches/baseline.json: files_over_800 belongs in tools/ratchet.json" $bench \
+  '{"measured_at": "2026-10-24", "metrics": {"door_1000_p99_ms": 1, "files_over_800": 1}}'
+refuse "a metric in the other wrong source" "tools/ratchet.json: door_1000_p99_ms belongs in benches/baseline.json" $ratchet \
+  '{"measured_at": "2026-10-24", "door_1000_p99_ms": 1}'
 
 one="$(fresh)"
 two="$(fresh)"
