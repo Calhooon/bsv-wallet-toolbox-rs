@@ -321,6 +321,28 @@ mod tests {
         );
     }
 
+    /// Production reads the wall clock: a gate built without `with_clock`
+    /// holds no instant, and its default window opens as real time passes.
+    /// A held `Clock::default()` would close every rung for the process's
+    /// life and never refill a bucket, so this names the real one.
+    #[test]
+    fn the_default_clock_is_the_wall_clock() {
+        assert!(
+            Clock::default().0.is_none(),
+            "the default clock holds no instant"
+        );
+        let gate = RateGate::new("Test", Duration::from_secs(1));
+        assert!(gate
+            .check(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new())
+            .is_err());
+        assert!(matches!(gate.admit(), Err(Error::RateLimited { .. })));
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(
+            gate.admit().is_ok(),
+            "the wall clock passed the default window, so the rung opens"
+        );
+    }
+
     /// A budget of 60 (a burst of 30 refilled at 0.5/s): no window of 60 s
     /// lets more than 60 through, and sustained it is 30 a minute.
     #[test]
