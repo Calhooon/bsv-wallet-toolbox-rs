@@ -35,6 +35,14 @@ const WALLET_PAYMENT_PROTOCOL: &str = "wallet payment";
 /// Protocol identifier for basket insertions.
 const BASKET_INSERTION_PROTOCOL: &str = "basket insertion";
 
+/// Maximum length of a basket insertion's `customInstructions`, in UTF-8 bytes.
+///
+/// BRC-100 wallet/0100.md:867 (BRCs@5119a9b): at most 1000 UTF-8 bytes,
+/// longer strings must be rejected. The reference agrees:
+/// ts-stack `validationHelpers.ts` `validateBasketInsertion` bounds the field
+/// with `validateOptionalStringLength(..., 0, 1000)`, counting UTF-8 bytes.
+const MAX_CUSTOM_INSTRUCTIONS_BYTES: usize = 1000;
+
 // =============================================================================
 // Internal Types
 // =============================================================================
@@ -78,6 +86,9 @@ pub async fn internalize_action_internal(
     user_id: i64,
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
+    // Step 0: Validate the arguments before anything is read or written.
+    validate_internalize_action_args(&args)?;
+
     // Step 1: Read the AtomicBEEF through the streaming reader first: a
     // refusal is for invalid bytes only, with the offset and the kind, and
     // never for a size or a count. The bytes arrive whole (the argument is a
@@ -690,6 +701,28 @@ pub async fn internalize_action_internal(
 // =============================================================================
 
 /// Finds an existing transaction by user and txid.
+/// Validates internalize action arguments at the storage door.
+///
+/// Every basket insertion's `customInstructions` is at most
+/// [`MAX_CUSTOM_INSTRUCTIONS_BYTES`] UTF-8 bytes (`str::len`, never a count of
+/// characters).
+fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> {
+    for output in &args.outputs {
+        let length = output
+            .insertion_remittance
+            .as_ref()
+            .and_then(|i| i.custom_instructions.as_ref())
+            .map_or(0, |s| s.len());
+        if length > MAX_CUSTOM_INSTRUCTIONS_BYTES {
+            return Err(Error::ValidationError(format!(
+                "customInstructions length must be at most {} bytes, got {}",
+                MAX_CUSTOM_INSTRUCTIONS_BYTES, length
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn find_existing_transaction(
     conn: &mut SqliteConnection,
     user_id: i64,
