@@ -9,7 +9,7 @@ export RUSTFLAGS=-Dwarnings
 DOOR_BENCH_SAMPLES=10 cargo bench --bench door --features bench-support
 tools/bench-compare "$CRITERION_HOME" --profile laptop --write
 tools/bench-compare "$CRITERION_HOME" --profile laptop
-python3 tests/bench_compare_test.py
+python3 tools/bench-compare-test.py
 ```
 
 When `/Volumes/Lanes` is mounted, keep measurement output under

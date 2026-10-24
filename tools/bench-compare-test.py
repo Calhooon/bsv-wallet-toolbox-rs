@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Executable regression witnesses for the benchmark gate (stdlib only)."""
 
 import json
@@ -10,7 +11,7 @@ import tempfile
 import unittest
 
 
-TOOL = Path(__file__).resolve().parents[1] / "tools/bench-compare"
+TOOL = Path(__file__).resolve().parent / "bench-compare"
 METHOD = "individual_wall_time_linear_interpolation_v1"
 
 
