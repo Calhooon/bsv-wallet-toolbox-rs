@@ -53,10 +53,6 @@ const ERROR_CEILINGS: &[(&str, usize)] = &[
     ("src/services/providers/bitails.rs", 2),
     ("src/services/providers/whatsonchain.rs", 8),
     ("src/storage/client/storage_client.rs", 4),
-    // The textual scrutinee check also sees txid.to_string() in typed
-    // request arguments, even though the matched result is not error text.
-    ("src/storage/sqlx/poisoned_chain.rs", 1),
-    ("src/storage/sqlx/storage_sqlx.rs", 1),
 ];
 
 // All these public answers are owned by services (today in traits.rs,
@@ -342,11 +338,14 @@ fn error_sites(t: &[Token<'_>]) -> Vec<usize> {
             let expression = &t[start..end];
             // Inspect the scrutinee only: typed error patterns and text rendered
             // inside match arms or pattern guards are not text classifications.
-            if (0..expression.len()).any(|j| {
-                sequence(expression, j, &[".", "to_string", "(", ")"])
-                    || code(expression, j, "message")
-                    || code(expression, j, "msg")
-            }) {
+            // The rendered receiver must be error text, not a txid argument.
+            if error_expression(expression, &tainted)
+                && (0..expression.len()).any(|j| {
+                    sequence(expression, j, &[".", "to_string", "(", ")"])
+                        || code(expression, j, "message")
+                        || code(expression, j, "msg")
+                })
+            {
                 lines.push(t[i].line);
             }
         }
@@ -402,6 +401,7 @@ fn errors_are_not_classified_by_text() {
         "matches!(v, _ if name.to_string() == \"busy\");\n",
         "matches!{wrap(e.to_string(), other), \"busy\"};\n",
         "match message { \"busy\" => true, _ => false }\n",
+        "match services.status(from_ref(&txid.to_string())).await { _ => () }\n",
     );
     assert_eq!(error_sites(&lex(matches)), [1, 2, 3, 4, 9, 10]);
     enforce(
