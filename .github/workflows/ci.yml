@@ -354,3 +354,15 @@ jobs:
           done < <(git ls-files -z -- 'Cargo.lock' '*/Cargo.lock')
           [ "$found" -gt 0 ] || echo "no committed Cargo.lock"
           exit "$status"
+
+  # The north-star table (docs/NORTH-STAR.md) against its sources and its
+  # checksum: an edited table or a stale source value fails. Read-only; the
+  # producers (#54's bench job, #55's ratchet job) run the write. Not yet a
+  # required context.
+  scoreboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: The scoreboard table matches its sources
+        run: python3 tools/scoreboard-write --check
