@@ -1341,7 +1341,8 @@ async fn a_named_spender_without_a_proof_is_not_a_spend() {
 }
 
 /// The named spender's bytes spend another outpoint. Its proof is real,
-/// and proves nothing about ours: the name was a word.
+/// and proves nothing about ours: the name was a word its bytes do not
+/// bear out, so the question could not be looked at (#96).
 #[tokio::test]
 async fn a_proven_transaction_that_does_not_name_the_outpoint_is_not_a_spend() {
     let f = spend_scene(SpendScene {
@@ -1360,8 +1361,8 @@ async fn a_proven_transaction_that_does_not_name_the_outpoint_is_not_a_spend() {
     );
     assert_eq!(
         answer,
-        UtxoVerdict::SpentHint,
-        "the explorers' agreement stands as a hint"
+        UtxoVerdict::Unknown,
+        "a name its bytes refuse is could not look"
     );
 }
 
@@ -1529,9 +1530,9 @@ async fn an_unspent_answers_no_spender() {
     f.spent_route.assert_async().await;
 }
 
-/// One explorer names a spender whose bytes spend another outpoint: the
-/// name is dropped, so no spender is answered, even with its proof real;
-/// the explorers' agreement stands as `SpentHint`.
+/// One explorer names a spender whose bytes spend another outpoint: no
+/// spender is answered, even with its proof real, and the verdict is
+/// `Unknown` (#96: a name its bytes refuse is "could not look").
 #[tokio::test]
 async fn a_name_its_bytes_refuse_answers_no_spender() {
     let f = spend_scene(SpendScene {
@@ -1546,7 +1547,7 @@ async fn a_name_its_bytes_refuse_answers_no_spender() {
         f.services
             .is_utxo_with_spender(UTXO_TXID, 0, UTXO_SCRIPT)
             .await,
-        (UtxoVerdict::SpentHint, None)
+        (UtxoVerdict::Unknown, None)
     );
 }
 
