@@ -18,7 +18,7 @@ cargo test -- --test-threads=1       # If tests conflict on shared resources
 cargo clippy -- -D warnings          # Lint (0 warnings, 0 errors)
 cargo fmt --all -- --check           # Format check
 cargo doc --no-deps --open           # Generate docs
-DOOR_BENCH_SAMPLES=10 cargo bench --bench door --features bench-support  # Door/explorer p50/p99 (benches/README.md)
+CARGO_TARGET_DIR=~/bsv/targets/<name> DOOR_BENCH_SAMPLES=10 cargo bench --bench door --features bench-support  # Door/explorer p50/p99; the bench needs CARGO_TARGET_DIR or CRITERION_HOME in its own env (benches/README.md)
 ```
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
