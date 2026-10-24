@@ -1387,7 +1387,11 @@ enum SpendEvidence {
     /// is held (not mined yet, or no courier served a path the header
     /// service accepts).
     Bound(String),
-    /// No spender named, or a name its own bytes do not bear out.
+    /// A spender (its txid) is named and its bytes could not be read, or
+    /// do not name the outpoint: "could not look" for the whole question
+    /// (bsv-wallet-toolbox-rs#96), never the unspent sets' answer.
+    Unreadable(String),
+    /// No spender named.
     None,
 }
 
@@ -1401,7 +1405,7 @@ impl Services {
     ///    WhatsOnChain (`/tx/{txid}/{vout}/spent`) and BananaBlocks
     ///    (`/txo/{txid}/{vout}`'s `spent_txid`) are each the other's fallback: a
     ///    fault, no name, or a name its bytes do not bear out moves to the
-    ///    next.
+    ///    next. A name no rung's bytes bear out is `Unreadable`.
     /// 2. The named transaction's bytes (bound to its txid by `get_raw_tx`)
     ///    must have an input that is this outpoint: a fact about the bytes.
     /// 3. `get_merkle_path` returns a path only after its root met the
@@ -1426,10 +1430,15 @@ impl Services {
             return SpendEvidence::None;
         }
         let mut named: HashSet<String> = HashSet::new();
+        // The last name whose bytes did not bear it out.
+        let mut unreadable = SpendEvidence::None;
         let woc = self.whatsonchain.get_spender(txid, vout).await;
         if let Some(spender) = self.named_spender("WhatsOnChain", txid, vout, woc, &mut named) {
-            if let Some(found) = self.bind_spender(txid, vout, &spender).await {
-                return found;
+            match self.bind_spender(txid, vout, &spender).await {
+                SpendEvidence::Unreadable(spender) => {
+                    unreadable = SpendEvidence::Unreadable(spender)
+                }
+                found => return found,
             }
         }
         if let Some(bb) = &self.bananablocks {
@@ -1444,12 +1453,15 @@ impl Services {
             if let Some(spender) =
                 self.named_spender("BananaBlocks", txid, vout, answer, &mut named)
             {
-                if let Some(found) = self.bind_spender(txid, vout, &spender).await {
-                    return found;
+                match self.bind_spender(txid, vout, &spender).await {
+                    SpendEvidence::Unreadable(spender) => {
+                        unreadable = SpendEvidence::Unreadable(spender)
+                    }
+                    found => return found,
                 }
             }
         }
-        SpendEvidence::None
+        unreadable
     }
 
     /// The ladder of `get_utxo_status` (its doc there is the rule), with
@@ -1643,9 +1655,9 @@ impl Services {
         }
     }
 
-    /// Steps 2 and 3 for one named spender: `None` when its bytes are not
-    /// held or do not name the outpoint (the name is dropped).
-    async fn bind_spender(&self, txid: &str, vout: u32, spender: &str) -> Option<SpendEvidence> {
+    /// Steps 2 and 3 for one named spender: `Unreadable` when its bytes
+    /// are not held or do not name the outpoint.
+    async fn bind_spender(&self, txid: &str, vout: u32, spender: &str) -> SpendEvidence {
         let raw_tx = match self.get_raw_tx(spender, false).await {
             Ok(GetRawTxResult {
                 raw_tx: Some(raw_tx),
@@ -1653,7 +1665,7 @@ impl Services {
             }) => raw_tx,
             _ => {
                 tracing::debug!(txid = %txid, vout, spender = %spender, "spend evidence: the named spender's bytes are not held");
-                return None;
+                return SpendEvidence::Unreadable(spender.to_string());
             }
         };
         let names_the_outpoint = bsv_rs::transaction::Transaction::from_binary(&raw_tx)
@@ -1671,14 +1683,14 @@ impl Services {
                 txid = %txid,
                 vout,
                 spender = %spender,
-                "spend evidence: the named spender's bytes do not spend the outpoint; the name is dropped"
+                "spend evidence: the named spender's bytes do not spend the outpoint"
             );
-            return None;
+            return SpendEvidence::Unreadable(spender.to_string());
         }
-        Some(match self.get_merkle_path(spender, false).await {
+        match self.get_merkle_path(spender, false).await {
             Ok(found) if found.merkle_path.is_some() => SpendEvidence::Proven(spender.to_string()),
             _ => SpendEvidence::Bound(spender.to_string()),
-        })
+        }
     }
 }
 
@@ -2789,7 +2801,10 @@ impl WalletServices for Services {
     /// own bytes name the outpoint and its merkle path meets the header
     /// service's header. Two explorers agreeing "not unspent", or a bound
     /// spender with no proof held (one provider's name is enough: its bytes
-    /// are the evidence), is `SpentHint`; anything else `Unknown`. An empty
+    /// are the evidence), is `SpentHint`. A spender named whose bytes could
+    /// not be read or do not spend the outpoint, with no other provider's
+    /// spender bound, is `Unknown` whatever the unspent sets say (#96);
+    /// anything else `Unknown`. An empty
     /// `locking_script` (none stored) is asked as the empty script's hash:
     /// no explorer lists an output under it, and BananaBlocks' answer for
     /// an output with another script is a fault, so it is never
@@ -2833,7 +2848,9 @@ impl WalletServices for Services {
         // outpoint BananaBlocks answered `spent: false` for), and the
         // spender's bytes are the evidence.
         let evidence = self.spend_evidence(txid, vout, carried).await;
-        if unspent_set == UtxoVerdict::UnspentHint && evidence != SpendEvidence::None {
+        if unspent_set == UtxoVerdict::UnspentHint
+            && matches!(evidence, SpendEvidence::Proven(_) | SpendEvidence::Bound(_))
+        {
             tracing::warn!(outpoint = %outpoint, evidence = ?evidence, "is_utxo: explorers list the output as unspent, and a spender its bytes bind is named; the spender stands");
         }
         match evidence {
@@ -2851,6 +2868,13 @@ impl WalletServices for Services {
                     confirmed: false,
                 }),
             ),
+            // A name its bytes could not bear out is "could not look" for
+            // the whole question (#96): never the unspent sets' answer, so
+            // a host holds the coin and asks again.
+            SpendEvidence::Unreadable(spender) => {
+                tracing::warn!(outpoint = %outpoint, spender = %spender, unspent_set = ?unspent_set, "is_utxo: could not look: a spender was named and its bytes could not be read or do not spend the outpoint");
+                (UtxoVerdict::Unknown, None)
+            }
             SpendEvidence::None => (unspent_set, None),
         }
     }
