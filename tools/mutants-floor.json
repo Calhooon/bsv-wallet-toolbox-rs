@@ -1,0 +1,125 @@
+{
+  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. Floor = 80 for a file at or above 80, else the score measured by lane oracle-57-mutants-d (2026-10-24, beta fc343d6) rounded down. Door floors come from a 1/8 sample and are provisional until the nightly has run once.",
+  "files": {
+    "src/monitor/tasks/arcade_events.rs": {
+      "floor": 47,
+      "_comment": "Measured 47.50% (19/40). Issue to file: raise src/monitor/tasks/arcade_events.rs from 47 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/check_for_proofs.rs": {
+      "floor": 28,
+      "_comment": "Measured 28.57% (4/14). Issue to file: raise src/monitor/tasks/check_for_proofs.rs from 28 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/check_no_sends.rs": {
+      "floor": 0,
+      "_comment": "Measured 0.00% (0/12). Issue to file: raise src/monitor/tasks/check_no_sends.rs from 0 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/clock.rs": {
+      "floor": 42,
+      "_comment": "Measured 42.86% (6/14). Issue to file: raise src/monitor/tasks/clock.rs from 42 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/compact_beef.rs": {
+      "floor": 0,
+      "_comment": "Measured 0.00% (0/9). Issue to file: raise src/monitor/tasks/compact_beef.rs from 0 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/fail_abandoned.rs": {
+      "floor": 0,
+      "_comment": "Measured 0.00% (0/6). Issue to file: raise src/monitor/tasks/fail_abandoned.rs from 0 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/mod.rs": {
+      "floor": 80,
+      "_comment": "Measured 80.00% (4/5)."
+    },
+    "src/monitor/tasks/monitor_call_history.rs": {
+      "floor": 13,
+      "_comment": "Measured 13.16% (5/38). Issue to file: raise src/monitor/tasks/monitor_call_history.rs from 13 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/new_header.rs": {
+      "floor": 80,
+      "_comment": "Measured 84.21% (16/19)."
+    },
+    "src/monitor/tasks/purge.rs": {
+      "floor": 0,
+      "_comment": "Measured 0.00% (0/10). Issue to file: raise src/monitor/tasks/purge.rs from 0 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/reorg.rs": {
+      "floor": 8,
+      "_comment": "Measured 8.33% (2/24). Issue to file: raise src/monitor/tasks/reorg.rs from 8 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/review_proven_txs.rs": {
+      "floor": 12,
+      "_comment": "Measured 12.00% (3/25). Issue to file: raise src/monitor/tasks/review_proven_txs.rs from 12 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/review_status.rs": {
+      "floor": 0,
+      "_comment": "Measured 0.00% (0/8). Issue to file: raise src/monitor/tasks/review_status.rs from 0 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/send_waiting.rs": {
+      "floor": 0,
+      "_comment": "Measured 0.00% (0/9). Issue to file: raise src/monitor/tasks/send_waiting.rs from 0 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/sync_when_idle.rs": {
+      "floor": 53,
+      "_comment": "Measured 53.85% (7/13). Issue to file: raise src/monitor/tasks/sync_when_idle.rs from 53 to 80 (#57 follow-up)."
+    },
+    "src/monitor/tasks/unfail.rs": {
+      "floor": 0,
+      "_comment": "Measured 0.00% (0/6). Issue to file: raise src/monitor/tasks/unfail.rs from 0 to 80 (#57 follow-up)."
+    },
+    "src/services/providers/arc.rs": {
+      "floor": 15,
+      "_comment": "Measured 15.93% (18/113). Issue to file: raise src/services/providers/arc.rs from 15 to 80 (#57 follow-up)."
+    },
+    "src/services/providers/arcade.rs": {
+      "floor": 36,
+      "_comment": "Measured 36.28% (41/113). Issue to file: raise src/services/providers/arcade.rs from 36 to 80 (#57 follow-up)."
+    },
+    "src/services/providers/bananablocks.rs": {
+      "floor": 80,
+      "_comment": "Measured 85.14% (63/74)."
+    },
+    "src/services/providers/bhs.rs": {
+      "floor": 50,
+      "_comment": "Measured 50.00% (6/12). Issue to file: raise src/services/providers/bhs.rs from 50 to 80 (#57 follow-up)."
+    },
+    "src/services/providers/bitails.rs": {
+      "floor": 57,
+      "_comment": "Measured 57.45% (27/47). Issue to file: raise src/services/providers/bitails.rs from 57 to 80 (#57 follow-up)."
+    },
+    "src/services/providers/chaintracks_client.rs": {
+      "floor": 80,
+      "_comment": "Measured 80.77% (21/26)."
+    },
+    "src/services/providers/fallback_chain_tracker.rs": {
+      "floor": 80,
+      "_comment": "Measured 100.00% (26/26)."
+    },
+    "src/services/providers/mod.rs": {
+      "floor": 80,
+      "_comment": "No mutants generated today; 80 applies to any that appear."
+    },
+    "src/services/providers/pace.rs": {
+      "floor": 75,
+      "_comment": "Measured 75.86% (22/29). Issue to file: raise src/services/providers/pace.rs from 75 to 80 (#57 follow-up)."
+    },
+    "src/services/providers/whatsonchain.rs": {
+      "floor": 46,
+      "_comment": "Measured 46.25% (37/80). Issue to file: raise src/services/providers/whatsonchain.rs from 46 to 80 (#57 follow-up)."
+    },
+    "src/services/services.rs": {
+      "floor": 54,
+      "_comment": "Measured 54.59% (107/196). Issue to file: raise src/services/services.rs from 54 to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action.rs": {
+      "floor": 64,
+      "_comment": "Measured 64.71% (44/68) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/create_action.rs from 64 to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/internalize_action.rs": {
+      "floor": 50,
+      "_comment": "Measured 50.00% (6/12) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/internalize_action.rs from 50 to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/process_action.rs": {
+      "floor": 61,
+      "_comment": "Measured 61.90% (13/21) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/process_action.rs from 61 to 80 (#57 follow-up)."
+    }
+  }
+}
