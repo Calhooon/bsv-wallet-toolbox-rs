@@ -3,6 +3,13 @@
   "rustc": "1.98.1",
   "toolchain": "clippy 0.1.98 (48a229ceae 2026-09-01)",
   "features": "default",
+  "measured_at": "2026-10-24",
+  "metrics": {
+    "files_over_800": 35,
+    "max_file_lines": 11474,
+    "unwraps_outside_tests": 61,
+    "undocumented_public_items": 308
+  },
   "clippy_pedantic": {
     "total": 3274,
     "by_lint": {
@@ -91,6 +98,7 @@
     "count": 35,
     "src_files": 91,
     "src_lines": 94746,
+    "max_lines": 11474,
     "files": {
       "src/storage/sqlx/create_action.rs": 11474,
       "src/storage/sqlx/storage_sqlx.rs": 9955,

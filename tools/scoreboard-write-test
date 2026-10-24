@@ -68,7 +68,8 @@ expect ok "scoreboard unchanged (0 source files)" "bare tree leaves the document
 same "bare tree write is byte-identical" "$document" "$root/docs/NORTH-STAR.md"
 
 root="$(fresh)"
-sed -i.orig 's/measured 2026-10-23: 79/measured 2026-10-23: 78/' "$root/docs/NORTH-STAR.md"
+# Every measured cell gets a trailing digit, whatever the day and the number read.
+sed -i.orig 's/\(measured [0-9-]*: [0-9]*\)/\10/' "$root/docs/NORTH-STAR.md"
 expect refused "table drift" "an edited observed cell fails --check" -- --check --root "$root"
 
 root="$(fresh)"
