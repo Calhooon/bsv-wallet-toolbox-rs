@@ -72,7 +72,7 @@ carries them into every shard. An unfiltered `--shard k/16` is disjoint and
 complete (1981 mutants over eight shards checked with `--list`), so the nightly
 is unaffected. `--in-diff` with a diff naming one line does confine them.
 
-## The lane measurement (2026-10-23)
+## The lane measurement (2026-10-24)
 
 The lane machine was shared (load 12 to 50 on 10 cores), so the lane ran one
 mutant per `cargo mutants` call: `--no-config --file F --in-diff <that line>
@@ -85,7 +85,7 @@ the runs skip one test, `wallet::wallet::busy_door_tests::a_wallet_and_a_monitor
 (52 s under load, a wallet-level store test): skipping a test can only lose
 kills, so those scores are lower bounds on the nightly's. The doors ran the
 whole suite. The door sample is every eighth door mutant of the catalog from
-index 1 (107 of 851); its floors are provisional until the first nightly.
+index 1 (107 of 851); its floors are provisional until the nightly has run once. The sample was taken at beta fc343d6; since then create_action.rs (#105, PR #107) and internalize_action.rs (#138, PR #139) changed on beta, so the door floors are lower bounds that predate those two commits.
 
 Monitor tasks score low on `--lib` alone (seven files at 0%): their tests live
 in `tests/` (`monitor_tests.rs`, `review_status_tests.rs`, `reorg_tests.rs`),
