@@ -131,13 +131,13 @@ impl WhatsOnChain {
 
     /// The provider at another API base: a local fixture standing in for
     /// the explorer, so a test can count the requests that reach it.
-    #[cfg(any(test, feature = "sqlite"))]
+    #[cfg(any(test, feature = "bench-support"))]
     pub(crate) fn with_base_url(chain: Chain, base_url: &str) -> Self {
         Self::with_base_url_and_config(chain, base_url, WhatsOnChainConfig::default())
     }
 
     /// [`Self::with_base_url`] with a config (an API key).
-    #[cfg(any(test, feature = "sqlite"))]
+    #[cfg(any(test, feature = "bench-support"))]
     pub(crate) fn with_base_url_and_config(
         chain: Chain,
         base_url: &str,

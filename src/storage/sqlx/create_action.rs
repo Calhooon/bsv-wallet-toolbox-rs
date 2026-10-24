@@ -2492,7 +2492,7 @@ async fn generate_change(
 pub(super) enum ChangePick<'a> {
     /// Mark each coin picked as allocated to the transaction, from every
     /// free coin (the tests' allocation).
-    #[cfg(any(test, feature = "sqlite"))]
+    #[cfg(any(test, feature = "bench-support"))]
     Allocate,
     /// Before the write lock, on a reader: pick exactly as the allocation
     /// would and mark nothing, never a coin another call of this process has
@@ -2642,7 +2642,7 @@ async fn release_change_input(
 }
 
 /// Allocates a change input from the default basket.
-#[cfg(any(test, feature = "sqlite"))]
+#[cfg(any(test, feature = "bench-support"))]
 pub(super) async fn allocate_change_input(
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -2665,7 +2665,7 @@ pub(super) async fn allocate_change_input(
 
 /// Unstable access for the isolated allocation benchmark, without a new
 /// wallet operation or a change to the production door's selection mode.
-#[cfg(feature = "sqlite")]
+#[cfg(feature = "bench-support")]
 pub(crate) async fn benchmark_allocate_change_input(
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -2717,7 +2717,7 @@ async fn allocate_change_input_by(
     // the loop ends within the number of coins).
     let row = loop {
         let (pick_clause, pick_ids): (String, Vec<i64>) = match pick {
-            #[cfg(any(test, feature = "sqlite"))]
+            #[cfg(any(test, feature = "bench-support"))]
             ChangePick::Allocate => (String::new(), Vec::new()),
             ChangePick::DryRun {
                 offer: Some(offer), ..

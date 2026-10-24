@@ -59,7 +59,7 @@ jobs:
         run: python3 tests/bench_compare_test.py
 
       - name: Measure the door and local explorer ladders
-        run: cargo bench --bench door
+        run: cargo bench --bench door --features bench-support
 
       # Keep the measured candidate in the log so the captain can record the
       # runner's numbers without borrowing the laptop profile or guessing.

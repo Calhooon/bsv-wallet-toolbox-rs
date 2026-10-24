@@ -60,7 +60,7 @@ mod sync;
 #[cfg(test)]
 mod void_lineage_tests;
 
-#[cfg(feature = "sqlite")]
+#[cfg(feature = "bench-support")]
 pub(crate) use create_action::benchmark_allocate_change_input;
 
 pub use crate::storage::broadcast::{
