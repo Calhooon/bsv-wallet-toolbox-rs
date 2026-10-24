@@ -683,7 +683,9 @@ async fn an_outage_is_could_not_look_never_spent() {
 /// T10: the answers of `is_utxo` from the explorers alone, one row per
 /// what WhatsOnChain, BananaBlocks and Bitails say. Agreement on a negative
 /// is the hint tier, never `Spent` (the second pass); the three answers
-/// mean what they meant with two explorers.
+/// mean what they meant with two explorers. BananaBlocks' "not listed"
+/// names `BB_SPENDER`, whose bytes no rung holds: a named spender that
+/// cannot be read is could not look whatever the sets say (#96).
 #[tokio::test]
 async fn is_utxo_gives_the_three_answers() {
     for (woc, bb, bitails, expected) in [
@@ -694,11 +696,13 @@ async fn is_utxo_gives_the_three_answers() {
             Says::Fault,
             UtxoVerdict::UnspentHint,
         ),
+        // Two unspent, and BananaBlocks names a spender whose bytes no
+        // rung holds: could not look (#96), never the unspent hint.
         (
             Says::Unspent,
             Says::NotListed,
             Says::Unspent,
-            UtxoVerdict::UnspentHint,
+            UtxoVerdict::Unknown,
         ),
         // A lone unspent is could not look.
         (
@@ -722,21 +726,23 @@ async fn is_utxo_gives_the_three_answers() {
         // A negative from two.
         (
             Says::NotListed,
-            Says::NotListed,
-            Says::Fault,
-            UtxoVerdict::SpentHint,
-        ),
-        (
-            Says::NotListed,
             Says::RateLimited,
             Says::NotListed,
             UtxoVerdict::SpentHint,
         ),
+        // A negative from two, one BananaBlocks' with its unreadable
+        // spender: could not look (#96).
+        (
+            Says::NotListed,
+            Says::NotListed,
+            Says::Fault,
+            UtxoVerdict::Unknown,
+        ),
         (
             Says::Fault,
             Says::NotListed,
             Says::NotListed,
-            UtxoVerdict::SpentHint,
+            UtxoVerdict::Unknown,
         ),
         // One negative is could not look.
         (
@@ -1275,12 +1281,7 @@ async fn spend_scene(scene: SpendScene) -> SpendFixtures {
         }
         None => spent_route.with_status(404),
     };
-    let spent_route = if scene.header_service {
-        spent_route
-    } else {
-        spent_route.expect(0)
-    };
-    let spent_route = spent_route.create_async().await;
+    let spent_route = spent_route.expect(1).create_async().await;
 
     let options = if scene.header_service {
         ServicesOptions::mainnet().with_chaintracks_url(ct.url())
@@ -1384,10 +1385,11 @@ async fn the_spenders_bytes_and_its_proof_are_a_spend() {
     f.spent_route.assert_async().await;
 }
 
-/// With no header service no proof can be checked, so no spender is asked
-/// for and nothing is `Spent`.
+/// With no header service no proof can be checked, so nothing is `Spent`;
+/// the spender is still asked for and bound by its bytes, which need no
+/// header (#96).
 #[tokio::test]
-async fn without_a_header_service_no_spend_is_a_fact_and_no_spender_is_asked() {
+async fn without_a_header_service_no_spend_is_a_fact() {
     let f = spend_scene(SpendScene {
         woc_unspent: Says::NotListed,
         bitails_unspent: Says::NotListed,
