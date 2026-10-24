@@ -1,0 +1,98 @@
+{
+  "calls": [
+    {
+      "args": {
+        "description": "Recorded custom instructions bound",
+        "outputs": [
+          {
+            "insertionRemittance": {
+              "basket": "bound",
+              "customInstructions": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaéééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞a"
+            },
+            "outputIndex": 0,
+            "protocol": "basket insertion"
+          }
+        ]
+      },
+      "from": "receipt",
+      "method": "internalize_action"
+    },
+    {"args":{"basket":"bound","includeCustomInstructions":true,"limit":10,"offset":0},"method":"list_outputs"}
+  ],
+  "expected": [
+    {
+      "result": {"error":"Validation error: customInstructions length must be at most 1000 bytes, got 1001"},
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1}
+        ],
+        "output_tags": [],
+        "output_tags_map": [],
+        "outputs": [],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [],
+        "proven_txs": [],
+        "sync_states": [],
+        "transactions": [],
+        "tx_labels": [],
+        "tx_labels_map": [],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": []
+    },
+    {
+      "result": {"ok":{"outputs":[],"totalOutputs":0}},
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1}
+        ],
+        "output_tags": [],
+        "output_tags_map": [],
+        "outputs": [],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [],
+        "proven_txs": [],
+        "sync_states": [],
+        "transactions": [],
+        "tx_labels": [],
+        "tx_labels_map": [],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": []
+    }
+  ],
+  "inputs": {
+    "baskets": [{"desired":1,"minimum":1000,"name":"default"}],
+    "services": {
+      "get_merkle_path": {"kind":"success","value":{"name":"fixture","notes":[]}},
+      "post_beef": {"kind":"success","value":[{"name":"fixture","notes":[],"status":"success","txid_results":[]}]}
+    },
+    "transactions": [
+      {"name":"anchor","outputs":[{"satoshis":20000,"script":"51"}],"store":false},
+      {
+        "name": "receipt",
+        "outputs": [{"basket":"default","change":true,"satoshis":9999}],
+        "proven": false,
+        "spends": "anchor.0",
+        "store": false
+      }
+    ],
+    "user": "Alice"
+  },
+  "issue": 138,
+  "name": "internalize_custom_instructions_1001_refused"
+}
