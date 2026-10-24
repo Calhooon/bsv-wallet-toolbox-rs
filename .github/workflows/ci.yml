@@ -31,7 +31,7 @@ env:
 
 jobs:
   # Advisory context, not required by branch protection. This baseline belongs
-  # to the Linux runner; laptop numbers are never compared with it. Until the
+  # to the Linux runner; other hosts' numbers are never compared with it. Until the
   # captain records a Linux baseline, the job logs a candidate and defers comparison.
   bench:
     name: bench
@@ -62,7 +62,7 @@ jobs:
         run: cargo bench --bench door --features bench-support
 
       # Keep the measured candidate in the log so the captain can record the
-      # runner's numbers without borrowing the laptop profile or guessing.
+      # runner's numbers without borrowing another host's profile or guessing.
       - name: Record the Linux candidate
         run: |
           tools/bench-compare "$CRITERION_HOME" --baseline "$RUNNER_TEMP/baseline-linux.json" --profile linux --machine ubuntu-latest --write
