@@ -546,6 +546,7 @@ Use `get_services_call_history(reset)` to retrieve and optionally reset counters
 - `services.rs`: 5 unit tests (creation, options, fiat rates, currency parsing)
 - `collection.rs`: 11 unit tests (basic operations, remove, move_to_last, call history, adaptive timeouts, EMA convergence)
 - `mock.rs`: 15 integration tests (failover, double-spend, sequences, error categorization, call tracking)
+- Bench seam: `benchmark_support::local_explorer_services` builds the real ladders (`Services::with_explorers`) with every explorer at a fixture URL; it and the `with_base_url` constructors it uses outside tests compile only under the non-default `bench-support` feature.
 
 ## Related Documentation
 
