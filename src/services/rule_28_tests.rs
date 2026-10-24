@@ -1677,6 +1677,12 @@ enum NamedSpender {
     BytesFault,
     /// The spender's bytes are a transaction that spends `UTXO_TXID:1`.
     BytesSpendAnother,
+    /// The spender's bytes spend the outpoint; no header service is
+    /// configured.
+    BoundNoHeaderService,
+    /// The spender's bytes spend the outpoint and a courier serves its
+    /// path; the header service answers 500.
+    BoundHeaderServiceFaults,
 }
 
 /// One pass of `scene`, through `is_utxo_with_spender` or `is_utxo` (the
@@ -1725,7 +1731,10 @@ async fn named_spender_pass(
 
     let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(&spender, SPEND_HEIGHT);
     let root = bump.compute_root(Some(&spender)).unwrap();
-    let header_asks = 0;
+    let header_asks = match scene {
+        NamedSpender::BoundHeaderServiceFaults => 1,
+        _ => 0,
+    };
     routes.push(
         ct.mock(
             "GET",
@@ -1736,7 +1745,12 @@ async fn named_spender_pass(
         .create_async()
         .await,
     );
-    let options = ServicesOptions::mainnet().with_chaintracks_url(ct.url());
+    let header_service = !matches!(scene, NamedSpender::BoundNoHeaderService);
+    let options = if header_service {
+        ServicesOptions::mainnet().with_chaintracks_url(ct.url())
+    } else {
+        ServicesOptions::mainnet()
+    };
     let mut services = services_with_explorers(options, &woc.url(), &bitails.url());
     let asked = StdArc::new(AtomicUsize::new(0));
     let courier: MerklePathProvider = StdArc::new(CountedProof {
@@ -1772,7 +1786,10 @@ async fn named_spender_pass(
     for route in &routes {
         route.assert_async().await;
     }
-    let proof_asks = 0;
+    let proof_asks = match scene {
+        NamedSpender::BoundHeaderServiceFaults => 1,
+        _ => 0,
+    };
     assert_eq!(
         asked.load(Ordering::SeqCst),
         proof_asks,
@@ -1803,11 +1820,51 @@ async fn a_named_spender_whose_bytes_spend_another_outpoint_answers_unknown() {
     );
 }
 
+/// With no header service the bytes binding still runs (it needs no
+/// header): the bound spender is named, not confirmed, and no proof is
+/// fetched.
+#[tokio::test]
+async fn without_a_header_service_the_bound_spender_is_named_unconfirmed() {
+    let (spender, _) = a_spender_of(UTXO_TXID, 0);
+    assert_eq!(
+        named_spender_pass(NamedSpender::BoundNoHeaderService, true).await,
+        (
+            UtxoVerdict::SpentHint,
+            Some(BoundSpender {
+                txid: spender,
+                confirmed: false,
+            })
+        )
+    );
+}
+
+/// A header service that faults is "could not confirm", not "could not
+/// look" at the binding: the bound spender is named, not confirmed.
+#[tokio::test]
+async fn a_header_service_fault_names_the_bound_spender_unconfirmed() {
+    let (spender, _) = a_spender_of(UTXO_TXID, 0);
+    assert_eq!(
+        named_spender_pass(NamedSpender::BoundHeaderServiceFaults, true).await,
+        (
+            UtxoVerdict::SpentHint,
+            Some(BoundSpender {
+                txid: spender,
+                confirmed: false,
+            })
+        )
+    );
+}
+
 /// `is_utxo`'s verdict is `is_utxo_with_spender`'s with the spender
 /// dropped, from the same requests, in each scene of #96.
 #[tokio::test]
 async fn is_utxo_is_the_spender_verdict_in_the_scenes_of_96() {
-    for scene in [NamedSpender::BytesFault, NamedSpender::BytesSpendAnother] {
+    for scene in [
+        NamedSpender::BytesFault,
+        NamedSpender::BytesSpendAnother,
+        NamedSpender::BoundNoHeaderService,
+        NamedSpender::BoundHeaderServiceFaults,
+    ] {
         let (verdict, _) = named_spender_pass(scene, true).await;
         assert_eq!(
             named_spender_pass(scene, false).await,
