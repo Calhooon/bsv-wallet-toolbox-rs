@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# The cases of tools/scoreboard-write, each on a copy of docs/NORTH-STAR.md
+# under a scratch root passed with --root.
+#
+#   tools/scoreboard-write-test
+set -uo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+writer="$here/scoreboard-write"
+document="$here/../docs/NORTH-STAR.md"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+pass=0
+fail=0
+
+# fresh: a new root holding the committed document; prints its path.
+fresh() {
+  local root
+  root="$(mktemp -d "$scratch/root.XXXXXX")"
+  mkdir -p "$root/docs" "$root/benches" "$root/tools"
+  cp "$document" "$root/docs/NORTH-STAR.md"
+  echo "$root"
+}
+
+# expect <want: ok|refused> <output substring> <name> -- <args...>
+expect() {
+  local want="$1" text="$2" name="$3"
+  shift 4
+  local out status
+  out="$(python3 "$writer" "$@" 2>&1)"
+  status=$?
+  if { [ "$want" = ok ] && [ "$status" -eq 0 ]; } || { [ "$want" = refused ] && [ "$status" -eq 1 ]; } \
+      && [[ "$out" == *"$text"* ]]; then
+    echo "ok      $name"
+    pass=$((pass + 1))
+  else
+    echo "FAILED  $name (exit $status): $out"
+    fail=$((fail + 1))
+  fi
+}
+
+# same <name> <file> <file>: the two files are byte-identical.
+same() {
+  if cmp -s "$2" "$3"; then
+    echo "ok      $1"
+    pass=$((pass + 1))
+  else
+    echo "FAILED  $1: $2 and $3 differ"
+    fail=$((fail + 1))
+  fi
+}
+
+# holds <name> <file> <text>: the file contains the text.
+holds() {
+  if grep -qF -- "$3" "$2"; then
+    echo "ok      $1"
+    pass=$((pass + 1))
+  else
+    echo "FAILED  $1: $2 lacks $3"
+    fail=$((fail + 1))
+  fi
+}
+
+expect ok "scoreboard check passed" "--check passes on the committed document" -- --check
+
+root="$(fresh)"
+expect ok "scoreboard unchanged (0 source files)" "bare tree leaves the document unchanged" -- --root "$root"
+same "bare tree write is byte-identical" "$document" "$root/docs/NORTH-STAR.md"
+
+root="$(fresh)"
+sed -i.orig 's/measured 2026-10-23: 79/measured 2026-10-23: 78/' "$root/docs/NORTH-STAR.md"
+expect refused "table drift" "an edited observed cell fails --check" -- --check --root "$root"
+
+root="$(fresh)"
+sed -i.orig "s/scoreboard:sha256 [0-9a-f]\{64\}/scoreboard:sha256 $(printf '0%.0s' {1..64})/" "$root/docs/NORTH-STAR.md"
+expect refused "table drift" "a tampered digest fails --check" -- --check --root "$root"
+
+root="$(fresh)"
+printf '{"measured_at": "2026-10-24", "metrics": {"unwraps_outside_tests": 70}}\n' > "$root/tools/ratchet.json"
+expect refused "table drift" "a stale source fails --check" -- --check --root "$root"
+expect ok "scoreboard updated (1 source files)" "the write takes the source" -- --root "$root"
+expect ok "scoreboard check passed (1 source files)" "the recheck passes" -- --check --root "$root"
+holds "the written cell carries the source" "$root/docs/NORTH-STAR.md" "measured 2026-10-24: 70"
+rm "$root/tools/ratchet.json"
+expect ok "scoreboard check passed (0 source files)" "a removed source passes --check" -- --check --root "$root"
+expect ok "scoreboard unchanged (0 source files)" "a removed source writes nothing" -- --root "$root"
+holds "a removed source preserves its cell" "$root/docs/NORTH-STAR.md" "measured 2026-10-24: 70"
+
+# refuse <name> <substring> <source file> <json>: exit 1 and the document unchanged.
+refuse() {
+  local root
+  root="$(fresh)"
+  printf '%s\n' "$4" > "$root/$3"
+  expect refused "$2" "$1 refused" -- --root "$root"
+  same "$1 leaves the document byte-identical" "$document" "$root/docs/NORTH-STAR.md"
+}
+
+bench=benches/baseline.json
+ratchet=tools/ratchet.json
+refuse "a negative number" "must be finite and nonnegative" $bench \
+  '{"measured_at": "2026-10-24", "metrics": {"door_1000_p99_ms": -1}}'
+refuse "a bool" "must be a nonnegative number" $bench \
+  '{"measured_at": "2026-10-24", "metrics": {"door_1000_p99_ms": true}}'
+refuse "a fractional count" "must be a whole number" $ratchet \
+  '{"measured_at": "2026-10-24", "metrics": {"files_over_800": 1.5}}'
+refuse "a bad pin" "must be a version string" $ratchet \
+  '{"measured_at": "2026-10-24", "metrics": {"dependent_pin_min": "0.12"}}'
+# The date error text varies across Python versions.
+refuse "a bad date" "scoreboard error" $ratchet \
+  '{"measured_at": "2026-10-24T00:00:00", "metrics": {"files_over_800": 1}}'
+refuse "a bad case" "invalid ladder case" $bench \
+  '{"measured_at": "2026-10-24", "metrics": {"ladder_p99_ms": {"get raw tx": 0.5}}}'
+refuse "a non-map ladder" "must map operation/provider/case names" $bench \
+  '{"measured_at": "2026-10-24", "metrics": {"ladder_p99_ms": 0.5}}'
+refuse "a mutation score over 100 percent" "mutation_score_pct must be <= 100" $ratchet \
+  '{"measured_at": "2026-10-24", "metrics": {"mutation_score_pct": 100.5}}'
+refuse "a duplicate key" "duplicate JSON key: files_over_800" $ratchet \
+  '{"measured_at": "2026-10-24", "metrics": {"files_over_800": 1, "files_over_800": 2}}'
+refuse "an array" "must contain an object" $ratchet \
+  '[{"measured_at": "2026-10-24", "metrics": {"files_over_800": 1}}]'
+
+one="$(fresh)"
+two="$(fresh)"
+for root in "$one" "$two"; do
+  printf '%s\n' '{"measured_at": "2026-10-24", "metrics": {"door_1000_p99_ms": 1.25, "ladder_p99_ms": {"get_raw_tx/bitails/404": 0.75, "get_raw_tx/woc/200": 0.5}, "ladder_request_count": {"get_raw_tx/bitails/404": 2}}}' > "$root/$bench"
+  printf '%s\n' '{"measured_at": "2026-10-24", "files_over_800": 12, "dependent_pin_max": "0.13.0"}' > "$root/$ratchet"
+done
+expect ok "scoreboard updated (2 source files)" "the write on one tree" -- --root "$one"
+expect ok "scoreboard updated (2 source files)" "the write on a second tree" -- --root "$two"
+same "two writes are byte-identical" "$one/docs/NORTH-STAR.md" "$two/docs/NORTH-STAR.md"
+expect ok "scoreboard unchanged (2 source files)" "a second write on one tree changes nothing" -- --root "$one"
+expect ok "scoreboard check passed (2 source files)" "the written tree passes --check" -- --check --root "$one"
+
+echo "${pass} passed, ${fail} failed"
+[ "$fail" -eq 0 ]
