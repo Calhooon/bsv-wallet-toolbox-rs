@@ -102,12 +102,19 @@ It never automatically accepts that candidate. Other hosts' measurements are sto
 separately and cannot pass a Linux comparison.
 
 The Linux profile is pending until an actual runner supplies it. Its numbers
-are `[D]`, not local measurements. The initial comparison intentionally fails
-with `baseline pending`; after the captain's CI run, copy the logged Linux
+are `[D]`, not local measurements. While it is pending the job logs a notice
+and defers the comparison; after the captain's CI run, copy the logged Linux
 profile into `baseline.json`, preserve the other profiles, and review and
 commit it. Keep `bench` out of required branch-protection contexts. The epic's
 3 ms signed-door, 2 ms allocation-and-sign and 1 ms ladder targets are targets,
 not asserted results. Publish actual Linux numbers to the scoreboard after CI.
+
+The job runs with `DOOR_BENCH_SAMPLES=10`. At ten samples a p99 is close to
+the maximum of ten batches, so a 5 percent gate on a shared runner will flap.
+The job therefore stays advisory, not a required context, until a Linux
+profile is recorded and a week of runs shows the spread. The plan: once a
+cache step exists, raise the samples as far as the job's 25 minute timeout
+allows; the captain decides when `bench` becomes required.
 
 These choices measure T3 and make the check executable (T6). Local, bounded
 fixtures exercise T1; stored proofs against a header oracle exercise T2 and
