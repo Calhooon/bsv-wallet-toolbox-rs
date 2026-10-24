@@ -489,9 +489,11 @@ fn answer_sites(t: &[Token<'_>]) -> Vec<usize> {
             }
             // An impl header naming an answer, inherent or `impl Trait for`,
             // is a site: its body builds `Self::Variant` without naming the
-            // type. Open gap: building through inference never names the type
-            // (`.into()`, `From::from`, `<T as Default>::default()`), and the
-            // lexer cannot see it; such calls need review by eye.
+            // type. Open gaps the lexer cannot see, each a review by eye and
+            // a follow-up (#151): a type alias (`type X = Answer;`) or a
+            // `use path::Answer as X;` rename builds the answer under another
+            // name; building through inference never names the type
+            // (`.into()`, `From::from`, `<T as Default>::default()`).
             if headers.iter().any(|&(s, e)| s < i && i < e) {
                 return true;
             }
