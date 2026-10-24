@@ -452,13 +452,23 @@ fn pattern(t: &[Token<'_>], start: usize, end: usize) -> bool {
     false
 }
 
+fn return_type(t: &[Token<'_>], i: usize) -> bool {
+    // Follow qualified type paths back to the return arrow, including a
+    // leading ::. A value expression in the body has no such arrow.
+    let mut start = i;
+    while start >= 2 && code(t, start - 1, "::") && !code(t, start - 2, "->") {
+        start -= 2;
+    }
+    (start > 0 && code(t, start - 1, "->")) || (start >= 2 && sequence(t, start - 2, &["->", "::"]))
+}
+
 fn answer_sites(t: &[Token<'_>]) -> Vec<usize> {
     (0..t.len())
         .filter(|&i| {
             if t[i].kind != Kind::Code || !SERVICE_ANSWERS.contains(&t[i].text) {
                 return false;
             }
-            if i > 0 && (code(t, i - 1, "struct") || code(t, i - 1, "enum") || code(t, i - 1, "->"))
+            if (i > 0 && (code(t, i - 1, "struct") || code(t, i - 1, "enum"))) || return_type(t, i)
             {
                 return false;
             }
@@ -502,6 +512,15 @@ fn service_answers_are_only_built_by_services() {
         "let parser = BroadcastStatus::parse;\n",
     );
     assert_eq!(answer_sites(&lex(constructors)), [1, 2, 3, 4]);
+    let returns = concat!(
+        "fn plain() -> UtxoVerdict { unreachable!() }\n",
+        "fn qualified() -> crate::services::traits::UtxoVerdict { unreachable!() }\n",
+        "fn absolute() -> ::toolbox::UtxoVerdict { unreachable!() }\n",
+        "fn constructs() -> crate::services::traits::UtxoVerdict {\n",
+        "    crate::services::traits::UtxoVerdict::Spent\n",
+        "}\n",
+    );
+    assert_eq!(answer_sites(&lex(returns)), [5]);
     enforce(
         "service answer constructed outside services",
         scan(answer_sites, |p| p.starts_with("src/services/")),
