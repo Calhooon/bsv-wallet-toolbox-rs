@@ -21,13 +21,15 @@ env:
 
 jobs:
   mutants:
-    name: Mutants shard ${{ matrix.shard }}/8
+    name: Mutants shard ${{ matrix.shard }}/16
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        # 1981 mutants at about 90 s each (build plus the whole lib suite) need 16
+        # shards to stay under the job limit.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -67,7 +69,7 @@ jobs:
           ALL_PROXY: http://127.0.0.1:9
           NO_PROXY: localhost,127.0.0.1,::1
         run: |
-          if cargo mutants --in-place --shard "$SHARD/8" --sharding round-robin --output "$RUNNER_TEMP/mutation"; then
+          if cargo mutants --in-place --shard "$SHARD/16" --sharding round-robin --output "$RUNNER_TEMP/mutation"; then
             result=0
           else
             result=$?
