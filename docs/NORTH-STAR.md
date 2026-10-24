@@ -219,10 +219,8 @@ and [L2 lane addendum][l2] govern the alignment review.
 Programme sources: [toolbox #60][i60] and [#80][epic], the CLI's [#77][cli77]
 document brief and [#106][cli106] programme. At the local refs read on 2026-10-23,
 the CLI document was absent from both `origin/beta` (`206d6d3cdec165e043caf9395a310980021f444f`)
-and `origin/main`; #77 is the specified fallback. The toolbox lane README is
-also absent at base `e9857b8b7494b56c6b44abce7bdff1de9f952d1b`; this lane used
-the rules supplied in its brief. The captain must resolve that link at landing.
-The CLI's [lane shape at its beta pin][cli-lanes] was read.
+and `origin/main`; #77 is the specified fallback. The CLI's
+[lane shape at its beta pin][cli-lanes] was read.
 
 [epic]: https://github.com/Calhooon/bsv-wallet-toolbox-rs/issues/80
 [i52]: https://github.com/Calhooon/bsv-wallet-toolbox-rs/issues/52
