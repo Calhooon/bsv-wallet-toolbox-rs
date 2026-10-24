@@ -21,8 +21,12 @@ The workflow file lives on `main`, because GitHub fires a `schedule` only from
 the default branch and registers no workflow that exists only on `beta` (#153).
 The scheduled run checks out `beta`, where the floors in
 `tools/mutants-floor.json` were measured; `main` is the stable line. A manual
-dispatch measures the ref it is given, so once the file is on `main`,
-`gh workflow run "Nightly mutants" --ref beta` measures beta by hand. The same
+dispatch measures the commit it was given (the sha, so every shard and the
+scores job read one tree however long they run; the schedule reads beta's tip at
+each job's start), so once the file is on `main`,
+`gh workflow run "Nightly mutants" --ref beta` measures beta by hand. A dispatch
+against `main` compares main's tree against the floors beta measured, since the
+tool reads `tools/mutants-floor.json` from the tree it checked out. The same
 five files on `beta` (this document, the workflow, `.cargo/mutants.toml`,
 `tools/mutants-score` and `tools/mutants-floor.json`) are the copy that moves
 with the programme; `main` carries them for the schedule.
