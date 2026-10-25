@@ -84,6 +84,16 @@ impl Normalizer {
                             .checked_add_signed(delta)
                             .context("canonical BEEF size")?,
                     );
+                    if beef.txs.iter().all(|tx| !tx.is_txid_only()) {
+                        beef.version = bsv_rs::transaction::BEEF_V1;
+                        let length = beef.to_binary().len();
+                        self.beef_sizes.insert(
+                            length,
+                            length
+                                .checked_add_signed(delta)
+                                .context("canonical V1 BEEF size")?,
+                        );
+                    }
                 }
             }
         }
@@ -110,6 +120,20 @@ impl Normalizer {
         let key = snake(key);
         if !value.is_null() {
             match key.as_str() {
+                "tx" => {
+                    let raw = bytes(value)?;
+                    let decoded = if Beef::from_binary(&raw).is_ok() {
+                        beef(&raw)?
+                    } else {
+                        transaction(&raw)?
+                    };
+                    return self.walk("decoded", decoded);
+                }
+                "txid" if value.is_array() => {
+                    let raw = bytes(value)?;
+                    anyhow::ensure!(raw.len() == 32, "transaction ID byte length");
+                    return self.string("txid", hex::encode(raw));
+                }
                 "raw_tx" | "source_transaction" => {
                     return self.walk("decoded", transaction(&bytes(value)?)?);
                 }
@@ -203,7 +227,15 @@ impl Normalizer {
                 return self.walk("decoded", parsed);
             }
         }
-        if matches!(key, "reference" | "batch" | "ref_num") {
+        if key == "reference" {
+            let decoded = hex::decode(&value)
+                .ok()
+                .and_then(|raw| String::from_utf8(raw).ok());
+            return Ok(json!(
+                self.token("reference", decoded.as_deref().unwrap_or(&value))
+            ));
+        }
+        if matches!(key, "batch" | "ref_num") {
             return Ok(json!(self.token(
                 if key == "reference" { "reference" } else { key },
                 &value

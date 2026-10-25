@@ -9,7 +9,6 @@ mod seed;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bsv_rs::primitives::PrivateKey;
@@ -17,6 +16,7 @@ use bsv_rs::wallet::CreateActionArgs;
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::storage::{AuthId, StorageCreateActionResult};
 use bsv_wallet_toolbox_rs::StorageSqlx;
+use bsv_wallet_toolbox_rs::Wallet;
 use serde_json::{json, Value};
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 
@@ -24,11 +24,12 @@ use model::Fixture;
 
 struct Replay {
     storage: StorageSqlx,
-    services: Arc<MockWalletServices>,
     auth: AuthId,
     root: PrivateKey,
     seeds: BTreeMap<String, seed::Seeded>,
     drafts: BTreeMap<String, (StorageCreateActionResult, CreateActionArgs)>,
+    wallet: Option<Wallet<StorageSqlx, MockWalletServices>>,
+    wallet_handles: BTreeMap<String, (Option<String>, String)>,
 }
 
 // Ordered by dependency and creation id. Maps are part of the contract too.
@@ -101,7 +102,7 @@ async fn replay_storage_fixtures() -> Result<()> {
         let fixture: Fixture =
             serde_json::from_str(&source).with_context(|| format!("reading {}", path.display()))?;
         anyhow::ensure!(
-            !fixture.name.is_empty() && [53, 103, 138].contains(&fixture.issue),
+            !fixture.name.is_empty() && [53, 66, 103, 138].contains(&fixture.issue),
             "fixture identity"
         );
         anyhow::ensure!(!fixture.calls.is_empty(), "{} has no calls", fixture.name);
@@ -116,7 +117,7 @@ async fn replay_storage_fixtures() -> Result<()> {
             let snapshot = rows(&replay.storage).await?;
             normalizer.prepare(&snapshot, &replay.root)?;
             let history: Vec<_> = replay
-                .services
+                .services()
                 .call_history()
                 .iter()
                 .map(|call| {
@@ -168,6 +169,13 @@ async fn replay_storage_fixtures() -> Result<()> {
 }
 
 impl Replay {
+    fn services(&self) -> &MockWalletServices {
+        self.wallet
+            .as_ref()
+            .expect("fixture wallet initialized")
+            .services()
+    }
+
     fn resolve(&self, value: Value) -> Result<Value> {
         Ok(match value {
             Value::String(s) if s.starts_with("$outpoint:") => {

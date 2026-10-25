@@ -3,6 +3,8 @@
 
 ## Overview
 
+`Wallet::process_action(StorageProcessActionArgs, &str)` posts the references or txids in `send_with` without `spend_lock`; `create_action_offering` with `no_send` builds, and its one-call form releases that lock before posting (#66).
+
 This module provides the main `Wallet<S, V>` struct that implements the complete `WalletInterface` trait from `bsv_sdk::wallet`. The Wallet orchestrates three components: `ProtoWallet` for cryptographic operations (key derivation, signing, encryption), a storage backend for persistent state (UTXOs, transactions, certificates), and a services backend for blockchain interaction (broadcasting, merkle proofs, chain height).
 
 ## Architecture

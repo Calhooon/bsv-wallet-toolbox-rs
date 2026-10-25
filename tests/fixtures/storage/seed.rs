@@ -11,9 +11,7 @@ use bsv_rs::transaction::{
 };
 use bsv_rs::wallet::{Counterparty, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel};
 use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
-use bsv_wallet_toolbox_rs::storage::{
-    AuthId, MonitorStorage, WalletStorageProvider, WalletStorageWriter,
-};
+use bsv_wallet_toolbox_rs::storage::{AuthId, MonitorStorage, WalletStorageWriter};
 use bsv_wallet_toolbox_rs::StorageSqlx;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -111,11 +109,12 @@ pub(super) async fn setup(inputs: &Inputs) -> Result<Replay> {
     let (user, _) = storage.find_or_insert_user(&identity).await?;
     let mut replay = Replay {
         storage,
-        services: Arc::new(MockWalletServices::new()),
         auth: AuthId::with_user_id(identity, user.user_id),
         root,
         seeds: BTreeMap::new(),
         drafts: BTreeMap::new(),
+        wallet: None,
+        wallet_handles: BTreeMap::new(),
     };
     for basket in &inputs.baskets {
         basket_id(&replay, &basket.name).await?;
@@ -140,8 +139,13 @@ pub(super) async fn setup(inputs: &Inputs) -> Result<Replay> {
         .storage
         .set_max_acceptable_proof_height(880_000)
         .await?;
-    replay.services = Arc::new(services(replay.resolve(inputs.services.clone())?)?);
-    replay.storage.set_services(replay.services.clone());
+    let wallet = bsv_wallet_toolbox_rs::Wallet::new(
+        Some(replay.root.clone()),
+        replay.storage.clone(),
+        services(replay.resolve(inputs.services.clone())?)?,
+    )
+    .await?;
+    replay.wallet = Some(wallet);
     Ok(replay)
 }
 

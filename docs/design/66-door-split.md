@@ -372,8 +372,8 @@ provided only when completing a new transaction (`:313-323`).
    has `Error::InvalidTransactionStatus`, so no new error variant is needed.
 
 `[D]` The implementation keeps the owner's public `process_action` name
-and accepts a toolbox `ProcessActionArgs` when the installed bsv-rs has no
-such type: sendWith handles, noSend and acceptDelayedBroadcast. A stored
+and reuses the toolbox's `StorageProcessActionArgs` because bsv-rs has no
+`ProcessActionArgs`: `send_with` handles, `is_no_send` and `is_delayed`. A stored
 reference is resolved in the authenticated user's rows to the txid before
 using the reference's sendWith path. The split does not add a by-value
 `Signed` type or change the storage trait. The proof uses wallet fixtures

@@ -74,16 +74,17 @@ proof funnel, the monitor's tasks, and the status words.
 
 ## 1. The doors
 
-The wallet layer (`src/wallet/wallet.rs`) takes the spend lock, checks
-permissions, and calls the store. Every door is one `write_tx()` on the writer
-(`BEGIN IMMEDIATE`); nothing but the store is awaited while it is held; a
-refusal drops the transaction and sqlx rolls it back. The broadcast, when there
-is one, comes after the commit. The files are `src/storage/sqlx/create_action.rs`,
+The wallet layer (`src/wallet/wallet.rs`) takes the spend lock for building and
+permission checks; the stored post door takes no wallet lock. Each write uses
+`write_tx()` on the writer (`BEGIN IMMEDIATE`); nothing but the store is awaited
+while it is held, and a refusal rolls it back. A broadcast comes after the
+commit. The files are `src/storage/sqlx/create_action/mod.rs`,
 `process_action.rs`, `internalize_action.rs`, `abort_action.rs`.
 
 | door | before the lock (reader, nothing held) | inside the one transaction | after the commit |
 |---|---|---|---|
 | `createAction` (`create_action_at_door_internal`) | outputs and inputs validated; the caller's `inputBEEF` roots read against the tracker (`RecordingTracker`); the change coins picked as a dry run (`ChangePick::DryRun`) from `change = 1` outputs of `completed` and `unproven` transactions in the change basket, within the host's offer, never a coin another call of this process has reserved (`InFlightPicks`); the BEEF assembled from stored bytes, every stored proof's root read against the tracker and the answers kept; a stored proof with no `proof_root_checks` record is checked once and demoted when refuted (a short write through the writer) | `transactions` row (`unsigned`), labels, the inputs, the allocation among the pre-checked coins only (`ChangePick::Within`: `outputs.spendable = 0`, `spent_by`), the new outputs and tags, the BEEF rebuilt from the kept answers (`CachedTracker`); with `sign_and_process` the signer (`DoorSigner`, local CPU) and `process_action_writes` on the same connection; one commit | `post_beef`; the outcome classified; `update_transaction_status_after_broadcast`; a busy on that write is logged (`post_broadcast_status_write_failed`) and the call still succeeds, `send_waiting` heals the row |
+| `processAction` (`Wallet::process_action`, #66) | user-scoped references or txids resolved; templates refused; signed BEEF rebuilt and roots checked | request `unsent`, transaction `sending`, result `sending`; one short commit | no wallet lock or writer across the post; every named instance's word recorded; acceptance writes `unmined`/`unproven` in short writes; a repeat answers `unproven` without posting |
 | `signAction` (`process_action_internal`) | the signature, local CPU (`src/wallet/signer.rs`) | `transactions` row: txid, `raw_tx`, status (`nosend`, `sending`, or `unproven` when already sent); `outputs` script offsets; the `proven_tx_reqs` row (`nosend`, `unsent`); one commit | as `createAction`: post, classify, status write |
 | `internalizeAction` (`internalize_action_internal`) | arguments validated (`customInstructions` at most 1,000 bytes); the bytes refused on shape (`refuse_invalid_beef_bytes`); parsed; the structure checked; with a tracker every BUMP root checked (`verify_beef_merkle_proofs`, `Strict`); the subject's own BUMP checked against the tracker and the gate (`validate_bump_claim`); the default basket read | `transactions` row inserted, or merged into an existing `completed`, `unproven` or `nosend` one; `outputs` (a wallet payment goes to the change basket with `change = 1`; a basket insertion to its basket); labels and tags; the inputs it consumes that are ours marked spent; the `proven_txs` link when the BUMP checked, else a `proven_tx_reqs` row (`unmined` when the gate deferred a checked BUMP, `unsent` for a new unproven transaction); one commit | a new `unsent` request is posted once (`broadcast_new_internalized_req`); an acceptance moves it to `unmined`; every other word is a hint recorded on the request |
 | `abortAction`, a template (`unsigned`, `unprocessed`, `nosend`, `nonfinal`, `unfail`) | the transaction read on the pool | the outputs checked unspent; the inputs released (`spendable = 1`, `spent_by = NULL`); status `failed`; one commit | nothing |
@@ -257,11 +258,11 @@ that height: a definite false is `NOTE_REFUTED` (a refutation, retained for the
 re-prove) and the next rung is asked; a tracker error is a fault. Every
 per-provider verdict rides in the answer's notes.
 
-**The broadcast ladder.** `post_beef` tries the broadcasters in order
-(`PostBeefMode::UntilSuccess` by default; `PromiseAll` posts to all); the
-provider that accepted the previous broadcast goes to the front, never ahead of
-a configured Arcade; the broadcast memory (`broadcast_seen`) lets a provider
-skip the ancestors it has already accepted. What comes back is classified
+**The broadcast ladder.** `post_beef` submits to every named broadcaster in
+parallel by default (`PostBeefMode::PromiseAll`, B3), retaining named transport
+faults alongside answers. Explicit `UntilSuccess` keeps the ordered path and
+its broadcast memory (`broadcast_seen`); the public post door records every
+instance's result on the request. What comes back is classified
 (`classify_broadcast_results`) and handed to the store as a hint: an acceptance
 moves the request to `unmined` and the transaction to `unproven`; every other
 word (a refusal, a 465, a double-spend word named or not, an orphan-mempool
@@ -501,7 +502,7 @@ Where the code and a charter at `36d2d6b` disagree, both cited; nothing judged.
 |---|---|---|
 | D1 | `abort_action` honours an abort of a broadcast transaction (`sending`, `unproven`) when the store holds no chain evidence: inputs released, outputs dead, request `invalid`, descendants retired (`src/storage/sqlx/abort_action.rs`, module doc; `test_abort_sending_transaction_without_chain_evidence_succeeds`); `retire_undeliverable_txid` is the same host's word | `wallet.md section 5`: abort `t`, `t` announced or later: unchanged, refused; `tracker.md section 1`: `abandoned` refused once the word left `built`; `broadcaster.md section 1 B4` (d): a template already announced is never abandoned; the exit is the replacement spend (B4 (c), #67) |
 | D2 | `review_proven_txs` audits a fresh window of the last 12 heights below the gate every ten minutes (`REVIEW_HEIGHTS`, `src/monitor/tasks/review_proven_txs.rs`; `docs/REORG-DIVERGENCES.md` R4 against the reference) | `tracker.md section 4`, "Never a schedule over every transaction": the 12-height review every ten minutes is named as what the rule replaces; `wallet.md section 4`, "Never a sweep" |
-| D3 | `post_beef` stops at the one accepting broadcaster by default (`PostBeefMode::UntilSuccess`, `src/services/services.rs`), the accepting provider moved to the front for the next post | `broadcaster.md section 1 B3`: one submission per instance the host names (three by default), every word recorded per instance; ruled 2026-10-19 (`broadcaster.md section 6`) |
+| D3, closed (#66, #167) | `post_beef` defaults to `PromiseAll`, one pass over every named instance with every result retained; the post door records those words per instance | `broadcaster.md` B3, ruled in section 6; `UntilSuccess` is an explicit opt-in on the 0.14 line pending the owner's removal word |
 | D4 | `process_sync_chunk_internal` takes the incoming row when `chunk.updated_at > local.updated_at` (`src/storage/sqlx/sync.rs`; `test_process_sync_chunk_upsert_existing`) | `storage.md section 2 S4`: no timestamp is a word; a merge never compares `updated_at` (a draft row, not yet ruled, as `storage.md section 2` says after its table) |
 | D5 | the door allocates change from every `change = 1` output of a `completed` or `unproven` transaction in the change basket (`count_change_inputs`, `src/storage/sqlx/create_action.rs`), and `internalize_action` writes a wallet payment as `change = 1` in that basket, so a received unproven payment is offered under the same rule as the wallet's own change; no `allowReceived` word is read | `wallet.md section 2` and `section 5` (R1 (d)): a `received` coin is never offered under a host rule, only under the rule the action names at the door, off by default and recorded on the action (`underReceivedRule`) |
 | D6 | the `WalletStorageManager` and `StorageClient` keep the reference's active-and-backups shape; no push of an action to a second store before the broadcast | `storage.md section 2 S1`: two instances either share one store or the spending instance pushes its action to the other's store before it broadcasts (ruled); `storage.md section 6` records that S1's push is not implemented by the CLI |
