@@ -1213,14 +1213,14 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Test 11: Abort sending transaction without chain evidence - succeeds
+    // Test 11: Abort sending transaction after acceptance - refused
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_abort_sending_transaction_without_chain_evidence_succeeds() {
+    async fn test_abort_sending_with_an_accepting_broadcaster_is_refused() {
         let (storage, user_id, auth) = setup_test_storage().await;
 
-        // A sending outgoing transaction the broadcaster merely accepted.
+        // A sending outgoing transaction the broadcaster accepted.
         let reference = "test-abort-ref-11";
         let txid = "a".repeat(64);
         let tx_id =
@@ -1231,7 +1231,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = abort_action_internal(
+        let err = abort_action_internal(
             &storage,
             auth.user_id.unwrap(),
             AbortActionArgs {
@@ -1239,10 +1239,12 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+        .unwrap_err();
 
-        assert!(result.aborted);
-        assert_eq!(get_transaction_status(&storage, tx_id).await, "failed");
+        assert!(
+            matches!(err, Error::InvalidTransactionStatus(ref msg) if msg.contains("acceptance"))
+        );
+        assert_eq!(get_transaction_status(&storage, tx_id).await, "sending");
     }
 
     // -------------------------------------------------------------------------
