@@ -1365,6 +1365,8 @@ where
                 None
             };
 
+            drop(_spend_guard);
+
             // Broadcast the transaction if not no_send and not delayed
             // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
             if !no_send && !accept_delayed_broadcast {
