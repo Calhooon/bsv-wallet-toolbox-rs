@@ -83,6 +83,21 @@ fn completed() -> String {
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Call {
+    WalletCreateAction {
+        #[serde(rename = "as")]
+        name: String,
+        args: Value,
+        offer: Vec<String>,
+    },
+    WalletProcessAction {
+        from: String,
+        #[serde(default)]
+        by_reference: bool,
+        #[serde(default)]
+        no_send: bool,
+        #[serde(default)]
+        delayed: bool,
+    },
     CreateAction {
         #[serde(rename = "as")]
         name: String,

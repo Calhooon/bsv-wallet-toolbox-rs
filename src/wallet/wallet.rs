@@ -1007,7 +1007,7 @@ where
     S: WalletStorageProvider + Send + Sync + 'static,
     V: WalletServices + Send + Sync + 'static,
 {
-    /// Post signed actions by reference or txid, using the reference's sendWith path.
+    /// Post signed actions by reference or txid, using the reference's `sendWith` path.
     ///
     /// Build with `create_action_offering` and `no_send`, then pass the handles in
     /// `send_with` with `is_send_with = true` and `is_new_tx = false`. A single

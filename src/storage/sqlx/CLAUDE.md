@@ -3,6 +3,8 @@
 
 ## Overview
 
+The stored sendWith path in `process_action.rs` resolves user-scoped handles, rebuilds BEEF before the writer, commits `unsent`/`sending`, posts without the writer, then records every instance's word; signed noSend outputs retain their spendable flag as at the reference pin (#66, B3).
+
 This module provides a production-ready storage backend for BSV wallet state using SQLx with SQLite. It implements the full `WalletStorageProvider` trait hierarchy, enabling persistent storage of transactions, outputs, certificates, and synchronization state. The implementation mirrors the TypeScript `@bsv/wallet-toolbox` storage architecture.
 
 ## Files

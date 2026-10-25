@@ -12,7 +12,7 @@
 //!
 //! ## Crash Safety
 //!
-//! Completion of a new transaction uses one write transaction. The stored sendWith
+//! Completion of a new transaction uses one write transaction. The stored `sendWith`
 //! path resolves and verifies BEEF before a short preparation transaction, releases
 //! the writer before posting, then records the outcomes in short writes. A crash
 //! after preparation leaves `unsent` requests for the monitor to retry.

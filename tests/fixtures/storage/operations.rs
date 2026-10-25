@@ -129,6 +129,44 @@ fn sign(
 impl Replay {
     pub(super) async fn execute(&mut self, call: &Call) -> Result<Value> {
         match call {
+            Call::WalletCreateAction { name, args, offer } => {
+                self.wallet_create(name, args, offer).await
+            }
+            Call::WalletProcessAction {
+                from,
+                by_reference,
+                no_send,
+                delayed,
+            } => {
+                let (txid, reference) = self
+                    .wallet_handles
+                    .get(from)
+                    .context("wallet action handle")?;
+                let handle = if *by_reference {
+                    reference.clone()
+                } else {
+                    txid.clone().context("signed wallet action")?
+                };
+                recorded(
+                    self.wallet
+                        .as_ref()
+                        .context("wallet")?
+                        .process_action(
+                            StorageProcessActionArgs {
+                                is_new_tx: false,
+                                is_send_with: !no_send,
+                                is_no_send: *no_send,
+                                is_delayed: *delayed,
+                                reference: None,
+                                txid: None,
+                                raw_tx: None,
+                                send_with: vec![handle],
+                            },
+                            "fixture.local",
+                        )
+                        .await,
+                )
+            }
             Call::CreateAction {
                 name,
                 args,
@@ -264,7 +302,7 @@ impl Replay {
                     Some("hash_be") => Some(GetUtxoStatusOutputFormat::HashBE),
                     Some(other) => anyhow::bail!("unknown script format {other}"),
                 };
-                recorded(self.services.get_utxo_leads(script, format).await)
+                recorded(self.services().get_utxo_leads(script, format).await)
             }
             Call::SendWaiting => {
                 recorded(self.storage.send_waiting_transactions(Duration::ZERO).await)
@@ -280,6 +318,50 @@ impl Replay {
                         .await?;
                 Ok(json!({"ok": {"agedRequests": result.rows_affected()}}))
             }
+        }
+    }
+
+    async fn wallet_create(&mut self, name: &str, args: &Value, offer: &[String]) -> Result<Value> {
+        let args: CreateActionArgs = serde_json::from_value(self.resolve(args.clone())?)?;
+        let mut ids = Vec::new();
+        for outpoint in offer {
+            let (seed, vout) = outpoint.rsplit_once('.').context("offer name.vout")?;
+            let txid = self.seeds.get(seed).context("offer seed")?.tx.id();
+            ids.push(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT output_id FROM outputs WHERE txid = ? AND vout = ?",
+                )
+                .bind(txid)
+                .bind(vout.parse::<i64>()?)
+                .fetch_one(self.storage.pool())
+                .await?,
+            );
+        }
+        let result = self
+            .wallet
+            .as_ref()
+            .context("wallet")?
+            .create_action_offering(args, "fixture.local", &ids)
+            .await;
+        match result {
+            Ok(result) => {
+                let txid = result.txid.map(hex::encode);
+                let reference = if let Some(signable) = &result.signable_transaction {
+                    String::from_utf8(signable.reference.clone())?
+                } else {
+                    sqlx::query_scalar(
+                        "SELECT reference FROM transactions WHERE txid = ? AND user_id = ?",
+                    )
+                    .bind(&txid)
+                    .bind(self.auth.user_id)
+                    .fetch_one(self.storage.pool())
+                    .await?
+                };
+                self.wallet_handles
+                    .insert(name.to_string(), (txid, reference));
+                Ok(json!({"ok": result}))
+            }
+            Err(error) => Ok(json!({"error": error.to_string()})),
         }
     }
 }
