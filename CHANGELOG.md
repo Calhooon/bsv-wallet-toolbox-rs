@@ -4,7 +4,7 @@
 
 ### Added
 
-- `Error::SpendRefused { offset: u64, txid: String, input: Option<u32>, why: SpendRefusal }` (#103), with the verifier's byte offset, hexadecimal transaction ID, input and reason preserved. `SpendRefusal` is re-exported from the crate; its `Debug` text is the error's reason text.
+- `Error::SpendRefused { offset: u64, txid: String, input: Option<u32>, why: SpendRefusal }` (#103), with the verifier's byte offset, hexadecimal transaction ID, input and reason preserved; the one public addition of this change (`Error` is `#[non_exhaustive]`). `why` is bsv-rs's `beef_stream::SpendRefusal`, named through bsv-rs; the error's text is `spend refused at offset N, input I of <txid>: <why>`, where a script refusal prints the interpreter's own sentence and every other arm names its rule in the crate's words (bsv-rs 0.8.2 gives the type no `Display`; bsv-rs #213 adds one).
 
 - `MockWalletServicesBuilder::is_utxo_with_spender_response(MockResponse<(UtxoVerdict, Option<BoundSpender>)>)` and `MockWalletServices::set_is_utxo_with_spender_response` (the same, on a built mock), for bsv-wallet-cli: the mock's `is_utxo_with_spender` answers the set response, so a host can test a bound spender against the mock (an error answers `Unknown` and no spender; a `Sequence` is consumed by this call's own count). Every call is recorded in `call_history` as `is_utxo_with_spender`. Unset, it answers as before, `is_utxo`'s verdict and `None` (the trait's default), with that `is_utxo` call recorded beside it; no existing caller's answer moves. Tests: `the_mock_answers_a_set_spender_and_records_the_call`, `the_mock_unset_answers_is_utxos_verdict_and_no_spender`.
 
