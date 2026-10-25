@@ -341,6 +341,12 @@ impl ChainTracker for FallbackChainTracker {
             .await
             .map_err(|e| ChainTrackerError::NetworkError(e.to_string()))
     }
+
+    async fn mining_tip(
+        &self,
+    ) -> Result<Option<bsv_rs::transaction::beef_stream::ChainTip>, ChainTrackerError> {
+        self.primary.mining_tip().await
+    }
 }
 
 #[cfg(test)]
