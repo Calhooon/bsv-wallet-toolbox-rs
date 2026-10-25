@@ -1,19 +1,21 @@
 name: Nightly mutants
 
-# Informational schedule, never a required branch protection context.
+# Informational, never a required branch protection context. Manual dispatch
+# only: the 04:41 UTC schedule is off (#153), because sixteen shards at about
+# 2.8 minutes a mutant ran past the 330 minute job limit every night and held
+# sixteen of the account's runner slots for five and a half hours, so no run
+# finished and every other repository's CI queued behind it. It returns when the
+# run is shaped to finish: the door files nightly in fewer shards, the full
+# inventory weekly, or a cheaper per-mutant build.
 on:
-  schedule:
-    - cron: '41 4 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# On a schedule github.ref reads the default branch (main), yet the run measures
-# beta: key by the event and the ref checked out, so a scheduled beta run and a
-# dispatched run never share a group.
+# One run per ref at a time; a second dispatch against the same ref queues.
 concurrency:
-  group: nightly-mutants-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'beta' || github.ref }}
+  group: nightly-mutants-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -34,11 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # The floors in tools/mutants-floor.json were measured on beta. A schedule
-          # fires only from the default branch, so this file lives on main (the
-          # stable line) and the scheduled run checks out beta; a dispatch measures
-          # the ref it was given.
-          ref: ${{ github.event_name == 'schedule' && 'beta' || github.sha }}
+          # The floors in tools/mutants-floor.json were measured on beta; main is
+          # the stable line and carries this file so the dispatch is registered.
+          # A dispatch measures the sha it was given, so every shard and the
+          # scores job read one tree however long they run.
+          ref: ${{ github.sha }}
 
       # The runner context is not available in workflow-level env.
       - name: Keep build output and scratch in the runner temp
@@ -119,11 +121,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # The floors in tools/mutants-floor.json were measured on beta. A schedule
-          # fires only from the default branch, so this file lives on main (the
-          # stable line) and the scheduled run checks out beta; a dispatch measures
-          # the ref it was given.
-          ref: ${{ github.event_name == 'schedule' && 'beta' || github.sha }}
+          # The floors in tools/mutants-floor.json were measured on beta; main is
+          # the stable line and carries this file so the dispatch is registered.
+          # A dispatch measures the sha it was given, so every shard and the
+          # scores job read one tree however long they run.
+          ref: ${{ github.sha }}
 
       - name: Download all shards
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
