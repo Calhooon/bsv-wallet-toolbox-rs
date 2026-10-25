@@ -190,6 +190,16 @@ pub enum Error {
         kind: bsv_rs::transaction::Kind,
     },
 
+    /// The BEEF's bytes are well formed and the verifier refused a spend inside it (#103).
+    /// The offset, input and reason are the verifier's own words.
+    #[error("spend refused at offset {offset}, input {input:?} of {txid}: {why:?}")]
+    SpendRefused {
+        offset: u64,
+        txid: String,
+        input: Option<u32>,
+        why: bsv_rs::transaction::beef_stream::SpendRefusal,
+    },
+
     /// A function argument is invalid or out of range.
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
