@@ -255,3 +255,30 @@ async fn post_keeps_acceptance_and_refusal_words_per_instance() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn no_send_outputs_match_the_reference_before_and_after_post() -> Result<()> {
+    let wallet = wallet().await?;
+    let txid = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
+    for posted in [false, true] {
+        if posted {
+            wallet
+                .process_action(post(txid.clone()), "fixture.local")
+                .await?;
+        }
+        let flags: Vec<bool> = sqlx::query_scalar("SELECT spendable FROM outputs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_all(wallet.storage().pool())
+            .await?;
+        assert!(!flags.is_empty());
+        assert!(
+            flags.iter().all(|spendable| *spendable),
+            "the reference marks every signed output spendable, posted={posted}"
+        );
+    }
+    let locked: bool = sqlx::query_scalar("SELECT spendable FROM outputs WHERE output_id = 1")
+        .fetch_one(wallet.storage().pool())
+        .await?;
+    assert!(!locked, "the input remains locked to this action");
+    Ok(())
+}
