@@ -267,7 +267,11 @@ impl StorageSqlx {
 }
 
 impl StorageSqlx {
-    pub(super) async fn mark_rejected(&self, txid: &str, double_spend: bool) -> Result<bool> {
+    pub(super) async fn mark_transaction_rejected_impl(
+        &self,
+        txid: &str,
+        double_spend: bool,
+    ) -> Result<bool> {
         let now = chrono::Utc::now();
         let req_status = if double_spend {
             "doubleSpend"
