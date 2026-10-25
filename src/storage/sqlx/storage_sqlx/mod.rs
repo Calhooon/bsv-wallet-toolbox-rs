@@ -8,6 +8,7 @@ use super::{
     proof_root_checks, sync, BroadcastOutcome,
 };
 mod baskets;
+mod beef_compaction;
 #[cfg(test)]
 mod certificate_tests;
 mod certificates;
