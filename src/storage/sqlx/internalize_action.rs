@@ -786,40 +786,10 @@ async fn load_existing_outputs(
     .fetch_all(&mut *conn)
     .await?;
 
-    let mut outputs = Vec::new();
-    for row in rows {
-        outputs.push(TableOutput {
-            output_id: row.get("output_id"),
-            user_id: row.get("user_id"),
-            transaction_id: row.get("transaction_id"),
-            basket_id: row.get("basket_id"),
-            txid: row.get("txid"),
-            vout: row.get("vout"),
-            satoshis: row.get("satoshis"),
-            locking_script: row.get("locking_script"),
-            script_length: row.get("script_length"),
-            script_offset: row.get("script_offset"),
-            output_type: row.get("type"),
-            provided_by: row.try_get("provided_by").unwrap_or("you".to_string()),
-            purpose: row.try_get("purpose").ok(),
-            output_description: row.try_get("output_description").ok(),
-            spent_by: row.try_get("spent_by").ok().flatten(),
-            sequence_number: row
-                .try_get::<Option<i32>, _>("sequence_number")
-                .ok()
-                .flatten()
-                .map(|v| v as u32),
-            spending_description: row.try_get("spending_description").ok(),
-            spendable: row.get("spendable"),
-            change: row.get("change"),
-            derivation_prefix: row.get("derivation_prefix"),
-            derivation_suffix: row.get("derivation_suffix"),
-            sender_identity_key: row.get("sender_identity_key"),
-            custom_instructions: row.get("custom_instructions"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        });
-    }
+    let outputs: Vec<TableOutput> = rows
+        .iter()
+        .map(super::storage_sqlx::output_from_row)
+        .collect();
 
     Ok(outputs)
 }

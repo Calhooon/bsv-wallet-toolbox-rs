@@ -251,7 +251,8 @@ impl ChaintracksServiceClient {
 
     // Network metadata is stable for this service. Header context is read anew
     // for each verification: one tip and one range of at most eleven headers.
-    async fn verifier_tip(&self) -> Result<ChainTip> {
+    /// The network, read once per client (`/getChain`) and kept.
+    async fn verifier_chain(&self) -> Result<Chain> {
         let chain = self
             .chain
             .get_or_try_init(|| async {
@@ -268,6 +269,11 @@ impl ChaintracksServiceClient {
                 })
             })
             .await?;
+        Ok(*chain)
+    }
+
+    async fn verifier_tip(&self) -> Result<ChainTip> {
+        let chain = self.verifier_chain().await?;
         let tip = self.find_chain_tip_header().await?;
         let start = tip.height.saturating_sub(10);
         let count = tip.height - start + 1;
@@ -285,26 +291,7 @@ impl ChaintracksServiceClient {
                     "Chaintracks getHeaders: missing or invalid header bytes".into(),
                 )
             })?;
-        let tip_bytes = tip.to_binary();
-        if bytes.len() != count as usize * 80 || bytes[bytes.len() - 80..] != tip_bytes {
-            return Err(Error::ServiceError(
-                "Chaintracks getHeaders: range does not end at the tip".into(),
-            ));
-        }
-        let mut previous: Option<[u8; 32]> = None;
-        let mut times = Vec::with_capacity(count as usize);
-        for header in bytes.as_chunks::<80>().0 {
-            if previous.is_some_and(|hash| header[4..36] != hash) {
-                return Err(Error::ServiceError(
-                    "Chaintracks getHeaders: disconnected range".into(),
-                ));
-            }
-            previous = Some(bsv_rs::primitives::sha256d(header));
-            times.push(u32::from_le_bytes([
-                header[68], header[69], header[70], header[71],
-            ]));
-        }
-        times.sort_unstable();
+        let median_time_past = median_time_past(&bytes, &tip.to_binary(), count as usize)?;
         // bsv-script-lean origin/main:docs/PARAMETERS.md, network table:
         // node chainparams.cpp:18,20,1046,1342 (Genesis and CSV activation).
         let (genesis_height, csv_height) = match chain {
@@ -313,7 +300,7 @@ impl ChaintracksServiceClient {
         };
         Ok(ChainTip {
             height: tip.height,
-            median_time_past: times[times.len() / 2],
+            median_time_past,
             genesis_height,
             csv_height,
             // A historical pre-CSV timestamp lock requires a candidate block
@@ -321,6 +308,32 @@ impl ChaintracksServiceClient {
             next_block_time: None,
         })
     }
+}
+
+/// The median time past of a connected header range that ends at the tip:
+/// `bytes` holds `count` headers of 80 bytes, each naming the previous one's
+/// hash, the last equal to `tip_bytes`; the middle timestamp of the range.
+fn median_time_past(bytes: &[u8], tip_bytes: &[u8], count: usize) -> Result<u32> {
+    if bytes.len() != count * 80 || &bytes[bytes.len() - 80..] != tip_bytes {
+        return Err(Error::ServiceError(
+            "Chaintracks getHeaders: range does not end at the tip".into(),
+        ));
+    }
+    let mut previous: Option<[u8; 32]> = None;
+    let mut times = Vec::with_capacity(count);
+    for header in bytes.as_chunks::<80>().0 {
+        if previous.is_some_and(|hash| header[4..36] != hash) {
+            return Err(Error::ServiceError(
+                "Chaintracks getHeaders: disconnected range".into(),
+            ));
+        }
+        previous = Some(bsv_rs::primitives::sha256d(header));
+        times.push(u32::from_le_bytes([
+            header[68], header[69], header[70], header[71],
+        ]));
+    }
+    times.sort_unstable();
+    Ok(times[times.len() / 2])
 }
 
 #[async_trait]

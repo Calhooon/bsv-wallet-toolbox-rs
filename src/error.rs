@@ -196,9 +196,14 @@ pub enum Error {
     /// the crate's own words since bsv-rs gives the reason no `Display`.
     #[error("spend refused at offset {offset}, input {} of {txid}: {}", input_text(*.input), spend_refusal_text(.why))]
     SpendRefused {
+        /// The byte offset within the submitted BEEF of the input the verifier
+        /// refused (or of the transaction, for the value rules).
         offset: u64,
+        /// The spending transaction, hexadecimal.
         txid: String,
+        /// The input the verifier named, when one input is named.
         input: Option<u32>,
+        /// The verifier's own reason.
         why: bsv_rs::transaction::beef_stream::SpendRefusal,
     },
 
