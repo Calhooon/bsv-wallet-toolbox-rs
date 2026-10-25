@@ -123,6 +123,10 @@ impl Normalizer {
         }
         Ok(match value {
             Value::Object(mut fields) => {
+                // The verifier's fields are evidence, including the exact txid.
+                if fields.contains_key("spendRefused") {
+                    return Ok(Value::Object(fields));
+                }
                 if let (Some(txid), Some(vout), Some(offset)) = (
                     fields.get("txid").and_then(Value::as_str),
                     fields.get("vout").and_then(Value::as_u64),
@@ -415,6 +419,17 @@ fn signature_size_delta(raw: &[u8]) -> Result<isize> {
             }
         })
         .sum())
+}
+
+#[test]
+fn a_spend_refusal_keeps_every_verifier_field_verbatim() -> Result<()> {
+    let refusal = json!({
+        "accepted": false,
+        "error": format!("spend refused at offset 156, input Some(0) of {}: Script(\"failed\")", "ab".repeat(32)),
+        "spendRefused": { "offset": 156, "input": 0, "txid": "ab".repeat(32), "why": "Script(\"failed\")" }
+    });
+    assert_eq!(Normalizer::default().value(refusal.clone())?, refusal);
+    Ok(())
 }
 
 #[test]

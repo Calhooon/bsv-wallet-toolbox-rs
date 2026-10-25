@@ -18,7 +18,19 @@ use super::{model::Call, seed, Replay};
 fn recorded<T: Serialize>(result: bsv_wallet_toolbox_rs::Result<T>) -> Result<Value> {
     match result {
         Ok(value) => Ok(json!({ "ok": serde_json::to_value(value)? })),
-        Err(error) => Ok(json!({ "error": error.to_string() })),
+        Err(error) => match &error {
+            bsv_wallet_toolbox_rs::Error::SpendRefused {
+                offset,
+                txid,
+                input,
+                why,
+            } => Ok(json!({
+                "accepted": false,
+                "error": error.to_string(),
+                "spendRefused": { "offset": offset, "txid": txid, "input": input, "why": format!("{why:?}") }
+            })),
+            _ => Ok(json!({ "error": error.to_string() })),
+        },
     }
 }
 
