@@ -5865,7 +5865,7 @@ impl MonitorStorage for StorageSqlx {
         for ids in failed_ids.chunks(400) {
             let placeholders = vec!["?"; ids.len()].join(",");
             let sql = format!(
-                "UPDATE outputs SET spendable = 0, spent_by = NULL, updated_at = ? \
+                "UPDATE outputs SET spendable = 0, updated_at = ? \
                  WHERE transaction_id IN ({placeholders})"
             );
             let mut query = sqlx::query(&sql).bind(now);
