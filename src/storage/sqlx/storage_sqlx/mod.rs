@@ -35,7 +35,7 @@ use super::create_action::{
 /// Every schema migration, in order. Each statement is `IF NOT EXISTS`, so
 /// the whole list is idempotent on a database at any earlier schema.
 const MIGRATIONS: &[(&str, &str)] = &[
-    ("001_initial", include_str!("migrations/001_initial.sql")),
+    ("001_initial", include_str!("../migrations/001_initial.sql")),
     (
         super::broadcast_seen::MIGRATION_002_BROADCAST_SEEN_NAME,
         super::broadcast_seen::MIGRATION_002_BROADCAST_SEEN_SQL,
