@@ -993,8 +993,9 @@ pub(super) async fn process_action_writes(
         )
         .await?;
 
-        // nosend outputs stay spendable=false until the tx is actually broadcast
-        let mark_spendable = !args.is_no_send || args.is_send_with;
+        // The reference marks every signed output spendable, including noSend.
+        // Its transaction status gates allocation until the action is posted.
+        let mark_spendable = true;
 
         let settings = storage.get_settings();
         for output in &outputs {
@@ -2230,8 +2231,10 @@ mod tests {
         assert!(script_offset.is_some(), "script_offset should be set");
         assert!(script_length.is_some(), "script_length should be set");
         assert_eq!(script_length.unwrap(), 25); // P2PKH script length
-                                                // nosend outputs are NOT marked spendable until the tx is actually broadcast
-        assert!(!spendable, "nosend output should not be marked spendable");
+        assert!(
+            spendable,
+            "signed noSend outputs follow the reference's flag"
+        );
     }
 
     /// Test proven_tx_req status based on different modes
