@@ -316,3 +316,70 @@ Recorded on #66 the same day; they close questions 5 to 9 and fix the plan the i
 3. *Section 8's proof plan.* Items that name `Post` arms, `into_result` or a CHANGELOG line for the `Signed` type fall away; the rest holds with the post door in place of `broadcast` and `create_action_offering` with `no_send` in place of `allocate_and_sign`. The implementing lane restates the plan in its PR before the proof runs.
 
 The implementing lane runs after #61 (the `create_action.rs` split), since it lands in that code.
+
+## 11. The reference's division at edf6e03 (2026-10-25)
+
+`[X]` Read with `git -C ~/bsv/ts-stack show edf6e03:<path>`, at
+`edf6e03dad39bd7bc4fc6e73e64de3a2b6f805c9`. Paths below are relative to
+`packages/wallet/wallet-toolbox/src/`. There is no
+`signer/methods/processAction.ts` at this pin: that helper is exported by
+`signer/methods/createAction.ts:305-327`. It forwards `sendWith` and the
+noSend/delayed flags to storage; its `reference`, `txid` and `rawTx` are
+provided only when completing a new transaction (`:313-323`).
+
+1. **Which outputs stay spendable.** All signed outputs, including the
+   user's outputs and change, have `spendable: true`, even under noSend.
+   `storage/methods/processAction.ts:374-401` builds every output update
+   with that value (`:391`); `:648-650` writes those updates. The transaction
+   and request are `nosend` (`:359-364`), which gates their use independently
+   of the output bit. A subsequent sendWith writes no output bits
+   (`:301-351`). This differs from the toolbox at c9f3afa, whose
+   `mark_spendable = !args.is_no_send || args.is_send_with` zeroes every
+   output under noSend. The exit test is **the same rows as the reference's
+   noSend then sendWith**. Correct that bit in its own behavior commit and
+   fixture; keep the composition's one-call rows. No output is made
+   spendable by the post call itself.
+2. **How the BEEF is rebuilt.**
+   `storage/StorageProvider.ts:950-995` finds each request by txid and
+   classifies it; `:997-1016` merges its `rawTx` and `inputBEEF`, then
+   resolves missing input ancestors from storage via
+   `getValidBeefForKnownTxid`. `storage/storageProviderHelpers.ts:66-81`
+   resolves a txid-only entry too unless this caller declared it known.
+   The public BEEF helpers delegate to
+   `storage/methods/getBeefForTransaction.ts:36-76,84-115`
+   (`StorageProvider.ts:1341-1347`).
+   `storage/methods/processAction.ts:313-351` validates the merged BEEF
+   before immediate posting; delayed sharing writes request `unsent` and
+   transaction `sending` in a transaction, without building BEEF
+   (`:315-337`). The noSend build skips its new txid only when sendWith is
+   empty (`:137-143`). The signing helper returns the storage result
+   unchanged (`signer/methods/createAction.ts:324-326`).
+3. **Unknown, repeated and template handles.** The reference's sendWith
+   contains txids, not opaque references. Unknown txids become an error
+   detail (`StorageProvider.ts:977-980`) and a typed `failed` send result
+   (`storage/methods/processAction.ts:228-247`), with no post. An already
+   posted request (`unmined`, `callback`, `unconfirmed`, `completed`) or
+   proven txid becomes `unproven`, with no post and no write
+   (`storage/storageProviderHelpers.ts:13-37`,
+   `StorageProvider.ts:971-975`, `processAction.ts:239-240,340`). There is
+   **no exception on a second sendWith** at this pin; the brief's phrase
+   "the reference's typed refusal" means these result statuses, not an
+   invented repeat-post error. A template has no signed request: the
+   signer returns early and caches it
+   (`signer/methods/createAction.ts:87-90,238-269`), so its prospective
+   txid would be unknown to sendWith. The keeper additionally requires a
+   typed template refusal with no writes (section 9); the toolbox already
+   has `Error::InvalidTransactionStatus`, so no new error variant is needed.
+
+`[D]` The implementation keeps the owner's public `process_action` name
+and accepts a toolbox `ProcessActionArgs` when the installed bsv-rs has no
+such type: sendWith handles, noSend and acceptDelayedBroadcast. A stored
+reference is resolved in the authenticated user's rows to the txid before
+using the reference's sendWith path. The split does not add a by-value
+`Signed` type or change the storage trait. The proof uses wallet fixtures
+for build then post, the existing composition, the template refusal and
+repeated posting, plus simultaneous posts against mock services. D3 is a
+separate behavior commit and fixture; the lock release is another commit
+with the existing door bench on both sides. All network calls in proofs
+use mocks. Charter rulings remain `[D]`; these source readings are `[X]`,
+not a run of the TypeScript implementation.
