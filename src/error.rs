@@ -374,9 +374,10 @@ fn spend_refusal_text(why: &bsv_rs::transaction::beef_stream::SpendRefusal) -> S
         SpendRefusal::OutputNotAvailable { vout } => {
             format!("the parent has no unspent output {vout}")
         }
-        SpendRefusal::Resource(limit) => {
-            format!("the evaluator declined on a local resource: {limit:?}")
-        }
+        SpendRefusal::Resource(limit) => format!(
+            "the evaluator declined on a local {} limit of {} (the spend needed {}), never a script verdict",
+            limit.resource, limit.limit, limit.attempted
+        ),
         SpendRefusal::CreatesValue => "the outputs are worth more than the inputs".to_string(),
         SpendRefusal::InputValueOutOfRange => "an input value is out of range".to_string(),
         SpendRefusal::P2shOutput { vout } => {
