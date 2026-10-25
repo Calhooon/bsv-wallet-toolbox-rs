@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-25
+
+A quick fix release on the stable line: the mock's spender setter for bsv-wallet-cli, the two #96 corrections to the 0.13.0 ladder, the #161 review-pass fix that voids a failed transaction's created outputs, and the mutation nightly's workflow file, all below. No other public shape moves.
+
+### CI
+
+- `.github/workflows/nightly-mutants.yml` lives on `main` so GitHub registers it (#153, #154); its schedule is off and it runs on manual dispatch only, after two dispatches showed sixteen shards running past the 330 minute job limit with no scores (#157); #159 reshapes the run. `docs/MUTANTS.md` records the measurement.
+
 ### Added
 
 - `MockWalletServicesBuilder::is_utxo_with_spender_response(MockResponse<(UtxoVerdict, Option<BoundSpender>)>)` and `MockWalletServices::set_is_utxo_with_spender_response` (the same, on a built mock), for bsv-wallet-cli: the mock's `is_utxo_with_spender` answers the set response, so a host can test a bound spender against the mock (an error answers `Unknown` and no spender; a `Sequence` is consumed by this call's own count). Every call is recorded in `call_history` as `is_utxo_with_spender`. Unset, it answers as before, `is_utxo`'s verdict and `None` (the trait's default), with that `is_utxo` call recorded beside it; no existing caller's answer moves. Tests: `the_mock_answers_a_set_spender_and_records_the_call`, `the_mock_unset_answers_is_utxos_verdict_and_no_spender`.
