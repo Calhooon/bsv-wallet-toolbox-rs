@@ -802,17 +802,8 @@ async fn post_stored_actions(
     if txids.is_empty() {
         return Ok(result);
     }
-    let words = match services.post_beef(&beef, &txids).await {
-        Ok(words) => words,
-        Err(error) => vec![PostBeefResult {
-            name: "Services".into(),
-            status: "error".into(),
-            error: Some(error.to_string()),
-            txid_results: vec![],
-            notes: vec![],
-        }],
-    };
-    finish_stored_posts(storage, &txids, &words, &mut result).await;
+    let posted = services.post_beef(&beef, &txids).await;
+    finish_stored_posts(storage, &txids, posted, &mut result).await;
     Ok(result)
 }
 
@@ -842,11 +833,20 @@ fn stored_post_outcome(words: &[PostBeefResult], txid: &str) -> BroadcastOutcome
 async fn finish_stored_posts(
     storage: &StorageSqlx,
     txids: &[String],
-    words: &[PostBeefResult],
+    posted: Result<Vec<PostBeefResult>>,
     result: &mut StorageProcessActionResults,
 ) {
+    let (words, fault) = match posted {
+        Ok(words) => (words, None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
     for txid in txids {
-        let outcome = stored_post_outcome(words, txid);
+        let outcome = fault.as_ref().map_or_else(
+            || stored_post_outcome(&words, txid),
+            |fault| BroadcastOutcome::ServiceError {
+                details: vec![fault.clone()],
+            },
+        );
         if let Err(error) =
             update_transaction_status_after_broadcast_internal(storage, txid, &outcome).await
         {
@@ -860,7 +860,7 @@ async fn finish_stored_posts(
             }
         }
     }
-    if let Err(error) = record_stored_post_words(storage, txids, words).await {
+    if let Err(error) = record_stored_post_words(storage, txids, &words, fault.as_deref()).await {
         for txid in txids {
             crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
         }
@@ -871,6 +871,7 @@ async fn record_stored_post_words(
     storage: &StorageSqlx,
     txids: &[String],
     words: &[PostBeefResult],
+    fault: Option<&str>,
 ) -> Result<()> {
     let mut tx = storage.write_tx().await?;
     for txid in txids {
@@ -884,7 +885,10 @@ async fn record_stored_post_words(
         if !history.is_object() {
             history = serde_json::json!({"previous": history});
         }
-        let note = serde_json::json!({"what": "processActionPost", "when": Utc::now().to_rfc3339(), "words": words});
+        let mut note = serde_json::json!({"what": "processActionPost", "when": Utc::now().to_rfc3339(), "words": words});
+        if let Some(fault) = fault {
+            note["serviceError"] = fault.into();
+        }
         if let Some(serde_json::Value::Array(notes)) = history.get_mut("notes") {
             notes.push(note);
             let excess = notes.len().saturating_sub(32);
