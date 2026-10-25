@@ -375,3 +375,51 @@ async fn abort_sending_with_no_acceptance_ignores_words_inside_error_text() {
     assert!(s.abort().await.unwrap().aborted);
     s.assert_no_chain_calls();
 }
+
+/// The keeper's word (#165, `tracker.md:140`, `wallet.md:32`): `unfail` is
+/// the unfail task finding a merkle path for a failed request, the
+/// strongest accepting word.
+#[tokio::test]
+async fn an_unfail_request_refuses_the_abort_and_the_retire() {
+    let s = Seeded::new("sending").await;
+    s.request("unfail", json!({})).await;
+    let before = s.snapshot().await;
+    assert_acceptance_refusal(s.abort().await);
+    assert_acceptance_refusal(
+        s.storage
+            .retire_undeliverable_txid(s.services.as_ref(), TXID, "invalid")
+            .await,
+    );
+    assert_eq!(s.snapshot().await, before);
+    s.assert_no_chain_calls();
+}
+
+/// The evidence is the proof's presence, not the label: a stored proof
+/// refuses even when the request says `failed`.
+#[tokio::test]
+async fn a_failed_request_with_a_stored_proof_refuses_the_abort_and_the_retire() {
+    let s = Seeded::new("sending").await;
+    s.request("failed", json!({})).await;
+    let now = chrono::Utc::now();
+    sqlx::query(
+        "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, \
+         raw_tx, created_at, updated_at) VALUES (?, 100000, 0, ?, ?, X'00', X'00', ?, ?)",
+    )
+    .bind(TXID)
+    .bind("c".repeat(64))
+    .bind("d".repeat(64))
+    .bind(now)
+    .bind(now)
+    .execute(s.storage.writer())
+    .await
+    .unwrap();
+    let before = s.snapshot().await;
+    assert_acceptance_refusal(s.abort().await);
+    assert_acceptance_refusal(
+        s.storage
+            .retire_undeliverable_txid(s.services.as_ref(), TXID, "invalid")
+            .await,
+    );
+    assert_eq!(s.snapshot().await, before);
+    s.assert_no_chain_calls();
+}
