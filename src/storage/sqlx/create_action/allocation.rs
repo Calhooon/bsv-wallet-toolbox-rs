@@ -1,4 +1,15 @@
-use super::*;
+use super::beef::{build_input_beef, change_coin_gap};
+use super::change::plan_change;
+use super::inputs::validate_and_extend_inputs;
+use super::outputs::validate_and_extend_outputs;
+use super::tracker::RecordingTracker;
+use super::Door;
+use crate::error::{Error, Result, StoreBusyReason};
+use bsv_rs::transaction::ChainTracker;
+use chrono::Utc;
+use sqlx::sqlite::SqliteConnection;
+use sqlx::Row;
+use std::collections::HashSet;
 
 /// An allocated change input.
 #[derive(Debug, Clone)]
@@ -92,11 +103,11 @@ pub(crate) struct InFlightPicks {
 }
 
 impl InFlightPicks {
-    pub(super) fn coins(&self) -> std::sync::MutexGuard<'_, HashSet<i64>> {
+    fn coins(&self) -> std::sync::MutexGuard<'_, HashSet<i64>> {
         self.coins.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub(super) fn is_off(&self) -> bool {
+    fn is_off(&self) -> bool {
         #[cfg(test)]
         {
             self.off.load(std::sync::atomic::Ordering::SeqCst)
@@ -137,12 +148,12 @@ impl PickReservation {
     }
 
     /// The coins this call holds, in the order picked.
-    pub(super) fn mine(&self) -> &[i64] {
+    fn mine(&self) -> &[i64] {
         &self.mine
     }
 
     /// The coins a dry run may not pick: this call's and every other call's.
-    pub(super) fn unavailable(&self) -> Vec<i64> {
+    fn unavailable(&self) -> Vec<i64> {
         if self.in_flight.is_off() {
             return self.mine.clone();
         }
@@ -161,7 +172,7 @@ impl PickReservation {
     }
 
     /// Lets `id` go, if this call holds it.
-    pub(super) fn release(&mut self, id: i64) {
+    fn release(&mut self, id: i64) {
         let held = self.mine.len();
         self.mine.retain(|m| *m != id);
         if self.mine.len() != held && !self.in_flight.is_off() {
@@ -170,7 +181,7 @@ impl PickReservation {
     }
 
     /// Lets every coin this call holds go.
-    pub(super) fn release_all(&mut self) {
+    fn release_all(&mut self) {
         if self.in_flight.is_off() {
             self.mine.clear();
             return;
@@ -400,7 +411,7 @@ pub(super) async fn allocate_change_input_by(
 }
 
 /// `?, ?, ?` for `n` binds.
-pub(super) fn placeholders(n: usize) -> String {
+fn placeholders(n: usize) -> String {
     vec!["?"; n].join(", ")
 }
 impl Door<'_> {

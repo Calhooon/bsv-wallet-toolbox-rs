@@ -1,4 +1,14 @@
-use super::*;
+use super::beef_graph::{
+    describe_invalid_beef, merge_beef_linked, needed_by_roots, prune_beef_to_roots,
+};
+use super::beef_storage::get_tx_with_proof;
+use super::beef_walk::beef_bfs_walk;
+use super::inputs::ExtendedInput;
+use super::AllocatedChangeInput;
+use crate::error::{Error, Result};
+use bsv_rs::transaction::{Beef, ChainTracker};
+use sqlx::sqlite::{SqliteConnection, SqlitePool};
+use std::collections::HashSet;
 
 /// `trustSelf: 'known'`: a txid-only entry of the caller's `inputBEEF` that
 /// names a transaction this wallet's storage holds is the wallet's own
@@ -16,7 +26,7 @@ use super::*;
 /// drops it (`createAction.ts:893-896`). An entry an input reaches that
 /// storage does not know is refused (`createAction.ts:934-937` for an
 /// ancestor, `996-1000` for an input).
-pub(super) async fn resolve_known_txid_only_entries(
+async fn resolve_known_txid_only_entries(
     conn: &mut SqliteConnection,
     user_beef: Beef,
     roots: &[String],
@@ -39,7 +49,7 @@ pub(super) async fn resolve_known_txid_only_entries(
 
 /// The caller's BEEF without the txid-only entries storage must answer for,
 /// and their txids (`resolve_known_txid_only_entries`).
-pub(super) fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<String>) {
+fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<String>) {
     if !user_beef.txs.iter().any(|tx| tx.is_txid_only()) {
         return (user_beef.clone(), Vec::new());
     }

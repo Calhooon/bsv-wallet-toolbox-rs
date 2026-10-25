@@ -1,4 +1,4 @@
-use super::*;
+use super::change::GenerateChangeParams;
 
 /// Default fee rate in satoshis per kilobyte.
 pub(super) const DEFAULT_FEE_RATE_SAT_PER_KB: u64 = 101;
@@ -55,7 +55,7 @@ pub(super) fn calculate_transaction_size(
 }
 
 /// Returns the size of a varint encoding.
-pub(super) fn var_int_size(value: u64) -> u64 {
+fn var_int_size(value: u64) -> u64 {
     if value < 253 {
         1
     } else if value <= 0xFFFF {

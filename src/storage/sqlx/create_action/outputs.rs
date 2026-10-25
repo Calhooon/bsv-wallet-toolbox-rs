@@ -1,4 +1,10 @@
-use super::*;
+use super::change::random_derivation;
+use crate::error::Result;
+use crate::storage::entities::{TableOutputBasket, TableOutputTag, TableTxLabel};
+use crate::storage::traits::StorageProvidedBy;
+use chrono::Utc;
+use sqlx::sqlite::SqliteConnection;
+use sqlx::Row;
 
 /// Extended output with additional context for transaction creation.
 #[derive(Debug, Clone)]
@@ -16,7 +22,7 @@ pub(super) struct ExtendedOutput {
 }
 
 /// Generates a random reference string.
-pub(super) fn random_reference() -> String {
+fn random_reference() -> String {
     random_derivation(12)
 }
 
