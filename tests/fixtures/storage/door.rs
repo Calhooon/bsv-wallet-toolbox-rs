@@ -304,3 +304,17 @@ async fn post_preserves_legacy_history_text() -> Result<()> {
     assert_eq!(history["notes"][0]["what"], "processActionPost");
     Ok(())
 }
+
+#[tokio::test]
+async fn post_uses_the_services_tracker_when_storage_has_none() -> Result<()> {
+    let wallet = wallet().await?;
+    let txid = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
+    wallet.storage().clear_chain_tracker().await;
+    assert_eq!(
+        status(&wallet.process_action(post(txid), "fixture.local").await?),
+        "unproven"
+    );
+    assert_eq!(wallet.services().call_count("get_chain_tracker"), 1);
+    assert_eq!(wallet.services().call_count("post_beef"), 1);
+    Ok(())
+}
