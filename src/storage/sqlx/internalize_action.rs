@@ -3761,4 +3761,250 @@ mod tests {
         assert_eq!(req_status(&storage, &txid).await, None);
         assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
     }
+
+    struct UnavailableHeaders(u8);
+
+    #[tokio::test]
+    async fn mining_finality_uses_both_tip_height_and_median_time() {
+        for (lock_time, accepted) in [
+            (PROVEN_HEIGHT + 6, true),
+            (PROVEN_HEIGHT + 7, false),
+            (1_699_999_999, true),
+            (1_700_000_000, false),
+        ] {
+            let (bytes, _, tracker) = payment_spending_abcd("02abcd");
+            let incoming = read_incoming_payment(&bytes).unwrap();
+            let mut payment = Transaction::from_binary(&incoming.body.unwrap().raw).unwrap();
+            payment.lock_time = lock_time;
+            payment.inputs[0].sequence = 0;
+            payment.invalidate_caches();
+            let txid = payment.id();
+            let parent_id = payment.inputs[0].source_txid.as_ref().unwrap();
+            let original = Beef::from_binary(&bytes).unwrap();
+            let parent = original
+                .find_txid(parent_id)
+                .unwrap()
+                .tx()
+                .unwrap()
+                .to_binary();
+            let mut beef = Beef::new();
+            let bump = beef.merge_bump(original.bumps[0].clone());
+            beef.merge_raw_tx(parent, Some(bump));
+            beef.merge_transaction(payment);
+            let bytes = beef.to_binary_atomic(&txid).unwrap();
+            let storage = create_test_storage().await;
+            let user_id = create_test_user(&storage).await;
+            storage
+                .set_chain_tracker(Arc::new(CountingTracker::new(tracker)))
+                .await;
+            let result = internalize_action_internal(
+                &storage,
+                user_id,
+                wallet_payment_args(bytes, "mining finality"),
+            )
+            .await;
+            if accepted {
+                assert!(result.unwrap().base.accepted);
+            } else {
+                assert!(
+                    matches!(result, Err(Error::SpendRefused {
+                    txid: ref refused, input: None, why: crate::SpendRefusal::NonFinal { lock_time: refused_time }, ..
+                }) if refused == &txid && refused_time == lock_time),
+                    "{result:?}"
+                );
+                assert_eq!(tx_status(&storage, user_id, &txid).await, None);
+                assert_eq!(req_status(&storage, &txid).await, None);
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl bsv_rs::transaction::ChainTracker for UnavailableHeaders {
+        async fn current_height(
+            &self,
+        ) -> std::result::Result<u32, bsv_rs::transaction::ChainTrackerError> {
+            panic!("the verifier needs mining context, not a height alone")
+        }
+
+        async fn mining_tip(
+            &self,
+        ) -> std::result::Result<
+            Option<bsv_rs::transaction::beef_stream::ChainTip>,
+            bsv_rs::transaction::ChainTrackerError,
+        > {
+            match self.0 {
+                0 => Ok(None),
+                1 => Err(bsv_rs::transaction::ChainTrackerError::NetworkError(
+                    "tip unavailable".into(),
+                )),
+                _ => {
+                    CountingTracker::new(MockChainTracker::new(PROVEN_HEIGHT + 6))
+                        .mining_tip()
+                        .await
+                }
+            }
+        }
+
+        async fn is_valid_root_for_height(
+            &self,
+            _: &str,
+            _: u32,
+        ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+            Err(bsv_rs::transaction::ChainTrackerError::NetworkError(
+                "root unavailable".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_header_fault_or_missing_tip_holds_even_a_failing_spend_without_writes() {
+        for fault in 0..3 {
+            let storage = create_test_storage().await;
+            let user_id = create_test_user(&storage).await;
+            let (bytes, txid, _) = payment_spending_abcd("02abce");
+            storage
+                .set_chain_tracker(Arc::new(UnavailableHeaders(fault)))
+                .await;
+            let services = Arc::new(crate::services::mock::MockWalletServices::new());
+            storage.set_services(services.clone());
+            let tables = [
+                "output_baskets",
+                "outputs",
+                "proven_txs",
+                "proof_root_checks",
+                "broadcast_seen",
+            ];
+            let mut before = Vec::new();
+            for table in tables {
+                before.push(
+                    sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+                        .fetch_one(storage.pool())
+                        .await
+                        .unwrap(),
+                );
+            }
+            let result = internalize_action_internal(
+                &storage,
+                user_id,
+                wallet_payment_args(bytes, "unavailable headers"),
+            )
+            .await;
+            assert!(matches!(result, Err(Error::ServiceError(_))), "{result:?}");
+            assert_eq!(tx_status(&storage, user_id, &txid).await, None);
+            assert_eq!(req_status(&storage, &txid).await, None);
+            for (table, expected) in tables.into_iter().zip(before) {
+                let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(storage.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(count, expected, "{table} unchanged on header fault {fault}");
+            }
+            assert_eq!(services.total_calls(), 0, "no broadcaster or tracker word");
+        }
+    }
+
+    /// A real HTTP adapter costs one network metadata read for its lifetime,
+    /// one tip, one range and one root per call, for acceptance and refusal.
+    #[tokio::test]
+    async fn the_door_reads_the_tip_range_and_root_once_and_never_an_explorer() {
+        use crate::services::{BlockHeader, ChaintracksServiceClient};
+        use serde_json::json;
+
+        let mut server = crate::services::mock_server().await;
+        let mut range_bytes = Vec::new();
+        let mut tip = BlockHeader::default();
+        for i in 0..11 {
+            let mut header = BlockHeader {
+                version: 1,
+                height: 900_000 + i,
+                previous_hash: tip.hash,
+                merkle_root: "11".repeat(32),
+                time: 1_700_000_000 + i,
+                bits: 0x1d00ffff,
+                nonce: i,
+                hash: String::new(),
+            };
+            let raw = header.to_binary();
+            header.hash = display_hex(&bsv_rs::primitives::sha256d(&raw));
+            range_bytes.extend(raw);
+            tip = header;
+        }
+        let (valid, _, tracker) = payment_spending_abcd("02abcd");
+        let (invalid, _, _) = payment_spending_abcd("02abce");
+        let root = &tracker.roots[&PROVEN_HEIGHT];
+        let frames = [
+            ("/getChain".to_string(), json!("main"), 1),
+            (
+                "/findChainTipHeaderHex".to_string(),
+                json!({
+                    "version": tip.version, "height": tip.height, "previousHash": tip.previous_hash,
+                    "merkleRoot": tip.merkle_root, "time": tip.time, "bits": tip.bits,
+                    "nonce": tip.nonce, "hash": tip.hash
+                }),
+                2,
+            ),
+            (
+                "/getHeaders?height=900000&count=11".to_string(),
+                json!(hex::encode(range_bytes)),
+                2,
+            ),
+            (
+                format!("/findHeaderHexForHeight?height={PROVEN_HEIGHT}"),
+                json!({
+                    "version": 1, "height": PROVEN_HEIGHT, "previousHash": "00".repeat(32),
+                    "merkleRoot": root, "time": 1_700_000_000, "bits": 0x1d00ffff,
+                    "nonce": 0, "hash": "11".repeat(32)
+                }),
+                2,
+            ),
+        ];
+        let mut requests = Vec::new();
+        for (route, value, count) in frames {
+            requests.push(
+                server
+                    .mock("GET", route.as_str())
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(json!({"status":"success", "value":value}).to_string())
+                    .expect(count)
+                    .create_async()
+                    .await,
+            );
+        }
+        let no_height = server
+            .mock("GET", "/getPresentHeight")
+            .expect(0)
+            .create_async()
+            .await;
+        let headers = Arc::new(ChaintracksServiceClient::from_url(&server.url()));
+        for (bytes, accepted) in [(valid, true), (invalid, false)] {
+            let storage = create_test_storage().await;
+            let user_id = create_test_user(&storage).await;
+            storage.set_chain_tracker(headers.clone()).await;
+            let result = internalize_action_internal(
+                &storage,
+                user_id,
+                wallet_payment_args(bytes, "counted header reads"),
+            )
+            .await;
+            if accepted {
+                let result = result.unwrap();
+                assert!(result.base.accepted);
+                assert_eq!(
+                    tx_status(&storage, user_id, &result.txid).await.as_deref(),
+                    Some("unproven")
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(Error::SpendRefused { .. })),
+                    "{result:?}"
+                );
+                assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
+            }
+        }
+        for request in requests {
+            request.assert_async().await;
+        }
+        no_height.assert_async().await;
+    }
 }

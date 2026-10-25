@@ -300,9 +300,9 @@ impl ChaintracksServiceClient {
                 ));
             }
             previous = Some(bsv_rs::primitives::sha256d(header));
-            times.push(u32::from_le_bytes(
-                header[68..72].try_into().expect("four timestamp bytes"),
-            ));
+            times.push(u32::from_le_bytes([
+                header[68], header[69], header[70], header[71],
+            ]));
         }
         times.sort_unstable();
         // bsv-script-lean origin/main:docs/PARAMETERS.md, network table:

@@ -1,0 +1,79 @@
+{
+  "calls": [
+    {
+      "args": {
+        "description": "A failing unproven payment",
+        "outputs": [
+          {
+            "outputIndex": 0,
+            "paymentRemittance": {
+              "derivationPrefix": "Pg==",
+              "derivationSuffix": "Sg==",
+              "senderIdentityKey": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810"
+            },
+            "protocol": "wallet payment"
+          }
+        ]
+      },
+      "from": "receipt",
+      "method": "internalize_action"
+    }
+  ],
+  "expected": [
+    {
+      "result": {
+        "accepted": false,
+        "error": "spend refused at offset 156, input Some(0) of 691cadf6c182241b0f32b0547ac702f74e19691e8cdc33d2881f6116b5341a6d: Script(\"The top stack element must be truthy after script evaluation.\")",
+        "spendRefused": {
+          "input": 0,
+          "offset": 156,
+          "txid": "691cadf6c182241b0f32b0547ac702f74e19691e8cdc33d2881f6116b5341a6d",
+          "why": "Script(\"The top stack element must be truthy after script evaluation.\")"
+        }
+      },
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1}
+        ],
+        "output_tags": [],
+        "output_tags_map": [],
+        "outputs": [],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [],
+        "proven_txs": [],
+        "sync_states": [],
+        "transactions": [],
+        "tx_labels": [],
+        "tx_labels_map": [],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": []
+    }
+  ],
+  "inputs": {
+    "baskets": [{"desired":1,"minimum":1000,"name":"default"}],
+    "services": {"post_beef":{"kind":"success","value":[{"name":"fixture","notes":[],"status":"success","txid_results":[]}]}},
+    "transactions": [
+      {"name":"funding","outputs":[{"satoshis":20000,"script":"7551"}],"proven":false,"store":false},
+      {"name":"anchor","outputs":[{"satoshis":20000,"script":"02abcd87"}],"spends":"funding.0","store":false},
+      {
+        "name": "receipt",
+        "outputs": [{"basket":"default","change":true,"satoshis":9999}],
+        "proven": false,
+        "spends": "anchor.0",
+        "store": false,
+        "unlocking": "02abce"
+      }
+    ],
+    "user": "Alice"
+  },
+  "issue": 103,
+  "name": "internalize_refuses_a_failing_script"
+}
