@@ -57,11 +57,12 @@ src/
 ├── monitor/                # Background task daemon
 │   ├── daemon.rs           # Monitor<S, V> task scheduler
 │   ├── config.rs           # MonitorOptions, TaskConfig
-│   └── tasks/              # 12 recurring tasks
+│   └── tasks/              # 15 recurring tasks
 │       ├── check_for_proofs.rs, send_waiting.rs, fail_abandoned.rs
 │       ├── unfail.rs, clock.rs, new_header.rs, reorg.rs
 │       ├── check_no_sends.rs, review_status.rs, purge.rs
-│       ├── monitor_call_history.rs
+│       ├── monitor_call_history.rs, arcade_events.rs, compact_beef.rs
+│       ├── review_proven_txs.rs
 │       └── sync_when_idle.rs
 └── managers/               # Higher-level orchestration
     ├── mod.rs              # WalletLogger, setup_wallet() helper

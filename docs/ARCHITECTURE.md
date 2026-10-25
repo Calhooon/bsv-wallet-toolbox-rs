@@ -16,7 +16,8 @@ whose test column reads `(no test)` is listed again at the end: those rows and
 the divergences are the findings of the lane that wrote this (#64).
 
 Monitor tasks are counted from `src/monitor/tasks/`: fifteen task files (the
-issue said thirteen and the root `CLAUDE.md` twelve; the directory is the truth).
+issue said thirteen and the root `CLAUDE.md` twelve until #64 corrected it; the
+directory is the truth).
 
 ## 0. The dataflow
 
@@ -111,7 +112,7 @@ it (`UnspendableCoin`).
 | a refusal keeps the inputs locked and the change | `wallet.md section 2` (from a broadcaster: a refusal moves no coin) | `test_broadcast_refusal_is_a_hint_that_keeps_inputs_and_change` |
 | an invalid BEEF stores nothing | `wallet.md section 5` (internalize, not valid: unchanged, refused) | `test_internalize_invalid_beef` |
 | a courier's stub is refused without storing | `wallet.md section 2` (from a courier) | `l2_23_pin_i_internalize_refuses_stub_without_storing` |
-| a checked BUMP the gate defers lands `unproven` with an `unmined` request | `tracker.md section 2` (the host's depth) | `a_validated_bump_the_gate_defers_lands_unproven_with_an_unmined_request` |
+| a checked BUMP the gate defers lands `unproven` with an `unmined` request | `wallet.md section 2` (the host's depth); `tracker.md section 3` (no new `mined` until the tip is fresh) | `a_validated_bump_the_gate_defers_lands_unproven_with_an_unmined_request` |
 | `customInstructions` over 1,000 bytes is refused; 1,000 is stored whole | `wallet.md section 3` (the bound, ruled 2026-10-24) | `custom_instructions_over_1000_bytes_is_refused_and_1000_is_stored_whole` (`--test internalize_custom_instructions_tests`) |
 | an internalize whose post is refused keeps the consumed coin spent | `wallet.md section 2` (a hint moves no coin) | `test_internalize_broadcast_refusal_keeps_the_consumed_coin_spent` |
 | an abort of a template releases its inputs | `wallet.md section 5` (abort `t`, `t` unknown or built: released) | `test_abort_unsigned_transaction_success` |
@@ -164,7 +165,8 @@ two stores whose writers meet in SQLite's busy handler and two reservation sets.
 | invariant | charter | test |
 |---|---|---|
 | a write on `pool()` fails under `query_only` | `storage.md section 2 S9` (one writer per store) | `a_write_on_pool_fails_under_query_only` (`--test store_write_lock_tests`) |
-| a deferred `BEGIN` that read before writing answers 517 after another commit; `write_tx` waits and both commit | `storage.md section 2 S9` (the lock before the read) | `a_deferred_begin_that_read_first_answers_517_after_another_commit` (`--test store_write_lock_tests`) |
+| a deferred `BEGIN` that read before writing answers 517 after another commit | `storage.md section 2 S9` (the lock before the read) | `a_deferred_begin_that_read_first_answers_517_after_another_commit` (`--test store_write_lock_tests`) |
+| the same shape through `write_tx` waits and both commit, across two stores | `storage.md section 2 S9` (the lock before the read) | `the_same_shape_through_write_tx_waits_and_both_commit_across_stores` (`--test store_write_lock_tests`) |
 | two handles of one store queue on one writer and both commit | `storage.md section 2 S9` | `two_handles_of_one_store_queue_on_one_writer_and_both_commit` (`--test store_write_lock_tests`) |
 | a store opened twice has two writers; a shared store one | `storage.md section 2 S9` | `a_store_opened_twice_has_two_writers_and_a_shared_store_one` (`--test store_write_lock_tests`) |
 | a wallet and a monitor over one store share the writer | `storage.md section 2 S9` | `a_wallet_and_a_monitor_over_one_store_share_the_writer` |
@@ -182,7 +184,11 @@ two stores whose writers meet in SQLite's busy handler and two reservation sets.
 BananaBlocks, Bitails) as couriers and the header service (chaintracks, then
 BHS) for headers. The rules are the owner's word of 2026-10-22 (bsv-wallet-cli
 #50) and Rule 28; the fixtures under `tests/fixtures/data/ladders/` replay each
-ladder's scenes (`ladder_fixtures_replay`).
+ladder's scenes (`ladder_fixtures_replay`, a lib test: `tests/fixtures/ladders.rs`
+is included by `src/services/ladder_fixtures_tests.rs` through `#[path]`, not
+declared in `tests/fixtures/main.rs`, so it runs under
+`cargo test --lib ladder_fixtures` and not under the `fixtures` integration
+binary).
 
 **The verdict rules.** A negative needs two clean answers: `get_utxo_status`
 returns "not in the unspent set" only when `UTXO_NEGATIVE_PROVIDERS` (two)
@@ -236,9 +242,12 @@ apart from every other fault.
 
 **The header ladder.** `get_height` and `get_chain_tip_header` read chaintracks,
 then BHS, never an explorer; with none reachable the answer is an error, never
-an explorer's number. `hash_to_header` is break-glass: with the header service
-down it asks WhatsOnChain and Bitails, each the other's fallback, and binds the
-answer to the hash. The default tracker never takes an explorer's root.
+an explorer's number. `hash_to_header` reads the header service; with the
+header service down it answers an error naming the setting and asks no
+explorer, unless `ServicesOptions::break_glass_explorer_headers` is set (off by
+default): then it asks WhatsOnChain and Bitails, each the other's fallback, and
+binds the answer to the hash. The default tracker never takes an explorer's
+root.
 
 **The proof ladder.** `get_merkle_path` fetches nothing with no header service
 configured: the answer is `merkle_path: None` with a note, never an unchecked
@@ -287,7 +296,8 @@ proof checked against our headers writes `doubleSpend`.
 | providers for one base share one gate | (no charter; the owner's word of 2026-10-22) | `providers_for_one_base_share_one_gate` |
 | a held clock keeps the default window closed; the default clock is the wall clock | (no charter; #53) | `the_default_clock_is_the_wall_clock` |
 | `get_height` is the header service's tip and asks no explorer | `wallet.md section 6` (the header service is the one headers machine) | `get_height_is_the_header_services_tip_and_asks_no_explorer` |
-| `hash_to_header` asks no explorer while the header service answers | `wallet.md section 6` | `hash_to_header_asks_no_explorer_when_the_header_service_fails` |
+| `hash_to_header` with the header service down and the setting off asks no explorer; the error names the setting | `wallet.md section 6` | `hash_to_header_asks_no_explorer_when_the_header_service_fails` |
+| the tracker holds no explorer unless `break_glass_explorer_headers` is set, and the default is off | `wallet.md section 6` | `the_tracker_holds_no_explorer_unless_break_glass_is_set` |
 | the default tracker never takes an explorer's root | `tracker.md section 2` | `the_default_tracker_never_takes_an_explorers_root` |
 | no proof is fetched from an explorer without a header service | `tracker.md section 2` | `no_proof_is_fetched_from_an_explorer_without_a_header_service` |
 | a served path the tracker refuted is a refutation, not a proof | `tracker.md section 4` (`proofFailed`) | `a_served_path_the_tracker_refuted_is_a_refutation_not_a_proof` |
@@ -299,7 +309,7 @@ proof checked against our headers writes `doubleSpend`.
 | a refusal from every source is still a hint | `broadcaster.md section 1 B3` (instances never vote) | `a_refusal_from_every_source_is_still_a_hint` |
 | the cadence is one to sixty-four minutes, doubling | `wallet.md section 4` (the age re-ask on the host's clock) | `the_cadence_is_one_to_sixty_four_minutes_doubling` (`--test rule_28_cadence_tests`) |
 | the sticky provider never moves ahead of a configured Arcade | (no charter) | `sticky_never_moves_ahead_of_a_configured_arcade` |
-| every ladder scene under `tests/fixtures/data/ladders/` replays from its fixture | (no charter; #53) | (no test): `tests/fixtures/ladders.rs` holds `ladder_fixtures_replay`, but `tests/fixtures/main.rs` declares no `mod ladders;` at beta `901d72c`, so the binary carries no such test |
+| every ladder scene under `tests/fixtures/data/ladders/` replays from its fixture | (no charter; #53) | `ladder_fixtures_replay` (a lib test, included from `src/services/ladder_fixtures_tests.rs`; not in the `fixtures` integration binary) |
 | a service answer is built only by services | (no charter; #56) | `service_answers_are_only_built_by_services` |
 | provider requests stay in providers | (no charter; #56) | `provider_requests_stay_in_providers` |
 
@@ -354,7 +364,7 @@ linked transaction back to `unproven` (still spendable, still listed:
 |---|---|---|
 | a proof stored through the funnel is a checked row | `tracker.md section 2` (only headers and proofs are evidence) | `a_proof_stored_through_the_funnel_is_a_checked_row` |
 | a trackerless store refuses a BUMP and the row stays `unproven` | `tracker.md section 2` (fail closed) | `a_trackerless_storage_refuses_a_bump_and_the_row_stays_unproven` |
-| a closed gate defers every proof | `tracker.md section 2` (the host's depth; no new `mined` until the tip is fresh) | `a_closed_gate_defers_every_proof` |
+| a closed gate defers every proof | `wallet.md section 2` (the host's depth); `tracker.md section 3` (no new `mined` until the tip is fresh) | `a_closed_gate_defers_every_proof` |
 | the gate is closed until the second observation of a tip | `tracker.md section 2` | `the_gate_is_closed_until_the_second_observation` |
 | a header is processed only after a full cycle as tip | `tracker.md section 2` | `a_header_is_processed_only_after_a_full_cycle_as_tip` |
 | a tracker outage keeps the stored BUMP and mutates nothing | `tracker.md section 4` (`recheck`: a header the service cannot answer is re-read later) | `a_tracker_outage_keeps_the_stored_bump_and_mutates_nothing` |
@@ -471,8 +481,10 @@ host's retire are `failed` with `invalid`. The transitions, with who writes each
 
 | invariant | charter | test |
 |---|---|---|
-| immediate and delayed sends write `sending` with `unsent`; `noSend` writes `nosend` | `wallet.md section 5` (create `t`: `built` if signed) | `test_determine_statuses_immediate` |
-| an acceptance never lifts a `failed` or `completed` transaction, never reopens a judged request | `tracker.md section 1` (a hint moves only the hint tier) | `arcade_rejected_after_gorillapool_accepted_stays_unproven_and_mined_proves_it` |
+| an immediate send writes `sending` | `wallet.md section 5` (create `t`: `built` if signed) | `test_process_action_immediate_broadcast` |
+| immediate and delayed sends write the request `unsent`; `noSend` writes `nosend` | `wallet.md section 5` | `test_process_action_proven_tx_req_status_modes` |
+| an acceptance racing an abort never lifts the `failed` transaction, never reopens the `invalid` request | `tracker.md section 1` (a hint moves only the hint tier) | `test_race_broadcast_status_vs_abort` (`--test concurrent_tests`) |
+| an acceptance never lifts a `completed` transaction, never reopens a `doubleSpend` request | `tracker.md section 1` | (no test): the `NOT IN` guards of the after-broadcast write (`src/storage/sqlx/process_action.rs`) hold it; no test seeds a `completed` or `doubleSpend` row before an acceptance |
 | a double-spend word releases no input | `wallet.md section 2` | `test_double_spend_word_releases_no_input` |
 | a service error keeps the inputs locked | `wallet.md section 2` | `test_service_error_keeps_inputs_locked` |
 | a transaction the status service knows is promoted, not retired | `broadcaster.md section 1 B1` | `a_tx_the_status_service_knows_is_promoted_not_retired` (`--test retire_rejected_tests`) |
@@ -500,5 +512,5 @@ Where the code and a charter at `36d2d6b` disagree, both cited; nothing judged.
 |---|---|
 | every other `begin` is banned (`clippy.toml`); the gate is clippy with `-D warnings`, not a test | 2 |
 | no service or tracker await while the writer or a `write_tx` is held | 2 |
-| every ladder scene replays from its fixture: `tests/fixtures/ladders.rs` is not a module of `tests/fixtures/main.rs`, so `ladder_fixtures_replay` is not compiled | 3 |
 | a found `nosend` proof is stored through the funnel (`check_no_sends.rs` says the pass it calls does not cover `nosend`) | 5 |
+| an acceptance never lifts a `completed` transaction, never reopens a `doubleSpend` request (the `NOT IN` guards of the after-broadcast write) | 6 |
