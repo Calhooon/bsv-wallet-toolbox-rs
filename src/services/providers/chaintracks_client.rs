@@ -293,7 +293,7 @@ impl ChaintracksServiceClient {
         }
         let mut previous: Option<[u8; 32]> = None;
         let mut times = Vec::with_capacity(count as usize);
-        for header in bytes.chunks_exact(80) {
+        for header in bytes.as_chunks::<80>().0 {
             if previous.is_some_and(|hash| header[4..36] != hash) {
                 return Err(Error::ServiceError(
                     "Chaintracks getHeaders: disconnected range".into(),
