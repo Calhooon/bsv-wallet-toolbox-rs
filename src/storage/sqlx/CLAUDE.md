@@ -42,7 +42,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | `create_action/broadcast.rs` | Broadcast BEEF rebuild and provider fallback |
 | `create_action/tests/` | Existing unit and integration cases by concern, shared helpers, and door scenarios |
 | `process_action.rs` | Signed transaction processing (1884 lines) |
-| `abort_action.rs` | Transaction abort/cancellation; since 0.3.60 a broadcast (`unproven` / `sending`) transaction with NO chain evidence (no `chain|seen`, no `mined` row, no proof) is aborted too: inputs released, own outputs dead, memory `rejected`, unproven descendants retired |
+| `abort_action.rs` | Transaction abort/cancellation (#165): refuses `unproven` and every stored accepting word; `sending` with no acceptance stays abortable (inputs released, own outputs dead, memory `rejected`, descendants retired); the abort makes no header-service or explorer call (`wallet.md:98`, `tracker.md:25`, broadcaster B4 (d)) |
 | `internalize_action.rs` | External transaction internalization (1343 lines) |
 | `sync.rs` | Multi-storage synchronization (2713 lines) |
 | `beef_verification.rs` | BEEF merkle proof verification (989 lines) |
