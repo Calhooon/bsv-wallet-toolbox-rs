@@ -23,7 +23,7 @@
               {
                 "bumpIndex": 0,
                 "transaction": {
-                  "inputs": [{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0101","vout":4294967295}],
+                  "inputs": [{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],
                   "lockTime": 0,
                   "outputs": [{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],
                   "txid": "<txid:1>",
@@ -102,12 +102,12 @@
         "proof_root_checks": [{"height":100000,"merkle_root":"<txid:1>","txid":"<txid:1>"}],
         "proven_tx_reqs": [],
         "proven_txs": [
-          {"block_hash":"<txid:3>","height":100000,"idx":0,"merkle_path":{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]},"merkle_root":"<txid:1>","proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}
+          {"block_hash":"<txid:3>","height":100000,"idx":0,"merkle_path":{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]},"merkle_root":"<txid:1>","proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}
         ],
         "sync_states": [],
         "transactions": [
-          {"description":"seed funding","input_beef":null,"is_outgoing":0,"lock_time":0,"proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":100000,"status":"completed","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1},
-          {"description":"Recorded storage payment","input_beef":{"atomicTxid":null,"bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":1,"lock_time":0,"proven_tx_id":null,"raw_tx":null,"reference":"<reference:2>","satoshis":-1021,"status":"unsigned","transaction_id":2,"txid":null,"user_id":1,"version":1}
+          {"description":"seed funding","input_beef":null,"is_outgoing":0,"lock_time":0,"proven_tx_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":100000,"status":"completed","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1},
+          {"description":"Recorded storage payment","input_beef":{"atomicTxid":null,"bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:1>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":100000}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":1,"lock_time":0,"proven_tx_id":null,"raw_tx":null,"reference":"<reference:2>","satoshis":-1021,"status":"unsigned","transaction_id":2,"txid":null,"user_id":1,"version":1}
         ],
         "tx_labels": [],
         "tx_labels_map": [],

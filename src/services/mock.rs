@@ -149,6 +149,19 @@ impl ChainTracker for MockChainTracker {
     async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
         Ok(self.height)
     }
+
+    async fn mining_tip(
+        &self,
+    ) -> std::result::Result<Option<bsv_rs::transaction::beef_stream::ChainTip>, ChainTrackerError>
+    {
+        Ok(Some(bsv_rs::transaction::beef_stream::ChainTip {
+            height: self.height,
+            median_time_past: 1_700_000_000,
+            genesis_height: 620_538,
+            csv_height: 419_328,
+            next_block_time: None,
+        }))
+    }
 }
 
 // =============================================================================

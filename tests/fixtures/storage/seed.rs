@@ -49,6 +49,19 @@ impl ChainTracker for FixtureTracker {
     async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
         Ok(880_000)
     }
+
+    async fn mining_tip(
+        &self,
+    ) -> std::result::Result<Option<bsv_rs::transaction::beef_stream::ChainTip>, ChainTrackerError>
+    {
+        Ok(Some(bsv_rs::transaction::beef_stream::ChainTip {
+            height: 880_000,
+            median_time_past: 1_700_000_000,
+            genesis_height: 620_538,
+            csv_height: 419_328,
+            next_block_time: None,
+        }))
+    }
 }
 
 pub(super) fn derived_lock(
@@ -142,7 +155,7 @@ fn script(replay: &Replay, output: &SeedOutput) -> Result<Vec<u8>> {
     match &output.script {
         Some(script) => Ok(hex::decode(script)?),
         None if output.change => Ok(derived_lock(&replay.root, PREFIX, SUFFIX, None)?.0),
-        None => Ok(vec![0x51]),
+        None => Ok(vec![0x75, 0x51]),
     }
 }
 
@@ -159,7 +172,7 @@ async fn seed_transaction(replay: &mut Replay, seed: &SeedTransaction, index: us
             vout.parse()?,
         )
     } else {
-        (None, "00".repeat(32), u32::MAX)
+        (None, "11".repeat(32), index as u32)
     };
     let expanded: Vec<_> = seed
         .outputs
@@ -185,7 +198,7 @@ async fn seed_transaction(replay: &mut Replay, seed: &SeedTransaction, index: us
             source_output_index: vout,
             unlocking_script: Some(match &seed.unlocking {
                 Some(script) => UnlockingScript::from_binary(&hex::decode(script)?)?,
-                None => UnlockingScript::from_binary(&[1, (index + 1) as u8])?,
+                None => UnlockingScript::from_binary(&[0x00])?,
             }),
             unlocking_script_template: None,
             sequence: u32::MAX,
