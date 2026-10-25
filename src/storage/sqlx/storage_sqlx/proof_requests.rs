@@ -12,6 +12,9 @@ use super::{
 pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
 pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;
 
+/// The proof pass over this wallet's own requests.
+/// Private helpers for the attempt backstop of
+/// `MonitorStorage::synchronize_transaction_statuses`.
 impl StorageSqlx {
     /// `MonitorStorage::synchronize_transaction_statuses` for the requests
     /// of this wallet's own transactions: the triage, the attempt count and

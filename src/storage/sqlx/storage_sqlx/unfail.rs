@@ -7,6 +7,7 @@ use super::{
 /// transaction one broadcaster refused (Calgooon/zanaadu-v2#357).
 const MEMORY_EVIDENCE_MAX_AGE_SECS: i64 = 2 * 60 * 60;
 
+/// Private helpers for the `MonitorStorage::un_fail` recovery path.
 impl StorageSqlx {
     pub(super) async fn un_fail_impl(&self) -> Result<()> {
         let now = chrono::Utc::now();

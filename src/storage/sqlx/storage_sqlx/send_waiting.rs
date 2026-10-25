@@ -63,6 +63,7 @@ pub(super) fn append_req_history_note(history: &str, note: serde_json::Value) ->
     serde_json::Value::Object(object).to_string()
 }
 
+/// Private helpers of `MonitorStorage::send_waiting_transactions`.
 impl StorageSqlx {
     /// A post drew no accepting word, or never reached a broadcaster: the
     /// request stays `unsent`, `attempts` paces the next re-ask on the

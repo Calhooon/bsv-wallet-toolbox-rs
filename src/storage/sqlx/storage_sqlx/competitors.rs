@@ -53,6 +53,7 @@ async fn competitor_proof_meets_our_header(
         )
 }
 
+/// The competitor's word for our transaction: the proof path's evidence.
 impl StorageSqlx {
     /// Append `note` to the history of `txid`'s request (if it has one).
     pub(super) async fn note_on_req_history(
