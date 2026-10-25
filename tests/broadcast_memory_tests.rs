@@ -762,7 +762,13 @@ mod services_memory {
         let options = ServicesOptions::mainnet()
             .with_arc(taal_url, None)
             .with_gorillapool(gp_url, None);
-        Services::with_options(Chain::Main, options).unwrap()
+        let mut services = Services::with_options(Chain::Main, options).unwrap();
+        // These fixtures exercise the explicit short-circuit policy. D3 makes
+        // the default a submission to every named instance.
+        services.set_post_beef_mode(
+            bsv_wallet_toolbox_rs::services::services::PostBeefMode::UntilSuccess,
+        );
+        services
     }
 
     #[tokio::test]
@@ -983,7 +989,11 @@ mod arcade_stale_probe {
 
     fn arcade_services(url: &str) -> Services {
         let options = ServicesOptions::mainnet().with_arcade(url, None);
-        Services::with_options(Chain::Main, options).unwrap()
+        let mut services = Services::with_options(Chain::Main, options).unwrap();
+        services.set_post_beef_mode(
+            bsv_wallet_toolbox_rs::services::services::PostBeefMode::UntilSuccess,
+        );
+        services
     }
 
     /// `a` and `b` SEEN by Arcade `age_secs` ago (`a` a minute older, so it
