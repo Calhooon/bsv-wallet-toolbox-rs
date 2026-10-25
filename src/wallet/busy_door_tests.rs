@@ -917,6 +917,17 @@ async fn tx_and_req(
 async fn a_busy_retirement_after_a_broadcast_abort_is_its_success_and_review_status_finishes_it() {
     let (_dir, wallet) = wallet().await;
     let (a_txid, d_txid, coin_a, change_d) = broadcast_chain(&wallet, "abort-retire").await;
+    // #165: this recovery path starts with a built root that no instance accepted.
+    sqlx::query("UPDATE transactions SET status = 'sending' WHERE txid = ?")
+        .bind(&a_txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent' WHERE txid = ?")
+        .bind(&a_txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
     let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let _capture = tracing::subscriber::set_default(LogCapture(logs.clone()));
 
