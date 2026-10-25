@@ -4,7 +4,7 @@ The captain's record of the north-star programme (epic #80). Re-orient from this
 
 ## The lines (2026-10-23)
 
-- `main`: the stable line for quick fixes. v0.13.0 at e9857b8 is the newest tag (the owner's, 2026-10-23). Since then on main: the mock spender setter (#84), the #96 spender verdicts (#101, a34c3c8) and the mutation nightly's file (#154, c5ad88d); the 0.13.1 tag is the owner's.
+- `main`: the stable line for quick fixes. v0.13.0 at e9857b8 is the newest tag (the owner's, 2026-10-23). Main is at a01c550 with version 0.13.1 and its CHANGELOG heading (PR #160): the mock spender setter (#84), the #96 spender verdicts (#101), the #161 review-pass fix (#164) and the mutation nightly's file (#154, #157). The `v0.13.1` tag and the crates.io publish are the owner's; bsv-wallet-cli #196 and #157 wait on them. Every fix on main reaches beta by a sync PR (#155, #158, #178, #179), never the other way until a release.
 - `beta`: the programme's line, cut from `main` at e9857b8 on 2026-10-23 and protected like `main` (strict checks: Test Suite (ubuntu-latest, stable), Clippy, Rustfmt, vectors, locks; admins enforced; linear history; no force push; no deletion). Every programme PR targets `beta`. CI runs on both lines (#52).
 - A tag of any kind, a public API shape, the schema, a pin, a spend: the owner's word. The stack keeper (captain-bsv-stack-lean) holds the charters and the line.
 - The CLI (captain-bsv-wallet-cli) consumes #66, #67, #68 and #70; the shapes are agreed by issue comment before coding. The CLI's beta is the canary for every beta prerelease.
@@ -32,7 +32,40 @@ Every oracle PR is on beta as of 2026-10-24 afternoon, each after a cold review 
 | #153 | #154 into main, #155 sync | the nightly's file lives on main (GitHub schedules only the default branch and registers no workflow that lives only on beta); a schedule checks out beta, a dispatch its sha | |
 | #55 | #90 | the ratchet (`tools/ratchet`, `tools/ratchet.json`, toolchain pin 1.98.1 as the instrument); baseline re-recorded at the landing tree; the file carries `measured_at` and a flat `metrics` object the scoreboard reads (four cells of `docs/NORTH-STAR.md`); #146 follow-ups | 00c2e94 |
 
-Not landed: `oracle-58-fuzz` (#58) was stopped by the Codex provider's classifier at its opening turn; per cca rule 18 the owner names its next model. `hot-103-internalize-verify` (#103, PR #104 red half at ec0e83b) waits on the owner's word for `Error::SpendRefused { offset, txid, input, why }` (the keeper asked him by name); the brief is `$TMPDIR/toolbox-lanes/hot-103-internalize-verify.md`.
+## Wave 2 (2026-10-25, the owner's green light): landed and in flight
+
+The owner's words of 2026-10-25, by message to the captain ("green light to make decisions based on north star, keeping it stable, the ecosystem's names"): the captain takes the shape decisions and records each as the owner's word on its issue; tags, publishes and pins stay his explicit word.
+
+| issue | PR | what landed | beta |
+|---|---|---|---|
+| #153 | #157 into main, #158 sync | the mutation nightly's schedule off (sixteen shards at 2.8 minutes a mutant ran past the 330-minute limit every night, no scores, every repository's CI queued behind them); dispatch only; #159 reshapes it | 7e95a26 |
+| #66 design | #95 | `docs/design/66-door-split.md` sections 9 and 10: the keeper's readings and the owner's words (the reference's division, no new verb; no `Signed` type; the lock released in its own benched commit; D3's default); two gaps for the implementing lane (every output's `spendable` under noSend; the three words that move to the post call) | 4a62914 |
+| #64 | #162 | `docs/ARCHITECTURE.md` (134 invariant rows, 130 with a test proved by `tools/arch-doc-tests.sh`), six code-vs-charter divergences filed as #165 to #170 with the keeper's readings, three missing tests #171 to #173 | d3a33ac |
+| #61 | #174 | `create_action.rs` (11,474 lines) split into `src/storage/sqlx/create_action/` (fourteen modules, largest 674); a pure move proven by token bag, literals, SQL and test names; mutants glob and fourteen provisional floors follow; ratchet re-recorded | 2b291bb |
+| #62 | #176 | `storage_sqlx.rs` (9,955 lines) split into `src/storage/sqlx/storage_sqlx/` (37 files, largest 686), every public path unchanged (698 rustdoc paths identical); twelve pedantic entries newly visible because `#[async_trait]` had hidden seven bodies from clippy, re-recorded and explained, no allow added | c9f3afa |
+
+In flight at the time of writing (each with its PR; the cold reviews wait on the pool's Fable allowance, spent for this window):
+
+- #103 (PR #163, lane `hot-103-fix` from PR #104's red half): the internalize door runs bsv-rs's spend verifier before anything is stored; `Error::SpendRefused { offset, txid, input, why }` (the owner's shape; `why` bsv-rs's `SpendRefusal`, rendered by a private function since 0.8.2 gives it no `Display`, bsv-rs #213 adds one); the tip handed through `Headers::mining_tip` from the header service; a header fault or a missing tip holds. Two cold reviews applied. Blocked on the dependents gate: nine of the CLI's tests use bsv-rs's `MockChainTracker`, which answers no tip, so the door holds; the CLI's captain wraps its mocks or re-pins (bsv-rs #218 gives the mock a tip, for 0.8.4 on the owner's tag). The CHANGELOG tells hosts.
+- #165 D1 (PR #177, lane `p1-165-abort-refusal-b`): abort and `retire_undeliverable_txid` refuse once the store holds an accepting word (the keeper's amended rule), honour a `sending` row no instance accepted, ask no chain or explorer; the retire half applied by the captain at `storage_sqlx/retirement.rs` after #62. Ratchet green. Awaiting its cold review.
+- #161 port (PR #178, lane `port-161-beta`): main's review-pass fix onto the split tree. Awaiting its cold review.
+- 0.13.1 heading sync (PR #179): version and release heading on beta by hand, beta's own entries kept under Unreleased.
+- #66 implementation (lane `p2-66-door-split`, launched 2026-10-25 afternoon): the post door named for the reference's `processAction`, D3's default flip (#167), the lock released in its own benched commit, section 11 of the design with the reference reads before any code.
+
+Closed today: #53, #54, #55, #56, #57, #59, #60 (Wave 1), #61, #62, #64, #153. Filed today: #159 (reshape the nightly), #161 (review_status voids created outputs), #165 to #170 (divergences), #171 to #173 (missing tests), #175 (sweep of pre-existing failed-beside-spendable rows).
+
+Not landed: `oracle-58-fuzz` (#58) stopped twice: the Codex classifier at its opening turn on 2026-10-24, and on 2026-10-25 a named Claude model that armed a background job and ended its turn without a REPORT, twice; per cca rule 18 the lane is recorded (worktree `oracle-58-fuzz-b`, nine uncommitted files) and the owner names the next model or the brief is rewritten to a fixed foreground budget per target.
+
+What landing taught (2026-10-25):
+
+- A measuring PR that re-records `tools/ratchet.json` must run `python3 tools/scoreboard-write` in the same commit, or the `scoreboard` job fails on table drift (#174).
+- The landing script force-pushes a rebased branch, so a lane worktree is behind it afterwards; a follow-up commit pushed plainly is refused and the next landing attempt reads the stale FAILED. Rebase onto `origin/lane/<name>` before every follow-up (#163, #174).
+- A captain command chain that pipes a gate through `tail` or `grep` loses its exit status, and a `;` runs the push after a failed gate: once a clippy-failing state and once a non-compiling test module were pushed. Join every step with `&&` and read the gate's own status; never two chains in one worktree.
+- The CI runner's stable is Rust 1.99 while the Studio has 1.95: `clippy::chunks_exact_to_as_chunks` and `items_after_test_module` bite only in CI. Run the exact CI command and expect new lints after a runner update.
+- The `#[async_trait]` expansion hides function bodies from clippy's `too_many_lines` and `cognitive_complexity`; splitting a trait impl into inherent functions makes them visible and the ratchet rises by that much. Explain and re-record; never add an allow to hide a body.
+- The dependents gate (#59) builds the CLI's beta against each PR: a door that newly requires something of a host's `ChainTracker` (here `mining_tip`) fails the CLI's tests before the CLI knows. Tell the CLI's captain the exact requirement with the PR, and name it in the CHANGELOG under a hosts paragraph.
+- A fix lane told "not that file" because another lane is splitting it leaves a prepared patch; the captain applies it at the new path after the split lands (#165's retire half, #103's ancestry tests).
+- Reviews need Fable points on a pool account; when the pool's allowance is spent, PRs queue reviewed-but-unlanded. The code lanes ran on Codex; a review on a different model would still satisfy the epic's rule, but naming a model is the owner's (cca rule 7).
 
 What landing taught (2026-10-24):
 
@@ -51,20 +84,22 @@ Lessons of the wave: a lane that arms a background job and ends its turn leaves 
 
 Required contexts: `fixtures`, `ratchet`, `scoreboard`, `semver`, `dependents` and `bench` become required after a week green; `Nightly mutants` never. The nightly's 16 shards take every runner slot the repository has, so a dispatch during a landing run queues every CI run behind it for hours (the one-off against 934a668 was cancelled for that); dispatch it only when nothing is landing, and read the door floors from that run (#110 to #136 depend on the reading). Four stale `cli44-toolbox-review` records sit blocked with no account from an earlier wave; not this programme's.
 
-## Next (Phase 1 and the owner's window)
+## Next (Phase 2 and the owner's window)
 
-- The owner's: #58's model (cca rule 18); `Error::SpendRefused` for #103; #66 questions 5 to 9; #106's constructor shape (after #66); the 0.13.1 tag; the bsv-rs line.
-- The bsv-rs line: bsv-rs beta is 0.9.0 (#87 typed transport fault at 4dc505f; #117 `validate_internalize_action_args` in `src/wallet/validation/internalize.rs`). The toolbox can pin only a published version, so the one word is 0.9.0-beta.1 on the index as `bsv-rs = "=0.9.0-beta.1"`; until then lanes read bsv-rs beta for design and fixtures only, nothing in `Cargo.toml`. Then: #63/#140 (typed faults, wildcard arms under `#[non_exhaustive]`, the one text site at `storage_client.rs:519-527`, #144), #143 (the door calls bsv-rs's validator and wraps it as `Error::ValidationError`), #149 (BRC-56 key rule half), #152 (BRCs pin citation moves with the next release's docs).
-- Phase 1 lanes from the epic (#61 to #70) in order once the owner's words are in; #66's design is `docs/design/66-door-split.md`.
-- Record the Linux bench profile; confirm the door floors from the nightly; the ratchet's follow-ups (#146).
+- The owner's explicit words still needed: the `v0.13.1` tag and publish on main a01c550; bsv-rs's `v0.8.4` (the mock tip, #218) and `0.9.0-beta.1` (the one pin word, #144); #58's model or a rewritten brief (cca rule 18).
+- Landings waiting on reviews: #177 (D1), #178 (#161 port), #179 (0.13.1 sync); #163 waits on the CLI's mocks; then the #66 implementing lane's PR.
+- After #163 and #66: #169 (D5, the received-coin rule at the door, with the mark on an existing column and the action's labels as the carrier; a new column is the schema word), #106 (the seed field), #167 closed by #66's D3 commit.
+- The bsv-rs line: #63/#140 (typed faults, wildcard arms under the `#[non_exhaustive]` `Reason` and `Kind`, `..Default::default()` on the seven key args types, the three removed writer helpers), #143, #149, #152 launch when 0.9.0-beta.1 is on the index; then the renderer in `error.rs` goes for bsv-rs's `Display` (#213).
+- The nightly reshaped (#159) so the door floors stop being provisional; the three missing tests #171 to #173; #175's sweep as a 0.13.2 candidate; the Linux bench profile; the ratchet follow-ups (#146).
 
 ## Open with the CLI's captain
 
-- The CLI's differential floor read zero against beta 00c2e94 (2026-10-24 21:36Z: two pairs, 335 calls and 35 commands each, 0 differences; evidence `/Volumes/Lanes/out/bsv-wallet-cli/diff-00c2e94/`), as it did at 40cabb9. The CLI's `refactor` hard-fail (CLI #196) and its side of the customInstructions bound (CLI #157) wait for the 0.13.1 pin that carries #105 and #138; CLI #198 and #199 assumed a bsv-rs 0.8.3 tag and are reread against 0.9.0-beta.1.
-- #138 landed (#139): the door's refusal is `Validation error: customInstructions length must be at most 1000 bytes, got N`; the CLI maps it to 400 `VALIDATION_ERROR`. The wallet-door half is #143.
-- #66's shape: the CLI comments with its handler's call sequence; the toolbox answers with the draft API on the issue; the stack's word before landing (`stack-charter`).
-- #68's shape: reader methods or versioned views, by issue comment.
-- #67: the keeper's `conformance/wallet-gate-vectors.json` (schema wallet-gate-vectors/1, 490 rows) is recorded on the issue; the replay lane follows the oracle.
+- The CLI's differential floor read zero against beta 00c2e94 (2026-10-24; evidence `/Volumes/Lanes/out/bsv-wallet-cli/diff-00c2e94/`). CLI #196 and #157 wait on the `v0.13.1` tag; the CLI pins `bsv-wallet-toolbox-rs = "=0.13.0"` and `bsv-rs = "=0.8.2"` exactly, so every pin move here is a coordinated step of three crates.
+- #103: the CLI's fixture 103 flips when a published toolbox version carries `Error::SpendRefused` (CLI #140); the CLI classifies it 400 `INVALID_BEEF` with the text `spend refused at offset N, input I of <txid>: <why>`. Its test mocks need `mining_tip` before #163 can land (the dependents gate).
+- #66: the division is the reference's; the CLI reads the create and post door shapes when the implementing lane's PR opens, before briefing its #78; its #86 exit test points at the lock-release commit.
+- #161 fixed on main (in 0.13.1); CLI #219's gate holds coins by status meanwhile and #175 heals 0.13.0 stores.
+- #165: the keeper told the CLI's captain about the retire path; the CLI's `retire_guard.rs` keys on the same accepting word.
+- #68's shape: reader methods or versioned views, by issue comment, after #66.
 
 ## The stack's bindings (the keeper's messages of 2026-10-23 and 2026-10-24)
 
@@ -77,3 +112,4 @@ Required contexts: `fixtures`, `ratchet`, `scoreboard`, `semver`, `dependents` a
 - The BRCs pin of record moved ed1b015 to 5119a9b (#152): the toolbox cites the old pin once, in a historical CHANGELOG line; it moves with the next release, never ahead of the line.
 - The wallet column of the stack's `docs/MATRIX.md` names the toolbox's open gaps at v0.12.1: two instances of one key, the storage split, the pending prompt, the signature window, the race rule's explorer read.
 - 0.13.0 is on crates.io (2026-10-23 21:54Z); the Release run was green.
+- 2026-10-25: the keeper recorded the owner's words on #103, #66 and #106 in the stack's RULINGS by pointer; read the six divergences (#165 to #170): D1, D3, D5 move the code, D2 goes with #67/#70, D4 waits on S4's ruling, D6 is no divergence for the shapes shipped; the wallet charter's hosting row (wallet.md:126 at stack main 85e4f21) cites `docs/ARCHITECTURE.md` at beta d3a33ac. The keeper owes scenario rows beside wallet.md:98 (the abort refusal) and :94 (the received coin) and asks for the beta shas of D1, D3 and D5 at landing, and of #103 for the internalize scenario replay.
