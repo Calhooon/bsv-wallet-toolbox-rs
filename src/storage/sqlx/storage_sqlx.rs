@@ -9279,6 +9279,104 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn review_status_newly_failed_root_retires_live_descendant() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("review-status", &"0".repeat(64))
+            .await
+            .unwrap();
+        let (user, _) = storage.find_or_insert_user(&"a".repeat(66)).await.unwrap();
+        let seeded_at = Utc::now() - chrono::Duration::days(1);
+        let mut transaction_ids = Vec::new();
+
+        for (index, (status, req_status)) in [
+            ("completed", None),
+            ("unproven", Some("invalid")),
+            ("unproven", Some("unmined")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let txid = format!("{:064x}", index + 1);
+            let transaction_id = sqlx::query(
+                "INSERT INTO transactions (user_id, txid, status, reference, description, \
+                 is_outgoing, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, 'review status descendant regression', 1, ?, ?)",
+            )
+            .bind(user.user_id)
+            .bind(&txid)
+            .bind(status)
+            .bind(format!("review-status-{index}"))
+            .bind(seeded_at)
+            .bind(seeded_at)
+            .execute(storage.writer())
+            .await
+            .unwrap()
+            .last_insert_rowid();
+            transaction_ids.push(transaction_id);
+
+            if let Some(req_status) = req_status {
+                sqlx::query(
+                    "INSERT INTO proven_tx_reqs (txid, status, raw_tx, created_at, updated_at) \
+                     VALUES (?, ?, X'01000000', ?, ?)",
+                )
+                .bind(&txid)
+                .bind(req_status)
+                .bind(seeded_at)
+                .bind(seeded_at)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            }
+        }
+
+        let source = transaction_ids[0];
+        let root = transaction_ids[1];
+        let descendant_id = transaction_ids[2];
+        for (creator, spendable, spent_by) in [
+            (source, false, Some(root)),
+            (root, false, Some(descendant_id)),
+            (descendant_id, true, None),
+        ] {
+            sqlx::query(
+                "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, provided_by, \
+                 purpose, type, spendable, spent_by, created_at, updated_at) \
+                 VALUES (?, ?, 0, 1000, 'storage', 'change', 'P2PKH', ?, ?, ?, ?)",
+            )
+            .bind(user.user_id)
+            .bind(creator)
+            .bind(spendable)
+            .bind(spent_by)
+            .bind(seeded_at)
+            .bind(seeded_at)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        }
+
+        let review = MonitorStorage::review_status(&storage).await.unwrap();
+        let descendant: (String, bool) = sqlx::query_as(
+            "SELECT t.status, o.spendable FROM transactions t \
+             JOIN outputs o ON o.transaction_id = t.transaction_id \
+             WHERE t.transaction_id = ?",
+        )
+        .bind(descendant_id)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+        println!("descendant={descendant:?}; log={}", review.log);
+        assert_eq!(
+            descendant,
+            ("failed".to_string(), false),
+            "check 4 must retire a live descendant of a root newly failed by check 1"
+        );
+        assert!(review.log.contains("Marked 1 transactions as failed"));
+        assert!(review
+            .log
+            .contains("Retired the unproven descendants of 1 failed transactions"));
+    }
+
     // =========================================================================
     // purge_data — monitor-level SQL correctness tests
     // =========================================================================
