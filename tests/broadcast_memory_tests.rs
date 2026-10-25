@@ -947,7 +947,10 @@ mod services_memory {
         let options = ServicesOptions::mainnet()
             .with_arcade(arcade.url(), None)
             .with_gorillapool(gp.url(), None);
-        let services = Services::with_options(Chain::Main, options).unwrap();
+        let mut services = Services::with_options(Chain::Main, options).unwrap();
+        services.set_post_beef_mode(
+            bsv_wallet_toolbox_rs::services::services::PostBeefMode::UntilSuccess,
+        );
         services.set_broadcast_memory(memory.clone());
 
         let results = services
