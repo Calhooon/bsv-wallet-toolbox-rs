@@ -550,7 +550,7 @@ fn determine_statuses(args: &StorageProcessActionArgs) -> (&'static str, &'stati
 
 /// Process a signed transaction action.
 ///
-/// A new signed transaction is committed atomically. A stored sendWith action
+/// A new signed transaction is committed atomically. A stored `sendWith` action
 /// prepares its statuses, posts without the writer, then records each outcome.
 pub async fn process_action_internal(
     storage: &StorageSqlx,
@@ -868,7 +868,8 @@ async fn record_stored_post_words(
                 .bind(txid)
                 .fetch_one(&mut *tx)
                 .await?;
-        let mut history: serde_json::Value = serde_json::from_str(&history).unwrap_or_default();
+        let mut history: serde_json::Value = serde_json::from_str(&history)
+            .unwrap_or_else(|_| serde_json::json!({"previous": history}));
         if !history.is_object() {
             history = serde_json::json!({"previous": history});
         }
