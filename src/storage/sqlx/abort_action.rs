@@ -1723,12 +1723,11 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Test 16: Abort unproven transaction by txid - honoured without chain
-    // evidence, refused with it
+    // Test 16: Abort unproven transaction by txid - always refused
     // -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_abort_unproven_transaction_by_txid_follows_the_chain_evidence() {
+    async fn test_abort_unproven_transaction_by_txid_is_always_refused() {
         let (storage, user_id, auth) = setup_test_storage().await;
 
         // Create an unproven outgoing transaction with a txid
@@ -1742,7 +1741,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Refused while the chain knows it.
+        // Refused with a stored chain word.
         let err = abort_action_internal(
             &storage,
             auth.user_id.unwrap(),
@@ -1754,13 +1753,13 @@ mod tests {
         .unwrap_err();
         match err {
             Error::InvalidTransactionStatus(msg) => {
-                assert!(msg.contains("the network has transaction"), "{}", msg);
+                assert!(msg.contains("records an acceptance"), "{}", msg);
             }
             other => panic!("Expected InvalidTransactionStatus, got: {:?}", other),
         }
         assert_eq!(get_transaction_status(&storage, tx_id).await, "unproven");
 
-        // Honoured for a transaction the chain never saw (found by txid).
+        // Also refused without a chain word (found by txid).
         let other_ref = "test-abort-ref-16b";
         let other_txid = "4".repeat(64);
         let other_id = insert_test_transaction(
@@ -1772,7 +1771,7 @@ mod tests {
             Some(&other_txid),
         )
         .await;
-        let result = abort_action_internal(
+        let err = abort_action_internal(
             &storage,
             auth.user_id.unwrap(),
             AbortActionArgs {
@@ -1780,9 +1779,11 @@ mod tests {
             },
         )
         .await
-        .unwrap();
-        assert!(result.aborted);
-        assert_eq!(get_transaction_status(&storage, other_id).await, "failed");
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidTransactionStatus(ref msg) if msg.contains("acceptance"))
+        );
+        assert_eq!(get_transaction_status(&storage, other_id).await, "unproven");
     }
 
     // -------------------------------------------------------------------------
