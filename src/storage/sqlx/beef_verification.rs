@@ -3,11 +3,97 @@
 //! This module provides functions for verifying BEEF (Background Evaluation
 //! Extended Format) merkle proofs against a ChainTracker.
 
+use bsv_rs::transaction::beef_stream::{
+    display_hex, verify_stream_two_pass, ChainTip, Hash32, Headers, StreamError, Verdict,
+};
 use bsv_rs::transaction::{Beef, BeefStream, ChainTracker};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
 use crate::storage::traits::BeefVerificationMode;
+
+pub(super) fn stream_error(error: StreamError) -> Error {
+    match error {
+        StreamError::Refused(r) => Error::InvalidBeef {
+            offset: r.offset,
+            kind: r.kind(),
+        },
+        StreamError::Io(e) => Error::IoError(e),
+    }
+}
+
+/// A header fault is a retryable hold, never a verdict about a payment.
+pub(super) fn header_fault(error: impl std::fmt::Display) -> Error {
+    Error::ServiceError(format!("ChainTracker verification failed: {error}"))
+}
+
+struct VerificationHeaders {
+    tip: ChainTip,
+    roots: HashSet<(u64, Hash32)>,
+}
+
+impl Headers for VerificationHeaders {
+    fn carries(&self, height: u64, root: &Hash32) -> bool {
+        self.roots.contains(&(height, *root))
+    }
+
+    fn mining_tip(&self) -> Option<ChainTip> {
+        Some(self.tip)
+    }
+}
+
+/// The bytes already reside in the caller's argument. Two passes keep only
+/// referenced output scripts until spent, plus the verifier's element/index.
+/// Roots were collected during the door's element scan; each distinct root is
+/// asked once, and the synchronous verifier reads that snapshot without I/O.
+pub(super) async fn verify_beef_spends(
+    bytes: &[u8],
+    roots: &[(u64, Hash32)],
+    tracker: &dyn ChainTracker,
+) -> Result<()> {
+    let tip = tracker
+        .mining_tip()
+        .await
+        .map_err(header_fault)?
+        .ok_or_else(|| header_fault("the header service supplied no mining tip"))?;
+    let mut headers = VerificationHeaders {
+        tip,
+        roots: HashSet::new(),
+    };
+    let mut asked = HashSet::new();
+    for &(height, root) in roots {
+        if !asked.insert((height, root)) {
+            continue;
+        }
+        if let Ok(height32) = u32::try_from(height) {
+            if tracker
+                .is_valid_root_for_height(&display_hex(&root), height32)
+                .await
+                .map_err(header_fault)?
+            {
+                headers.roots.insert((height, root));
+            }
+        }
+    }
+    match verify_stream_two_pass(std::io::Cursor::new(bytes), headers, None)? {
+        Verdict::Valid { .. } => Ok(()),
+        Verdict::Invalid { offset, kind, .. } => Err(Error::InvalidBeef { offset, kind }),
+        Verdict::SpendRefused {
+            offset,
+            txid,
+            input,
+            why,
+        } => Err(Error::SpendRefused {
+            offset,
+            txid: display_hex(&txid),
+            input,
+            why,
+        }),
+        Verdict::Unverifiable { check, .. } => Err(header_fault(format!(
+            "the supplied mining context could not answer {check:?}"
+        ))),
+    }
+}
 
 /// Reads a stranger's BEEF through bsv-rs's streaming reader, one element at
 /// a time, and refuses it only for invalid bytes: [`Error::InvalidBeef`] with
@@ -40,8 +126,8 @@ pub fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
 /// Verifies BEEF merkle proofs against a ChainTracker.
 ///
 /// This function validates that all merkle proofs in a BEEF are valid
-/// according to the provided ChainTracker. It's used during internalize_action
-/// and create_action to ensure incoming transactions have valid proofs.
+/// according to the provided ChainTracker. Used by create_action; internalize
+/// runs the spend verifier, which already checks structure and roots.
 ///
 /// # Arguments
 ///
@@ -105,12 +191,7 @@ pub async fn verify_beef_merkle_proofs(
         let is_valid = chain_tracker
             .is_valid_root_for_height(root, *height)
             .await
-            .map_err(|e| {
-                Error::ValidationError(format!(
-                    "ChainTracker verification failed at height {}: {}",
-                    height, e
-                ))
-            })?;
+            .map_err(header_fault)?;
 
         if !is_valid {
             return Err(Error::ValidationError(format!(
@@ -169,12 +250,7 @@ pub async fn verify_txid_merkle_proof(
     let is_valid = chain_tracker
         .is_valid_root_for_height(&computed_root, block_height)
         .await
-        .map_err(|e| {
-            Error::ValidationError(format!(
-                "ChainTracker verification failed for txid {}: {}",
-                txid, e
-            ))
-        })?;
+        .map_err(header_fault)?;
 
     if !is_valid {
         return Err(Error::ValidationError(format!(

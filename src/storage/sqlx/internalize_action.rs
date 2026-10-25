@@ -10,18 +10,17 @@
 
 use crate::error::{Error, Result};
 use crate::storage::entities::{TableOutput, TableTransaction, TransactionStatus};
-use crate::storage::traits::{
-    BeefVerificationMode, StorageInternalizeActionResult, WalletStorageReader,
-};
-use bsv_rs::transaction::{Beef, Transaction};
+use crate::storage::traits::{StorageInternalizeActionResult, WalletStorageReader};
+use bsv_rs::transaction::beef_stream::{display_hex, Element, Hash32, TxBody};
+use bsv_rs::transaction::{BeefStream, MerklePath, Transaction};
 use bsv_rs::wallet::{
     BasketInsertion, InternalizeActionArgs, InternalizeActionResult, WalletPayment,
 };
 use chrono::Utc;
 use sqlx::{Row, SqliteConnection};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use super::beef_verification::verify_beef_merkle_proofs;
+use super::beef_verification::{header_fault, stream_error, verify_beef_spends};
 use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
 use super::StorageSqlx;
 
@@ -89,92 +88,53 @@ pub async fn internalize_action_internal(
     // Step 0: Validate the arguments before anything is read or written.
     validate_internalize_action_args(&args)?;
 
-    // Step 1: Read the AtomicBEEF through the streaming reader first: a
-    // refusal is for invalid bytes only, with the offset and the kind, and
-    // never for a size or a count. The bytes arrive whole (the argument is a
-    // byte vector), so the in-memory parse below holds them whole as well.
-    super::beef_verification::refuse_invalid_beef_bytes(&args.tx)?;
-    let mut beef = Beef::from_binary(&args.tx)
-        .map_err(|e| Error::ValidationError(format!("Failed to parse AtomicBEEF: {}", e)))?;
-
-    // Get the atomic txid (target transaction)
-    let txid = beef.atomic_txid.clone().ok_or_else(|| {
-        Error::ValidationError("BEEF is not AtomicBEEF (missing atomic_txid)".to_string())
-    })?;
-
-    // Step 1b: Check structure even when no chain tracker is configured.
-    // An incomplete ancestry must never be stored as input_beef.
-    if !beef.verify_valid(true).valid {
-        return Err(Error::ValidationError(
-            "BEEF structure is invalid".to_string(),
-        ));
-    }
-
-    // With a tracker, also verify the incoming merkle roots before internalizing.
-    if let Some(chain_tracker) = storage.get_chain_tracker().await {
-        // Get known txids for TrustKnown mode (transactions already in wallet)
-        let known_txids = get_known_txids(storage, user_id).await?;
-
-        // Verify the BEEF merkle proofs against the chain
-        // Default to Strict mode for internalize_action
-        let _is_valid = verify_beef_merkle_proofs(
-            &mut beef,
-            chain_tracker.as_ref(),
-            BeefVerificationMode::Strict,
-            &known_txids,
-        )
-        .await?;
-        // Note: verify_beef_merkle_proofs returns Err on invalid proofs,
-        // Ok(false) for a valid structure with no roots, Ok(true) with roots.
-        // A missing ancestor is refused even when there are no proofs.
-    }
-
-    // Find the target transaction
-    let beef_tx = beef.find_txid(&txid).ok_or_else(|| {
-        Error::ValidationError(format!("Could not find transaction {} in AtomicBEEF", txid))
-    })?;
-
-    // Extract ALL data from the transaction before any await points.
-    // This is necessary because Transaction contains RefCell which is not Send.
-    let (tx_outputs_count, tx_version, tx_lock_time, raw_tx, extracted_outputs, input_outpoints) = {
-        let tx = beef_tx.tx().ok_or_else(|| {
-            Error::ValidationError(format!("Transaction {} is txid-only in BEEF", txid))
-        })?;
-
-        // Extract all output data from the transaction
-        let outputs: Vec<(u64, Vec<u8>)> = tx
-            .outputs
-            .iter()
-            .map(|o| (o.satoshis.unwrap_or(0), o.locking_script.to_binary()))
-            .collect();
-
-        // Extract the input outpoints — the coins this transaction CONSUMES.
-        // Needed to mark any wallet-tracked UTXOs among them as spent
-        // (TS parity: internalizeAction.ts:73-97 markUserInputsSpent).
-        let input_outpoints = extract_input_outpoints(tx);
-
-        (
-            tx.outputs.len(),
-            tx.version,
-            tx.lock_time,
-            tx.to_binary(),
-            outputs,
-            input_outpoints,
-        )
+    // Scan one element at a time, keeping the subject and BUMP locations only.
+    // No parsed copy of the ancestor graph survives the scan.
+    let incoming = read_incoming_payment(&args.tx)?;
+    let configured_tracker = storage.get_chain_tracker().await;
+    let services = storage.get_services().ok();
+    let tracker = match &configured_tracker {
+        Some(tracker) => tracker.as_ref(),
+        None => services
+            .as_ref()
+            .ok_or_else(|| header_fault("no header service configured"))?
+            .get_chain_tracker()
+            .await
+            .map_err(header_fault)?,
     };
-    // tx is now dropped, safe to await
-
-    // Step 1c: Extract the BUMP that proves `txid` (if the BEEF carries one).
-    //
-    // Done here, synchronously, because `Beef` holds `RefCell`-bearing
-    // transactions and must not be borrowed across an await point.
-    let bump_claim = extract_bump_claim(&beef, &txid);
-
-    // Step 1d: VALIDATE that claimed proof against the wallet's ChainTracker.
-    // `Some` means the proof is safe to store as a `proven_txs` row; `None`
-    // means it must not be trusted and the txid needs a `proven_tx_req` so the
-    // CheckForProofs backstop re-derives the proof from a service.
-    let validated_bump = validate_bump_claim(storage, &txid, bump_claim).await;
+    // A valid verdict is required even for an unproven payment, before any
+    // basket, transaction, coin, request or broadcast can be created.
+    verify_beef_spends(&args.tx, &incoming.roots, tracker).await?;
+    let txid = incoming.txid;
+    let body = incoming
+        .body
+        .ok_or_else(|| Error::Internal("verified subject has no raw body".into()))?;
+    let tx_outputs_count = body.outputs.len();
+    let tx_version = body.version;
+    let tx_lock_time = body.lock_time;
+    let extracted_outputs: Vec<_> = body
+        .outputs
+        .iter()
+        .map(|o| (o.satoshis, body.raw[o.script.clone()].to_vec()))
+        .collect();
+    let input_outpoints: Vec<_> = body
+        .inputs
+        .iter()
+        .map(|i| (display_hex(&i.prev), i.vout))
+        .collect();
+    let raw_tx = body.raw;
+    // The spend verifier already checked this root. Only obtain the optional
+    // block-hash metadata for storage; never ask the root question again.
+    let validated_bump = match incoming.bump_claim {
+        Some(claim) => Some(ValidatedBump {
+            block_hash: block_hash_at_height(storage, claim.height).await,
+            height: claim.height,
+            idx: claim.idx,
+            merkle_root: claim.computed_root,
+            merkle_path: claim.merkle_path,
+        }),
+        None => None,
+    };
 
     // Step 2: Get the user's default (change) basket
     // NOTE: This uses its own connection (known limitation).
@@ -306,7 +266,7 @@ pub async fn internalize_action_internal(
     // 'completed' from `has_proof` alone while never writing `proven_tx_id`
     // and never creating a req, so the tx was unreachable by every
     // proof-linking path forever (Calgooon/bsv-wallet-toolbox-rs#8).
-    let has_proof = beef.find_bump(&txid).is_some();
+    let has_proof = validated_bump.is_some();
     // Whether a `proven_txs` row was actually WRITTEN for this transaction
     // (a validated proof the LAG gate defers writes none): the status and
     // the request below follow the row, never the claim.
@@ -1023,10 +983,62 @@ async fn add_tag_to_output(
 // Proof linkage (proof-bearing internalize)
 // =============================================================================
 
+struct IncomingPayment {
+    txid: String,
+    body: Option<TxBody>,
+    roots: Vec<(u64, Hash32)>,
+    bump_claim: Option<BumpClaim>,
+}
+
+/// Retain the subject alone, and offsets into the caller's bytes for BUMPs.
+/// Ancestor bodies and BUMP trees are dropped after each element. The verifier
+/// subsequently checks the graph, roots and spends before these fields are used.
+fn read_incoming_payment(bytes: &[u8]) -> Result<IncomingPayment> {
+    let mut stream = BeefStream::new(bytes);
+    let mut bumps = Vec::new();
+    let mut roots = Vec::new();
+    let mut body = None;
+    let mut subject_bump = None;
+    while let Some(element) = stream.next_element().map_err(stream_error)? {
+        match element {
+            Element::Bump(bump) => {
+                bumps.push((bump.offset, bump.wire_len));
+                roots.push((bump.block_height, bump.root));
+            }
+            Element::Tx {
+                txid,
+                bump_index,
+                body: tx,
+                ..
+            } if Some(txid) == stream.subject() => {
+                body = Some(tx);
+                subject_bump = bump_index;
+            }
+            _ => {}
+        }
+    }
+    let txid = stream.subject().map(|id| display_hex(&id)).ok_or_else(|| {
+        Error::ValidationError("BEEF is not AtomicBEEF (missing atomic_txid)".into())
+    })?;
+    let bump = subject_bump
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| bumps.get(index))
+        .and_then(|&(offset, length)| bytes.get(offset as usize..(offset + length) as usize))
+        .map(MerklePath::from_binary)
+        .transpose()?;
+    let bump_claim = extract_bump_claim(bump.as_ref(), &txid);
+    Ok(IncomingPayment {
+        txid,
+        body,
+        roots,
+        bump_claim,
+    })
+}
+
 /// An unverified merkle-proof claim lifted out of an incoming BEEF's BUMP.
 ///
 /// "Claim" is deliberate: nothing here has been checked against a block header
-/// yet. Only [`validate_bump_claim`] may turn one of these into a
+/// yet. Only a successful spend verification may turn one into a
 /// [`ValidatedBump`].
 struct BumpClaim {
     /// Block height the BUMP asserts.
@@ -1076,8 +1088,8 @@ async fn block_hash_at_height(storage: &StorageSqlx, height: u32) -> String {
 /// not be held across an await point, so every field is copied out here.
 /// Returns `None` when there is no BUMP for `txid`, when the root cannot be
 /// computed from it, or when `txid` is absent from the BUMP's level-0 leaves.
-fn extract_bump_claim(beef: &Beef, txid: &str) -> Option<BumpClaim> {
-    let bump = beef.find_bump(txid)?;
+fn extract_bump_claim(bump: Option<&MerklePath>, txid: &str) -> Option<BumpClaim> {
+    let bump = bump?;
 
     // compute_root(Some(txid)) fails unless txid is actually in the path, so a
     // malformed or unrelated BUMP is rejected right here.
@@ -1102,75 +1114,6 @@ fn extract_bump_claim(beef: &Beef, txid: &str) -> Option<BumpClaim> {
         computed_root,
         merkle_path: bump.to_binary(),
     })
-}
-
-/// Validates a [`BumpClaim`] against the storage's ChainTracker.
-///
-/// This is the SAME check `StorageSqlx::ingest_merkle_proof` performs before it
-/// stores any proof (`is_valid_root_for_height` at the claimed height) — an
-/// incoming BEEF's BUMP gets no more trust than a proof pulled from a service.
-///
-/// Returns `None` — meaning "do not store this proof" — when:
-/// - there is no claim,
-/// - no ChainTracker is wired (we cannot verify, so we must not assert),
-/// - the tracker says the root is not the one at that height, or
-/// - the tracker errored (unknown, not proven).
-///
-/// A `None` result is not fatal: the caller records the txid as 'unproven' with
-/// a `proven_tx_req`, and the CheckForProofs backstop obtains a proof the
-/// normal way.
-async fn validate_bump_claim(
-    storage: &StorageSqlx,
-    txid: &str,
-    claim: Option<BumpClaim>,
-) -> Option<ValidatedBump> {
-    let claim = claim?;
-
-    let Some(tracker) = storage.get_chain_tracker().await else {
-        tracing::debug!(
-            txid = %txid,
-            height = claim.height,
-            "internalize_action: BEEF carries a BUMP but no ChainTracker is wired — \
-             not trusting it; txid will be tracked as unproven"
-        );
-        return None;
-    };
-
-    match tracker
-        .is_valid_root_for_height(&claim.computed_root, claim.height)
-        .await
-    {
-        Ok(true) => {
-            let block_hash = block_hash_at_height(storage, claim.height).await;
-            Some(ValidatedBump {
-                height: claim.height,
-                idx: claim.idx,
-                merkle_root: claim.computed_root,
-                merkle_path: claim.merkle_path,
-                block_hash,
-            })
-        }
-        Ok(false) => {
-            tracing::warn!(
-                txid = %txid,
-                height = claim.height,
-                computed_root = %claim.computed_root,
-                "internalize_action: incoming BEEF's BUMP does NOT match the merkle root \
-                 at its claimed height — proof rejected, txid tracked as unproven"
-            );
-            None
-        }
-        Err(e) => {
-            tracing::warn!(
-                txid = %txid,
-                height = claim.height,
-                error = %e,
-                "internalize_action: ChainTracker could not confirm the incoming BEEF's BUMP \
-                 — proof not stored, txid tracked as unproven"
-            );
-            None
-        }
-    }
 }
 
 /// Stores the `proven_txs` row for a ChainTracker-validated BUMP through the
@@ -1236,28 +1179,6 @@ async fn insert_proven_tx_from_bump(
             Ok(None)
         }
     }
-}
-
-/// Gets known txids for a user (for TrustKnown BEEF verification mode).
-///
-/// Returns all txids from transactions owned by the user that are in
-/// "completed" or "unproven" status. These are transactions the wallet
-/// already knows about and can trust.
-///
-/// NOTE: This function runs outside the SQL transaction (before `begin()`),
-/// using the pool directly. It is only called during BEEF verification.
-async fn get_known_txids(storage: &StorageSqlx, user_id: i64) -> Result<HashSet<String>> {
-    let rows: Vec<String> = sqlx::query_scalar(
-        r#"
-        SELECT txid FROM transactions
-        WHERE user_id = ? AND status IN ('completed', 'unproven')
-        "#,
-    )
-    .bind(user_id)
-    .fetch_all(storage.pool())
-    .await?;
-
-    Ok(rows.into_iter().collect())
 }
 
 /// Creates a proven transaction request for an internalized transaction.
@@ -3140,7 +3061,7 @@ mod tests {
     fn test_extract_bump_claim() {
         let (beef_bytes, txid, _satoshis, bump, _tracker) = create_proven_atomic_beef();
         let beef = Beef::from_binary(&beef_bytes).unwrap();
-        let claim = extract_bump_claim(&beef, &txid).expect("BUMP present");
+        let claim = extract_bump_claim(beef.find_bump(&txid), &txid).expect("BUMP present");
         assert_eq!(claim.height, PROVEN_HEIGHT);
         assert_eq!(claim.idx, 0);
         assert_eq!(claim.computed_root, bump.compute_root(Some(&txid)).unwrap());
@@ -3158,7 +3079,7 @@ mod tests {
                 .to_binary(),
             None,
         );
-        assert!(extract_bump_claim(&plain, &plain_txid).is_none());
+        assert!(extract_bump_claim(plain.find_bump(&plain_txid), &plain_txid).is_none());
     }
 
     /// A BUMP that does not actually contain the target txid yields no claim —
@@ -3171,7 +3092,7 @@ mod tests {
         let other = MerklePath::from_coinbase_txid(&"7c".repeat(32), PROVEN_HEIGHT);
         beef.bumps = vec![other];
         assert!(
-            extract_bump_claim(&beef, &txid).is_none(),
+            extract_bump_claim(beef.find_bump(&txid), &txid).is_none(),
             "a BUMP that does not contain the txid must not be usable as its proof"
         );
     }
