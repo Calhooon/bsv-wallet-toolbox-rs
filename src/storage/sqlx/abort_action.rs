@@ -272,7 +272,28 @@ pub(crate) async fn refuse_if_accepted(
 
 /// Reads only stored words, including acceptance kept after a later refusal
 /// replaced a provider's memory row. `sending` / `unsent` precede the post.
+/// Each reader below asks one table; the first word found names the refusal.
 async fn accepting_word_for(conn: &mut SqliteConnection, txid: &str) -> Result<Option<String>> {
+    if let Some(word) = transaction_accepting_word(conn, txid).await? {
+        return Ok(Some(word));
+    }
+    if let Some(word) = request_accepting_word(conn, txid).await? {
+        return Ok(Some(word));
+    }
+    if let Some(word) = memory_accepting_word(conn, txid).await? {
+        return Ok(Some(word));
+    }
+    if let Some(word) = proof_accepting_word(conn, txid).await? {
+        return Ok(Some(word));
+    }
+    tracker_accepting_word(conn, txid).await
+}
+
+/// The transaction's own status past the post, or a stored proof link.
+async fn transaction_accepting_word(
+    conn: &mut SqliteConnection,
+    txid: &str,
+) -> Result<Option<String>> {
     let status: Option<String> = sqlx::query_scalar(
         "SELECT status FROM transactions WHERE txid = ? \
          AND (status IN ('unproven', 'completed') OR proven_tx_id IS NOT NULL) LIMIT 1",
@@ -280,32 +301,36 @@ async fn accepting_word_for(conn: &mut SqliteConnection, txid: &str) -> Result<O
     .bind(txid)
     .fetch_optional(&mut *conn)
     .await?;
-    if let Some(status) = status {
-        return Ok(Some(format!(
-            "transaction status '{status}' or a stored proof link"
-        )));
-    }
+    Ok(status.map(|status| format!("transaction status '{status}' or a stored proof link")))
+}
 
+/// The proof request past the post, or an acceptance in its post history.
+async fn request_accepting_word(conn: &mut SqliteConnection, txid: &str) -> Result<Option<String>> {
     let req: Option<(String, String, Option<i64>)> =
         sqlx::query_as("SELECT status, history, proven_tx_id FROM proven_tx_reqs WHERE txid = ?")
             .bind(txid)
             .fetch_optional(&mut *conn)
             .await?;
-    if let Some((status, history, proof)) = req {
-        if matches!(
-            status.as_str(),
-            "unmined" | "callback" | "unconfirmed" | "completed"
-        ) || proof.is_some()
-        {
-            return Ok(Some(format!("proof request past the post ('{status}')")));
-        }
-        if serde_json::from_str::<serde_json::Value>(&history)
-            .is_ok_and(|history| history_has_acceptance(&history, txid))
-        {
-            return Ok(Some("acceptance in the request's post history".to_string()));
-        }
+    let Some((status, history, proof)) = req else {
+        return Ok(None);
+    };
+    if matches!(
+        status.as_str(),
+        "unmined" | "callback" | "unconfirmed" | "completed"
+    ) || proof.is_some()
+    {
+        return Ok(Some(format!("proof request past the post ('{status}')")));
     }
+    if serde_json::from_str::<serde_json::Value>(&history)
+        .is_ok_and(|history| history_has_acceptance(&history, txid))
+    {
+        return Ok(Some("acceptance in the request's post history".to_string()));
+    }
+    Ok(None)
+}
 
+/// A broadcaster's memory row that accepted, saw or mined the transaction.
+async fn memory_accepting_word(conn: &mut SqliteConnection, txid: &str) -> Result<Option<String>> {
     let memory: Option<(String, String)> = sqlx::query_as(
         "SELECT provider, status FROM broadcast_seen \
          WHERE txid = ? AND status IN ('accepted', 'seen', 'mined') LIMIT 1",
@@ -313,38 +338,38 @@ async fn accepting_word_for(conn: &mut SqliteConnection, txid: &str) -> Result<O
     .bind(txid)
     .fetch_optional(&mut *conn)
     .await?;
-    if let Some((provider, status)) = memory {
-        return Ok(Some(format!("{provider} recorded '{status}'")));
-    }
+    Ok(memory.map(|(provider, status)| format!("{provider} recorded '{status}'")))
+}
 
+/// A stored merkle proof for the transaction.
+async fn proof_accepting_word(conn: &mut SqliteConnection, txid: &str) -> Result<Option<String>> {
     let proof: Option<i64> =
         sqlx::query_scalar("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
             .bind(txid)
             .fetch_optional(&mut *conn)
             .await?;
-    if proof.is_some() {
-        return Ok(Some("a stored merkle proof".to_string()));
-    }
+    Ok(proof.map(|_| "a stored merkle proof".to_string()))
+}
 
-    // The CLI hosts this table; a standalone toolbox store need not have it.
+/// A tracker word past `built`, when the host keeps the tracker's table in
+/// this store (the CLI does; a standalone toolbox store need not).
+async fn tracker_accepting_word(conn: &mut SqliteConnection, txid: &str) -> Result<Option<String>> {
     let tracker_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tracker_states')",
     )
     .fetch_one(&mut *conn)
     .await?;
-    if tracker_exists {
-        let word: Option<String> = sqlx::query_scalar(
-            "SELECT word FROM tracker_states WHERE txid = ? \
-             AND word IN ('announced', 'seen', 'mined', 'stale') LIMIT 1",
-        )
-        .bind(txid)
-        .fetch_optional(&mut *conn)
-        .await?;
-        if let Some(word) = word {
-            return Ok(Some(format!("tracker word '{word}'")));
-        }
+    if !tracker_exists {
+        return Ok(None);
     }
-    Ok(None)
+    let word: Option<String> = sqlx::query_scalar(
+        "SELECT word FROM tracker_states WHERE txid = ? \
+         AND word IN ('announced', 'seen', 'mined', 'stale') LIMIT 1",
+    )
+    .bind(txid)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(word.map(|word| format!("tracker word '{word}'")))
 }
 
 /// Read structured post results, never words quoted in a refusal's text.
@@ -786,6 +811,31 @@ mod tests {
     // -------------------------------------------------------------------------
     // Test 1: Abort unsigned transaction - success
     // -------------------------------------------------------------------------
+
+    /// Asks the door to abort `reference` and requires the accepting-word
+    /// refusal (#165): `InvalidTransactionStatus` whose text holds `expected`.
+    async fn abort_refused_as_accepted(
+        storage: &StorageSqlx,
+        user_id: i64,
+        reference: &str,
+        expected: &str,
+    ) {
+        let err = abort_action_internal(
+            storage,
+            user_id,
+            AbortActionArgs {
+                reference: reference.to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+        match err {
+            Error::InvalidTransactionStatus(msg) => {
+                assert!(msg.contains(expected), "{msg}");
+            }
+            other => panic!("Expected InvalidTransactionStatus, got: {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn test_abort_unsigned_transaction_success() {
@@ -1231,19 +1281,7 @@ mod tests {
             .await
             .unwrap();
 
-        let err = abort_action_internal(
-            &storage,
-            auth.user_id.unwrap(),
-            AbortActionArgs {
-                reference: reference.to_string(),
-            },
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(err, Error::InvalidTransactionStatus(ref msg) if msg.contains("acceptance"))
-        );
+        abort_refused_as_accepted(&storage, auth.user_id.unwrap(), reference, "acceptance").await;
         assert_eq!(get_transaction_status(&storage, tx_id).await, "sending");
     }
 
@@ -1485,21 +1523,13 @@ mod tests {
             .await
             .unwrap();
 
-        let err = abort_action_internal(
+        abort_refused_as_accepted(
             &storage,
             auth.user_id.unwrap(),
-            AbortActionArgs {
-                reference: reference.to_string(),
-            },
+            reference,
+            "records an acceptance",
         )
-        .await
-        .unwrap_err();
-        match err {
-            Error::InvalidTransactionStatus(msg) => {
-                assert!(msg.contains("records an acceptance"), "{}", msg);
-            }
-            other => panic!("Expected InvalidTransactionStatus, got: {:?}", other),
-        }
+        .await;
         // Nothing moved.
         assert_eq!(get_transaction_status(&storage, c.a).await, "unproven");
         assert_eq!(get_transaction_status(&storage, c.d).await, "unproven");
@@ -1518,21 +1548,13 @@ mod tests {
             .await
             .unwrap();
 
-        let err = abort_action_internal(
+        abort_refused_as_accepted(
             &storage,
             auth.user_id.unwrap(),
-            AbortActionArgs {
-                reference: reference.to_string(),
-            },
+            reference,
+            "records an acceptance",
         )
-        .await
-        .unwrap_err();
-        match err {
-            Error::InvalidTransactionStatus(msg) => {
-                assert!(msg.contains("records an acceptance"), "{}", msg);
-            }
-            other => panic!("Expected InvalidTransactionStatus, got: {:?}", other),
-        }
+        .await;
         assert_eq!(get_transaction_status(&storage, c.a).await, "unproven");
     }
 
@@ -1742,21 +1764,13 @@ mod tests {
             .unwrap();
 
         // Refused with a stored chain word.
-        let err = abort_action_internal(
+        abort_refused_as_accepted(
             &storage,
             auth.user_id.unwrap(),
-            AbortActionArgs {
-                reference: txid.clone(),
-            },
+            &txid,
+            "records an acceptance",
         )
-        .await
-        .unwrap_err();
-        match err {
-            Error::InvalidTransactionStatus(msg) => {
-                assert!(msg.contains("records an acceptance"), "{}", msg);
-            }
-            other => panic!("Expected InvalidTransactionStatus, got: {:?}", other),
-        }
+        .await;
         assert_eq!(get_transaction_status(&storage, tx_id).await, "unproven");
 
         // Also refused without a chain word (found by txid).
@@ -1771,18 +1785,7 @@ mod tests {
             Some(&other_txid),
         )
         .await;
-        let err = abort_action_internal(
-            &storage,
-            auth.user_id.unwrap(),
-            AbortActionArgs {
-                reference: other_txid.clone(),
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidTransactionStatus(ref msg) if msg.contains("acceptance"))
-        );
+        abort_refused_as_accepted(&storage, auth.user_id.unwrap(), &other_txid, "acceptance").await;
         assert_eq!(get_transaction_status(&storage, other_id).await, "unproven");
     }
 
