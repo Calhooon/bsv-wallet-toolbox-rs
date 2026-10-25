@@ -1,30 +1,8 @@
+use super::same_proof_anchor;
 use super::{
     commit, MerklePath, MonitorStorage, ProofIngestOutcome, ProvenTxAnchor, ProvenTxReqStatus,
-    Result, StorageSqlx, TxSynchronizedStatus, Utc,
+    Result, StorageSqlx, TxSynchronizedStatus,
 };
-
-/// M19 R1: is a freshly validated proof the SAME anchor as the stored one?
-///
-/// A stored row written by `internalize_action` before 0.3.65 carries an
-/// empty `block_hash` (the validated bump had none), so the comparison falls
-/// back to height + merkle root there; with both hashes known, the hash and
-/// the height decide (the root is implied by the hash).
-pub(crate) fn same_proof_anchor(
-    stored_hash: &str,
-    stored_height: i64,
-    stored_root: &str,
-    new_hash: &str,
-    new_height: u32,
-    new_root: &str,
-) -> bool {
-    if stored_height != new_height as i64 {
-        return false;
-    }
-    if !stored_hash.is_empty() && !new_hash.is_empty() {
-        return stored_hash.eq_ignore_ascii_case(new_hash);
-    }
-    stored_root.eq_ignore_ascii_case(new_root)
-}
 
 /// The level-0 leaf offset of `txid` inside `bump` (the `proven_txs.idx`
 /// column); 0 when the leaf cannot be found (a proof whose root computed
@@ -462,7 +440,9 @@ impl StorageSqlx {
             merkle_path: Some(merkle_path_bytes.to_vec()),
         }))
     }
+}
 
+impl StorageSqlx {
     pub(super) async fn set_proven_tx_block_hash_if_empty_impl(
         &self,
         txid: &str,

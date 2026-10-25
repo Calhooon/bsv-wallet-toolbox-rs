@@ -1,7 +1,7 @@
 use super::{
     parse_input_txids, rebuild_beef_for_broadcast, validate_beef_for_broadcast, Beef, Duration,
     Error, FindProvenTxReqsArgs, ProvenTxReqStatus, Result, SendWithResult,
-    StorageProcessActionResults, StorageSqlx, TableProvenTxReq, Utc, WalletStorageReader,
+    StorageProcessActionResults, StorageSqlx, TableProvenTxReq, WalletStorageReader,
 };
 
 /// How many notes a request's history keeps, the newest.
@@ -152,7 +152,9 @@ impl StorageSqlx {
         self.queue_competitors(txid, competitors).await?;
         Ok(())
     }
+}
 
+impl StorageSqlx {
     pub(super) async fn send_waiting_transactions_impl(
         &self,
         min_transaction_age: Duration,
@@ -564,7 +566,7 @@ impl StorageSqlx {
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
+    use super::super::{Duration, MonitorStorage, StorageSqlx, WalletStorageWriter};
 
     #[tokio::test]
     async fn test_send_waiting_transactions_empty() {

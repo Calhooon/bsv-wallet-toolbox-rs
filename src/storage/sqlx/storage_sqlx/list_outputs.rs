@@ -374,7 +374,9 @@ impl StorageSqlx {
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
+    use super::super::{
+        AuthId, ListOutputsArgs, StorageSqlx, WalletStorageReader, WalletStorageWriter,
+    };
 
     #[tokio::test]
     async fn test_list_outputs_empty() {

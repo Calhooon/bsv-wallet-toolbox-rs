@@ -30,8 +30,8 @@ const HTTP_CEILINGS: &[(&str, usize)] = &[
 // are test-only diagnostics. #61 moves those diagnostics with their tests.
 const CONFIG_MODULES: &[&str] = &["src/services/mod.rs", "src/monitor/config.rs"];
 
-// #61 splits create_action.rs; #62 splits storage_sqlx.rs. Keep each file's
-// budget attached to its old path so moving code cannot mint a new allowance.
+// The create_action and storage_sqlx splits retain each original budget
+// across their destination paths; moving code cannot mint a new allowance.
 const PANIC_CEILINGS: &[(&str, usize)] = &[
     ("src/managers/cwi_style_wallet_manager.rs", 1),
     ("src/managers/storage_manager.rs", 11),

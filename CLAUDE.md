@@ -36,7 +36,7 @@ src/
 │   ├── traits.rs           # WalletStorageReader → Writer → Sync → Provider → MonitorStorage (892 lines)
 │   ├── entities/mod.rs     # 18 table entity structs (single file, camelCase serde)
 │   ├── sqlx/               # SQLite/MySQL impl (StorageSqlx)
-│   │   ├── storage_sqlx.rs # Main impl + CRUD
+│   │   ├── storage_sqlx/   # Provider core, entity repositories, monitor routines
 │   │   ├── create_action/ (the door in mod.rs; allocation, change, fees, signing, validation, inputs, outputs, tracker, beef* and broadcast modules; #61), process_action.rs, abort_action.rs
 │   │   ├── internalize_action.rs, beef_verification.rs, sync.rs
 │   │   └── mod.rs
@@ -80,7 +80,7 @@ Each subdirectory has its own `CLAUDE.md` with detailed API docs. The dataflow a
 
 **Trait hierarchy (storage):** Reader < Writer < Sync < Provider < MonitorStorage.
 Adding methods to any storage trait requires updating ALL 3 implementors:
-- `StorageSqlx` (src/storage/sqlx/storage_sqlx.rs) - SQL queries
+- `StorageSqlx` (src/storage/sqlx/storage_sqlx/mod.rs) - SQL queries
 - `WalletStorageManager` (src/managers/storage_manager.rs) - delegates via `run_as_writer`
 - `StorageClient` (src/storage/client/storage_client.rs) - uses `rpc_call`
 

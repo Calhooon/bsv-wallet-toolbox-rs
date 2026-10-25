@@ -1,16 +1,8 @@
 use super::{
-    commit, Duration, FindProvenTxReqsArgs, HashMap, HashSet, MonitorStorage, ProofIngestOutcome,
-    ProvenTxReqStatus, Result, Row, StorageSqlx, TxSynchronizedStatus, Utc, WalletStorageReader,
+    commit, FindProvenTxReqsArgs, MonitorStorage, ProofIngestOutcome, ProvenTxReqStatus, Result,
+    StorageSqlx, TxSynchronizedStatus, WalletStorageReader,
 };
-
-/// The reference's `unprovenAttemptsLimitMain` / `unprovenAttemptsLimitTest`
-/// (wallet-toolbox src/monitor/Monitor.ts:105-106). The reference writes a
-/// req off once `attempts` is GREATER than the limit
-/// (src/monitor/tasks/TaskCheckForProofs.ts:158); here, since 0.7.4
-/// (bsv-stack-lean #66), past the limit is only a log line: a count is no
-/// evidence and writes no word.
-pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
-pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;
+use super::{PROOF_ATTEMPTS_LIMIT_MAIN, PROOF_ATTEMPTS_LIMIT_TEST};
 
 /// The proof pass over this wallet's own requests.
 /// Private helpers for the attempt backstop of

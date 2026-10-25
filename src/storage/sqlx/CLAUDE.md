@@ -10,7 +10,20 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (4798 lines) |
+| `storage_sqlx/mod.rs` | StorageSqlx, shared pools and settings, pragmas, writer discipline |
+| `storage_sqlx/reader.rs`, `storage_sqlx/writer.rs`, `storage_sqlx/monitor.rs` | One implementation per storage trait, delegating to the entity modules |
+| `storage_sqlx/users.rs`, `storage_sqlx/settings.rs`, `storage_sqlx/sync_state.rs` | User records, storage configuration, and synchronization state |
+| `storage_sqlx/outputs.rs`, `storage_sqlx/output_selection.rs`, `storage_sqlx/list_outputs.rs` | Output queries, allocation, and wallet output listing |
+| `storage_sqlx/baskets.rs`, `storage_sqlx/labels.rs`, `storage_sqlx/tags.rs` | Output baskets and transaction/output labels |
+| `storage_sqlx/transactions.rs` | Wallet action listing, raw transaction reads, and abandoned actions |
+| `storage_sqlx/certificates.rs` | Certificate queries, fields, atomic insertion, and relinquishing |
+| `storage_sqlx/proven_tx_reqs.rs` | Proof-request queries, adoption, and status updates |
+| `storage_sqlx/proven_txs.rs`, `storage_sqlx/stale_proofs.rs` | Validated proof storage, anchors, and stale-proof demotion |
+| `storage_sqlx/proof_requests.rs`, `storage_sqlx/beef_compaction.rs` | The monitor proof-fetch pass, attempt accounting, and input BEEF compaction |
+| `storage_sqlx/send_waiting.rs`, `storage_sqlx/competitors.rs`, `storage_sqlx/retirement.rs` | Broadcast retries and hints, competitor proof checks, and retirement |
+| `storage_sqlx/maintenance.rs`, `storage_sqlx/unfail.rs` | Status repair, purge, and false-failure recovery |
+| `storage_sqlx/commissions.rs`, `storage_sqlx/monitor_events.rs` | Commissions and monitor event persistence |
+| `storage_sqlx/core_tests.rs`, `storage_sqlx/certificate_tests.rs`, `storage_sqlx/commission_tests.rs`, `storage_sqlx/monitor_event_tests.rs`, `storage_sqlx/proof_request_tests.rs`, `storage_sqlx/transaction_tests.rs`, `storage_sqlx/unfail_tests.rs`, `storage_sqlx/unfail_empty_tests.rs`, `storage_sqlx/user_tests.rs`, `storage_sqlx/validation_tests.rs` | Existing scenarios split by subject; entity modules also retain their tests |
 | `create_action/mod.rs` | Private door, write transaction, signing callback, and result assembly |
 | `create_action/allocation.rs` | Change-coin selection, reservations, and precheck |
 | `create_action/change.rs` | Change planning, funding, and starvation loop |
@@ -546,7 +559,7 @@ The create-action tests are grouped by concern under `create_action/tests/`.
 |--------|-------|--------------|
 | `create_action/` | 131 | Validation, fee calculation, BEEF building, allocation, and door scenarios |
 | `process_action.rs` | 35 | txid computation, VarInt parsing, script offsets, Go test parity |
-| `storage_sqlx.rs` | 32 | CRUD, list methods, certificate filters, monitor ops, TrxToken, task locks |
+| `storage_sqlx/` | 73 | CRUD, list methods, certificate filters, monitor ops, TrxToken, task locks |
 | `beef_verification.rs` | 25 | Merkle proof verification, verification modes, edge cases |
 | `abort_action.rs` | 19 | Status validation, UTXO release, lookup by txid |
 | `internalize_action.rs` | 11 | Wallet payment, basket insertion, merge scenarios |
