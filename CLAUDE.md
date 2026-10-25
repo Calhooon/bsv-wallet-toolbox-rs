@@ -73,7 +73,7 @@ src/
     └── auth_manager.rs              # WAB integration wrapper (58 lines)
 ```
 
-Each subdirectory has its own `CLAUDE.md` with detailed API docs.
+Each subdirectory has its own `CLAUDE.md` with detailed API docs. The dataflow across the machines (the doors, the writer, the ladders, the proof path, the monitor, the status words) is `docs/ARCHITECTURE.md`.
 
 ## Key Patterns
 
