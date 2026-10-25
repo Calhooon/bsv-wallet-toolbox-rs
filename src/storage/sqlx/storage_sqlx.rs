@@ -9228,7 +9228,10 @@ mod tests {
                     !current.1,
                     "a newly failed transaction's created output must be void"
                 );
-                assert_eq!(current.2, None, "a void output must clear spent_by");
+                assert_eq!(
+                    current.2, original.2,
+                    "a void output must keep spent_by unchanged"
+                );
                 assert_eq!(current.3, transactions[index].1);
                 assert_ne!(current.3, original.3, "the output timestamp must advance");
             } else {
