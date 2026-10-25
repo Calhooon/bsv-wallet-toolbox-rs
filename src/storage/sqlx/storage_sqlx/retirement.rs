@@ -238,12 +238,21 @@ impl StorageSqlx {
     ///
     /// Returns `Ok(None)` when no proven_tx_req exists for `txid` (nothing was
     /// ever queued for the network under that id); nothing is touched then.
+    ///
+    /// Retire only a transaction no instance accepted (#165): the stored
+    /// accepting-word guard is shared with `abort_action`, and an acceptance
+    /// refuses with `InvalidTransactionStatus` before any service is asked.
     pub async fn retire_undeliverable_txid(
         &self,
         services: &dyn WalletServices,
         txid: &str,
         req_status: &str,
     ) -> Result<Option<RetireOutcome>> {
+        {
+            let mut conn = self.pool().acquire().await?;
+            super::super::abort_action::refuse_if_accepted(&mut conn, txid, "retire transaction")
+                .await?;
+        }
         let req: Option<(i64, i64)> =
             sqlx::query_as("SELECT proven_tx_req_id, attempts FROM proven_tx_reqs WHERE txid = ?")
                 .bind(txid)
