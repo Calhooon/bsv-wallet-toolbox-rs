@@ -1496,8 +1496,7 @@ mod tests {
         .unwrap_err();
         match err {
             Error::InvalidTransactionStatus(msg) => {
-                assert!(msg.contains("the network has transaction"), "{}", msg);
-                assert!(msg.contains("chain index has seen it"), "{}", msg);
+                assert!(msg.contains("records an acceptance"), "{}", msg);
             }
             other => panic!("Expected InvalidTransactionStatus, got: {:?}", other),
         }
