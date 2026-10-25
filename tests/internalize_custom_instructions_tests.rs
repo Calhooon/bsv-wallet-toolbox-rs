@@ -4,7 +4,7 @@
 //! (`wallet-internalize-custom-instructions-bound`), steps 1 to 4: S1001 is
 //! refused with nothing stored; S1000 is stored whole and read back whole.
 //!
-//! Real SQLite storage, no services, no network.
+//! Real SQLite storage, mock headers, no network.
 
 #![cfg(feature = "sqlite")]
 
@@ -31,7 +31,7 @@ fn s1000() -> String {
 fn op_true_output(satoshis: u64) -> TransactionOutput {
     TransactionOutput {
         satoshis: Some(satoshis),
-        locking_script: LockingScript::from_hex("51").unwrap(),
+        locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
     }
 }
@@ -117,6 +117,10 @@ async fn custom_instructions_over_1000_bytes_is_refused_and_1000_is_stored_whole
     let identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
     storage.migrate("bound-tests", identity).await.unwrap();
     storage.make_available().await.unwrap();
+    bsv_wallet_toolbox_rs::WalletStorageProvider::set_services(
+        &storage,
+        std::sync::Arc::new(bsv_wallet_toolbox_rs::services::mock::MockWalletServices::new()),
+    );
     let (user, _) = storage.find_or_insert_user(identity).await.unwrap();
     let auth = AuthId {
         identity_key: identity.to_string(),

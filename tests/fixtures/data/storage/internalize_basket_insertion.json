@@ -66,12 +66,12 @@
         ],
         "proof_root_checks": [],
         "proven_tx_reqs": [
-          {"attempts":0,"batch":null,"history":{},"input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0102","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"notified":0,"notify":{},"proven_tx_id":null,"proven_tx_req_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0102","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"status":"unmined","txid":"<txid:1>"}
+          {"attempts":0,"batch":null,"history":{},"input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"notified":0,"notify":{},"proven_tx_id":null,"proven_tx_req_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"status":"unmined","txid":"<txid:1>"}
         ],
         "proven_txs": [],
         "sync_states": [],
         "transactions": [
-          {"description":"Recorded basket insertion","input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0102","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":0,"lock_time":1,"proven_tx_id":null,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0102","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":0,"status":"unproven","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1}
+          {"description":"Recorded basket insertion","input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":0,"lock_time":1,"proven_tx_id":null,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":0,"status":"unproven","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1}
         ],
         "tx_labels": [
           {"is_deleted":0,"label":"asset","tx_label_id":1,"user_id":1},
@@ -85,7 +85,7 @@
           {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
         ]
       },
-      "serviceCalls": [{"args":["beef_len=236","txids=[\"<txid:1>\"]"],"method":"post_beef","success":true}]
+      "serviceCalls": [{"args":["beef_len=235","txids=[\"<txid:1>\"]"],"method":"post_beef","success":true}]
     },
     {
       "result": {
@@ -121,12 +121,12 @@
         ],
         "proof_root_checks": [],
         "proven_tx_reqs": [
-          {"attempts":0,"batch":null,"history":{},"input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0102","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"notified":0,"notify":{},"proven_tx_id":null,"proven_tx_req_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0102","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"status":"unmined","txid":"<txid:1>"}
+          {"attempts":0,"batch":null,"history":{},"input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"notified":0,"notify":{},"proven_tx_id":null,"proven_tx_req_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"status":"unmined","txid":"<txid:1>"}
         ],
         "proven_txs": [],
         "sync_states": [],
         "transactions": [
-          {"description":"Recorded basket insertion","input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"0101","vout":4294967295}],"lockTime":0,"outputs":[{"lockingScript":"51","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0102","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":0,"lock_time":1,"proven_tx_id":null,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"0102","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":0,"status":"unproven","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1}
+          {"description":"Recorded basket insertion","input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":0,"lock_time":1,"proven_tx_id":null,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":0,"status":"unproven","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1}
         ],
         "tx_labels": [
           {"is_deleted":0,"label":"asset","tx_label_id":1,"user_id":1},
@@ -140,7 +140,7 @@
           {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
         ]
       },
-      "serviceCalls": [{"args":["beef_len=236","txids=[\"<txid:1>\"]"],"method":"post_beef","success":true}]
+      "serviceCalls": [{"args":["beef_len=235","txids=[\"<txid:1>\"]"],"method":"post_beef","success":true}]
     }
   ],
   "inputs": {
@@ -150,7 +150,7 @@
       "post_beef": {"kind":"success","value":[{"name":"fixture","notes":[],"status":"success","txid_results":[]}]}
     },
     "transactions": [
-      {"name":"anchor","outputs":[{"satoshis":20000,"script":"51"}],"store":false},
+      {"name":"anchor","outputs":[{"satoshis":20000,"script":"7551"}],"store":false},
       {
         "name": "receipt",
         "outputs": [{"basket":"default","change":true,"satoshis":9999}],

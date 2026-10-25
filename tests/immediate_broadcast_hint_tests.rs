@@ -537,7 +537,7 @@ fn incoming_atomic_beef() -> (Vec<u8>, String) {
     parent.inputs.push(parent_input);
     parent.outputs.push(TransactionOutput {
         satoshis: Some(20_000),
-        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
     });
     let parent_txid = parent.id();

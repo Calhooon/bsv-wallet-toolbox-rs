@@ -82,7 +82,7 @@
       "post_beef": {"kind":"success","value":[{"name":"fixture","notes":[],"status":"success","txid_results":[]}]}
     },
     "transactions": [
-      {"name":"anchor","outputs":[{"satoshis":20000,"script":"51"}],"store":false},
+      {"name":"anchor","outputs":[{"satoshis":20000,"script":"7551"}],"store":false},
       {
         "name": "receipt",
         "outputs": [{"basket":"default","change":true,"satoshis":9999}],

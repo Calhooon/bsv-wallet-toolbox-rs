@@ -234,7 +234,7 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
     parent.inputs.push(parent_input);
     parent.outputs.push(TransactionOutput {
         satoshis: Some(20_000),
-        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
     });
     let parent_txid = parent.id();
@@ -1050,7 +1050,7 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
     parent.inputs.push(parent_input);
     parent.outputs.push(TransactionOutput {
         satoshis: Some(20_000),
-        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
     });
     let parent_txid = parent.id();

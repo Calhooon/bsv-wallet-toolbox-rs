@@ -1643,6 +1643,11 @@ mod tests {
             .await
             .unwrap();
         storage.make_available().await.unwrap();
+        let mut tracker = MockChainTracker::new(PROVEN_HEIGHT + 6);
+        tracker.add_root(PROVEN_HEIGHT, test_parent().1);
+        storage
+            .set_chain_tracker(Arc::new(CountingTracker::new(tracker)))
+            .await;
         // The proof LAG gate is CLOSED on a fresh database (nothing is
         // stored before a header has aged a cycle); these tests exercise the
         // storage of a validated proof, so the gate is open here. The
@@ -1842,13 +1847,12 @@ mod tests {
             prev.reverse();
             raw.extend_from_slice(&prev);
             raw.extend_from_slice(&vout.to_le_bytes());
-            raw.push(0);
+            raw.extend_from_slice(&[1, 0]); // OP_0, consumed by OP_DROP
             raw.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
         }
         raw.push(1);
         raw.extend_from_slice(&satoshis.to_le_bytes());
-        raw.push(1);
-        raw.push(0x51);
+        raw.extend_from_slice(&[2, 0x75, 0x51]); // OP_DROP OP_1
         raw.extend_from_slice(&0u32.to_le_bytes());
         let mut h = bsv_rs::primitives::hash::sha256d(&raw);
         h.reverse();
@@ -1945,10 +1949,15 @@ mod tests {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
 
-        let (anchor, anchor_txid) = raw_tx_spending(&[(&"00".repeat(32), 0xffff_ffff)], 50_000);
+        let (anchor, anchor_txid) = raw_tx_spending(&[(&"11".repeat(32), 0)], 50_000);
         let mut beef = Beef::new();
         let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&anchor_txid, 900_000));
         beef.merge_raw_tx(anchor, Some(bump));
+        let mut tracker = MockChainTracker::new(900_006);
+        tracker.add_root(900_000, anchor_txid.clone());
+        storage
+            .set_chain_tracker(Arc::new(CountingTracker::new(tracker)))
+            .await;
         let mut parent = anchor_txid;
         for i in 0..1_000u64 {
             let (raw, txid) = raw_tx_spending(&[(&parent, 0)], 49_000 - i);
@@ -2338,7 +2347,7 @@ mod tests {
     ///
     /// The BUMP is a single-leaf (coinbase-shaped) path, so its computed root
     /// is the txid itself and the leaf offset is 0 — both deterministic.
-    fn create_proven_atomic_beef() -> (Vec<u8>, String, u64, MerklePath, MockChainTracker) {
+    fn create_proven_atomic_beef() -> (Vec<u8>, String, u64, MerklePath, CountingTracker) {
         let mut tx = Transaction::new();
         tx.version = 1;
         tx.lock_time = 0;
@@ -2375,7 +2384,13 @@ mod tests {
         let mut tracker = MockChainTracker::new(PROVEN_HEIGHT + 6);
         tracker.add_root(PROVEN_HEIGHT, merkle_root);
 
-        (beef_bytes, txid, satoshis, bump, tracker)
+        (
+            beef_bytes,
+            txid,
+            satoshis,
+            bump,
+            CountingTracker::new(tracker),
+        )
     }
 
     /// The whole `proven_txs` row recorded for a txid, if any.
@@ -2880,46 +2895,24 @@ mod tests {
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
     }
 
-    /// With NO ChainTracker wired the wallet cannot verify an incoming BEEF's
-    /// BUMP, so it must NOT be stored or asserted. The tx stays 'unproven' and
-    /// gets a req the CheckForProofs backstop will actually reach — the txid is
-    /// never left in a state nothing can advance.
+    /// A missing header service holds the payment and writes nothing.
     #[tokio::test]
-    async fn test_new_internalize_bump_not_trusted_without_chaintracker() {
+    async fn test_new_internalize_holds_without_chaintracker() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
-        let (beef_bytes, txid, _satoshis, _bump, _tracker) = create_proven_atomic_beef();
-        // Deliberately no set_chain_tracker.
-
-        let args = wallet_payment_args(beef_bytes, "unverifiable proof claim");
-        let result = internalize_action_internal(&storage, user_id, args)
-            .await
-            .unwrap();
-
-        assert!(result.base.accepted);
-        assert_eq!(
-            tx_status(&storage, user_id, &txid).await.as_deref(),
-            Some("unproven"),
-            "an unverifiable BUMP must not produce a 'completed' tx"
-        );
-        assert_eq!(tx_proven_tx_id(&storage, &txid).await, None);
-        assert!(
-            proven_tx_row(&storage, &txid).await.is_none(),
-            "an unverified BUMP must never be stored as a proven_txs row"
-        );
-
-        // 'unmined' IS in the CheckForProofs eligible set
-        // (storage_sqlx.rs synchronize_transaction_statuses), and because the
-        // payer asserts the tx is already mined we must not re-broadcast it.
-        assert_eq!(
-            req_status(&storage, &txid).await.as_deref(),
-            Some("unmined"),
-            "a claimed-but-unverified proof must hand the txid to CheckForProofs"
-        );
-
-        assert_completed_implies_proven(&storage).await;
-        assert_unproven_is_reachable(&storage).await;
-        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+        let (bytes, txid, ..) = create_proven_atomic_beef();
+        storage.clear_chain_tracker().await;
+        let result = internalize_action_internal(
+            &storage,
+            user_id,
+            wallet_payment_args(bytes, "no header service"),
+        )
+        .await;
+        assert!(matches!(result, Err(Error::ServiceError(_))));
+        assert_eq!(tx_status(&storage, user_id, &txid).await, None);
+        assert_eq!(req_status(&storage, &txid).await, None);
+        assert!(proven_tx_row(&storage, &txid).await.is_none());
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
     }
 
     /// A ChainTracker that rejects the claimed root must not yield a stored
@@ -2935,7 +2928,9 @@ mod tests {
         // A tracker that knows the height but has a DIFFERENT root there.
         let mut liar = MockChainTracker::new(PROVEN_HEIGHT + 6);
         liar.add_root(PROVEN_HEIGHT, "aa".repeat(32));
-        storage.set_chain_tracker(Arc::new(liar)).await;
+        storage
+            .set_chain_tracker(Arc::new(CountingTracker::new(liar)))
+            .await;
 
         let args = wallet_payment_args(beef_bytes, "bogus proof claim");
         let result = internalize_action_internal(&storage, user_id, args).await;
@@ -3001,36 +2996,29 @@ mod tests {
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
     }
 
-    /// Merge into a 'nosend' tx whose BUMP cannot be verified (no
-    /// ChainTracker): fall back to the unproven hand-off rather than retiring
-    /// the req to a terminal 'completed' with nothing linked.
+    /// Missing headers leave a pre-existing nosend action unchanged.
     #[tokio::test]
-    async fn test_merge_nosend_unverifiable_bump_falls_back_to_unmined() {
+    async fn test_merge_nosend_without_headers_is_unchanged() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
-        let (beef_bytes, txid, _satoshis, _bump, _tracker) = create_proven_atomic_beef();
-        // Deliberately no set_chain_tracker.
-
+        let (bytes, txid, ..) = create_proven_atomic_beef();
+        storage.clear_chain_tracker().await;
         insert_existing_tx(&storage, user_id, &txid, "nosend").await;
         insert_req(&storage, &txid, "nosend").await;
-
-        let args = wallet_payment_args(beef_bytes, "merge nosend, unverifiable proof");
-        internalize_action_internal(&storage, user_id, args)
-            .await
-            .unwrap();
-
+        let result = internalize_action_internal(
+            &storage,
+            user_id,
+            wallet_payment_args(bytes, "merge without headers"),
+        )
+        .await;
+        assert!(matches!(result, Err(Error::ServiceError(_))));
         assert_eq!(
             tx_status(&storage, user_id, &txid).await.as_deref(),
-            Some("unproven")
+            Some("nosend")
         );
-        assert_eq!(
-            req_status(&storage, &txid).await.as_deref(),
-            Some("unmined"),
-            "must stay in the CheckForProofs eligible set, not retire to 'completed'"
-        );
+        assert_eq!(req_status(&storage, &txid).await.as_deref(), Some("nosend"));
         assert!(proven_tx_row(&storage, &txid).await.is_none());
-        assert_completed_implies_proven(&storage).await;
-        assert_unproven_is_reachable(&storage).await;
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
     }
 
     /// A no-BUMP stub has missing ancestry and must be refused without writes.
@@ -3047,9 +3035,13 @@ mod tests {
         );
         let args = wallet_payment_args(stub.to_binary_atomic(&txid).unwrap(), "missing ancestry");
         let result = internalize_action_internal(&storage, user_id, args).await;
-        assert!(
-            matches!(result, Err(Error::ValidationError(ref e)) if e.contains("structure is invalid"))
-        );
+        assert!(matches!(
+            result,
+            Err(Error::InvalidBeef {
+                kind: bsv_rs::transaction::Kind::InputNamesNoElement,
+                ..
+            })
+        ));
         assert_eq!(tx_status(&storage, user_id, &txid).await, None);
         assert_eq!(req_status(&storage, &txid).await, None);
         assert!(proven_tx_row(&storage, &txid).await.is_none());
@@ -3565,6 +3557,15 @@ mod tests {
         requests: std::sync::atomic::AtomicUsize,
     }
 
+    impl CountingTracker {
+        fn new(inner: MockChainTracker) -> Self {
+            Self {
+                inner,
+                requests: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl bsv_rs::transaction::ChainTracker for CountingTracker {
         async fn is_valid_root_for_height(
@@ -3583,6 +3584,23 @@ mod tests {
             self.requests
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.current_height().await
+        }
+
+        async fn mining_tip(
+            &self,
+        ) -> std::result::Result<
+            Option<bsv_rs::transaction::beef_stream::ChainTip>,
+            bsv_rs::transaction::ChainTrackerError,
+        > {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(bsv_rs::transaction::beef_stream::ChainTip {
+                height: self.inner.height,
+                median_time_past: 1_700_000_000,
+                genesis_height: 620_538,
+                csv_height: 419_328,
+                next_block_time: None,
+            }))
         }
     }
 
@@ -3669,9 +3687,9 @@ mod tests {
     }
 
     /// Rule 28's pin: the valid unproven payment over a proven parent costs
-    /// the header service one request, the parent's root.
+    /// the tracker one root request and one mining-context request.
     #[tokio::test]
-    async fn a_valid_unproven_payment_is_taken_with_one_header_request() {
+    async fn a_valid_unproven_payment_checks_one_root_and_one_mining_context() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
         let (bytes, txid, inner) = payment_spending_abcd("02abcd");
@@ -3696,8 +3714,8 @@ mod tests {
         );
         assert_eq!(
             tracker.requests.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "one root, asked once"
+            2,
+            "one root and one mining context, each asked once"
         );
     }
 
@@ -3705,12 +3723,13 @@ mod tests {
     /// carries an unlocking script that fails is refused before anything is
     /// stored: no transaction row, no received coin, no request.
     #[tokio::test]
-    #[ignore = "#103: red until internalize runs bsv-rs's verifier; the spend refusal's variant is the owner's word"]
     async fn a_payment_whose_unlocking_script_fails_is_refused() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
         let (bytes, txid, tracker) = payment_spending_abcd("02abce");
-        storage.set_chain_tracker(Arc::new(tracker)).await;
+        storage
+            .set_chain_tracker(Arc::new(CountingTracker::new(tracker)))
+            .await;
 
         let result = internalize_action_internal(
             &storage,
@@ -3719,11 +3738,25 @@ mod tests {
         )
         .await;
 
-        assert!(
-            result.is_err(),
-            "a failing unlocking script is refused, got {:?}",
-            result.map(|r| (r.base.accepted, r.txid))
-        );
+        match result.expect_err("a failing unlocking script is refused") {
+            Error::SpendRefused {
+                offset,
+                txid: spender,
+                input,
+                why,
+            } => {
+                assert_eq!(offset, 156);
+                assert_eq!(spender, txid);
+                assert_eq!(input, Some(0));
+                assert_eq!(
+                    why,
+                    crate::SpendRefusal::Script(
+                        "The top stack element must be truthy after script evaluation.".into()
+                    )
+                );
+            }
+            other => panic!("expected the verifier's spend refusal, got {other:?}"),
+        }
         assert_eq!(tx_status(&storage, user_id, &txid).await, None);
         assert_eq!(req_status(&storage, &txid).await, None);
         assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
