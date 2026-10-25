@@ -110,7 +110,7 @@ Background monitoring operations (extends `WalletStorageProvider`). Used by the 
 | `send_waiting_transactions()` | Broadcast transactions in unsent/sending status |
 | `abort_abandoned()` | Cancel stale unsigned/unprocessed transactions |
 | `un_fail()` | Attempt recovery of incorrectly failed transactions |
-| `review_status()` | Monitor-level status review across all users (no AuthId required) |
+| `review_status()` | Monitor-level status review across all users (no AuthId required); an invalid request fails its transaction and voids its created outputs atomically, leaving consumed inputs unchanged |
 | `purge_data()` | Monitor-level purge across all users (no AuthId required) |
 | `try_acquire_task_lock()` | Acquire distributed lock for multi-instance support (default: always acquires) |
 | `release_task_lock()` | Release a previously acquired task lock (default: no-op) |
