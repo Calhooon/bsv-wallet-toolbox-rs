@@ -114,11 +114,22 @@ impl FaultKind {
 /// Post BEEF mode for handling multiple broadcast services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PostBeefMode {
-    /// Try services until one succeeds (default).
-    #[default]
+    /// Try services until one succeeds, as an explicit opt-in on the 0.14 line.
+    /// Removal of this mode requires the owner's word.
     UntilSuccess,
-    /// Post to all services in parallel.
+    /// Post to every named service in parallel and retain every result (B3).
+    #[default]
     PromiseAll,
+}
+
+fn post_beef_fault(provider: &str, error: &Error) -> PostBeefResult {
+    PostBeefResult {
+        name: provider.to_string(),
+        status: "error".to_string(),
+        txid_results: Vec::new(),
+        error: Some(error.to_string()),
+        notes: Vec::new(),
+    }
 }
 
 /// Main services orchestrator for blockchain operations.
@@ -126,7 +137,8 @@ pub enum PostBeefMode {
 /// Coordinates multiple blockchain service providers (WhatsOnChain, ARC, Bitails,
 /// Block Header Service) with automatic failover. Each operation type maintains
 /// an ordered list of providers via [`ServiceCollection`], which are tried
-/// sequentially until one succeeds.
+/// sequentially until one succeeds, except `post_beef`: its default submits
+/// to every named provider in parallel and records each provider's result.
 ///
 /// `Services` implements the [`WalletServices`] trait and is the standard services
 /// backend for [`Wallet`](crate::Wallet).
@@ -762,20 +774,11 @@ impl Services {
         }
         raw_tx_services.add("Bitails", StdArc::clone(&bitails) as RawTxProvider);
 
-        // postBeef: TAAL → GorillaPool → Bitails → WoC
-        //
-        // TAAL is placed first intentionally. In production we observed
-        // GorillaPool ARC accepting POSTs with `txStatus: ANNOUNCED_TO_NETWORK`
-        // and returning HTTP 200 while the tx never actually propagated to
-        // other ARC nodes / miners. Because PostBeefMode::UntilSuccess stops
-        // on the first provider that returns success, putting GorillaPool
-        // first caused ~185 stuck txs in one wallet over a few hours. TAAL
-        // ARC accepts and actually federates, so we try it first and fall
-        // back to GorillaPool (still useful when TAAL is degraded).
+        // postBeef names TAAL, GorillaPool, Bitails and WoC. The default asks
+        // each instance once per pass (B3); order matters only to UntilSuccess.
         let mut post_beef_services = ServiceCollection::new("postBeef");
-        // Arcade V2 (when enabled) goes first: it is the explicitly configured
-        // primary broadcaster. Classic ARC providers stay behind it as
-        // failover so a transient Arcade outage never blocks a broadcast.
+        // A configured Arcade V2 is also named. It precedes the classic ARC
+        // providers when the caller explicitly chooses UntilSuccess.
         if let Some(ref arcade_provider) = arcade {
             post_beef_services.add(
                 PROVIDER_ARCADE_V2,
@@ -2392,6 +2395,7 @@ impl WalletServices for Services {
                             call.mark_error(&e.to_string(), call_error_code(&e));
                             lock_write(&self.post_beef_services)?
                                 .add_call_error(&provider_name, call);
+                            results.push(post_beef_fault(&provider_name, &e));
                         }
                     }
                 }
@@ -2443,6 +2447,7 @@ impl WalletServices for Services {
                             call.mark_error(&e.to_string(), call_error_code(&e));
                             lock_write(&self.post_beef_services)?
                                 .add_call_error(provider_name, call);
+                            results.push(post_beef_fault(provider_name, &e));
                         }
                     }
                 }
@@ -3150,6 +3155,92 @@ mod tests {
     use super::*;
     use crate::services::providers::ArcadeConfig;
     use crate::services::traits::TxStatusDetail;
+
+    struct RecordedPostService {
+        name: String,
+        status: String,
+        calls: StdArc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl PostBeefService for RecordedPostService {
+        async fn post_beef(&self, _beef: &[u8], _txids: &[String]) -> Result<PostBeefResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.status == "transportError" {
+                return Err(Error::ServiceError("recorded transport fault".into()));
+            }
+            Ok(PostBeefResult {
+                name: self.name.clone(),
+                status: self.status.clone(),
+                txid_results: vec![],
+                error: (self.status == "error").then(|| "recorded refusal".to_string()),
+                notes: vec![],
+            })
+        }
+    }
+
+    fn recorded_post_services() -> (Services, Vec<StdArc<AtomicUsize>>, serde_json::Value) {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/data/services/post_beef_named_instances.json"
+        ))
+        .unwrap();
+        let services = Services::mainnet().unwrap();
+        let mut providers = ServiceCollection::new("postBeef");
+        let mut counts = Vec::new();
+        for instance in fixture["instances"].as_array().unwrap() {
+            let calls = StdArc::new(AtomicUsize::new(0));
+            let name = instance["name"].as_str().unwrap().to_string();
+            providers.add(
+                &name,
+                StdArc::new(RecordedPostService {
+                    name: name.clone(),
+                    status: instance["status"].as_str().unwrap().to_string(),
+                    calls: calls.clone(),
+                }) as PostBeefProvider,
+            );
+            counts.push(calls);
+        }
+        *lock_write(&services.post_beef_services).unwrap() = providers;
+        (services, counts, fixture["expected"].clone())
+    }
+
+    #[tokio::test]
+    async fn default_post_records_every_named_instance_including_transport_faults() {
+        let (services, counts, expected) = recorded_post_services();
+        let result = services
+            .post_beef(b"recorded BEEF", &["recorded txid".into()])
+            .await
+            .unwrap();
+        let actual: Vec<_> = result
+            .iter()
+            .map(|word| {
+                serde_json::json!({
+                    "name": word.name, "status": word.status, "hasError": word.error.is_some(),
+                })
+            })
+            .collect();
+        assert_eq!(serde_json::json!(actual), expected);
+        assert!(counts.iter().all(|count| count.load(Ordering::SeqCst) == 1));
+    }
+
+    #[tokio::test]
+    async fn until_success_remains_an_explicit_opt_in() {
+        let (mut services, counts, _) = recorded_post_services();
+        services.set_post_beef_mode(PostBeefMode::UntilSuccess);
+        let result = services
+            .post_beef(b"recorded BEEF", &["recorded txid".into()])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_success());
+        assert_eq!(
+            counts
+                .iter()
+                .map(|count| count.load(Ordering::SeqCst))
+                .collect::<Vec<_>>(),
+            vec![1, 0, 0]
+        );
+    }
 
     #[test]
     fn test_services_creation() {

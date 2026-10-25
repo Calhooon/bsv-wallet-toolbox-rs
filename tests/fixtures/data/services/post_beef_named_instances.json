@@ -1,0 +1,13 @@
+{
+  "issue": 167,
+  "instances": [
+    {"name": "acceptor", "status": "success"},
+    {"name": "refuser", "status": "error"},
+    {"name": "unreachable", "status": "transportError"}
+  ],
+  "expected": [
+    {"name": "acceptor", "status": "success", "hasError": false},
+    {"name": "refuser", "status": "error", "hasError": true},
+    {"name": "unreachable", "status": "error", "hasError": true}
+  ]
+}
