@@ -9,10 +9,16 @@
 
 #![cfg(feature = "sqlite")]
 
+use async_trait::async_trait;
+use bsv_rs::transaction::ChainTracker;
 use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
-use bsv_wallet_toolbox_rs::services::TxStatusDetail;
+use bsv_wallet_toolbox_rs::services::{
+    BlockHeader, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,
+    GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult, TxStatusDetail,
+    UtxoVerdict, WalletServices,
+};
 use bsv_wallet_toolbox_rs::{
-    Error, GetStatusForTxidsResult, RetireOutcome, StorageSqlx, WalletStorageWriter,
+    Error, GetStatusForTxidsResult, Result, RetireOutcome, StorageSqlx, WalletStorageWriter,
 };
 
 const PARENT_TXID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -342,4 +348,119 @@ async fn own_tx_id(storage: &StorageSqlx) -> i64 {
         .fetch_one(storage.pool())
         .await
         .unwrap()
+}
+
+/// The race window of `retire_undeliverable_txid`: the alive check asks the
+/// status service between the reader's guard and the retire's writes. This
+/// service records an instance's acceptance in that window, as a broadcast
+/// on another path would, then answers "not found" (the default mock).
+struct AcceptsWhileAsked {
+    inner: MockWalletServices,
+    storage: StorageSqlx,
+}
+
+#[async_trait]
+impl WalletServices for AcceptsWhileAsked {
+    async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker> {
+        self.inner.get_chain_tracker().await
+    }
+    async fn get_height(&self) -> Result<u32> {
+        self.inner.get_height().await
+    }
+    async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>> {
+        self.inner.get_header_for_height(height).await
+    }
+    async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader> {
+        self.inner.hash_to_header(hash).await
+    }
+    async fn get_raw_tx(&self, txid: &str, use_next: bool) -> Result<GetRawTxResult> {
+        self.inner.get_raw_tx(txid, use_next).await
+    }
+    async fn get_merkle_path(&self, txid: &str, use_next: bool) -> Result<GetMerklePathResult> {
+        self.inner.get_merkle_path(txid, use_next).await
+    }
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>> {
+        self.inner.post_beef(beef, txids).await
+    }
+    async fn get_utxo_status(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+        use_next: bool,
+    ) -> Result<GetUtxoStatusResult> {
+        self.inner
+            .get_utxo_status(output, output_format, outpoint, use_next)
+            .await
+    }
+    async fn get_status_for_txids(
+        &self,
+        txids: &[String],
+        use_next: bool,
+    ) -> Result<GetStatusForTxidsResult> {
+        self.storage
+            .record_broadcast_status(TXID, "instance-a", "accepted")
+            .await
+            .expect("the acceptance commits while the status service is asked");
+        self.inner.get_status_for_txids(txids, use_next).await
+    }
+    async fn get_bsv_exchange_rate(&self) -> Result<f64> {
+        self.inner.get_bsv_exchange_rate().await
+    }
+    async fn get_fiat_exchange_rate(
+        &self,
+        currency: FiatCurrency,
+        base: Option<FiatCurrency>,
+    ) -> Result<f64> {
+        self.inner.get_fiat_exchange_rate(currency, base).await
+    }
+    fn hash_output_script(&self, script: &[u8]) -> String {
+        self.inner.hash_output_script(script)
+    }
+    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
+        self.inner.is_utxo(txid, vout, locking_script).await
+    }
+    async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool> {
+        self.inner.n_lock_time_is_final(n_lock_time).await
+    }
+    async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool> {
+        self.inner.n_lock_time_is_final_for_tx(input).await
+    }
+    async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult> {
+        self.inner.get_beef(txid, known_txids).await
+    }
+}
+
+#[tokio::test]
+async fn an_acceptance_committed_during_the_alive_check_refuses_the_retire() {
+    let s = seed().await;
+    let services = AcceptsWhileAsked {
+        inner: MockWalletServices::new(),
+        storage: s.storage.clone(),
+    };
+
+    let err = s
+        .storage
+        .retire_undeliverable_txid(&services, TXID, "invalid")
+        .await
+        .expect_err("the acceptance is read under the retire's write lock");
+    assert!(
+        matches!(err, Error::InvalidTransactionStatus(ref msg) if msg.contains("acceptance")),
+        "{err:?}"
+    );
+    assert_eq!(
+        services.inner.call_count("get_status_for_txids"),
+        1,
+        "the guard passed before the ask: the window was open"
+    );
+    assert_eq!(tx_status(&s.storage).await, "sending");
+    assert_eq!(
+        req_status_attempts(&s.storage).await,
+        ("unsent".to_string(), 0)
+    );
+    assert_eq!(
+        output_state(&s.storage, s.input_output_id).await,
+        (0, Some(own_tx_id(&s.storage).await))
+    );
+    assert_eq!(output_state(&s.storage, s.own_output_id).await, (1, None));
 }
