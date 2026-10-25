@@ -1,5 +1,5 @@
 use super::{
-    AuthId, Error, PurgeParams, PurgeResults, Result, ReviewStatusResult, StorageSqlx,
+    commit, AuthId, Error, PurgeParams, PurgeResults, Result, ReviewStatusResult, StorageSqlx,
     WalletStorageReader,
 };
 
@@ -199,7 +199,8 @@ impl StorageSqlx {
         // TS reference uses: WHERE status != 'failed' (includes 'completed').
         // If the proven_tx_req is 'invalid', the tx was never confirmed on-chain,
         // so even 'completed' transactions must be demoted to 'failed'.
-        let failed_count = sqlx::query(
+        let mut tx = self.write_tx().await?;
+        let failed_ids: Vec<i64> = sqlx::query_scalar(
             r#"
             UPDATE transactions SET status = 'failed', updated_at = ?
             WHERE status != 'failed'
@@ -207,12 +208,29 @@ impl StorageSqlx {
                 SELECT ptr.txid FROM proven_tx_reqs ptr
                 WHERE ptr.status = 'invalid'
               )
+            RETURNING transaction_id
             "#,
         )
         .bind(now)
-        .execute(&mut *self.writer_conn().await?)
-        .await?
-        .rows_affected();
+        .fetch_all(&mut *tx)
+        .await?;
+
+        // Void only the outputs created by transactions this pass just failed.
+        // Keep both writes atomic, without releasing their consumed inputs.
+        for ids in failed_ids.chunks(400) {
+            let placeholders = vec!["?"; ids.len()].join(",");
+            let sql = format!(
+                "UPDATE outputs SET spendable = 0, updated_at = ? \
+                 WHERE transaction_id IN ({placeholders})"
+            );
+            let mut query = sqlx::query(&sql).bind(now);
+            for id in ids {
+                query = query.bind(id);
+            }
+            query.execute(&mut *tx).await?;
+        }
+        commit(tx).await?;
+        let failed_count = failed_ids.len();
 
         if failed_count > 0 {
             log.push_str(&format!(
