@@ -282,3 +282,25 @@ async fn no_send_outputs_match_the_reference_before_and_after_post() -> Result<(
     assert!(!locked, "the input remains locked to this action");
     Ok(())
 }
+
+#[tokio::test]
+async fn post_preserves_legacy_history_text() -> Result<()> {
+    let wallet = wallet().await?;
+    let txid = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
+    sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE txid = ?")
+        .bind("legacy history")
+        .bind(&txid)
+        .execute(wallet.storage().writer())
+        .await?;
+    wallet
+        .process_action(post(txid.clone()), "fixture.local")
+        .await?;
+    let history: String = sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+        .bind(txid)
+        .fetch_one(wallet.storage().pool())
+        .await?;
+    let history: Value = serde_json::from_str(&history)?;
+    assert_eq!(history["previous"], "legacy history");
+    assert_eq!(history["notes"][0]["what"], "processActionPost");
+    Ok(())
+}
