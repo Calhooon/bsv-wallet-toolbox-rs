@@ -210,35 +210,6 @@ impl StorageSqlx {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::{
-        AuthId, FindOutputsArgs, StorageSqlx, WalletStorageReader, WalletStorageWriter,
-    };
-
-    #[tokio::test]
-    async fn test_find_outputs() {
-        let storage = StorageSqlx::in_memory().await.unwrap();
-        storage
-            .migrate("test-storage", "0".repeat(64).as_str())
-            .await
-            .unwrap();
-        storage.make_available().await.unwrap();
-
-        let identity_key = "a".repeat(66);
-        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
-
-        let auth = AuthId::with_user_id(&identity_key, user.user_id);
-
-        // Find outputs (should be empty)
-        let outputs = storage
-            .find_outputs(&auth, FindOutputsArgs::default())
-            .await
-            .unwrap();
-        assert!(outputs.is_empty());
-    }
-}
-
 /// One `outputs` row as a `TableOutput`, every column the SELECT lists; the
 /// shared shape of the readers that fetch whole rows.
 pub(crate) fn output_from_row(row: &sqlx::sqlite::SqliteRow) -> TableOutput {
@@ -272,5 +243,34 @@ pub(crate) fn output_from_row(row: &sqlx::sqlite::SqliteRow) -> TableOutput {
         custom_instructions: row.get("custom_instructions"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{
+        AuthId, FindOutputsArgs, StorageSqlx, WalletStorageReader, WalletStorageWriter,
+    };
+
+    #[tokio::test]
+    async fn test_find_outputs() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+
+        // Find outputs (should be empty)
+        let outputs = storage
+            .find_outputs(&auth, FindOutputsArgs::default())
+            .await
+            .unwrap();
+        assert!(outputs.is_empty());
     }
 }
