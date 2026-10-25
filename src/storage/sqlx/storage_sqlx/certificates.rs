@@ -1,7 +1,10 @@
+#[cfg(test)]
+use super::StoreBusyReason;
+
 use super::{
-    commit, AuthId, Error, FindCertificatesArgs, HashMap, ListCertificatesArgs,
-    ListCertificatesResult, RelinquishCertificateArgs, Result, Row, StorageSqlx, StoreBusyReason,
-    TableCertificate, TableCertificateField, Utc,
+    commit, AuthId, Error, FindCertificatesArgs, ListCertificatesArgs, ListCertificatesResult,
+    RelinquishCertificateArgs, Result, Row, StorageSqlx, TableCertificate, TableCertificateField,
+    Utc,
 };
 
 impl StorageSqlx {
@@ -99,6 +102,44 @@ impl StorageSqlx {
         Ok(certificates)
     }
 
+    /// Find certificate fields for a given certificate.
+    pub async fn find_certificate_fields(
+        &self,
+        certificate_id: i64,
+    ) -> Result<Vec<TableCertificateField>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM certificate_fields
+            WHERE certificate_id = ?
+            ORDER BY field_name
+            "#,
+        )
+        .bind(certificate_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        let fields = rows
+            .iter()
+            .map(|row| {
+                let now = chrono::Utc::now();
+                TableCertificateField {
+                    certificate_field_id: row.get("certificate_field_id"),
+                    certificate_id: row.get("certificate_id"),
+                    user_id: row.get("user_id"),
+                    field_name: row.get("field_name"),
+                    field_value: row.get("field_value"),
+                    master_key: row.get("master_key"),
+                    created_at: row.try_get("created_at").unwrap_or(now),
+                    updated_at: row.try_get("updated_at").unwrap_or(now),
+                }
+            })
+            .collect();
+
+        Ok(fields)
+    }
+}
+
+impl StorageSqlx {
     pub(super) async fn list_certificates_impl(
         &self,
         auth: &AuthId,
@@ -420,41 +461,5 @@ impl StorageSqlx {
         .await?;
 
         Ok(result.rows_affected() as i64)
-    }
-
-    /// Find certificate fields for a given certificate.
-    pub async fn find_certificate_fields(
-        &self,
-        certificate_id: i64,
-    ) -> Result<Vec<TableCertificateField>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT * FROM certificate_fields
-            WHERE certificate_id = ?
-            ORDER BY field_name
-            "#,
-        )
-        .bind(certificate_id)
-        .fetch_all(self.pool())
-        .await?;
-
-        let fields = rows
-            .iter()
-            .map(|row| {
-                let now = chrono::Utc::now();
-                TableCertificateField {
-                    certificate_field_id: row.get("certificate_field_id"),
-                    certificate_id: row.get("certificate_id"),
-                    user_id: row.get("user_id"),
-                    field_name: row.get("field_name"),
-                    field_value: row.get("field_value"),
-                    master_key: row.get("master_key"),
-                    created_at: row.try_get("created_at").unwrap_or(now),
-                    updated_at: row.try_get("updated_at").unwrap_or(now),
-                }
-            })
-            .collect();
-
-        Ok(fields)
     }
 }

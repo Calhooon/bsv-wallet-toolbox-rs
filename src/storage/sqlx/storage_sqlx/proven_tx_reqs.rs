@@ -1,6 +1,4 @@
-use super::{
-    FindProvenTxReqsArgs, ProvenTxReqStatus, Result, Row, StorageSqlx, TableProvenTxReq, Utc,
-};
+use super::{FindProvenTxReqsArgs, ProvenTxReqStatus, Result, Row, StorageSqlx, TableProvenTxReq};
 
 /// Upper bound on the proof-less `transactions` rows ONE
 /// [`StorageSqlx::adopt_unproven_transactions`] pass turns into
@@ -274,7 +272,9 @@ impl StorageSqlx {
 
         Ok(out)
     }
+}
 
+impl StorageSqlx {
     pub(super) async fn update_proven_tx_req_status_impl(
         &self,
         proven_tx_req_id: i64,

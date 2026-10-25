@@ -81,6 +81,9 @@ impl StorageSqlx {
 
         Ok(())
     }
+}
+
+impl StorageSqlx {
     pub(super) async fn make_available_impl(&self) -> Result<TableSettings> {
         let settings = self.read_settings().await?;
 
@@ -212,7 +215,7 @@ impl WalletStorageProvider for StorageSqlx {
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
+    use super::super::{StorageSqlx, WalletStorageReader, WalletStorageWriter};
 
     #[tokio::test]
     async fn test_in_memory_storage() {

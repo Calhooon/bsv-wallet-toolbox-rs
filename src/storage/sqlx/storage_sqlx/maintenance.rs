@@ -1,6 +1,6 @@
 use super::{
-    AuthId, Duration, Error, PurgeParams, PurgeResults, Result, ReviewStatusResult, StorageSqlx,
-    Utc, WalletStorageReader,
+    AuthId, Error, PurgeParams, PurgeResults, Result, ReviewStatusResult, StorageSqlx,
+    WalletStorageReader,
 };
 
 impl StorageSqlx {
@@ -448,7 +448,7 @@ impl StorageSqlx {
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
+    use super::super::{MonitorStorage, PurgeParams, StorageSqlx, WalletStorageWriter};
 
     // =========================================================================
     // purge_data — monitor-level SQL correctness tests

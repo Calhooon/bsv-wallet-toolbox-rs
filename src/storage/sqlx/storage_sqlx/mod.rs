@@ -12,6 +12,8 @@ mod beef_compaction;
 #[cfg(test)]
 mod certificate_tests;
 mod certificates;
+#[cfg(test)]
+mod commission_tests;
 mod commissions;
 mod competitors;
 #[cfg(test)]
@@ -20,6 +22,8 @@ mod labels;
 mod list_outputs;
 mod maintenance;
 mod monitor;
+#[cfg(test)]
+mod monitor_event_tests;
 mod monitor_events;
 mod output_selection;
 mod outputs;
@@ -35,19 +39,23 @@ mod settings;
 mod stale_proofs;
 mod sync_state;
 mod tags;
+#[cfg(test)]
+mod transaction_tests;
 mod transactions;
 mod unfail;
 #[cfg(test)]
+mod unfail_empty_tests;
+#[cfg(test)]
 mod unfail_tests;
+#[cfg(test)]
+mod user_tests;
 mod users;
 #[cfg(test)]
 mod validation_tests;
 mod writer;
-pub(crate) use proof_requests::{PROOF_ATTEMPTS_LIMIT_MAIN, PROOF_ATTEMPTS_LIMIT_TEST};
 pub use proven_tx_reqs::{UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT};
 pub(crate) use proven_txs::{
-    bump_leaf_index, same_proof_anchor, store_validated_proof_on, StoreProofOutcome,
-    ValidatedProofRow,
+    bump_leaf_index, store_validated_proof_on, StoreProofOutcome, ValidatedProofRow,
 };
 pub(crate) use retirement::RetireBasis;
 pub use retirement::RetireOutcome;
@@ -643,3 +651,35 @@ impl StorageSqlx {
         })
     }
 }
+
+/// M19 R1: is a freshly validated proof the SAME anchor as the stored one?
+///
+/// A stored row written by `internalize_action` before 0.3.65 carries an
+/// empty `block_hash` (the validated bump had none), so the comparison falls
+/// back to height + merkle root there; with both hashes known, the hash and
+/// the height decide (the root is implied by the hash).
+pub(crate) fn same_proof_anchor(
+    stored_hash: &str,
+    stored_height: i64,
+    stored_root: &str,
+    new_hash: &str,
+    new_height: u32,
+    new_root: &str,
+) -> bool {
+    if stored_height != new_height as i64 {
+        return false;
+    }
+    if !stored_hash.is_empty() && !new_hash.is_empty() {
+        return stored_hash.eq_ignore_ascii_case(new_hash);
+    }
+    stored_root.eq_ignore_ascii_case(new_root)
+}
+
+/// The reference's `unprovenAttemptsLimitMain` / `unprovenAttemptsLimitTest`
+/// (wallet-toolbox src/monitor/Monitor.ts:105-106). The reference writes a
+/// req off once `attempts` is GREATER than the limit
+/// (src/monitor/tasks/TaskCheckForProofs.ts:158); here, since 0.7.4
+/// (bsv-stack-lean #66), past the limit is only a log line: a count is no
+/// evidence and writes no word.
+pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
+pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;

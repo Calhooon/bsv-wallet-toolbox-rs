@@ -3,10 +3,9 @@
 // =============================================================================
 
 use super::{
-    async_trait, parse_input_txids, prune_beef_to_roots, Beef, Duration, HeaderTrackerState,
-    MerklePath, MonitorStorage, ProofIngestOutcome, ProvenTxAnchor, ProvenTxReqStatus, PurgeParams,
-    PurgeResults, Result, ReviewStatusResult, Row, StorageProcessActionResults, StorageSqlx,
-    TxSynchronizedStatus, Utc,
+    async_trait, Duration, HeaderTrackerState, MonitorStorage, ProofIngestOutcome, ProvenTxAnchor,
+    ProvenTxReqStatus, PurgeParams, PurgeResults, Result, ReviewStatusResult,
+    StorageProcessActionResults, StorageSqlx, TxSynchronizedStatus,
 };
 
 #[async_trait]
@@ -203,8 +202,7 @@ impl MonitorStorage for StorageSqlx {
     }
 
     async fn mark_transaction_rejected(&self, txid: &str, double_spend: bool) -> Result<bool> {
-        self.mark_transaction_rejected_impl(txid, double_spend)
-            .await
+        self.mark_rejected(txid, double_spend).await
     }
 
     async fn mark_transaction_rejected_by(
@@ -265,7 +263,7 @@ impl MonitorStorage for StorageSqlx {
 }
 #[cfg(test)]
 mod tests {
-    use super::super::*;
+    use super::super::{Duration, MonitorStorage, StorageSqlx};
 
     // =========================================================================
     // Task Lock Tests

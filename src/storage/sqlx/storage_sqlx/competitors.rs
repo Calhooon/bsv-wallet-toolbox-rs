@@ -1,7 +1,7 @@
 use super::{
-    append_req_history_note, ChainTracker, GetRawTxResult, MerklePath, MonitorStorage,
-    ProvenTxReqStatus, Result, RetireBasis, RetireOutcome, Row, StorageSqlx, TxSynchronizedStatus,
-    Utc, WalletServices, WalletStorageReader,
+    append_req_history_note, GetRawTxResult, MerklePath, MonitorStorage, ProvenTxReqStatus, Result,
+    RetireBasis, RetireOutcome, StorageSqlx, TxSynchronizedStatus, WalletServices,
+    WalletStorageReader,
 };
 
 /// The key of a request's history that holds the competitors queued for a

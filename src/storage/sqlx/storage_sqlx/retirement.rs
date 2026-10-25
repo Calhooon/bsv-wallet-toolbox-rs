@@ -1,6 +1,5 @@
 use super::{
-    Result, Row, StorageSqlx, Utc, WalletServices, LOCKED_VERDICT_SPENT_PROVEN,
-    LOCKED_VERDICT_UNKNOWN,
+    Result, Row, StorageSqlx, WalletServices, LOCKED_VERDICT_SPENT_PROVEN, LOCKED_VERDICT_UNKNOWN,
 };
 
 /// Outcome of `StorageSqlx::retire_undeliverable_tx`.
@@ -265,12 +264,10 @@ impl StorageSqlx {
         .await
         .map(Some)
     }
+}
 
-    pub(super) async fn mark_transaction_rejected_impl(
-        &self,
-        txid: &str,
-        double_spend: bool,
-    ) -> Result<bool> {
+impl StorageSqlx {
+    pub(super) async fn mark_rejected(&self, txid: &str, double_spend: bool) -> Result<bool> {
         let now = chrono::Utc::now();
         let req_status = if double_spend {
             "doubleSpend"

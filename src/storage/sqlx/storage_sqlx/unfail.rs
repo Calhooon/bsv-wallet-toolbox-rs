@@ -1,6 +1,6 @@
 use super::{
-    Duration, FindProvenTxReqsArgs, ProvenTxReqStatus, Result, Row, StorageSqlx, Utc, UtxoVerdict,
-    WalletServices, WalletStorageReader,
+    FindProvenTxReqsArgs, ProvenTxReqStatus, Result, Row, StorageSqlx, UtxoVerdict, WalletServices,
+    WalletStorageReader,
 };
 
 /// How long a broadcast-memory row counts as another source holding a
@@ -9,172 +9,6 @@ const MEMORY_EVIDENCE_MAX_AGE_SECS: i64 = 2 * 60 * 60;
 
 /// Private helpers for the `MonitorStorage::un_fail` recovery path.
 impl StorageSqlx {
-    pub(super) async fn un_fail_impl(&self) -> Result<()> {
-        let now = chrono::Utc::now();
-
-        // ---- Phase A: auto-unfail canary (the producer) ----
-        //
-        // Canary invariant: `failed` means never-on-chain. Every failed
-        // transaction with an 'invalid'/'doubleSpend' req is periodically
-        // re-verified against the chain, UNBOUNDED — a tx the network still
-        // reports known/mined must never stop being re-checked. Backoff:
-        // hourly for the first 24 checks, daily after (attempts counts
-        // canary re-stamps) — bounded provider load without ever abandoning
-        // a row.
-        //
-        // Without this sweep the explicit-'unfail' consumer below is dead
-        // code: every demotion path writes 'invalid'/'doubleSpend', never
-        // 'unfail', so a false-fail (a broadcast reject during an index
-        // disagreement window — the 2026-07-28 btc-relay fuel-coin
-        // incident) stayed `failed` forever while mined on-chain.
-        // Production reference: rust-wallet-infra monitor auto-unfail
-        // canary; TS TaskReviewDoubleSpends covers only the doubleSpend
-        // half of this.
-        //
-        // julianday() on BOTH sides of the time compares: updated_at holds
-        // RFC3339 'T' stamps (sqlx chrono) but CURRENT_TIMESTAMP defaults
-        // write space-format — a raw string compare silently breaks the
-        // backoff windows.
-        //
-        // The LEFT JOIN + OR arm: a 'doubleSpend' req whose transactions
-        // row missed its 'failed' write (partial batch) must still be
-        // re-checked.
-        let candidates = sqlx::query(
-            "SELECT DISTINCT r.proven_tx_req_id, r.txid, r.raw_tx \
-             FROM proven_tx_reqs r \
-             LEFT JOIN transactions t ON t.txid = r.txid \
-             WHERE r.status IN ('invalid', 'doubleSpend') \
-               AND (t.status = 'failed' OR r.status = 'doubleSpend') \
-               AND julianday(r.updated_at) < julianday(?) \
-               AND (r.attempts < 24 OR julianday(r.updated_at) < julianday(?)) \
-             ORDER BY r.updated_at ASC \
-             LIMIT 20",
-        )
-        .bind(now - chrono::Duration::hours(1))
-        .bind(now - chrono::Duration::days(1))
-        .fetch_all(self.pool())
-        .await?;
-
-        // Both phases are chain-evidence driven; with no work, don't
-        // require services to be configured (parity with the pre-canary
-        // no-op path).
-        let unfail_reqs = self
-            .find_proven_tx_reqs(FindProvenTxReqsArgs {
-                status: Some(vec![ProvenTxReqStatus::Unfail]),
-                ..Default::default()
-            })
-            .await?;
-        if candidates.is_empty() && unfail_reqs.is_empty() {
-            return Ok(());
-        }
-        let services = self.get_services()?;
-
-        for row in &candidates {
-            let req_id: i64 = row.get("proven_tx_req_id");
-            let txid: String = row.get("txid");
-            let raw_tx: Option<Vec<u8>> = row.get("raw_tx");
-            if txid.is_empty() {
-                continue;
-            }
-            // EVERY status source, not only the one that refused it
-            // (Calgooon/zanaadu-v2#357): the status sources first, then each
-            // broadcaster's own status read and a tracker-checked merkle
-            // path. A failed transaction is usually failed on ONE
-            // broadcaster's word; the one that accepted it is the likeliest
-            // to know better.
-            let status_word = match services
-                .get_status_for_txids(std::slice::from_ref(&txid), false)
-                .await
-            {
-                Ok(result) => result
-                    .results
-                    .iter()
-                    .find(|d| d.txid == txid && (d.status == "known" || d.status == "mined"))
-                    .map(|d| format!("status sources {}", d.status)),
-                // Provider error: no evidence from these sources.
-                Err(_) => None,
-            };
-            let evidence = match status_word {
-                Some(word) => Some(word),
-                None => Self::network_holds(services.as_ref(), &txid, None, false, true).await,
-            };
-            match evidence {
-                Some(evidence) => {
-                    self.recover_false_failed_req(req_id, &txid, raw_tx.as_deref(), now)
-                        .await?;
-                    tracing::warn!(
-                        "un_fail canary: false-failed tx is on network ({}) — recovered txid={}",
-                        evidence,
-                        txid
-                    );
-                }
-                None => {
-                    // No source holds it — factually failed (so far).
-                    // Re-stamp for the backoff; stays invalid, stays
-                    // watched, forever.
-                    self.restamp_false_fail_candidate(req_id, now).await?;
-                }
-            }
-        }
-
-        // ---- Phase B: explicit 'unfail' requests (the consumer) ----
-        let reqs = unfail_reqs;
-
-        if reqs.is_empty() {
-            return Ok(());
-        }
-
-        tracing::debug!(
-            "un_fail: processing {} transactions marked for unfail",
-            reqs.len()
-        );
-
-        for req in &reqs {
-            // Check if transaction has a merkle path on-chain
-            match services.get_merkle_path(&req.txid, false).await {
-                Ok(result) if result.merkle_path.is_some() => {
-                    self.recover_false_failed_req(
-                        req.proven_tx_req_id,
-                        &req.txid,
-                        req.raw_tx.as_deref(),
-                        now,
-                    )
-                    .await?;
-                }
-                Ok(_) => {
-                    // Positive network answer, no proof — back to 'invalid'.
-                    // NOT terminal: the Phase A canary keeps re-checking
-                    // 'invalid' reqs whose tx is failed, so a proof that
-                    // shows up later still recovers it.
-                    sqlx::query(
-                        "UPDATE proven_tx_reqs SET status = 'invalid', updated_at = ? WHERE proven_tx_req_id = ?"
-                    )
-                    .bind(now)
-                    .bind(req.proven_tx_req_id)
-                    .execute(&mut *self.writer_conn().await?)
-                    .await?;
-
-                    tracing::debug!(
-                        "un_fail: marked {} as invalid (not found on chain)",
-                        req.txid
-                    );
-                }
-                Err(e) => {
-                    // Provider error — no evidence, no state change: hold at
-                    // 'unfail' for the next pass. Terminalizing on an outage
-                    // is the incident class where a multi-day provider
-                    // outage turns a recovery request permanent-'invalid'.
-                    tracing::warn!(
-                        "un_fail: provider error for {} — holding at 'unfail': {}",
-                        req.txid,
-                        e
-                    );
-                }
-            }
-        }
-
-        Ok(())
-    }
     /// THE FINAL-VERSUS-TRANSIENT RULE for one broadcaster's refusal
     /// (Calgooon/zanaadu-v2#357), the memory half: the broadcast memory's
     /// evidence that a source other than `refusing` holds `txid`. Another
@@ -477,21 +311,171 @@ impl StorageSqlx {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::*;
+impl StorageSqlx {
+    pub(super) async fn un_fail_impl(&self) -> Result<()> {
+        let now = chrono::Utc::now();
 
-    #[tokio::test]
-    async fn test_un_fail_empty() {
-        let storage = StorageSqlx::in_memory().await.unwrap();
-        storage
-            .migrate("test-storage", "0".repeat(64).as_str())
-            .await
-            .unwrap();
-        storage.make_available().await.unwrap();
+        // ---- Phase A: auto-unfail canary (the producer) ----
+        //
+        // Canary invariant: `failed` means never-on-chain. Every failed
+        // transaction with an 'invalid'/'doubleSpend' req is periodically
+        // re-verified against the chain, UNBOUNDED — a tx the network still
+        // reports known/mined must never stop being re-checked. Backoff:
+        // hourly for the first 24 checks, daily after (attempts counts
+        // canary re-stamps) — bounded provider load without ever abandoning
+        // a row.
+        //
+        // Without this sweep the explicit-'unfail' consumer below is dead
+        // code: every demotion path writes 'invalid'/'doubleSpend', never
+        // 'unfail', so a false-fail (a broadcast reject during an index
+        // disagreement window — the 2026-07-28 btc-relay fuel-coin
+        // incident) stayed `failed` forever while mined on-chain.
+        // Production reference: rust-wallet-infra monitor auto-unfail
+        // canary; TS TaskReviewDoubleSpends covers only the doubleSpend
+        // half of this.
+        //
+        // julianday() on BOTH sides of the time compares: updated_at holds
+        // RFC3339 'T' stamps (sqlx chrono) but CURRENT_TIMESTAMP defaults
+        // write space-format — a raw string compare silently breaks the
+        // backoff windows.
+        //
+        // The LEFT JOIN + OR arm: a 'doubleSpend' req whose transactions
+        // row missed its 'failed' write (partial batch) must still be
+        // re-checked.
+        let candidates = sqlx::query(
+            "SELECT DISTINCT r.proven_tx_req_id, r.txid, r.raw_tx \
+             FROM proven_tx_reqs r \
+             LEFT JOIN transactions t ON t.txid = r.txid \
+             WHERE r.status IN ('invalid', 'doubleSpend') \
+               AND (t.status = 'failed' OR r.status = 'doubleSpend') \
+               AND julianday(r.updated_at) < julianday(?) \
+               AND (r.attempts < 24 OR julianday(r.updated_at) < julianday(?)) \
+             ORDER BY r.updated_at ASC \
+             LIMIT 20",
+        )
+        .bind(now - chrono::Duration::hours(1))
+        .bind(now - chrono::Duration::days(1))
+        .fetch_all(self.pool())
+        .await?;
 
-        // With no unfail transactions, should complete without error
-        let result = storage.un_fail().await;
-        assert!(result.is_ok());
+        // Both phases are chain-evidence driven; with no work, don't
+        // require services to be configured (parity with the pre-canary
+        // no-op path).
+        let unfail_reqs = self
+            .find_proven_tx_reqs(FindProvenTxReqsArgs {
+                status: Some(vec![ProvenTxReqStatus::Unfail]),
+                ..Default::default()
+            })
+            .await?;
+        if candidates.is_empty() && unfail_reqs.is_empty() {
+            return Ok(());
+        }
+        let services = self.get_services()?;
+
+        for row in &candidates {
+            let req_id: i64 = row.get("proven_tx_req_id");
+            let txid: String = row.get("txid");
+            let raw_tx: Option<Vec<u8>> = row.get("raw_tx");
+            if txid.is_empty() {
+                continue;
+            }
+            // EVERY status source, not only the one that refused it
+            // (Calgooon/zanaadu-v2#357): the status sources first, then each
+            // broadcaster's own status read and a tracker-checked merkle
+            // path. A failed transaction is usually failed on ONE
+            // broadcaster's word; the one that accepted it is the likeliest
+            // to know better.
+            let status_word = match services
+                .get_status_for_txids(std::slice::from_ref(&txid), false)
+                .await
+            {
+                Ok(result) => result
+                    .results
+                    .iter()
+                    .find(|d| d.txid == txid && (d.status == "known" || d.status == "mined"))
+                    .map(|d| format!("status sources {}", d.status)),
+                // Provider error: no evidence from these sources.
+                Err(_) => None,
+            };
+            let evidence = match status_word {
+                Some(word) => Some(word),
+                None => Self::network_holds(services.as_ref(), &txid, None, false, true).await,
+            };
+            match evidence {
+                Some(evidence) => {
+                    self.recover_false_failed_req(req_id, &txid, raw_tx.as_deref(), now)
+                        .await?;
+                    tracing::warn!(
+                        "un_fail canary: false-failed tx is on network ({}) — recovered txid={}",
+                        evidence,
+                        txid
+                    );
+                }
+                None => {
+                    // No source holds it — factually failed (so far).
+                    // Re-stamp for the backoff; stays invalid, stays
+                    // watched, forever.
+                    self.restamp_false_fail_candidate(req_id, now).await?;
+                }
+            }
+        }
+
+        // ---- Phase B: explicit 'unfail' requests (the consumer) ----
+        let reqs = unfail_reqs;
+
+        if reqs.is_empty() {
+            return Ok(());
+        }
+
+        tracing::debug!(
+            "un_fail: processing {} transactions marked for unfail",
+            reqs.len()
+        );
+
+        for req in &reqs {
+            // Check if transaction has a merkle path on-chain
+            match services.get_merkle_path(&req.txid, false).await {
+                Ok(result) if result.merkle_path.is_some() => {
+                    self.recover_false_failed_req(
+                        req.proven_tx_req_id,
+                        &req.txid,
+                        req.raw_tx.as_deref(),
+                        now,
+                    )
+                    .await?;
+                }
+                Ok(_) => {
+                    // Positive network answer, no proof — back to 'invalid'.
+                    // NOT terminal: the Phase A canary keeps re-checking
+                    // 'invalid' reqs whose tx is failed, so a proof that
+                    // shows up later still recovers it.
+                    sqlx::query(
+                        "UPDATE proven_tx_reqs SET status = 'invalid', updated_at = ? WHERE proven_tx_req_id = ?"
+                    )
+                    .bind(now)
+                    .bind(req.proven_tx_req_id)
+                    .execute(&mut *self.writer_conn().await?)
+                    .await?;
+
+                    tracing::debug!(
+                        "un_fail: marked {} as invalid (not found on chain)",
+                        req.txid
+                    );
+                }
+                Err(e) => {
+                    // Provider error — no evidence, no state change: hold at
+                    // 'unfail' for the next pass. Terminalizing on an outage
+                    // is the incident class where a multi-day provider
+                    // outage turns a recovery request permanent-'invalid'.
+                    tracing::warn!(
+                        "un_fail: provider error for {} — holding at 'unfail': {}",
+                        req.txid,
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 }

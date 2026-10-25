@@ -205,7 +205,9 @@ impl StorageSqlx {
             None => Ok(None),
         }
     }
+}
 
+impl StorageSqlx {
     pub(super) async fn relinquish_output_impl(
         &self,
         auth: &AuthId,
@@ -240,7 +242,9 @@ impl StorageSqlx {
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
+    use super::super::{
+        AuthId, FindOutputsArgs, StorageSqlx, WalletStorageReader, WalletStorageWriter,
+    };
 
     #[tokio::test]
     async fn test_find_outputs() {

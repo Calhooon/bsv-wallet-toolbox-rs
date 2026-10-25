@@ -1,4 +1,4 @@
-use super::{Result, Row, StorageSqlx, TableOutput, Utc};
+use super::{Result, Row, StorageSqlx, TableOutput};
 
 impl StorageSqlx {
     /// Find a spendable change output suitable for use as input.
@@ -191,7 +191,7 @@ impl StorageSqlx {
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
+    use super::super::{Arc, StorageSqlx, Utc, WalletStorageWriter};
 
     /// Review F7 of bsv-wallet-cli #44: the public `allocate_change_input`
     /// read on the reader and wrote on the writer with no guard, so two

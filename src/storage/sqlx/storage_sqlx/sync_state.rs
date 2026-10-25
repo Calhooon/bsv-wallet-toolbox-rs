@@ -1,6 +1,6 @@
 use super::{
     async_trait, AuthId, Error, ProcessSyncChunkResult, RequestSyncChunkArgs, Result, Row,
-    StorageSqlx, SyncChunk, SyncMap, TableSyncState, Utc, WalletStorageSync,
+    StorageSqlx, SyncChunk, TableSyncState, Utc, WalletStorageSync,
 };
 
 impl StorageSqlx {

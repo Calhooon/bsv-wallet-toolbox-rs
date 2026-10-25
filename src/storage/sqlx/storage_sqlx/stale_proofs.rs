@@ -1,5 +1,5 @@
 use super::{
-    commit, parse_input_txids, rebuild_beef_for_broadcast, Error, Result, StorageSqlx, Utc,
+    commit, parse_input_txids, rebuild_beef_for_broadcast, Error, Result, StorageSqlx,
     WalletStorageReader,
 };
 
