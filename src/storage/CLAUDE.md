@@ -214,6 +214,8 @@ Provides metadata about a configured storage provider instance.
 
 ### BEEF Verification
 
+`internalize_action` verifies the AtomicBEEF's structure, roots, spends and mining context before writing: `InvalidBeef` names invalid bytes, `SpendRefused` preserves the verifier's spend reason, and a header fault holds the call with `ServiceError` and nothing stored.
+
 ```rust
 pub enum BeefVerificationMode {
     Strict,     // Verify all BEEF merkle proofs (default)
