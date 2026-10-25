@@ -1073,7 +1073,7 @@ where
 
         // Serialize spending operations to prevent UTXO contention and
         // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).
-        let _spend_guard = self.spend_lock.lock().await;
+        let spend_guard = self.spend_lock.lock().await;
 
         // BRC-98/99: Check spending permission based on total output satoshis
         if self.permissions_manager.is_some() {
@@ -1365,7 +1365,7 @@ where
                 None
             };
 
-            drop(_spend_guard);
+            drop(spend_guard);
 
             // Broadcast the transaction if not no_send and not delayed
             // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
