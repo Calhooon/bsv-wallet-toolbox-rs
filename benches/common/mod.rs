@@ -43,6 +43,21 @@ impl ChainTracker for StoredRoots {
     async fn current_height(&self) -> Result<u32, ChainTrackerError> {
         Ok(HEIGHT)
     }
+
+    /// The mining context the spend verifier needs since #103: a synthetic tip
+    /// at HEIGHT, well past the CSV and Genesis activations, so the door never
+    /// holds for a missing tip and the bench measures the verifier's work.
+    async fn mining_tip(
+        &self,
+    ) -> Result<Option<bsv_rs::transaction::beef_stream::ChainTip>, ChainTrackerError> {
+        Ok(Some(bsv_rs::transaction::beef_stream::ChainTip {
+            height: HEIGHT,
+            median_time_past: 1_700_000_000,
+            genesis_height: 620_538,
+            csv_height: 419_328,
+            next_block_time: None,
+        }))
+    }
 }
 
 /// A distinct synthetic funding transaction for each coin. Its proof is a
