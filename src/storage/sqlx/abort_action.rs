@@ -6,36 +6,32 @@
 //! Abort action cancels a pending (unsigned) transaction and releases
 //! any locked UTXOs back to their spendable state.
 //!
-//! # Aborting a broadcast transaction (0.3.60)
+//! # Abort stops at the accepting word (#165)
 //!
-//! An `unproven` (or `sending`) transaction has been handed to a
-//! broadcaster, which is not the same as the network having it. When the
-//! application learns that such a transaction can never mine (2026-09-03,
-//! beta: a pf head spend that lost its head race is a double spend of the
-//! head, the overlay says so on the first submit, and the wallet would
-//! otherwise keep the transaction as `unproven` on the broadcaster's SEEN
-//! and fund the next action from its change), it may abort it. The abort
-//! is honoured only when the wallet holds NO chain evidence for the
-//! transaction: a broadcaster's `accepted` / `seen` (Arcade's
-//! `SEEN_ON_NETWORK`, `SEEN_MULTIPLE_NODES`) and the network
-//! pseudo-provider's `seen` are that reporter's word, not the chain's; only
-//! a `chain|seen` / `chain|mined` row (the chain index or a validated proof)
-//! or a `mined` row from anyone is chain evidence, and then the abort is
-//! refused with a clear error. A proven descendant refuses it too.
+//! The store's word decides: abort is honoured while the transaction is
+//! `built`, and refused once any acceptance wrote `announced`. This follows
+//! the stack's wallet charter section 5 (`wallet.md:97-98`), `tracker.md:25`,
+//! and broadcaster B4 (d) and section 6 item 2. An `unproven` transaction
+//! always records acceptance. A `sending` transaction is still abortable
+//! when no instance accepted, including when every named instance refused.
+//! Its label alone does not say whether the post was accepted.
 //!
-//! An honoured broadcast abort fails the transaction, releases its inputs
-//! (the caller vouches that the transaction will never mine, so nothing it
-//! spent is spent), invalidates its own outputs, records `rejected` in the
-//! broadcast memory (no provider skips it, the reconciler never resurrects
-//! it), and retires every unproven descendant through the poisoned-chain
-//! path (`retire_poisoned_descendants`): change built on the aborted
-//! transaction is never spent, and a descendant's outside inputs are
-//! released only on chain verification (kept and re-checked otherwise).
+//! Acceptance is read from the transaction, its proof request and post
+//! history, broadcast memory, stored proofs, and the host's tracker word
+//! (`announced`, `seen`, `mined`, `stale`). The check and the abort share the
+//! write lock. The chain is not consulted: no header-service or explorer
+//! call is made anywhere on the abort path, whether refused or honoured.
+//!
+//! An honoured `sending` abort fails the transaction, releases its inputs,
+//! invalidates its outputs, records `rejected` in broadcast memory, and
+//! retires unproven descendants through `retire_poisoned_descendants`.
+//! Descendants' outside inputs stay locked for the monitor's later check.
+//! A proven descendant refuses the abort too. The monitor still uses
+//! `chain_evidence_for`; that check is not the abort rule.
 
 use crate::error::{Error, Result};
 use crate::services::broadcast_memory::{BroadcastStatus, BROADCAST_PROVIDER_CHAIN};
 use crate::storage::entities::TransactionStatus;
-use crate::storage::traits::WalletStorageReader;
 use chrono::Utc;
 use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
@@ -60,10 +56,8 @@ const ABORTABLE_STATUSES: &[TransactionStatus] = &[
     TransactionStatus::Unfail,
 ];
 
-/// Transaction statuses of a broadcast (or broadcasting) transaction:
-/// abortable only without chain evidence (see the module docs).
-const BROADCAST_STATUSES: &[TransactionStatus] =
-    &[TransactionStatus::Sending, TransactionStatus::Unproven];
+/// A post may be pending or refused: the stored acceptance decides.
+const BROADCAST_STATUSES: &[TransactionStatus] = &[TransactionStatus::Sending];
 
 /// Transaction statuses that cannot be aborted.
 const NON_ABORTABLE_STATUSES: &[TransactionStatus] =
@@ -87,7 +81,7 @@ struct TransactionRecord {
 enum AbortKind {
     /// Never broadcast: release the inputs, fail the transaction.
     Pending,
-    /// Broadcast: honoured only without chain evidence, and the
+    /// Sending: honoured only without an accepting word, and the
     /// descendants go with it.
     Broadcast,
 }
@@ -104,8 +98,8 @@ enum AbortKind {
 /// 3. Releases locked outputs back to spendable state
 /// 4. Updates transaction status to 'failed'
 ///
-/// For a broadcast transaction (`unproven` / `sending`) see the module docs:
-/// the chain-evidence check comes first, the descendants are retired after.
+/// For a `sending` transaction see the module docs: the stored acceptance
+/// is checked under the write lock, the descendants are retired after.
 ///
 /// The transaction's own mutations are wrapped in a SQL transaction so that
 /// a crash mid-operation does not leave the database in an inconsistent
@@ -121,13 +115,10 @@ pub async fn abort_action_internal(
 ) -> Result<AbortActionResult> {
     let reference = &args.reference;
 
-    // Step 1: Find the transaction (read-only, outside the write
-    // transaction: the broadcast checks below read the memory and the
-    // descendants on the pool).
-    let tx = {
-        let mut conn = storage.pool().acquire().await?;
-        find_transaction(&mut conn, user_id, reference).await?
-    };
+    // Read and decide under the same lock as the abort, so a concurrent
+    // acceptance that committed before this lock cannot be missed.
+    let mut db_tx = storage.write_tx().await?;
+    let tx = find_transaction(&mut db_tx, user_id, reference).await?;
 
     let tx = tx.ok_or_else(|| Error::NotFound {
         entity: "transaction".to_string(),
@@ -136,18 +127,21 @@ pub async fn abort_action_internal(
 
     // Step 2: Validate the transaction can be aborted
     let kind = validate_transaction_for_abort(&tx)?;
+    if let Some(txid) = tx.txid.as_deref() {
+        refuse_if_accepted(&mut db_tx, txid, "abort action").await?;
+    }
 
     match kind {
-        AbortKind::Pending => abort_pending(storage, &tx).await,
-        AbortKind::Broadcast => abort_broadcast(storage, &tx).await,
+        AbortKind::Pending => abort_pending(db_tx, &tx).await,
+        AbortKind::Broadcast => abort_broadcast(storage, db_tx, &tx).await,
     }
 }
 
 /// The abort of a never-broadcast transaction.
-async fn abort_pending(storage: &StorageSqlx, tx: &TransactionRecord) -> Result<AbortActionResult> {
-    // Begin a SQL transaction so that all mutations are atomic.
-    let mut db_tx = storage.write_tx().await?;
-
+async fn abort_pending(
+    mut db_tx: sqlx::Transaction<'static, sqlx::Sqlite>,
+    tx: &TransactionRecord,
+) -> Result<AbortActionResult> {
     // Step 3: Check that transaction outputs haven't been spent
     check_outputs_not_spent(&mut db_tx, tx.transaction_id).await?;
 
@@ -166,22 +160,15 @@ async fn abort_pending(storage: &StorageSqlx, tx: &TransactionRecord) -> Result<
 /// The abort of a broadcast transaction (see the module docs).
 async fn abort_broadcast(
     storage: &StorageSqlx,
+    mut db_tx: sqlx::Transaction<'static, sqlx::Sqlite>,
     tx: &TransactionRecord,
 ) -> Result<AbortActionResult> {
     let txid = tx.txid.as_deref().ok_or_else(|| {
         Error::InvalidTransactionStatus(format!(
-            "cannot abort action: transaction with status '{}' has no txid, so its chain evidence cannot be checked",
+            "cannot abort action: transaction with status '{}' has no txid, so its stored acceptance cannot be checked",
             tx.status
         ))
     })?;
-
-    // Only a transaction the chain does not know may be aborted.
-    if let Some(evidence) = chain_evidence_for(storage, txid).await? {
-        return Err(Error::InvalidTransactionStatus(format!(
-            "cannot abort action: the network has transaction {} ({}); only a broadcast transaction with no chain evidence can be aborted",
-            txid, evidence
-        )));
-    }
 
     // Everything built on it goes with it, unless something is proven,
     // which means the transaction is on chain after all.
@@ -194,7 +181,6 @@ async fn abort_broadcast(
     }
 
     let now = Utc::now();
-    let mut db_tx = storage.write_tx().await?;
 
     // Its inputs come back: the caller vouches the transaction never mines.
     release_locked_outputs(&mut db_tx, tx.transaction_id).await?;
@@ -225,10 +211,8 @@ async fn abort_broadcast(
     // rejected root rather than a candidate.
     storage.mark_broadcast_rejected_quiet(txid).await;
 
-    // The descendants: change chained on the aborted transaction, and
-    // whatever was built on that. The chain oracle, when the wallet has
-    // one, decides their outside inputs; without one they stay locked and
-    // re-checked.
+    // Retire the descendants without a network call. Their outside inputs
+    // stay locked and are scheduled for the monitor's later check.
     //
     // The abort is committed: from here no store fault is the call's error
     // (a `StoreBusy` would tell the host to repeat a call whose repeat
@@ -236,9 +220,8 @@ async fn abort_broadcast(
     // the marker `post_commit_retire_failed` and left to the monitor's
     // review-status pass, which retires the unproven descendants of a
     // failed root with an `invalid` req and no chain evidence.
-    let services = storage.get_services().ok();
     let (restored, kept) = match storage
-        .retire_poisoned_descendants(services.as_deref(), txid, tx.transaction_id, now)
+        .retire_poisoned_descendants(None, txid, tx.transaction_id, now)
         .await
     {
         Ok(counts) => counts,
@@ -254,7 +237,7 @@ async fn abort_broadcast(
         descendants = descendants.len(),
         descendant_inputs_restored = restored,
         descendant_inputs_kept = kept,
-        "abort_action: broadcast transaction aborted on the caller's word (no chain evidence); inputs released, descendants retired"
+        "abort_action: sending transaction aborted before any acceptance; inputs released, descendants retired"
     );
 
     Ok(AbortActionResult { aborted: true })
@@ -270,6 +253,148 @@ pub(crate) fn post_commit_retire_failed(txid: &str, error: &Error) {
         error = %error,
         "abort_action: the abort is committed; retiring its descendants failed, left to the review-status pass"
     );
+}
+
+/// The host's abort and retire share the stored accepting word. Callers
+/// performing an abort hold their write lock across this check and its writes.
+pub(crate) async fn refuse_if_accepted(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    operation: &str,
+) -> Result<()> {
+    if let Some(word) = accepting_word_for(conn, txid).await? {
+        return Err(Error::InvalidTransactionStatus(format!(
+            "cannot {operation}: transaction {txid} has a recorded acceptance ({word}); only a transaction never accepted can be retired"
+        )));
+    }
+    Ok(())
+}
+
+/// Reads only stored words, including acceptance kept after a later refusal
+/// replaced a provider's memory row. `sending` / `unsent` precede the post.
+async fn accepting_word_for(conn: &mut SqliteConnection, txid: &str) -> Result<Option<String>> {
+    let status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM transactions WHERE txid = ? \
+         AND (status IN ('unproven', 'completed') OR proven_tx_id IS NOT NULL) LIMIT 1",
+    )
+    .bind(txid)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(status) = status {
+        return Ok(Some(format!(
+            "transaction status '{status}' or a stored proof link"
+        )));
+    }
+
+    let req: Option<(String, String, Option<i64>)> =
+        sqlx::query_as("SELECT status, history, proven_tx_id FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if let Some((status, history, proof)) = req {
+        if matches!(
+            status.as_str(),
+            "unmined" | "callback" | "unconfirmed" | "completed"
+        ) || proof.is_some()
+        {
+            return Ok(Some(format!("proof request past the post ('{status}')")));
+        }
+        if serde_json::from_str::<serde_json::Value>(&history)
+            .is_ok_and(|history| history_has_acceptance(&history, txid))
+        {
+            return Ok(Some("acceptance in the request's post history".to_string()));
+        }
+    }
+
+    let memory: Option<(String, String)> = sqlx::query_as(
+        "SELECT provider, status FROM broadcast_seen \
+         WHERE txid = ? AND status IN ('accepted', 'seen', 'mined') LIMIT 1",
+    )
+    .bind(txid)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((provider, status)) = memory {
+        return Ok(Some(format!("{provider} recorded '{status}'")));
+    }
+
+    let proof: Option<i64> =
+        sqlx::query_scalar("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if proof.is_some() {
+        return Ok(Some("a stored merkle proof".to_string()));
+    }
+
+    // The CLI hosts this table; a standalone toolbox store need not have it.
+    let tracker_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tracker_states')",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if tracker_exists {
+        let word: Option<String> = sqlx::query_scalar(
+            "SELECT word FROM tracker_states WHERE txid = ? \
+             AND word IN ('announced', 'seen', 'mined', 'stale') LIMIT 1",
+        )
+        .bind(txid)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(word) = word {
+            return Ok(Some(format!("tracker word '{word}'")));
+        }
+    }
+    Ok(None)
+}
+
+/// Read structured post results, never words quoted in a refusal's text.
+fn history_has_acceptance(value: &serde_json::Value, txid: &str) -> bool {
+    match value {
+        serde_json::Value::Array(values) => values.iter().any(|v| history_has_acceptance(v, txid)),
+        serde_json::Value::Object(fields) => {
+            if fields
+                .get("txid")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id != txid)
+            {
+                return false;
+            }
+            if fields
+                .get("status")
+                .and_then(|v| v.as_str())
+                .is_some_and(|status| {
+                    matches!(
+                        status,
+                        "success"
+                            | "accepted"
+                            | "announced"
+                            | "seen"
+                            | "mined"
+                            | "stale"
+                            | "unproven"
+                            | "unmined"
+                            | "callback"
+                            | "unconfirmed"
+                            | "completed"
+                    )
+                })
+            {
+                return true;
+            }
+            [
+                "notes",
+                "words",
+                "sendWithResults",
+                "txid_results",
+                "txids",
+                "results",
+            ]
+            .iter()
+            .filter_map(|key| fields.get(*key))
+            .any(|v| history_has_acceptance(v, txid))
+        }
+        _ => false,
+    }
 }
 
 /// The chain evidence the wallet holds for `txid`, described, or `None`.
@@ -428,12 +553,19 @@ fn validate_transaction_for_abort(tx: &TransactionRecord) -> Result<AbortKind> {
         Error::InvalidTransactionStatus(format!("unknown transaction status: {}", tx.status))
     })?;
 
+    if status == TransactionStatus::Unproven {
+        return Err(Error::InvalidTransactionStatus(format!(
+            "cannot abort action: action with status '{}' records an acceptance and cannot be aborted",
+            tx.status
+        )));
+    }
+
     // Check if status is abortable
     if ABORTABLE_STATUSES.contains(&status) {
         return Ok(AbortKind::Pending);
     }
 
-    // Broadcast: abortable without chain evidence (checked by the caller).
+    // Sending: abortable without an accepting word (checked by the caller).
     if BROADCAST_STATUSES.contains(&status) {
         return Ok(AbortKind::Broadcast);
     }
