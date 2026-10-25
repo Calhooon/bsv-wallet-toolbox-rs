@@ -424,9 +424,8 @@ fn signature_size_delta(raw: &[u8]) -> Result<isize> {
 #[test]
 fn a_spend_refusal_keeps_every_verifier_field_verbatim() -> Result<()> {
     let refusal = json!({
-        "accepted": false,
-        "error": format!("spend refused at offset 156, input Some(0) of {}: Script(\"failed\")", "ab".repeat(32)),
-        "spendRefused": { "offset": 156, "input": 0, "txid": "ab".repeat(32), "why": "Script(\"failed\")" }
+        "error": format!("spend refused at offset 156, input 0 of {}: The top stack element must be truthy after script evaluation.", "ab".repeat(32)),
+        "spendRefused": { "offset": 156, "input": 0, "txid": "ab".repeat(32) }
     });
     assert_eq!(Normalizer::default().value(refusal.clone())?, refusal);
     Ok(())

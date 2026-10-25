@@ -2916,9 +2916,9 @@ mod tests {
     }
 
     /// A ChainTracker that rejects the claimed root must not yield a stored
-    /// proof. (`verify_beef_merkle_proofs` in Strict mode already refuses the
-    /// whole internalize for a bad root; this pins that a rejected proof is
-    /// never persisted either way.)
+    /// proof. (Since #103 the spend verifier refuses the whole internalize for
+    /// a bad root, `Error::InvalidBeef { RootNotCarried }`; this pins that a
+    /// rejected proof is never persisted either way.)
     #[tokio::test]
     async fn test_new_internalize_rejected_bump_stores_no_proof() {
         let storage = create_test_storage().await;
