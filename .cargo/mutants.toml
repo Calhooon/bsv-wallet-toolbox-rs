@@ -1,6 +1,6 @@
 # cargo-mutants 27.1.0. Run `cargo test --lib` in both build and test phases.
 examine_globs = [
-    "src/storage/sqlx/create_action.rs",
+    "src/storage/sqlx/create_action/*.rs",
     "src/storage/sqlx/process_action.rs",
     "src/storage/sqlx/internalize_action.rs",
     "src/services/services.rs",

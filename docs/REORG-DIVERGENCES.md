@@ -36,9 +36,9 @@ storage, and a tracker error keeps the bump for the final verification.
 
 - `storage/sqlx/internalize_action.rs` `validate_bump_claim`: `Err` is "not proven": the BUMP is not stored, the transaction is `unproven` with an `unmined` request. Fails closed, never credits a proof.
 - `storage/sqlx/beef_verification.rs` `verify_beef_merkle_proofs` / `verify_txid_merkle_proof`: `Err` becomes `Error::ValidationError`: the incoming BEEF is refused. Fails closed (the same status as before, a clearer message).
-- `storage/sqlx/create_action.rs` `validate_stored_beef`: `Err` discards the stored `input_beef` and falls through to the per-transaction lookup and the network fallback. No storage mutation.
-- `storage/sqlx/create_action.rs` `fetch_and_store_merkle_path`: `Err` returns `None`: the fetched proof is not stored, the walk continues raw. No storage mutation.
-- `storage/sqlx/create_action.rs` `stored_bump_refuted` (the walk): `Err` is not a refutation: the stored bump stays attached and the final BEEF verification decides. No storage mutation.
-- `storage/sqlx/create_action.rs` final BEEF verification in `build_input_beef`: `Err` becomes `Error::ValidationError`: the spend is refused rather than sent with an unverifiable BEEF. Fails closed, as before.
+- `storage/sqlx/create_action/beef_graph.rs` `validate_stored_beef`: `Err` discards the stored `input_beef` and falls through to the per-transaction lookup and the network fallback. No storage mutation.
+- `storage/sqlx/create_action/broadcast.rs` `fetch_and_store_merkle_path`: `Err` returns `None`: the fetched proof is not stored, the walk continues raw. No storage mutation.
+- `storage/sqlx/create_action/beef_walk.rs` `stored_bump_refuted` (the walk): `Err` is not a refutation: the stored bump stays attached and the final BEEF verification decides. No storage mutation.
+- `storage/sqlx/create_action/beef.rs` final BEEF verification in `build_input_beef`: `Err` becomes `Error::ValidationError`: the spend is refused rather than sent with an unverifiable BEEF. Fails closed, as before.
 - `storage/sqlx/storage_sqlx.rs` `ingest_merkle_proof`: `Err` is `ProofIngestOutcome::TrackerError`: not stored; the polling path counts an attempt and retries next cycle, the push paths fall back to the fetch.
 - `services/services.rs` `get_merkle_path` (Layer 3): `Err` is a FAULT note for that provider and the next provider is tried; with no provider left the result carries no path and the faults. A provider's word never decides staleness: `reprove_anchor` decides it by the local header read alone, and a header that cannot be read is "retain, retry".
