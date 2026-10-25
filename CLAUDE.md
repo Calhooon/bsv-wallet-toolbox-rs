@@ -37,7 +37,7 @@ src/
 │   ├── entities/mod.rs     # 18 table entity structs (single file, camelCase serde)
 │   ├── sqlx/               # SQLite/MySQL impl (StorageSqlx)
 │   │   ├── storage_sqlx.rs # Main impl + CRUD
-│   │   ├── create_action.rs, process_action.rs, abort_action.rs
+│   │   ├── create_action/ (the door in mod.rs; allocation, change, fees, signing, validation, inputs, outputs, tracker, beef* and broadcast modules; #61), process_action.rs, abort_action.rs
 │   │   ├── internalize_action.rs, beef_verification.rs, sync.rs
 │   │   └── mod.rs
 │   └── client/             # Remote JSON-RPC impl (StorageClient)

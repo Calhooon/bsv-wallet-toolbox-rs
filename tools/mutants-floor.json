@@ -109,9 +109,61 @@
       "floor": 54,
       "_comment": "Measured 54.59% (107/196). Issue to file: raise src/services/services.rs from 54 to 80 (#57 follow-up)."
     },
-    "src/storage/sqlx/create_action.rs": {
+    "src/storage/sqlx/create_action/allocation.rs": {
       "floor": 64,
-      "_comment": "Measured 64.71% (44/68) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/create_action.rs from 64 to 80 (#57 follow-up)."
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/beef.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/beef_graph.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/beef_storage.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/beef_walk.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/broadcast.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/change.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/fees.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/inputs.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/mod.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/outputs.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/signing.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/tracker.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/validation.rs": {
+      "floor": 64,
+      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
     },
     "src/storage/sqlx/internalize_action.rs": {
       "floor": 50,
