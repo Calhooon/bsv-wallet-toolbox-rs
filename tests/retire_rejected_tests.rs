@@ -12,7 +12,7 @@
 use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
 use bsv_wallet_toolbox_rs::services::TxStatusDetail;
 use bsv_wallet_toolbox_rs::{
-    GetStatusForTxidsResult, RetireOutcome, StorageSqlx, WalletStorageWriter,
+    Error, GetStatusForTxidsResult, RetireOutcome, StorageSqlx, WalletStorageWriter,
 };
 
 const PARENT_TXID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -26,8 +26,9 @@ struct Seeded {
     own_output_id: i64,
 }
 
-/// An outgoing tx at `unproven` (broadcast accepted) with req `unmined`,
-/// spending one parent output and producing one change output.
+/// An outgoing tx at `sending` with req `unsent` and no accepting word (no
+/// instance accepted: still `built`, the only transaction retire honours,
+/// #165), spending one parent output and producing one change output.
 async fn seed() -> Seeded {
     let storage = StorageSqlx::in_memory().await.expect("in-memory storage");
     let storage_key = "02".to_string() + &"ab".repeat(32);
@@ -63,7 +64,7 @@ async fn seed() -> Seeded {
     let tx_id = sqlx::query(
         r#"
         INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
-        VALUES (?, 'unproven', 'ours', 1, -2000, 1, 0, 'ours', ?, X'01000000', ?, ?)
+        VALUES (?, 'sending', 'ours', 1, -2000, 1, 0, 'ours', ?, X'01000000', ?, ?)
         "#,
     )
     .bind(user.user_id)
@@ -119,7 +120,7 @@ async fn seed() -> Seeded {
     sqlx::query(
         r#"
         INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, created_at, updated_at)
-        VALUES (?, 'unmined', 0, '{}', 0, '{}', X'01000000', ?, ?)
+        VALUES (?, 'unsent', 0, '{}', 0, '{}', X'01000000', ?, ?)
         "#,
     )
     .bind(TXID)
@@ -279,7 +280,7 @@ async fn an_unknown_txid_touches_nothing() {
         .await
         .expect("retire");
     assert_eq!(outcome, None);
-    assert_eq!(tx_status(&s.storage).await, "unproven");
+    assert_eq!(tx_status(&s.storage).await, "sending");
     assert_eq!(output_state(&s.storage, s.input_output_id).await.0, 0);
 }
 
@@ -295,4 +296,50 @@ async fn the_req_status_names_the_reason() {
         req_status_attempts(&s.storage).await,
         ("doubleSpend".to_string(), 1)
     );
+}
+
+#[tokio::test]
+async fn an_accepted_tx_is_refused_with_nothing_written_and_no_service_asked() {
+    let s = seed().await;
+    // A broadcaster accepted it: tx `unproven`, req `unmined` (#165).
+    sqlx::query("UPDATE transactions SET status = 'unproven' WHERE txid = ?")
+        .bind(TXID)
+        .execute(s.storage.writer())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined' WHERE txid = ?")
+        .bind(TXID)
+        .execute(s.storage.writer())
+        .await
+        .unwrap();
+    let services = alive_oracle();
+
+    let err = s
+        .storage
+        .retire_undeliverable_txid(&services, TXID, "invalid")
+        .await
+        .expect_err("an accepted transaction is never retired");
+    assert!(
+        matches!(err, Error::InvalidTransactionStatus(ref msg) if msg.contains("acceptance")),
+        "{err:?}"
+    );
+    assert_eq!(tx_status(&s.storage).await, "unproven");
+    assert_eq!(
+        req_status_attempts(&s.storage).await,
+        ("unmined".to_string(), 0)
+    );
+    assert_eq!(
+        output_state(&s.storage, s.input_output_id).await,
+        (0, Some(own_tx_id(&s.storage).await))
+    );
+    assert_eq!(output_state(&s.storage, s.own_output_id).await, (1, None));
+    assert_eq!(services.total_calls(), 0, "no service asked");
+}
+
+async fn own_tx_id(storage: &StorageSqlx) -> i64 {
+    sqlx::query_scalar("SELECT transaction_id FROM transactions WHERE txid = ?")
+        .bind(TXID)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap()
 }
