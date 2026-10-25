@@ -31,6 +31,9 @@ use signing::*;
 mod validation;
 use validation::*;
 
+mod inputs;
+use inputs::*;
+
 #[cfg(test)]
 #[path = "tests/support.rs"]
 mod test_support;
@@ -49,24 +52,6 @@ const MAX_PROOF_FETCHES_PER_WALK: usize = 8;
 /// its descendant), so skipping a young ancestor costs nothing: if it were
 /// mined, the next hop back is mined too and answers there instead.
 const MIN_AGE_FOR_PROOF_LOOKUP_SECS: i64 = 90;
-
-// =============================================================================
-// Internal Types
-// =============================================================================
-
-/// Extended input with additional context for transaction creation.
-#[derive(Debug, Clone)]
-struct ExtendedInput {
-    vin: u32,
-    txid: String,
-    vout: u32,
-    satoshis: u64,
-    locking_script: Vec<u8>,
-    unlocking_script_length: u32,
-    input_description: Option<String>,
-    /// Associated output record if this input spends a known output.
-    output: Option<TableOutput>,
-}
 
 /// Extended output with additional context for transaction creation.
 #[derive(Debug, Clone)]
@@ -1235,138 +1220,6 @@ fn validate_and_extend_outputs(
     Ok(extended)
 }
 
-/// Validates and extends input specifications, looking up associated outputs.
-/// For external inputs not in storage, looks up source output info from the input_beef.
-async fn validate_and_extend_inputs(
-    storage: &StorageSqlx,
-    conn: &mut SqliteConnection,
-    user_id: i64,
-    args: &bsv_rs::wallet::CreateActionArgs,
-) -> Result<Vec<ExtendedInput>> {
-    use bsv_rs::transaction::Beef;
-
-    let mut extended = Vec::new();
-
-    // Parse input_beef if provided (needed for external inputs)
-    let input_beef = if let Some(ref beef_bytes) = args.input_beef {
-        Beef::from_binary(beef_bytes).ok()
-    } else {
-        None
-    };
-
-    if let Some(ref inputs) = args.inputs {
-        for (i, input) in inputs.iter().enumerate() {
-            let txid = hex::encode(input.outpoint.txid);
-            let vout = input.outpoint.vout;
-
-            // Try to find the output being spent in storage first
-            let output = storage
-                .find_output_by_outpoint(user_id, &txid, vout)
-                .await?;
-
-            let (satoshis, locking_script) = if let Some(ref out) = output {
-                let script = if let Some(ref s) = out.locking_script {
-                    s.clone()
-                } else if out.script_offset > 0 && out.script_length > 0 && !out.txid.is_empty() {
-                    // Script was cleared from output (too long), read from rawTx
-                    get_locking_script_from_raw_tx(
-                        &mut *conn,
-                        &out.txid,
-                        out.script_offset as usize,
-                        out.script_length as usize,
-                    )
-                    .await
-                    .unwrap_or_default()
-                } else {
-                    vec![]
-                };
-                (out.satoshis as u64, script)
-            } else if let Some(ref beef) = input_beef {
-                // Output not in storage - look it up in the input_beef
-                if let Some(beef_tx) = beef.find_txid(&txid) {
-                    if let Some(tx) = beef_tx.tx() {
-                        if let Some(out) = tx.outputs.get(vout as usize) {
-                            let sats = out.satoshis.unwrap_or(0);
-                            let script = out.locking_script.to_binary();
-                            (sats, script)
-                        } else {
-                            return Err(Error::ValidationError(format!(
-                                "inputs[{}]: output {}:{} not found in BEEF transaction",
-                                i, txid, vout
-                            )));
-                        }
-                    } else {
-                        return Err(Error::ValidationError(format!(
-                            "inputs[{}]: transaction {} found in BEEF but has no parsed data",
-                            i, txid
-                        )));
-                    }
-                } else {
-                    return Err(Error::ValidationError(format!(
-                        "inputs[{}]: output {}:{} not found in storage or input_beef",
-                        i, txid, vout
-                    )));
-                }
-            } else {
-                // No beef provided and output not in storage
-                return Err(Error::ValidationError(format!(
-                    "inputs[{}]: output {}:{} not found in storage. Provide input_beef for external inputs.",
-                    i, txid, vout
-                )));
-            };
-
-            // Check that output is spendable
-            if let Some(ref out) = output {
-                if !out.spendable {
-                    return Err(Error::ValidationError(format!(
-                        "inputs[{}]: output {}:{} is not spendable",
-                        i, txid, vout
-                    )));
-                }
-                if out.change {
-                    return Err(Error::ValidationError(format!(
-                        "inputs[{}]: cannot spend change output {}:{} directly. Change is managed by the wallet.",
-                        i, txid, vout
-                    )));
-                }
-                // A failed creator's output is a phantom, whatever its flag
-                // says (bsv-wallet-toolbox-rs #42 point 4).
-                let creator: Option<String> =
-                    sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
-                        .bind(out.transaction_id)
-                        .fetch_optional(&mut *conn)
-                        .await?;
-                if creator.as_deref() == Some("failed") {
-                    return Err(Error::FailedAncestor { txid });
-                }
-            }
-
-            let unlocking_script_length = input
-                .unlocking_script_length
-                .or_else(|| input.unlocking_script.as_ref().map(|s| s.len() as u32))
-                .ok_or_else(|| {
-                    Error::ValidationError(format!(
-                        "inputs[{}]: unlockingScript or unlockingScriptLength required",
-                        i
-                    ))
-                })?;
-
-            extended.push(ExtendedInput {
-                vin: i as u32,
-                txid,
-                vout,
-                satoshis,
-                locking_script,
-                unlocking_script_length,
-                input_description: Some(input.input_description.clone()),
-                output,
-            });
-        }
-    }
-
-    Ok(extended)
-}
-
 /// Counts available change inputs in the default basket.
 async fn count_change_inputs(
     conn: &mut SqliteConnection,
@@ -1434,62 +1287,6 @@ async fn create_transaction_record(
     Ok(result.last_insert_rowid())
 }
 
-/// Reads locking script from rawTx in proven_tx_reqs table.
-/// This is needed when the output's locking_script was cleared (set to NULL)
-/// because it exceeded maxOutputScript length.
-async fn get_locking_script_from_raw_tx(
-    conn: &mut SqliteConnection,
-    txid: &str,
-    offset: usize,
-    length: usize,
-) -> Result<Vec<u8>> {
-    // First try proven_tx_reqs (for pending transactions)
-    let row = sqlx::query("SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?")
-        .bind(txid)
-        .fetch_optional(&mut *conn)
-        .await?;
-
-    if let Some(row) = row {
-        let raw_tx: Vec<u8> = row.get("raw_tx");
-        if offset + length <= raw_tx.len() {
-            return Ok(raw_tx[offset..offset + length].to_vec());
-        }
-    }
-
-    // Then try transactions table
-    let row = sqlx::query("SELECT raw_tx FROM transactions WHERE txid = ?")
-        .bind(txid)
-        .fetch_optional(&mut *conn)
-        .await?;
-
-    if let Some(row) = row {
-        let raw_tx: Option<Vec<u8>> = row.get("raw_tx");
-        if let Some(raw_tx) = raw_tx {
-            if offset + length <= raw_tx.len() {
-                return Ok(raw_tx[offset..offset + length].to_vec());
-            }
-        }
-    }
-
-    // Finally try proven_txs table
-    let row = sqlx::query("SELECT raw_tx FROM proven_txs WHERE txid = ?")
-        .bind(txid)
-        .fetch_optional(&mut *conn)
-        .await?;
-
-    if let Some(row) = row {
-        let raw_tx: Vec<u8> = row.get("raw_tx");
-        if offset + length <= raw_tx.len() {
-            return Ok(raw_tx[offset..offset + length].to_vec());
-        }
-    }
-
-    Err(Error::TransactionError(format!(
-        "Could not read locking script from rawTx for txid {}",
-        txid
-    )))
-}
-
 /// Gets the reference for a transaction.
 async fn get_transaction_reference(
     conn: &mut SqliteConnection,
@@ -1517,32 +1314,6 @@ async fn update_transaction_satoshis(
         .bind(transaction_id)
         .execute(&mut *conn)
         .await?;
-
-    Ok(())
-}
-
-/// Marks an output as spent.
-async fn update_output_spent(
-    conn: &mut SqliteConnection,
-    output_id: i64,
-    spent_by: i64,
-    spending_description: Option<&str>,
-) -> Result<()> {
-    let now = Utc::now();
-
-    sqlx::query(
-        r#"
-        UPDATE outputs
-        SET spendable = 0, spent_by = ?, spending_description = ?, updated_at = ?
-        WHERE output_id = ?
-        "#,
-    )
-    .bind(spent_by)
-    .bind(spending_description)
-    .bind(now)
-    .bind(output_id)
-    .execute(&mut *conn)
-    .await?;
 
     Ok(())
 }
@@ -7116,104 +6887,6 @@ mod tests {
             "fee {} is implausibly large",
             in_total - out_total
         );
-    }
-
-    /// Calgooon/zanaadu-v2#357: a pf head spend names its head output (a row
-    /// in the `pf-name-head` basket) and the wallet funds the rest. Both
-    /// inputs, the caller's and the wallet's change, are marked `spent_by` at
-    /// `create_action`, so `list_actions` lists every input from storage.
-    #[tokio::test]
-    async fn test_caller_named_basket_input_is_marked_spent_by_and_listed() {
-        use crate::storage::traits::{AuthId, WalletStorageReader};
-
-        let (storage, user_id) = caller_complete_storage().await;
-        let head_lock = vec![0x51u8];
-        let head_txid = seed_custom_output(&storage, user_id, 1, &head_lock, "9e4d").await;
-        let head_basket = find_or_insert_output_basket(
-            &mut storage.writer().acquire().await.unwrap(),
-            user_id,
-            "pf-name-head",
-        )
-        .await
-        .unwrap();
-        sqlx::query("UPDATE outputs SET basket_id = ? WHERE txid = ?")
-            .bind(head_basket.basket_id)
-            .bind(&head_txid)
-            .execute(storage.writer())
-            .await
-            .unwrap();
-        seed_change_output(&storage, user_id, 100_000).await;
-
-        let args = bsv_rs::wallet::CreateActionArgs {
-            description: "pf head spend".to_string(),
-            input_beef: None,
-            inputs: Some(vec![covenant_input(&head_txid, p2pkh_unlock(0xc3))]),
-            outputs: Some(vec![
-                CreateActionOutput {
-                    locking_script: head_lock.clone(),
-                    satoshis: 1,
-                    output_description: "next head".to_string(),
-                    basket: Some("pf-name-head".to_string()),
-                    custom_instructions: None,
-                    tags: None,
-                },
-                p2pkh_output(1_000, "platform fee"),
-            ]),
-            lock_time: None,
-            version: None,
-            labels: Some(vec!["pf-name".to_string()]),
-            options: None,
-        };
-        let result = create_action_internal(&storage, None, user_id, args)
-            .await
-            .expect("a funded head spend");
-        assert_eq!(result.inputs.len(), 2, "the head and one funding input");
-
-        let transaction_id: i64 =
-            sqlx::query_scalar("SELECT transaction_id FROM transactions WHERE reference = ?")
-                .bind(&result.reference)
-                .fetch_one(storage.pool())
-                .await
-                .unwrap();
-        let spent: Vec<(String, Option<i64>, bool)> = sqlx::query_as(
-            "SELECT txid, spent_by, spendable FROM outputs WHERE txid IN (?, ?) ORDER BY txid",
-        )
-        .bind(&head_txid)
-        .bind(txid_of(&seed_raw_tx()))
-        .fetch_all(storage.pool())
-        .await
-        .unwrap();
-        assert_eq!(spent.len(), 2);
-        for (txid, spent_by, spendable) in &spent {
-            assert_eq!(*spent_by, Some(transaction_id), "{txid} spent_by");
-            assert!(!spendable, "{txid} spendable");
-        }
-
-        let listed = storage
-            .list_actions(
-                &AuthId::with_user_id("02user_identity_key", user_id),
-                bsv_rs::wallet::ListActionsArgs {
-                    labels: vec!["pf-name".to_string()],
-                    label_query_mode: None,
-                    include_labels: None,
-                    include_inputs: Some(true),
-                    include_input_source_locking_scripts: None,
-                    include_input_unlocking_scripts: None,
-                    include_outputs: None,
-                    include_output_locking_scripts: None,
-                    limit: Some(10),
-                    offset: Some(0),
-                    seek_permission: None,
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(listed.actions.len(), 1);
-        let inputs = listed.actions[0].inputs.as_ref().expect("inputs listed");
-        assert_eq!(inputs.len(), 2, "every input from storage: {:?}", inputs);
-        assert!(inputs
-            .iter()
-            .any(|i| hex::encode(i.source_outpoint.txid) == head_txid));
     }
 
     /// Same shortfall, but the caller signed SIGHASH_ALL|FORKID (0x41): the
