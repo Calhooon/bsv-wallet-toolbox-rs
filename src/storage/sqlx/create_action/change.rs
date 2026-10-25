@@ -1,4 +1,15 @@
-use super::*;
+use super::allocation::{allocate_change_input_by, release_change_input, ChangePick};
+use super::fees::{
+    calculate_transaction_size, caller_fixed_fee_required, FixedInput, FixedOutput,
+    DEFAULT_FEE_RATE_SAT_PER_KB, P2PKH_LOCKING_SCRIPT_LENGTH, P2PKH_UNLOCKING_SCRIPT_LENGTH,
+};
+use super::inputs::ExtendedInput;
+use super::outputs::ExtendedOutput;
+use super::signing::caller_inputs_permit_funding;
+use super::AllocatedChangeInput;
+use crate::error::{Error, Result};
+use crate::storage::entities::TableOutputBasket;
+use sqlx::sqlite::SqliteConnection;
 
 /// Parameters for change generation.
 pub(super) struct GenerateChangeParams {
@@ -195,7 +206,7 @@ pub(super) async fn plan_change(
 /// What `create_action` does with a caller-complete transaction (every provided
 /// input already carries a full unlocking script).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CallerCompletePlan {
+enum CallerCompletePlan {
     /// Self-sufficient: broadcast the caller's bytes verbatim. No funding input,
     /// no change output. `inputs − outputs` is the miner fee the caller fixed.
     Verbatim,
@@ -217,7 +228,7 @@ pub(super) enum CallerCompletePlan {
 ///   is below it gets a funding input instead of a "fee too low" rejection.
 /// * A transaction whose signatures forbid funding is self-sufficient whenever
 ///   inputs cover outputs: the fee is the caller's to fix, not ours to judge.
-pub(super) fn caller_complete_plan(
+fn caller_complete_plan(
     in_sats: u64,
     out_sats: u64,
     fee_required: u64,
@@ -246,7 +257,7 @@ pub(super) fn caller_complete_plan(
 /// 3. If can't fund, remove change outputs one at a time
 /// 4. Distribute excess to change outputs
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn generate_change(
+async fn generate_change(
     conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,

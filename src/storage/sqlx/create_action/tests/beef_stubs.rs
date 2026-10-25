@@ -1,3 +1,5 @@
+use super::super::beef_graph::validate_stored_beef;
+use super::super::*;
 use super::*;
 use crate::storage::traits::WalletStorageWriter;
 

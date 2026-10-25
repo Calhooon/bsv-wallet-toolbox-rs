@@ -1,4 +1,9 @@
-use super::*;
+use super::StorageSqlx;
+use crate::error::{Error, Result};
+use crate::storage::entities::TableOutput;
+use chrono::Utc;
+use sqlx::sqlite::SqliteConnection;
+use sqlx::Row;
 
 // =============================================================================
 // Internal Types
@@ -153,7 +158,7 @@ pub(super) async fn validate_and_extend_inputs(
 /// Reads locking script from rawTx in proven_tx_reqs table.
 /// This is needed when the output's locking_script was cleared (set to NULL)
 /// because it exceeded maxOutputScript length.
-pub(super) async fn get_locking_script_from_raw_tx(
+async fn get_locking_script_from_raw_tx(
     conn: &mut SqliteConnection,
     txid: &str,
     offset: usize,

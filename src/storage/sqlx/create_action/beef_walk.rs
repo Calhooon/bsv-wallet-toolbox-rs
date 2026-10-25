@@ -1,11 +1,24 @@
-use super::*;
+use super::beef_graph::{
+    compact_stored_beef, flag_txid_leaf, merge_beef_linked, merge_proof_for, prune_beef_to_roots,
+    validate_stored_beef,
+};
+use super::beef_storage::{get_stored_beef, get_tx_with_proof, parse_input_txids};
+use super::broadcast::{
+    fetch_and_store_merkle_path, local_record_age_secs, try_network_fallback,
+    MIN_AGE_FOR_PROOF_LOOKUP_SECS,
+};
+use super::StorageSqlx;
+use crate::error::{Error, Result};
+use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
+use sqlx::sqlite::{SqliteConnection, SqlitePool};
+use std::collections::HashSet;
 
 /// How many merkle paths one BEEF assembly may fetch from services.
 ///
 /// The ancestor walk runs newest-first and stops at the first proven
 /// ancestor, so in practice one or two fetches settle a chain. The budget
 /// only caps the pathological case where nothing on the chain is mined yet.
-pub(super) const MAX_PROOF_FETCHES_PER_WALK: usize = 8;
+const MAX_PROOF_FETCHES_PER_WALK: usize = 8;
 
 /// Core BFS ancestor walk for BEEF construction.
 ///

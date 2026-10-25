@@ -1,5 +1,3 @@
-use super::*;
-
 /// Whether every caller-provided input's signatures allow the wallet to append
 /// its own funding inputs and change outputs. Empty input lists are not
 /// caller-complete and are never "fundable" through this path.
@@ -15,15 +13,15 @@ pub(super) fn caller_inputs_permit_funding(inputs: &[bsv_rs::wallet::CreateActio
 }
 
 /// Sighash flag bits of the byte appended to every BSV signature.
-pub(super) const SIGHASH_BASE_MASK: u8 = 0x1f;
-pub(super) const SIGHASH_ALL: u8 = 0x01;
-pub(super) const SIGHASH_NONE: u8 = 0x02;
-pub(super) const SIGHASH_SINGLE: u8 = 0x03;
-pub(super) const SIGHASH_ANYONECANPAY: u8 = 0x80;
+const SIGHASH_BASE_MASK: u8 = 0x1f;
+const SIGHASH_ALL: u8 = 0x01;
+const SIGHASH_NONE: u8 = 0x02;
+const SIGHASH_SINGLE: u8 = 0x03;
+const SIGHASH_ANYONECANPAY: u8 = 0x80;
 
 /// What the signatures in a caller-provided unlocking script commit to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum InputCommitment {
+enum InputCommitment {
     /// A signature commits to the whole transaction: SIGHASH_ALL without
     /// ANYONECANPAY commits to every input and output; ALL|ANYONECANPAY commits
     /// to every output. Appending a funding input or a change output breaks it.
@@ -40,7 +38,7 @@ pub(super) enum InputCommitment {
 /// Classify a caller-provided unlocking script by the sighash flags of the DER
 /// signatures it pushes. Position-independent, so it covers P2PKH
 /// (`<sig> <pubkey>`), multisig and OP_PUSH_TX covenant unlocks alike.
-pub(super) fn input_commitment(unlocking_script: &[u8]) -> InputCommitment {
+fn input_commitment(unlocking_script: &[u8]) -> InputCommitment {
     let mut saw_signature = false;
     for push in script_pushes(unlocking_script) {
         let Some(sighash) = der_signature_sighash(push) else {
@@ -62,7 +60,7 @@ pub(super) fn input_commitment(unlocking_script: &[u8]) -> InputCommitment {
 /// The data pushes of a script, in order: direct pushes (0x01..0x4b) and
 /// OP_PUSHDATA1/2/4. Every other opcode carries no payload and is skipped.
 /// Stops at the first push that runs past the end of the script.
-pub(super) fn script_pushes(script: &[u8]) -> Vec<&[u8]> {
+fn script_pushes(script: &[u8]) -> Vec<&[u8]> {
     let mut pushes = Vec::new();
     let mut i = 0usize;
     while i < script.len() {
@@ -102,7 +100,7 @@ pub(super) fn script_pushes(script: &[u8]) -> Vec<&[u8]> {
 
 /// If `data` is `<DER signature><sighash byte>` (`0x30 len 0x02 rlen r 0x02
 /// slen s flags` with a valid base type), return the sighash byte.
-pub(super) fn der_signature_sighash(data: &[u8]) -> Option<u8> {
+fn der_signature_sighash(data: &[u8]) -> Option<u8> {
     let n = data.len();
     // 8-byte minimal DER body (1-byte r and s) .. 72-byte maximal (33 + 33), plus flags.
     if !(9..=73).contains(&n) || data[0] != 0x30 || data[1] as usize != n - 3 || data[2] != 0x02 {

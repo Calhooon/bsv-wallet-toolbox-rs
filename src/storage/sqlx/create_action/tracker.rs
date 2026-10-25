@@ -1,4 +1,6 @@
-use super::*;
+use crate::error::{Error, Result};
+use bsv_rs::transaction::{Beef, ChainTracker};
+use std::collections::{HashMap, HashSet};
 
 // =============================================================================
 // Helper Functions
@@ -67,7 +69,7 @@ impl TrackerAnswers {
         ))
     }
 
-    pub(super) fn get(&self, height: u32, root: &str) -> Option<std::result::Result<bool, String>> {
+    fn get(&self, height: u32, root: &str) -> Option<std::result::Result<bool, String>> {
         self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -75,7 +77,7 @@ impl TrackerAnswers {
             .cloned()
     }
 
-    pub(super) fn put(&self, height: u32, root: &str, answer: std::result::Result<bool, String>) {
+    fn put(&self, height: u32, root: &str, answer: std::result::Result<bool, String>) {
         self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())

@@ -1,22 +1,22 @@
-use super::*;
+use crate::error::{Error, Result};
 // =============================================================================
 // Constants
 // =============================================================================
 
 /// Maximum satoshi value (total BTC supply in satoshis).
-pub(super) const MAX_SATOSHIS: u64 = 2_100_000_000_000_000;
+const MAX_SATOSHIS: u64 = 2_100_000_000_000_000;
 
 /// Special satoshi value indicating "use maximum possible".
-pub(super) const MAX_POSSIBLE_SATOSHIS: u64 = 2_099_999_999_999_999;
+const MAX_POSSIBLE_SATOSHIS: u64 = 2_099_999_999_999_999;
 
 /// Minimum description length.
-pub(super) const MIN_DESCRIPTION_LENGTH: usize = 5;
+const MIN_DESCRIPTION_LENGTH: usize = 5;
 
 /// Maximum description length.
-pub(super) const MAX_DESCRIPTION_LENGTH: usize = 2000;
+const MAX_DESCRIPTION_LENGTH: usize = 2000;
 
 /// Maximum label length.
-pub(super) const MAX_LABEL_LENGTH: usize = 300;
+const MAX_LABEL_LENGTH: usize = 300;
 
 // =============================================================================
 // Validation

@@ -1,4 +1,17 @@
-use super::*;
+use super::super::storage_sqlx::{
+    bump_leaf_index, store_validated_proof_on, StoreProofOutcome, ValidatedProofRow,
+};
+use super::beef_graph::prune_beef_to_roots;
+use super::beef_storage::BeefTxData;
+use super::beef_walk::beef_bfs_walk;
+use super::StorageSqlx;
+use crate::error::Result;
+use crate::services::traits::WalletServices;
+use crate::storage::traits::WalletStorageReader;
+use bsv_rs::transaction::{Beef, MerklePath};
+use chrono::Utc;
+use sqlx::sqlite::{SqliteConnection, SqlitePool};
+use std::collections::HashSet;
 
 /// Do not ask the chain for a proof of a transaction this wallet only just
 /// recorded. Mining is monotonic along a chain (an ancestor is older than
