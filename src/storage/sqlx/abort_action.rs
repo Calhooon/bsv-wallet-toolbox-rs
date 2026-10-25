@@ -272,7 +272,8 @@ pub(crate) async fn refuse_if_accepted(
 
 /// Reads only stored words, including acceptance kept after a later refusal
 /// replaced a provider's memory row. `sending` / `unsent` precede the post.
-/// Each reader below asks one table; the first word found names the refusal.
+/// Each reader below asks one table, in the order written; the earliest
+/// reader holding a word names the refusal.
 async fn accepting_word_for(conn: &mut SqliteConnection, txid: &str) -> Result<Option<String>> {
     if let Some(word) = transaction_accepting_word(conn, txid).await? {
         return Ok(Some(word));
