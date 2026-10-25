@@ -3,9 +3,10 @@
 //! Provides block header lookups and merkle root validation via a remote
 //! Chaintracks server. Also implements the `ChainTracker` trait from bsv-sdk.
 
-use crate::services::traits::BlockHeader;
+use crate::services::{traits::BlockHeader, Chain};
 use crate::{Error, Result};
 use async_trait::async_trait;
+use bsv_rs::transaction::beef_stream::ChainTip;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -70,6 +71,7 @@ impl From<CtBlockHeader> for BlockHeader {
 pub struct ChaintracksServiceClient {
     client: Client,
     config: ChaintracksConfig,
+    chain: tokio::sync::OnceCell<Chain>,
 }
 
 impl ChaintracksServiceClient {
@@ -79,7 +81,11 @@ impl ChaintracksServiceClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
-        Self { client, config }
+        Self {
+            client,
+            config,
+            chain: tokio::sync::OnceCell::new(),
+        }
     }
 
     /// Create from a URL string.
@@ -242,6 +248,79 @@ impl ChaintracksServiceClient {
         let header = self.find_header_for_height(height).await?;
         Ok(header.merkle_root == root)
     }
+
+    // Network metadata is stable for this service. Header context is read anew
+    // for each verification: one tip and one range of at most eleven headers.
+    async fn verifier_tip(&self) -> Result<ChainTip> {
+        let chain = self
+            .chain
+            .get_or_try_init(|| async {
+                let response = self
+                    .build_request(&self.build_url("/getChain"))
+                    .send()
+                    .await?;
+                let frame: ResponseFrame<Chain> = response.error_for_status()?.json().await?;
+                if !frame.is_success() {
+                    return Err(Error::ServiceError("Chaintracks getChain failed".into()));
+                }
+                frame.value.ok_or_else(|| {
+                    Error::ServiceError("Chaintracks getChain: missing value".into())
+                })
+            })
+            .await?;
+        let tip = self.find_chain_tip_header().await?;
+        let start = tip.height.saturating_sub(10);
+        let count = tip.height - start + 1;
+        let url = self.build_url(&format!("/getHeaders?height={start}&count={count}"));
+        let response = self.build_request(&url).send().await?;
+        let frame: ResponseFrame<String> = response.error_for_status()?.json().await?;
+        if !frame.is_success() {
+            return Err(Error::ServiceError("Chaintracks getHeaders failed".into()));
+        }
+        let bytes = frame
+            .value
+            .and_then(|s| hex::decode(s).ok())
+            .ok_or_else(|| {
+                Error::ServiceError(
+                    "Chaintracks getHeaders: missing or invalid header bytes".into(),
+                )
+            })?;
+        let tip_bytes = tip.to_binary();
+        if bytes.len() != count as usize * 80 || bytes[bytes.len() - 80..] != tip_bytes {
+            return Err(Error::ServiceError(
+                "Chaintracks getHeaders: range does not end at the tip".into(),
+            ));
+        }
+        let mut previous: Option<[u8; 32]> = None;
+        let mut times = Vec::with_capacity(count as usize);
+        for header in bytes.chunks_exact(80) {
+            if previous.is_some_and(|hash| header[4..36] != hash) {
+                return Err(Error::ServiceError(
+                    "Chaintracks getHeaders: disconnected range".into(),
+                ));
+            }
+            previous = Some(bsv_rs::primitives::sha256d(header));
+            times.push(u32::from_le_bytes(
+                header[68..72].try_into().expect("four timestamp bytes"),
+            ));
+        }
+        times.sort_unstable();
+        // bsv-script-lean origin/main:docs/PARAMETERS.md, network table:
+        // node chainparams.cpp:18,20,1046,1342 (Genesis and CSV activation).
+        let (genesis_height, csv_height) = match chain {
+            Chain::Main => (620_538, 419_328),
+            Chain::Test => (1_344_302, 770_112),
+        };
+        Ok(ChainTip {
+            height: tip.height,
+            median_time_past: times[times.len() / 2],
+            genesis_height,
+            csv_height,
+            // A historical pre-CSV timestamp lock requires a candidate block
+            // time. A header service cannot supply that future fact; hold it.
+            next_block_time: None,
+        })
+    }
 }
 
 #[async_trait]
@@ -261,11 +340,134 @@ impl ChainTracker for ChaintracksServiceClient {
             .await
             .map_err(|e| ChainTrackerError::NetworkError(e.to_string()))
     }
+
+    async fn mining_tip(&self) -> std::result::Result<Option<ChainTip>, ChainTrackerError> {
+        self.verifier_tip()
+            .await
+            .map(Some)
+            .map_err(|e| ChainTrackerError::Other(e.to_string()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn header_range() -> (BlockHeader, Vec<u8>) {
+        let mut tip = BlockHeader::default();
+        let mut bytes = Vec::new();
+        for i in 0..11 {
+            let header = BlockHeader {
+                version: 1,
+                previous_hash: tip.hash.clone(),
+                merkle_root: "11".repeat(32),
+                // Permuted times make taking the tip's time fail the test.
+                time: 1_700_000_000 + ((i * 7) % 11),
+                bits: 0x1d00ffff,
+                nonce: i,
+                height: 900_000 + i,
+                hash: String::new(),
+            };
+            let raw = header.to_binary();
+            let hash =
+                bsv_rs::transaction::beef_stream::display_hex(&bsv_rs::primitives::sha256d(&raw));
+            tip = BlockHeader { hash, ..header };
+            bytes.extend(raw);
+        }
+        (tip, bytes)
+    }
+
+    async fn answer(
+        server: &mut crate::services::MockServer,
+        route: &str,
+        value: serde_json::Value,
+        count: usize,
+    ) -> mockito::Mock {
+        server
+            .mock("GET", route)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({"status": "success", "value": value}).to_string())
+            .expect(count)
+            .create_async()
+            .await
+    }
+
+    fn tip_json(tip: &BlockHeader) -> serde_json::Value {
+        serde_json::json!({
+            "version": tip.version, "previousHash": tip.previous_hash,
+            "merkleRoot": tip.merkle_root, "time": tip.time, "bits": tip.bits,
+            "nonce": tip.nonce, "height": tip.height, "hash": tip.hash
+        })
+    }
+
+    #[tokio::test]
+    async fn mining_context_uses_one_tip_and_one_range_with_cached_network() {
+        for (chain, genesis_height, csv_height) in
+            [("main", 620_538, 419_328), ("test", 1_344_302, 770_112)]
+        {
+            let mut server = crate::services::mock_server().await;
+            let (tip, bytes) = header_range();
+            let network = answer(&mut server, "/getChain", serde_json::json!(chain), 1).await;
+            let tip_read = answer(&mut server, "/findChainTipHeaderHex", tip_json(&tip), 2).await;
+            let range = answer(
+                &mut server,
+                "/getHeaders?height=900000&count=11",
+                serde_json::json!(hex::encode(bytes)),
+                2,
+            )
+            .await;
+            let client = ChaintracksServiceClient::from_url(&server.url());
+            for _ in 0..2 {
+                assert_eq!(
+                    client.mining_tip().await.unwrap(),
+                    Some(ChainTip {
+                        height: tip.height,
+                        median_time_past: 1_700_000_005,
+                        genesis_height,
+                        csv_height,
+                        next_block_time: None
+                    })
+                );
+            }
+            network.assert_async().await;
+            tip_read.assert_async().await;
+            range.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn mining_context_holds_on_a_short_or_disconnected_range() {
+        for corruption in 0..3 {
+            let mut server = crate::services::mock_server().await;
+            let (tip, mut bytes) = header_range();
+            match corruption {
+                0 => {
+                    bytes.pop();
+                }
+                1 => {
+                    bytes[80 + 4] ^= 1;
+                }
+                _ => {
+                    bytes[800 + 68] ^= 1;
+                }
+            }
+            let network = answer(&mut server, "/getChain", serde_json::json!("main"), 1).await;
+            let tip_read = answer(&mut server, "/findChainTipHeaderHex", tip_json(&tip), 1).await;
+            let range = answer(
+                &mut server,
+                "/getHeaders?height=900000&count=11",
+                serde_json::json!(hex::encode(bytes)),
+                1,
+            )
+            .await;
+            let client = ChaintracksServiceClient::from_url(&server.url());
+            assert!(client.mining_tip().await.is_err());
+            network.assert_async().await;
+            tip_read.assert_async().await;
+            range.assert_async().await;
+        }
+    }
 
     #[test]
     fn test_chaintracks_config() {
