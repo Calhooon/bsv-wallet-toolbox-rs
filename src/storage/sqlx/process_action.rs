@@ -12,12 +12,10 @@
 //!
 //! ## Crash Safety
 //!
-//! `process_action_internal` wraps all database mutations in a single SQL transaction
-//! (BEGIN/COMMIT), and so does the success branch of
-//! `update_transaction_status_after_broadcast_internal`; its hint branch writes the
-//! request in one statement (and a named competitor's queue in a second). If the process
-//! crashes mid-operation, SQLite automatically rolls back the incomplete transaction,
-//! preventing partial updates that would leave the database in an inconsistent state.
+//! Completion of a new transaction uses one write transaction. The stored sendWith
+//! path resolves and verifies BEEF before a short preparation transaction, releases
+//! the writer before posting, then records the outcomes in short writes. A crash
+//! after preparation leaves `unsent` requests for the monitor to retry.
 
 use crate::error::{Error, Result};
 use crate::storage::entities::TransactionStatus;
@@ -29,9 +27,10 @@ use chrono::Utc;
 use sqlx::{Row, SqliteConnection};
 
 use super::StorageSqlx;
-#[cfg(test)]
+use crate::services::PostBeefResult;
 use crate::storage::broadcast::classify_broadcast_results;
 use crate::storage::broadcast::BroadcastOutcome;
+use bsv_rs::transaction::Beef;
 
 // =============================================================================
 // Constants
@@ -551,13 +550,16 @@ fn determine_statuses(args: &StorageProcessActionArgs) -> (&'static str, &'stati
 
 /// Process a signed transaction action.
 ///
-/// All database mutations are wrapped in a single SQL transaction for crash safety.
-/// If any step fails or the process crashes, all changes are rolled back automatically.
+/// A new signed transaction is committed atomically. A stored sendWith action
+/// prepares its statuses, posts without the writer, then records each outcome.
 pub async fn process_action_internal(
     storage: &StorageSqlx,
     user_id: i64,
     args: StorageProcessActionArgs,
 ) -> Result<StorageProcessActionResults> {
+    if !args.is_new_tx && (args.is_send_with || args.is_no_send) {
+        return post_stored_actions(storage, user_id, &args).await;
+    }
     validate_process_action_args(&args)?;
 
     // Begin SQL transaction - all DB mutations go through `tx`.
@@ -566,6 +568,325 @@ pub async fn process_action_internal(
     let results = process_action_writes(storage, &mut tx, user_id, &args).await?;
     super::storage_sqlx::commit(tx).await?;
     Ok(results)
+}
+
+// The reference's sendWith path. These are owned bytes and row identifiers;
+// neither a reader nor the writer is held across a broadcaster await.
+struct StoredPost {
+    txid: String,
+    transaction_id: Option<i64>,
+    request_id: Option<i64>,
+    status: &'static str,
+    raw_tx: Option<Vec<u8>>,
+    input_beef: Option<Vec<u8>>,
+}
+
+async fn find_stored_post(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    handle: &str,
+) -> Result<StoredPost> {
+    let row = sqlx::query(
+        "SELECT t.transaction_id, t.txid, t.status, r.proven_tx_req_id, \
+         r.status AS request_status, r.raw_tx, r.input_beef \
+         FROM transactions t LEFT JOIN proven_tx_reqs r ON r.txid = t.txid \
+         WHERE t.user_id = ? AND (t.reference = ? OR t.txid = ?)",
+    )
+    .bind(user_id)
+    .bind(handle)
+    .bind(handle)
+    .fetch_optional(conn)
+    .await?;
+    let Some(row) = row else {
+        return Ok(StoredPost {
+            txid: handle.to_string(),
+            transaction_id: None,
+            request_id: None,
+            status: "failed",
+            raw_tx: None,
+            input_beef: None,
+        });
+    };
+    let transaction_status: String = row.try_get("status")?;
+    if transaction_status == "unsigned" {
+        return Err(Error::InvalidTransactionStatus(
+            "process_action cannot post an unsigned template".to_string(),
+        ));
+    }
+    let request_status: Option<String> = row.try_get("request_status")?;
+    let raw_tx: Option<Vec<u8>> = row.try_get("raw_tx")?;
+    let input_beef: Option<Vec<u8>> = row.try_get("input_beef")?;
+    let status = match request_status.as_deref() {
+        _ if transaction_status == "failed" => "failed",
+        Some("unmined" | "callback" | "unconfirmed" | "completed" | "unproven") => "unproven",
+        _ if transaction_status == "completed" => "unproven",
+        Some("nosend" | "unsent" | "sending" | "unprocessed")
+            if raw_tx.is_some() && input_beef.is_some() =>
+        {
+            "sending"
+        }
+        _ => "failed",
+    };
+    Ok(StoredPost {
+        txid: row
+            .try_get::<Option<String>, _>("txid")?
+            .unwrap_or_else(|| handle.to_string()),
+        transaction_id: row.try_get("transaction_id")?,
+        request_id: row.try_get("proven_tx_req_id")?,
+        status,
+        raw_tx,
+        input_beef,
+    })
+}
+
+async fn resolve_stored_posts(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    handles: &[String],
+) -> Result<Vec<StoredPost>> {
+    let mut posts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for handle in handles {
+        let post = find_stored_post(conn, user_id, handle).await?;
+        if seen.insert(post.txid.clone()) {
+            posts.push(post);
+        }
+    }
+    // Like classifyReqDetails at the reference pin: a bad member prevents
+    // the ready subset from being posted or scheduled.
+    if posts.iter().any(|post| post.status == "failed") {
+        for post in &mut posts {
+            if post.status == "sending" {
+                post.status = "failed";
+            }
+        }
+    }
+    Ok(posts)
+}
+
+fn stored_post_result(posts: &[StoredPost]) -> StorageProcessActionResults {
+    StorageProcessActionResults {
+        send_with_results: Some(
+            posts
+                .iter()
+                .map(|post| SendWithResult {
+                    txid: post.txid.clone(),
+                    status: post.status.to_string(),
+                })
+                .collect(),
+        ),
+        not_delayed_results: None,
+        log: None,
+    }
+}
+
+async fn prepare_stored_posts(
+    storage: &StorageSqlx,
+    user_id: i64,
+    handles: &[String],
+) -> Result<Vec<StoredPost>> {
+    let mut tx = storage.write_tx().await?;
+    let posts = resolve_stored_posts(&mut tx, user_id, handles).await?;
+    if posts.iter().any(|post| post.status == "failed") {
+        return Ok(posts);
+    }
+    let batch = (posts.len() > 1).then(generate_batch_id);
+    for post in posts.iter().filter(|post| post.status == "sending") {
+        let request_id = post
+            .request_id
+            .ok_or_else(|| Error::Internal("missing post request".into()))?;
+        update_proven_tx_req_status(&mut tx, request_id, "unsent", batch.as_deref()).await?;
+        sqlx::query("UPDATE transactions SET status = 'sending', updated_at = ? WHERE transaction_id = ? AND user_id = ?")
+            .bind(Utc::now()).bind(post.transaction_id).bind(user_id).execute(&mut *tx).await?;
+    }
+    super::storage_sqlx::commit(tx).await?;
+    Ok(posts)
+}
+
+async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result<Vec<u8>> {
+    let mut beef = Beef::new();
+    let mut roots = Vec::new();
+    for post in posts.iter().filter(|post| post.status == "sending") {
+        let input = post
+            .input_beef
+            .as_deref()
+            .ok_or_else(|| Error::Internal("missing input BEEF".into()))?;
+        let raw = post
+            .raw_tx
+            .as_ref()
+            .ok_or_else(|| Error::Internal("missing signed transaction".into()))?;
+        validate_txid_matches_raw_tx(&post.txid, raw)?;
+        beef.merge_beef(&Beef::from_binary(input)?);
+        beef.merge_raw_tx(raw.clone(), None);
+        roots.push(post.txid.clone());
+    }
+    super::create_action::prune_beef_to_roots(&mut beef, &roots);
+    // A proven txid-only entry validates, but a broadcaster still needs its
+    // bytes. Only the caller of the build declared those ancestors known.
+    if beef.txs.iter().any(|tx| tx.is_txid_only()) || !beef.verify_valid(true).valid {
+        let mut missing = beef.sort_txs().missing_inputs;
+        missing.extend(
+            beef.txs
+                .iter()
+                .filter(|tx| tx.is_txid_only())
+                .map(|tx| tx.txid()),
+        );
+        let mut conn = storage.pool().acquire().await?;
+        let ancestors = super::create_action::rebuild_beef_for_broadcast(
+            &mut conn,
+            storage.writer(),
+            &missing,
+            Some(storage),
+        )
+        .await?;
+        beef.merge_beef(&ancestors);
+    }
+    let tracker = storage
+        .get_chain_tracker()
+        .await
+        .ok_or_else(|| Error::InvalidOperation("process_action requires a chain tracker".into()))?;
+    super::beef_verification::verify_beef_merkle_proofs(
+        &mut beef,
+        tracker.as_ref(),
+        crate::storage::BeefVerificationMode::Strict,
+        &std::collections::HashSet::new(),
+    )
+    .await?;
+    if beef.txs.iter().all(|tx| !tx.is_txid_only()) {
+        beef.version = bsv_rs::transaction::BEEF_V1;
+    }
+    Ok(beef.to_binary())
+}
+
+async fn post_stored_actions(
+    storage: &StorageSqlx,
+    user_id: i64,
+    args: &StorageProcessActionArgs,
+) -> Result<StorageProcessActionResults> {
+    let mut handles = args.send_with.clone();
+    handles.extend(args.reference.iter().chain(args.txid.iter()).cloned());
+    let posts = {
+        let mut conn = storage.pool().acquire().await?;
+        resolve_stored_posts(&mut conn, user_id, &handles).await?
+    };
+    if args.is_no_send && !args.is_send_with {
+        return Ok(stored_post_result(&[]));
+    }
+    if !posts.iter().any(|post| post.status == "sending") {
+        return Ok(stored_post_result(&posts));
+    }
+    if args.is_delayed {
+        return Ok(stored_post_result(
+            &prepare_stored_posts(storage, user_id, &handles).await?,
+        ));
+    }
+    let services = storage.get_services()?;
+    let beef = stored_post_beef(storage, &posts).await?;
+    let posts = prepare_stored_posts(storage, user_id, &handles).await?;
+    if posts.iter().any(|post| post.status == "failed") {
+        return Ok(stored_post_result(&posts));
+    }
+    let txids: Vec<_> = posts
+        .iter()
+        .filter(|post| post.status == "sending")
+        .map(|post| post.txid.clone())
+        .collect();
+    let mut result = stored_post_result(&posts);
+    if txids.is_empty() {
+        return Ok(result);
+    }
+    let words = match services.post_beef(&beef, &txids).await {
+        Ok(words) => words,
+        Err(error) => vec![PostBeefResult {
+            name: "Services".into(),
+            status: "error".into(),
+            error: Some(error.to_string()),
+            txid_results: vec![],
+            notes: vec![],
+        }],
+    };
+    finish_stored_posts(storage, &txids, &words, &mut result).await;
+    Ok(result)
+}
+
+fn stored_post_outcome(words: &[PostBeefResult], txid: &str) -> BroadcastOutcome {
+    let selected: Vec<_> = words
+        .iter()
+        .cloned()
+        .map(|mut word| {
+            if !word.txid_results.is_empty() {
+                word.txid_results.retain(|result| result.txid == txid);
+                word.status = if word.txid_results.iter().any(|result| result.is_success()) {
+                    "success".to_string()
+                } else {
+                    "error".to_string()
+                };
+            }
+            word
+        })
+        .collect();
+    classify_broadcast_results(&selected)
+}
+
+async fn finish_stored_posts(
+    storage: &StorageSqlx,
+    txids: &[String],
+    words: &[PostBeefResult],
+    result: &mut StorageProcessActionResults,
+) {
+    for txid in txids {
+        let outcome = stored_post_outcome(words, txid);
+        if let Err(error) =
+            update_transaction_status_after_broadcast_internal(storage, txid, &outcome).await
+        {
+            crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
+        }
+        if matches!(outcome, BroadcastOutcome::Success) {
+            if let Some(results) = &mut result.send_with_results {
+                for entry in results.iter_mut().filter(|entry| &entry.txid == txid) {
+                    entry.status = "unproven".to_string();
+                }
+            }
+        }
+    }
+    if let Err(error) = record_stored_post_words(storage, txids, words).await {
+        for txid in txids {
+            crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
+        }
+    }
+}
+
+async fn record_stored_post_words(
+    storage: &StorageSqlx,
+    txids: &[String],
+    words: &[PostBeefResult],
+) -> Result<()> {
+    let mut tx = storage.write_tx().await?;
+    for txid in txids {
+        let history: String =
+            sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+                .bind(txid)
+                .fetch_one(&mut *tx)
+                .await?;
+        let mut history: serde_json::Value = serde_json::from_str(&history).unwrap_or_default();
+        if !history.is_object() {
+            history = serde_json::json!({"previous": history});
+        }
+        let note = serde_json::json!({"what": "processActionPost", "when": Utc::now().to_rfc3339(), "words": words});
+        if let Some(serde_json::Value::Array(notes)) = history.get_mut("notes") {
+            notes.push(note);
+            let excess = notes.len().saturating_sub(32);
+            notes.drain(..excess);
+        } else {
+            history["notes"] = serde_json::json!([note]);
+        }
+        sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE txid = ?")
+            .bind(history.to_string())
+            .bind(txid)
+            .execute(&mut *tx)
+            .await?;
+    }
+    super::storage_sqlx::commit(tx).await
 }
 
 /// processAction's writes on `conn`, a connection inside a write transaction

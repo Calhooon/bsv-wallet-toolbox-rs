@@ -1007,6 +1007,45 @@ where
     S: WalletStorageProvider + Send + Sync + 'static,
     V: WalletServices + Send + Sync + 'static,
 {
+    /// Post signed actions by reference or txid, using the reference's sendWith path.
+    ///
+    /// Build with `create_action_offering` and `no_send`, then pass the handles in
+    /// `send_with` with `is_send_with = true` and `is_new_tx = false`. A single
+    /// handle may also be supplied as `reference` or `txid`. No wallet spending
+    /// lock is taken, so independent signed actions may be posted concurrently.
+    /// The storage resolves handles within this wallet, rebuilds the BEEF, and
+    /// records each broadcaster's word after releasing its writer.
+    ///
+    /// An unsigned template returns `Error::InvalidTransactionStatus` without
+    /// writes. An unknown handle returns `failed`; an already posted action
+    /// returns `unproven` without another post, as at ts-stack edf6e03.
+    /// `is_no_send` without `is_send_with` returns an empty result unchanged;
+    /// `is_delayed` schedules the actions and returns their `sending` results.
+    /// This door does not sign: `is_new_tx` and `raw_tx` are refused.
+    ///
+    /// # Errors
+    /// Returns a validation error for an invalid originator, an invalid operation
+    /// for signing arguments, or the storage's typed refusal before posting.
+    pub async fn process_action(
+        &self,
+        mut args: StorageProcessActionArgs,
+        originator: &str,
+    ) -> Result<crate::storage::StorageProcessActionResults> {
+        validate_originator(originator)?;
+        if args.is_new_tx || args.raw_tx.is_some() {
+            return Err(Error::InvalidOperation(
+                "process_action posts stored signed actions; build or sign them before posting"
+                    .to_string(),
+            ));
+        }
+        // A wallet call requests a post; storage also has a legacy update-only
+        // call with neither is_new_tx nor is_send_with set.
+        if !args.is_no_send {
+            args.is_send_with = true;
+        }
+        self.storage.process_action(&self.auth(), args).await
+    }
+
     /// `createAction` with the host's offer (bsv-wallet-cli #44): `offer`
     /// is the output ids of the change coins the host offers, and the
     /// allocation takes from these only, under concurrency too (the dry-run
@@ -4069,6 +4108,43 @@ mod tests {
     // =========================================================================
     // Spend lock tests
     // =========================================================================
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn post_door_does_not_take_spend_lock() {
+        use crate::storage::WalletStorageWriter;
+        let storage = crate::StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("post-lock-test", "fixture").await.unwrap();
+        storage.make_available().await.unwrap();
+        let wallet = Wallet::new(
+            None,
+            storage,
+            crate::services::mock::MockWalletServices::new(),
+        )
+        .await
+        .unwrap();
+        let _held = wallet.spend_lock.lock().await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            wallet.process_action(
+                StorageProcessActionArgs {
+                    is_new_tx: false,
+                    is_send_with: true,
+                    is_no_send: false,
+                    is_delayed: false,
+                    reference: None,
+                    txid: None,
+                    raw_tx: None,
+                    send_with: vec!["not-built".into()],
+                },
+                "fixture.local",
+            ),
+        )
+        .await
+        .expect("the post door must not wait for the spend lock")
+        .unwrap();
+        assert_eq!(result.send_with_results.unwrap()[0].status, "failed");
+    }
 
     #[tokio::test]
     async fn test_spend_lock_is_fifo() {
