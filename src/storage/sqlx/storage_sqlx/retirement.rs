@@ -35,6 +35,24 @@ pub(crate) enum RetireBasis<'a> {
     },
 }
 
+/// The operation `retire_undeliverable_txid`'s refusal names.
+const RETIRE_OPERATION: &str = "retire transaction";
+
+/// What `StorageSqlx::retire_rows` writes.
+struct RetireRows<'a> {
+    txid: &'a str,
+    proven_tx_req_id: i64,
+    attempts: i64,
+    req_status: &'a str,
+    /// The operation the accepting-word guard names, when the caller retires
+    /// only a transaction no instance accepted.
+    guard: Option<&'a str>,
+    now: chrono::DateTime<chrono::Utc>,
+}
+
+/// A retired transaction's input: `output_id`, source txid, `vout`.
+type RetireInput = (i64, String, i32);
+
 impl StorageSqlx {
     /// THE RELEASE RULE (2026-08-29) — the ONE path that may give a
     /// broadcast-failed transaction's inputs back to coin selection.
@@ -69,6 +87,13 @@ impl StorageSqlx {
     ///
     /// The tx's own outputs (change) are marked unspendable and the tx
     /// `failed` so its phantom change never funds — and orphans — a new tx.
+    ///
+    /// Order (the writer discipline): the alive check asks the status
+    /// service before any lock; the req, the own outputs and the `failed`
+    /// status are written in one write transaction (`retire_rows`, with the
+    /// accepting-word guard when `guard` names the operation); the inputs'
+    /// re-check schedule, the broadcast memory and the descendants follow
+    /// its commit.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn retire_undeliverable_tx(
         &self,
@@ -78,6 +103,7 @@ impl StorageSqlx {
         attempts: i64,
         req_status: &str,
         basis: RetireBasis<'_>,
+        guard: Option<&str>,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<RetireOutcome> {
         match basis {
@@ -98,65 +124,36 @@ impl StorageSqlx {
             }
         }
 
-        sqlx::query("UPDATE proven_tx_reqs SET status = ?, attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-            .bind(req_status)
-            .bind(attempts)
-            .bind(now)
-            .bind(proven_tx_req_id)
-            .execute(&mut *self.writer_conn().await?)
-            .await?;
-
-        let tx_row: Option<(i64,)> = sqlx::query_as(
-            "SELECT transaction_id FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven')",
-        )
-        .bind(txid)
-        .fetch_optional(self.pool())
-        .await?;
-        let Some((transaction_id,)) = tx_row else {
+        let lost: &[(String, u32)] = match basis {
+            RetireBasis::CompetitorProven { lost, .. } => lost,
+            RetireBasis::Undelivered => &[],
+        };
+        let rows = RetireRows {
+            txid,
+            proven_tx_req_id,
+            attempts,
+            req_status,
+            guard,
+            now,
+        };
+        let Some((transaction_id, inputs)) = self.retire_rows(&rows).await? else {
             return Ok(RetireOutcome::Retired {
                 restored: 0,
                 kept: 0,
             });
         };
 
-        // Its own outputs never fund anything again.
-        sqlx::query(
-            "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
-        )
-        .bind(now)
-        .bind(transaction_id)
-        .execute(&mut *self.writer_conn().await?)
-        .await?;
-
-        // Its inputs: none released (a node's verdict releases a coin; an
-        // explorer's unspent set does not). Lost to a proven competitor, or
-        // kept for the re-check.
-        let lost: &[(String, u32)] = match basis {
-            RetireBasis::CompetitorProven { lost, .. } => lost,
-            RetireBasis::Undelivered => &[],
-        };
-        let input_rows = sqlx::query(
-            r#"
-            SELECT o.output_id, t.txid AS source_txid, o.vout, o.locking_script
-            FROM outputs o
-            JOIN transactions t ON o.transaction_id = t.transaction_id
-            WHERE o.spent_by = ?
-            "#,
-        )
-        .bind(transaction_id)
-        .fetch_all(self.pool())
-        .await?;
+        // Committed. Its inputs: none released (a node's verdict releases a
+        // coin; an explorer's unspent set does not). Lost to a proven
+        // competitor, or kept for the re-check.
         let mut kept = 0u32;
-        for input_row in &input_rows {
-            let output_id: i64 = input_row.get("output_id");
-            let source_txid: String = input_row.get("source_txid");
-            let vout: i32 = input_row.get("vout");
+        for (output_id, source_txid, vout) in &inputs {
             kept += 1;
             let is_lost = lost
                 .iter()
-                .any(|(t, v)| *v as i64 == vout as i64 && t.eq_ignore_ascii_case(&source_txid));
+                .any(|(t, v)| *v as i64 == *vout as i64 && t.eq_ignore_ascii_case(source_txid));
             if is_lost {
-                self.schedule_locked_input_check(output_id, LOCKED_VERDICT_SPENT_PROVEN)
+                self.schedule_locked_input_check(*output_id, LOCKED_VERDICT_SPENT_PROVEN)
                     .await;
                 tracing::warn!(
                     txid = %txid,
@@ -164,7 +161,7 @@ impl StorageSqlx {
                     "retire: input spent by the proven competitor: lost, locked for good"
                 );
             } else {
-                self.schedule_locked_input_check(output_id, LOCKED_VERDICT_UNKNOWN)
+                self.schedule_locked_input_check(*output_id, LOCKED_VERDICT_UNKNOWN)
                     .await;
                 tracing::info!(
                     txid = %txid,
@@ -173,14 +170,6 @@ impl StorageSqlx {
                 );
             }
         }
-
-        sqlx::query(
-            "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-        )
-        .bind(now)
-        .bind(transaction_id)
-        .execute(&mut *self.writer_conn().await?)
-        .await?;
 
         // No provider skips it again, and everything this wallet built on
         // it is a phantom too (the poisoned chain, 2026-09-02).
@@ -195,6 +184,59 @@ impl StorageSqlx {
             restored: descendants_restored,
             kept: kept + descendants_kept,
         })
+    }
+
+    /// The retire's own rows in one write transaction (`BEGIN IMMEDIATE`):
+    /// the accepting-word guard when `guard` names the operation, the req
+    /// at its terminal status, the transaction's own outputs unspendable,
+    /// the transaction `failed`. An acceptance committed before this lock is
+    /// read under it and refuses; one committed after finds the row
+    /// `failed`. Nothing awaits a service in here. Returns the transaction
+    /// id and its inputs (`output_id`, source txid, `vout`), or `None` when
+    /// no `sending` / `unproven` transaction holds `txid` (the req is still
+    /// written then).
+    async fn retire_rows(&self, rows: &RetireRows<'_>) -> Result<Option<(i64, Vec<RetireInput>)>> {
+        let mut db_tx = self.write_tx().await?;
+        if let Some(operation) = rows.guard {
+            super::super::abort_action::refuse_if_accepted(&mut db_tx, rows.txid, operation)
+                .await?;
+        }
+        sqlx::query("UPDATE proven_tx_reqs SET status = ?, attempts = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+            .bind(rows.req_status)
+            .bind(rows.attempts)
+            .bind(rows.now)
+            .bind(rows.proven_tx_req_id)
+            .execute(&mut *db_tx)
+            .await?;
+        let tx_row: Option<(i64,)> = sqlx::query_as(
+            "SELECT transaction_id FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven')",
+        )
+        .bind(rows.txid)
+        .fetch_optional(&mut *db_tx)
+        .await?;
+        let Some((transaction_id,)) = tx_row else {
+            super::commit(db_tx).await?;
+            return Ok(None);
+        };
+
+        // Its own outputs never fund anything again.
+        sqlx::query(
+            "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+        )
+        .bind(rows.now)
+        .bind(transaction_id)
+        .execute(&mut *db_tx)
+        .await?;
+        let inputs = retire_inputs(&mut db_tx, transaction_id).await?;
+        sqlx::query(
+            "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+        )
+        .bind(rows.now)
+        .bind(transaction_id)
+        .execute(&mut *db_tx)
+        .await?;
+        super::commit(db_tx).await?;
+        Ok(Some((transaction_id, inputs)))
     }
 
     /// If a status source holds `txid` (known or mined), promote it: the
@@ -242,15 +284,20 @@ impl StorageSqlx {
     /// Retire only a transaction no instance accepted (#165): the stored
     /// accepting-word guard is shared with `abort_action`, and an acceptance
     /// refuses with `InvalidTransactionStatus` before any service is asked.
+    /// The guard is read again inside the write transaction that writes the
+    /// retire's rows, after the alive check (`retire_rows`), so an acceptance
+    /// committed while the status service was asked still refuses.
     pub async fn retire_undeliverable_txid(
         &self,
         services: &dyn WalletServices,
         txid: &str,
         req_status: &str,
     ) -> Result<Option<RetireOutcome>> {
+        // Read here so an accepted transaction asks no service; read again
+        // under the retire's write lock, where it decides.
         {
             let mut conn = self.pool().acquire().await?;
-            super::super::abort_action::refuse_if_accepted(&mut conn, txid, "retire transaction")
+            super::super::abort_action::refuse_if_accepted(&mut conn, txid, RETIRE_OPERATION)
                 .await?;
         }
         let req: Option<(i64, i64)> =
@@ -268,11 +315,39 @@ impl StorageSqlx {
             attempts.saturating_add(1),
             req_status,
             RetireBasis::Undelivered,
+            Some(RETIRE_OPERATION),
             chrono::Utc::now(),
         )
         .await
         .map(Some)
     }
+}
+
+/// The inputs a retired transaction spends, read on its write transaction.
+async fn retire_inputs(
+    conn: &mut sqlx::SqliteConnection,
+    transaction_id: i64,
+) -> Result<Vec<RetireInput>> {
+    Ok(sqlx::query(
+        r#"
+        SELECT o.output_id, t.txid AS source_txid, o.vout
+        FROM outputs o
+        JOIN transactions t ON o.transaction_id = t.transaction_id
+        WHERE o.spent_by = ?
+        "#,
+    )
+    .bind(transaction_id)
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(|row| {
+        (
+            row.get("output_id"),
+            row.get("source_txid"),
+            row.get("vout"),
+        )
+    })
+    .collect())
 }
 
 impl StorageSqlx {

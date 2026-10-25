@@ -256,6 +256,7 @@ impl StorageSqlx {
                             competitor: &competitor,
                             lost: &lost,
                         },
+                        None,
                         chrono::Utc::now(),
                     )
                     .await?;
