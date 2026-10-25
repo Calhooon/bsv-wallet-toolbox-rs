@@ -23,11 +23,10 @@ fn recorded<T: Serialize>(result: bsv_wallet_toolbox_rs::Result<T>) -> Result<Va
                 offset,
                 txid,
                 input,
-                why,
+                ..
             } => Ok(json!({
-                "accepted": false,
                 "error": error.to_string(),
-                "spendRefused": { "offset": offset, "txid": txid, "input": input, "why": format!("{why:?}") }
+                "spendRefused": { "offset": offset, "txid": txid, "input": input, "why": error.to_string().rsplit_once(": ").map(|(_, why)| why.to_string()).unwrap_or_default() }
             })),
             _ => Ok(json!({ "error": error.to_string() })),
         },

@@ -3750,7 +3750,7 @@ mod tests {
                 assert_eq!(input, Some(0));
                 assert_eq!(
                     why,
-                    crate::SpendRefusal::Script(
+                    bsv_rs::transaction::beef_stream::SpendRefusal::Script(
                         "The top stack element must be truthy after script evaluation.".into()
                     )
                 );
@@ -3808,7 +3808,7 @@ mod tests {
             } else {
                 assert!(
                     matches!(result, Err(Error::SpendRefused {
-                    txid: ref refused, input: None, why: crate::SpendRefusal::NonFinal { lock_time: refused_time }, ..
+                    txid: ref refused, input: None, why: bsv_rs::transaction::beef_stream::SpendRefusal::NonFinal { lock_time: refused_time }, ..
                 }) if refused == &txid && refused_time == lock_time),
                     "{result:?}"
                 );
