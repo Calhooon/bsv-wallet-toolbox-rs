@@ -318,3 +318,40 @@ async fn post_uses_the_services_tracker_when_storage_has_none() -> Result<()> {
     assert_eq!(wallet.services().call_count("post_beef"), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn post_service_fault_is_recorded_without_fabricating_an_instance() -> Result<()> {
+    let wallet = wallet().await?;
+    let txid = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
+    wallet.storage().set_services(std::sync::Arc::new(
+        MockWalletServices::builder()
+            .post_beef_network_error("recorded outage")
+            .build(),
+    ));
+    assert_eq!(
+        status(
+            &wallet
+                .process_action(post(txid.clone()), "fixture.local")
+                .await?
+        ),
+        "sending"
+    );
+    let row: (String, String) =
+        sqlx::query_as("SELECT status, history FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_one(wallet.storage().pool())
+            .await?;
+    assert_eq!(row.0, "unsent");
+    let history: Value = serde_json::from_str(&row.1)?;
+    let note = history["notes"]
+        .as_array()
+        .context("notes")?
+        .last()
+        .context("post fault")?;
+    assert_eq!(note["words"], json!([]));
+    assert!(note["serviceError"]
+        .as_str()
+        .context("fault")?
+        .contains("recorded outage"));
+    Ok(())
+}
