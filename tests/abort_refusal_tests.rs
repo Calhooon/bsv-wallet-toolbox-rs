@@ -160,6 +160,7 @@ impl Seeded {
             "proven_txs",
             "broadcast_seen",
             "locked_input_checks",
+            "tracker_states",
         ] {
             let columns: Vec<String> =
                 sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
@@ -167,6 +168,9 @@ impl Seeded {
                     .fetch_all(self.storage.pool())
                     .await
                     .unwrap();
+            if columns.is_empty() {
+                continue;
+            }
             let projection = columns
                 .iter()
                 .map(|column| format!("quote(\"{column}\")"))
@@ -260,5 +264,114 @@ async fn retire_undeliverable_with_an_accepting_word_is_refused_without_writes_o
             .await,
     );
     assert_eq!(s.snapshot().await, before);
+    s.assert_no_chain_calls();
+}
+
+#[tokio::test]
+async fn abort_sending_refuses_each_accepting_memory_word_despite_another_refusal() {
+    for status in ["accepted", "seen", "mined"] {
+        let s = Seeded::new("sending").await;
+        s.storage
+            .record_broadcast_status(TXID, "instance-a", status)
+            .await
+            .unwrap();
+        s.storage
+            .record_broadcast_status(TXID, "instance-b", "rejected")
+            .await
+            .unwrap();
+        let before = s.snapshot().await;
+        assert_acceptance_refusal(s.abort().await);
+        assert_eq!(s.snapshot().await, before, "{status}");
+        s.assert_no_chain_calls();
+    }
+}
+
+#[tokio::test]
+async fn abort_sending_refuses_each_request_status_past_the_post() {
+    for status in ["unmined", "callback", "unconfirmed", "completed"] {
+        let s = Seeded::new("sending").await;
+        s.request(status, json!({})).await;
+        let before = s.snapshot().await;
+        assert_acceptance_refusal(s.abort().await);
+        assert_eq!(s.snapshot().await, before, "{status}");
+        s.assert_no_chain_calls();
+    }
+}
+
+#[tokio::test]
+async fn abort_sending_refuses_acceptance_kept_in_request_history_after_a_refusal() {
+    for history in [
+        json!({"notes": [{"what": "sendWaitingHint", "words": [
+            {"provider": "instance-a", "status": "error", "txids": [{"status": "success"}]},
+            {"provider": "instance-b", "status": "error", "txids": [{"status": "error"}]}
+        ]}]}),
+        json!({"sendWithResults": [{"txid": TXID, "status": "unproven"}]}),
+        json!({"notes": [
+            {"what": "post", "status": "accepted"},
+            {"what": "post", "status": "rejected"}
+        ]}),
+    ] {
+        let s = Seeded::new("sending").await;
+        s.request("unsent", history).await;
+        s.storage
+            .record_broadcast_status(TXID, "instance-a", "rejected")
+            .await
+            .unwrap();
+        let before = s.snapshot().await;
+        assert_acceptance_refusal(s.abort().await);
+        assert_eq!(s.snapshot().await, before);
+        s.assert_no_chain_calls();
+    }
+}
+
+#[tokio::test]
+async fn abort_sending_refuses_each_tracker_word_past_built() {
+    for word in ["announced", "seen", "mined", "stale"] {
+        let s = Seeded::new("sending").await;
+        sqlx::query("CREATE TABLE tracker_states (txid TEXT PRIMARY KEY, word TEXT)")
+            .execute(s.storage.writer())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracker_states (txid, word) VALUES (?, ?)")
+            .bind(TXID)
+            .bind(word)
+            .execute(s.storage.writer())
+            .await
+            .unwrap();
+        let before = s.snapshot().await;
+        assert_acceptance_refusal(s.abort().await);
+        assert_eq!(s.snapshot().await, before, "{word}");
+        s.assert_no_chain_calls();
+    }
+}
+
+#[tokio::test]
+async fn abort_pending_status_labels_do_not_hide_an_accepting_word() {
+    for status in ["nosend", "unsigned", "unprocessed"] {
+        let s = Seeded::new(status).await;
+        s.storage
+            .record_broadcast_status(TXID, "instance-a", "accepted")
+            .await
+            .unwrap();
+        let before = s.snapshot().await;
+        assert_acceptance_refusal(s.abort().await);
+        assert_eq!(s.snapshot().await, before, "{status}");
+        s.assert_no_chain_calls();
+    }
+}
+
+#[tokio::test]
+async fn abort_sending_with_no_acceptance_ignores_words_inside_error_text() {
+    let s = Seeded::new("sending").await;
+    s.request(
+        "unsent",
+        json!({"notes": [{
+            "what": "immediateBroadcastHint", "outcome": "serviceError",
+            "words": ["not accepted", "no success", "unproven was never written"],
+            "error": {"status": "accepted"}
+        }]}),
+    )
+    .await;
+    assert!(s.abort().await.unwrap().aborted);
     s.assert_no_chain_calls();
 }
