@@ -27,10 +27,10 @@ use chrono::Utc;
 use sqlx::{Row, SqliteConnection};
 
 use super::StorageSqlx;
-use crate::services::PostBeefResult;
+use crate::services::{PostBeefResult, PostTxResultForTxid};
 use crate::storage::broadcast::classify_broadcast_results;
 use crate::storage::broadcast::BroadcastOutcome;
-use bsv_rs::transaction::Beef;
+use bsv_rs::transaction::{Beef, BeefTx};
 
 // =============================================================================
 // Constants
@@ -723,13 +723,13 @@ async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result
     super::create_action::prune_beef_to_roots(&mut beef, &roots);
     // A proven txid-only entry validates, but a broadcaster still needs its
     // bytes. Only the caller of the build declared those ancestors known.
-    if beef.txs.iter().any(|tx| tx.is_txid_only()) || !beef.verify_valid(true).valid {
+    if beef.txs.iter().any(BeefTx::is_txid_only) || !beef.verify_valid(true).valid {
         let mut missing = beef.sort_txs().missing_inputs;
         missing.extend(
             beef.txs
                 .iter()
                 .filter(|tx| tx.is_txid_only())
-                .map(|tx| tx.txid()),
+                .map(BeefTx::txid),
         );
         let mut conn = storage.pool().acquire().await?;
         let ancestors = super::create_action::rebuild_beef_for_broadcast(
@@ -816,7 +816,11 @@ fn stored_post_outcome(words: &[PostBeefResult], txid: &str) -> BroadcastOutcome
         .map(|mut word| {
             if !word.txid_results.is_empty() {
                 word.txid_results.retain(|result| result.txid == txid);
-                word.status = if word.txid_results.iter().any(|result| result.is_success()) {
+                word.status = if word
+                    .txid_results
+                    .iter()
+                    .any(PostTxResultForTxid::is_success)
+                {
                     "success".to_string()
                 } else {
                     "error".to_string()
