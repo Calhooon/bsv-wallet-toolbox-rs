@@ -126,8 +126,9 @@ pub fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
 /// Verifies BEEF merkle proofs against a ChainTracker.
 ///
 /// This function validates that all merkle proofs in a BEEF are valid
-/// according to the provided ChainTracker. Used by create_action; internalize
-/// runs the spend verifier, which already checks structure and roots.
+/// according to the provided ChainTracker. No door calls it since #103:
+/// internalize runs the spend verifier, which checks structure, roots and
+/// scripts in one pass; the helper stays public for hosts that hold a BEEF.
 ///
 /// # Arguments
 ///

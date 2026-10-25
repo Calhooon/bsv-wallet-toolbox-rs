@@ -191,8 +191,10 @@ pub enum Error {
     },
 
     /// The BEEF's bytes are well formed and the verifier refused a spend inside it (#103).
-    /// The offset, input and reason are the verifier's own words.
-    #[error("spend refused at offset {offset}, input {input:?} of {txid}: {why:?}")]
+    /// The offset, input and reason are the verifier's own words; the text is
+    /// `spend refused at offset N, input I of <txid>: <why>`, rendered by
+    /// the crate's own words since bsv-rs gives the reason no `Display`.
+    #[error("spend refused at offset {offset}, input {} of {txid}: {}", input_text(*.input), spend_refusal_text(.why))]
     SpendRefused {
         offset: u64,
         txid: String,
@@ -348,6 +350,44 @@ impl From<Error> for bsv_rs::Error {
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         Error::HttpError(err.to_string())
+    }
+}
+
+/// The input an [`Error::SpendRefused`] names, or `none` when the verifier
+/// judged the transaction as a whole (the value rules).
+fn input_text(input: Option<u32>) -> String {
+    match input {
+        Some(index) => index.to_string(),
+        None => "none".to_string(),
+    }
+}
+
+/// The verifier's reason in words a payer can act on. A script refusal is the
+/// interpreter's own sentence; the other arms name the rule that refused.
+fn spend_refusal_text(why: &bsv_rs::transaction::beef_stream::SpendRefusal) -> String {
+    use bsv_rs::transaction::beef_stream::SpendRefusal;
+    match why {
+        SpendRefusal::Script(reason) => reason.clone(),
+        SpendRefusal::ParentIsTxidOnly => {
+            "the parent is txid-only, so its output is not in the BEEF".to_string()
+        }
+        SpendRefusal::OutputNotAvailable { vout } => {
+            format!("the parent has no unspent output {vout}")
+        }
+        SpendRefusal::Resource(limit) => {
+            format!("the evaluator declined on a local resource: {limit:?}")
+        }
+        SpendRefusal::CreatesValue => "the outputs are worth more than the inputs".to_string(),
+        SpendRefusal::InputValueOutOfRange => "an input value is out of range".to_string(),
+        SpendRefusal::P2shOutput { vout } => {
+            format!("output {vout} is an exact P2SH template, refused after Genesis")
+        }
+        SpendRefusal::NonFinal { lock_time } => {
+            format!("not final for the next block (lock time {lock_time})")
+        }
+        SpendRefusal::PrematureCoinbase { height } => {
+            format!("the coinbase at height {height} has not matured")
+        }
     }
 }
 

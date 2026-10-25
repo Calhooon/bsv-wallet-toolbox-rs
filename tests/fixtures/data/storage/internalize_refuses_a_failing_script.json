@@ -22,13 +22,12 @@
   "expected": [
     {
       "result": {
-        "accepted": false,
-        "error": "spend refused at offset 156, input Some(0) of 691cadf6c182241b0f32b0547ac702f74e19691e8cdc33d2881f6116b5341a6d: Script(\"The top stack element must be truthy after script evaluation.\")",
+        "error": "spend refused at offset 156, input 0 of 691cadf6c182241b0f32b0547ac702f74e19691e8cdc33d2881f6116b5341a6d: The top stack element must be truthy after script evaluation.",
         "spendRefused": {
           "input": 0,
           "offset": 156,
           "txid": "691cadf6c182241b0f32b0547ac702f74e19691e8cdc33d2881f6116b5341a6d",
-          "why": "Script(\"The top stack element must be truthy after script evaluation.\")"
+          "why": "The top stack element must be truthy after script evaluation."
         }
       },
       "rows": {
