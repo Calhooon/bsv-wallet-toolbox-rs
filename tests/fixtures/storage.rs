@@ -1,6 +1,7 @@
 //! Replay the storage door against recorded inputs, including every persisted column.
 
 mod compare;
+mod door;
 mod model;
 mod normalize;
 mod operations;
