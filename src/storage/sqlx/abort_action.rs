@@ -1248,8 +1248,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Test 12: Abort unproven transaction - the broadcaster's word is not
-    // chain evidence, the abort is honoured and the chain built on it retired
+    // Test 12: An unaccepted sending root is aborted and its descendants retired
     // -------------------------------------------------------------------------
 
     /// A proven_tx_req for `txid` (what the broadcast path leaves behind).
@@ -1360,22 +1359,48 @@ mod tests {
         }
     }
 
+    async fn seed_unaccepted_root(
+        storage: &StorageSqlx,
+        user_id: i64,
+        reference: &str,
+    ) -> BroadcastChain {
+        let c = seed_broadcast_chain(storage, user_id, reference).await;
+        sqlx::query("UPDATE transactions SET status = 'sending' WHERE transaction_id = ?")
+            .bind(c.a)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent' WHERE txid = ?")
+            .bind(&c.a_txid)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        c
+    }
+
     #[tokio::test]
-    async fn test_abort_unproven_without_chain_evidence_releases_inputs_and_retires_descendants() {
+    async fn test_abort_sending_without_acceptance_releases_inputs_and_retires_descendants() {
+        use crate::storage::traits::WalletStorageProvider;
+
         let (storage, user_id, auth) = setup_test_storage().await;
         let reference = "test-abort-ref-12";
-        let c = seed_broadcast_chain(&storage, user_id, reference).await;
+        let c = seed_unaccepted_root(&storage, user_id, reference).await;
 
-        // Arcade saw it, several times; a peer node saw it too. None of that
-        // is the chain's word.
+        // Every named instance refused the root; only the descendant was accepted.
+        let services = std::sync::Arc::new(crate::services::mock::MockWalletServices::new());
+        storage.set_services(services.clone());
         for _ in 0..4 {
             storage
-                .record_broadcast_status(&c.a_txid, PROVIDER_ARCADE_V2, BROADCAST_STATUS_SEEN)
+                .record_broadcast_status(&c.a_txid, PROVIDER_ARCADE_V2, BROADCAST_STATUS_REJECTED)
                 .await
                 .unwrap();
         }
         storage
-            .record_broadcast_status(&c.a_txid, BROADCAST_PROVIDER_NETWORK, BROADCAST_STATUS_SEEN)
+            .record_broadcast_status(
+                &c.a_txid,
+                BROADCAST_PROVIDER_NETWORK,
+                BROADCAST_STATUS_REJECTED,
+            )
             .await
             .unwrap();
         storage
@@ -1408,7 +1433,7 @@ mod tests {
 
         // The descendant: failed, req invalid, its own change dead, the
         // poisoned input left as it was, and the outside coin KEPT locked
-        // (no chain oracle in this storage) with a re-check scheduled.
+        // (no chain call on the abort path) with a re-check scheduled.
         assert_eq!(get_transaction_status(&storage, c.d).await, "failed");
         assert_eq!(req_status(&storage, &c.d_txid).await, "invalid");
         assert!(!is_output_spendable(&storage, c.change_d).await);
@@ -1447,6 +1472,7 @@ mod tests {
                 ),
             ]
         );
+        assert_eq!(services.total_calls(), 0, "no explorer or header call");
     }
 
     #[tokio::test]
