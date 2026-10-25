@@ -202,7 +202,8 @@ impl MonitorStorage for StorageSqlx {
     }
 
     async fn mark_transaction_rejected(&self, txid: &str, double_spend: bool) -> Result<bool> {
-        self.mark_rejected(txid, double_spend).await
+        self.mark_transaction_rejected_impl(txid, double_spend)
+            .await
     }
 
     async fn mark_transaction_rejected_by(
