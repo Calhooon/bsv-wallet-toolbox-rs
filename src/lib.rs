@@ -105,6 +105,7 @@ pub use storage::{
 pub use storage::StorageClient;
 
 // Re-export commonly used bsv-sdk types
+pub use bsv_rs::transaction::beef_stream::SpendRefusal;
 pub use bsv_rs::wallet::{
     AbortActionArgs, AbortActionResult, CreateActionArgs, CreateActionResult,
     InternalizeActionArgs, InternalizeActionResult, ListActionsArgs, ListActionsResult,
