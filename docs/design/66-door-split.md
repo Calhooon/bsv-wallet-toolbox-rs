@@ -297,3 +297,16 @@ The four questions of section 7 for the keeper, answered by captain-bsv-stack-le
 On the whole: the split meets S9 and B1 and changes no transition, so no charter row moves. Whether the composition keeps today's lock span across the post is the owner's call (question 6).
 
 What this fixes for the implementing lane beyond sections 2 to 6: `broadcast` on a `Post::Template` is a typed refusal that writes nothing (question 9 for the template case; for `NoSend` and `Delayed` the composition still needs the result unchanged, which the owner decides); the no-BEEF abort runs in its own short write transaction.
+
+## 10. The owner's words (2026-10-25)
+
+Recorded on #66 the same day; they close questions 5 to 9 and fix the plan the implementing lane follows.
+
+- **The division is the reference's.** `@bsv/wallet-toolbox` already splits this door: `createAction` with `noSend` builds and signs, `processAction` with `sendWith` posts. The toolbox exposes that division and introduces no new verb: `Wallet::create_action_offering` with `no_send` is the build step a host holds its lock around (the `built` word written at signing), and a public post door on `Wallet`, named for the reference's `processAction` and taking the references or txids to send, is the post (the `announced` word on the broadcaster's acceptance), callable with no lock of the wallet's and concurrently for many. `create_action_offering` without `no_send` stays the one-call composition.
+- **No `Signed` type (question 5).** The reference's `reference` (with the txid) is the handle between the two calls, consumed once by the post; a second post of the same reference is the reference's typed refusal. The post rebuilds what it needs for a `nosend` row from storage, as the reference's `processAction` does. If the implementing lane finds the BEEF cannot be rebuilt from storage for such a row, that reason goes on #66 before any by-value type is added; section 2's `Signed` is the fallback, not the plan.
+- **The toolbox's own `spend_lock` (question 6).** Released after the build step in the composition too, landed as its own commit after the refactor commits, with #54's bench run before and after it; the refactor commits keep today's span so the bench has one commit to point at (the CLI's #86 exit test).
+- **The names (question 7).** The reference's, above. Neither `allocate_and_sign` and `broadcast` nor `build` and `announce` become public names.
+- **`sign_action` (question 8).** The reference's `signAction` then `processAction` is already this division; the post door takes a reference from either path. Its own PR after this one.
+- **A post that posts nothing (question 9).** The reference's semantics: `noSend` and `acceptDelayedBroadcast` answer the result unchanged; a template is never posted and the post door refuses it with the keeper's typed refusal that writes no word (section 9).
+
+The implementing lane runs after #61 (the `create_action.rs` split), since it lands in that code; the section 8 proof plan holds with the names above substituted.
