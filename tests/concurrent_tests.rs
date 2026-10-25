@@ -579,21 +579,25 @@ mod concurrent {
         let broadcast_result = broadcast_handle.await.unwrap();
         let abort_result = abort_handle.await.unwrap();
 
-        // Since 0.3.60 a 'sending' transaction the wallet holds no chain
-        // evidence for is aborted on the caller's word (the broadcaster's
-        // acceptance is not chain evidence), and a broadcast acceptance that
-        // lands after the abort never lifts the failed transaction back.
-        // Whichever runs first, both calls succeed and the abort stands.
+        // #165: acceptance and abort serialize at the write lock. An
+        // acceptance already committed refuses the abort; an abort already
+        // committed is not reopened by the later status write.
         assert!(
             broadcast_result.is_ok(),
             "Broadcast status update should succeed: {:?}",
             broadcast_result.err()
         );
-        assert!(
-            abort_result.is_ok(),
-            "Abort of a broadcast transaction without chain evidence succeeds: {:?}",
-            abort_result.err()
-        );
+        let aborted = match abort_result {
+            Ok(result) => {
+                assert!(result.aborted);
+                true
+            }
+            Err(bsv_wallet_toolbox_rs::Error::InvalidTransactionStatus(message)) => {
+                assert!(message.contains("acceptance"), "{message}");
+                false
+            }
+            Err(other) => panic!("unexpected abort error: {other:?}"),
+        };
 
         let final_status: (String,) =
             sqlx::query_as("SELECT status FROM transactions WHERE txid = ?")
@@ -601,26 +605,27 @@ mod concurrent {
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        assert_eq!(
-            final_status.0, "failed",
-            "the abort stands whichever side ran first"
-        );
         let req_status: (String,) =
             sqlx::query_as("SELECT status FROM proven_tx_reqs WHERE txid = ?")
                 .bind(&txid)
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        assert_eq!(req_status.0, "invalid", "the req is not reopened either");
         let released: (Option<i64>,) =
             sqlx::query_as("SELECT spent_by FROM outputs WHERE transaction_id = ? AND vout = 0")
                 .bind(tx_id)
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        assert!(
-            released.0.is_none(),
-            "the input lock is released by the abort"
+        let expected = if aborted {
+            ("failed", "invalid", None)
+        } else {
+            ("unproven", "unmined", Some(tx_id))
+        };
+        assert_eq!(
+            (final_status.0.as_str(), req_status.0.as_str(), released.0),
+            expected,
+            "the status, request and input lock must agree with the winning write"
         );
     }
 
