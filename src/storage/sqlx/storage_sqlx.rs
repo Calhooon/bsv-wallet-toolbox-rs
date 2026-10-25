@@ -9086,6 +9086,178 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn review_status_voids_created_outputs_of_newly_failed_transactions() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("review-status", &"0".repeat(64))
+            .await
+            .unwrap();
+        let (user, _) = storage.find_or_insert_user(&"a".repeat(66)).await.unwrap();
+        let seeded_at = Utc::now() - chrono::Duration::days(1);
+        let mut transaction_ids = Vec::new();
+
+        for (index, (status, req_status)) in [
+            ("completed", None),
+            ("unproven", Some("invalid")),
+            ("sending", Some("invalid")),
+            ("unproven", Some("unmined")),
+            ("failed", Some("invalid")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let txid = format!("{:064x}", index + 1);
+            let transaction_id = sqlx::query(
+                "INSERT INTO transactions (user_id, txid, status, reference, description, \
+                 is_outgoing, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, 'review status regression', 1, ?, ?)",
+            )
+            .bind(user.user_id)
+            .bind(&txid)
+            .bind(status)
+            .bind(format!("review-status-{index}"))
+            .bind(seeded_at)
+            .bind(seeded_at)
+            .execute(storage.writer())
+            .await
+            .unwrap()
+            .last_insert_rowid();
+            transaction_ids.push(transaction_id);
+
+            if let Some(req_status) = req_status {
+                sqlx::query(
+                    "INSERT INTO proven_tx_reqs (txid, status, raw_tx, created_at, updated_at) \
+                     VALUES (?, ?, X'01000000', ?, ?)",
+                )
+                .bind(&txid)
+                .bind(req_status)
+                .bind(seeded_at)
+                .bind(seeded_at)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            }
+        }
+
+        let source = transaction_ids[0];
+        let newly_failed = &transaction_ids[1..3];
+        for (creator, vout, spendable, spent_by) in [
+            // Consumed inputs must keep their locks and timestamps.
+            (source, 0, false, Some(newly_failed[0])),
+            (source, 1, false, Some(newly_failed[1])),
+            // Clear every created output, including an existing spent_by.
+            (newly_failed[0], 0, true, None),
+            (newly_failed[0], 1, false, Some(source)),
+            (newly_failed[1], 0, true, Some(source)),
+            // A live request and an older failure are outside this transition.
+            (transaction_ids[3], 0, true, None),
+            (transaction_ids[4], 0, true, None),
+        ] {
+            sqlx::query(
+                "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, provided_by, \
+                 purpose, type, spendable, spent_by, created_at, updated_at) \
+                 VALUES (?, ?, ?, 1000, 'storage', 'change', 'P2PKH', ?, ?, ?, ?)",
+            )
+            .bind(user.user_id)
+            .bind(creator)
+            .bind(vout)
+            .bind(spendable)
+            .bind(spent_by)
+            .bind(seeded_at)
+            .bind(seeded_at)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        }
+
+        const OUTPUT_STATE: &str = "SELECT transaction_id, spendable, spent_by, \
+            CAST(updated_at AS TEXT) FROM outputs ORDER BY output_id";
+        const TRANSACTION_STATE: &str = "SELECT status, CAST(updated_at AS TEXT) \
+            FROM transactions ORDER BY transaction_id";
+        type OutputState = (i64, bool, Option<i64>, String);
+        let before: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+
+        let review = MonitorStorage::review_status(&storage).await.unwrap();
+        assert!(review.log.contains("Marked 2 transactions as failed"));
+        let transactions: Vec<(String, String)> = sqlx::query_as(TRANSACTION_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            transactions
+                .iter()
+                .map(|row| row.0.as_str())
+                .collect::<Vec<_>>(),
+            ["completed", "failed", "failed", "unproven", "failed"]
+        );
+
+        let after: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(after.len(), before.len());
+        for (original, current) in before.iter().zip(&after) {
+            if let Some(index) = transaction_ids
+                .iter()
+                .position(|id| *id == original.0)
+                .filter(|index| (1..3).contains(index))
+            {
+                assert!(
+                    !current.1,
+                    "a newly failed transaction's created output must be void"
+                );
+                assert_eq!(current.2, None, "a void output must clear spent_by");
+                assert_eq!(current.3, transactions[index].1);
+                assert_ne!(current.3, original.3, "the output timestamp must advance");
+            } else {
+                assert_eq!(
+                    current, original,
+                    "consumed inputs and unrelated outputs stay unchanged"
+                );
+            }
+        }
+
+        let again = MonitorStorage::review_status(&storage).await.unwrap();
+        assert_eq!(again.log, "No status mismatches found\n");
+        let unchanged: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(unchanged, after, "a repeat pass must not rewrite outputs");
+
+        // An output-write failure must roll back the status write too.
+        sqlx::query("UPDATE transactions SET status = 'unproven' WHERE transaction_id = ?")
+            .bind(newly_failed[0])
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        let before_failure: Vec<(String, String)> = sqlx::query_as(TRANSACTION_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER reject_review_output_update BEFORE UPDATE OF spendable ON outputs \
+             BEGIN SELECT RAISE(ABORT, 'injected output failure'); END",
+        )
+        .execute(storage.writer())
+        .await
+        .unwrap();
+        let error = MonitorStorage::review_status(&storage).await.unwrap_err();
+        assert!(error.to_string().contains("injected output failure"));
+        let after_failure: Vec<(String, String)> = sqlx::query_as(TRANSACTION_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            after_failure, before_failure,
+            "the failed pass must roll back"
+        );
+    }
+
     // =========================================================================
     // purge_data — monitor-level SQL correctness tests
     // =========================================================================
