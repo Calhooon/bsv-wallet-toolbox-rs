@@ -11,7 +11,21 @@ This module provides a production-ready storage backend for BSV wallet state usi
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
 | `storage_sqlx.rs` | Complete `StorageSqlx` implementation (4798 lines) |
-| `create_action.rs` | Transaction creation implementation (3823 lines) |
+| `create_action/mod.rs` | Private door, write transaction, signing callback, and result assembly |
+| `create_action/allocation.rs` | Change-coin selection, reservations, and precheck |
+| `create_action/change.rs` | Change planning, funding, and starvation loop |
+| `create_action/fees.rs` | Transaction sizes and fee calculations |
+| `create_action/signing.rs` | Caller signature commitments and funding permission |
+| `create_action/validation.rs` | Create-action argument validation |
+| `create_action/inputs.rs` | Caller input preparation and spent-input writes |
+| `create_action/outputs.rs` | Output preparation, action records, baskets, labels, and tags |
+| `create_action/tracker.rs` | Precheck tracker answers, recording tracker, and cached tracker |
+| `create_action/beef.rs` | Input BEEF assembly, known entries, and ancestry gaps |
+| `create_action/beef_graph.rs` | Proof linking, graph pruning, and stored BEEF validation/compaction |
+| `create_action/beef_storage.rs` | Stored transaction/proof lookup and raw-transaction parsing |
+| `create_action/beef_walk.rs` | Shared ancestor walk |
+| `create_action/broadcast.rs` | Broadcast BEEF rebuild and provider fallback |
+| `create_action/tests/` | Existing unit and integration cases by concern, shared helpers, and door scenarios |
 | `process_action.rs` | Signed transaction processing (1884 lines) |
 | `abort_action.rs` | Transaction abort/cancellation; since 0.3.60 a broadcast (`unproven` / `sending`) transaction with NO chain evidence (no `chain|seen`, no `mined` row, no proof) is aborted too: inputs released, own outputs dead, memory `rejected`, unproven descendants retired |
 | `internalize_action.rs` | External transaction internalization (1343 lines) |
@@ -121,7 +135,7 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `relinquish_certificate()` | Soft-delete certificate |
 | `relinquish_output()` | Remove output from basket |
 | `abort_action()` | Abort pending transaction, release locked outputs (delegates to abort_action.rs) |
-| `create_action()` | Create new transaction with inputs/outputs (delegates to create_action.rs) |
+| `create_action()` | Create new transaction with inputs/outputs (delegates to create_action/mod.rs) |
 | `process_action()` | Process signed transaction (delegates to process_action.rs) |
 | `internalize_action()` | Internalize external transaction into wallet (delegates to internalize_action.rs) |
 | `update_transaction_status_after_broadcast()` | Update tx status after broadcast success/failure (delegates to process_action.rs) |
@@ -368,7 +382,7 @@ pub async fn verify_txid_merkle_proof(
 
 ## Create Action Implementation
 
-The `create_action.rs` module provides full transaction creation functionality:
+The private `create_action/` module provides full transaction creation functionality:
 
 ### Core Function
 ```rust
@@ -526,11 +540,11 @@ Operations requiring blockchain access (BEEF verification, broadcasting, header 
 
 ## Tests
 
-Total: 176 tests across all modules.
+The create-action tests are grouped by concern under `create_action/tests/`.
 
 | Module | Tests | Key Coverage |
 |--------|-------|--------------|
-| `create_action.rs` | 45 | Validation, fee calculation, BEEF building, Go test parity |
+| `create_action/` | 131 | Validation, fee calculation, BEEF building, allocation, and door scenarios |
 | `process_action.rs` | 35 | txid computation, VarInt parsing, script offsets, Go test parity |
 | `storage_sqlx.rs` | 32 | CRUD, list methods, certificate filters, monitor ops, TrxToken, task locks |
 | `beef_verification.rs` | 25 | Merkle proof verification, verification modes, edge cases |
