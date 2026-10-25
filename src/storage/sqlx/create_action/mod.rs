@@ -22,6 +22,9 @@ use super::storage_sqlx::{
 };
 use super::StorageSqlx;
 
+mod fees;
+use fees::*;
+
 #[cfg(test)]
 #[path = "tests/support.rs"]
 mod test_support;
@@ -49,15 +52,6 @@ const MIN_AGE_FOR_PROOF_LOOKUP_SECS: i64 = 90;
 
 /// Special satoshi value indicating "use maximum possible".
 const MAX_POSSIBLE_SATOSHIS: u64 = 2_099_999_999_999_999;
-
-/// Default fee rate in satoshis per kilobyte.
-const DEFAULT_FEE_RATE_SAT_PER_KB: u64 = 101;
-
-/// P2PKH locking script length (25 bytes).
-const P2PKH_LOCKING_SCRIPT_LENGTH: u32 = 25;
-
-/// P2PKH unlocking script length (107 bytes typical).
-const P2PKH_UNLOCKING_SCRIPT_LENGTH: u32 = 107;
 
 /// Minimum description length.
 const MIN_DESCRIPTION_LENGTH: usize = 5;
@@ -111,20 +105,6 @@ struct GenerateChangeParams {
     change_locking_script_length: u32,
     change_unlocking_script_length: u32,
     target_net_count: Option<i32>,
-}
-
-/// A fixed input for fee calculation.
-#[derive(Debug, Clone)]
-struct FixedInput {
-    satoshis: u64,
-    unlocking_script_length: u32,
-}
-
-/// A fixed output for fee calculation.
-#[derive(Debug, Clone)]
-struct FixedOutput {
-    satoshis: u64,
-    locking_script_length: u32,
 }
 
 /// Result of change generation.
@@ -306,47 +286,6 @@ fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArgs) -> Resul
     }
 
     Ok(())
-}
-
-// =============================================================================
-// Size Calculation
-// =============================================================================
-
-/// Calculates transaction size given input and output script lengths.
-fn calculate_transaction_size(input_script_lengths: &[u32], output_script_lengths: &[u32]) -> u64 {
-    // Transaction overhead: version (4) + locktime (4) + input count varint + output count varint
-    let mut size: u64 = 4 + 4;
-
-    // Input count varint
-    size += var_int_size(input_script_lengths.len() as u64);
-
-    // Each input: txid (32) + vout (4) + script length varint + script + sequence (4)
-    for script_len in input_script_lengths {
-        size += 32 + 4 + var_int_size(*script_len as u64) + *script_len as u64 + 4;
-    }
-
-    // Output count varint
-    size += var_int_size(output_script_lengths.len() as u64);
-
-    // Each output: satoshis (8) + script length varint + script
-    for script_len in output_script_lengths {
-        size += 8 + var_int_size(*script_len as u64) + *script_len as u64;
-    }
-
-    size
-}
-
-/// Returns the size of a varint encoding.
-fn var_int_size(value: u64) -> u64 {
-    if value < 253 {
-        1
-    } else if value <= 0xFFFF {
-        3
-    } else if value <= 0xFFFFFFFF {
-        5
-    } else {
-        9
-    }
 }
 
 // =============================================================================
@@ -2093,23 +2032,6 @@ fn caller_complete_plan(
     } else {
         CallerCompletePlan::Unfundable
     }
-}
-
-/// The miner fee the wallet would require for the transaction exactly as the
-/// caller provided it (its fixed inputs and outputs only, no change).
-fn caller_fixed_fee_required(params: &GenerateChangeParams) -> u64 {
-    let input_script_lengths: Vec<u32> = params
-        .fixed_inputs
-        .iter()
-        .map(|i| i.unlocking_script_length)
-        .collect();
-    let output_script_lengths: Vec<u32> = params
-        .fixed_outputs
-        .iter()
-        .map(|o| o.locking_script_length)
-        .collect();
-    let size = calculate_transaction_size(&input_script_lengths, &output_script_lengths);
-    (size * params.fee_rate).div_ceil(1000)
 }
 
 /// Whether every caller-provided input's signatures allow the wallet to append
@@ -4543,28 +4465,6 @@ mod tests {
     use super::*;
     use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
     use bsv_rs::wallet::{CreateActionOptions, CreateActionOutput};
-    #[test]
-    fn test_var_int_size() {
-        assert_eq!(var_int_size(0), 1);
-        assert_eq!(var_int_size(252), 1);
-        assert_eq!(var_int_size(253), 3);
-        assert_eq!(var_int_size(0xFFFF), 3);
-        assert_eq!(var_int_size(0x10000), 5);
-        assert_eq!(var_int_size(0xFFFFFFFF), 5);
-        assert_eq!(var_int_size(0x100000000), 9);
-    }
-
-    #[test]
-    fn test_calculate_transaction_size() {
-        // Empty transaction: version (4) + locktime (4) + input count varint (1) + output count varint (1)
-        let size = calculate_transaction_size(&[], &[]);
-        assert_eq!(size, 10);
-
-        // Transaction with one P2PKH input (32 + 4 + 1 + 107 + 4 = 148) and one P2PKH output (8 + 1 + 25 = 34)
-        let size = calculate_transaction_size(&[107], &[25]);
-        // 4 + 4 + 1 + 148 + 1 + 34 = 192
-        assert_eq!(size, 192);
-    }
 
     #[test]
     fn test_random_derivation() {
