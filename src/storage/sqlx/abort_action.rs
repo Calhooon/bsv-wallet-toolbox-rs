@@ -1537,10 +1537,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_abort_unproven_with_a_proven_descendant_is_refused() {
+    async fn test_abort_sending_with_a_proven_descendant_is_refused() {
         let (storage, user_id, auth) = setup_test_storage().await;
         let reference = "test-abort-ref-12d";
-        let c = seed_broadcast_chain(&storage, user_id, reference).await;
+        let c = seed_unaccepted_root(&storage, user_id, reference).await;
         sqlx::query("UPDATE transactions SET status = 'completed' WHERE transaction_id = ?")
             .bind(c.d)
             .execute(storage.writer())
@@ -1563,7 +1563,7 @@ mod tests {
             }
             other => panic!("Expected InvalidTransactionStatus, got: {:?}", other),
         }
-        assert_eq!(get_transaction_status(&storage, c.a).await, "unproven");
+        assert_eq!(get_transaction_status(&storage, c.a).await, "sending");
         assert!(!is_output_spendable(&storage, c.coin_a).await);
     }
 
