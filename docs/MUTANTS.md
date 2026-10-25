@@ -1,11 +1,17 @@
 # Mutation evidence (#57)
 
-The independent `Nightly mutants` workflow runs at 04:41 UTC and on manual
-dispatch. It is informational and must not become a required branch protection
-context. Sixteen zero-based round-robin shards cover the same complete inventory
-(about 124 mutants each at about 90 s a mutant, inside the 330 minute job).
-Each uploads its `mutants.out`, inventory and exit code for 14 days, even on
-failure. `Mutation scores` combines disjoint outcomes and prints the per-file
+The independent `Nightly mutants` workflow runs on manual dispatch only. Its
+04:41 UTC schedule is off since 2026-10-25 (#153). Two dispatches against beta
+(runs 40126339129 and 40136138380) showed sixteen round-robin shards over 1994
+mutants at about 2.8 minutes a mutant, nearly all of it the per-mutant
+`cargo test --no-run` rebuild, so every shard ran past the 330 minute job limit,
+no scores were produced, and the sixteen runner slots they held for five and a
+half hours queued every other repository's CI behind them. The schedule returns
+when the run is shaped to finish: the three door files (861 mutants) nightly in
+fewer shards and the full inventory weekly, a cheaper per-mutant build, or both.
+It is informational and must not become a required branch protection context.
+Each shard uploads its `mutants.out`, inventory and exit code for 14 days, even
+on failure. `Mutation scores` combines disjoint outcomes and prints the per-file
 table in the job summary. Missing shards, failed baselines, unfinished runs,
 duplicate mutants, unsupported outcomes and missing floor entries fail the gate.
 
@@ -18,18 +24,19 @@ an unreachable loopback proxy blocks accidental external HTTP while allowing
 the local mock servers.
 
 The workflow file lives on `main`, because GitHub fires a `schedule` only from
-the default branch and registers no workflow that exists only on `beta` (#153).
-The scheduled run checks out `beta`, where the floors in
-`tools/mutants-floor.json` were measured; `main` is the stable line. A manual
-dispatch measures the commit it was given (the sha, so every shard and the
-scores job read one tree however long they run; the schedule reads beta's tip at
-each job's start), so once the file is on `main`,
-`gh workflow run "Nightly mutants" --ref beta` measures beta by hand. A dispatch
+the default branch and registers no workflow that exists only on `beta` (#153);
+with the schedule off, the `main` copy is what makes the dispatch available.
+The floors in `tools/mutants-floor.json` were measured on `beta`; `main` is the
+stable line. A dispatch measures the commit it was given (the sha, so every
+shard and the scores job read one tree however long they run), so
+`gh workflow run "Nightly mutants" --ref beta` measures beta by hand. Dispatch
+only when nothing is landing: the shards take every runner slot the account
+has. A dispatch
 against `main` compares main's tree against the floors beta measured, since the
 tool reads `tools/mutants-floor.json` from the tree it checked out. The same
 five files on `beta` (this document, the workflow, `.cargo/mutants.toml`,
 `tools/mutants-score` and `tools/mutants-floor.json`) are the copy that moves
-with the programme; `main` carries them for the schedule.
+with the programme; `main` carries them so the dispatch is registered.
 
 ## Measurement
 
