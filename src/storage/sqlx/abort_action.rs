@@ -1529,7 +1529,7 @@ mod tests {
         .unwrap_err();
         match err {
             Error::InvalidTransactionStatus(msg) => {
-                assert!(msg.contains("reports it mined"), "{}", msg);
+                assert!(msg.contains("records an acceptance"), "{}", msg);
             }
             other => panic!("Expected InvalidTransactionStatus, got: {:?}", other),
         }
