@@ -16,8 +16,10 @@
 //! when no instance accepted, including when every named instance refused.
 //! Its label alone does not say whether the post was accepted.
 //!
-//! Acceptance is read from the transaction, its proof request and post
-//! history, broadcast memory, stored proofs, and the host's tracker word
+//! Acceptance is read from the transaction, its proof request (`unmined`,
+//! `callback`, `unconfirmed`, `completed`, `unfail`, a proof link) and post
+//! history, broadcast memory, stored proofs (whatever the request's label,
+//! `failed` included), and the host's tracker word
 //! (`announced`, `seen`, `mined`, `stale`). The check and the abort share the
 //! write lock. The chain is not consulted: no header-service or explorer
 //! call is made anywhere on the abort path, whether refused or honoured.
@@ -306,6 +308,9 @@ async fn transaction_accepting_word(
 }
 
 /// The proof request past the post, or an acceptance in its post history.
+/// `unfail` is the unfail task finding a merkle path for a failed request:
+/// the strongest word (the keeper, #165). A path stored as a proof is read
+/// by `proof_accepting_word` whatever the request's label says.
 async fn request_accepting_word(conn: &mut SqliteConnection, txid: &str) -> Result<Option<String>> {
     let req: Option<(String, String, Option<i64>)> =
         sqlx::query_as("SELECT status, history, proven_tx_id FROM proven_tx_reqs WHERE txid = ?")
@@ -317,7 +322,7 @@ async fn request_accepting_word(conn: &mut SqliteConnection, txid: &str) -> Resu
     };
     if matches!(
         status.as_str(),
-        "unmined" | "callback" | "unconfirmed" | "completed"
+        "unmined" | "callback" | "unconfirmed" | "completed" | "unfail"
     ) || proof.is_some()
     {
         return Ok(Some(format!("proof request past the post ('{status}')")));
