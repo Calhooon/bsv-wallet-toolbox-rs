@@ -454,6 +454,22 @@ async fn an_already_failed_root_still_retires_its_descendants() {
 async fn retire_undeliverable_walks_the_descendants_too() {
     let s = seed("unproven").await;
     // C1 is the tx the broadcaster dropped; C2 is chained on its change.
+    // Dropped means no instance accepted it: `sending`, `unsent`, the one
+    // memory row refused (retire refuses an accepting word, #165).
+    sqlx::query("UPDATE transactions SET status = 'sending' WHERE txid = ?")
+        .bind(C1)
+        .execute(s.storage.writer())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent' WHERE txid = ?")
+        .bind(C1)
+        .execute(s.storage.writer())
+        .await
+        .unwrap();
+    s.storage
+        .record_broadcast_status(C1, PROVIDER_ARCADE_V2, BROADCAST_STATUS_REJECTED)
+        .await
+        .unwrap();
     // The default oracle vouches for both of C1's inputs as unspent; since
     // 0.11.1 no explorer's word releases an input at retire
     // (bsv-wallet-toolbox-rs #42 point 5): both kept, scheduled.
