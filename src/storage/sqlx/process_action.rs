@@ -741,21 +741,28 @@ async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result
         .await?;
         beef.merge_beef(&ancestors);
     }
-    let tracker = storage
-        .get_chain_tracker()
-        .await
-        .ok_or_else(|| Error::InvalidOperation("process_action requires a chain tracker".into()))?;
-    super::beef_verification::verify_beef_merkle_proofs(
-        &mut beef,
-        tracker.as_ref(),
-        crate::storage::BeefVerificationMode::Strict,
-        &std::collections::HashSet::new(),
-    )
-    .await?;
+    verify_stored_post_beef(storage, &mut beef).await?;
     if beef.txs.iter().all(|tx| !tx.is_txid_only()) {
         beef.version = bsv_rs::transaction::BEEF_V1;
     }
     Ok(beef.to_binary())
+}
+
+async fn verify_stored_post_beef(storage: &StorageSqlx, beef: &mut Beef) -> Result<()> {
+    let configured = storage.get_chain_tracker().await;
+    let services = storage.get_services()?;
+    let tracker = match configured.as_deref() {
+        Some(tracker) => tracker,
+        None => services.get_chain_tracker().await?,
+    };
+    super::beef_verification::verify_beef_merkle_proofs(
+        beef,
+        tracker,
+        crate::storage::BeefVerificationMode::Strict,
+        &std::collections::HashSet::new(),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn post_stored_actions(
