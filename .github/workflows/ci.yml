@@ -18,7 +18,7 @@ name: CI
 # The balance (the owner's word of 2026-10-26, through the stack keeper): a pull
 # request runs the required set on one OS and one toolchain; a push to `main`
 # or `beta`, and a tag through release.yml, runs the full matrix (both OSes,
-# the beta toolchain, coverage, bench, dependents). The
+# the beta toolchain, coverage, bench; dependents on a push, never on a tag). The
 # `dependents` job builds the CLI's beta on beta and its main on main (#208); it
 # reports and does not fail the run on beta while the CLI's beta adapts to the
 # doors landed after 0.14.0-beta.1, and the step named "Why this job may not
@@ -386,8 +386,9 @@ jobs:
           exit "$status"
 
   # Every dependent in docs/DEPENDENTS.md whose ci column is `yes`, cloned at
-  # its default branch, built and tested against this tree as a path
-  # dependency. The clones are reads of public repositories; no token.
+  # its branch named after the line under test (the CLI's beta on beta, #208;
+  # its default branch when it has none), built and tested against this tree as
+  # a path dependency. The clones are reads of public repositories; no token.
   dependents:
     name: dependents
     if: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') }}

@@ -1,7 +1,7 @@
 # Dependents
 
 The crates that build on `bsv-wallet-toolbox-rs`, read from their manifests at
-their default branches on 2026-10-23. Every pin-move PR in a dependent (or here,
+the branch matching each of this crate's lines (2026-10-26; the CLI's main and beta). Every pin-move PR in a dependent (or here,
 when a release moves what a dependent should take) updates its row in the same
 PR, so this page stays current.
 
