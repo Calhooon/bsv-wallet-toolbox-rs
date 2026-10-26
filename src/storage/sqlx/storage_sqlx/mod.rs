@@ -213,7 +213,7 @@ pub struct StorageSqlxOptions {
 /// `StoreBusy`) instead of queueing on one writer, and two reservation sets.
 pub struct StorageSqlx {
     /// The store's random stream, shared by every cloned handle.
-    _rng: Arc<crate::wallet::RandomSource>,
+    pub(super) rng: Arc<crate::wallet::RandomSource>,
     /// The reader pool: several connections, each `PRAGMA query_only = ON`,
     /// so a write sent here fails loudly instead of racing the writer.
     reader: Pool<Sqlite>,
@@ -279,7 +279,7 @@ pub struct StorageSqlx {
 impl Clone for StorageSqlx {
     fn clone(&self) -> Self {
         Self {
-            _rng: Arc::clone(&self._rng),
+            rng: Arc::clone(&self.rng),
             reader: self.reader.clone(),
             writer: self.writer.clone(),
             settings: Arc::clone(&self.settings),
@@ -390,7 +390,7 @@ impl StorageSqlx {
         ));
 
         Ok(Self {
-            _rng: Arc::new(crate::wallet::RandomSource::new(storage_options.rng_seed)),
+            rng: Arc::new(crate::wallet::RandomSource::new(storage_options.rng_seed)),
             reader,
             writer,
             settings: Default::default(),

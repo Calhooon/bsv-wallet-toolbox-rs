@@ -9,6 +9,7 @@ use super::signing::caller_inputs_permit_funding;
 use super::AllocatedChangeInput;
 use crate::error::{Error, Result};
 use crate::storage::entities::TableOutputBasket;
+use crate::wallet::RandomSource;
 use sqlx::sqlite::SqliteConnection;
 
 /// Parameters for change generation.
@@ -44,12 +45,9 @@ pub(super) struct ChangeOutput {
 // =============================================================================
 
 /// Generates a random base64-encoded string for derivation paths.
+#[cfg(test)]
 pub(super) fn random_derivation(count: usize) -> String {
-    use rand::RngCore;
-    let mut rng = rand::thread_rng();
-    let mut bytes = vec![0u8; count];
-    rng.fill_bytes(&mut bytes);
-    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
+    RandomSource::new(None).base64(count)
 }
 
 /// Fees and change for the action: the caller-complete plan, else
@@ -67,6 +65,7 @@ pub(super) async fn plan_change(
     available_change_count: usize,
     is_delayed: bool,
     pick: &mut ChangePick<'_>,
+    rng: &RandomSource,
 ) -> Result<(GenerateChangeResult, String)> {
     let fee_rate = DEFAULT_FEE_RATE_SAT_PER_KB;
 
@@ -98,7 +97,7 @@ pub(super) async fn plan_change(
         ),
     };
 
-    let derivation_prefix = random_derivation(16);
+    let derivation_prefix = rng.base64(16);
 
     // A caller-complete transaction — every provided input already carries a full
     // unlocking script — is decided by two questions (see `caller_complete_plan`):
@@ -178,6 +177,7 @@ pub(super) async fn plan_change(
                     &derivation_prefix,
                     is_delayed,
                     pick,
+                    rng,
                 )
                 .await?
             }
@@ -192,6 +192,7 @@ pub(super) async fn plan_change(
             &derivation_prefix,
             is_delayed,
             pick,
+            rng,
         )
         .await?
     };
@@ -266,6 +267,7 @@ async fn generate_change(
     derivation_prefix: &str,
     is_delayed: bool,
     pick: &mut ChangePick<'_>,
+    rng: &RandomSource,
 ) -> Result<GenerateChangeResult> {
     let mut allocated_inputs: Vec<AllocatedChangeInput> = Vec::new();
     let mut change_outputs: Vec<ChangeOutput> = Vec::new();
@@ -339,7 +341,7 @@ async fn generate_change(
             satoshis,
             vout: (params.fixed_outputs.len() + change_outputs.len()) as u32,
             derivation_prefix: derivation_prefix.to_string(),
-            derivation_suffix: random_derivation(16),
+            derivation_suffix: rng.base64(16),
         });
 
         // Recalculate fee_excess with new output
@@ -403,7 +405,7 @@ async fn generate_change(
                         satoshis,
                         vout: (params.fixed_outputs.len() + change_outputs.len()) as u32,
                         derivation_prefix: derivation_prefix.to_string(),
-                        derivation_suffix: random_derivation(16),
+                        derivation_suffix: rng.base64(16),
                     });
                     let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
                     fee_excess = new_excess;
@@ -440,7 +442,7 @@ async fn generate_change(
                 satoshis: 1, // Minimum; Step 3 will distribute the real excess
                 vout: params.fixed_outputs.len() as u32,
                 derivation_prefix: derivation_prefix.to_string(),
-                derivation_suffix: random_derivation(16),
+                derivation_suffix: rng.base64(16),
             });
             let (_, _, _, new_excess) = calculate_state(&allocated_inputs, &change_outputs);
             if new_excess >= 0 {

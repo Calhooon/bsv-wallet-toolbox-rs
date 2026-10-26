@@ -690,7 +690,7 @@ async fn prepare_stored_posts(
     if posts.iter().any(|post| post.status == "failed") {
         return Ok(posts);
     }
-    let batch = (posts.len() > 1).then(generate_batch_id);
+    let batch = (posts.len() > 1).then(|| storage.rng.base64(16));
     for post in posts.iter().filter(|post| post.status == "sending") {
         let request_id = post
             .request_id
@@ -1081,7 +1081,7 @@ pub(super) async fn process_action_writes(
     }
 
     let batch = if txids_to_broadcast.len() > 1 {
-        Some(generate_batch_id())
+        Some(storage.rng.base64(16))
     } else {
         None
     };
@@ -1161,12 +1161,9 @@ pub(super) async fn process_action_writes(
     })
 }
 
+#[cfg(test)]
 fn generate_batch_id() -> String {
-    use rand::RngCore;
-    let mut rng = rand::thread_rng();
-    let mut bytes = [0u8; 16];
-    rng.fill_bytes(&mut bytes);
-    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    crate::wallet::RandomSource::new(None).base64(16)
 }
 
 // =============================================================================

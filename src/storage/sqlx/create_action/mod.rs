@@ -340,7 +340,8 @@ impl Door<'_> {
         .await?;
 
         // Step 6: Create transaction record in DB
-        let transaction_id = create_transaction_record(&mut tx, user_id, args).await?;
+        let transaction_id =
+            create_transaction_record(&mut tx, user_id, args, &self.storage.rng).await?;
 
         // Step 7: Create transaction labels
         if let Some(ref labels) = args.labels {
@@ -367,6 +368,7 @@ impl Door<'_> {
                 allowed: &allowed,
                 allow_received: self.allows_received(),
             },
+            &self.storage.rng,
         )
         .await
         {
@@ -688,3 +690,7 @@ impl Door<'_> {
 #[cfg(test)]
 #[path = "tests/door.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/seed.rs"]
+mod seed_tests;

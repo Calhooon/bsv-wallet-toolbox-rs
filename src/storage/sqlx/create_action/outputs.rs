@@ -1,7 +1,7 @@
-use super::change::random_derivation;
 use crate::error::Result;
 use crate::storage::entities::{TableOutputBasket, TableOutputTag, TableTxLabel};
 use crate::storage::traits::StorageProvidedBy;
+use crate::wallet::RandomSource;
 use chrono::Utc;
 use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
@@ -19,11 +19,6 @@ pub(super) struct ExtendedOutput {
     pub(super) provided_by: StorageProvidedBy,
     pub(super) purpose: Option<String>,
     pub(super) derivation_suffix: Option<String>,
-}
-
-/// Generates a random reference string.
-fn random_reference() -> String {
-    random_derivation(12)
 }
 
 /// Validates and extends output specifications.
@@ -57,9 +52,10 @@ pub(super) async fn create_transaction_record(
     conn: &mut SqliteConnection,
     user_id: i64,
     args: &bsv_rs::wallet::CreateActionArgs,
+    rng: &RandomSource,
 ) -> Result<i64> {
     let now = Utc::now();
-    let reference = random_reference();
+    let reference = rng.base64(12);
     let version = args.version.unwrap_or(1) as i32;
     let lock_time = args.lock_time.unwrap_or(0) as i64;
 
