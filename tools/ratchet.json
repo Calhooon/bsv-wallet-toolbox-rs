@@ -11,9 +11,9 @@
     "undocumented_public_items": 308
   },
   "clippy_pedantic": {
-    "total": 3277,
+    "total": 3275,
     "by_lint": {
-      "clippy::assigning_clones": 3,
+      "clippy::assigning_clones": 4,
       "clippy::bool_to_int_with_if": 6,
       "clippy::case_sensitive_file_extension_comparisons": 3,
       "clippy::cast_lossless": 46,
@@ -23,7 +23,7 @@
       "clippy::cast_sign_loss": 70,
       "clippy::checked_conversions": 1,
       "clippy::default_trait_access": 38,
-      "clippy::doc_markdown": 728,
+      "clippy::doc_markdown": 727,
       "clippy::duration_suboptimal_units": 37,
       "clippy::enum_glob_use": 1,
       "clippy::explicit_iter_loop": 4,
@@ -61,7 +61,7 @@
       "clippy::struct_field_names": 6,
       "clippy::too_many_lines": 64,
       "clippy::trivially_copy_pass_by_ref": 1,
-      "clippy::uninlined_format_args": 683,
+      "clippy::uninlined_format_args": 681,
       "clippy::unnecessary_wraps": 2,
       "clippy::unreadable_literal": 323,
       "clippy::unused_async": 1,
@@ -96,8 +96,8 @@
   "files_over_800": {
     "limit": 800,
     "count": 33,
-    "src_files": 176,
-    "src_lines": 99847,
+    "src_files": 177,
+    "src_lines": 100336,
     "max_lines": 4573,
     "files": {
       "src/services/services.rs": 4573,
@@ -120,7 +120,7 @@
       "src/services/providers/bananablocks.rs": 1474,
       "src/services/providers/whatsonchain.rs": 1381,
       "src/services/providers/bitails.rs": 1151,
-      "src/wallet/certificate_issuance.rs": 1141,
+      "src/wallet/certificate_issuance.rs": 1146,
       "src/storage/sqlx/beef_verification.rs": 1104,
       "src/wallet/signer.rs": 1081,
       "src/services/broadcast_memory.rs": 1060,
@@ -261,8 +261,8 @@
       "src/storage/sqlx/sync.rs::upsert_transaction 84",
       "src/storage/traits.rs::create_action_at_door 66",
       "src/wallet/certificate_issuance.rs::acquire_certificate_issuance 79",
-      "src/wallet/certificate_issuance.rs::parse_certificate_response 108",
-      "src/wallet/certificate_issuance.rs::prepare_issuance_action_data 77",
+      "src/wallet/certificate_issuance.rs::parse_certificate_response 106",
+      "src/wallet/certificate_issuance.rs::prepare_issuance_action_data 74",
       "src/wallet/certificate_issuance.rs::store_certificate 108",
       "src/wallet/certificate_issuance.rs::verify_certificate_issuance 129",
       "src/wallet/lookup.rs::query_overlay 83",
@@ -320,8 +320,8 @@
   },
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
-    "count": 6777,
-    "windows": 74927,
+    "count": 6776,
+    "windows": 75377,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:37 = src/storage/sqlx/create_action/tests/beef_options.rs:406 (39 lines)",
