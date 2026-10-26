@@ -1,0 +1,114 @@
+{
+  "description": "A certificate field value is the UTF-8 bytes of its base64 text, held, written and signed (#261): a certificate the reference issued with encrypted fields and one issued by this crate, each with the reference's verify() verdict and the plaintexts the reference decrypts",
+  "reference": "@bsv/sdk at ts-stack@edf6e03 (packages/sdk, bundled with bun build), run under Node v22.18.0 by tests/support/certificate_field_value_261.mjs",
+  "brc": "BRC-52 at brcs@5119a9b peer-to-peer/0052.md:41,97",
+  "commands": "see the header of tests/support/certificate_field_value_261.mjs",
+  "reference_issued": {
+    "origin": "issued by the reference's MasterCertificate.issueCertificateForSubject (certifier key 31, subject key 37, type 32 x 0x06, serial 32 x 0x07, revocation outpoint 32 zero bytes index 0), keyrings by createKeyringForVerifier for verifier key 41 and for the anyone key (1); randomness the script's SHA-256 counter stream",
+    "keys": {
+      "certifier": 31,
+      "subject": 37,
+      "verifier": 41
+    },
+    "plaintexts": {
+      "name": "Alice Example",
+      "email": "alice@example.com",
+      "city": "Zoë's Café"
+    },
+    "certificate": {
+      "type": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=",
+      "serialNumber": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+      "subject": "0362d14dab4150bf497402fdc45a215e10dcb01c354959b10cfe31c7e9d87ff33d",
+      "certifier": "026a245bf6dc698504c89a20cfded60853152b695336c28063b61c65cbd269e6b4",
+      "revocationOutpoint": "0000000000000000000000000000000000000000000000000000000000000000.0",
+      "fields": {
+        "name": "1tqmut0QMhIOTCzd4bweSBgqbBffIm31JOnLrp8Y8uOzFb+xO1Oo7T/LvIV+IFscbu7vGrEEzSYR84juSQ==",
+        "email": "V0tMjZH/XCMMkHQQ1lD00kacXr3Id3ElEilo7tNmUA1Pn5GFuSDcTY1hiJjvFvm8jLdLUPtjZiTr9sEEdgBO/T0=",
+        "city": "8AVaV0itUB4m+zObKAeFYKIIjpejSqbBnyIGZxPjPzS+dITvCS4NNhUAxCshgdTgD8VsIKoSVO5upIz3"
+      },
+      "signature": "3044022044df249b593576bf9d1e0be7a6b33fad142a6978eb073edcedc5301c9e154e9c02204c9771d4d2be8359c54bec15b828f42c530d70ba7d54a31173e6a39525d4f836"
+    },
+    "master_keyring": {
+      "name": "6we4oalmCKc62+EkNLapNrL6Jm7WHQoiM1b3SEs+3ul7/WvVODHFXJybonhHYFBlTHygzZ9r5OWkOdNqUC3I4lg0r49/8KSTBfOrfvrtWdI=",
+      "email": "a7PldlaPhfHmlKJ0nAo13f/XTiSaCtoWbY44SLbvwL624A6XFGYSFxt1po3s+hPMFD1ctBCIpPgcgyewhI9Z+2RAm2dDjPe8yj8HSplCK1E=",
+      "city": "hUNaZqJe4IZAjpJGMVRFQ50kioJe/UTJdRvqSvZR0ikn3tCswEfot6ASTVpKAeFLpD8YGmHY3ESoF3EhWxDpaeRkpM/oBXe2DR5exjnB/Ds="
+    },
+    "verifier_keyring": {
+      "city": "vnuLa0zQ6u9W5qvyiBoXvk0DsOel/E8rYlUtzX6B0Ia5ikwE8wADGe6lQ5+JKP6ke72vNpJKH+NlQwP91+jk5C2zLP/Igy7SFNrJKDSg9b8=",
+      "email": "yxTg4wlKIEOOI0Jssp2jGVvU8chHZemqmqqWjMRHKZcBjns1YeauluN61JhHX6wnrerIGV0K4X3Cwkj2qlqXcO3xXMNP3HO1wxgIePpPlCE=",
+      "name": "Rsspxvwd22lCwOcOXORM26GGhq1g/IlGBqw5CRLqI3wa9PLNuUumrb0BjMolWVxU+NGnwulE+6xs9J8za5/6zK2IZkdTZYEGakWaW/KYvAc="
+    },
+    "anyone_keyring": {
+      "city": "LCRGRUggQV8iT/zSUk4iikMHOryxRbBYuE3kiPcyZvKuHpYFEaqdaw/uttAJoxiDRCJcpGKpbVUh59tQHgZYqtsUbQDwzxk8TW0mJ38F7fQ=",
+      "email": "n0vlcZy6NoNsESGdiVLGERLRHCky2TQ4Ktg+d6TeHyR6A/1rKilTwBh2nJaqNtkbAsiOXxmN+JRVGTN0fnT42FZImiluM55sHz6O+PO0Gmc=",
+      "name": "30Ev92wNRogO0Y+g3BShQNa3ZpZ8jEkszaJXYuuz5i1KWW5N6jpUV/Y5QUce5AowokSOQp5dZ9/hCUX+1C7x/Alr9nNshY5oMRnjBR1azg0="
+    },
+    "binary_hex": "060606060606060606060606060606060606060606060606060606060606060607070707070707070707070707070707070707070707070707070707070707070362d14dab4150bf497402fdc45a215e10dcb01c354959b10cfe31c7e9d87ff33d026a245bf6dc698504c89a20cfded60853152b695336c28063b61c65cbd269e6b40000000000000000000000000000000000000000000000000000000000000000000304636974795038415661563069745542346d2b7a4f624b416546594b49496a70656a537162426e7949475a78506a507a532b644954764353344e4e685541784373686764546744385673494b6f53564f357570497a3305656d61696c585630744d6a5a482f58434d4d6b485151316c4430306b6163587233496433456c45696c6f37744e6d554131506e3547467553446354593168694a6a7646766d386a4c644c5550746a5a695472397345456467424f2f54303d046e616d65543174716d757430514d68494f54437a64346277655342677162426666496d33314a4f6e4c7270385938754f7a46622b784f314f6f37542f4c7649562b4946736362753776477245457a53595238346a7553513d3d3044022044df249b593576bf9d1e0be7a6b33fad142a6978eb073edcedc5301c9e154e9c02204c9771d4d2be8359c54bec15b828f42c530d70ba7d54a31173e6a39525d4f836",
+    "preimage_sha256": "bdb4d0c7b9b81d1bc6ba69e8514f0f3b7077f164d10d4bd80396c098dc70259b",
+    "reference_verify": true,
+    "reference_master_plaintexts": {
+      "name": "Alice Example",
+      "email": "alice@example.com",
+      "city": "Zoë's Café"
+    },
+    "reference_verifier_plaintexts": {
+      "city": "Zoë's Café",
+      "email": "alice@example.com",
+      "name": "Alice Example"
+    },
+    "reference_anyone_plaintexts": {
+      "city": "Zoë's Café",
+      "email": "alice@example.com",
+      "name": "Alice Example"
+    }
+  },
+  "rust_issued": {
+    "binary_hex": "080808080808080808080808080808080808080808080808080808080808080809090909090909090909090909090909090909090909090909090909090909090277f230936ee88cbbd73df930d64702ef881d811e0e1498e2f1c13eb1fc345d7403d528ecd9b696b54c907a9ed045447a79bb408ec39b68df504bb51f459bc3ffc90000000000000000000000000000000000000000000000000000000000000000000304636974795044783743435636566a6f2b6432683054615674666d58656475684e66624466704d52616c6a4f35564f497834724d492b313168754c4d4d4c74556e486e30417972414963395759702b366777617a535805656d61696c543253414c3641377935472b6678363159657650356e674d346d686b70414c335378677176656136473765344c36463977527a48504b586931744d4f6245454455374e3370384642536b6963715a452b7953546e2b046e616d6550466d6b497774533838466a794b44484b6642453149443033756f686267546f43526b4c436873673154323361457267594832367834492f504b4d6c6576786d633844757a6d4a4256784c616b67544d3d30450221008c588c3122a934c3468df29255903f83da565a2ef130a8cecaeb59dfc00c8c8d0220462260d24f25884bac0cff993a0b305a73304e65c00d3f4b3ce09f4eb453bf1d",
+    "certificate": {
+      "certifier": "03d528ecd9b696b54c907a9ed045447a79bb408ec39b68df504bb51f459bc3ffc9",
+      "fields": {
+        "city": "Dx7CCV6Vjo+d2h0TaVtfmXeduhNfbDfpMRaljO5VOIx4rMI+11huLMMLtUnHn0AyrAIc9WYp+6gwazSX",
+        "email": "2SAL6A7y5G+fx61YevP5ngM4mhkpAL3Sxgqvea6G7e4L6F9wRzHPKXi1tMObEEDU7N3p8FBSkicqZE+ySTn+",
+        "name": "FmkIwtS88FjyKDHKfBE1ID03uohbgToCRkLChsg1T23aErgYH26x4I/PKMlevxmc8DuzmJBVxLakgTM="
+      },
+      "revocationOutpoint": "0000000000000000000000000000000000000000000000000000000000000000.0",
+      "serialNumber": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
+      "signature": "30450221008c588c3122a934c3468df29255903f83da565a2ef130a8cecaeb59dfc00c8c8d0220462260d24f25884bac0cff993a0b305a73304e65c00d3f4b3ce09f4eb453bf1d",
+      "subject": "0277f230936ee88cbbd73df930d64702ef881d811e0e1498e2f1c13eb1fc345d74",
+      "type": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg="
+    },
+    "keys": {
+      "certifier": 43,
+      "subject": 47,
+      "verifier": 41
+    },
+    "master_keyring": {
+      "city": "ox2JmPShy80RTawkFmAOE2SZYjxNSGgR4iByoF1g04qP8y2yut6AGtBYOefwliq7Or4WfP2nuFYPg4e76abbtIvLqnWmLzgXGiMXEzsMQrY=",
+      "email": "x8UKWG+BLKid0AoRF1JcODqJ5xMNwe/20523E7gePYcwHpCkuMP1veej1TCc2YSzP3/d83V4EUYANKG/LhNuA9WvAwoQtrvGJm+NSBPqzYU=",
+      "name": "+b+VuPeL31IjjFjYgGq8+cYPIyrexsFj7nsG4r4gFgtZsYLwfGPEzYMJ8IUGB5YYhsigBQpDuHyKuf5hsTyT6gf0sNyJLrZ1aGEi+hAFRos="
+    },
+    "origin": "issued by this crate's MasterCertificate::issue_for_subject (certifier key 43, subject key 47, type 32 x 0x08, serial 32 x 0x09, no revocation outpoint) with a keyring for verifier key 41 by create_keyring_for_verifier",
+    "plaintexts": {
+      "city": "Zoë's Café",
+      "email": "bob@example.com",
+      "name": "Bob Example"
+    },
+    "verifier_keyring": {
+      "city": "6xd67MP8Pgke9GCW1sw/0iN0a2de5w5bXCkqPJn63QOwQlsuWyLVydnEXmBh3W2BMbIRSn3swFDyEMqsahWisWzJH/cJ12YshvDrbVn51rY=",
+      "email": "osZJhd05NznGdZv9OPmVoTlVyh06U/gCvwrPcD87haoeuU4ZU0oEo5lThcbm56acNVfq8sxvl9VndRefTZg9TfoV6bg0IKwdHNaVV9GJ4a8=",
+      "name": "BKoNu6/szv28sT0raGO5job72ATPgF+W8Z3hAvoTO4PpDgtsGs2ZTXmXT4/s5JBlf+hkU1lXJ9tEP+HaCeZMpp44/Wf8Plzcm0WTDxPsAoc="
+    },
+    "reference_to_binary_hex": "080808080808080808080808080808080808080808080808080808080808080809090909090909090909090909090909090909090909090909090909090909090277f230936ee88cbbd73df930d64702ef881d811e0e1498e2f1c13eb1fc345d7403d528ecd9b696b54c907a9ed045447a79bb408ec39b68df504bb51f459bc3ffc90000000000000000000000000000000000000000000000000000000000000000000304636974795044783743435636566a6f2b6432683054615674666d58656475684e66624466704d52616c6a4f35564f497834724d492b313168754c4d4d4c74556e486e30417972414963395759702b366777617a535805656d61696c543253414c3641377935472b6678363159657650356e674d346d686b70414c335378677176656136473765344c36463977527a48504b586931744d4f6245454455374e3370384642536b6963715a452b7953546e2b046e616d6550466d6b497774533838466a794b44484b6642453149443033756f686267546f43526b4c436873673154323361457267594832367834492f504b4d6c6576786d633844757a6d4a4256784c616b67544d3d30450221008c588c3122a934c3468df29255903f83da565a2ef130a8cecaeb59dfc00c8c8d0220462260d24f25884bac0cff993a0b305a73304e65c00d3f4b3ce09f4eb453bf1d",
+    "reference_verify": true,
+    "reference_master_plaintexts": {
+      "city": "Zoë's Café",
+      "email": "bob@example.com",
+      "name": "Bob Example"
+    },
+    "reference_verifier_plaintexts": {
+      "city": "Zoë's Café",
+      "email": "bob@example.com",
+      "name": "Bob Example"
+    }
+  }
+}
