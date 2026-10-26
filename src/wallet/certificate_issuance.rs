@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bsv_rs::auth::certificates::Certificate;
-use bsv_rs::primitives::PublicKey;
+use bsv_rs::primitives::{PublicKey, SymmetricKey};
 use bsv_rs::wallet::{
     AcquireCertificateArgs, Counterparty, Protocol, SecurityLevel, VerifyHmacArgs,
     WalletCertificate, WalletInterface,
@@ -259,8 +259,8 @@ where
 
 /// Prepares the certificate signing request payload.
 ///
-/// Generates a random nonce and creates encrypted certificate fields using
-/// the SDK's MasterCertificate::create_certificate_fields.
+/// Generates a random nonce, encrypts each field with a fresh symmetric key,
+/// and wraps those keys for the certifier.
 async fn prepare_issuance_action_data<W>(
     wallet: &W,
     args: &AcquireCertificateArgs,
@@ -293,10 +293,7 @@ where
     cert_type_array.copy_from_slice(&cert_type_bytes);
     let cert_type_b64 = args.certificate_type.clone();
 
-    // Create encrypted certificate fields using SDK
-    // Note: We need to use MasterCertificate::create_certificate_fields
-    // but it requires the certifier's wallet. For issuance, we create
-    // the fields ourselves since we're the subject encrypting for certifier.
+    // Create field ciphertexts and wrap their keys from subject to certifier.
     let (encrypted_fields, master_keyring) = create_certificate_fields_for_issuance(
         wallet,
         certifier,
@@ -341,8 +338,8 @@ where
 
 /// Creates encrypted certificate fields for issuance.
 ///
-/// This encrypts field values from the subject to the certifier, creating
-/// both the encrypted field values and the master keyring.
+/// Each field is encrypted with its own random symmetric key. The subject
+/// wallet encrypts that key for the certifier to form the master keyring.
 async fn create_certificate_fields_for_issuance<W>(
     wallet: &W,
     certifier: &PublicKey,
@@ -362,14 +359,20 @@ where
     let mut master_keyring = HashMap::new();
 
     for (field_name, plain_value) in plain_fields {
+        let field_key = SymmetricKey::random();
+        let ciphertext = field_key.encrypt(plain_value.as_bytes()).map_err(|e| {
+            Error::ValidationError(format!("Failed to encrypt field '{field_name}': {e}"))
+        })?;
+
         // Key ID for master encryption is just the field name
         let key_id = field_name.clone();
 
-        // Encrypt the field value from subject to certifier
+        // Encrypt the field key from subject to certifier, as in
+        // ts-stack@edf6e03 MasterCertificate.ts:277-293.
         let encrypt_result = wallet
             .encrypt(
                 EncryptArgs {
-                    plaintext: plain_value.as_bytes().to_vec(),
+                    plaintext: field_key.as_bytes().to_vec(),
                     protocol_id: protocol.clone(),
                     key_id: key_id.clone(),
                     counterparty: Some(Counterparty::Other(certifier.clone())),
@@ -379,10 +382,10 @@ where
             )
             .await
             .map_err(|e| {
-                Error::ValidationError(format!("Failed to encrypt field '{}': {}", field_name, e))
+                Error::ValidationError(format!("Failed to encrypt field key '{field_name}': {e}"))
             })?;
 
-        encrypted_fields.insert(field_name.clone(), encrypt_result.ciphertext.clone());
+        encrypted_fields.insert(field_name.clone(), ciphertext);
         master_keyring.insert(field_name.clone(), encrypt_result.ciphertext);
     }
 
@@ -549,12 +552,10 @@ fn parse_certificate_response(
         }
     }
 
-    // Set encrypted fields
+    // The signed field value is the Base64 text's UTF-8 bytes (BRC-52).
+    // bsv-rs 0.9.0-beta.1 takes bytes here; decode only when decrypting.
     for (name, value) in &cert_resp.fields {
-        let decoded = BASE64.decode(value).map_err(|e| {
-            Error::ValidationError(format!("Failed to decode field '{}': {}", name, e))
-        })?;
-        certificate.set_field(name.clone(), decoded);
+        certificate.set_field(name.clone(), value.as_bytes().to_vec());
     }
 
     // Set signature
