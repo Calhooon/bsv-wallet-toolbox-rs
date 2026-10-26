@@ -92,3 +92,5 @@ match the failing fixture`. Both changes were removed after the runs.
 This vector witnesses T2 (checked evidence), T4 (the script's verdict), and
 T6 (executable evidence). The captain sends this directory and its pinned output
 to the stack keeper for the owner's upstream filing. No fix is proposed here.
+
+Upstream: filed as [bsv-blockchain/ts-stack#1380](https://github.com/bsv-blockchain/ts-stack/issues/1380) under the owner's name on 2026-10-26 by the stack keeper, citing this vector at beta 82e822e, `internalizeAction.ts:456` and `Beef.ts:1020-1035` at edf6e03, and BRC-62 `0062.md:185`.
