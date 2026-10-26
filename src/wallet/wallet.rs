@@ -46,6 +46,9 @@ use crate::wallet::lookup::OverlayLookupResolver;
 
 use super::signer::{SignerInput, WalletSigner};
 
+#[path = "validation.rs"]
+mod validation;
+
 #[cfg(test)]
 #[path = "rng_tests.rs"]
 mod rng_tests;
@@ -1109,6 +1112,7 @@ where
         offer: Option<&[i64]>,
     ) -> bsv_rs::Result<CreateActionResult> {
         validate_originator(originator)?;
+        validation::validate_create_action_inputs(&args)?;
 
         // Serialize spending operations to prevent UTXO contention and
         // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).
