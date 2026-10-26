@@ -286,32 +286,7 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
 async fn sign_action_on_a_busy_store_is_wallet_busy_and_keeps_the_action() {
     let (_dir, wallet) = wallet().await;
     unsigned_action(&wallet, "sign-busy").await;
-    let mut tx = Transaction::new();
-    let mut input = TransactionInput::new("22".repeat(32), 0);
-    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
-        satoshis: Some(1_000),
-        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
-        change: false,
-    });
-    wallet.pending_transactions.write().await.insert(
-        "sign-busy".to_string(),
-        PendingSignAction {
-            transaction: PendingTransaction {
-                reference: "sign-busy".to_string(),
-                raw_tx: tx.to_binary(),
-                inputs: vec![],
-                input_beef: None,
-                is_no_send: true,
-                is_delayed: false,
-                send_with: vec![],
-                created_at: Utc::now(),
-            },
-            storage_inputs: HashSet::new(),
-            unlocking_script_lengths: vec![],
-        },
-    );
+    pending(&wallet, "sign-busy", "22").await;
 
     let held = wallet.storage().write_tx().await.unwrap();
     let result = wallet
