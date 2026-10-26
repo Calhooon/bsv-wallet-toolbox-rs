@@ -561,3 +561,7 @@ mod tests {
         assert!(inline_proof_material(&base("fea3", Some(1))).is_some()); // complete
     }
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "arcade_events_tests.rs"]
+mod storage_tests;
