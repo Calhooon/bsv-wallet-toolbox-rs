@@ -1,0 +1,24 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "listCertificates",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "certifiers": [
+        "021111111111111111111111111111111111111111111111111111111111111111"
+      ],
+      "limit": 3,
+      "offset": 2,
+      "privileged": true,
+      "privilegedReason": "wire scene",
+      "types": [
+        "dHlwZQ=="
+      ]
+    }
+  ]
+}

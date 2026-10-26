@@ -1,0 +1,15 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "abortAction",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "reference": "cmVm"
+    }
+  ]
+}

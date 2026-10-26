@@ -1,0 +1,136 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "createAction",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "description": "storage wire scene",
+      "includeAllSourceTransactions": true,
+      "inputBeef": [
+        0,
+        128,
+        255
+      ],
+      "inputs": [
+        {
+          "inputDescription": "wire input",
+          "outpoint": "2222222222222222222222222222222222222222222222222222222222222222.1",
+          "sequenceNumber": 42,
+          "unlockingScript": "51",
+          "unlockingScriptLength": 1
+        }
+      ],
+      "isDelayed": true,
+      "isNewTx": true,
+      "isNoSend": true,
+      "isRemixChange": false,
+      "isSendWith": true,
+      "isSignAction": true,
+      "labels": [
+        "label"
+      ],
+      "lockTime": 42,
+      "options": {
+        "acceptDelayedBroadcast": true,
+        "knownTxids": [
+          [
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34
+          ]
+        ],
+        "noSend": true,
+        "noSendChange": [
+          "2222222222222222222222222222222222222222222222222222222222222222.1"
+        ],
+        "randomizeOutputs": false,
+        "returnTxidOnly": true,
+        "sendWith": [
+          [
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34,
+            34
+          ]
+        ],
+        "signAndProcess": true,
+        "trustSelf": "known"
+      },
+      "outputs": [
+        {
+          "basket": "basket",
+          "customInstructions": "keep",
+          "lockingScript": "51",
+          "outputDescription": "wire output",
+          "satoshis": 100,
+          "tags": [
+            "tag"
+          ]
+        }
+      ],
+      "version": 1
+    }
+  ]
+}

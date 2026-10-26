@@ -1,0 +1,20 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "findTransactions",
+  "params": [
+    {
+      "noRawTx": true,
+      "orderDescending": true,
+      "paged": {
+        "limit": 3,
+        "offset": 2
+      },
+      "partial": {},
+      "since": "2026-01-02T03:04:05Z",
+      "status": [
+        "nonFinal"
+      ]
+    }
+  ]
+}

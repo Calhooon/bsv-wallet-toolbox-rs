@@ -1,0 +1,22 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "insertCertificateFieldAuth",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "certificateFieldId": 5,
+      "certificateId": 4,
+      "createdAt": "2026-01-02T03:04:05Z",
+      "fieldName": "name",
+      "fieldValue": "encrypted",
+      "masterKey": "a2V5",
+      "updatedAt": "2026-01-02T03:04:05Z",
+      "userId": 7
+    }
+  ]
+}

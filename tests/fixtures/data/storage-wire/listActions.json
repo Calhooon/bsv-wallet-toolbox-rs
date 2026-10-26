@@ -1,0 +1,27 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "listActions",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "includeInputSourceLockingScripts": true,
+      "includeInputUnlockingScripts": true,
+      "includeInputs": true,
+      "includeLabels": true,
+      "includeOutputLockingScripts": true,
+      "includeOutputs": true,
+      "labelQueryMode": "all",
+      "labels": [
+        "label"
+      ],
+      "limit": 3,
+      "offset": 2,
+      "seekPermission": false
+    }
+  ]
+}

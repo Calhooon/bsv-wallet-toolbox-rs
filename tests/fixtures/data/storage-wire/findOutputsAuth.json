@@ -1,0 +1,31 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "findOutputsAuth",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "noScript": true,
+      "orderDescending": true,
+      "paged": {
+        "limit": 3,
+        "offset": 2
+      },
+      "partial": {
+        "basketId": 10,
+        "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+        "userId": 7,
+        "vout": 1
+      },
+      "since": "2026-01-02T03:04:05Z",
+      "txStatus": [
+        "noSend",
+        "nonFinal"
+      ]
+    }
+  ]
+}
