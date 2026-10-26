@@ -1,0 +1,111 @@
+[package]
+name = "bsv-wallet-toolbox-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bsv-rs = { version = "0.8.0", features = ["full", "http"] }
+tokio = { version = "1", features = ["rt", "time"] }
+serde_json = "1"
+hex = "0.4"
+chrono = "0.4"
+
+[dependencies.bsv-wallet-toolbox-rs]
+path = ".."
+features = ["bench-support"]
+
+# Kept out of the root crate's workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "beef_door"
+path = "fuzz_targets/beef_door.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tsc_proof"
+path = "fuzz_targets/tsc_proof.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "merkle_path"
+path = "fuzz_targets/merkle_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "broadcast_memory"
+path = "fuzz_targets/broadcast_memory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "arcade_sse"
+path = "fuzz_targets/arcade_sse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "whatsonchain"
+path = "fuzz_targets/whatsonchain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bitails"
+path = "fuzz_targets/bitails.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bananablocks"
+path = "fuzz_targets/bananablocks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "arc"
+path = "fuzz_targets/arc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "arcade"
+path = "fuzz_targets/arcade.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bhs"
+path = "fuzz_targets/bhs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chaintracks"
+path = "fuzz_targets/chaintracks.rs"
+test = false
+doc = false
+bench = false
