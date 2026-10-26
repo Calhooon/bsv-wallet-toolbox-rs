@@ -48,6 +48,10 @@ use super::signer::{SignerInput, WalletSigner};
 #[path = "rng_tests.rs"]
 mod rng_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "named_input_tests.rs"]
+mod named_input_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
