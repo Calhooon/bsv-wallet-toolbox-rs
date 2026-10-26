@@ -1,0 +1,28 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "processAction",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "isDelayed": true,
+      "isNewTx": true,
+      "isNoSend": true,
+      "isSendWith": true,
+      "rawTx": [
+        0,
+        128,
+        255
+      ],
+      "reference": "cmVm",
+      "sendWith": [
+        "2222222222222222222222222222222222222222222222222222222222222222"
+      ],
+      "txid": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ]
+}

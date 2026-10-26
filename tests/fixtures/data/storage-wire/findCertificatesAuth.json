@@ -1,0 +1,28 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "findCertificatesAuth",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "certifiers": [
+        "021111111111111111111111111111111111111111111111111111111111111111"
+      ],
+      "includeFields": true,
+      "orderDescending": true,
+      "paged": {
+        "limit": 3,
+        "offset": 2
+      },
+      "since": "2026-01-02T03:04:05Z",
+      "types": [
+        "dHlwZQ=="
+      ],
+      "userId": 7
+    }
+  ]
+}

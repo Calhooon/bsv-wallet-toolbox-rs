@@ -1,0 +1,229 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "processSyncChunk",
+  "params": [
+    {
+      "fromStorageIdentityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "maxItems": 25,
+      "maxRoughSize": 100000,
+      "offsets": [
+        {
+          "name": "provenTxs",
+          "offset": 2
+        }
+      ],
+      "since": "2026-01-02T03:04:05Z",
+      "toStorageIdentityKey": "035555555555555555555555555555555555555555555555555555555555555555"
+    },
+    {
+      "certificateFields": [
+        {
+          "certificateFieldId": 5,
+          "certificateId": 4,
+          "createdAt": "2026-01-02T03:04:05Z",
+          "fieldName": "name",
+          "fieldValue": "encrypted",
+          "masterKey": "a2V5",
+          "updatedAt": "2026-01-02T03:04:05Z",
+          "userId": 7
+        }
+      ],
+      "certificates": [
+        {
+          "certType": "dHlwZQ==",
+          "certificateId": 4,
+          "certifier": "021111111111111111111111111111111111111111111111111111111111111111",
+          "createdAt": "2026-01-02T03:04:05Z",
+          "revocationOutpoint": "2222222222222222222222222222222222222222222222222222222222222222.0",
+          "serialNumber": "c2VyaWFs",
+          "signature": "3044",
+          "subject": "021111111111111111111111111111111111111111111111111111111111111111",
+          "updatedAt": "2026-01-02T03:04:05Z",
+          "userId": 7,
+          "verifier": "021111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "commissions": [
+        {
+          "commissionId": 15,
+          "createdAt": "2026-01-02T03:04:05Z",
+          "isRedeemed": false,
+          "keyOffset": "a2V5",
+          "payerLockingScript": [
+            0,
+            128,
+            255
+          ],
+          "satoshis": 1,
+          "transactionId": 13,
+          "updatedAt": "2026-01-02T03:04:05Z",
+          "userId": 7
+        }
+      ],
+      "fromStorageIdentityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "outputBaskets": [
+        {
+          "basketId": 10,
+          "createdAt": "2026-01-02T03:04:05Z",
+          "minimumDesiredUtxoValue": 100,
+          "name": "basket",
+          "numberOfDesiredUtxos": 2,
+          "updatedAt": "2026-01-02T03:04:05Z",
+          "userId": 7
+        }
+      ],
+      "outputTagMaps": [
+        {
+          "createdAt": "2026-01-02T03:04:05Z",
+          "outputId": 16,
+          "outputTagMapId": 18,
+          "tagId": 12,
+          "updatedAt": "2026-01-02T03:04:05Z"
+        }
+      ],
+      "outputTags": [
+        {
+          "createdAt": "2026-01-02T03:04:05Z",
+          "tag": "tag",
+          "tagId": 12,
+          "updatedAt": "2026-01-02T03:04:05Z",
+          "userId": 7
+        }
+      ],
+      "outputs": [
+        {
+          "basketId": 10,
+          "change": true,
+          "createdAt": "2026-01-02T03:04:05Z",
+          "customInstructions": "keep",
+          "derivationPrefix": "cHJlZml4",
+          "derivationSuffix": "c3VmZml4",
+          "lockingScript": [
+            81
+          ],
+          "outputDescription": "wire output",
+          "outputId": 16,
+          "outputType": "P2PKH",
+          "providedBy": "storage",
+          "purpose": "change",
+          "satoshis": 100,
+          "scriptLength": 1,
+          "scriptOffset": 0,
+          "senderIdentityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+          "sequenceNumber": 42,
+          "spendable": true,
+          "spendingDescription": "wire spend",
+          "spentBy": 17,
+          "transactionId": 13,
+          "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+          "updatedAt": "2026-01-02T03:04:05Z",
+          "userId": 7,
+          "vout": 0
+        }
+      ],
+      "provenTxReqs": [
+        {
+          "attempts": 2,
+          "batch": "batch",
+          "createdAt": "2026-01-02T03:04:05Z",
+          "history": "{}",
+          "inputBeef": [
+            1,
+            2,
+            255
+          ],
+          "notified": false,
+          "notify": "{}",
+          "provenTxId": 8,
+          "provenTxReqId": 9,
+          "rawTx": [
+            0,
+            128,
+            255
+          ],
+          "status": "nosend",
+          "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+          "updatedAt": "2026-01-02T03:04:05Z"
+        }
+      ],
+      "provenTxs": [
+        {
+          "blockHash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "createdAt": "2026-01-02T03:04:05Z",
+          "height": 100,
+          "index": 1,
+          "merklePath": [
+            0,
+            128,
+            255
+          ],
+          "merkleRoot": "4444444444444444444444444444444444444444444444444444444444444444",
+          "provenTxId": 8,
+          "rawTx": [
+            1,
+            2,
+            255
+          ],
+          "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+          "updatedAt": "2026-01-02T03:04:05Z"
+        }
+      ],
+      "toStorageIdentityKey": "035555555555555555555555555555555555555555555555555555555555555555",
+      "transactions": [
+        {
+          "createdAt": "2026-01-02T03:04:05Z",
+          "description": "wire scene",
+          "inputBeef": [
+            1,
+            2,
+            255
+          ],
+          "isOutgoing": true,
+          "lockTime": 0,
+          "proofTxid": "2222222222222222222222222222222222222222222222222222222222222222",
+          "rawTx": [
+            0,
+            128,
+            255
+          ],
+          "reference": "cmVm",
+          "satoshis": 100,
+          "status": "noSend",
+          "transactionId": 13,
+          "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+          "updatedAt": "2026-01-02T03:04:05Z",
+          "userId": 7,
+          "version": 1
+        }
+      ],
+      "txLabelMaps": [
+        {
+          "createdAt": "2026-01-02T03:04:05Z",
+          "labelId": 11,
+          "transactionId": 13,
+          "txLabelMapId": 14,
+          "updatedAt": "2026-01-02T03:04:05Z"
+        }
+      ],
+      "txLabels": [
+        {
+          "createdAt": "2026-01-02T03:04:05Z",
+          "label": "label",
+          "labelId": 11,
+          "updatedAt": "2026-01-02T03:04:05Z",
+          "userId": 7
+        }
+      ],
+      "user": {
+        "activeStorage": "021111111111111111111111111111111111111111111111111111111111111111",
+        "createdAt": "2026-01-02T03:04:05Z",
+        "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+        "updatedAt": "2026-01-02T03:04:05Z",
+        "userId": 7
+      },
+      "userIdentityKey": "021111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ]
+}

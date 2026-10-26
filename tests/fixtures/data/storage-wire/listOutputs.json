@@ -1,0 +1,26 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "listOutputs",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "basket": "basket",
+      "include": "entire transactions",
+      "includeCustomInstructions": true,
+      "includeLabels": true,
+      "includeTags": true,
+      "limit": 3,
+      "offset": -2,
+      "seekPermission": false,
+      "tagQueryMode": "all",
+      "tags": [
+        "tag"
+      ]
+    }
+  ]
+}

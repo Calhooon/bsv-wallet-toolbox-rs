@@ -1,0 +1,12 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "monitorPurgeData",
+  "params": [
+    {
+      "maxAgeDays": 14,
+      "purgeCompleted": true,
+      "purgeFailed": true
+    }
+  ]
+}

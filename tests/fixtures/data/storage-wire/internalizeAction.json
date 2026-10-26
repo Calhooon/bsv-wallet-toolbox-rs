@@ -1,0 +1,42 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "internalizeAction",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "description": "wire scene",
+      "labels": [
+        "label"
+      ],
+      "outputs": [
+        {
+          "outputIndex": 0,
+          "paymentRemittance": {
+            "derivationPrefix": "cHJlZml4",
+            "derivationSuffix": "c3VmZml4",
+            "senderIdentityKey": "021111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "protocol": "wallet payment"
+        },
+        {
+          "insertionRemittance": {
+            "basket": "basket",
+            "customInstructions": "keep",
+            "tags": [
+              "tag"
+            ]
+          },
+          "outputIndex": 1,
+          "protocol": "basket insertion"
+        }
+      ],
+      "seekPermission": false,
+      "tx": "0080ff"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "relinquishCertificate",
+  "params": [
+    {
+      "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
+      "isActive": true,
+      "userId": 7
+    },
+    {
+      "certificateType": "dHlwZQ==",
+      "certifier": "021111111111111111111111111111111111111111111111111111111111111111",
+      "serialNumber": "c2VyaWFs"
+    }
+  ]
+}
