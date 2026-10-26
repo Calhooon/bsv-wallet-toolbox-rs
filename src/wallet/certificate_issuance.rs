@@ -373,6 +373,7 @@ where
                     protocol_id: protocol.clone(),
                     key_id: key_id.clone(),
                     counterparty: Some(Counterparty::Other(certifier.clone())),
+                    ..Default::default()
                 },
                 originator,
             )
@@ -628,6 +629,7 @@ where
                 protocol_id: protocol,
                 key_id: hmac_key_id,
                 counterparty: Some(Counterparty::Other(certifier.clone())),
+                ..Default::default()
             },
             originator,
         )

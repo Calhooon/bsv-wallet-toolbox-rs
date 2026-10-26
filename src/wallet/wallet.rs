@@ -878,6 +878,7 @@ where
             key_id: args.key_id,
             counterparty: args.counterparty,
             for_self: args.for_self,
+            ..Default::default()
         };
 
         let result = self.proto_wallet.get_public_key(proto_args)?;
@@ -899,6 +900,7 @@ where
             protocol_id: args.protocol_id,
             key_id: args.key_id,
             counterparty: args.counterparty,
+            ..Default::default()
         };
 
         let result = self.proto_wallet.encrypt(proto_args)?;
@@ -920,6 +922,7 @@ where
             protocol_id: args.protocol_id,
             key_id: args.key_id,
             counterparty: args.counterparty,
+            ..Default::default()
         };
 
         let result = self.proto_wallet.decrypt(proto_args)?;
@@ -941,6 +944,7 @@ where
             protocol_id: args.protocol_id,
             key_id: args.key_id,
             counterparty: args.counterparty,
+            ..Default::default()
         };
 
         let result = self.proto_wallet.create_hmac(proto_args)?;
@@ -961,6 +965,7 @@ where
             protocol_id: args.protocol_id,
             key_id: args.key_id,
             counterparty: args.counterparty,
+            ..Default::default()
         };
 
         let result = self.proto_wallet.verify_hmac(proto_args)?;
@@ -983,6 +988,7 @@ where
             protocol_id: args.protocol_id,
             key_id: args.key_id,
             counterparty: args.counterparty,
+            ..Default::default()
         };
 
         let result = self.proto_wallet.create_signature(proto_args)?;
@@ -1007,6 +1013,7 @@ where
             key_id: args.key_id,
             counterparty: args.counterparty,
             for_self: args.for_self,
+            ..Default::default()
         };
 
         let result = self.proto_wallet.verify_signature(proto_args)?;
@@ -3243,6 +3250,7 @@ fn create_keyring_for_verifier(
             protocol_id: protocol.clone(),
             key_id: field_name.clone(),
             counterparty: Some(Counterparty::Other(certifier.clone())),
+            ..Default::default()
         })?;
 
         // The decrypted plaintext is the symmetric key bytes
@@ -3257,6 +3265,7 @@ fn create_keyring_for_verifier(
             protocol_id: protocol.clone(),
             key_id: verifiable_key_id,
             counterparty: Some(Counterparty::Other(verifier.clone())),
+            ..Default::default()
         })?;
 
         // Encode the re-encrypted symmetric key as base64
@@ -3747,6 +3756,7 @@ mod tests {
                     protocol_id: protocol.clone(),
                     key_id: field_name.to_string(),
                     counterparty: Some(Counterparty::Other(subject_key.public_key())),
+                    ..Default::default()
                 })
                 .unwrap();
             let master_key_base64 = BASE64.encode(&master_key_encrypted.ciphertext);
@@ -3788,6 +3798,7 @@ mod tests {
                     protocol_id: protocol.clone(),
                     key_id: verifiable_key_id,
                     counterparty: Some(Counterparty::Other(subject_key.public_key())),
+                    ..Default::default()
                 })
                 .expect("Verifier should be able to decrypt the symmetric key");
 
@@ -3847,6 +3858,7 @@ mod tests {
                         protocol_id: protocol.clone(),
                         key_id: field_name.to_string(),
                         counterparty: Some(Counterparty::Other(subject_key.public_key())),
+                        ..Default::default()
                     })
                     .unwrap();
                 master_keyring.insert(

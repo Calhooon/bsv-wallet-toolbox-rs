@@ -99,7 +99,7 @@ pub(super) async fn verify_beef_spends(
 /// a time, and refuses it only for invalid bytes: [`Error::InvalidBeef`] with
 /// the offset of the byte and the kind (a bad varint, a cut field, a tree
 /// height over 64, a transaction with no input, trailing bytes, and the rest
-/// of the reader's twenty-four). Nothing is refused for its size or its counts.
+/// of the reader's kinds). Nothing is refused for its size or its counts.
 ///
 /// The frame and each element are checked; the graph (an input naming an
 /// earlier transaction) and the roots against the headers are not: those
