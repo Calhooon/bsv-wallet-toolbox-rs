@@ -721,6 +721,8 @@ async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result
         roots.push(post.txid.clone());
     }
     super::create_action::prune_beef_to_roots(&mut beef, &roots);
+    // bsv-rs 0.9.0 judges the order held: BRC-62 requires parents ahead of children.
+    beef.sort_txs();
     // A proven txid-only entry validates, but a broadcaster still needs its
     // bytes. Only the caller of the build declared those ancestors known.
     if beef.txs.iter().any(BeefTx::is_txid_only) || !beef.verify_valid(true).valid {
@@ -740,6 +742,8 @@ async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result
         )
         .await?;
         beef.merge_beef(&ancestors);
+        // Restoring ancestors can append them after the children already merged.
+        beef.sort_txs();
     }
     verify_stored_post_beef(storage, &mut beef).await?;
     if beef.txs.iter().all(|tx| !tx.is_txid_only()) {
@@ -1326,6 +1330,10 @@ pub async fn update_transaction_status_after_broadcast_internal(
 // =============================================================================
 // Tests
 // =============================================================================
+
+#[cfg(test)]
+#[path = "tests/post_beef_order.rs"]
+mod post_beef_order_tests;
 
 #[cfg(test)]
 mod tests {
