@@ -23,7 +23,7 @@ fn pay_lock() -> Vec<u8> {
 }
 
 /// A wallet over a file store (WAL; a held writer does not block readers).
-async fn wallet() -> (tempfile::TempDir, Wallet<StorageSqlx, MockWalletServices>) {
+pub(super) async fn wallet() -> (tempfile::TempDir, Wallet<StorageSqlx, MockWalletServices>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("busy.db").to_string_lossy().to_string();
     let storage = StorageSqlx::open(&path).await.unwrap();
@@ -68,7 +68,7 @@ async fn fund_with(wallet: &Wallet<StorageSqlx, MockWalletServices>, lock: &[u8]
 
 /// `fund_with`, the coin's parent spending outpoint `tag:0` (its own txid
 /// per tag), so a wallet can be funded with many coins.
-async fn fund_tagged(
+pub(super) async fn fund_tagged(
     wallet: &Wallet<StorageSqlx, MockWalletServices>,
     lock: &[u8],
     tag: u32,
@@ -339,7 +339,7 @@ async fn sign_action_on_a_busy_store_is_wallet_busy_and_keeps_the_action() {
 /// The P2PKH script of the wallet's own BRC-29 key for `fund`'s
 /// derivation (prefix `cHJlZml4`, suffix `c3VmZml4`, counterparty self),
 /// so the signer signs the coin.
-fn own_lock(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> Vec<u8> {
+pub(super) fn own_lock(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> Vec<u8> {
     use bsv_rs::wallet::{Counterparty, KeyDeriverApi, Protocol, SecurityLevel};
     let key = wallet
         .proto_wallet
