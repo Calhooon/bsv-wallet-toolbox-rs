@@ -233,7 +233,7 @@ pub(super) async fn build_input_beef(
     // and an ancestor this wallet does not store is named: createAction
     // fetches none (the monitor's backstop fetches proofs). The walk merges
     // children ahead of their parents; bsv-rs judges the order held
-    // (BRC-62, parents first, since 0.9.0), so the assembly is judged in the
+    // (BRC-62, parents ahead of their children, since 0.9.0), so the assembly is judged in the
     // order `to_binary` writes it.
     beef.sort_txs();
     let validation = beef.verify_valid(true);
