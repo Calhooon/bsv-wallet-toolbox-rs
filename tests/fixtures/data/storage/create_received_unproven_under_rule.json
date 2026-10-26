@@ -1,0 +1,228 @@
+{
+  "calls": [
+    {
+      "args": {
+        "description": "Recorded received payment",
+        "labels": ["received","fixture"],
+        "outputs": [
+          {
+            "outputIndex": 0,
+            "paymentRemittance": {
+              "derivationPrefix": "Pg==",
+              "derivationSuffix": "Sg==",
+              "senderIdentityKey": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810"
+            },
+            "protocol": "wallet payment"
+          }
+        ]
+      },
+      "from": "receipt",
+      "method": "internalize_action"
+    },
+    {
+      "args": {
+        "description": "Spend received payment",
+        "labels": ["underReceivedRule"],
+        "options": {"noSend":true,"randomizeOutputs":false,"signAndProcess":false},
+        "outputs": [{"lockingScript":"51","outputDescription":"Recorded recipient","satoshis":1000}]
+      },
+      "as": "spend",
+      "method": "create_action",
+      "sign": false
+    }
+  ],
+  "expected": [
+    {
+      "result": {
+        "ok": {
+          "accepted": true,
+          "isMerge": false,
+          "notDelayedResults": null,
+          "satoshis": 9999,
+          "sendWithResults": null,
+          "txid": "<txid:1>"
+        }
+      },
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1}
+        ],
+        "output_tags": [],
+        "output_tags_map": [],
+        "outputs": [
+          {"basket_id":1,"change":1,"custom_instructions":null,"derivation_prefix":"Pg==","derivation_suffix":"Sg==","locking_script":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","output_description":null,"output_id":1,"provided_by":"storage","purpose":"receive","satoshis":9999,"script_length":25,"script_offset":null,"sender_identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":1,"txid":"<txid:1>","type":"P2PKH","user_id":1,"vout":0}
+        ],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [
+          {"attempts":0,"batch":null,"history":{},"input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"notified":0,"notify":{},"proven_tx_id":null,"proven_tx_req_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"status":"unmined","txid":"<txid:1>"}
+        ],
+        "proven_txs": [],
+        "sync_states": [],
+        "transactions": [
+          {"description":"Recorded received payment","input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":0,"lock_time":1,"proven_tx_id":null,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":9999,"status":"unproven","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1}
+        ],
+        "tx_labels": [
+          {"is_deleted":0,"label":"received","tx_label_id":1,"user_id":1},
+          {"is_deleted":0,"label":"fixture","tx_label_id":2,"user_id":1}
+        ],
+        "tx_labels_map": [
+          {"is_deleted":0,"transaction_id":1,"tx_label_id":1,"tx_label_map_id":1},
+          {"is_deleted":0,"transaction_id":1,"tx_label_id":2,"tx_label_map_id":2}
+        ],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": [{"args":["beef_len=235","txids=[\"<txid:1>\"]"],"method":"post_beef","success":true}]
+    },
+    {
+      "result": {
+        "ok": {
+          "derivationPrefix": "<derivation:1>",
+          "inputBeef": {
+            "atomicTxid": null,
+            "bumps": [{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],
+            "transactions": [
+              {
+                "bumpIndex": 0,
+                "transaction": {
+                  "inputs": [{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],
+                  "lockTime": 0,
+                  "outputs": [{"lockingScript":"7551","satoshis":20000}],
+                  "txid": "<txid:2>",
+                  "version": 1
+                },
+                "txid": "<txid:2>"
+              },
+              {
+                "bumpIndex": null,
+                "transaction": {
+                  "inputs": [{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],
+                  "lockTime": 1,
+                  "outputs": [{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],
+                  "txid": "<txid:1>",
+                  "version": 1
+                },
+                "txid": "<txid:1>"
+              }
+            ],
+            "version": 4022206466
+          },
+          "inputs": [
+            {
+              "derivationPrefix": "Pg==",
+              "derivationSuffix": "Sg==",
+              "inputType": "P2PKH",
+              "providedBy": "storage",
+              "senderIdentityKey": "0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810",
+              "sourceLockingScript": "76a914d4251d021420e279795dd3e75773f283658ea19d88ac",
+              "sourceSatoshis": 9999,
+              "sourceTransaction": null,
+              "sourceTxid": "<txid:1>",
+              "sourceVout": 0,
+              "spendingDescription": null,
+              "unlockingScriptLength": 107,
+              "vin": 0
+            }
+          ],
+          "lockTime": 0,
+          "noSendChangeOutputVouts": [1],
+          "outputs": [
+            {
+              "basket": null,
+              "customInstructions": null,
+              "derivationSuffix": null,
+              "lockingScript": "51",
+              "outputDescription": "Recorded recipient",
+              "providedBy": "you",
+              "purpose": null,
+              "satoshis": 1000,
+              "tags": [],
+              "vout": 0
+            },
+            {
+              "basket": "default",
+              "customInstructions": null,
+              "derivationSuffix": "<derivation:2>",
+              "lockingScript": "",
+              "outputDescription": null,
+              "providedBy": "storage",
+              "purpose": "change",
+              "satoshis": 8978,
+              "tags": [],
+              "vout": 1
+            }
+          ],
+          "reference": "<reference:2>",
+          "version": 1
+        }
+      },
+      "rows": {
+        "broadcast_prefs": [],
+        "broadcast_seen": [],
+        "commissions": [],
+        "locked_input_checks": [],
+        "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
+        "output_baskets": [
+          {"basket_id":1,"is_deleted":0,"minimum_desired_utxo_value":1000,"name":"default","number_of_desired_utxos":1,"user_id":1}
+        ],
+        "output_tags": [],
+        "output_tags_map": [],
+        "outputs": [
+          {"basket_id":1,"change":1,"custom_instructions":null,"derivation_prefix":"Pg==","derivation_suffix":"Sg==","locking_script":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","output_description":null,"output_id":1,"provided_by":"storage","purpose":"receive","satoshis":9999,"script_length":25,"script_offset":null,"sender_identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","sequence_number":null,"spendable":0,"spending_description":null,"spent_by":2,"transaction_id":1,"txid":"<txid:1>","type":"P2PKH","user_id":1,"vout":0},
+          {"basket_id":null,"change":0,"custom_instructions":null,"derivation_prefix":null,"derivation_suffix":null,"locking_script":"51","output_description":"Recorded recipient","output_id":2,"provided_by":"you","purpose":"","satoshis":1000,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":1,"spending_description":null,"spent_by":null,"transaction_id":2,"txid":null,"type":"custom","user_id":1,"vout":0},
+          {"basket_id":1,"change":1,"custom_instructions":null,"derivation_prefix":"<derivation:1>","derivation_suffix":"<derivation:2>","locking_script":null,"output_description":"","output_id":3,"provided_by":"storage","purpose":"change","satoshis":8978,"script_length":null,"script_offset":null,"sender_identity_key":null,"sequence_number":null,"spendable":0,"spending_description":null,"spent_by":null,"transaction_id":2,"txid":null,"type":"P2PKH","user_id":1,"vout":1}
+        ],
+        "proof_root_checks": [],
+        "proven_tx_reqs": [
+          {"attempts":0,"batch":null,"history":{},"input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"notified":0,"notify":{},"proven_tx_id":null,"proven_tx_req_id":1,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"status":"unmined","txid":"<txid:1>"}
+        ],
+        "proven_txs": [],
+        "sync_states": [],
+        "transactions": [
+          {"description":"Recorded received payment","input_beef":{"atomicTxid":"<txid:1>","bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":0,"lock_time":1,"proven_tx_id":null,"raw_tx":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"reference":"<reference:1>","satoshis":9999,"status":"unproven","transaction_id":1,"txid":"<txid:1>","user_id":1,"version":1},
+          {"description":"Spend received payment","input_beef":{"atomicTxid":null,"bumps":[{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:2>","offset":0,"txid":true}]]}],"transactions":[{"bumpIndex":0,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:3>","unlockingScript":"00","vout":0}],"lockTime":0,"outputs":[{"lockingScript":"7551","satoshis":20000}],"txid":"<txid:2>","version":1},"txid":"<txid:2>"},{"bumpIndex":null,"transaction":{"inputs":[{"sequence":4294967295,"sourceTxid":"<txid:2>","unlockingScript":"00","vout":0}],"lockTime":1,"outputs":[{"lockingScript":"76a914d4251d021420e279795dd3e75773f283658ea19d88ac","satoshis":9999}],"txid":"<txid:1>","version":1},"txid":"<txid:1>"}],"version":4022206466},"is_outgoing":1,"lock_time":0,"proven_tx_id":null,"raw_tx":null,"reference":"<reference:2>","satoshis":-1021,"status":"unsigned","transaction_id":2,"txid":null,"user_id":1,"version":1}
+        ],
+        "tx_labels": [
+          {"is_deleted":0,"label":"received","tx_label_id":1,"user_id":1},
+          {"is_deleted":0,"label":"fixture","tx_label_id":2,"user_id":1},
+          {"is_deleted":0,"label":"underReceivedRule","tx_label_id":3,"user_id":1}
+        ],
+        "tx_labels_map": [
+          {"is_deleted":0,"transaction_id":1,"tx_label_id":1,"tx_label_map_id":1},
+          {"is_deleted":0,"transaction_id":1,"tx_label_id":2,"tx_label_map_id":2},
+          {"is_deleted":0,"transaction_id":2,"tx_label_id":3,"tx_label_map_id":3}
+        ],
+        "users": [
+          {"active_storage":"028f2daab7808b79368d99eef1ebc2d35cdafe3932cafe3d83cf17837af034ec29","identity_key":"0320bbfb879bbd6761ecd2962badbb41ba9d60ca88327d78b07ae7141af6b6c810","user_id":1}
+        ]
+      },
+      "serviceCalls": [{"args":["beef_len=235","txids=[\"<txid:1>\"]"],"method":"post_beef","success":true}]
+    }
+  ],
+  "inputs": {
+    "baskets": [{"desired":1,"minimum":1000,"name":"default"}],
+    "services": {
+      "get_merkle_path": {"kind":"success","value":{"name":"fixture","notes":[]}},
+      "post_beef": {"kind":"success","value":[{"name":"fixture","notes":[],"status":"success","txid_results":[]}]}
+    },
+    "transactions": [
+      {"name":"anchor","outputs":[{"satoshis":20000,"script":"7551"}],"store":false},
+      {
+        "name": "receipt",
+        "outputs": [{"basket":"default","change":true,"satoshis":9999}],
+        "proven": false,
+        "spends": "anchor.0",
+        "store": false
+      }
+    ],
+    "user": "Alice"
+  },
+  "issue": 169,
+  "name": "create_received_unproven_under_rule"
+}
