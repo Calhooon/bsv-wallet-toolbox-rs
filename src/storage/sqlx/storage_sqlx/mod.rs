@@ -203,6 +203,8 @@ pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
 /// writers meet in SQLite and wait on its busy handler (`busy_timeout`, then
 /// `StoreBusy`) instead of queueing on one writer, and two reservation sets.
 pub struct StorageSqlx {
+    /// The store's random stream, shared by every cloned handle.
+    _rng: Arc<crate::wallet::RandomSource>,
     /// The reader pool: several connections, each `PRAGMA query_only = ON`,
     /// so a write sent here fails loudly instead of racing the writer.
     reader: Pool<Sqlite>,
@@ -268,6 +270,7 @@ pub struct StorageSqlx {
 impl Clone for StorageSqlx {
     fn clone(&self) -> Self {
         Self {
+            _rng: Arc::clone(&self._rng),
             reader: self.reader.clone(),
             writer: self.writer.clone(),
             settings: Arc::clone(&self.settings),
@@ -356,6 +359,7 @@ impl StorageSqlx {
         ));
 
         Ok(Self {
+            _rng: Arc::new(crate::wallet::RandomSource::new(None)),
             reader,
             writer,
             settings: Default::default(),
