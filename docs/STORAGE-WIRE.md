@@ -249,9 +249,11 @@ reference-shaped responses. No TS server deployment is exercised by this audit.
 
 ## CI landing requirement
 
-The current `.github/workflows/ci.yml:130-139,164-165` test and clippy commands
-enable `sqlite` only. The remote client and these tests require `remote`, which
-`full` includes. The captain must add a required `storage-wire` context running
-full-feature clippy, library tests and `tests/storage_wire.rs`, with warnings
-denied and the dead-proxy test environment. This lane's bounds exclude workflow
-edits. Its local full-feature gates are recorded in the lane evidence.
+Use the existing required `Test Suite (ubuntu-latest, stable)` and `Clippy`
+contexts. At landing, the captain changes the unit-test, integration-test,
+doc-test and Clippy commands in `.github/workflows/ci.yml:130-139,164-165` from
+`--features sqlite` to `--features sqlite,remote`, keeping the required context
+set unchanged. Enabling `remote` runs all 42 tests in `tests/storage_wire.rs`
+and the library's `storage::client::wire_tests` on every PR, and includes their
+code in Clippy's checks. Workflow edits belong to the captain; this lane's local
+full-feature gates are recorded in its evidence.
