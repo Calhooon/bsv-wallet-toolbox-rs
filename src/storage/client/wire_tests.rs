@@ -296,24 +296,32 @@ async fn transactions_accept_reference_beef_and_keep_legacy_name() {
 }
 
 #[tokio::test]
-async fn sync_accepts_reference_entity_names() {
-    let (_server, mock, client) = reply(json!({
-        "fromStorageIdentityKey": "source", "toStorageIdentityKey": "destination",
-        "userIdentityKey": "user", "transactions": [{"inputBEEF": [0, 128, 255]}],
-        "provenTxReqs": [{"inputBEEF": [1, 2, 255]}], "outputs": [{"type": "P2PKH"}]
-    }))
-    .await;
-    let result = client.get_sync_chunk(sync_args()).await.unwrap();
-    assert_eq!(
-        result.transactions.unwrap()[0].input_beef.as_deref(),
-        Some([0, 128, 255].as_slice())
-    );
-    assert_eq!(
-        result.proven_tx_reqs.unwrap()[0].input_beef.as_deref(),
-        Some([1, 2, 255].as_slice())
-    );
-    assert_eq!(result.outputs.unwrap()[0].output_type, "P2PKH");
-    mock.assert_async().await;
+async fn sync_accepts_reference_entity_names_and_keeps_legacy_names() {
+    for (beef_field, output_field) in [("inputBEEF", "type"), ("inputBeef", "outputType")] {
+        let (_server, mock, client) = reply(json!({
+            "fromStorageIdentityKey": "source", "toStorageIdentityKey": "destination",
+            "userIdentityKey": "user", "transactions": [{beef_field: [0, 128, 255]}],
+            "provenTxReqs": [{beef_field: [1, 2, 255]}], "outputs": [{output_field: "P2PKH"}]
+        }))
+        .await;
+        let result = client.get_sync_chunk(sync_args()).await.unwrap();
+        assert_eq!(
+            result.transactions.unwrap()[0].input_beef.as_deref(),
+            Some([0, 128, 255].as_slice()),
+            "{beef_field}"
+        );
+        assert_eq!(
+            result.proven_tx_reqs.unwrap()[0].input_beef.as_deref(),
+            Some([1, 2, 255].as_slice()),
+            "{beef_field}"
+        );
+        assert_eq!(
+            result.outputs.unwrap()[0].output_type,
+            "P2PKH",
+            "{output_field}"
+        );
+        mock.assert_async().await;
+    }
 }
 
 #[tokio::test]
