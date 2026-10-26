@@ -121,7 +121,7 @@ it (`UnspendableCoin`).
 | an abort of a template releases its inputs | `wallet.md section 5` (abort `t`, `t` unknown or built: released) | `test_abort_unsigned_transaction_success` |
 | an abort of a broadcast transaction with chain evidence is refused | `wallet.md section 5` (abort `t`, `t` announced or later: refused) | `test_abort_unproven_with_chain_seen_row_is_refused` |
 | a broadcaster's status is never chain evidence, however often refreshed | `broadcaster.md section 1 B1` | `test_a_broadcaster_status_never_counts_as_chain_evidence_however_often_refreshed` |
-| a proven descendant refuses the abort | `wallet.md section 12`, the lineage rule | `test_abort_unproven_with_a_proven_descendant_is_refused` |
+| a proven descendant refuses the abort | `wallet.md section 12`, the lineage rule | `test_abort_sending_with_a_proven_descendant_is_refused` |
 | a busy retirement after a broadcast abort is its success; `review_status` finishes it | `storage.md section 2 S9` | `a_busy_retirement_after_a_broadcast_abort_is_its_success_and_review_status_finishes_it` |
 | exactly one of a concurrent abort and process wins | `storage.md section 2 S9` (one writer) | `test_concurrent_abort_and_process_exactly_one_wins` (`--test concurrent_tests`) |
 
@@ -493,7 +493,8 @@ host's retire are `failed` with `invalid`. The transitions, with who writes each
 | a transaction the status service knows is promoted, not retired | `broadcaster.md section 1 B1` | `a_tx_the_status_service_knows_is_promoted_not_retired` (`--test retire_rejected_tests`) |
 | an absent transaction retired keeps an explorer's unspent input locked | `wallet.md section 2` (from an explorer) | `absent_tx_is_failed_and_an_explorers_unspent_input_stays_locked` (`--test retire_rejected_tests`) |
 | an already failed root still retires its descendants | `wallet.md section 12`, the lineage rule | `an_already_failed_root_still_retires_its_descendants` (`--test poisoned_chain_tests`) |
-| a `nosend` merge with a checked BUMP links the proof; an unverifiable one falls back to `unmined` | `wallet.md section 5` (internalize rows) | `test_merge_nosend_unverifiable_bump_falls_back_to_unmined` |
+| a `nosend` merge with a checked BUMP links the proof | `wallet.md section 5` (internalize rows) | `test_merge_nosend_validated_bump_links_proven_tx` |
+| a `nosend` merge without headers refuses and leaves the action unchanged | `tracker.md section 2` (fail closed) | `test_merge_nosend_without_headers_is_unchanged` |
 | a transaction's status is read from the request by the review pass | `wallet.md section 5` | `test_review_status_marks_tx_failed_when_req_invalid` (`--test review_status_tests`) |
 
 ## 7. Divergences
