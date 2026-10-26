@@ -8,8 +8,8 @@ use super::outputs::ExtendedOutput;
 use super::signing::caller_inputs_permit_funding;
 use super::AllocatedChangeInput;
 use crate::error::{Error, Result};
+use crate::rng::RandomSource;
 use crate::storage::entities::TableOutputBasket;
-use crate::wallet::RandomSource;
 use sqlx::sqlite::SqliteConnection;
 
 /// Parameters for change generation.
@@ -38,16 +38,6 @@ pub(super) struct ChangeOutput {
     pub(super) vout: u32,
     pub(super) derivation_prefix: String,
     pub(super) derivation_suffix: String,
-}
-
-// =============================================================================
-// Random Generation
-// =============================================================================
-
-/// Generates a random base64-encoded string for derivation paths.
-#[cfg(test)]
-pub(super) fn random_derivation(count: usize) -> String {
-    RandomSource::new(None).base64(count)
 }
 
 /// Fees and change for the action: the caller-complete plan, else

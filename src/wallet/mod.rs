@@ -95,8 +95,6 @@ mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;
 
-pub(crate) use wallet::RandomSource;
-
 pub use lookup::{
     dedup_certificates, HttpLookupResolver, OverlayCertificate, OverlayLookupResolver,
 };

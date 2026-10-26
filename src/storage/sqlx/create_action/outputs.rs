@@ -1,7 +1,7 @@
 use crate::error::Result;
+use crate::rng::RandomSource;
 use crate::storage::entities::{TableOutputBasket, TableOutputTag, TableTxLabel};
 use crate::storage::traits::StorageProvidedBy;
-use crate::wallet::RandomSource;
 use chrono::Utc;
 use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
