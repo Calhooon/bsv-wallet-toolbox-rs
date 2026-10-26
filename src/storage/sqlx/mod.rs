@@ -90,7 +90,7 @@ pub use proof_root_checks::{
     MIGRATION_005_PROOF_ROOT_CHECKS_NAME, MIGRATION_005_PROOF_ROOT_CHECKS_SQL,
 };
 pub use storage_sqlx::{
-    RetireOutcome, StorageSqlx, UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT,
+    RetireOutcome, StorageSqlx, StorageSqlxOptions, UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT,
     DEFAULT_MAX_OUTPUT_SCRIPT, STORE_BUSY_CEILING_MS,
 };
 pub use sync::entity_names;

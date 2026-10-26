@@ -263,6 +263,9 @@ pub struct UtxoInfo {
 /// Configuration options for the Wallet.
 #[derive(Debug, Clone)]
 pub struct WalletOptions {
+    /// Optional seed for the wallet's test-harness stream. None uses OS entropy.
+    pub rng_seed: Option<[u8; 32]>,
+
     /// If true, signable transactions will include source transaction for each input,
     /// including those that do not require signature and those that were also contained
     /// in the inputBEEF. Default: true
@@ -281,6 +284,7 @@ pub struct WalletOptions {
 impl Default for WalletOptions {
     fn default() -> Self {
         Self {
+            rng_seed: None,
             include_all_source_transactions: true,
             auto_known_txids: false,
             trust_self: Some("known".to_string()),
@@ -468,6 +472,7 @@ where
         // and cannot find locally; without this handle those paths are silently
         // dead and every BEEF is built from local knowledge alone.
         storage.set_services(services.clone());
+        let rng = Arc::new(RandomSource::new(options.rng_seed));
 
         Ok(Self {
             proto_wallet,
@@ -476,7 +481,7 @@ where
             identity_key,
             chain,
             options,
-            _rng: Arc::new(RandomSource::new(None)),
+            _rng: rng,
             signer,
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
             user_id: user.user_id,
