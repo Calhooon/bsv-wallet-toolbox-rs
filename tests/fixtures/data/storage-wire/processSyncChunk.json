@@ -22,25 +22,25 @@
         {
           "certificateFieldId": 5,
           "certificateId": 4,
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "fieldName": "name",
           "fieldValue": "encrypted",
           "masterKey": "a2V5",
-          "updatedAt": "2026-01-02T03:04:05Z",
+          "updated_at": "2026-01-02T03:04:05Z",
           "userId": 7
         }
       ],
       "certificates": [
         {
-          "certType": "dHlwZQ==",
           "certificateId": 4,
           "certifier": "021111111111111111111111111111111111111111111111111111111111111111",
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "revocationOutpoint": "2222222222222222222222222222222222222222222222222222222222222222.0",
           "serialNumber": "c2VyaWFs",
           "signature": "3044",
           "subject": "021111111111111111111111111111111111111111111111111111111111111111",
-          "updatedAt": "2026-01-02T03:04:05Z",
+          "type": "dHlwZQ==",
+          "updated_at": "2026-01-02T03:04:05Z",
           "userId": 7,
           "verifier": "021111111111111111111111111111111111111111111111111111111111111111"
         }
@@ -48,17 +48,17 @@
       "commissions": [
         {
           "commissionId": 15,
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "isRedeemed": false,
           "keyOffset": "a2V5",
-          "payerLockingScript": [
+          "lockingScript": [
             0,
             128,
             255
           ],
           "satoshis": 1,
           "transactionId": 13,
-          "updatedAt": "2026-01-02T03:04:05Z",
+          "updated_at": "2026-01-02T03:04:05Z",
           "userId": 7
         }
       ],
@@ -66,29 +66,29 @@
       "outputBaskets": [
         {
           "basketId": 10,
-          "createdAt": "2026-01-02T03:04:05Z",
-          "minimumDesiredUtxoValue": 100,
+          "created_at": "2026-01-02T03:04:05Z",
+          "minimumDesiredUTXOValue": 100,
           "name": "basket",
-          "numberOfDesiredUtxos": 2,
-          "updatedAt": "2026-01-02T03:04:05Z",
+          "numberOfDesiredUTXOs": 2,
+          "updated_at": "2026-01-02T03:04:05Z",
           "userId": 7
         }
       ],
       "outputTagMaps": [
         {
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "outputId": 16,
+          "outputTagId": 12,
           "outputTagMapId": 18,
-          "tagId": 12,
-          "updatedAt": "2026-01-02T03:04:05Z"
+          "updated_at": "2026-01-02T03:04:05Z"
         }
       ],
       "outputTags": [
         {
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
+          "outputTagId": 12,
           "tag": "tag",
-          "tagId": 12,
-          "updatedAt": "2026-01-02T03:04:05Z",
+          "updated_at": "2026-01-02T03:04:05Z",
           "userId": 7
         }
       ],
@@ -96,7 +96,7 @@
         {
           "basketId": 10,
           "change": true,
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "customInstructions": "keep",
           "derivationPrefix": "cHJlZml4",
           "derivationSuffix": "c3VmZml4",
@@ -105,7 +105,6 @@
           ],
           "outputDescription": "wire output",
           "outputId": 16,
-          "outputType": "P2PKH",
           "providedBy": "storage",
           "purpose": "change",
           "satoshis": 100,
@@ -118,7 +117,8 @@
           "spentBy": 17,
           "transactionId": 13,
           "txid": "2222222222222222222222222222222222222222222222222222222222222222",
-          "updatedAt": "2026-01-02T03:04:05Z",
+          "type": "P2PKH",
+          "updated_at": "2026-01-02T03:04:05Z",
           "userId": 7,
           "vout": 0
         }
@@ -127,9 +127,9 @@
         {
           "attempts": 2,
           "batch": "batch",
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "history": "{}",
-          "inputBeef": [
+          "inputBEEF": [
             1,
             2,
             255
@@ -145,13 +145,13 @@
           ],
           "status": "nosend",
           "txid": "2222222222222222222222222222222222222222222222222222222222222222",
-          "updatedAt": "2026-01-02T03:04:05Z"
+          "updated_at": "2026-01-02T03:04:05Z"
         }
       ],
       "provenTxs": [
         {
           "blockHash": "3333333333333333333333333333333333333333333333333333333333333333",
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "height": 100,
           "index": 1,
           "merklePath": [
@@ -167,15 +167,15 @@
             255
           ],
           "txid": "2222222222222222222222222222222222222222222222222222222222222222",
-          "updatedAt": "2026-01-02T03:04:05Z"
+          "updated_at": "2026-01-02T03:04:05Z"
         }
       ],
       "toStorageIdentityKey": "035555555555555555555555555555555555555555555555555555555555555555",
       "transactions": [
         {
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "description": "wire scene",
-          "inputBeef": [
+          "inputBEEF": [
             1,
             2,
             255
@@ -190,37 +190,37 @@
           ],
           "reference": "cmVm",
           "satoshis": 100,
-          "status": "noSend",
+          "status": "nosend",
           "transactionId": 13,
           "txid": "2222222222222222222222222222222222222222222222222222222222222222",
-          "updatedAt": "2026-01-02T03:04:05Z",
+          "updated_at": "2026-01-02T03:04:05Z",
           "userId": 7,
           "version": 1
         }
       ],
       "txLabelMaps": [
         {
-          "createdAt": "2026-01-02T03:04:05Z",
-          "labelId": 11,
+          "created_at": "2026-01-02T03:04:05Z",
           "transactionId": 13,
+          "txLabelId": 11,
           "txLabelMapId": 14,
-          "updatedAt": "2026-01-02T03:04:05Z"
+          "updated_at": "2026-01-02T03:04:05Z"
         }
       ],
       "txLabels": [
         {
-          "createdAt": "2026-01-02T03:04:05Z",
+          "created_at": "2026-01-02T03:04:05Z",
           "label": "label",
-          "labelId": 11,
-          "updatedAt": "2026-01-02T03:04:05Z",
+          "txLabelId": 11,
+          "updated_at": "2026-01-02T03:04:05Z",
           "userId": 7
         }
       ],
       "user": {
         "activeStorage": "021111111111111111111111111111111111111111111111111111111111111111",
-        "createdAt": "2026-01-02T03:04:05Z",
+        "created_at": "2026-01-02T03:04:05Z",
         "identityKey": "021111111111111111111111111111111111111111111111111111111111111111",
-        "updatedAt": "2026-01-02T03:04:05Z",
+        "updated_at": "2026-01-02T03:04:05Z",
         "userId": 7
       },
       "userIdentityKey": "021111111111111111111111111111111111111111111111111111111111111111"

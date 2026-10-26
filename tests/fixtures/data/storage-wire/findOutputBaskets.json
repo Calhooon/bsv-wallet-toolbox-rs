@@ -9,14 +9,16 @@
       "userId": 7
     },
     {
-      "name": "basket",
       "orderDescending": true,
       "paged": {
         "limit": 3,
         "offset": 2
       },
-      "since": "2026-01-02T03:04:05Z",
-      "userId": 7
+      "partial": {
+        "name": "basket",
+        "userId": 7
+      },
+      "since": "2026-01-02T03:04:05Z"
     }
   ]
 }
