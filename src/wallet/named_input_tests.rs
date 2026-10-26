@@ -23,8 +23,8 @@ use bsv_rs::script::{templates::P2PKH, Script};
 use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput};
 use bsv_rs::wallet::{
     Counterparty, CreateActionArgs, CreateActionInput, CreateActionOptions, CreateActionOutput,
-    KeyDeriverApi, Outpoint, Protocol, SecurityLevel, SignActionArgs, SignActionSpend,
-    SignableTransaction, WalletInterface,
+    KeyDeriverApi, Outpoint, Protocol, SecurityLevel, SignActionArgs, SignActionResult,
+    SignActionSpend, SignableTransaction, WalletInterface,
 };
 use std::collections::HashMap;
 
@@ -34,6 +34,29 @@ struct NamedInputScene {
     _dir: tempfile::TempDir,
     wallet: Wallet<StorageSqlx, MockWalletServices>,
     input: SignerInput,
+}
+
+impl NamedInputScene {
+    fn caller_input(
+        &self,
+        script: Option<Vec<u8>>,
+        length: Option<u32>,
+        description: &str,
+    ) -> CreateActionInput {
+        CreateActionInput {
+            outpoint: Outpoint {
+                txid: hex::decode(&self.input.source_txid)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+                vout: self.input.source_vout,
+            },
+            unlocking_script: script,
+            unlocking_script_length: length,
+            input_description: description.to_string(),
+            sequence_number: None,
+        }
+    }
 }
 
 async fn fund_wallet_change(wallet: &Wallet<StorageSqlx, MockWalletServices>, tag: u32) {
@@ -134,19 +157,11 @@ async fn defer_named(
     let mut args = payment(satoshis);
     args.options.as_mut().unwrap().sign_and_process = Some(false);
     let unlocking_script_length = script.is_none().then_some(110);
-    args.inputs = Some(vec![CreateActionInput {
-        outpoint: Outpoint {
-            txid: hex::decode(&scene.input.source_txid)
-                .unwrap()
-                .try_into()
-                .unwrap(),
-            vout: scene.input.source_vout,
-        },
-        unlocking_script: script,
+    args.inputs = Some(vec![scene.caller_input(
+        script,
         unlocking_script_length,
-        input_description: "caller unlocks an owned output".to_string(),
-        sequence_number: None,
-    }]);
+        "caller unlocks an owned output",
+    )]);
     scene
         .wallet
         .create_action(args, ORIGINATOR)
@@ -156,6 +171,25 @@ async fn defer_named(
         .unwrap()
 }
 
+async fn assert_refused<T>(
+    scene: &NamedInputScene,
+    result: bsv_rs::Result<T>,
+    expected: &str,
+    before: &[String],
+) {
+    match result {
+        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, expected),
+        Ok(_) => panic!("wallet accepted an invalid caller input"),
+        Err(error) => panic!("unexpected refusal: {error}"),
+    }
+    assert_eq!(
+        store_snapshot(&scene.wallet).await,
+        before,
+        "nothing stored"
+    );
+    assert_eq!(scene.wallet.services().total_calls(), 0);
+}
+
 async fn assert_create_input_refused(script: Option<Vec<u8>>, length: Option<u32>, expected: &str) {
     let scene = named_input_scene().await;
     let before = store_snapshot(&scene.wallet).await;
@@ -163,19 +197,11 @@ async fn assert_create_input_refused(script: Option<Vec<u8>>, length: Option<u32
         let mut args = payment(1_000);
         args.input_beef = input_beef;
         args.options.as_mut().unwrap().sign_and_process = Some(sign_and_process);
-        args.inputs = Some(vec![CreateActionInput {
-            outpoint: Outpoint {
-                txid: hex::decode(&scene.input.source_txid)
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                vout: scene.input.source_vout,
-            },
-            unlocking_script: script.clone(),
-            unlocking_script_length: length,
-            input_description: "caller supplies the unlocking script".to_string(),
-            sequence_number: None,
-        }]);
+        args.inputs = Some(vec![scene.caller_input(
+            script.clone(),
+            length,
+            "caller supplies the unlocking script",
+        )]);
         // Bad arguments must win over both a malformed BEEF and a held writer.
         let held_writer = if args.input_beef.is_some() {
             Some(scene.wallet.storage().write_tx().await.unwrap())
@@ -203,19 +229,14 @@ async fn assert_create_input_refused(script: Option<Vec<u8>>, length: Option<u32
                 accepted.signable_transaction.is_some()
             );
         }
-        match result {
-            Err(bsv_rs::Error::WalletError(message)) => {
-                assert_eq!(message, format!("Validation error: {expected}"));
-            }
-            other => panic!("unexpected create refusal: {other:?}"),
-        }
-        assert_eq!(
-            store_snapshot(&scene.wallet).await,
-            before,
-            "nothing stored"
-        );
+        assert_refused(
+            &scene,
+            result,
+            &format!("Validation error: {expected}"),
+            &before,
+        )
+        .await;
         assert!(scene.wallet.pending_transactions.read().await.is_empty());
-        assert_eq!(scene.wallet.services().total_calls(), 0);
     }
 }
 
@@ -268,35 +289,53 @@ fn caller_script(scene: &NamedInputScene, signable: &SignableTransaction) -> Vec
     script
 }
 
-async fn complete(
+fn spend_map(
+    vin: u32,
+    unlocking_script: Vec<u8>,
+    sequence_number: Option<u32>,
+) -> HashMap<u32, SignActionSpend> {
+    HashMap::from([(
+        vin,
+        SignActionSpend {
+            unlocking_script,
+            sequence_number,
+        },
+    )])
+}
+
+async fn sign_named(
     scene: &NamedInputScene,
-    signable: SignableTransaction,
-    script: Option<Vec<u8>>,
-) -> Transaction {
-    let spends = script
-        .map(|unlocking_script| {
-            (
-                0,
-                SignActionSpend {
-                    unlocking_script,
-                    sequence_number: None,
-                },
-            )
-        })
-        .into_iter()
-        .collect();
-    let result = scene
+    reference: String,
+    spends: HashMap<u32, SignActionSpend>,
+) -> bsv_rs::Result<SignActionResult> {
+    scene
         .wallet
         .sign_action(
             SignActionArgs {
-                reference: String::from_utf8(signable.reference).unwrap(),
+                reference,
                 spends,
                 options: None,
             },
             ORIGINATOR,
         )
         .await
-        .unwrap();
+}
+
+async fn complete(
+    scene: &NamedInputScene,
+    signable: SignableTransaction,
+    script: Option<Vec<u8>>,
+) -> Transaction {
+    let spends = script
+        .map(|script| spend_map(0, script, None))
+        .unwrap_or_default();
+    let result = sign_named(
+        scene,
+        String::from_utf8(signable.reference).unwrap(),
+        spends,
+    )
+    .await
+    .unwrap();
     assert_eq!(scene.wallet.services().total_calls(), 0);
     subject(&result.tx.unwrap())
 }
@@ -305,25 +344,15 @@ async fn assert_named_input_script_refused(spends: HashMap<u32, SignActionSpend>
     let scene = named_input_scene().await;
     let signable = defer_named(&scene, 1_000, None).await;
     let reference = String::from_utf8(signable.reference.clone()).unwrap();
-    let result = scene
-        .wallet
-        .sign_action(
-            SignActionArgs {
-                reference: reference.clone(),
-                spends,
-                options: None,
-            },
-            ORIGINATOR,
-        )
-        .await;
-    match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
-            message,
-            "Validation error: The inputs[0].unlockScript parameter must be valid."
-        ),
-        Ok(_) => panic!("wallet processed a caller-named input without a non-empty caller script"),
-        Err(error) => panic!("unexpected refusal: {error}"),
-    }
+    let before = store_snapshot(&scene.wallet).await;
+    let result = sign_named(&scene, reference.clone(), spends).await;
+    assert_refused(
+        &scene,
+        result,
+        "Validation error: The inputs[0].unlockScript parameter must be valid.",
+        &before,
+    )
+    .await;
     let status: String = sqlx::query_scalar("SELECT status FROM transactions WHERE reference = ?")
         .bind(&reference)
         .fetch_one(scene.wallet.storage().pool())
@@ -360,14 +389,7 @@ async fn sign_action_requires_caller_script_for_named_input_with_derivation() {
 
 #[tokio::test]
 async fn sign_action_refuses_empty_caller_script_for_named_input_with_derivation() {
-    assert_named_input_script_refused(HashMap::from([(
-        0,
-        SignActionSpend {
-            unlocking_script: vec![],
-            sequence_number: None,
-        },
-    )]))
-    .await;
+    assert_named_input_script_refused(spend_map(0, vec![], None)).await;
 }
 
 #[tokio::test]
@@ -450,32 +472,21 @@ async fn assert_spend_without_deferred_named_input_refused(vin: u32, replacement
         .fetch_one(scene.wallet.storage().writer())
         .await
         .unwrap();
+    let before = store_snapshot(&scene.wallet).await;
 
-    let result = scene
-        .wallet
-        .sign_action(
-            SignActionArgs {
-                reference: reference.clone(),
-                spends: HashMap::from([(
-                    vin,
-                    SignActionSpend {
-                        unlocking_script: replacement.clone(),
-                        sequence_number: Some(42),
-                    },
-                )]),
-                options: None,
-            },
-            ORIGINATOR,
-        )
-        .await;
-    match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
-            message,
-            "Validation error: The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength."
-        ),
-        Ok(_) => panic!("wallet accepted a spend without a deferred caller input at vin {vin}"),
-        Err(error) => panic!("unexpected refusal: {error}"),
-    }
+    let result = sign_named(
+        &scene,
+        reference.clone(),
+        spend_map(vin, replacement.clone(), Some(42)),
+    )
+    .await;
+    assert_refused(
+        &scene,
+        result,
+        "Validation error: The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength.",
+        &before,
+    )
+    .await;
     let after_writes: i64 = sqlx::query_scalar("SELECT total_changes()")
         .fetch_one(scene.wallet.storage().writer())
         .await
@@ -488,7 +499,6 @@ async fn assert_spend_without_deferred_named_input_refused(vin: u32, replacement
             .await
             .unwrap();
     assert_eq!(after, stored, "the stored unsigned action must not change");
-    assert_eq!(scene.wallet.services().total_calls(), 0);
 
     let signed = complete(&scene, signable, None).await;
     assert_eq!(input_script(&signed, 0), script);
