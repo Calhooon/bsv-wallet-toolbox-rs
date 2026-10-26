@@ -5,7 +5,7 @@
 
 `Wallet::process_action(StorageProcessActionArgs, &str)` posts the references or txids in `send_with` without `spend_lock`; `create_action_offering` with `no_send` builds, and its one-call form releases that lock before posting (#66).
 
-`create_action` refuses an empty caller `unlocking_script` or a zero `unlocking_script_length` with `Error::ValidationError` before BEEF parsing or storage (#212); hosts reserving a caller input must omit its script and supply a positive length.
+`create_action` refuses an empty caller `unlocking_script` or a zero `unlocking_script_length` with `Error::ValidationError` before BEEF parsing or storage (#212). The texts name the parameters bare: `The unlockingScript parameter must be hexadecimal string.` is the reference's byte for byte (`ts-stack@edf6e03` `validationHelpers.ts:522-530,595,758` and `WERR_INVALID_PARAMETER.ts:14`); `The unlockingScriptLength parameter must be a positive integer.` is the port's own in the reference's sentence shape. Hosts reserving a caller input must omit its script and supply a positive length.
 
 This module provides the main `Wallet<S, V>` struct that implements the complete `WalletInterface` trait from `bsv_sdk::wallet`. The Wallet orchestrates three components: `ProtoWallet` for cryptographic operations (key derivation, signing, encryption), a storage backend for persistent state (UTXOs, transactions, certificates), and a services backend for blockchain interaction (broadcasting, merkle proofs, chain height).
 
