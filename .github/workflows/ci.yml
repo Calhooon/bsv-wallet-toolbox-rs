@@ -19,10 +19,9 @@ name: CI
 # request runs the required set on one OS and one toolchain; a push to `main`
 # or `beta`, and a tag through release.yml, runs the full matrix (both OSes,
 # the beta toolchain, coverage, bench; dependents on a push, never on a tag). The
-# `dependents` job builds the CLI's beta on beta and its main on main (#208); it
-# reports and does not fail the run on beta while the CLI's beta adapts to the
-# doors landed after 0.14.0-beta.1, and the step named "Why this job may not
-# fail the run" says so in the job summary and goes when a beta push reads green.
+# `dependents` job builds the CLI's beta on beta and its main on main (#208) and
+# fails the run when a dependent does not build or test against the tree: since
+# the CLI's beta 3268281 (2026-10-26) nothing excuses it.
 on:
   pull_request:
     branches: [main, beta]
@@ -392,17 +391,8 @@ jobs:
   dependents:
     name: dependents
     if: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') }}
-    # The CLI's beta pins both prereleases since bb0a149 (2026-10-26) and the gate
-    # builds it on beta (#208); until the CLI's beta adapts to the doors landed after
-    # 0.14.0-beta.1 (its beta.2 list) the job reports and does not fail the run.
-    # Remove this line when a beta push reads the gate green.
-    continue-on-error: ${{ github.ref_name == 'beta' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Why this job may not fail the run
-        if: ${{ github.ref_name == 'beta' }}
-        run: |
-          echo "dependents on beta reports and does not fail the run: it builds the CLI's beta (which pins both prereleases) against this tree, and the CLI adapts to the doors landed after 0.14.0-beta.1 at its beta.2 list; the line goes when a beta push reads the gate green (the owner's word of 2026-10-26)." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust

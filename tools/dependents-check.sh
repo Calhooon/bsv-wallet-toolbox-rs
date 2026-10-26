@@ -135,15 +135,32 @@ run_one() {
     echo "== $crate: copying $from (the source is not touched)"
     rsync -a --exclude target --exclude .git "$from/" "$dest/"
   else
-    # The dependent's branch named after the line under test, when it has one; else its default.
-    if [ -n "$line" ] && [ "$line" != main ] && git ls-remote --exit-code --heads "$clone" "refs/heads/$line" >/dev/null 2>&1; then
-      echo "== $crate: cloning $clone at its $line branch (the line under test)"
-      git clone --quiet --depth 1 --branch "$line" "$clone" "$dest"
+    # The dependent's branch named after the line under test, when it has one; else its
+    # default. The probe's answer is a verdict only when it is a yes (0) or a no (2):
+    # any other exit is a fault (host unreachable, auth), and a fault is not a verdict.
+    probe=0
+    if [ -n "$line" ] && [ "$line" != main ]; then
+      git ls-remote --exit-code --heads "$clone" "refs/heads/$line" >/dev/null 2>&1 || probe=$?
     else
-      [ -n "$line" ] && [ "$line" != main ] && echo "   NOTE: $clone has no $line branch; its default branch stands in"
-      echo "== $crate: cloning $clone at its default branch"
-      git clone --quiet --depth 1 "$clone" "$dest"
+      probe=2
     fi
+    case "$probe" in
+      0)
+        echo "== $crate: cloning $clone at its $line branch (the line under test)"
+        git clone --quiet --depth 1 --branch "$line" "$clone" "$dest"
+        ;;
+      2)
+        [ -n "$line" ] && [ "$line" != main ] && echo "   NOTE: $clone has no $line branch; its default branch stands in"
+        echo "== $crate: cloning $clone at its default branch"
+        git clone --quiet --depth 1 "$clone" "$dest"
+        ;;
+      *)
+        echo "== $crate: the branch probe of $clone failed (git ls-remote exit $probe); a fault is not a verdict"
+        summary+=("$crate|probe fault (exit $probe)|-")
+        status=1
+        return
+        ;;
+    esac
     echo "   at $(git -C "$dest" rev-parse --short HEAD) ($(git -C "$dest" rev-parse --abbrev-ref HEAD))"
   fi
   src="$dest/$dir"
