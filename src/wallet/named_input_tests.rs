@@ -214,8 +214,7 @@ async fn complete(
     subject(&result.tx.unwrap())
 }
 
-#[tokio::test]
-async fn sign_action_requires_caller_script_for_named_input_with_derivation() {
+async fn assert_named_input_script_refused(spends: HashMap<u32, SignActionSpend>) {
     let scene = named_input_scene().await;
     let signable = defer_named(&scene, 1_000, None).await;
     let reference = String::from_utf8(signable.reference.clone()).unwrap();
@@ -224,7 +223,7 @@ async fn sign_action_requires_caller_script_for_named_input_with_derivation() {
         .sign_action(
             SignActionArgs {
                 reference: reference.clone(),
-                spends: HashMap::new(),
+                spends,
                 options: None,
             },
             ORIGINATOR,
@@ -235,7 +234,7 @@ async fn sign_action_requires_caller_script_for_named_input_with_derivation() {
             message,
             "Validation error: The inputs[0].unlockScript parameter must be valid."
         ),
-        Ok(_) => panic!("wallet signed a caller-named input with no caller script"),
+        Ok(_) => panic!("wallet processed a caller-named input without a non-empty caller script"),
         Err(error) => panic!("unexpected refusal: {error}"),
     }
     let status: String = sqlx::query_scalar("SELECT status FROM transactions WHERE reference = ?")
@@ -265,6 +264,23 @@ async fn sign_action_requires_caller_script_for_named_input_with_derivation() {
     let script = caller_script(&scene, &signable);
     let signed = complete(&scene, signable, Some(script.clone())).await;
     assert_eq!(input_script(&signed, 0), script);
+}
+
+#[tokio::test]
+async fn sign_action_requires_caller_script_for_named_input_with_derivation() {
+    assert_named_input_script_refused(HashMap::new()).await;
+}
+
+#[tokio::test]
+async fn sign_action_refuses_empty_caller_script_for_named_input_with_derivation() {
+    assert_named_input_script_refused(HashMap::from([(
+        0,
+        SignActionSpend {
+            unlocking_script: vec![],
+            sequence_number: None,
+        },
+    )]))
+    .await;
 }
 
 #[tokio::test]
