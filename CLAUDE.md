@@ -24,8 +24,7 @@ cd fuzz && cargo +nightly fuzz run <target> -- -max_total_time=60 -timeout=10  #
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
 
-**bsv-sdk dependency:** Local path `../rust-sdk` with `full` and `http` features.
-You MUST have `../rust-sdk` checked out for the project to compile.
+**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.1` on beta since #184; main pins a 0.8 release) with `full` and `http` features. The pin is the owner's word (epic #80).
 
 ## Architecture
 
@@ -103,7 +102,7 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 
 ## Known Issues / Gotchas
 
-- `bsv-sdk` is a local path dep - must have `../rust-sdk` checked out
+- `bsv-rs` is pinned exactly from crates.io; a pin move is the owner's word and lands with the CLI's pin of the same version
 - `StorageSqlx::pool()` is the READER pool (`query_only`): writes go to `writer()` (one connection) or `write_tx()` (`BEGIN IMMEDIATE`); never await a service or tracker while holding either. `clippy.toml` bans every other `begin` (bsv-wallet-cli #44)
 - One store per file per process: give a `Wallet` and a `Monitor` clones of ONE `StorageSqlx` (`impl Clone` shares the pools and every field); never open the same file twice in one process (two writer pools meet on SQLite's busy handler)
 - `ChainTrackerError` must be imported separately: `use bsv_sdk::transaction::ChainTrackerError;`
