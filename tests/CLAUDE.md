@@ -29,6 +29,7 @@ Most integration tests require the `sqlite` feature (default). The `valid_create
 | `error_recovery_tests.rs` | 495 | 10 | none | Service layer HTTP errors, adaptive timeouts, EMA |
 | `services_tests.rs` | 949 | ~58 | none | Service creation, provider config, result types, nLockTime |
 | `test_vectors.rs` | 2059 | ~40 | none/`remote` | Cross-SDK test vector validation (7 vector files) |
+| `storage_wire.rs` | 617 | 42 | `remote` | Recorded JSON-RPC request witnesses for every remote storage method |
 | `beef_edge_cases.rs` | 309 | 5 | none | BEEF format edge cases and serialization roundtrips |
 | `double_spend_tests.rs` | 309 | 5 | none | Double-spend detection data structures and status enums |
 | `error_path_tests.rs` | 250 | 5 | none | Error variant construction, Display, conversions |
