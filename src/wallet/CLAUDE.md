@@ -84,7 +84,7 @@ where
     chain: Chain,
     options: WalletOptions,
     signer: WalletSigner,
-    pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
+    pending_transactions: Arc<RwLock<HashMap<String, PendingSignAction>>>,
     user_id: i64,
     privileged_key_manager: Option<Arc<dyn PrivilegedKeyManager>>,
     permissions_manager: Option<Arc<WalletPermissionsManager>>,
