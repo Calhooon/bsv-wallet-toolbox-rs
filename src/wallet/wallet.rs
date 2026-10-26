@@ -2005,11 +2005,22 @@ where
         let mut inputs = pending_tx.inputs.clone();
         let mut raw_tx = pending_tx.raw_tx.clone();
         for (vin, spend) in &args.spends {
-            if let Some(input) = inputs.iter_mut().find(|i| i.vin == *vin) {
-                if !spend.unlocking_script.is_empty() || !storage_inputs.contains(vin) {
-                    input.unlocking_script = Some(spend.unlocking_script.clone());
-                }
-            }
+            // ts-stack@edf6e03 completeSignedTransaction.ts:19-24 accepts
+            // only caller inputs with a deferred script. create_action requires
+            // unlockingScriptLength when a caller input has no script.
+            let input = inputs
+                .iter_mut()
+                .find(|i| i.vin == *vin)
+                .filter(|input| {
+                    !storage_inputs.contains(vin) && input.unlocking_script.is_none()
+                })
+                .ok_or_else(|| {
+                    Error::ValidationError(
+                        "The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength."
+                            .to_string(),
+                    )
+                })?;
+            input.unlocking_script = Some(spend.unlocking_script.clone());
             if let Some(sequence) = spend.sequence_number {
                 raw_tx = crate::wallet::signer::set_input_sequence(&raw_tx, *vin, sequence)
                     .map_err(|e| {
