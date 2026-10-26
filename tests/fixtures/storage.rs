@@ -5,6 +5,7 @@ mod door;
 mod model;
 mod normalize;
 mod operations;
+mod received_rule;
 mod seed;
 
 use std::collections::BTreeMap;
