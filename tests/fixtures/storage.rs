@@ -102,7 +102,7 @@ async fn replay_storage_fixtures() -> Result<()> {
         let fixture: Fixture =
             serde_json::from_str(&source).with_context(|| format!("reading {}", path.display()))?;
         anyhow::ensure!(
-            !fixture.name.is_empty() && [53, 66, 103, 138, 165].contains(&fixture.issue),
+            !fixture.name.is_empty() && [53, 66, 103, 138, 165, 169].contains(&fixture.issue),
             "fixture identity"
         );
         anyhow::ensure!(!fixture.calls.is_empty(), "{} has no calls", fixture.name);
