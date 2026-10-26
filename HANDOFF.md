@@ -112,6 +112,30 @@ What landing taught (2026-10-26):
 - A push from a detached worktree needs the full ref (`HEAD:refs/heads/lane/<name>`).
 - A parity claim to a peer needs the body of the function the question names, not its caller: the captain told bsv-rs the toolbox's certificate field encryption was the reference's after reading the keyring half only; the issuance half was not (#203), and the record had to be corrected.
 
+## Wave 3 (2026-10-26 evening, after the cut): the doors read as the reference reads them
+
+Launched on beta 84a5a49 and after, from the cold reviews of CLI PRs 262 and 263 and of the toolbox's own PRs; every lane on Codex, every PR cold-reviewed on a different model, every code fix re-reviewed, every doc-only fold applied with the review standing (the stack's cadence of 16:3xZ).
+
+| issue | PR | beta | what landed |
+|---|---|---|---|
+| #200 | #209 | e2e2bf3 | `sign_action` signs only the inputs the wallet allocated (`provided_by = "storage"`); a caller's named input keeps the caller's script; a missing or empty caller script is refused before processing with the reference's `The inputs[N].unlockScript parameter must be valid.` (the ordering named as this port's: the reference completes and processes before `verifyUnlockScripts`); two reviews (fix, merge), one doc fold |
+| #201 | #210 | 4d8d48c | a store busy during inline proof ingestion keeps its type on the MINED and IMMUTABLE arm; the status write may have committed when it returns and a redelivery is idempotent (the `sending`-shape test); three reviews (fix, fix on one row, merge on the test refactor) |
+| #211 | #214 | f78b68d | a caller's spend on a vin that is not a deferred caller input is refused with the reference's WERR text byte for byte (`completeSignedTransaction.ts:19`); one review (merge; #216 filed) |
+| #202 | #213 | 6b98355 | the storage client's JSON-RPC wire follows the reference's StorageServer names through a runtime adapter (`src/storage/client/wire.rs`; 16 field groups, `inputBEEF` among them; result aliases both ways); 41 request witnesses replayed by `tests/storage_wire.rs`; `docs/STORAGE-WIRE.md` the audit of record; the required `Test Suite` and `Clippy` steps build `sqlite,remote`; two reviews (fix, merge), two doc folds. The captain's decision: the adapter is the wire layer, since a serde rename on the shared public entity types would be a public shape change; the twelve rows marked as the owner's are in his decision brief of 2026-10-26 (the keeper's recommendation: the reference's shape on the 0.14 line) and become successor lanes on his word |
+| #212 | #215 | 1a0f3f1 | the create door refuses an empty unlocking script (`The unlockingScript parameter must be hexadecimal string.`, the reference's text) and a zero `unlockingScriptLength` (the port's own words in the reference's shape; the reference's helper permits 0 where BRC-100 types it positive, an upstream finding in the keeper's filing) before anything is stored; three reviews (fix on the parameter name, merge, merge on the test refactor) |
+
+Filed from the reviews, Phase 2: #216 (a spend longer than the declared `unlockingScriptLength` is accepted where the reference refuses it). Told to bsv-rs: its shared `validate_create_action_args` carries neither create bound (bsv-rs #282); the toolbox's door delegates to it when it lands.
+
+What landing taught (the evening):
+
+- The ratchet's `duplicated_blocks` is a whole-tree count: three PRs' tests in one file (`named_input_tests.rs`) and two in another (`arcade_events_tests.rs`) each stayed under the baseline alone and together went over it on the rebased tree, once in CI (#210, a 40-minute cycle) and once at the landing script's new local ratchet run (#215, two minutes). The fix each time was a test-only refactor into shared scene helpers by a fix lane, with a short cold look on the one commit; never a re-record upward. The landing script runs `RUSTUP_TOOLCHAIN=1.98.1 python3 tools/ratchet --check` on the rebased worktree before every push.
+- Review lanes share cca's default cargo target unless the brief sets one, and a shared target ran another lane's stale test binary twice (a `cargo test` with no `Compiling` line for the tree is not that tree's run). The review template exports `CARGO_TARGET_DIR=$HOME/bsv/targets/<lane>-review`.
+- A brief that routes `cargo test` through a loopback proxy sink must also set `NO_PROXY=127.0.0.1,localhost,::1`, or every fixture against a local mock fails (111 failures in one lane until it added the exemption).
+- The landing script's "keep both CHANGELOG sides" repeats an entry once per rebased commit that touched the file; its guard refuses the push, and the captain keeps the last copy. Land PRs that share a file one at a time.
+- A refusal text is the reference's byte for byte or it is a finding: three reviews found a prefix, an ordering claim or a parameter name that followed nothing (`inputs.N.`), each corrected to the reference's rendering or named as the port's own.
+
+The ratchet's accepted falls (pedantic 3279 to 3276, cognitive 43 to 42, duplicated_blocks 6822 to the tree's reading after #215) are re-recorded in a measuring commit with `python3 tools/scoreboard-write` after this wave, never before.
+
 ## Next (after the cut)
 
 - The CLI's beta pins `bsv-wallet-toolbox-rs = "=0.14.0-beta.1"` and `bsv-rs = "=0.9.0-beta.1"` together and re-records its BEEF bytes in BRC-62 order; then `dependents` and `semver` turn back to failing the run on beta (#204's two lines).
