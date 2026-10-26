@@ -4,6 +4,25 @@
 
 ### Fixed
 
+- #203: certificate issuance now encrypts each field with a fresh 32-byte
+  symmetric key, stores the ciphertext as Base64 text, and wallet-encrypts
+  that key into the master keyring. Previously it wallet-encrypted the
+  plaintext and copied the same ciphertext into both the field and keyring.
+  Intake now preserves the signed Base64 text (#197); Base64 decoding is
+  deferred to field decryption. The scheme follows `ts-stack@edf6e03`,
+  `packages/sdk/src/auth/certificates/MasterCertificate.ts:277-293,380-420`,
+  with the verifier's decrypt procedure in `VerifiableCertificate.ts:180-211`.
+  The pinned bsv-rs #261 fixture witnesses reference-issued and Rust-issued
+  certificates through intake, storage, proof and field decryption.
+
+  **For hosts (#203):** every certificate issued through the toolbox's own
+  issuance before this change does not decrypt under the reference, Go or
+  bsv-rs's corrected scheme and must be re-issued. A certificate issued by the
+  reference now proves and decrypts here. This does not migrate old keyrings.
+  The pinned bsv-rs 0.9.0-beta.1 still has the separate signature-verifier and
+  certificate decrypt-helper differences tracked by #199; the witness uses
+  the reference's verification and decryption procedures directly.
+
 - #211: `sign_action` previously accepted caller spends on storage-allocated inputs and replaced scripts already supplied at `create_action`. It now refuses a spend unless its vin names a caller input deferred with `unlockingScriptLength`, before signing or processing, with no storage writes and the unsigned action available for completion. The reference's `WERR_INVALID_PARAMETER` maps to `Error::ValidationError` with the text `The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength.` Reference: `ts-stack@edf6e03`, under `packages/wallet/wallet-toolbox/src/`, `signer/methods/completeSignedTransaction.ts:15-32` (the refusal at lines 19-24), `signer/methods/buildSignableTransaction.ts:169-189` (caller inputs), and `sdk/WERR_errors.ts:105` (the complete message).
 - #212: `create_action` rejects caller inputs with `unlocking_script: Some(vec![])` or `unlocking_script_length: Some(0)` using `Error::ValidationError`, before any BEEF parse or storage call. The messages are `The unlockingScript parameter must be hexadecimal string.` and `The unlockingScriptLength parameter must be a positive integer.` The empty-script text is the reference's byte for byte (`ts-stack@edf6e03` `packages/sdk/src/wallet/validationHelpers.ts:522-530,595,758` and `packages/sdk/src/wallet/WERR_INVALID_PARAMETER.ts:14`). The length text is the port's own in the reference's sentence shape; the positive-length bound follows `BRCs@5119a9b` `wallet/0100.md:649` (the TS helper at `:598` permits zero). Hosts that sent an empty script to reserve an input must omit the script and supply a positive `unlockingScriptLength`.
 - #200: `sign_action` signs only inputs allocated by storage (`provided_by = "storage"`). Previously it could sign a caller-named input whenever the stored output carried derivation metadata, and deferred actions discarded scripts supplied at `create_action`. Caller scripts supplied at either step are now preserved. This port refuses a missing or empty named-input script before signing or processing, using the reference's `The inputs[N].unlockScript parameter must be valid.` text and mapping its `WERR_INVALID_PARAMETER` to `Error::ValidationError`; `ts-stack@edf6e03` completes and processes the action before `verifyUnlockScripts` reports a missing script's refusal, and refuses an empty script earlier, at its argument gate, as not a hexadecimal string (`validationHelpers.ts:522-530`), the same class. The WalletInterface boundary renders `Validation error: The inputs[N].unlockScript parameter must be valid.`, and the action stays unsigned for completion by the caller. Reference: `ts-stack@edf6e03`, under `packages/wallet/wallet-toolbox/src/signer/methods/`, `signAction.ts:65-90`, `createAction.ts:181-189`, `buildSignableTransaction.ts:176-189`, `completeSignedTransaction.ts:15-32,50-79`, and `verifyUnlockScripts.ts:51-64`; BRCs@5119a9b `wallet/0100.md:643-649,724-729`.

@@ -549,6 +549,13 @@ Internal helper functions in `wallet.rs`:
 
 The `prove_certificate` method implements BRC-52/53 selective attribute disclosure:
 
+Each field's Base64 text encodes ciphertext under an independent 32-byte
+`SymmetricKey`. The master keyring holds the wallet-encrypted field key, under
+protocol `[2, "certificate field encryption"]` and key ID `field_name`.
+The verifier unwraps that key under `"{serial_number_base64} {field_name}"`,
+Base64-decodes the field ciphertext, decrypts it with the recovered key, and
+reads the plaintext as UTF-8. The keyring does not carry the field plaintext.
+
 1. **Query certificate** - Finds unique certificate matching args via `list_certificates`
 2. **Validate keyring** - Ensures storage has master keyring for decryption
 3. **Create verifier keyring** - For each field to reveal:
@@ -574,11 +581,33 @@ Internal helper functions in `signer.rs` (the varint, sha256d and hash160 are bs
 
 ## Certificate Issuance Protocol (certificate_issuance.rs)
 
-The `certificate_issuance` module implements the BRC-104 certificate issuance protocol for acquiring identity certificates from certifier services. This provides 1:1 parity with Go and TypeScript implementations.
+The `certificate_issuance` module implements the BRC-104 certificate issuance
+protocol for acquiring identity certificates from certifier services. Its
+field scheme follows `ts-stack@edf6e03`,
+`MasterCertificate.ts:277-293,380-420`: draw a fresh `SymmetricKey` per field,
+encrypt the plaintext with it, and wallet-encrypt the key to the certifier.
+Both ciphertexts are Base64 text in the request and storage. Intake preserves
+that text's bytes for the signed representation (BRC-52 `0052.md:97`, #197);
+the pinned bsv-rs 0.9.0-beta.1 setter takes `value.as_bytes().to_vec()`.
+Decode a field's Base64 only when decrypting it.
+
+The bsv-rs #261 fixture is pinned byte for byte under
+`conformance/upstream/261-certificate-field-value/`. The four tests in
+`certificate_issuance_tests.rs` cover intake bytes and reference signature
+verification, the stored certificate's `prove_certificate` path, local
+issuance through preparation/validation/storage/proof, and fresh keys for
+equal and empty plaintexts. They implement the reference's verifier and
+decrypt procedures because the pinned SDK's helpers still use the older
+signature and field schemes; #199 owns that dependency update.
+
+Hosts must re-issue every certificate produced by the toolbox's own issuance
+before #203: those fields and keyrings do not decrypt with the reference, Go
+or bsv-rs's corrected scheme. Stored certificates from the reference now
+prove and decrypt through the toolbox.
 
 ### Protocol Flow
 
-1. **PrepareIssuanceActionData**: Generate random 32-byte nonce, encrypt fields using subject-to-certifier encryption, build JSON request body
+1. **PrepareIssuanceActionData**: Generate a random 32-byte nonce, encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
 2. **HTTP POST**: Send request to certifier URL with BRC-104 headers (`x-bsv-auth-version: 0.1`, `x-bsv-identity-key`)
 3. **ParseCertificateResponse**: Parse JSON response, validate headers and certificate components
 4. **VerifyCertificateIssuance**: Verify serial number via HMAC, validate certificate type/subject/certifier/fields, verify signature
