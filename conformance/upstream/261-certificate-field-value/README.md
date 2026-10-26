@@ -19,6 +19,11 @@ The witnesses live in `src/wallet/certificate_issuance_tests.rs` and run with:
 env HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 cargo test --lib certificate_issuance::field_scheme_tests
 ```
 
+The issuance checks compare recovered plaintexts and distinct 32-byte keys,
+including equal and empty plaintext fields across repeated issuances. They
+do not compare random ciphertext bytes, so they need no seeded RNG or
+storage RNG access. Production draws each key with `SymmetricKey::random`.
+
 The decrypt procedure is ported from the pinned reference's
 `MasterCertificate.decryptField` and `VerifiableCertificate.decryptFields`:
 wallet-decrypt the field key, Base64-decode the field, AES-decrypt it with
