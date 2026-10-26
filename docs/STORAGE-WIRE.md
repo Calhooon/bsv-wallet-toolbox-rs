@@ -44,7 +44,7 @@ reuse. Method-only differences are counted as one group per method.
 
 Counts for the two field tables plus the 17 toolbox-only method rows: same 42;
 differs and fixed 16; moves with bsv-rs #105 6; owner's word 10;
-reference-only 12; toolbox-only 20. The 16 reference-only allowlist names below
+reference-only 13; toolbox-only 20. The 16 reference-only allowlist names below
 are a separate capability inventory, not additional field groups.
 
 The reference also negotiates optional binary JSON: C `:888-890`,
@@ -188,14 +188,15 @@ without changing those types or their local serialization.
 | E1 all entities | `createdAt:D,updatedAt:D` | `created_at:D,updated_at:D` T/* | same; old Rust already accepts those aliases | differs and fixed, outbound only |
 | E2 Certificate | `certType:B` | `type:B` T/Certificate:10 | same; incoming alias already present | differs and fixed, outbound only |
 | Certificate common | `certificateId:N,userId:N,serialNumber:B,certifier:H,subject:H,verifier:H?,revocationOutpoint:S,signature:H` | same T/Certificate:8-17 | same | same |
+| Certificate result fields | no field collection on the returned `TableCertificate` | `fields:CertificateField[]?` on `TableCertificateX`, T/Certificate:21; C730-736 reads them for `includeFields` | same | reference-only; preserving requested fields needs an owner's public type decision |
 | E3 CertificateField | `userId:N,certificateId:N,fieldName:S,fieldValue:S,masterKey:B` | same T/CertificateField:8-12 | same | same |
-| E4 Transaction, ProvenTxReq | `inputBeef:A?` | `inputBEEF:A?` T/Transaction:37,T/ProvenTxReq:33 | same | differs and fixed, outbound rename and inbound alias |
+| E4 Transaction, ProvenTxReq | `inputBeef:A?` | `inputBEEF:A?` T/Transaction:35,T/ProvenTxReq:33 | same | differs and fixed, outbound rename and inbound alias |
 | E5 Transaction | status `"noSend","nonFinal"` | `"nosend","nonfinal"` WT sdk/types.ts:54-84 | same; incoming aliases already present | differs and fixed, outbound only |
-| E6 Output | `outputType:S` | `type:S` T/Output:22 | same | differs and fixed, both directions |
-| E7 Basket | `numberOfDesiredUtxos:N,minimumDesiredUtxoValue:N` | `numberOfDesiredUTXOs:N,minimumDesiredUTXOValue:N` T/OutputBasket:10-11 | same; incoming aliases already present | differs and fixed, outbound only |
+| E6 Output | `outputType:S` | `type:S` T/Output:20 | same | differs and fixed, both directions |
+| E7 Basket | `numberOfDesiredUtxos:N,minimumDesiredUtxoValue:N` | `numberOfDesiredUTXOs:N,minimumDesiredUTXOValue:N` T/OutputBasket:9-10 | same; incoming aliases already present | differs and fixed, outbound only |
 | E8 Label, LabelMap | `labelId:N` | `txLabelId:N` T/TxLabel:6,T/TxLabelMap:6 | same; incoming aliases already present | differs and fixed, outbound only |
 | E9 Tag, TagMap | `tagId:N` | `outputTagId:N` T/OutputTag:6,T/OutputTagMap:6 | same; incoming aliases already present | differs and fixed, outbound only |
-| E10 Commission | `payerLockingScript:A` | `lockingScript:A` T/Commission:13 | same; incoming alias already present | differs and fixed, outbound only |
+| E10 Commission | `payerLockingScript:A` | `lockingScript:A` T/Commission:12 | same; incoming alias already present | differs and fixed, outbound only |
 | E11 User | `userId:N,identityKey:H,activeStorage:H?` | same T/User | same | same |
 | E12 SyncState | `whenLastSyncStarted:D?` | `when:D?` T/SyncState:14,C667 | same | differs and fixed, inbound alias |
 | SyncState common | `syncStateId:N,userId:N,storageIdentityKey:H,storageName:S,status:S,init:F,refNum:S,syncMap:S,satoshis:N?,errorLocal:S?,errorOther:S?` | same T/SyncState | same | same |
@@ -245,3 +246,12 @@ T2/T4: no proof or coin verdict is changed. T3: no extra network round trip.
 T5: the server's pinned field contract replaces an undocumented assumption.
 T6: every called method has an executable request witness; alias tests exercise
 reference-shaped responses. No TS server deployment is exercised by this audit.
+
+## CI landing requirement
+
+The current `.github/workflows/ci.yml:130-139,164-165` test and clippy commands
+enable `sqlite` only. The remote client and these tests require `remote`, which
+`full` includes. The captain must add a required `storage-wire` context running
+full-feature clippy, library tests and `tests/storage_wire.rs`, with warnings
+denied and the dead-proxy test environment. This lane's bounds exclude workflow
+edits. Its local full-feature gates are recorded in the lane evidence.

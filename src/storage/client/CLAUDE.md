@@ -12,6 +12,20 @@ wallets to persist state to remote infrastructure with BRC-104 mutual authentica
 The client is the recommended approach for production wallet applications that need reliable,
 persistent storage without managing local databases.
 
+## Wire contract
+
+The storage wire follows the reference's `StorageServer` field names at the pin
+recorded in [the storage-wire audit](../../../docs/STORAGE-WIRE.md). Add every
+new RPC method or field to that table with its request witness under
+`tests/fixtures/data/storage-wire/`; `tests/storage_wire.rs` captures the real
+client's JSON against loopback mockito. Review fixture diffs, including any
+change brought by a bsv-rs pin. Local storage fixtures are a separate format.
+
+`wire.rs` adapts toolbox-owned entity and filter names only at the RPC boundary
+and accepts reference result aliases. `ValidCreateActionArgs` explicitly sends
+`inputBEEF`. Embedded bsv-rs types retain their own serialization; the audit
+marks their #105 changes and the remaining decisions that need the owner.
+
 ## Files
 
 | File | Lines | Purpose |
@@ -20,6 +34,8 @@ persistent storage without managing local databases.
 | `auth.rs` | 969 | BRC-31 authentication: nonce creation, request signing, response verification |
 | `json_rpc.rs` | 292 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) |
 | `storage_client.rs` | 2619 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
+| `wire.rs` | 187 | Request field names and reference result aliases |
+| `wire_tests.rs` | 353 | Reference responses and outgoing-name regressions |
 
 ## Key Exports
 
