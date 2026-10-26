@@ -109,32 +109,50 @@ fn partial_filter(args: &mut Value, fields: &[&str]) {
     }
 }
 
+fn find_params(method: &str, params: &mut [Value]) {
+    let (index, fields, optional): (usize, &[&str], &[&str]) = match method {
+        "findCertificatesAuth" => (1, &["userId"], &[]),
+        "findOutputBaskets" => (1, &["userId", "name"], &[]),
+        "findOutputsAuth" => (
+            1,
+            &["userId", "basketId", "txid", "vout"],
+            &["noScript", "txStatus"],
+        ),
+        "findProvenTxReqs" => (0, &[], &["status", "txids"]),
+        "findTransactions" => (0, &[], &["status", "noRawTx"]),
+        _ => return,
+    };
+    let Some(args) = params.get_mut(index) else {
+        return;
+    };
+    partial_filter(args, fields);
+    // Preserve omitted query options while keeping the base fields' nulls.
+    if let Some(object) = args.as_object_mut() {
+        for field in optional {
+            if object.get(*field).is_some_and(Value::is_null) {
+                object.remove(*field);
+            }
+        }
+    }
+    let field = match method {
+        "findOutputsAuth" => "txStatus",
+        "findTransactions" => "status",
+        _ => return,
+    };
+    if let Some(statuses) = args.get_mut(field).and_then(Value::as_array_mut) {
+        for status in statuses {
+            transaction_status(status);
+        }
+    }
+}
+
 pub(super) fn request_params(method: &str, params: &mut [Value]) {
     match method {
-        "findCertificatesAuth" | "findOutputBaskets" => {
-            if let Some(args) = params.get_mut(1) {
-                let fields: &[&str] = if method == "findCertificatesAuth" {
-                    &["userId"]
-                } else {
-                    &["userId", "name"]
-                };
-                partial_filter(args, fields);
-            }
-        }
-        "findOutputsAuth" | "findTransactions" => {
-            let (index, field) = if method == "findOutputsAuth" {
-                (1, "txStatus")
-            } else {
-                (0, "status")
-            };
-            if let Some(statuses) = params.get_mut(index).and_then(|v| v.get_mut(field)) {
-                if let Some(statuses) = statuses.as_array_mut() {
-                    for status in statuses {
-                        transaction_status(status);
-                    }
-                }
-            }
-        }
+        "findCertificatesAuth"
+        | "findOutputBaskets"
+        | "findOutputsAuth"
+        | "findProvenTxReqs"
+        | "findTransactions" => find_params(method, params),
         "insertCertificateAuth" => {
             if let Some(certificate) = params.get_mut(1) {
                 entity_to_wire(certificate, "certificates");

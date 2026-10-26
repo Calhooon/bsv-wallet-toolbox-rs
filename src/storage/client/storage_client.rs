@@ -706,85 +706,24 @@ impl<W: WalletInterface + Clone + 'static> WalletStorageReader for StorageClient
     }
 
     async fn find_outputs(&self, auth: &AuthId, args: FindOutputsArgs) -> Result<Vec<TableOutput>> {
-        // TS server expects filter fields wrapped in a `partial` sub-object:
-        //   { ...base, partial: { userId, basketId, txid, vout }, noScript, txStatus }
-        let mut wire_args = serde_json::json!({});
-        // Flatten base (FindSincePagedArgs) fields
-        let base_val = serde_json::to_value(&args.base)?;
-        if let serde_json::Value::Object(map) = base_val {
-            for (k, v) in map {
-                wire_args[&k] = v;
-            }
-        }
-        // Build the partial sub-object with filter fields
-        let mut partial = serde_json::json!({});
-        if let Some(uid) = args.user_id {
-            partial["userId"] = serde_json::json!(uid);
-        }
-        if let Some(bid) = args.basket_id {
-            partial["basketId"] = serde_json::json!(bid);
-        }
-        if let Some(ref txid) = args.txid {
-            partial["txid"] = serde_json::json!(txid);
-        }
-        if let Some(vout) = args.vout {
-            partial["vout"] = serde_json::json!(vout);
-        }
-        wire_args["partial"] = partial;
-        // Top-level optional fields
-        if let Some(ns) = args.no_script {
-            wire_args["noScript"] = serde_json::json!(ns);
-        }
-        if let Some(ref ts) = args.tx_status {
-            wire_args["txStatus"] = serde_json::to_value(ts)?;
-        }
-        self.rpc_call("findOutputsAuth", vec![Self::to_value(auth)?, wire_args])
-            .await
+        self.rpc_call(
+            "findOutputsAuth",
+            vec![Self::to_value(auth)?, Self::to_value(&args)?],
+        )
+        .await
     }
 
     async fn find_proven_tx_reqs(
         &self,
         args: FindProvenTxReqsArgs,
     ) -> Result<Vec<TableProvenTxReq>> {
-        // TS server expects: { ...base, partial: {}, status?, txids? }
-        // The server accesses args.partial.rawTx immediately, so partial must be present.
-        let mut wire_args = serde_json::json!({});
-        // Flatten base (FindSincePagedArgs) fields
-        let base_val = serde_json::to_value(&args.base)?;
-        if let serde_json::Value::Object(map) = base_val {
-            for (k, v) in map {
-                wire_args[&k] = v;
-            }
-        }
-        // Empty partial (required by server, we don't filter by partial fields)
-        wire_args["partial"] = serde_json::json!({});
-        // Top-level optional fields
-        if let Some(ref status) = args.status {
-            wire_args["status"] = serde_json::to_value(status)?;
-        }
-        if let Some(ref txids) = args.txids {
-            wire_args["txids"] = serde_json::to_value(txids)?;
-        }
-        self.rpc_call("findProvenTxReqs", vec![wire_args]).await
+        self.rpc_call("findProvenTxReqs", vec![Self::to_value(&args)?])
+            .await
     }
 
     async fn find_transactions(&self, args: FindTransactionsArgs) -> Result<Vec<TableTransaction>> {
-        // TS server expects: { ...base, partial: {}, status?, noRawTx? }
-        let mut wire_args = serde_json::json!({});
-        let base_val = serde_json::to_value(&args.base)?;
-        if let serde_json::Value::Object(map) = base_val {
-            for (k, v) in map {
-                wire_args[&k] = v;
-            }
-        }
-        wire_args["partial"] = serde_json::json!({});
-        if let Some(ref status) = args.status {
-            wire_args["status"] = serde_json::to_value(status)?;
-        }
-        if let Some(no_raw_tx) = args.no_raw_tx {
-            wire_args["noRawTx"] = serde_json::Value::Bool(no_raw_tx);
-        }
-        self.rpc_call("findTransactions", vec![wire_args]).await
+        self.rpc_call("findTransactions", vec![Self::to_value(&args)?])
+            .await
     }
 
     async fn list_actions(
