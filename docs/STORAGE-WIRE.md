@@ -249,11 +249,4 @@ reference-shaped responses. No TS server deployment is exercised by this audit.
 
 ## CI landing requirement
 
-Use the existing required `Test Suite (ubuntu-latest, stable)` and `Clippy`
-contexts. At landing, the captain changes the unit-test, integration-test,
-doc-test and Clippy commands in `.github/workflows/ci.yml:130-139,164-165` from
-`--features sqlite` to `--features sqlite,remote`, keeping the required context
-set unchanged. Enabling `remote` runs all 42 tests in `tests/storage_wire.rs`
-and the library's `storage::client::wire_tests` on every PR, and includes their
-code in Clippy's checks. Workflow edits belong to the captain; this lane's local
-full-feature gates are recorded in its evidence.
+Done at landing (commit 9652e2e on this branch): the required `Test Suite (ubuntu-latest, stable)` steps (lib, integration, doc) and the `Clippy` step build `--features sqlite,remote` (`.github/workflows/ci.yml` lines 15, 133, 138, 141, 167), so `tests/storage_wire.rs` (42 witnesses) and the lib `wire_tests` run on every pull request under contexts branch protection already requires. No new context was added; the required set stays as the workflow header names it.

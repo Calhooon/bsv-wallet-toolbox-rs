@@ -34,8 +34,8 @@ marks their #105 changes and the remaining decisions that need the owner.
 | `auth.rs` | 969 | BRC-31 authentication: nonce creation, request signing, response verification |
 | `json_rpc.rs` | 292 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) |
 | `storage_client.rs` | 2619 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
-| `wire.rs` | 187 | Request field names and reference result aliases |
-| `wire_tests.rs` | 353 | Reference responses and outgoing-name regressions |
+| `wire.rs` | 205 | Request field names and reference result aliases |
+| `wire_tests.rs` | 361 | Reference responses and outgoing-name regressions |
 
 ## Key Exports
 
