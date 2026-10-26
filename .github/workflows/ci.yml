@@ -8,7 +8,7 @@ name: CI
 # could refuse but is not required is a hole. Beta requires nine contexts:
 # `Test Suite (ubuntu-latest, stable)`, `Clippy`, `Rustfmt`, `vectors`, `locks`,
 # `ratchet`, `scoreboard`, `fixtures`, `Documentation`; main requires the six
-# its older workflow has (the first five and `Documentation`) until beta merges
+# its older workflow has (those five and `Documentation`) until beta merges
 # into it. Renaming one of those jobs removes its context and blocks every PR
 # into that branch until the protection is updated. Every action is pinned by
 # commit sha. `semver` and `dependents` report but are not required.
