@@ -11,11 +11,11 @@
     {
       "certificateFieldId": 5,
       "certificateId": 4,
-      "createdAt": "2026-01-02T03:04:05Z",
+      "created_at": "2026-01-02T03:04:05Z",
       "fieldName": "name",
       "fieldValue": "encrypted",
       "masterKey": "a2V5",
-      "updatedAt": "2026-01-02T03:04:05Z",
+      "updated_at": "2026-01-02T03:04:05Z",
       "userId": 7
     }
   ]

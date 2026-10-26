@@ -23,8 +23,8 @@
       },
       "since": "2026-01-02T03:04:05Z",
       "txStatus": [
-        "noSend",
-        "nonFinal"
+        "nosend",
+        "nonfinal"
       ]
     }
   ]

@@ -18,11 +18,13 @@
         "limit": 3,
         "offset": 2
       },
+      "partial": {
+        "userId": 7
+      },
       "since": "2026-01-02T03:04:05Z",
       "types": [
         "dHlwZQ=="
-      ],
-      "userId": 7
+      ]
     }
   ]
 }

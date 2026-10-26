@@ -75,7 +75,7 @@ pub struct ValidCreateActionArgs {
     pub description: String,
 
     /// Optional BEEF data containing input transactions.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "inputBEEF", skip_serializing_if = "Option::is_none")]
     pub input_beef: Option<Vec<u8>>,
 
     /// Input specifications.
@@ -429,9 +429,14 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
     ///
     /// * `method` - The RPC method name (e.g., "makeAvailable", "findOrInsertUser")
     /// * `params` - Parameters to pass to the method
-    async fn rpc_call<T: DeserializeOwned>(&self, method: &str, params: Vec<Value>) -> Result<T> {
+    async fn rpc_call<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        mut params: Vec<Value>,
+    ) -> Result<T> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
+        super::wire::request_params(method, &mut params);
         let request = JsonRpcRequest::new(method, params, id);
         let request_body = serde_json::to_vec(&request)?;
 
@@ -579,7 +584,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
         match rpc_response.into_result() {
             Ok(value) => {
-                let result: T = serde_json::from_value(value).map_err(|e| {
+                let result: T = super::wire::result(method, value).map_err(|e| {
                     Error::StorageError(format!("Failed to deserialize result: {}", e))
                 })?;
                 Ok(result)
@@ -641,7 +646,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
         match rpc_response.into_result() {
             Ok(value) => {
-                let result: T = serde_json::from_value(value).map_err(|e| {
+                let result: T = super::wire::result(method, value).map_err(|e| {
                     Error::StorageError(format!("Failed to deserialize result: {}", e))
                 })?;
                 Ok(result)
@@ -1772,14 +1777,16 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        let params = vec![
+        let mut params = vec![
             serde_json::to_value(&auth).unwrap(),
             serde_json::to_value(&cert).unwrap(),
         ];
+        super::super::wire::request_params("insertCertificateAuth", &mut params);
         let request = JsonRpcRequest::new("insertCertificateAuth", params, 1);
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"method\":\"insertCertificateAuth\""));
-        assert!(json.contains("certType"));
+        assert!(json.contains("\"type\""));
+        assert!(!json.contains("certType"));
         assert!(json.contains("serialNumber"));
     }
 
