@@ -1,0 +1,259 @@
+//! Real-store witnesses for the event handler's busy and fallback boundaries.
+
+#![cfg(test)]
+
+use super::*;
+use bsv_rs::transaction::{ChainTracker, ChainTrackerError, MerklePath, MockChainTracker};
+use sqlx::{Connection, SqliteConnection};
+
+use crate::services::mock::MockWalletServices;
+use crate::storage::StorageSqlx;
+use crate::{Error, StoreBusyReason, WalletStorageProvider, WalletStorageWriter};
+
+const HEIGHT: u32 = 850_000;
+
+async fn setup() -> (tempfile::TempDir, StorageSqlx, SqliteConnection, String) {
+    // The two-connection WAL pattern from tests/store_write_lock_tests.rs.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.db");
+    let storage = StorageSqlx::open(path.to_str().unwrap()).await.unwrap();
+    storage.migrate("events", &"02".repeat(33)).await.unwrap();
+    storage.make_available().await.unwrap();
+    storage
+        .set_max_acceptable_proof_height(HEIGHT)
+        .await
+        .unwrap();
+    // Only shorten the test's SQLite wait; the error still comes from a
+    // competing connection's real write lock, with no injected busy error.
+    sqlx::query("PRAGMA busy_timeout = 50")
+        .execute(storage.writer())
+        .await
+        .unwrap();
+    let other =
+        SqliteConnection::connect_with(&sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+
+    let txid = "ab".repeat(32);
+    let (user, _) = storage.find_or_insert_user(&"03".repeat(33)).await.unwrap();
+    sqlx::query(
+        "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, created_at, updated_at) \
+         VALUES (?, 'unmined', 0, '{}', 0, '{}', X'01000000', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(&txid)
+    .execute(storage.writer())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO transactions (user_id, txid, status, reference, description, satoshis, version, lock_time, raw_tx, is_outgoing, created_at, updated_at) \
+         VALUES (?, ?, 'unproven', 'event-test', 'event test', 0, 1, 0, X'01000000', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(user.user_id)
+    .bind(&txid)
+    .execute(storage.writer())
+    .await
+    .unwrap();
+    // A replay with an already remembered MINED hint needs no status writes.
+    // The proof is still pending, so it must reach the ingest write boundary.
+    storage
+        .record_broadcast_status(&txid, PROVIDER_ARCADE_V2, "mined")
+        .await
+        .unwrap();
+    (dir, storage, other, txid)
+}
+
+fn event(txid: &str, status: &str) -> ArcadeStatusEvent {
+    ArcadeStatusEvent {
+        txid: txid.to_string(),
+        tx_status: status.to_string(),
+        timestamp: None,
+        block_hash: Some("cd".repeat(32)),
+        block_height: Some(HEIGHT),
+        merkle_path: Some(MerklePath::from_coinbase_txid(txid, HEIGHT).to_hex()),
+        extra_info: None,
+        status_code: None,
+        competing_txs: None,
+        event_id: None,
+    }
+}
+
+async fn writer_changes(storage: &StorageSqlx) -> i64 {
+    sqlx::query_scalar("SELECT total_changes()")
+        .fetch_one(storage.writer())
+        .await
+        .unwrap()
+}
+
+async fn assert_pending(storage: &StorageSqlx, writes_before: i64) {
+    assert_eq!(
+        writer_changes(storage).await,
+        writes_before,
+        "no rows written"
+    );
+    let req: (String, Option<i64>) =
+        sqlx::query_as("SELECT status, proven_tx_id FROM proven_tx_reqs")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+    let tx: (String, Option<i64>) = sqlx::query_as("SELECT status, proven_tx_id FROM transactions")
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    let proofs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM proven_txs")
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    assert_eq!(req, ("unmined".to_string(), None));
+    assert_eq!(tx, ("unproven".to_string(), None));
+    assert_eq!(proofs, 0);
+}
+
+struct LockAtProofCheck {
+    other: tokio::sync::Mutex<SqliteConnection>,
+    root: String,
+    checked: AtomicBool,
+}
+
+#[async_trait]
+impl ChainTracker for LockAtProofCheck {
+    async fn is_valid_root_for_height(
+        &self,
+        root: &str,
+        height: u32,
+    ) -> std::result::Result<bool, ChainTrackerError> {
+        assert_eq!((root, height), (self.root.as_str(), HEIGHT));
+        // Taking the lock before apply_event would stop at its status write
+        // and never exercise the MINED arm's ingest error handler (#201).
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *self.other.lock().await)
+            .await
+            .unwrap();
+        self.checked.store(true, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
+        Ok(HEIGHT)
+    }
+}
+
+#[tokio::test]
+async fn mined_inline_proof_keeps_store_busy_without_writes_or_fetch() {
+    for status in ["MINED", "IMMUTABLE"] {
+        let (_dir, storage, other, txid) = setup().await;
+        let services = Arc::new(MockWalletServices::new());
+        storage.set_services(services.clone());
+        let tracker = Arc::new(LockAtProofCheck {
+            other: tokio::sync::Mutex::new(other),
+            root: txid.clone(),
+            checked: AtomicBool::new(false),
+        });
+        storage.set_chain_tracker(tracker.clone()).await;
+        let trigger = AtomicBool::new(false);
+        let writes_before = writer_changes(&storage).await;
+
+        let result = ArcadeEventsTask::apply_event(&storage, &event(&txid, status), &trigger).await;
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut *tracker.other.lock().await)
+            .await
+            .unwrap();
+        assert!(tracker.checked.load(Ordering::SeqCst), "ingest was reached");
+        assert_pending(&storage, writes_before).await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::StoreBusy {
+                    reason: StoreBusyReason::SqliteBusy { code: 5 }
+                })
+            ),
+            "{status}: result={result:?}, fetch_fallback={}",
+            trigger.load(Ordering::SeqCst)
+        );
+        assert!(!trigger.load(Ordering::SeqCst), "no fetch fallback");
+        assert_eq!(services.total_calls(), 0);
+    }
+}
+
+#[tokio::test]
+async fn status_writes_keep_store_busy_without_fetch() {
+    for status in [
+        "SEEN_ON_NETWORK",
+        "STUMP_PROCESSING",
+        "MINED",
+        "REJECTED",
+        "DOUBLE_SPEND_ATTEMPTED",
+    ] {
+        let (_dir, storage, mut other, txid) = setup().await;
+        let mut ev = event(&txid, status);
+        if status == "DOUBLE_SPEND_ATTEMPTED" {
+            ev.competing_txs = Some(vec!["ef".repeat(32)]);
+        }
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut other)
+            .await
+            .unwrap();
+        let trigger = AtomicBool::new(false);
+        let writes_before = writer_changes(&storage).await;
+        let result = ArcadeEventsTask::apply_event(&storage, &ev, &trigger).await;
+        sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
+        assert!(
+            matches!(result, Err(Error::StoreBusy { .. })),
+            "{status}: {result:?}"
+        );
+        assert_pending(&storage, writes_before).await;
+        assert!(
+            !trigger.load(Ordering::SeqCst),
+            "{status}: no fetch fallback"
+        );
+    }
+}
+
+#[tokio::test]
+async fn non_busy_inline_ingest_error_keeps_fetch_fallback() {
+    let (_dir, storage, _other, txid) = setup().await;
+    let mut tracker = MockChainTracker::new(HEIGHT);
+    tracker.add_root(HEIGHT, txid.clone());
+    storage.set_chain_tracker(Arc::new(tracker)).await;
+    sqlx::query(
+        "CREATE TRIGGER refuse_proof BEFORE INSERT ON proven_txs \
+         BEGIN SELECT RAISE(ABORT, 'test ingest fault'); END",
+    )
+    .execute(storage.writer())
+    .await
+    .unwrap();
+    let ev = event(&txid, "MINED");
+    // Prove this is the Err branch, rather than a rejected-proof outcome.
+    let error = storage
+        .ingest_push_proof(
+            &txid,
+            &hex::decode(ev.merkle_path.as_ref().unwrap()).unwrap(),
+            HEIGHT,
+            ev.block_hash.as_ref().unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::SqlxError(_)), "{error:?}");
+
+    let trigger = AtomicBool::new(false);
+    let writes_before = writer_changes(&storage).await;
+    assert!(!ArcadeEventsTask::apply_event(&storage, &ev, &trigger)
+        .await
+        .unwrap());
+    assert!(trigger.load(Ordering::SeqCst));
+    assert_pending(&storage, writes_before).await;
+}
+
+#[tokio::test]
+async fn malformed_inline_proof_keeps_fetch_fallback() {
+    let (_dir, storage, _other, txid) = setup().await;
+    let mut ev = event(&txid, "MINED");
+    ev.merkle_path = Some("dead".to_string());
+    let trigger = AtomicBool::new(false);
+    let writes_before = writer_changes(&storage).await;
+    assert!(!ArcadeEventsTask::apply_event(&storage, &ev, &trigger)
+        .await
+        .unwrap());
+    assert!(trigger.load(Ordering::SeqCst));
+    assert_pending(&storage, writes_before).await;
+}
