@@ -158,11 +158,11 @@ pub struct WalletSigner {
 }
 ```
 
-Handles transaction signing using key derivation from `ProtoWallet`. Signs inputs based on their derivation prefix/suffix, deriving keys via BRC-29 protocol (`"3241645161d8"` at SecurityLevel::Counterparty).
+Handles transaction signing using key derivation from `ProtoWallet`. The wallet authorizes automatic signing only for storage-allocated inputs, using their derivation prefix/suffix and BRC-29 protocol (`"3241645161d8"` at SecurityLevel::Counterparty). Caller-named inputs use the caller's unlocking scripts, even when their stored outputs carry derivation metadata.
 
 **Methods:**
 - `new(root_key: Option<PrivateKey>)` - Create a new signer (uses "anyone" key if None)
-- `sign_transaction(&self, unsigned_tx, inputs, proto_wallet) -> Result<Vec<u8>>` - Sign all inputs in a transaction, returns fully signed transaction bytes
+- `sign_transaction(&self, unsigned_tx, inputs, proto_wallet) -> Result<Vec<u8>>` - Sign inputs without unlocking scripts using their derivation metadata, and insert supplied scripts; the wallet checks signing authority before calling it
 - `sign_input(&self, tx_data, input_index, input, proto_wallet) -> Result<Vec<u8>>` - Sign a single input, returns unlocking script bytes
 - `create_unlock_template(&self, prefix, suffix, script_type, satoshis) -> UnlockingScriptTemplate` - Create a template for deferred signing
 - `apply_templates(&self, raw_tx, templates, proto_wallet) -> Result<Vec<u8>>` - Apply unlocking script templates to sign inputs
@@ -376,22 +376,24 @@ CreateActionArgs → storage.create_action_at_door(args, CreateActionDoor { offe
     → CreateActionResult { txid, tx, ... }
 ```
 
-For each input: derive signing key from BRC-29 protocol/counterparty, compute BIP-143 sighash, sign and build unlocking script.
+For each storage-allocated input: derive the signing key from the BRC-29 protocol/counterparty, compute the BIP-143 sighash, sign and build the unlocking script. Caller-named inputs retain their supplied scripts.
 
 **Error recovery:** a refusal inside the door (the create step, the signer, processAction's writes) rolls the one transaction back: nothing was written, so a busy is `WalletBusy` and any other refusal keeps its text (`Signing failed: ...`, `Process action failed: ...`). After the broadcast a store fault is logged with the marker `post_broadcast_status_write_failed` and the call answers its success with the txid; the monitor's send-waiting task heals the row (bsv-wallet-cli #44). The same rule after any committed write: `abort_action` on a broadcast transaction answers `{ aborted: true }` when the descendants' retirement after its commit fails (marker `post_commit_retire_failed`; the review-status pass retires them). Coins held only by other calls in flight are `WalletBusy` (`Store busy: coins held by calls in flight`), never `Insufficient funds`. `create_action_offering(args, originator, offer)` is the same call with the change coins limited to the host's offered output ids.
 
-### Deferred Signing (sign_and_process = false)
+### Deferred Signing (sign_and_process = false or a named input lacks a script)
 
 ```
 CreateActionArgs → storage.create_action() → build_unsigned_transaction()
     → Cache in pending_transactions → CreateActionResult { signable_transaction }
 
 Later via sign_action:
-SignActionArgs → Lookup from cache → Merge client unlocking scripts
+SignActionArgs → Lookup from cache → Merge and require caller unlocking scripts
     → WalletSigner.sign_transaction() → storage.process_action()
     → services.post_beef() → storage.update_transaction_status_after_broadcast()
     → SignActionResult { txid, tx, ... }
 ```
+
+The private cache retains which inputs storage allocated (`provided_by = "storage"`), separately from the public `PendingTransaction` data. A caller-named input is never authorized for wallet signing. Its script from `create_action` or `sign_action` is preserved; if neither supplied one, `sign_action` returns `Error::ValidationError` with `The inputs[N].unlockScript parameter must be valid.` before signing or processing. The WalletInterface boundary wraps this as `WalletError("Validation error: ...")`. The action stays unsigned and its inputs stay reserved, so the caller can supply the script on a later call. This follows `ts-stack@edf6e03`'s `signer/methods/signAction.ts:65-90`, `buildSignableTransaction.ts:176-189`, `completeSignedTransaction.ts:15-32,50-79`, and the `WERR_INVALID_PARAMETER` refusal in `verifyUnlockScripts.ts:51-64`.
 
 ### Broadcast Flow
 
