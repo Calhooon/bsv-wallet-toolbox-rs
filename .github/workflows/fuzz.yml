@@ -1,0 +1,86 @@
+name: Fuzz
+
+# Informational, never a required branch protection context. Manual dispatch
+# only, and there is no schedule on purpose: the owner's rule is that nothing
+# holds the shared runner pool on a timer (#153, #159). Twelve jobs of five
+# minutes each are run when someone asks for them. Each target, its seeds and
+# how to read a crash are in docs/FUZZ.md.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per ref at a time; a second dispatch against the same ref queues.
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - beef_door
+          - tsc_proof
+          - merkle_path
+          - broadcast_memory
+          - arcade_sse
+          - whatsonchain
+          - bitails
+          - bananablocks
+          - arc
+          - arcade
+          - bhs
+          - chaintracks
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+
+      # The runner context is not available in workflow-level env.
+      - name: Keep build output and scratch in the runner temp
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/fuzz-target" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: nightly
+
+      - name: Cache tool and registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-fuzz
+          key: fuzz-${{ runner.os }}-${{ hashFiles('fuzz/Cargo.toml', 'Cargo.toml') }}
+
+      - name: Install cargo-fuzz
+        run: command -v cargo-fuzz || cargo install cargo-fuzz --locked --version 0.13.2
+
+      - name: Fuzz for five minutes
+        working-directory: fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=300 -timeout=10
+
+      # A crash leaves its input under fuzz/artifacts/<target>/; the grown
+      # corpus is kept too, for a later commit after cargo fuzz cmin.
+      - name: Upload crash artifacts and corpus
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}
+            fuzz/corpus/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 14
