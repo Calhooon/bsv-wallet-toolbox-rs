@@ -572,36 +572,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             )));
         }
 
-        let rpc_response: JsonRpcResponse = serde_json::from_slice(&http_response.body)
-            .map_err(|e| Error::StorageError(format!("Invalid JSON-RPC response: {}", e)))?;
-
-        if rpc_response.id != id {
-            return Err(Error::StorageError(format!(
-                "Response ID mismatch: expected {}, got {}",
-                id, rpc_response.id
-            )));
-        }
-
-        match rpc_response.into_result() {
-            Ok(value) => {
-                let result: T = super::wire::result(method, value).map_err(|e| {
-                    Error::StorageError(format!("Failed to deserialize result: {}", e))
-                })?;
-                Ok(result)
-            }
-            Err(rpc_error) => {
-                tracing::error!(
-                    method = method,
-                    code = rpc_error.code,
-                    message = %rpc_error.message,
-                    "JSON-RPC error from storage server"
-                );
-                Err(Error::StorageError(format!(
-                    "RPC error {}: {}",
-                    rpc_error.code, rpc_error.message
-                )))
-            }
-        }
+        Self::parse_rpc_response(method, &http_response.body, id)
     }
 
     /// Makes an unauthenticated JSON-RPC call (for testing).
@@ -634,7 +605,12 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             .await
             .map_err(|e| Error::NetworkError(format!("Failed to read response body: {}", e)))?;
 
-        let rpc_response: JsonRpcResponse = serde_json::from_slice(&response_body)
+        Self::parse_rpc_response(method, &response_body, id)
+    }
+
+    /// Both transports share response correlation, wire aliases and errors.
+    fn parse_rpc_response<T: DeserializeOwned>(method: &str, body: &[u8], id: u64) -> Result<T> {
+        let rpc_response: JsonRpcResponse = serde_json::from_slice(body)
             .map_err(|e| Error::StorageError(format!("Invalid JSON-RPC response: {}", e)))?;
 
         if rpc_response.id != id {
