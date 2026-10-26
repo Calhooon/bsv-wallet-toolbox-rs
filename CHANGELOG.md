@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- #216: `sign_action` previously accepted caller spends longer than the
+  `unlockingScriptLength` declared at `create_action`, which could reduce the
+  effective fee below the rate used to price the transaction. It now refuses
+  those spends before signing or writing, with `Error::ValidationError` and
+  `The args parameter must be spend unlockingScript length N exceeds expected length M`
+  (no trailing period). As in `ts-stack@edf6e03`
+  `signer/methods/completeSignedTransaction.ts:25-30` and `sdk/WERR_errors.ts:105`,
+  the comparison uses bytes, while `N` reports the supplied script's
+  hex-character count and `M` is the declared byte length. Equal and shorter
+  spends remain accepted. The declared lengths ride the wallet's private
+  pending-action cache from the create args, as the reference's
+  `pendingSignActions` retains those args (`signer/methods/createAction.ts:189,267`);
+  restarting a wallet between create and sign loses the pending action in both
+  implementations.
+
 - #203: certificate issuance now encrypts each field with a fresh 32-byte
   symmetric key, stores the ciphertext as Base64 text, and wallet-encrypts
   that key into the master keyring. Previously it wallet-encrypted the
