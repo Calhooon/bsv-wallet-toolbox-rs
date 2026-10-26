@@ -1075,7 +1075,7 @@ async fn fetch_outputs_for_sync(
     let mut sql = String::from(
         r#"
         SELECT output_id, user_id, transaction_id, basket_id, txid, vout, satoshis,
-               locking_script, script_length, script_offset, type, spendable, change,
+               locking_script, script_length, script_offset, type, provided_by, purpose, spendable, change,
                derivation_prefix, derivation_suffix, sender_identity_key, custom_instructions,
                created_at, updated_at
         FROM outputs
@@ -1111,8 +1111,8 @@ async fn fetch_outputs_for_sync(
             script_length: row.get("script_length"),
             script_offset: row.get("script_offset"),
             output_type: row.get("type"),
-            provided_by: row.try_get("provided_by").unwrap_or("you".to_string()),
-            purpose: row.try_get("purpose").ok(),
+            provided_by: row.get("provided_by"),
+            purpose: row.get("purpose"),
             output_description: row.try_get("output_description").ok(),
             spent_by: row.try_get("spent_by").ok().flatten(),
             sequence_number: row
@@ -1924,7 +1924,7 @@ async fn upsert_output(
                 SET transaction_id = ?, basket_id = ?, satoshis = ?, locking_script = ?,
                     script_length = ?, script_offset = ?, type = ?, spendable = ?, change = ?,
                     derivation_prefix = ?, derivation_suffix = ?, sender_identity_key = ?,
-                    custom_instructions = ?, updated_at = ?
+                    custom_instructions = ?, provided_by = ?, purpose = ?, updated_at = ?
                 WHERE output_id = ?
                 "#,
             )
@@ -1941,6 +1941,8 @@ async fn upsert_output(
             .bind(&output.derivation_suffix)
             .bind(&output.sender_identity_key)
             .bind(&output.custom_instructions)
+            .bind(&output.provided_by)
+            .bind(output.purpose.as_deref().unwrap_or("change"))
             .bind(output.updated_at)
             .bind(local_id)
             .execute(&mut *storage.writer_conn().await?)
@@ -1977,8 +1979,8 @@ async fn upsert_output(
         .bind(&output.derivation_suffix)
         .bind(&output.sender_identity_key)
         .bind(&output.custom_instructions)
-        .bind("you") // provided_by - default to "you" for synced outputs
-        .bind("change") // purpose - default to "change" for synced outputs
+        .bind(&output.provided_by)
+        .bind(output.purpose.as_deref().unwrap_or("change"))
         .bind(output.created_at)
         .bind(output.updated_at)
         .execute(&mut *storage.writer_conn().await?)

@@ -335,3 +335,245 @@ async fn test_fallback_to_unproven_when_proven_insufficient() {
     );
     assert_eq!(allocated.satoshis, 9_000_000);
 }
+
+mod sync_received {
+    use super::*;
+    use crate::storage::entities::{
+        TableOutput, TableOutputBasket, TableTransaction, TransactionStatus,
+    };
+    use crate::storage::sqlx::sync::{
+        entity_names, get_sync_chunk_internal, process_sync_chunk_internal,
+    };
+    use crate::storage::{RequestSyncChunkArgs, SyncChunk, SyncMap, SyncOffset};
+
+    fn sync_args() -> RequestSyncChunkArgs {
+        RequestSyncChunkArgs {
+            from_storage_identity_key: "a".repeat(66),
+            to_storage_identity_key: "c".repeat(66),
+            identity_key: "b".repeat(66),
+            since: None,
+            max_rough_size: 100_000,
+            max_items: 1000,
+            offsets: [
+                entity_names::OUTPUT_BASKET,
+                entity_names::TRANSACTION,
+                entity_names::OUTPUT,
+            ]
+            .into_iter()
+            .map(|name| SyncOffset {
+                name: name.to_string(),
+                offset: 0,
+            })
+            .collect(),
+        }
+    }
+
+    async fn empty_storage() -> StorageSqlx {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("received-sync", &"c".repeat(66))
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+        storage
+    }
+
+    fn received_chunk(args: &RequestSyncChunkArgs) -> SyncChunk {
+        let now = Utc::now();
+        SyncChunk {
+            from_storage_identity_key: args.from_storage_identity_key.clone(),
+            to_storage_identity_key: args.to_storage_identity_key.clone(),
+            user_identity_key: args.identity_key.clone(),
+            output_baskets: Some(vec![TableOutputBasket {
+                basket_id: 300,
+                user_id: 1,
+                name: "default".to_string(),
+                number_of_desired_utxos: 10,
+                minimum_desired_utxo_value: 1000,
+                created_at: now,
+                updated_at: now,
+            }]),
+            transactions: Some(vec![TableTransaction {
+                transaction_id: 200,
+                user_id: 1,
+                txid: Some("d".repeat(64)),
+                status: TransactionStatus::Unproven,
+                reference: "received-sync-payment".to_string(),
+                description: "Received wallet payment".to_string(),
+                satoshis: 10_000,
+                version: 1,
+                lock_time: 0,
+                raw_tx: None,
+                input_beef: None,
+                is_outgoing: false,
+                proof_txid: None,
+                created_at: now,
+                updated_at: now,
+            }]),
+            outputs: Some(vec![TableOutput {
+                output_id: 100,
+                user_id: 1,
+                transaction_id: 200,
+                basket_id: Some(300),
+                txid: "d".repeat(64),
+                vout: 0,
+                satoshis: 10_000,
+                locking_script: Some(vec![0x51]),
+                script_length: 1,
+                script_offset: 0,
+                output_type: "P2PKH".to_string(),
+                provided_by: "storage".to_string(),
+                purpose: Some("receive".to_string()),
+                output_description: None,
+                spent_by: None,
+                sequence_number: None,
+                spending_description: None,
+                spendable: true,
+                change: true,
+                derivation_prefix: None,
+                derivation_suffix: None,
+                sender_identity_key: None,
+                custom_instructions: None,
+                created_at: now,
+                updated_at: now,
+            }]),
+            ..SyncChunk::default()
+        }
+    }
+
+    async fn stored_output(storage: &StorageSqlx) -> sqlx::sqlite::SqliteRow {
+        let outputs =
+            sqlx::query("SELECT output_id, user_id, basket_id, purpose, provided_by FROM outputs")
+                .fetch_all(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(outputs.len(), 1);
+        outputs.into_iter().next().unwrap()
+    }
+
+    async fn assert_received_rule(storage: &StorageSqlx) {
+        let output = stored_output(storage).await;
+        assert_eq!(output.get::<String, _>("purpose"), "receive");
+        assert_eq!(output.get::<String, _>("provided_by"), "storage");
+        let user_id = output.get("user_id");
+        let basket_id = output.get("basket_id");
+        let output_id = output.get("output_id");
+        let mut conn = storage.pool().acquire().await.unwrap();
+        for allow_received in [false, true] {
+            let count =
+                count_change_inputs_under_rule(&mut conn, user_id, basket_id, true, allow_received)
+                    .await
+                    .unwrap();
+            let mut reserved = PickReservation::new(std::sync::Arc::default());
+            let picked = allocate_change_input_by(
+                &mut conn,
+                user_id,
+                basket_id,
+                0,
+                1000,
+                true,
+                &mut ChangePick::DryRun {
+                    reserved: &mut reserved,
+                    skip: &[],
+                    offer: Some(&[output_id]),
+                    allow_received,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(count, usize::from(allow_received));
+            assert_eq!(picked.is_some(), allow_received);
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_received_insert_preserves_origin_and_action_rule() {
+        let storage = empty_storage().await;
+        let args = sync_args();
+        let chunk = received_chunk(&args);
+        process_sync_chunk_internal(&storage, args.clone(), chunk, &mut SyncMap::default())
+            .await
+            .unwrap();
+        assert_received_rule(&storage).await;
+    }
+
+    #[tokio::test]
+    async fn sync_received_update_preserves_origin_and_action_rule() {
+        let storage = empty_storage().await;
+        let args = sync_args();
+        let mut older = received_chunk(&args);
+        let output = &mut older.outputs.as_mut().unwrap()[0];
+        output.purpose = Some("change".to_string());
+        output.provided_by = "you".to_string();
+        process_sync_chunk_internal(
+            &storage,
+            args.clone(),
+            older.clone(),
+            &mut SyncMap::default(),
+        )
+        .await
+        .unwrap();
+
+        let mut newer = older.clone();
+        let output = &mut newer.outputs.as_mut().unwrap()[0];
+        output.purpose = Some("receive".to_string());
+        output.provided_by = "storage".to_string();
+        output.updated_at += chrono::Duration::seconds(10);
+        process_sync_chunk_internal(&storage, args.clone(), newer, &mut SyncMap::default())
+            .await
+            .unwrap();
+        assert_received_rule(&storage).await;
+
+        // An older chunk cannot remove the received mark after the update.
+        process_sync_chunk_internal(&storage, args.clone(), older, &mut SyncMap::default())
+            .await
+            .unwrap();
+        assert_received_rule(&storage).await;
+    }
+
+    #[tokio::test]
+    async fn sync_received_roundtrip_preserves_origin_and_action_rule() {
+        let source = empty_storage().await;
+        let args = sync_args();
+        process_sync_chunk_internal(
+            &source,
+            args.clone(),
+            received_chunk(&args),
+            &mut SyncMap::default(),
+        )
+        .await
+        .unwrap();
+        // Seed the stored mark directly to test chunk construction independently of ingestion.
+        sqlx::query("UPDATE outputs SET purpose = 'receive', provided_by = 'storage'")
+            .execute(source.writer())
+            .await
+            .unwrap();
+        let chunk = get_sync_chunk_internal(&source, args.clone())
+            .await
+            .unwrap();
+        let output = &chunk.outputs.as_ref().unwrap()[0];
+        assert_eq!(output.purpose.as_deref(), Some("receive"));
+        assert_eq!(output.provided_by, "storage");
+
+        let destination = empty_storage().await;
+        process_sync_chunk_internal(&destination, args.clone(), chunk, &mut SyncMap::default())
+            .await
+            .unwrap();
+        assert_received_rule(&destination).await;
+    }
+
+    #[tokio::test]
+    async fn sync_received_missing_purpose_keeps_legacy_default() {
+        let storage = empty_storage().await;
+        let args = sync_args();
+        let mut chunk = received_chunk(&args);
+        chunk.outputs.as_mut().unwrap()[0].purpose = None;
+        process_sync_chunk_internal(&storage, args.clone(), chunk, &mut SyncMap::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_output(&storage).await.get::<String, _>("purpose"),
+            "change"
+        );
+    }
+}
