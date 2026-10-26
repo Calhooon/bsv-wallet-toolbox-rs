@@ -134,7 +134,7 @@ What landing taught (the evening):
 - The landing script's "keep both CHANGELOG sides" repeats an entry once per rebased commit that touched the file; its guard refuses the push, and the captain keeps the last copy. Land PRs that share a file one at a time.
 - A refusal text is the reference's byte for byte or it is a finding: three reviews found a prefix, an ordering claim or a parameter name that followed nothing (`inputs.N.`), each corrected to the reference's rendering or named as the port's own.
 
-The ratchet's accepted falls (pedantic 3279 to 3276, cognitive 43 to 42, duplicated_blocks 6822 to the tree's reading after #215) are re-recorded in a measuring commit with `python3 tools/scoreboard-write` after this wave, never before.
+The ratchet's accepted falls (pedantic 3279 to 3277, cognitive 43 to 42, duplicated_blocks 6822 to the tree's reading after #215) are re-recorded in a measuring commit with `python3 tools/scoreboard-write` after this wave, never before.
 
 ## Next (after the cut)
 
