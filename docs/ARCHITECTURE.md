@@ -174,7 +174,7 @@ two stores whose writers meet in SQLite's busy handler and two reservation sets.
 | a store opened twice has two writers; a shared store one | `storage.md section 2 S9` | `a_store_opened_twice_has_two_writers_and_a_shared_store_one` (`--test store_write_lock_tests`) |
 | a wallet and a monitor over one store share the writer | `storage.md section 2 S9` | `a_wallet_and_a_monitor_over_one_store_share_the_writer` |
 | the writer not acquired within the ceiling is `StoreBusy` | `storage.md section 2 S9` (a typed busy that promises nothing was written) | `the_writer_not_acquired_within_the_ceiling_is_store_busy` (`--test store_write_lock_tests`) |
-| an Arcade MINED or IMMUTABLE proof-ingest busy keeps its type and skips the fetch fallback (#44, #201) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `mined_inline_proof_keeps_store_busy_without_writes_or_fetch` |
+| an Arcade MINED or IMMUTABLE proof-ingest busy keeps its type and skips the fetch fallback (#44, #201) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `replayed_mined_inline_proof_keeps_store_busy_without_fetch`, `mined_inline_proof_busy_after_sending_status_commit_retries_idempotently` |
 | a unique violation is not `StoreBusy` | `storage.md section 2 S9` | `a_unique_violation_is_not_store_busy` (`--test store_write_lock_tests`) |
 | both pools keep their pragmas | `storage.md section 2 S9` | `both_pools_keep_the_pragmas` (`--test store_write_lock_tests`) |
 | the door's busy answer is typed at the wallet | `wallet.md section 6` R8 | `create_action_on_a_busy_store_is_wallet_busy` |
