@@ -290,8 +290,12 @@ The client converts JSON-RPC errors to `crate::error::Error`:
 ```rust
 match client.make_available().await {
     Ok(settings) => { /* success */ }
+    Err(Error::SdkError(e)) if e.transport_fault().is_some() => {
+        // The peer's transport fault, bsv-rs's class kept (bsv-rs #87):
+        // NEVER_SENT, MAY_HAVE_BEEN_RECEIVED, or RATE_LIMITED with its wait
+    }
     Err(Error::NetworkError(msg)) => {
-        // HTTP-level failure or timeout
+        // Any other send failure, or the response wait timed out
         eprintln!("Network error: {}", msg);
     }
     Err(Error::StorageError(msg)) => {

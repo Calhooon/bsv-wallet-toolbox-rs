@@ -48,6 +48,8 @@
 pub mod auth;
 mod json_rpc;
 mod storage_client;
+#[cfg(test)]
+mod transport_fault_tests;
 
 pub use auth::{
     create_auth_headers, create_simple_nonce, current_timestamp_ms, headers as auth_headers,

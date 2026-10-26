@@ -522,6 +522,11 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             self.peer
                 .stop_listening_for_general_messages(callback_id)
                 .await;
+            // A transport fault keeps bsv-rs's class (bsv-rs #87): the host
+            // reads `transport_fault()`, never the text (#63, #140).
+            if e.transport_fault().is_some() {
+                return Err(Error::SdkError(e));
+            }
             return Err(Error::NetworkError(format!(
                 "Failed to send request: {}",
                 e
