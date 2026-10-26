@@ -190,6 +190,7 @@ pub async fn create_nonce<W: WalletInterface>(
                 protocol_id: protocol,
                 key_id,
                 counterparty: server_identity_key.map(|pk| Counterparty::Other(pk.clone())),
+                ..Default::default()
             },
             originator,
         )
@@ -324,6 +325,7 @@ pub async fn sign_request<W: WalletInterface>(
                 protocol_id: protocol,
                 key_id,
                 counterparty: server_identity_key.map(|pk| Counterparty::Other(pk.clone())),
+                ..Default::default()
             },
             originator,
         )
@@ -393,6 +395,7 @@ pub async fn verify_response<W: WalletInterface>(
                 key_id,
                 counterparty: Some(Counterparty::Other(server_identity_key)),
                 for_self: None,
+                ..Default::default()
             },
             originator,
         )
@@ -430,6 +433,7 @@ pub async fn create_auth_headers<W: WalletInterface>(
                 key_id: None,
                 counterparty: None,
                 for_self: None,
+                ..Default::default()
             },
             originator,
         )

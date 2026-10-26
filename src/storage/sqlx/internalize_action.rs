@@ -3669,7 +3669,7 @@ mod tests {
     /// bsv-rs's verifier on the two payments: the valid one is `Valid`, the
     /// failing one is `SpendRefused` at its input with the interpreter's
     /// reason. The failing spend is not `Invalid`: it is none of the
-    /// twenty-four byte kinds `Error::InvalidBeef` carries (#103).
+    /// byte kinds `Error::InvalidBeef` carries (#103).
     #[test]
     fn the_verifier_refuses_the_failing_spend_and_takes_the_valid_one() {
         use bsv_rs::transaction::beef_stream::SpendRefusal;

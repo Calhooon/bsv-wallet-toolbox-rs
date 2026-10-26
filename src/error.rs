@@ -186,7 +186,7 @@ pub enum Error {
     InvalidBeef {
         /// The offset of the byte the refusal names.
         offset: u64,
-        /// The kind, one of bsv-rs's nineteen.
+        /// The kind, one of bsv-rs's kinds.
         kind: bsv_rs::transaction::Kind,
     },
 

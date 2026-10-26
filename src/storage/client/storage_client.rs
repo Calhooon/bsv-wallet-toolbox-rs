@@ -400,6 +400,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
                     key_id: None,
                     counterparty: None,
                     for_self: None,
+                    ..Default::default()
                 },
                 "bsv-wallet-toolbox",
             )
