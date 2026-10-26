@@ -219,6 +219,8 @@ pub struct PendingTransaction {
 struct PendingSignAction {
     transaction: PendingTransaction,
     storage_inputs: HashSet<u32>,
+    /// Caller-declared byte lengths in create_action input (vin) order.
+    unlocking_script_lengths: Vec<Option<u32>>,
 }
 
 // =============================================================================
@@ -1642,6 +1644,14 @@ where
             .map(|input| input.vin)
             .collect();
 
+        // Like the reference's pendingSignActions, retain the caller's lengths
+        // from the create args alongside the transaction until sign_action.
+        let unlocking_script_lengths = caller_inputs
+            .unwrap_or(&[])
+            .iter()
+            .map(|input| input.unlocking_script_length)
+            .collect();
+
         // Cache the pending transaction for later signing via sign_action
         let pending_tx = PendingTransaction {
             reference: reference.clone(),
@@ -1671,6 +1681,7 @@ where
                 PendingSignAction {
                     transaction: pending_tx,
                     storage_inputs,
+                    unlocking_script_lengths,
                 },
             );
         }
@@ -1979,6 +1990,7 @@ where
         let PendingSignAction {
             transaction: pending_tx,
             storage_inputs,
+            unlocking_script_lengths,
         } = pending_tx.ok_or_else(|| {
             bsv_rs::Error::WalletError(format!(
                 "No pending transaction found for reference: {}",
@@ -2012,18 +2024,34 @@ where
             // ts-stack@edf6e03 completeSignedTransaction.ts:19-24 accepts
             // only caller inputs with a deferred script. create_action requires
             // unlockingScriptLength when a caller input has no script.
-            let input = inputs
+            let (input, expected_length) = inputs
                 .iter_mut()
                 .find(|i| i.vin == *vin)
                 .filter(|input| {
                     !storage_inputs.contains(vin) && input.unlocking_script.is_none()
                 })
+                .zip(
+                    unlocking_script_lengths
+                        .get(*vin as usize)
+                        .copied()
+                        .flatten(),
+                )
                 .ok_or_else(|| {
                     Error::ValidationError(
                         "The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength."
                             .to_string(),
                     )
                 })?;
+            // ts-stack@edf6e03 completeSignedTransaction.ts:25-30 compares
+            // bytes but reports the supplied script's hex-character count.
+            if spend.unlocking_script.len() > expected_length as usize {
+                return Err(Error::ValidationError(format!(
+                    "The args parameter must be spend unlockingScript length {} exceeds expected length {}",
+                    spend.unlocking_script.len() * 2,
+                    expected_length,
+                ))
+                .into());
+            }
             input.unlocking_script = Some(spend.unlocking_script.clone());
             if let Some(sequence) = spend.sequence_number {
                 raw_tx = crate::wallet::signer::set_input_sequence(&raw_tx, *vin, sequence)
