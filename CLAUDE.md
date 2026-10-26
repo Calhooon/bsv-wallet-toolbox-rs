@@ -142,7 +142,7 @@ Shared: test vectors, entity field names (camelCase), API method signatures, sta
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `bsv-sdk` | 0.2.0 (local) | Primitives, transactions, WalletInterface trait |
+| `bsv-rs` | =0.9.0-beta.1 (crates.io, `full` + `http`) | Primitives, transactions, WalletInterface trait |
 | `tokio` | 1 | Async runtime (full features) |
 | `sqlx` | 0.8 | SQLite/MySQL database |
 | `reqwest` | 0.12 | HTTP client |

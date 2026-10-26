@@ -31,6 +31,11 @@ What the check found against 0.13.0 on 2026-10-23: `bsv-wallet-cli` at
 job when its captain re-pins `bsv-rs` and this crate (the pin spread is a
 scoreboard line of epic #80).
 
+From #144 this crate's beta line takes `bsv-rs` `=0.9.0-beta.1` (the owner's
+word): a dependent that builds against it re-pins `bsv-rs` to the same
+version, since the two share bsv-rs's types (`bsv-wallet-cli` pins `=0.8.2`
+today and moves with this crate's `0.14.0-beta.1`).
+
 ### Re-pin plan
 
 A row whose ci column is not `yes` stays out of the CI job, and the job never
