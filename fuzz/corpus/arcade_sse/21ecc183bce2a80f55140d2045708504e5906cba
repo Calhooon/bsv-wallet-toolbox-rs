@@ -1,0 +1,4 @@
+id: 1
+event: status
+data: {"error": "transaction failed validation", "txid": "11111111111111111", "reason": "policy", "status": 4671000000000000000000000000000000000000107762222222222222222222222222222222222222222222222222222*2222222[0]", "competingTxs": ["22222222222222222222200000000000000000000000036911318ØØØØØØØØØØØØØ, "title": "Generic error", "detail": "Transaction could not be processed", "type": "https://bitcoi“ÒŒ‰.github.io/arc/#/errors?id=_467"}
+

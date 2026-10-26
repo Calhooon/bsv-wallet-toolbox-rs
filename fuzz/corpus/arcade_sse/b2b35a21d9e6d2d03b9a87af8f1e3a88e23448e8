@@ -1,0 +1,8 @@
+¦id: 1
+event: status
+data: {"error": "transaction failed validation", "txid": "000000000000000Kid: 1
+event: status
+data: {"txid": "1111111111111111111111111111111111111111111111111111111111111111", "status": 202, "txStatus": "SENT_TO_NETWORK"}
+
+ansaction fee is too low", "type": "https://bitcoin-sv.github.io/arc/#/errors?id=_465"}
+

@@ -1,0 +1,4 @@
+ûid: 1
+event: status
+data: {"error": "transaction failed validation", "txid": "11111111111111111", "reason": "policy", "statRus": 467, "title": "Generic error", "detüñì·:could not be processed", "type": "https://bitcoin-sv.github.io/arc/#/errors?id=_467"}
+

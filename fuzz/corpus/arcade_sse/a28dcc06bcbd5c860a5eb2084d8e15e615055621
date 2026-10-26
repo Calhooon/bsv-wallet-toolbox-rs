@@ -1,0 +1,4 @@
+Àid: 11111111111",s": "MINED
+event: status
+data: {"txid": "1111111111111111111111111111111111111111111111111111111111111111", "txStatus": "IMMUTABLE", "timestamp": "2026-10-26T00:00:00Z", "blockHash": "{BLOCKHASH}", "blockHeight": 850000, "merklePath": "fea0bb0d0001020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0:00Z", "blockHash": "{BLOCKHASH}", "blockHeight": 850000, "merklePaaaaaaaaaaaaaaaaaaaaaaaaaaa0100bâbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+

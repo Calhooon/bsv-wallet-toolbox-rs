@@ -1,0 +1,4 @@
+žid: 1
+event: status
+data: {"error": ÿÿÿÿÿÿÿ"transaction failed validatin could not be processed", "type": "https://bitcoin-sv.github.io.arc/#/errors?id=_467"}
+

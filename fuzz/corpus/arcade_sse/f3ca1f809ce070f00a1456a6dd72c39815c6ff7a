@@ -1,0 +1,4 @@
+©id: 1
+event: status
+data: {"error": "transaction failed validation", "txid": "1111111111111on", "detail": "Transaction unlocking scripts are invalid", "-type": "https://bitcoin-sv.github.io/arc/#/errors?id=_461"}
+
