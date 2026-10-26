@@ -3443,7 +3443,9 @@ fn validate_named_input_unlocking_scripts(
     storage_inputs: &HashSet<u32>,
 ) -> Result<()> {
     for input in inputs {
-        if input.unlocking_script.is_none() && !storage_inputs.contains(&input.vin) {
+        if !storage_inputs.contains(&input.vin)
+            && input.unlocking_script.as_ref().is_none_or(Vec::is_empty)
+        {
             return Err(Error::ValidationError(format!(
                 "The inputs[{}].unlockScript parameter must be valid.",
                 input.vin
