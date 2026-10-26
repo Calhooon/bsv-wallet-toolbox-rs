@@ -108,6 +108,50 @@ async fn assert_pending(storage: &StorageSqlx, writes_before: i64) {
     assert_eq!(proofs, 0);
 }
 
+async fn unchanged_event_fields(storage: &StorageSqlx) -> Vec<String> {
+    // Only status, the proof link and updated_at may change on delivery.
+    let mut rows = Vec::new();
+    for query in [
+        "SELECT json_array(proven_tx_req_id, txid, attempts, history, notified, notify, \
+         quote(raw_tx), quote(input_beef), batch, created_at) FROM proven_tx_reqs",
+        "SELECT json_array(transaction_id, user_id, txid, reference, description, satoshis, \
+         version, lock_time, quote(raw_tx), quote(input_beef), is_outgoing, created_at) FROM transactions",
+    ] {
+        rows.push(
+            sqlx::query_scalar(query)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap(),
+        );
+    }
+    rows
+}
+
+async fn proof_rows(storage: &StorageSqlx) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT json_array(proven_tx_id, txid, height, idx, block_hash, merkle_root, \
+         hex(merkle_path), hex(raw_tx), created_at, updated_at) FROM proven_txs ORDER BY proven_tx_id",
+    )
+    .fetch_all(storage.pool())
+    .await
+    .unwrap()
+}
+
+async fn assert_completed(storage: &StorageSqlx) {
+    let proof_id: i64 = sqlx::query_scalar("SELECT proven_tx_id FROM proven_txs")
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    for table in ["proven_tx_reqs", "transactions"] {
+        let row: (String, Option<i64>) =
+            sqlx::query_as(&format!("SELECT status, proven_tx_id FROM {table}"))
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(row, ("completed".to_string(), Some(proof_id)));
+    }
+}
+
 struct LockAtProofCheck {
     other: tokio::sync::Mutex<SqliteConnection>,
     root: String,
@@ -137,18 +181,27 @@ impl ChainTracker for LockAtProofCheck {
     }
 }
 
+async fn lock_at_proof_check(
+    storage: &StorageSqlx,
+    other: SqliteConnection,
+    txid: &str,
+) -> Arc<LockAtProofCheck> {
+    let tracker = Arc::new(LockAtProofCheck {
+        other: tokio::sync::Mutex::new(other),
+        root: txid.to_string(),
+        checked: AtomicBool::new(false),
+    });
+    storage.set_chain_tracker(tracker.clone()).await;
+    tracker
+}
+
 #[tokio::test]
-async fn mined_inline_proof_keeps_store_busy_without_writes_or_fetch() {
+async fn replayed_mined_inline_proof_keeps_store_busy_without_fetch() {
     for status in ["MINED", "IMMUTABLE"] {
         let (_dir, storage, other, txid) = setup().await;
         let services = Arc::new(MockWalletServices::new());
         storage.set_services(services.clone());
-        let tracker = Arc::new(LockAtProofCheck {
-            other: tokio::sync::Mutex::new(other),
-            root: txid.clone(),
-            checked: AtomicBool::new(false),
-        });
-        storage.set_chain_tracker(tracker.clone()).await;
+        let tracker = lock_at_proof_check(&storage, other, &txid).await;
         let trigger = AtomicBool::new(false);
         let writes_before = writer_changes(&storage).await;
 
@@ -170,6 +223,72 @@ async fn mined_inline_proof_keeps_store_busy_without_writes_or_fetch() {
             "{status}: result={result:?}, fetch_fallback={}",
             trigger.load(Ordering::SeqCst)
         );
+        assert!(!trigger.load(Ordering::SeqCst), "no fetch fallback");
+        assert_eq!(services.total_calls(), 0);
+    }
+}
+
+#[tokio::test]
+async fn mined_inline_proof_busy_after_sending_status_commit_retries_idempotently() {
+    for status in ["MINED", "IMMUTABLE"] {
+        let (_dir, storage, other, txid) = setup().await;
+        for table in ["proven_tx_reqs", "transactions"] {
+            sqlx::query(&format!("UPDATE {table} SET status = 'sending'"))
+                .execute(storage.writer())
+                .await
+                .unwrap();
+        }
+        let services = Arc::new(MockWalletServices::new());
+        storage.set_services(services.clone());
+        let tracker = lock_at_proof_check(&storage, other, &txid).await;
+        let trigger = AtomicBool::new(false);
+        let ev = event(&txid, status);
+        let fields_before = unchanged_event_fields(&storage).await;
+        let writes_before = writer_changes(&storage).await;
+
+        let result = ArcadeEventsTask::apply_event(&storage, &ev, &trigger).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(Error::StoreBusy {
+                    reason: StoreBusyReason::SqliteBusy { code: 5 }
+                })
+            ),
+            "{status}: {result:?}"
+        );
+        assert!(tracker.checked.load(Ordering::SeqCst), "ingest was reached");
+        // Read while the other connection still holds the writer: both
+        // status updates committed before the proof ingest met the busy.
+        assert_pending(&storage, writes_before + 2).await;
+        assert_eq!(unchanged_event_fields(&storage).await, fields_before);
+        assert!(!trigger.load(Ordering::SeqCst), "no fetch fallback");
+        assert_eq!(services.total_calls(), 0);
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut *tracker.other.lock().await)
+            .await
+            .unwrap();
+        let mut accepting_tracker = MockChainTracker::new(HEIGHT);
+        accepting_tracker.add_root(HEIGHT, txid.clone());
+        storage.set_chain_tracker(Arc::new(accepting_tracker)).await;
+
+        assert!(ArcadeEventsTask::apply_event(&storage, &ev, &trigger)
+            .await
+            .unwrap());
+        assert_completed(&storage).await;
+        assert_eq!(unchanged_event_fields(&storage).await, fields_before);
+        let stored_proofs = proof_rows(&storage).await;
+        assert_eq!(stored_proofs.len(), 1, "the retry stores one proof");
+
+        // A duplicate delivery preserves the proof, its links and every
+        // unrelated field; completion timestamps may be refreshed.
+        assert!(ArcadeEventsTask::apply_event(&storage, &ev, &trigger)
+            .await
+            .unwrap());
+        assert_completed(&storage).await;
+        assert_eq!(proof_rows(&storage).await, stored_proofs);
+        assert_eq!(unchanged_event_fields(&storage).await, fields_before);
         assert!(!trigger.load(Ordering::SeqCst), "no fetch fallback");
         assert_eq!(services.total_calls(), 0);
     }
