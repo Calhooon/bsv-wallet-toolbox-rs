@@ -413,8 +413,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn review_status_voids_created_outputs_of_newly_failed_transactions() {
+    struct ReviewStatusSeed<'a> {
+        status: &'a str,
+        request_status: Option<&'a str>,
+        // Outputs in vout order: (spendable, index of the spending transaction).
+        outputs: &'a [(bool, Option<usize>)],
+    }
+
+    async fn seed_review_status(
+        description: &str,
+        transactions: &[ReviewStatusSeed<'_>],
+    ) -> (StorageSqlx, Vec<i64>) {
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage
             .migrate("review-status", &"0".repeat(64))
@@ -422,28 +431,20 @@ mod tests {
             .unwrap();
         let (user, _) = storage.find_or_insert_user(&"a".repeat(66)).await.unwrap();
         let seeded_at = Utc::now() - chrono::Duration::days(1);
-        let mut transaction_ids = Vec::new();
+        let mut transaction_ids = Vec::with_capacity(transactions.len());
 
-        for (index, (status, req_status)) in [
-            ("completed", None),
-            ("unproven", Some("invalid")),
-            ("sending", Some("invalid")),
-            ("unproven", Some("unmined")),
-            ("failed", Some("invalid")),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (index, transaction) in transactions.iter().enumerate() {
             let txid = format!("{:064x}", index + 1);
             let transaction_id = sqlx::query(
                 "INSERT INTO transactions (user_id, txid, status, reference, description, \
                  is_outgoing, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, 'review status regression', 1, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
             )
             .bind(user.user_id)
             .bind(&txid)
-            .bind(status)
+            .bind(transaction.status)
             .bind(format!("review-status-{index}"))
+            .bind(description)
             .bind(seeded_at)
             .bind(seeded_at)
             .execute(storage.writer())
@@ -452,7 +453,7 @@ mod tests {
             .last_insert_rowid();
             transaction_ids.push(transaction_id);
 
-            if let Some(req_status) = req_status {
+            if let Some(req_status) = transaction.request_status {
                 sqlx::query(
                     "INSERT INTO proven_tx_reqs (txid, status, raw_tx, created_at, updated_at) \
                      VALUES (?, ?, X'01000000', ?, ?)",
@@ -467,36 +468,67 @@ mod tests {
             }
         }
 
-        let source = transaction_ids[0];
-        let newly_failed = &transaction_ids[1..3];
-        for (creator, vout, spendable, spent_by) in [
-            // Consumed inputs must keep their locks and timestamps.
-            (source, 0, false, Some(newly_failed[0])),
-            (source, 1, false, Some(newly_failed[1])),
-            // Clear every created output, including an existing spent_by.
-            (newly_failed[0], 0, true, None),
-            (newly_failed[0], 1, false, Some(source)),
-            (newly_failed[1], 0, true, Some(source)),
-            // A live request and an older failure are outside this transition.
-            (transaction_ids[3], 0, true, None),
-            (transaction_ids[4], 0, true, None),
-        ] {
-            sqlx::query(
-                "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, provided_by, \
-                 purpose, type, spendable, spent_by, created_at, updated_at) \
-                 VALUES (?, ?, ?, 1000, 'storage', 'change', 'P2PKH', ?, ?, ?, ?)",
-            )
-            .bind(user.user_id)
-            .bind(creator)
-            .bind(vout)
-            .bind(spendable)
-            .bind(spent_by)
-            .bind(seeded_at)
-            .bind(seeded_at)
-            .execute(storage.writer())
-            .await
-            .unwrap();
+        // Every id is available before resolving forward spender references.
+        for (index, transaction) in transactions.iter().enumerate() {
+            for (vout, &(spendable, spent_by)) in transaction.outputs.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, provided_by, \
+                     purpose, type, spendable, spent_by, created_at, updated_at) \
+                     VALUES (?, ?, ?, 1000, 'storage', 'change', 'P2PKH', ?, ?, ?, ?)",
+                )
+                .bind(user.user_id)
+                .bind(transaction_ids[index])
+                .bind(i64::try_from(vout).unwrap())
+                .bind(spendable)
+                .bind(spent_by.map(|spender| transaction_ids[spender]))
+                .bind(seeded_at)
+                .bind(seeded_at)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            }
         }
+
+        (storage, transaction_ids)
+    }
+
+    #[tokio::test]
+    async fn review_status_voids_created_outputs_of_newly_failed_transactions() {
+        let (storage, transaction_ids) = seed_review_status(
+            "review status regression",
+            &[
+                ReviewStatusSeed {
+                    status: "completed",
+                    request_status: None,
+                    // Consumed inputs must keep their locks and timestamps.
+                    outputs: &[(false, Some(1)), (false, Some(2))],
+                },
+                ReviewStatusSeed {
+                    status: "unproven",
+                    request_status: Some("invalid"),
+                    // Clear every created output, including an existing spent_by.
+                    outputs: &[(true, None), (false, Some(0))],
+                },
+                ReviewStatusSeed {
+                    status: "sending",
+                    request_status: Some("invalid"),
+                    outputs: &[(true, Some(0))],
+                },
+                // A live request and an older failure are outside this transition.
+                ReviewStatusSeed {
+                    status: "unproven",
+                    request_status: Some("unmined"),
+                    outputs: &[(true, None)],
+                },
+                ReviewStatusSeed {
+                    status: "failed",
+                    request_status: Some("invalid"),
+                    outputs: &[(true, None)],
+                },
+            ],
+        )
+        .await;
+        let newly_failed = &transaction_ids[1..3];
 
         const OUTPUT_STATE: &str = "SELECT transaction_id, spendable, spent_by, \
             CAST(updated_at AS TEXT) FROM outputs ORDER BY output_id";
@@ -590,79 +622,28 @@ mod tests {
 
     #[tokio::test]
     async fn review_status_newly_failed_root_retires_live_descendant() {
-        let storage = StorageSqlx::in_memory().await.unwrap();
-        storage
-            .migrate("review-status", &"0".repeat(64))
-            .await
-            .unwrap();
-        let (user, _) = storage.find_or_insert_user(&"a".repeat(66)).await.unwrap();
-        let seeded_at = Utc::now() - chrono::Duration::days(1);
-        let mut transaction_ids = Vec::new();
-
-        for (index, (status, req_status)) in [
-            ("completed", None),
-            ("unproven", Some("invalid")),
-            ("unproven", Some("unmined")),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let txid = format!("{:064x}", index + 1);
-            let transaction_id = sqlx::query(
-                "INSERT INTO transactions (user_id, txid, status, reference, description, \
-                 is_outgoing, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, 'review status descendant regression', 1, ?, ?)",
-            )
-            .bind(user.user_id)
-            .bind(&txid)
-            .bind(status)
-            .bind(format!("review-status-{index}"))
-            .bind(seeded_at)
-            .bind(seeded_at)
-            .execute(storage.writer())
-            .await
-            .unwrap()
-            .last_insert_rowid();
-            transaction_ids.push(transaction_id);
-
-            if let Some(req_status) = req_status {
-                sqlx::query(
-                    "INSERT INTO proven_tx_reqs (txid, status, raw_tx, created_at, updated_at) \
-                     VALUES (?, ?, X'01000000', ?, ?)",
-                )
-                .bind(&txid)
-                .bind(req_status)
-                .bind(seeded_at)
-                .bind(seeded_at)
-                .execute(storage.writer())
-                .await
-                .unwrap();
-            }
-        }
-
-        let source = transaction_ids[0];
-        let root = transaction_ids[1];
+        let (storage, transaction_ids) = seed_review_status(
+            "review status descendant regression",
+            &[
+                ReviewStatusSeed {
+                    status: "completed",
+                    request_status: None,
+                    outputs: &[(false, Some(1))],
+                },
+                ReviewStatusSeed {
+                    status: "unproven",
+                    request_status: Some("invalid"),
+                    outputs: &[(false, Some(2))],
+                },
+                ReviewStatusSeed {
+                    status: "unproven",
+                    request_status: Some("unmined"),
+                    outputs: &[(true, None)],
+                },
+            ],
+        )
+        .await;
         let descendant_id = transaction_ids[2];
-        for (creator, spendable, spent_by) in [
-            (source, false, Some(root)),
-            (root, false, Some(descendant_id)),
-            (descendant_id, true, None),
-        ] {
-            sqlx::query(
-                "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, provided_by, \
-                 purpose, type, spendable, spent_by, created_at, updated_at) \
-                 VALUES (?, ?, 0, 1000, 'storage', 'change', 'P2PKH', ?, ?, ?, ?)",
-            )
-            .bind(user.user_id)
-            .bind(creator)
-            .bind(spendable)
-            .bind(spent_by)
-            .bind(seeded_at)
-            .bind(seeded_at)
-            .execute(storage.writer())
-            .await
-            .unwrap();
-        }
 
         let review = MonitorStorage::review_status(&storage).await.unwrap();
         let descendant: (String, bool) = sqlx::query_as(
