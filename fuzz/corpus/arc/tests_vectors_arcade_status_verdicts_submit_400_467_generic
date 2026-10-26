@@ -1,0 +1,1 @@
+{"error": "transaction failed validation", "txid": "1111111111111111111111111111111111111111111111111111111111111111", "reason": "policy", "status": 467, "title": "Generic error", "detail": "Transaction could not be processed", "type": "https://bitcoin-sv.github.io/arc/#/errors?id=_467"}

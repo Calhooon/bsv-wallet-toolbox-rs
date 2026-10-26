@@ -1,0 +1,1 @@
+{"error": "transaction failed validation", "txid": "1111111111111111111111111111111111111111111111111111111111111111", "reason": "TX_INVALID (31): insufficient-fee", "status": 465, "title": "Fee too low", "detail": "Transaction fee is too low", "type": "https://bitcoin-sv.github.io/arc/#/errors?id=_465"}
