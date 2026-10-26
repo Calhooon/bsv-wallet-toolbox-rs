@@ -138,6 +138,7 @@ Returned by `balance()` and `balance_and_utxos()`. Both use `#[serde(rename_all 
 
 ```rust
 pub struct WalletOptions {
+    pub rng_seed: Option<[u8; 32]>,              // Default: None (OS entropy); separate from the storage seed
     pub include_all_source_transactions: bool,  // Default: true
     pub auto_known_txids: bool,                 // Default: false
     pub trust_self: Option<String>,             // Default: Some("known")

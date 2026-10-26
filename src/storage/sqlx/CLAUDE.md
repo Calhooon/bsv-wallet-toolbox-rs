@@ -55,6 +55,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 
 ### `StorageSqlx`
 The main storage provider struct implementing all wallet storage traits.
+`storage::sqlx::StorageSqlxOptions { rng_seed: Option<[u8; 32]> }` configures `new_with_options` and `open_with_options`: `None` uses OS entropy, and `Some(seed)` repeats references and change derivations from the store's shared stream; no environment variable supplies the seed.
 
 ```rust
 // impl Clone by hand: every field shared, none copied
