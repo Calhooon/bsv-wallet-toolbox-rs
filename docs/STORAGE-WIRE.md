@@ -74,11 +74,11 @@ requests also carry `jsonrpc:"2.0"`, `method:S`, `params:[]`, `id:N`.
 | `listOutputs` | `[Auth,ListOutputs]` | `[Auth,ValidListOutputs]` C702-705 | same V1589-1603 | bsv-rs `ListOutputsResult`; L2, D8 |
 | `listCertificates` | `[Auth,ListCertificates]` | same fields C714-717 | V1166-1180 | bsv-rs `ListCertificatesResult`; L3, D6 |
 | `abortAction` | `[Auth,{reference:B}]` | same C622-623 | same | `{aborted:F}`; same |
-| `createAction` | `[Auth,Create]` | `[Auth,ValidCreateActionArgs]` C478-508 | I211, V714-733 | `CreateResult`; C1-C6, D1-D4, R1 |
+| `createAction` | `[Auth,Create]` | `[Auth,ValidCreateActionArgs]` C478-508 | I190, V714-733 | `CreateResult`; C1-C6, D1-D4, R1 |
 | `processAction` | `[Auth,Process]` | same C521-522 | I352-362 | `ProcessResult`; same |
 | `internalizeAction` | `[Auth,Internalize]` | same names C467-468 | W601-607, I364-377 | `InternalizeResult`; D5 |
 | `markInternalizedTxFailed` | `[txid:H]` | absent | absent | null; toolbox-only; method-not-found ignored |
-| `insertCertificateAuth` | `[Auth,Certificate]`; second caller adds `fields:CertificateField[]`, removes `certificateFieldId` | `[Auth,CertificateX]` C678-680 | I230, T/Certificate | `N`; E1-E3 and reference-only deletion field |
+| `insertCertificateAuth` | `[Auth,Certificate]`; second caller adds `fields:CertificateField[]`, removes `certificateFieldId` | `[Auth,CertificateX]` C678-680 | I217, T/Certificate | `N`; E1-E3 and reference-only deletion field |
 | `insertCertificateFieldAuth` | `[Auth,CertificateField]` | absent | absent | N; toolbox-only, entity naming still audited |
 | `relinquishCertificate` | `[Auth,{certificateType:B,serialNumber:B,certifier:H}]` | `[Auth,{type:B,serialNumber:B,certifier:H}]` C799-800 | same W936-940 | N; D6 |
 | `relinquishOutput` | `[Auth,{basket:S,output:S}]` | same C812-813 | W648-651 | N; same (output is `H.N`) |
@@ -127,7 +127,7 @@ hold, or a validation/encoding decision beyond renaming this storage wire.
 | Q1 common | `certifiers:H[]?,types:B[]?,includeFields:F?` | same | same | same |
 | Q2 | `userId:N?,name:S?` at root | `partial:{userId:N?,name:S?}` I271-273 | `partial` object | differs and fixed |
 | Q1/Q2 extra filters | absent | `partial:Partial<Certificate/Basket>` | all table columns can filter | reference-only |
-| Q3 | `txStatus:["noSend","nonFinal"]` for these Rust variants | `["nosend","nonfinal"]` I279, WT sdk/types.ts | same | differs and fixed |
+| Q3 | `txStatus:["noSend","nonFinal"]` for these Rust variants | `["nosend","nonfinal"]` I278, WT sdk/types.ts | same | differs and fixed |
 | C1 | `inputBeef:A?` | `inputBEEF:A?` V716,C479-505 | `inputBEEF:A?` V756-757 | differs and fixed |
 | C2 | `description:S,lockTime:N?,version:N?,labels:S[]?` | same names, validated values populated V714-725 | same | same |
 | C3 | `isNewTx:F,isNoSend:F,isDelayed:F,isSendWith:F,isRemixChange:F,isSignAction:F,includeAllSourceTransactions:F` | same names V699-733 | same | same |
