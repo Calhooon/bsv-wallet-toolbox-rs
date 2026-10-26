@@ -9,6 +9,7 @@
 
 ### Changed
 
+- `create_action` offers an unproven received wallet payment only when that call's labels contain the exact string `underReceivedRule` (#169; `wallet.md` section 2 and section 5, R1 (d)). The rule is off by default and recorded in the action's labels. Hosts that relied on the old offer receive `Insufficient funds` until they name the rule; mined (`completed`) receipts and the wallet's own change remain eligible as before. Received origin uses the existing `outputs.purpose = "receive"`, including custom outputs converted to wallet payments, with `provided_by = "storage"` for managed signing. This implements the keeper's ruling and deliberately diverges from `ts-stack@edf6e03`: `internalizeAction` writes received payments with `providedBy: "storage"`, `purpose: "change"`, `change: true` in the default basket, and `StorageKnex.allocateChangeInput` selects those fields without an action rule.
 - `PostBeefMode::PromiseAll` is the default: submit to every named broadcaster in parallel and retain each result, including a named transport fault (#167, broadcaster charter B3). `UntilSuccess` remains an explicit opt-in on the 0.14 line; removal requires the owner's word.
 - The wallet's spending lock is released after building and signing in `create_action_offering`, before the broadcast await (#66). Existing one-call transaction rows are preserved.
 

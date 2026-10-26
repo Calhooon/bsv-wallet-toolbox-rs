@@ -324,6 +324,7 @@ pub async fn internalize_action_internal(
 - Merge support for existing transactions (completed/unproven/nosend)
 - Balance tracking with net satoshi change calculation
 - Label and tag support for transaction/output organization
+- Received wallet payments carry `outputs.purpose = "receive"`, including converted custom outputs; `create_action` offers unproven receipts only under its exact `underReceivedRule` label, recorded on that action, while completed receipts and own change keep their eligibility (#169).
 - ProvenTxReq creation for unproven transactions
 
 ### Merge Behavior
