@@ -3,20 +3,6 @@ use super::*;
 use bsv_rs::wallet::CreateActionOutput;
 
 #[test]
-fn test_random_derivation() {
-    let d1 = random_derivation(16);
-    let d2 = random_derivation(16);
-
-    // Should be base64 encoded
-    assert!(d1
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '='));
-
-    // Should be different each time
-    assert_ne!(d1, d2);
-}
-
-#[test]
 fn test_caller_complete_plan_rule() {
     use CallerCompletePlan::*;
     // Self-sufficient, signatures forbid funding: verbatim whatever the fee.

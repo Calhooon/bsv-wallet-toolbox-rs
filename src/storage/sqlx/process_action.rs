@@ -1161,11 +1161,6 @@ pub(super) async fn process_action_writes(
     })
 }
 
-#[cfg(test)]
-fn generate_batch_id() -> String {
-    crate::wallet::RandomSource::new(None).base64(16)
-}
-
 // =============================================================================
 // Post-Broadcast Status Update
 // =============================================================================
@@ -1555,14 +1550,6 @@ mod tests {
         let (tx_status, req_status) = determine_statuses(&args);
         assert_eq!(tx_status, "unprocessed");
         assert_eq!(req_status, "unprocessed");
-    }
-
-    #[test]
-    fn test_generate_batch_id() {
-        let id1 = generate_batch_id();
-        let id2 = generate_batch_id();
-        assert!(base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &id1).is_ok());
-        assert_ne!(id1, id2);
     }
 
     #[test]

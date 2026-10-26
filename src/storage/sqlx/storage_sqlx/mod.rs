@@ -78,6 +78,7 @@ use tokio::sync::RwLock;
 use super::locked_inputs::{LOCKED_VERDICT_SPENT_PROVEN, LOCKED_VERDICT_UNKNOWN};
 use crate::error::{Error, Result, StoreBusyReason};
 use crate::lock_utils::{lock_read, lock_write};
+use crate::rng::RandomSource;
 use crate::services::{GetRawTxResult, UtxoVerdict, WalletServices};
 use crate::storage::entities::*;
 use crate::storage::traits::*;
@@ -191,7 +192,7 @@ fn writer_acquire_error(err: sqlx::Error) -> Error {
 pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
 
 /// Options for constructing a SQLx storage provider.
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct StorageSqlxOptions {
     /// Optional seed for repeatable test-harness draws. None uses OS entropy.
     pub rng_seed: Option<[u8; 32]>,
@@ -213,7 +214,7 @@ pub struct StorageSqlxOptions {
 /// `StoreBusy`) instead of queueing on one writer, and two reservation sets.
 pub struct StorageSqlx {
     /// The store's random stream, shared by every cloned handle.
-    pub(super) rng: Arc<crate::wallet::RandomSource>,
+    pub(super) rng: Arc<RandomSource>,
     /// The reader pool: several connections, each `PRAGMA query_only = ON`,
     /// so a write sent here fails loudly instead of racing the writer.
     reader: Pool<Sqlite>,
@@ -390,7 +391,7 @@ impl StorageSqlx {
         ));
 
         Ok(Self {
-            rng: Arc::new(crate::wallet::RandomSource::new(storage_options.rng_seed)),
+            rng: Arc::new(RandomSource::new(storage_options.rng_seed)),
             reader,
             writer,
             settings: Default::default(),

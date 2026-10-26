@@ -67,6 +67,7 @@ pub mod error;
 pub mod lock_utils;
 pub mod managers;
 pub mod monitor;
+mod rng;
 pub mod services;
 pub mod storage;
 pub mod tsc_proof;
