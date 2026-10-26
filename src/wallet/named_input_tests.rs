@@ -9,6 +9,10 @@
 //! verifyUnlockScripts.ts:51-64 refuses an invalid unlock with
 //! WERR_INVALID_PARAMETER. Rust maps that argument failure to ValidationError,
 //! not InvalidTransactionStatus: the unsigned action remains available to sign.
+//!
+//! #211: completeSignedTransaction.ts:19-24 also refuses a spend unless its vin
+//! names a caller input deferred with unlockingScriptLength; a script supplied
+//! at create_action cannot be replaced, and storage inputs stay wallet-signed.
 
 use super::busy_door_tests::{fund_tagged, own_lock, wallet};
 use super::{SignerInput, Wallet};
@@ -295,9 +299,7 @@ async fn sign_action_preserves_named_script_and_signs_only_allocated_inputs() {
     assert!(!input_script(&signed, 1).is_empty());
 }
 
-#[tokio::test]
-async fn sign_action_preserves_named_script_supplied_at_create_action() {
-    let scene = named_input_scene().await;
+fn script_for_create_action(scene: &NamedInputScene) -> Vec<u8> {
     let key_id = format!(
         "{} {}",
         scene.input.derivation_prefix.as_ref().unwrap(),
@@ -321,11 +323,124 @@ async fn sign_action_preserves_named_script_supplied_at_create_action() {
     let raw = draft.to_binary();
     let lock = Script::from_binary(scene.input.source_locking_script.as_ref().unwrap()).unwrap();
     // NONE|ANYONECANPAY signs this input before the wallet chooses outputs.
-    let script = P2PKH::unlock(&key, SignOutputs::None, true)
+    P2PKH::unlock(&key, SignOutputs::None, true)
         .sign(&SigningContext::new(&raw, 0, scene.input.satoshis, &lock))
         .unwrap()
-        .to_binary();
+        .to_binary()
+}
+
+#[tokio::test]
+async fn sign_action_preserves_named_script_supplied_at_create_action() {
+    let scene = named_input_scene().await;
+    let script = script_for_create_action(&scene);
     let signable = defer_named(&scene, 1_000, Some(script.clone())).await;
     let signed = complete(&scene, signable, None).await;
     assert_eq!(input_script(&signed, 0), script);
+}
+
+async fn assert_spend_without_deferred_named_input_refused(vin: u32, replacement: Vec<u8>) {
+    let scene = named_input_scene().await;
+    fund_wallet_change(&scene.wallet, 1).await;
+    let script = script_for_create_action(&scene);
+    let signable = defer_named(&scene, 100_000, Some(script.clone())).await;
+    let reference = String::from_utf8(signable.reference.clone()).unwrap();
+    let unsigned = subject(&signable.tx);
+    assert_eq!(unsigned.inputs.len(), 2);
+    {
+        let cache = scene.wallet.pending_transactions.read().await;
+        let pending = cache.get(&reference).unwrap();
+        assert_eq!(pending.storage_inputs.len(), 1);
+        assert!(pending.storage_inputs.contains(&1));
+        assert_eq!(
+            pending.transaction.inputs[0].unlocking_script.as_ref(),
+            Some(&script)
+        );
+    }
+    let stored: (String, Option<String>, Option<Vec<u8>>) =
+        sqlx::query_as("SELECT status, txid, raw_tx FROM transactions WHERE reference = ?")
+            .bind(&reference)
+            .fetch_one(scene.wallet.storage().pool())
+            .await
+            .unwrap();
+    assert_eq!(stored.0, "unsigned");
+    let writes: i64 = sqlx::query_scalar("SELECT total_changes()")
+        .fetch_one(scene.wallet.storage().writer())
+        .await
+        .unwrap();
+
+    let result = scene
+        .wallet
+        .sign_action(
+            SignActionArgs {
+                reference: reference.clone(),
+                spends: HashMap::from([(
+                    vin,
+                    SignActionSpend {
+                        unlocking_script: replacement.clone(),
+                        sequence_number: Some(42),
+                    },
+                )]),
+                options: None,
+            },
+            ORIGINATOR,
+        )
+        .await;
+    match result {
+        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
+            message,
+            "Validation error: The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength."
+        ),
+        Ok(_) => panic!("wallet accepted a spend without a deferred caller input at vin {vin}"),
+        Err(error) => panic!("unexpected refusal: {error}"),
+    }
+    let after_writes: i64 = sqlx::query_scalar("SELECT total_changes()")
+        .fetch_one(scene.wallet.storage().writer())
+        .await
+        .unwrap();
+    assert_eq!(after_writes, writes, "a refused spend must write nothing");
+    let after: (String, Option<String>, Option<Vec<u8>>) =
+        sqlx::query_as("SELECT status, txid, raw_tx FROM transactions WHERE reference = ?")
+            .bind(&reference)
+            .fetch_one(scene.wallet.storage().pool())
+            .await
+            .unwrap();
+    assert_eq!(after, stored, "the stored unsigned action must not change");
+    assert_eq!(scene.wallet.services().total_calls(), 0);
+
+    let signed = complete(&scene, signable, None).await;
+    assert_eq!(input_script(&signed, 0), script);
+    assert!(!input_script(&signed, 1).is_empty());
+    assert_ne!(input_script(&signed, 1), replacement);
+    assert_eq!(
+        signed
+            .inputs
+            .iter()
+            .map(|input| input.sequence)
+            .collect::<Vec<_>>(),
+        unsigned
+            .inputs
+            .iter()
+            .map(|input| input.sequence)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn sign_action_refuses_caller_spend_for_allocated_input() {
+    assert_spend_without_deferred_named_input_refused(1, vec![0x51]).await;
+}
+
+#[tokio::test]
+async fn sign_action_refuses_empty_caller_spend_for_allocated_input() {
+    assert_spend_without_deferred_named_input_refused(1, vec![]).await;
+}
+
+#[tokio::test]
+async fn sign_action_refuses_caller_spend_for_create_supplied_script() {
+    assert_spend_without_deferred_named_input_refused(0, vec![0x51]).await;
+}
+
+#[tokio::test]
+async fn sign_action_refuses_caller_spend_for_unknown_input() {
+    assert_spend_without_deferred_named_input_refused(2, vec![0x51]).await;
 }
