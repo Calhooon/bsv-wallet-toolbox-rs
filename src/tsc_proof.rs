@@ -163,13 +163,17 @@ mod tests {
 
     #[test]
     fn test_hex_roundtrip() {
+        // Index 5 needs a tree of height 3 (three nodes): bsv-rs 0.9.0 reads
+        // a BUMP alone by the BEEF reader's decoder, which refuses a leaf
+        // outside the tree (`OffsetOutsideTree`, bsv-rs #167).
         let json = r#"{
             "index": 5,
             "txOrId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "target": "0000000000000000000000000000000000000000000000000000000000000000",
             "nodes": [
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
             ]
         }"#;
 

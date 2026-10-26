@@ -231,7 +231,11 @@ pub(super) async fn build_input_beef(
     // Validate every assembly before trimming known txids, including bodies
     // without BUMPs and calls with no tracker. Missing ancestry is an error,
     // and an ancestor this wallet does not store is named: createAction
-    // fetches none (the monitor's backstop fetches proofs).
+    // fetches none (the monitor's backstop fetches proofs). The walk merges
+    // children ahead of their parents; bsv-rs judges the order held
+    // (BRC-62, parents first, since 0.9.0), so the assembly is judged in the
+    // order `to_binary` writes it.
+    beef.sort_txs();
     let validation = beef.verify_valid(true);
     if !validation.valid {
         let missing = beef.sort_txs().missing_inputs;
@@ -324,6 +328,8 @@ pub(super) async fn change_coin_gap(
         Err(e) => return Err(e),
     }
     prune_beef_to_roots(&mut beef, &[txid.to_string()]);
+    // Judged in the order `to_binary` writes, as the assembly above is.
+    beef.sort_txs();
     if beef.verify_valid(true).valid {
         return Ok(None);
     }
