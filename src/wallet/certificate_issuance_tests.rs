@@ -5,9 +5,10 @@
 use super::*;
 use bsv_rs::primitives::{PrivateKey, Signature, SymmetricKey};
 use bsv_rs::wallet::{
-    AcquisitionProtocol, CreateSignatureArgs, DecryptArgs, KeyDeriver, ProtoWallet,
+    AcquisitionProtocol, CreateHmacArgs, CreateSignatureArgs, DecryptArgs, KeyDeriver, ProtoWallet,
     ProveCertificateArgs,
 };
+use std::collections::HashSet;
 
 use crate::services::mock::MockWalletServices;
 use crate::storage::WalletStorageWriter;
@@ -195,16 +196,87 @@ async fn prove(
         .keyring_for_verifier
 }
 
+fn acquisition_args(issued: &Issued) -> AcquireCertificateArgs {
+    AcquireCertificateArgs {
+        certificate_type: issued.certificate.cert_type.clone(),
+        certifier: issued.certificate.certifier.clone(),
+        acquisition_protocol: AcquisitionProtocol::Issuance,
+        fields: issued.plaintexts.clone(),
+        serial_number: None,
+        revocation_outpoint: None,
+        signature: None,
+        certifier_url: None,
+        keyring_revealer: None,
+        keyring_for_subject: None,
+        privileged: Some(false),
+        privileged_reason: None,
+    }
+}
+
+// Simulate the reference's certifier locally, including the BRC-104 nonce
+// HMAC and the BRC-52 signature. No HTTP request or payment is involved.
+fn certifier_response(
+    issued: &Issued,
+    prepared: &PrepareIssuanceActionDataResult,
+) -> ProtocolIssuanceResponse {
+    let certifier = ProtoWallet::new(Some(key(issued.keys.certifier)));
+    let server_nonce = [5; 32];
+    let mut nonce_data = BASE64.decode(&prepared.client_nonce).unwrap();
+    nonce_data.extend_from_slice(&server_nonce);
+    let serial = certifier
+        .create_hmac(CreateHmacArgs {
+            data: nonce_data,
+            protocol_id: Protocol::new(SecurityLevel::Counterparty, "certificate issuance"),
+            key_id: format!("{}{}", BASE64.encode(server_nonce), prepared.client_nonce),
+            counterparty: Some(Counterparty::Other(key(issued.keys.subject).public_key())),
+            ..Default::default()
+        })
+        .unwrap()
+        .hmac;
+    let mut certificate = Certificate::new(
+        BASE64
+            .decode(&prepared.cert_type_b64)
+            .unwrap()
+            .try_into()
+            .unwrap(),
+        serial,
+        key(issued.keys.subject).public_key(),
+        key(issued.keys.certifier).public_key(),
+    );
+    for (name, value) in &prepared.fields {
+        certificate.set_field(name.clone(), value.as_bytes().to_vec());
+    }
+    let signature = certifier
+        .create_signature(CreateSignatureArgs {
+            data: Some(certificate.to_binary(false)),
+            protocol_id: Protocol::new(SecurityLevel::Counterparty, "certificate signature"),
+            key_id: format!("{} {}", prepared.cert_type_b64, BASE64.encode(serial)),
+            counterparty: Some(Counterparty::Anyone),
+            ..Default::default()
+        })
+        .unwrap()
+        .signature;
+    let mut cert_response = issued.certificate.clone();
+    cert_response.fields = prepared.fields.clone();
+    cert_response.serial_number = BASE64.encode(serial);
+    cert_response.signature = hex::encode(signature);
+    response(cert_response)
+}
+
+fn parse_issued(issued: &Issued) -> ParseCertificateResponseResult {
+    parse_certificate_response(
+        &response(issued.certificate.clone()),
+        &issued.certificate.certifier,
+        &issued.certificate.cert_type,
+    )
+    .unwrap()
+}
+
 #[test]
 fn reference_issued_certificate_survives_intake() {
     let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
     for issued in [fixture.reference_issued, fixture.rust_issued] {
-        let parsed = parse_certificate_response(
-            &response(issued.certificate.clone()),
-            &issued.certificate.certifier,
-            &issued.certificate.cert_type,
-        )
-        .unwrap();
+        let parsed = parse_issued(&issued);
         assert_eq!(
             verify_like_reference(&parsed.certificate),
             issued.reference_verify,
@@ -224,17 +296,8 @@ fn reference_issued_certificate_survives_intake() {
 async fn reference_issued_certificate_proves_and_decrypts() {
     let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
     for issued in [fixture.reference_issued, fixture.rust_issued] {
-        // Read signed bytes independently of the intake so a failure there
-        // cannot hide what the existing prove path already does correctly.
-        let certificate =
-            Certificate::from_binary(&hex::decode(&issued.binary_hex).unwrap()).unwrap();
-        assert!(verify_like_reference(&certificate));
-        let parsed = ParseCertificateResponseResult {
-            serial_number: certificate.serial_number,
-            certificate,
-            server_nonce: BASE64.encode([5; 32]),
-            cert_fields: issued.certificate.fields.clone(),
-        };
+        let parsed = parse_issued(&issued);
+        assert!(verify_like_reference(&parsed.certificate));
         let (wallet, auth) = wallet(issued.keys.subject).await;
         let stored = store(&wallet, &auth, &parsed, &issued.master_keyring).await;
         assert_eq!(stored.fields, issued.certificate.fields);
@@ -301,20 +364,7 @@ async fn toolbox_issued_certificate_decrypts_like_reference() {
         let (wallet, auth) = wallet(issued.keys.subject).await;
         let certifier = key(issued.keys.certifier);
         let subject = key(issued.keys.subject).public_key();
-        let args = AcquireCertificateArgs {
-            certificate_type: issued.certificate.cert_type.clone(),
-            certifier: certifier.public_key().to_hex(),
-            acquisition_protocol: AcquisitionProtocol::Issuance,
-            fields: issued.plaintexts.clone(),
-            serial_number: None,
-            revocation_outpoint: None,
-            signature: None,
-            certifier_url: None,
-            keyring_revealer: None,
-            keyring_for_subject: None,
-            privileged: None,
-            privileged_reason: None,
-        };
+        let args = acquisition_args(&issued);
         let prepared = prepare_issuance_action_data(
             &wallet,
             &args,
@@ -324,84 +374,111 @@ async fn toolbox_issued_certificate_decrypts_like_reference() {
         )
         .await
         .unwrap();
-        let mut cert_response = issued.certificate.clone();
-        cert_response.fields = prepared.fields.clone();
-        let subject_wallet = ProtoWallet::new(Some(key(issued.keys.subject)));
-        assert_eq!(
-            decrypt_like_reference(
-                &subject_wallet,
-                &certifier.public_key(),
-                &cert_response,
-                &prepared.master_keyring,
-                true
+        let response = certifier_response(&issued, &prepared);
+        let cert_response = response.certificate.as_ref().unwrap();
+        for (reader, counterparty) in [
+            (
+                ProtoWallet::new(Some(key(issued.keys.subject))),
+                certifier.public_key(),
             ),
-            issued.plaintexts
-        );
-        assert_eq!(
-            decrypt_like_reference(
-                &ProtoWallet::new(Some(certifier.clone())),
-                &subject,
-                &cert_response,
-                &prepared.master_keyring,
-                true
-            ),
-            issued.plaintexts
-        );
-
-        // Simulate the certifier locally: sign the Base64 text bytes that the
-        // toolbox sent. No HTTP request, broadcast or payment is involved.
-        let mut signed = Certificate::new(
-            BASE64
-                .decode(&args.certificate_type)
-                .unwrap()
-                .try_into()
-                .unwrap(),
-            BASE64
-                .decode(&cert_response.serial_number)
-                .unwrap()
-                .try_into()
-                .unwrap(),
-            subject.clone(),
-            certifier.public_key(),
-        );
-        for (name, value) in &prepared.fields {
-            signed.set_field(name.clone(), value.as_bytes().to_vec());
+            (ProtoWallet::new(Some(certifier.clone())), subject.clone()),
+        ] {
+            assert_eq!(
+                decrypt_like_reference(
+                    &reader,
+                    &counterparty,
+                    cert_response,
+                    &prepared.master_keyring,
+                    true,
+                ),
+                issued.plaintexts
+            );
         }
-        signed.signature = Some(
-            ProtoWallet::new(Some(certifier))
-                .create_signature(CreateSignatureArgs {
-                    data: Some(signed.to_binary(false)),
-                    protocol_id: Protocol::new(
-                        SecurityLevel::Counterparty,
-                        "certificate signature",
-                    ),
-                    key_id: format!("{} {}", signed.type_base64(), signed.serial_number_base64()),
-                    counterparty: Some(Counterparty::Anyone),
-                    ..Default::default()
-                })
-                .unwrap()
-                .signature,
-        );
-        cert_response.signature = hex::encode(signed.signature.as_ref().unwrap());
+
         let parsed = parse_certificate_response(
-            &response(cert_response.clone()),
+            &response,
             &cert_response.certifier,
             &cert_response.cert_type,
         )
         .unwrap();
+        verify_certificate_issuance(
+            &wallet,
+            &parsed,
+            &prepared.client_nonce,
+            &prepared.fields,
+            &prepared.cert_type_b64,
+            &auth.identity_key,
+            &cert_response.certifier,
+            &certifier.public_key(),
+            ORIGINATOR,
+        )
+        .await
+        .unwrap();
         assert!(verify_like_reference(&parsed.certificate));
-        assert_eq!(parsed.certificate.to_binary(true), signed.to_binary(true));
+        assert_eq!(parsed.cert_fields, prepared.fields);
         let stored = store(&wallet, &auth, &parsed, &prepared.master_keyring).await;
         let keyring = prove(&wallet, stored, issued.keys.verifier, Vec::new()).await;
         assert_eq!(
             decrypt_like_reference(
                 &ProtoWallet::new(Some(key(issued.keys.verifier))),
                 &subject,
-                &cert_response,
+                cert_response,
                 &keyring,
                 false
             ),
             issued.plaintexts
         );
+    }
+}
+
+#[tokio::test]
+async fn issuance_uses_fresh_keys_for_equal_and_empty_plaintexts() {
+    let subject = key(37);
+    let subject_wallet = ProtoWallet::new(Some(subject.clone()));
+    let certifier = key(31).public_key();
+    let plaintexts = HashMap::from([
+        ("a".to_string(), "same value".to_string()),
+        ("b".to_string(), "same value".to_string()),
+        ("empty".to_string(), String::new()),
+    ]);
+    let mut all_keys = HashSet::new();
+    for _ in 0..2 {
+        let (fields, keyring) = create_certificate_fields_for_issuance(
+            &subject_wallet,
+            &certifier,
+            &subject.public_key(),
+            &plaintexts,
+            &[6; 32],
+            ORIGINATOR,
+        )
+        .await
+        .unwrap();
+        for (name, ciphertext) in fields {
+            let field_key = subject_wallet
+                .decrypt(DecryptArgs {
+                    ciphertext: keyring[&name].clone(),
+                    protocol_id: Protocol::new(
+                        SecurityLevel::Counterparty,
+                        "certificate field encryption",
+                    ),
+                    key_id: name.clone(),
+                    counterparty: Some(Counterparty::Other(certifier.clone())),
+                    ..Default::default()
+                })
+                .unwrap()
+                .plaintext;
+            assert_eq!(field_key.len(), 32);
+            assert!(
+                all_keys.insert(field_key.clone()),
+                "field key reused for {name}"
+            );
+            assert_eq!(
+                SymmetricKey::from_bytes(&field_key)
+                    .unwrap()
+                    .decrypt(&ciphertext)
+                    .unwrap(),
+                plaintexts[&name].as_bytes()
+            );
+        }
     }
 }
