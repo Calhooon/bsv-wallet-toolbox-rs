@@ -34,6 +34,8 @@ mod proven_tx_reqs;
 mod proven_txs;
 mod reader;
 mod retirement;
+#[cfg(test)]
+mod rng_tests;
 mod send_waiting;
 mod settings;
 mod stale_proofs;
@@ -188,6 +190,13 @@ fn writer_acquire_error(err: sqlx::Error) -> Error {
 /// Scripts longer than this will be retrieved from the raw transaction.
 pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
 
+/// Options for constructing a SQLx storage provider.
+#[derive(Default)]
+pub struct StorageSqlxOptions {
+    /// Optional seed for repeatable test-harness draws. None uses OS entropy.
+    pub rng_seed: Option<[u8; 32]>,
+}
+
 /// SQLite storage provider.
 ///
 /// Implements the full `WalletStorageProvider` trait hierarchy using SQLx
@@ -309,17 +318,39 @@ impl StorageSqlx {
     /// let storage = StorageSqlx::new("sqlite:wallet.db").await?;
     /// ```
     pub async fn new(database_url: &str) -> Result<Self> {
-        Self::connect(database_url, READER_POOL_SIZE, None).await
+        Self::new_with_options(database_url, StorageSqlxOptions::default()).await
+    }
+
+    /// Create a SQLite storage provider with an optional test-harness seed.
+    /// Cloned handles share the stream; independently opened stores do not.
+    pub async fn new_with_options(database_url: &str, options: StorageSqlxOptions) -> Result<Self> {
+        Self::connect_with_options(database_url, READER_POOL_SIZE, None, options).await
     }
 
     /// The store over `database_url` with a reader pool of `reader_size`
     /// connections and, when given, that reader acquire timeout (sqlx's
     /// default otherwise). The writer is always one connection with the
     /// store's ceiling as its acquire timeout.
+    #[cfg(test)]
     async fn connect(
         database_url: &str,
         reader_size: u32,
         reader_acquire_timeout: Option<std::time::Duration>,
+    ) -> Result<Self> {
+        Self::connect_with_options(
+            database_url,
+            reader_size,
+            reader_acquire_timeout,
+            StorageSqlxOptions::default(),
+        )
+        .await
+    }
+
+    async fn connect_with_options(
+        database_url: &str,
+        reader_size: u32,
+        reader_acquire_timeout: Option<std::time::Duration>,
+        storage_options: StorageSqlxOptions,
     ) -> Result<Self> {
         let options = SqliteConnectOptions::from_str(database_url)
             .map_err(|e| Error::DatabaseError(e.to_string()))?
@@ -359,7 +390,7 @@ impl StorageSqlx {
         ));
 
         Ok(Self {
-            _rng: Arc::new(crate::wallet::RandomSource::new(None)),
+            _rng: Arc::new(crate::wallet::RandomSource::new(storage_options.rng_seed)),
             reader,
             writer,
             settings: Default::default(),
@@ -437,8 +468,13 @@ impl StorageSqlx {
     ///
     /// Creates the database file if it doesn't exist.
     pub async fn open(path: &str) -> Result<Self> {
+        Self::open_with_options(path, StorageSqlxOptions::default()).await
+    }
+
+    /// Open a file-based SQLite database with an optional test-harness seed.
+    pub async fn open_with_options(path: &str, options: StorageSqlxOptions) -> Result<Self> {
         let url = format!("sqlite:{}", path);
-        Self::new(&url).await
+        Self::new_with_options(&url, options).await
     }
 
     /// The reader pool. Every connection is `PRAGMA query_only = ON`: a
