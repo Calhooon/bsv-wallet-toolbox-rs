@@ -7,6 +7,45 @@
 - #211: `sign_action` previously accepted caller spends on storage-allocated inputs and replaced scripts already supplied at `create_action`. It now refuses a spend unless its vin names a caller input deferred with `unlockingScriptLength`, before signing or processing, with no storage writes and the unsigned action available for completion. The reference's `WERR_INVALID_PARAMETER` maps to `Error::ValidationError` with the text `The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength.` Reference: `ts-stack@edf6e03`, under `packages/wallet/wallet-toolbox/src/`, `signer/methods/completeSignedTransaction.ts:15-32` (the refusal at lines 19-24), `signer/methods/buildSignableTransaction.ts:169-189` (caller inputs), and `sdk/WERR_errors.ts:105` (the complete message).
 - #200: `sign_action` signs only inputs allocated by storage (`provided_by = "storage"`). Previously it could sign a caller-named input whenever the stored output carried derivation metadata, and deferred actions discarded scripts supplied at `create_action`. Caller scripts supplied at either step are now preserved. This port refuses a missing or empty named-input script before signing or processing, using the reference's `The inputs[N].unlockScript parameter must be valid.` text and mapping its `WERR_INVALID_PARAMETER` to `Error::ValidationError`; `ts-stack@edf6e03` completes and processes the action before `verifyUnlockScripts` reports a missing script's refusal, and refuses an empty script earlier, at its argument gate, as not a hexadecimal string (`validationHelpers.ts:522-530`), the same class. The WalletInterface boundary renders `Validation error: The inputs[N].unlockScript parameter must be valid.`, and the action stays unsigned for completion by the caller. Reference: `ts-stack@edf6e03`, under `packages/wallet/wallet-toolbox/src/signer/methods/`, `signAction.ts:65-90`, `createAction.ts:181-189`, `buildSignableTransaction.ts:176-189`, `completeSignedTransaction.ts:15-32,50-79`, and `verifyUnlockScripts.ts:51-64`; BRCs@5119a9b `wallet/0100.md:643-649,724-729`.
 - `ArcadeEventsTask::apply_event` preserves `Error::StoreBusy` from inline proof ingestion on the MINED and IMMUTABLE arms (#201), following the #44 rule that a store busy keeps its type to the caller. Previously these arms swallowed the busy, raised the monitor's proof-fetch flag and returned `Ok`, so a host could acknowledge and discard a delivery whose inline proof was not stored. The typed busy now lets the relay poller hold its cursor and the webhook door request a retry, without triggering a fetch fallback. On MINED and IMMUTABLE, the status write may have committed when `StoreBusy` returns; retrying the delivery is idempotent. The SEEN, IN_BLOCK, REJECTED and CONFLICT arms already forwarded errors returned by their storage calls. `record_broadcast_status_quiet` logs a busy and never returns it, by design, because that write records a hint for reduced sends, not a delivery. Other proof-ingest faults retain the fetch fallback.
+- #202: `StorageClient` sends `ValidCreateActionArgs.input_beef` as `inputBEEF`,
+  previously `inputBeef`, with byte-array encoding (`ts-stack@edf6e03`,
+  SDK `wallet/validationHelpers.ts:716,756-757`; BRC-100 at `5119a9b`,
+  `wallet/0100.md:676`). Local storage fixtures keep their `inputBeef` shape.
+- #202: the remote wire wraps certificate `userId` and basket `userId`/`name`
+  filters in `partial` (WT `sdk/WalletStorage.interfaces.ts:265,272`). Entity
+  timestamps send `created_at`/`updated_at` instead of `createdAt`/`updatedAt`
+  (WT `storage/schema/tables/TableUser.ts:4-5`); certificate `certType` sends
+  `type` (`TableCertificate.ts:10`); transaction and proof-request `inputBeef`
+  send `inputBEEF` (`TableTransaction.ts:35`, `TableProvenTxReq.ts:33`);
+  output `outputType` sends `type` (`TableOutput.ts:20`). These names apply to
+  the storage wire only; the shared Rust entities keep their local serialization.
+- #202: sync entities send basket `numberOfDesiredUTXOs`/`minimumDesiredUTXOValue`
+  instead of `numberOfDesiredUtxos`/`minimumDesiredUtxoValue`
+  (`TableOutputBasket.ts:9-10`), label `txLabelId` instead of `labelId`
+  (`TableTxLabel.ts:6`, `TableTxLabelMap.ts:6`), tag `outputTagId` instead of
+  `tagId` (`TableOutputTag.ts:6`, `TableOutputTagMap.ts:6`), and commission
+  `lockingScript` instead of `payerLockingScript` (`TableCommission.ts:12`).
+  Transaction status values send `nosend`/`nonfinal` instead of
+  `noSend`/`nonFinal` (WT `sdk/types.ts:84`). All TS citations here are at `edf6e03`;
+  WT paths start at `packages/wallet/wallet-toolbox/src/`, SDK paths at
+  `packages/sdk/src/`.
+- #202: remote results accept input `type` as `input_type` (previous wire name
+  `inputType`, WT `sdk/WalletStorage.interfaces.ts:295`), output `type` as
+  `output_type` (`TableOutput.ts:20`), and transaction/proof-request `inputBEEF`
+  as `input_beef` (`TableTransaction.ts:35`, `TableProvenTxReq.ts:33`). Sync
+  state accepts `when` as `when_last_sync_started` (previous wire name
+  `whenLastSyncStarted`, `TableSyncState.ts:14`); sync results accept
+  `maxUpdated_at` as `max_updated_at` (previous wire name `maxUpdatedAt`,
+  WT `sdk/WalletStorage.interfaces.ts:715`). Existing response spellings remain
+  accepted. [The field audit](docs/STORAGE-WIRE.md) records all 40 methods,
+  remaining owner decisions and bsv-rs #105 changes; 41 request witnesses under
+  `tests/fixtures/data/storage-wire/` are replayed by `tests/storage_wire.rs`.
+
+For hosts: a toolbox wallet on a reference storage server now sends `inputBEEF`.
+A reference client against a toolbox server uses the same storage-wire field
+contract. This crate supplies a client, so that reverse-host direction is a
+contract statement, not a server run. The CLI's toolbox wallet with toolbox
+storage does not use this remote wire unless configured for a reference server.
 
 ## [0.14.0-beta.1] - 2026-10-26
 
