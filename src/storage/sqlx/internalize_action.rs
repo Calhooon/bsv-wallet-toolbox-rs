@@ -455,12 +455,13 @@ pub async fn internalize_action_internal(
                 }
 
                 if let Some(output_id) = od.existing_output_id {
-                    // Update existing output
+                    // Conversion keeps the same received origin as a new payment.
                     let now = Utc::now();
                     sqlx::query(
                         r#"
                         UPDATE outputs
                         SET basket_id = ?, type = 'P2PKH', change = 1, spendable = 1,
+                            provided_by = 'storage', purpose = 'receive',
                             derivation_prefix = ?, derivation_suffix = ?,
                             sender_identity_key = ?, custom_instructions = NULL, updated_at = ?
                         WHERE output_id = ?
@@ -1764,6 +1765,52 @@ mod tests {
         assert!(!result.is_merge);
         assert_eq!(result.txid, txid);
         assert_eq!(result.satoshis, satoshis as i64);
+    }
+
+    #[tokio::test]
+    async fn wallet_payment_origin_is_marked_on_insert_and_basket_conversion() {
+        for convert_basket in [false, true] {
+            let storage = create_test_storage().await;
+            let user_id = create_test_user(&storage).await;
+            let (bytes, txid, satoshis) = create_test_atomic_beef();
+            let payment = wallet_payment_args(bytes, "received origin");
+            if convert_basket {
+                let mut insertion = payment.clone();
+                insertion.outputs[0] = InternalizeOutput {
+                    output_index: 0,
+                    protocol: BASKET_INSERTION_PROTOCOL.to_string(),
+                    payment_remittance: None,
+                    insertion_remittance: Some(BasketInsertion {
+                        basket: "assets".to_string(),
+                        custom_instructions: None,
+                        tags: None,
+                    }),
+                };
+                internalize_action_internal(&storage, user_id, insertion)
+                    .await
+                    .unwrap();
+                // Caller-managed or synced custom rows can lack the origin mark.
+                sqlx::query("UPDATE outputs SET purpose = '', provided_by = 'you' WHERE txid = ?")
+                    .bind(&txid)
+                    .execute(storage.writer())
+                    .await
+                    .unwrap();
+            }
+            for expected_satoshis in [satoshis as i64, 0] {
+                let result = internalize_action_internal(&storage, user_id, payment.clone())
+                    .await
+                    .unwrap();
+                assert_eq!(result.satoshis, expected_satoshis);
+                let mark: (String, String, bool) = sqlx::query_as(
+                    "SELECT purpose, provided_by, change FROM outputs WHERE txid = ?",
+                )
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+                assert_eq!(mark, ("receive".to_string(), "storage".to_string(), true));
+            }
+        }
     }
 
     #[tokio::test]
