@@ -13,6 +13,10 @@
 //! #211: completeSignedTransaction.ts:19-24 also refuses a spend unless its vin
 //! names a caller input deferred with unlockingScriptLength; a script supplied
 //! at create_action cannot be replaced, and storage inputs stay wallet-signed.
+//!
+//! #216: completeSignedTransaction.ts:25-30 refuses scripts longer than the
+//! declared byte length, reporting their hex-character length; equal and shorter
+//! scripts are accepted by the same comparison.
 
 use super::busy_door_tests::{fund_tagged, own_lock, store_snapshot, wallet};
 use super::{SignerInput, Wallet};
@@ -162,6 +166,10 @@ async fn defer_named(
         unlocking_script_length,
         "caller unlocks an owned output",
     )]);
+    create_signable(scene, args).await
+}
+
+async fn create_signable(scene: &NamedInputScene, args: CreateActionArgs) -> SignableTransaction {
     scene
         .wallet
         .create_action(args, ORIGINATOR)
@@ -321,6 +329,107 @@ async fn sign_named(
         .await
 }
 
+async fn stored_action(
+    scene: &NamedInputScene,
+    reference: &str,
+) -> (String, Option<String>, Option<Vec<u8>>) {
+    sqlx::query_as("SELECT status, txid, raw_tx FROM transactions WHERE reference = ?")
+        .bind(reference)
+        .fetch_one(scene.wallet.storage().pool())
+        .await
+        .unwrap()
+}
+
+async fn write_count(scene: &NamedInputScene) -> i64 {
+    sqlx::query_scalar("SELECT total_changes()")
+        .fetch_one(scene.wallet.storage().writer())
+        .await
+        .unwrap()
+}
+
+const DECLARED_SCRIPT_LENGTH: u32 = 937;
+
+async fn length_limited_action(scene: &NamedInputScene) -> SignableTransaction {
+    sqlx::query("UPDATE output_baskets SET number_of_desired_utxos = 0")
+        .execute(scene.wallet.storage().writer())
+        .await
+        .unwrap();
+    // One input with a 937-byte script and one OP_TRUE output is 1,000 bytes.
+    // Spend exactly the remainder after the 101 sat/kB fee, with no change.
+    let mut args = payment(scene.input.satoshis - 101);
+    args.options.as_mut().unwrap().sign_and_process = Some(false);
+    args.inputs = Some(vec![scene.caller_input(
+        None,
+        Some(DECLARED_SCRIPT_LENGTH),
+        "caller declares its unlocking script length",
+    )]);
+    create_signable(scene, args).await
+}
+
+#[tokio::test]
+async fn sign_action_refuses_caller_spend_over_declared_length() {
+    let scene = named_input_scene().await;
+    let signable = length_limited_action(&scene).await;
+    let reference = String::from_utf8(signable.reference.clone()).unwrap();
+    let stored = stored_action(&scene, &reference).await;
+    assert_eq!(stored.0, "unsigned");
+    let writes = write_count(&scene).await;
+    let before = store_snapshot(&scene.wallet).await;
+    let mut script = caller_script(&scene, &signable);
+    script.resize(DECLARED_SCRIPT_LENGTH as usize + 1, 0x61);
+    let result = sign_named(&scene, reference.clone(), spend_map(0, script, Some(42))).await;
+    if let Ok(accepted) = &result {
+        let signed = subject(accepted.tx.as_ref().unwrap());
+        let (status, _, raw) = stored_action(&scene, &reference).await;
+        assert_eq!(raw.as_ref(), Some(&signed.to_binary()));
+        let fee = scene.input.satoshis
+            - signed
+                .outputs
+                .iter()
+                .map(|o| o.satoshis.unwrap())
+                .sum::<u64>();
+        assert_eq!(fee, 101);
+        assert_eq!(signed.to_binary().len(), 1_001);
+        panic!(
+            "accepted overlong spend: stored status={status}, script={} bytes, fee={fee} sats \
+             for {} bytes, below the priced 101 sat/kB",
+            input_script(&signed, 0).len(),
+            signed.to_binary().len(),
+        );
+    }
+    assert_refused(
+        &scene,
+        result,
+        "Validation error: The args parameter must be spend unlockingScript length 1876 exceeds expected length 937",
+        &before,
+    )
+    .await;
+    assert_eq!(write_count(&scene).await, writes, "no storage writes");
+    assert_eq!(stored_action(&scene, &reference).await, stored);
+    let script = caller_script(&scene, &signable);
+    let signed = complete(&scene, signable, Some(script.clone())).await;
+    assert_eq!(input_script(&signed, 0), script);
+    assert_eq!(signed.inputs[0].sequence, u32::MAX);
+}
+
+#[tokio::test]
+async fn sign_action_accepts_caller_spend_at_or_below_declared_length() {
+    // The reference's strict `>` comparison at lines 25-30 allows both lengths.
+    for length in [DECLARED_SCRIPT_LENGTH, DECLARED_SCRIPT_LENGTH - 1] {
+        let scene = named_input_scene().await;
+        let signable = length_limited_action(&scene).await;
+        let reference = String::from_utf8(signable.reference.clone()).unwrap();
+        let mut script = caller_script(&scene, &signable);
+        script.resize(length as usize, 0x61);
+        let signed = complete(&scene, signable, Some(script.clone())).await;
+        assert_eq!(input_script(&signed, 0), script);
+        let (status, txid, raw) = stored_action(&scene, &reference).await;
+        assert_eq!(status, "nosend");
+        assert_eq!(txid.as_deref(), Some(signed.id().as_str()));
+        assert_eq!(raw, Some(signed.to_binary()));
+    }
+}
+
 async fn complete(
     scene: &NamedInputScene,
     signable: SignableTransaction,
@@ -461,17 +570,9 @@ async fn assert_spend_without_deferred_named_input_refused(vin: u32, replacement
             Some(&script)
         );
     }
-    let stored: (String, Option<String>, Option<Vec<u8>>) =
-        sqlx::query_as("SELECT status, txid, raw_tx FROM transactions WHERE reference = ?")
-            .bind(&reference)
-            .fetch_one(scene.wallet.storage().pool())
-            .await
-            .unwrap();
+    let stored = stored_action(&scene, &reference).await;
     assert_eq!(stored.0, "unsigned");
-    let writes: i64 = sqlx::query_scalar("SELECT total_changes()")
-        .fetch_one(scene.wallet.storage().writer())
-        .await
-        .unwrap();
+    let writes = write_count(&scene).await;
     let before = store_snapshot(&scene.wallet).await;
 
     let result = sign_named(
@@ -487,17 +588,9 @@ async fn assert_spend_without_deferred_named_input_refused(vin: u32, replacement
         &before,
     )
     .await;
-    let after_writes: i64 = sqlx::query_scalar("SELECT total_changes()")
-        .fetch_one(scene.wallet.storage().writer())
-        .await
-        .unwrap();
+    let after_writes = write_count(&scene).await;
     assert_eq!(after_writes, writes, "a refused spend must write nothing");
-    let after: (String, Option<String>, Option<Vec<u8>>) =
-        sqlx::query_as("SELECT status, txid, raw_tx FROM transactions WHERE reference = ?")
-            .bind(&reference)
-            .fetch_one(scene.wallet.storage().pool())
-            .await
-            .unwrap();
+    let after = stored_action(&scene, &reference).await;
     assert_eq!(after, stored, "the stored unsigned action must not change");
 
     let signed = complete(&scene, signable, None).await;
