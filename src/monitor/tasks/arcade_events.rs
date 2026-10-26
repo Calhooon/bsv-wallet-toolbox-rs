@@ -180,7 +180,9 @@ where
     /// On MINED with inline proof material (arcade ≥ v0.10.1 enriched frame),
     /// the proof is ingested through [`MonitorStorage::ingest_push_proof`] —
     /// the same SPV-gated funnel as the webhook path. A `StoreBusy` error
-    /// returns unchanged so the host can retry the delivery. Every other
+    /// returns unchanged so the host can retry the delivery.
+    /// On MINED and IMMUTABLE, the status write may have committed when
+    /// `StoreBusy` returns; retrying the delivery is idempotent. Every other
     /// outcome besides a successful validated latch falls back to the fetch
     /// trigger, so a missing, malformed, or root-mismatched inline proof can
     /// never make the wallet worse off than the pre-v0.10.1 behavior.
