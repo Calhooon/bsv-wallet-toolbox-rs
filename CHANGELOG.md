@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- #200: `sign_action` signs only inputs allocated by storage (`provided_by = "storage"`). Previously it could sign a caller-named input whenever the stored output carried derivation metadata, and deferred actions discarded scripts supplied at `create_action`. Caller scripts supplied at either step are now preserved. A missing named-input script returns `Validation error: The inputs[N].unlockScript parameter must be valid.` and leaves the action unsigned for completion by the caller. This maps the reference's `WERR_INVALID_PARAMETER` to `Error::ValidationError`, rather than a transaction-status error. Reference: `ts-stack@edf6e03`, under `packages/wallet/wallet-toolbox/src/signer/methods/`, `signAction.ts:65-90`, `createAction.ts:181-189`, `buildSignableTransaction.ts:176-189`, `completeSignedTransaction.ts:15-32,50-79`, and `verifyUnlockScripts.ts:51-64`; BRCs@5119a9b `wallet/0100.md:643-649,724-729`.
+
 ## [0.14.0-beta.1] - 2026-10-26
 
 The programme line's (epic #80) opening prerelease, cut from beta on the owner's word of 2026-10-26 after the bsv-rs `=0.9.0-beta.1` pin. What moves for a host coming from 0.13.1: the pin itself (bsv-rs's types are shared, so a host re-pins both); the internalize door runs bsv-rs's spend verifier and needs the tracker's `mining_tip`; a received unproven coin is offered only under `underReceivedRule`; `WalletOptions::rng_seed` and `StorageSqlxOptions` for deterministic references; `PostBeefMode::PromiseAll` is the default; `Wallet::process_action` posts stored signed actions; abort and retire refuse once the store holds an accepting word. A `-beta.N` is a semver prerelease: a plain `bsv-wallet-toolbox-rs = "0.14"` never resolves to it. Phase exit merges beta into main as 0.14.0 after the CLI's gate passes on this prerelease and a day of canary (RELEASING.md).
