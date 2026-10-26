@@ -297,15 +297,18 @@ async fn sign_action_on_a_busy_store_is_wallet_busy_and_keeps_the_action() {
     });
     wallet.pending_transactions.write().await.insert(
         "sign-busy".to_string(),
-        PendingTransaction {
-            reference: "sign-busy".to_string(),
-            raw_tx: tx.to_binary(),
-            inputs: vec![],
-            input_beef: None,
-            is_no_send: true,
-            is_delayed: false,
-            send_with: vec![],
-            created_at: Utc::now(),
+        PendingSignAction {
+            transaction: PendingTransaction {
+                reference: "sign-busy".to_string(),
+                raw_tx: tx.to_binary(),
+                inputs: vec![],
+                input_beef: None,
+                is_no_send: true,
+                is_delayed: false,
+                send_with: vec![],
+                created_at: Utc::now(),
+            },
+            storage_inputs: HashSet::new(),
         },
     );
 
@@ -404,15 +407,18 @@ async fn pending(wallet: &Wallet<StorageSqlx, MockWalletServices>, reference: &s
     });
     wallet.pending_transactions.write().await.insert(
         reference.to_string(),
-        PendingTransaction {
-            reference: reference.to_string(),
-            raw_tx: tx.to_binary(),
-            inputs: vec![],
-            input_beef: None,
-            is_no_send: true,
-            is_delayed: false,
-            send_with: vec![],
-            created_at: Utc::now(),
+        PendingSignAction {
+            transaction: PendingTransaction {
+                reference: reference.to_string(),
+                raw_tx: tx.to_binary(),
+                inputs: vec![],
+                input_beef: None,
+                is_no_send: true,
+                is_delayed: false,
+                send_with: vec![],
+                created_at: Utc::now(),
+            },
+            storage_inputs: HashSet::new(),
         },
     );
 }

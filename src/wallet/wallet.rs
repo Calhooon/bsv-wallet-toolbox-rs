@@ -39,7 +39,9 @@ use crate::rng::RandomSource;
 use crate::services::{Chain, WalletServices};
 use crate::storage::broadcast::{classify_broadcast_results, BroadcastOutcome};
 use crate::storage::entities::{TableCertificate, TableCertificateField, TransactionStatus};
-use crate::storage::{AuthId, FindOutputsArgs, StorageProcessActionArgs, WalletStorageProvider};
+use crate::storage::{
+    AuthId, FindOutputsArgs, StorageProcessActionArgs, StorageProvidedBy, WalletStorageProvider,
+};
 use crate::wallet::lookup::OverlayLookupResolver;
 
 use super::signer::{SignerInput, WalletSigner};
@@ -209,6 +211,13 @@ pub struct PendingTransaction {
     pub created_at: DateTime<Utc>,
 }
 
+/// Signing authority kept locally alongside the public transaction data.
+#[derive(Debug, Clone)]
+struct PendingSignAction {
+    transaction: PendingTransaction,
+    storage_inputs: HashSet<u32>,
+}
+
 // =============================================================================
 // Balance and UTXO Types
 // =============================================================================
@@ -336,7 +345,7 @@ where
     signer: WalletSigner,
 
     /// Cache for pending unsigned transactions awaiting signature
-    pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
+    pending_transactions: Arc<RwLock<HashMap<String, PendingSignAction>>>,
 
     /// The user's ID in the storage system (for AuthId)
     user_id: i64,
@@ -1608,11 +1617,25 @@ where
                 source_locking_script: Some(
                     hex::decode(&input.source_locking_script).unwrap_or_default(),
                 ),
-                unlocking_script: None,
+                unlocking_script: caller_inputs
+                    .and_then(|inputs| inputs.get(input.vin as usize))
+                    .and_then(|input| input.unlocking_script.clone()),
                 derivation_prefix: input.derivation_prefix.clone(),
                 derivation_suffix: input.derivation_suffix.clone(),
                 sender_identity_key: input.sender_identity_key.clone(),
             })
+            .collect();
+
+        // Only storage-allocated inputs authorize wallet signing. Named inputs
+        // remain the caller's even if their stored outputs carry derivation.
+        let storage_inputs = storage_result
+            .inputs
+            .iter()
+            .filter(|input| {
+                input.provided_by == StorageProvidedBy::Storage
+                    && input.vin as usize >= caller_inputs.unwrap_or(&[]).len()
+            })
+            .map(|input| input.vin)
             .collect();
 
         // Cache the pending transaction for later signing via sign_action
@@ -1637,9 +1660,15 @@ where
             let mut cache = self.pending_transactions.write().await;
             // Clean up expired pending transactions while we have the lock
             let cutoff = Utc::now() - chrono::Duration::seconds(PENDING_TRANSACTION_TTL_SECS);
-            cache.retain(|_, tx| tx.created_at > cutoff);
+            cache.retain(|_, tx| tx.transaction.created_at > cutoff);
             // Add the new pending transaction
-            cache.insert(reference.clone(), pending_tx);
+            cache.insert(
+                reference.clone(),
+                PendingSignAction {
+                    transaction: pending_tx,
+                    storage_inputs,
+                },
+            );
         }
 
         // The canonical TS `WalletPermissionsManager.createAction`
@@ -1943,7 +1972,10 @@ where
             cache.get(&reference).cloned()
         };
 
-        let pending_tx = pending_tx.ok_or_else(|| {
+        let PendingSignAction {
+            transaction: pending_tx,
+            storage_inputs,
+        } = pending_tx.ok_or_else(|| {
             bsv_rs::Error::WalletError(format!(
                 "No pending transaction found for reference: {}",
                 reference
@@ -1974,7 +2006,7 @@ where
         let mut raw_tx = pending_tx.raw_tx.clone();
         for (vin, spend) in &args.spends {
             if let Some(input) = inputs.iter_mut().find(|i| i.vin == *vin) {
-                if !spend.unlocking_script.is_empty() {
+                if !spend.unlocking_script.is_empty() || !storage_inputs.contains(vin) {
                     input.unlocking_script = Some(spend.unlocking_script.clone());
                 }
             }
@@ -1987,6 +2019,10 @@ where
                     })?;
             }
         }
+
+        // Refuse a missing caller script before signing or changing the stored
+        // action, so the caller can complete the same pending transaction.
+        validate_named_input_unlocking_scripts(&inputs, &storage_inputs)?;
 
         // Sign the transaction using the wallet signer
         let signed_tx = match self
@@ -3397,6 +3433,24 @@ fn is_sign_action(
     caller_inputs: &[bsv_rs::wallet::CreateActionInput],
 ) -> bool {
     !sign_and_process || caller_inputs.iter().any(|i| i.unlocking_script.is_none())
+}
+
+// ts-stack@edf6e03: signAction.ts:65-90 completes only the planned storage
+// inputs, then verifyUnlockScripts.ts:51-64 reports WERR_INVALID_PARAMETER
+// for an invalid caller unlock. This is an argument error, not a status error.
+fn validate_named_input_unlocking_scripts(
+    inputs: &[SignerInput],
+    storage_inputs: &HashSet<u32>,
+) -> Result<()> {
+    for input in inputs {
+        if input.unlocking_script.is_none() && !storage_inputs.contains(&input.vin) {
+            return Err(Error::ValidationError(format!(
+                "The inputs[{}].unlockScript parameter must be valid.",
+                input.vin
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
