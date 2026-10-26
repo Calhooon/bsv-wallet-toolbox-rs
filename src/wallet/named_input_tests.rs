@@ -14,7 +14,7 @@
 //! names a caller input deferred with unlockingScriptLength; a script supplied
 //! at create_action cannot be replaced, and storage inputs stay wallet-signed.
 
-use super::busy_door_tests::{fund_tagged, own_lock, wallet};
+use super::busy_door_tests::{fund_tagged, own_lock, store_snapshot, wallet};
 use super::{SignerInput, Wallet};
 use crate::services::mock::MockWalletServices;
 use crate::StorageSqlx;
@@ -154,6 +154,89 @@ async fn defer_named(
         .unwrap()
         .signable_transaction
         .unwrap()
+}
+
+async fn assert_create_input_refused(script: Option<Vec<u8>>, length: Option<u32>, expected: &str) {
+    let scene = named_input_scene().await;
+    let before = store_snapshot(&scene.wallet).await;
+    for (input_beef, sign_and_process) in [(None, true), (None, false), (Some(vec![0]), true)] {
+        let mut args = payment(1_000);
+        args.input_beef = input_beef;
+        args.options.as_mut().unwrap().sign_and_process = Some(sign_and_process);
+        args.inputs = Some(vec![CreateActionInput {
+            outpoint: Outpoint {
+                txid: hex::decode(&scene.input.source_txid)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+                vout: scene.input.source_vout,
+            },
+            unlocking_script: script.clone(),
+            unlocking_script_length: length,
+            input_description: "caller supplies the unlocking script".to_string(),
+            sequence_number: None,
+        }]);
+        // Bad arguments must win over both a malformed BEEF and a held writer.
+        let held_writer = if args.input_beef.is_some() {
+            Some(scene.wallet.storage().write_tx().await.unwrap())
+        } else {
+            None
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            scene.wallet.create_action(args, ORIGINATOR),
+        )
+        .await
+        .expect("the argument refusal must not wait for storage");
+        drop(held_writer);
+        if let Ok(accepted) = &result {
+            let status: String = sqlx::query_scalar(
+                "SELECT status FROM transactions WHERE is_outgoing = 1 \
+                 ORDER BY transaction_id DESC LIMIT 1",
+            )
+            .fetch_one(scene.wallet.storage().pool())
+            .await
+            .unwrap();
+            panic!(
+                "create door accepted invalid input: stored status={status}, txid={}, signable={}",
+                accepted.txid.is_some(),
+                accepted.signable_transaction.is_some()
+            );
+        }
+        match result {
+            Err(bsv_rs::Error::WalletError(message)) => {
+                assert_eq!(message, format!("Validation error: {expected}"));
+            }
+            other => panic!("unexpected create refusal: {other:?}"),
+        }
+        assert_eq!(
+            store_snapshot(&scene.wallet).await,
+            before,
+            "nothing stored"
+        );
+        assert!(scene.wallet.pending_transactions.read().await.is_empty());
+        assert_eq!(scene.wallet.services().total_calls(), 0);
+    }
+}
+
+#[tokio::test]
+async fn create_action_refuses_empty_caller_unlocking_script() {
+    assert_create_input_refused(
+        Some(vec![]),
+        None,
+        "The inputs.0.unlockingScript parameter must be hexadecimal string.",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn create_action_refuses_zero_caller_unlocking_script_length() {
+    assert_create_input_refused(
+        None,
+        Some(0),
+        "The inputs.0.unlockingScriptLength parameter must be a positive integer.",
+    )
+    .await;
 }
 
 fn subject(beef: &[u8]) -> Transaction {

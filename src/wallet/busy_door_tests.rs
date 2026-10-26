@@ -502,7 +502,9 @@ async fn sign_action_on_another_process_action_error_still_aborts() {
 /// Every row count `createAction` could touch, the default basket's coin
 /// locks and SQLite's sequence counters: equal before and after a refusal
 /// means the action wrote nothing.
-async fn store_snapshot(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> Vec<String> {
+pub(super) async fn store_snapshot(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+) -> Vec<String> {
     let mut snapshot = Vec::new();
     for table in [
         "transactions",
