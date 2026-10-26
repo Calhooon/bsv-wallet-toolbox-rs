@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.1] - 2026-10-26
+
 ### Added
 
 - #106: `WalletOptions::rng_seed: Option<[u8; 32]>` and `storage::sqlx::StorageSqlxOptions { pub rng_seed: Option<[u8; 32]> }`, accepted by `StorageSqlx::new_with_options` and `open_with_options`. The same seed and call order repeat SQLx action references, change derivations and process-action batch references; cloned stores share one stream. `None` preserves OS entropy and the default behavior, and the toolbox never reads an environment variable to select a seed. The wallet holds a separate seeded stream; routing it to remote authentication, the managers and the monitor still needs an owner-approved interface. BRC-2 IVs remain bsv-rs's `SymmetricKey::encrypt` responsibility and are not controlled by these seeds.
