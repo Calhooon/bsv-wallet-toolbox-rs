@@ -2,8 +2,12 @@
 # Build and test each dependent named in docs/DEPENDENTS.md against this tree.
 #
 # For every row of the check table (between the dependents-check markers):
-#   1. clone the dependent at its default branch into a scratch directory
-#      (or copy a local checkout given with --from; the source is never written);
+#   1. clone the dependent at the branch matching the line under test: `--line L`
+#      (in CI, GITHUB_BASE_REF on a pull request, GITHUB_REF_NAME on a push), the
+#      dependent's default branch when it has no branch of that name or no line is
+#      named (or copy a local checkout given with --from; the source is never
+#      written). The CLI pins this crate's prereleases on its beta only, so the
+#      toolbox's beta builds the CLI's beta and the toolbox's main the CLI's main (#208);
 #   2. rewrite its dependency on bsv-wallet-toolbox-rs to a path dependency on
 #      this tree. A [patch.crates-io] entry would not apply when the dependent's
 #      pin excludes this tree's version, so the dependency line itself is edited;
@@ -16,9 +20,11 @@
 #      unlocked); a row's test column may name a narrower command, with the
 #      reason in its reason column.
 #
-# Usage: tools/dependents-check.sh [--ci] [--only CRATE] [--from CRATE=DIR]...
+# Usage: tools/dependents-check.sh [--ci] [--only CRATE] [--line L] [--from CRATE=DIR]...
 #   --ci          run only the rows whose ci column is `yes`
 #   --only CRATE  run one row
+#   --line L      clone each dependent at its branch L when it has one (default: the
+#                 line CI runs on, GITHUB_BASE_REF or GITHUB_REF_NAME; else the default branch)
 #   --from C=DIR  take crate C's repository from the local DIR (a copy is built; DIR is never written)
 # Environment: DEPENDENTS_WORK (scratch, default $RUNNER_TEMP or $TMPDIR),
 #   DEPENDENTS_TARGET_DIR (cargo target root, default inside the scratch).
@@ -38,11 +44,13 @@ WORK="$WORK/dependents-check"
 
 ci=0
 only=""
+line="${GITHUB_BASE_REF:-${GITHUB_REF_NAME:-}}"
 declare -a froms=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --ci) ci=1 ;;
     --only) only="$2"; shift ;;
+    --line) line="$2"; shift ;;
     --from) froms+=("$2"); shift ;;
     -h|--help) sed -n '2,/^set -euo/{ /^#/p; }' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -127,8 +135,15 @@ run_one() {
     echo "== $crate: copying $from (the source is not touched)"
     rsync -a --exclude target --exclude .git "$from/" "$dest/"
   else
-    echo "== $crate: cloning $clone at its default branch"
-    git clone --quiet --depth 1 "$clone" "$dest"
+    # The dependent's branch named after the line under test, when it has one; else its default.
+    if [ -n "$line" ] && [ "$line" != main ] && git ls-remote --exit-code --heads "$clone" "refs/heads/$line" >/dev/null 2>&1; then
+      echo "== $crate: cloning $clone at its $line branch (the line under test)"
+      git clone --quiet --depth 1 --branch "$line" "$clone" "$dest"
+    else
+      [ -n "$line" ] && [ "$line" != main ] && echo "   NOTE: $clone has no $line branch; its default branch stands in"
+      echo "== $crate: cloning $clone at its default branch"
+      git clone --quiet --depth 1 "$clone" "$dest"
+    fi
     echo "   at $(git -C "$dest" rev-parse --short HEAD) ($(git -C "$dest" rev-parse --abbrev-ref HEAD))"
   fi
   src="$dest/$dir"
