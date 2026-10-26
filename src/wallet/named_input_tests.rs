@@ -224,7 +224,7 @@ async fn create_action_refuses_empty_caller_unlocking_script() {
     assert_create_input_refused(
         Some(vec![]),
         None,
-        "The inputs.0.unlockingScript parameter must be hexadecimal string.",
+        "The unlockingScript parameter must be hexadecimal string.",
     )
     .await;
 }
@@ -234,7 +234,7 @@ async fn create_action_refuses_zero_caller_unlocking_script_length() {
     assert_create_input_refused(
         None,
         Some(0),
-        "The inputs.0.unlockingScriptLength parameter must be a positive integer.",
+        "The unlockingScriptLength parameter must be a positive integer.",
     )
     .await;
 }
