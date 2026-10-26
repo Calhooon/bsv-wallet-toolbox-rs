@@ -309,6 +309,7 @@ async fn sign_action_on_a_busy_store_is_wallet_busy_and_keeps_the_action() {
                 created_at: Utc::now(),
             },
             storage_inputs: HashSet::new(),
+            unlocking_script_lengths: vec![],
         },
     );
 
@@ -419,6 +420,7 @@ async fn pending(wallet: &Wallet<StorageSqlx, MockWalletServices>, reference: &s
                 created_at: Utc::now(),
             },
             storage_inputs: HashSet::new(),
+            unlocking_script_lengths: vec![],
         },
     );
 }
