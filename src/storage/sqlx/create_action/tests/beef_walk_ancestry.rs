@@ -119,6 +119,10 @@ async fn test_walk_reaches_the_proven_anchor_at_any_depth() {
     assert_eq!(kept.len(), HOPS, "every unproven ancestor is carried");
     assert!(kept.contains(&chain[0].1), "down to the proven anchor");
     assert_eq!(beef.bumps.len(), 1);
+    // The walk holds children ahead of their parents; bsv-rs judges the
+    // order held (BRC-62, since 0.9.0), so the check reads it sorted, as
+    // the assembly and `to_binary` do.
+    beef.sort_txs();
     assert!(
         beef.verify_valid(true).valid,
         "valid to the in-memory check"
