@@ -219,7 +219,7 @@ pub struct PendingTransaction {
 struct PendingSignAction {
     transaction: PendingTransaction,
     storage_inputs: HashSet<u32>,
-    /// Caller-declared byte lengths in create_action input (vin) order.
+    /// Caller-declared byte lengths in `create_action` input (vin) order.
     unlocking_script_lengths: Vec<Option<u32>>,
 }
 
