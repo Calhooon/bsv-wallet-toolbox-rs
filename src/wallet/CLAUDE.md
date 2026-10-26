@@ -399,6 +399,8 @@ The private cache retains which inputs storage allocated (`provided_by = "storag
 
 For #211, `sign_action` accepts spends only for caller inputs deferred with `unlockingScriptLength`, refusing storage-allocated or absent vins and replacements for scripts supplied at `create_action` with `Error::ValidationError` and the text `The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength.`, without changing storage or the pending action, as in `ts-stack@edf6e03`'s `completeSignedTransaction.ts:19-24` and `WERR_errors.ts:105`.
 
+For #216, the private pending-action cache also retains each caller's declared `unlockingScriptLength` from the create args and `sign_action` refuses a longer script before signing or writing with `Error::ValidationError`, while accepting equal or shorter scripts (`ts-stack@edf6e03` `completeSignedTransaction.ts:25-30`, whose rendered message has no trailing period).
+
 ### Broadcast Flow
 
 When broadcasting (not no_send, not delayed):
