@@ -37,8 +37,11 @@ scoreboard line of epic #80).
 
 From #144 this crate's beta line takes `bsv-rs` `=0.9.0-beta.1` (the owner's
 word): a dependent that builds against it re-pins `bsv-rs` to the same
-version, since the two share bsv-rs's types (`bsv-wallet-cli` pins `=0.8.2`
-today and moves with this crate's `0.14.0-beta.1`).
+version, since the two share bsv-rs's types. `bsv-wallet-cli` did so on its
+beta at bb0a149 (CLI PR 274, 2026-10-26) together with this crate's
+`=0.14.0-beta.1`; its main stays at `=0.13.1` with `bsv-rs` `=0.8.3` and never
+pins a prerelease, so the gate builds the CLI's beta on this crate's beta and
+its main on main.
 
 ### Re-pin plan
 
