@@ -844,6 +844,10 @@ where
 // Tests
 // =============================================================================
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "certificate_issuance_tests.rs"]
+mod field_scheme_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
