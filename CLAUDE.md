@@ -24,7 +24,7 @@ cd fuzz && cargo +nightly fuzz run <target> -- -max_total_time=60 -timeout=10  #
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
 
-**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.1` on beta since #184; main pins a 0.8 release) with `full` and `http` features. The pin is the owner's word (epic #80).
+**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.1` on beta since #184; main asks `0.8.0`, a caret range, until beta merges into it) with `full` and `http` features. The pin is the owner's word (epic #80).
 
 ## Architecture
 
