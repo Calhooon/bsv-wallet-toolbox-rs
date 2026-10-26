@@ -2,8 +2,9 @@
 """Seed fuzz/corpus/<target>/ from the fixtures and vectors already in the repo.
 
 Run from the repository root: python3 fuzz/seed_corpus.py
-Each seed is named by its source (file stem, then the case). The bytes are
-copied, never invented: a provider seed is its fuzzed-status byte (the index
+Each seed is named by its source (file stem, then the case). The bytes come
+from the repo's fixtures and vectors (the arcade and broadcast_memory seeds
+fill a few placeholders such as the txid and the clock): a provider seed is its fuzzed-status byte (the index
 of the status in fuzz/src/lib.rs STATUSES) and then the recorded body.
 """
 

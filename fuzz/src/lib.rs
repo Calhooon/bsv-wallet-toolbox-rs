@@ -3,8 +3,8 @@
 //!
 //! A provider target arms a path prefix with [`answer`]; every request whose
 //! path starts with it gets the fuzzed status and body, a `/headers` request
-//! gets a fixed Chaintracks header (so a ladder that checks a header first
-//! still reaches the explorer), and anything else gets a 404. Nothing leaves
+//! gets a fixed Chaintracks header (so a ladder that checks a header before
+//! the explorer still reaches the explorer), and anything else gets a 404. Nothing leaves
 //! the machine: the server is on 127.0.0.1, and every other HTTPS request is
 //! sent to a refused local proxy.
 
@@ -46,7 +46,7 @@ pub fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// The loopback server's base URL, started on first use.
+/// The loopback server's base URL, started when a target asks for it.
 pub fn base() -> &'static str {
     static BASE: OnceLock<String> = OnceLock::new();
     BASE.get_or_init(|| {
@@ -65,7 +65,7 @@ pub fn base() -> &'static str {
     })
 }
 
-/// Arm `prefix`: the next requests under it get `data`'s answer (its first
+/// Arm `prefix`: the next requests under it get `data`'s answer (its leading
 /// byte picks the status, the rest is the body).
 pub fn answer(prefix: &'static str, data: &[u8]) {
     let (status, body) = match data.split_first() {

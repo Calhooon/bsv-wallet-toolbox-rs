@@ -1,7 +1,7 @@
 name: Fuzz
 
 # Informational, never a required branch protection context. Manual dispatch
-# only, and there is no schedule on purpose: the owner's rule is that nothing
+# only, and no timer on purpose: the owner's rule is that nothing
 # holds the shared runner pool on a timer (#153, #159). Twelve jobs of five
 # minutes each are run when someone asks for them. Each target, its seeds and
 # how to read a crash are in docs/FUZZ.md.

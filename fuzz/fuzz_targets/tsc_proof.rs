@@ -1,7 +1,8 @@
 //! The TSC proof intake (`tsc_json_to_bump_*`, which runs the private
 //! `tsc_proof_to_merkle_path`): WhatsOnChain's and Bitails's JSON proofs
-//! turned into a BUMP. The first four bytes are the block height. `None` is
-//! a fine answer; a BUMP that comes out must read back.
+//! turned into a BUMP. The leading four bytes are the block height. `None` is
+//! a fine answer; a BUMP that comes out is read back, and no panic is the
+//! only assertion.
 #![no_main]
 
 use bsv_rs::transaction::MerklePath;

@@ -1,7 +1,7 @@
 //! The Arcade V2 status stream: the SSE client reading the fuzzer's body as
 //! its `/events` stream (frames, then each frame's JSON status event), and
-//! the frame parser fed the same bytes in two chunks split at the first
-//! byte's offset. No panic is the only assertion.
+//! the frame parser fed the same bytes in two chunks split at the
+//! leading byte's offset. No panic is the only assertion.
 #![no_main]
 
 use bsv_wallet_toolbox_rs::services::providers::arcade::arcade_reorg_marker;

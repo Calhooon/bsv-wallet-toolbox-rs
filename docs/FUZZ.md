@@ -109,9 +109,9 @@ Test unit written to fuzz/artifacts/<target>/crash-<sha1>
 1. Read the report: the panic message and its location, or the sanitizer's
    kind and stack. A `timeout-` or `oom-` artifact is a hang or a blow-up, not
    a panic.
-2. Reproduce it: `cargo +nightly fuzz run <target> fuzz/artifacts/<target>/crash-<sha1>`.
+2. Reproduce it: `cargo +nightly fuzz run <target> artifacts/<target>/crash-<sha1>` (from `fuzz/`; the fuzzer prints the artifact's absolute path, which also works).
 3. Minimize it with a budget:
-   `cargo +nightly fuzz tmin <target> fuzz/artifacts/<target>/crash-<sha1> -- -max_total_time=60`.
+   `cargo +nightly fuzz tmin <target> artifacts/<target>/crash-<sha1> -- -max_total_time=60`.
 4. Commit the minimized artifact under `fuzz/artifacts/<target>/` and file an
    issue with the target, the panic text and the artifact path. The fix is
    the parser's own change, with a regression test that feeds the artifact's
