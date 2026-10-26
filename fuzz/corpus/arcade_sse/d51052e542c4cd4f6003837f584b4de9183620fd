@@ -1,0 +1,4 @@
+§id: 1
+event: status
+data: {"txid": "1111111111111111111111111111111111111111111111111111111111111111", "txStatus": "REJECTED", "status": 476, "timestamp": "2026-10-13T00:00:00Z", "extraInfo": "TX_LOCK_TIME (35): non-final - retryable: the transaction is not final against this peer's chain view; reÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿsubmit after the locktime expires"}
+

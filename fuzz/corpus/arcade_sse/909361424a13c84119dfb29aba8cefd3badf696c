@@ -1,0 +1,5 @@
+zid: 1
+event: status
+data: {"txid": "111111111111111: status
+data: {"txid": "111111111", "txStatus": "PENDING_RETRY", "timestamp": "2026-10-26T00:00:00Z",5 propagation attempts: retryable"}
+

@@ -1,0 +1,4 @@
+¶id: 1
+event: status
+data: {"error": "transaction failed1111111111111111111", "reason": "TX_INVALID (31): insufficient-fee", "status": 465, "title": "Fee too low",n": "ail":Ã "Trcnsaction fee is too low", "type": "https://bitcoio/arc/Â–errors?id=_465"}
+

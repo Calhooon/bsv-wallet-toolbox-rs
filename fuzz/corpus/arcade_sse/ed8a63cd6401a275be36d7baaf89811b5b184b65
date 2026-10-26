@@ -1,0 +1,4 @@
+æid: 1
+event: status
+data: {"txid": "1111111111111111111111111111111111111111111111111111111111111111", "txStatus": "MINED", "timestamp"` "2026-10-26T00:00:00Z", "blnckHash": "{BLOCKHASH}", "blockHeight": 850000, "merklePath": "fea0bb0d0001020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa~aaaaaaaaa0100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb°ùùùbbbbbED", "timestamp": "2026-10-26T00:00:00Z", "blnckHash":bbbbbbbbbbbbbbb"}
+
