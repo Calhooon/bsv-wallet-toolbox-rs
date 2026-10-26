@@ -11,6 +11,10 @@ use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
 use std::collections::HashSet;
 
+// R1 (d): a received unproven coin needs this action's recorded rule.
+const RECEIVED_COIN_CLAUSE: &str =
+    "AND (t.status = 'completed' OR COALESCE(o.purpose, '') <> 'receive' OR ?)";
+
 /// An allocated change input.
 #[derive(Debug, Clone)]
 pub(in crate::storage::sqlx) struct AllocatedChangeInput {
@@ -25,12 +29,24 @@ pub(in crate::storage::sqlx) struct AllocatedChangeInput {
     pub(super) sender_identity_key: Option<String>,
 }
 
-/// Counts available change inputs in the default basket.
+/// Counts available change inputs with the received rule off.
+#[cfg(test)]
 pub(super) async fn count_change_inputs(
     conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,
     require_spendable: bool,
+) -> Result<usize> {
+    count_change_inputs_under_rule(conn, user_id, basket_id, require_spendable, false).await
+}
+
+/// Counts change inputs eligible under this action's received rule.
+pub(super) async fn count_change_inputs_under_rule(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    basket_id: i64,
+    require_spendable: bool,
+    allow_received: bool,
 ) -> Result<usize> {
     let spendable_clause = if require_spendable {
         "AND o.spendable = 1"
@@ -47,6 +63,7 @@ pub(super) async fn count_change_inputs(
           AND o.basket_id = ?
           AND o.change = 1
           AND t.status IN ('completed', 'unproven')
+          {RECEIVED_COIN_CLAUSE}
           {}
         "#,
         spendable_clause
@@ -55,6 +72,7 @@ pub(super) async fn count_change_inputs(
     let row = sqlx::query(&sql)
         .bind(user_id)
         .bind(basket_id)
+        .bind(allow_received)
         .fetch_one(&mut *conn)
         .await?;
 
@@ -81,10 +99,26 @@ pub(in crate::storage::sqlx) enum ChangePick<'a> {
         reserved: &'a mut PickReservation,
         skip: &'a [i64],
         offer: Option<&'a [i64]>,
+        allow_received: bool,
     },
     /// Under the write lock: allocate, but only from the coins the pre-check
     /// read. A coin taken meanwhile is skipped as any allocated coin is.
-    Within { allowed: &'a [i64] },
+    Within {
+        allowed: &'a [i64],
+        allow_received: bool,
+    },
+}
+
+impl ChangePick<'_> {
+    fn allows_received(&self) -> bool {
+        match self {
+            #[cfg(any(test, feature = "bench-support"))]
+            Self::Allocate => false,
+            Self::DryRun { allow_received, .. } | Self::Within { allow_received, .. } => {
+                *allow_received
+            }
+        }
+    }
 }
 
 /// The change coins `createAction` pre-checks in this process have picked
@@ -301,6 +335,7 @@ pub(super) async fn allocate_change_input_by(
                 reserved,
                 skip,
                 offer,
+                ..
             } => {
                 let mut unavailable = reserved.unavailable();
                 unavailable.extend_from_slice(skip);
@@ -320,8 +355,8 @@ pub(super) async fn allocate_change_input_by(
                 }
                 (clause, unavailable)
             }
-            ChangePick::Within { allowed } if allowed.is_empty() => return Ok(None),
-            ChangePick::Within { allowed } => (
+            ChangePick::Within { allowed, .. } if allowed.is_empty() => return Ok(None),
+            ChangePick::Within { allowed, .. } => (
                 format!("AND o.output_id IN ({})", placeholders(allowed.len())),
                 allowed.to_vec(),
             ),
@@ -339,6 +374,7 @@ pub(super) async fn allocate_change_input_by(
               AND o.change = 1
               AND o.spent_by IS NULL
               AND t.status IN ('completed', 'unproven')
+              {RECEIVED_COIN_CLAUSE}
               {}
               {}
             ORDER BY
@@ -351,7 +387,10 @@ pub(super) async fn allocate_change_input_by(
             spendable_clause, pick_clause
         );
 
-        let mut query = sqlx::query(&sql).bind(user_id).bind(basket_id);
+        let mut query = sqlx::query(&sql)
+            .bind(user_id)
+            .bind(basket_id)
+            .bind(pick.allows_received());
         for id in &pick_ids {
             query = query.bind(*id);
         }
@@ -434,11 +473,12 @@ impl Door<'_> {
         let extended_outputs = validate_and_extend_outputs(self.args)?;
         let extended_inputs =
             validate_and_extend_inputs(self.storage, &mut conn, self.user_id, self.args).await?;
-        let available_change_count = count_change_inputs(
+        let available_change_count = count_change_inputs_under_rule(
             &mut conn,
             self.user_id,
             self.change_basket.basket_id,
             !self.is_delayed(),
+            self.allows_received(),
         )
         .await?;
         let caller = chain_tracker.map(|inner| RecordingTracker {
@@ -475,6 +515,7 @@ impl Door<'_> {
                     reserved: &mut *reserved,
                     skip: &skip,
                     offer: self.offer,
+                    allow_received: self.allows_received(),
                 },
             )
             .await;
@@ -501,6 +542,7 @@ impl Door<'_> {
                         reserved: &mut own_only,
                         skip: &skip,
                         offer: self.offer,
+                        allow_received: self.allows_received(),
                     },
                 )
                 .await
@@ -572,3 +614,116 @@ impl Door<'_> {
 #[cfg(test)]
 #[path = "tests/allocation.rs"]
 mod tests;
+
+#[cfg(test)]
+mod received_rule_tests {
+    use super::*;
+    use crate::storage::sqlx::create_action::test_support::seed_change_output_with_status;
+    use crate::storage::WalletStorageWriter;
+    use crate::StorageSqlx;
+
+    async fn received_change() -> (StorageSqlx, i64, i64) {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("received-rule", "02test_key")
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+        let (user, _) = storage.find_or_insert_user("02user_key").await.unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user.user_id)
+            .await
+            .unwrap();
+        seed_change_output_with_status(&storage, user.user_id, 10_000, "unproven", "a169").await;
+        sqlx::query("UPDATE outputs SET purpose = 'receive'")
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        (storage, user.user_id, basket.basket_id)
+    }
+
+    #[tokio::test]
+    async fn received_unproven_change_is_not_offered_without_the_action_rule() {
+        let (storage, user_id, basket_id) = received_change().await;
+        let mut conn = storage.pool().acquire().await.unwrap();
+        let count = count_change_inputs(&mut conn, user_id, basket_id, true)
+            .await
+            .unwrap();
+        let mut reserved = PickReservation::new(Default::default());
+        let picked = allocate_change_input_by(
+            &mut conn,
+            user_id,
+            basket_id,
+            0,
+            1000,
+            true,
+            &mut ChangePick::DryRun {
+                reserved: &mut reserved,
+                skip: &[],
+                offer: None,
+                allow_received: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((count, picked.is_some()), (0, false));
+    }
+
+    #[tokio::test]
+    async fn received_rule_preserves_mined_and_own_change_eligibility() {
+        let (storage, user_id, basket_id) = received_change().await;
+        for (status, purpose, allow_received, expected) in [
+            ("unproven", "receive", false, 0),
+            ("unproven", "receive", true, 1),
+            ("completed", "receive", false, 1),
+            ("completed", "receive", true, 1),
+            ("unproven", "change", false, 1),
+            ("unproven", "", false, 1),
+            ("completed", "change", false, 1),
+            ("nosend", "receive", true, 0),
+            ("failed", "receive", true, 0),
+        ] {
+            sqlx::query("UPDATE transactions SET status = ?")
+                .bind(status)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            sqlx::query("UPDATE outputs SET purpose = ?")
+                .bind(purpose)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            let mut conn = storage.pool().acquire().await.unwrap();
+            for require_spendable in [false, true] {
+                let count = count_change_inputs_under_rule(
+                    &mut conn,
+                    user_id,
+                    basket_id,
+                    require_spendable,
+                    allow_received,
+                )
+                .await
+                .unwrap();
+                let mut reserved = PickReservation::new(Default::default());
+                let picked = allocate_change_input_by(
+                    &mut conn,
+                    user_id,
+                    basket_id,
+                    0,
+                    1000,
+                    require_spendable,
+                    &mut ChangePick::DryRun {
+                        reserved: &mut reserved,
+                        skip: &[],
+                        offer: Some(&[1]),
+                        allow_received,
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!((count, picked.is_some()), (expected, expected == 1),
+                    "status={status}, purpose={purpose}, rule={allow_received}, spendable={require_spendable}");
+            }
+        }
+    }
+}

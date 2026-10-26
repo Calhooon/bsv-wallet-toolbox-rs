@@ -262,6 +262,13 @@ impl std::fmt::Display for Again {
 }
 
 impl Door<'_> {
+    fn allows_received(&self) -> bool {
+        self.args
+            .labels
+            .as_ref()
+            .is_some_and(|labels| labels.iter().any(|label| label == "underReceivedRule"))
+    }
+
     fn options(&self) -> Option<&bsv_rs::wallet::CreateActionOptions> {
         self.args.options.as_ref()
     }
@@ -323,8 +330,14 @@ impl Door<'_> {
             validate_and_extend_inputs(self.storage, &mut tx, user_id, args).await?;
 
         // Step 5: Count available change outputs for targeting
-        let available_change_count =
-            count_change_inputs(&mut tx, user_id, change_basket.basket_id, !is_delayed).await?;
+        let available_change_count = count_change_inputs_under_rule(
+            &mut tx,
+            user_id,
+            change_basket.basket_id,
+            !is_delayed,
+            self.allows_received(),
+        )
+        .await?;
 
         // Step 6: Create transaction record in DB
         let transaction_id = create_transaction_record(&mut tx, user_id, args).await?;
@@ -350,7 +363,10 @@ impl Door<'_> {
             &extended_outputs,
             available_change_count,
             is_delayed,
-            &mut ChangePick::Within { allowed: &allowed },
+            &mut ChangePick::Within {
+                allowed: &allowed,
+                allow_received: self.allows_received(),
+            },
         )
         .await
         {
