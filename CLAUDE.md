@@ -19,6 +19,7 @@ cargo clippy -- -D warnings          # Lint (0 warnings, 0 errors)
 cargo fmt --all -- --check           # Format check
 cargo doc --no-deps --open           # Generate docs
 CARGO_TARGET_DIR=~/bsv/targets/<name> DOOR_BENCH_SAMPLES=10 cargo bench --bench door --features bench-support  # Door/explorer p50/p99; the bench needs CARGO_TARGET_DIR or CRITERION_HOME in its own env (benches/README.md)
+cd fuzz && cargo +nightly fuzz run <target> -- -max_total_time=60 -timeout=10  # One of twelve fuzz targets on outside bytes, with a budget, in the foreground (docs/FUZZ.md)
 ```
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
