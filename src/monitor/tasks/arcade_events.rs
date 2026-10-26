@@ -24,7 +24,9 @@
 //!   When absent (older instance, best-effort enrichment miss) or when the
 //!   inline ingest does not conclude `Ingested`, fall back to the pre-v0.10.1
 //!   behavior: raise the shared CheckForProofs trigger flag so the proof is
-//!   fetched immediately through the services stack.
+//!   fetched immediately through the services stack. A `StoreBusy` error
+//!   returns unchanged for delivery retry, without raising the fetch flag
+//!   (bsv-wallet-cli #44, toolbox #201).
 //! - `REJECTED` / `DOUBLE_SPEND_ATTEMPTED`: a hint (bsv-stack-lean #66):
 //!   Arcade's refusal is recorded and writes no word
 //!   (`MonitorStorage::mark_transaction_rejected_by`); the competitors the
@@ -177,10 +179,11 @@ where
     ///
     /// On MINED with inline proof material (arcade ≥ v0.10.1 enriched frame),
     /// the proof is ingested through [`MonitorStorage::ingest_push_proof`] —
-    /// the same SPV-gated funnel as the webhook path. Any outcome other than
-    /// a successful validated latch falls back to the fetch trigger, so a
-    /// missing, malformed, or root-mismatched inline proof can never make the
-    /// wallet worse off than the pre-v0.10.1 behavior.
+    /// the same SPV-gated funnel as the webhook path. A `StoreBusy` error
+    /// returns unchanged so the host can retry the delivery. Every other
+    /// outcome besides a successful validated latch falls back to the fetch
+    /// trigger, so a missing, malformed, or root-mismatched inline proof can
+    /// never make the wallet worse off than the pre-v0.10.1 behavior.
     pub async fn apply_event(
         storage: &S,
         ev: &ArcadeStatusEvent,
@@ -266,6 +269,7 @@ where
                                 "Arcade MINED event — storage lacks inline proof ingest, falling back to fetch"
                             );
                         }
+                        Err(e @ crate::Error::StoreBusy { .. }) => return Err(e),
                         Err(e) => {
                             tracing::warn!(
                                 txid = %txid,
