@@ -21,7 +21,9 @@
   ],
   "expected": [
     {
-      "result": {"error":"Validation error: customInstructions length must be at most 1000 bytes, got 1001"},
+      "result": {
+        "error": "Validation error: Invalid outputs[0].insertionRemittance.customInstructions: must be no more than 1000 bytes, got 1001"
+      },
       "rows": {
         "broadcast_prefs": [],
         "broadcast_seen": [],
