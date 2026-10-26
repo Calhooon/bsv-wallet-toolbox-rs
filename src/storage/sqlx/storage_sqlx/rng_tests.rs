@@ -5,7 +5,7 @@ const SEED: [u8; 32] = [42; 32];
 
 fn draw(storage: &StorageSqlx) -> [u8; 32] {
     let mut bytes = [0; 32];
-    storage._rng.fill_bytes(&mut bytes);
+    storage.rng.fill_bytes(&mut bytes);
     bytes
 }
 

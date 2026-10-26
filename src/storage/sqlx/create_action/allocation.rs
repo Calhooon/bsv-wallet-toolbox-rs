@@ -517,6 +517,7 @@ impl Door<'_> {
                     offer: self.offer,
                     allow_received: self.allows_received(),
                 },
+                &self.storage.rng,
             )
             .await;
             // Uncovered: planned once more without the other calls'
@@ -544,6 +545,7 @@ impl Door<'_> {
                         offer: self.offer,
                         allow_received: self.allows_received(),
                     },
+                    &self.storage.rng,
                 )
                 .await
                 .is_ok();

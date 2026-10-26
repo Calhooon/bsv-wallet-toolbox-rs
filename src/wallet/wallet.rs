@@ -68,6 +68,12 @@ impl RandomSource {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fill_bytes(bytes);
     }
+
+    pub(crate) fn base64(&self, count: usize) -> String {
+        let mut bytes = vec![0; count];
+        self.fill_bytes(&mut bytes);
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    }
 }
 
 // =============================================================================
