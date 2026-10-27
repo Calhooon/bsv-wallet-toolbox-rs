@@ -1,8 +1,9 @@
-//! #261: acquisition validates and normalizes the certifier before issuance.
+//! #261 and #271: issuance argument order, normalization, and response texts.
 
 use super::*;
 use bsv_rs::primitives::PrivateKey;
-use bsv_rs::wallet::AcquisitionProtocol;
+use bsv_rs::wallet::{AcquisitionProtocol, CreateHmacArgs, ProtoWallet};
+use std::sync::{Arc, Mutex};
 
 use crate::services::mock::MockWalletServices;
 use crate::storage::WalletStorageWriter;
@@ -54,6 +55,60 @@ fn assert_wallet_error(result: bsv_rs::Result<WalletCertificate>, expected: &str
         Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, expected),
         other => panic!("expected WalletError({expected:?}), got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn test_issuance_bad_type_refuses_before_protocol() {
+    let wallet = wallet().await;
+    let mut server = mockito::Server::new_async().await;
+    let request = server.mock("POST", "/issue").expect(0).create_async().await;
+    // validationHelpers.ts:439-497,1338: structure before the 32-byte bounds.
+    for (value, rule) in [
+        (String::new(), "valid base64 string"),
+        ("!".to_string(), "valid base64 string"),
+        ("A".to_string(), "valid base64 string"),
+        ("A=AA".to_string(), "valid base64 string"),
+        ("AA=A".to_string(), "at least 32 bytes"),
+        ("A===".to_string(), "valid base64 string"),
+        ("=AAA".to_string(), "valid base64 string"),
+        ("A".repeat(43), "valid base64 string"),
+        (format!("{}==", "A".repeat(42)), "at least 32 bytes"),
+        (BASE64.encode([7; 31]), "at least 32 bytes"),
+        (BASE64.encode([7; 33]), "no more than 32 bytes"),
+        (
+            format!("\u{0085}{}\u{0085}", BASE64.encode([7; 32])),
+            "valid base64 string",
+        ),
+    ] {
+        let mut invalid = args(certifier(), format!("{}/issue", server.url()));
+        invalid.certificate_type = value;
+        assert_wallet_error(
+            wallet.acquire_certificate(invalid, ORIGINATOR).await,
+            &format!("Validation error: The type parameter must be {rule}"),
+        );
+    }
+    request.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_issuance_bad_type_precedes_certifier() {
+    let wallet = wallet().await;
+    let mut server = mockito::Server::new_async().await;
+    let request = server.mock("POST", "/issue").expect(0).create_async().await;
+    for (value, rule) in [
+        ("!".to_string(), "valid base64 string"),
+        (BASE64.encode([7; 31]), "at least 32 bytes"),
+        (BASE64.encode([7; 33]), "no more than 32 bytes"),
+    ] {
+        let mut invalid = args("gg".to_string(), format!("{}/issue", server.url()));
+        invalid.certificate_type = value;
+        // Both arguments are bad; validationHelpers.ts:1338 must win over :1339.
+        assert_wallet_error(
+            wallet.acquire_certificate(invalid, ORIGINATOR).await,
+            &format!("Validation error: The type parameter must be {rule}"),
+        );
+    }
+    request.assert_async().await;
 }
 
 #[tokio::test]
@@ -121,6 +176,14 @@ async fn test_issuance_bad_certifier_precedes_identity() {
 }
 
 async fn normalized_certifier_reaches_response_checks(value: String) {
+    normalized_args_reach_response_checks(args(value, String::new()), &BASE64.encode([7; 32]))
+        .await;
+}
+
+async fn normalized_args_reach_response_checks(
+    mut acquisition: AcquireCertificateArgs,
+    expected_type: &str,
+) {
     let wallet = wallet().await;
     let mut server = mockito::Server::new_async().await;
     let canonical = certifier();
@@ -143,6 +206,9 @@ async fn normalized_certifier_reaches_response_checks(value: String) {
     let request = server
         .mock("POST", "/issue")
         .match_header(HEADER_IDENTITY_KEY, wallet.identity_key())
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "type": expected_type,
+        })))
         .with_header(HEADER_IDENTITY_KEY, &canonical)
         .with_body(serde_json::to_string(&response).unwrap())
         .expect(1)
@@ -150,17 +216,126 @@ async fn normalized_certifier_reaches_response_checks(value: String) {
         .await;
     // A deliberately different type witnesses acceptance through preparation,
     // transport, and both canonical certifier comparisons, before verification.
-    let result = wallet
-        .acquire_certificate(args(value, format!("{}/issue", server.url())), ORIGINATOR)
-        .await;
+    acquisition.certifier_url = Some(format!("{}/issue", server.url()));
+    let result = wallet.acquire_certificate(acquisition, ORIGINATOR).await;
     assert_wallet_error(
         result,
         &format!(
             "Validation error: Invalid certificate type! Expected: {}, Received: {issued_type}",
-            BASE64.encode([7; 32])
+            expected_type
         ),
     );
     request.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_issuance_type_normalizes_before_protocol() {
+    let canonical = BASE64.encode([7; 32]);
+    // The reference trims ECMAScript whitespace but does not check padding bits.
+    let noncanonical = format!("{}B=", "A".repeat(42));
+    let embedded_padding = format!("{}=A", "A".repeat(42));
+    for (value, expected) in [
+        (canonical.clone(), canonical.clone()),
+        (format!(" \t\r\n{canonical} \t\r\n"), canonical.clone()),
+        (format!("\u{feff}{canonical}\u{feff}"), canonical),
+        (noncanonical.clone(), noncanonical),
+        (embedded_padding.clone(), embedded_padding),
+    ] {
+        let mut acquisition = args(certifier(), String::new());
+        acquisition.certificate_type = value;
+        normalized_args_reach_response_checks(acquisition, &expected).await;
+    }
+}
+
+async fn mismatched_response(field: Option<&str>) -> (bsv_rs::Result<WalletCertificate>, String) {
+    let wallet = wallet().await;
+    let mut server = mockito::Server::new_async().await;
+    let mut acquisition = args(certifier(), format!("{}/issue", server.url()));
+    if let Some(field) = field {
+        acquisition
+            .fields
+            .insert(field.to_string(), "value".to_string());
+    }
+    let field = field.map(str::to_string);
+    let expected = Arc::new(Mutex::new(String::new()));
+    let response_expected = Arc::clone(&expected);
+    let subject = PublicKey::from_hex(wallet.identity_key()).unwrap();
+    let certifier_key = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
+    let signer = ProtoWallet::new(Some(certifier_key));
+    let request = server
+        .mock("POST", "/issue")
+        .match_header(HEADER_IDENTITY_KEY, wallet.identity_key())
+        .with_header(HEADER_IDENTITY_KEY, &certifier())
+        .with_body_from_request(move |request| {
+            let issued: ProtocolIssuanceRequest =
+                serde_json::from_slice(request.body().unwrap()).unwrap();
+            let server_nonce = BASE64.encode([5; 32]);
+            let mut data = BASE64.decode(&issued.client_nonce).unwrap();
+            data.extend_from_slice(&[5; 32]);
+            let serial = signer
+                .create_hmac(CreateHmacArgs {
+                    data,
+                    protocol_id: Protocol::new(
+                        SecurityLevel::Counterparty,
+                        CERTIFICATE_ISSUANCE_PROTOCOL,
+                    ),
+                    key_id: format!("{}{}", server_nonce, issued.client_nonce),
+                    counterparty: Some(Counterparty::Other(subject.clone())),
+                    ..Default::default()
+                })
+                .unwrap()
+                .hmac;
+            let mut fields = issued.fields;
+            let revocation_outpoint = if let Some(field) = &field {
+                let received = "dGFtcGVyZWQ=".to_string();
+                let sent = fields.insert(field.clone(), received.clone()).unwrap();
+                *response_expected.lock().unwrap() = format!(
+                    "Validation error: Invalid field! Expected: {sent}, Received: {received}"
+                );
+                format!("{}.0", "00".repeat(32))
+            } else {
+                *response_expected.lock().unwrap() =
+                    "Validation error: Invalid revocationOutpoint!".to_string();
+                String::new()
+            };
+            serde_json::to_vec(&ProtocolIssuanceResponse {
+                protocol: "certificate issuance".to_string(),
+                certificate: Some(CertificateResponse {
+                    cert_type: issued.cert_type,
+                    serial_number: BASE64.encode(serial),
+                    subject: subject.to_hex(),
+                    certifier: certifier(),
+                    revocation_outpoint,
+                    fields,
+                    signature: String::new(),
+                }),
+                server_nonce,
+                timestamp: String::new(),
+                version: "1.0".to_string(),
+            })
+            .unwrap()
+        })
+        .expect(1)
+        .create_async()
+        .await;
+    let result = wallet.acquire_certificate(acquisition, ORIGINATOR).await;
+    request.assert_async().await;
+    let expected = expected.lock().unwrap().clone();
+    (result, expected)
+}
+
+#[tokio::test]
+async fn test_issuance_revocation_outpoint_uses_reference_text() {
+    let (result, expected) = mismatched_response(None).await;
+    assert_wallet_error(result, &expected);
+}
+
+#[tokio::test]
+async fn test_issuance_field_mismatch_uses_reference_text() {
+    for field in ["city", "name"] {
+        let (result, expected) = mismatched_response(Some(field)).await;
+        assert_wallet_error(result, &expected);
+    }
 }
 
 #[tokio::test]
