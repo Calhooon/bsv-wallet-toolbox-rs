@@ -2575,6 +2575,12 @@ where
                 // Set the subject to the wallet's identity key (matching issuance behavior)
                 certificate.subject = self.identity_key.clone();
 
+                // validateOutpointString at validationHelpers.ts:1435
+                // (1099-1116): the txid lowercased, so the stored row is the
+                // one a normalized prove argument finds (#291).
+                certificate.revocation_outpoint =
+                    validate_outpoint_arg(&certificate.revocation_outpoint, "revocationOutpoint")?;
+
                 // Determine the verifier from the keyring_revealer argument
                 let verifier = match &args.keyring_revealer {
                     Some(bsv_rs::wallet::KeyringRevealer::Certifier) => {
@@ -2681,11 +2687,12 @@ where
         .await?;
 
         // Argument checks in ts-stack@edf6e03 validationHelpers.ts order:
-        // validatePrivilege(args, false) at 1477 (its body at 207-222) ahead
-        // of 1483-1518, validateArray's 100000-item bound (105-114) at 1506
-        // ahead of the names; the privilegedReason check at 1511 repeats 1477 on the
-        // same value and never fires. The helper retains its own name, map and
-        // serial checks. SQLite matches the normalized certifier byte for
+        // validatePrivilege(args, false) at 1477 (its body at 207-222), then
+        // certificate.fields at 1478-1480, ahead of 1483-1518; validateArray's
+        // 100000-item bound (105-114) at 1506 ahead of the names; the
+        // privilegedReason check at 1511 repeats 1477 on the same value and
+        // never fires. The helper retains its own name, map and serial checks
+        // on the stored row (MasterCertificate.ts:348-365). SQLite matches the normalized certifier byte for
         // byte; the remote storage server decides its own collation.
         if let Some(reason) = &args.privileged_reason {
             let rule = if reason.len() < 5 {
@@ -2704,6 +2711,7 @@ where
                 "a value when 'privileged' is true",
             ));
         }
+        validate_certificate_fields_arg(&args.certificate.fields)?;
         let certificate_type = validate_certificate_base64_arg(
             &args.certificate.certificate_type,
             "certificate.type",
@@ -3486,6 +3494,48 @@ pub(crate) fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs
         return Err(invalid_certificate_argument(name, "no more than 32 bytes"));
     }
     Ok(value.to_string())
+}
+
+// validateCertificateFields at validationHelpers.ts:1232-1241 on the
+// argument's map (1478-1480). validateRecord (81-103) bounds the map at
+// 100000 keys (67, 90-92) and refuses an unsafe key (94-96, SafeRecord.ts:2-3)
+// before any name, then each name is 1 to 50 UTF-8 bytes (348-355). A Rust
+// map holds only string values, so 1238 cannot fail; names are checked in
+// sorted order, as a map keeps no insertion order.
+fn validate_certificate_fields_arg(fields: &HashMap<String, String>) -> bsv_rs::Result<()> {
+    const MAXIMUM_WALLET_COLLECTION_ITEMS: usize = 100_000;
+    if fields.len() > MAXIMUM_WALLET_COLLECTION_ITEMS {
+        return Err(invalid_certificate_argument(
+            "fields",
+            &format!("an object with at most {MAXIMUM_WALLET_COLLECTION_ITEMS} properties"),
+        ));
+    }
+    if fields
+        .keys()
+        .any(|name| matches!(name.as_str(), "__proto__" | "constructor" | "prototype"))
+    {
+        return Err(invalid_certificate_argument(
+            "fields",
+            "an object with safe string keys",
+        ));
+    }
+    let mut names: Vec<&String> = fields.keys().collect();
+    names.sort();
+    for name in names {
+        if name.is_empty() {
+            return Err(invalid_certificate_argument(
+                "field name",
+                "at least 1 length.",
+            ));
+        }
+        if name.len() > 50 {
+            return Err(invalid_certificate_argument(
+                "field name",
+                "no more than 50 length.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `MAXIMUM_CERTIFICATE_REVEAL_FIELDS` at ts-stack@edf6e03 validationHelpers.ts:70.
@@ -4715,10 +4765,21 @@ mod tests {
             #[cfg(feature = "sqlite")]
             #[tokio::test]
             async fn test_create_keyring_preloop_invalid_field_key() {
+                // #291: the prove door refuses the argument's map first
+                // (validationHelpers.ts:1478-1480); the helper keeps its text.
                 for name in invalid_field_names() {
+                    let door = match name.as_str() {
+                        "" => "The field name parameter must be at least 1 length.",
+                        "__proto__" | "constructor" | "prototype" => {
+                            "The fields parameter must be an object with safe string keys"
+                        }
+                        _ => "The field name parameter must be no more than 50 length.",
+                    };
                     let mut request = Request::new();
                     request.fields.insert(name, "YQ==".to_string());
-                    request.assert_gate_error(FIELD_NAME_ERROR).await;
+                    request
+                        .assert_gate_errors(FIELD_NAME_ERROR, &format!("Validation error: {door}"))
+                        .await;
                 }
             }
 
@@ -5414,6 +5475,95 @@ mod tests {
                         // The returned certificate carries the stored value, as
                         // acquireDirectCertificate.ts:47 returns vargs'.
                         assert_eq!(acquired.revocation_outpoint, lowercase);
+                    }
+
+                    // #291: 1435 refuses a malformed outpoint with the
+                    // validator's texts under the bare name, and stores nothing.
+                    #[tokio::test]
+                    async fn test_direct_acquire_refuses_malformed_outpoint() {
+                        use crate::services::mock::MockWalletServices;
+                        use crate::storage::WalletStorageWriter;
+                        use bsv_rs::wallet::AcquisitionProtocol;
+
+                        let key31 = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
+                        let storage = crate::StorageSqlx::in_memory().await.unwrap();
+                        storage.migrate("acquire-outpoint", &key(31)).await.unwrap();
+                        storage.make_available().await.unwrap();
+                        let wallet = Wallet::new(Some(key31), storage, MockWalletServices::new())
+                            .await
+                            .unwrap();
+                        for (outpoint, parameter, rule) in [
+                            ("abc123.0".to_string(), "revocationOutpoint", OUTPOINT_SHAPE),
+                            (
+                                format!("{}.01", "ab".repeat(32)),
+                                "revocationOutpoint",
+                                OUTPOINT_SHAPE,
+                            ),
+                            (
+                                format!("{}.4294967296", "ab".repeat(32)),
+                                "revocationOutpoint vout",
+                                "no more than 4294967295 length.",
+                            ),
+                        ] {
+                            let result = wallet
+                                .acquire_certificate(
+                                    AcquireCertificateArgs {
+                                        certificate_type: BASE64.encode([33; 32]),
+                                        certifier: key(31),
+                                        acquisition_protocol: AcquisitionProtocol::Direct,
+                                        fields: HashMap::new(),
+                                        serial_number: Some(BASE64.encode([32; 32])),
+                                        revocation_outpoint: Some(outpoint.clone()),
+                                        signature: Some("300602010a02010b".to_string()),
+                                        certifier_url: None,
+                                        keyring_revealer: None,
+                                        keyring_for_subject: None,
+                                        privileged: None,
+                                        privileged_reason: None,
+                                    },
+                                    "certificate.test",
+                                )
+                                .await;
+                            assert_wallet_error(&outpoint, result, &refusal(parameter, rule));
+                        }
+                        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM certificates")
+                            .fetch_one(wallet.storage().pool())
+                            .await
+                            .unwrap();
+                        assert_eq!(stored, 0);
+                    }
+
+                    // validateRecord's bound (validationHelpers.ts:67, 90-92)
+                    // precedes its key checks (93-96) and the names (1236-1237).
+                    #[tokio::test]
+                    async fn test_prove_certificate_fields_record_bound() {
+                        let result = prove_args(false, |args| {
+                            args.certificate.fields = (0..100_001)
+                                .map(|i| (format!("f{i}"), String::new()))
+                                .collect();
+                            args.certificate.fields.insert(String::new(), String::new());
+                            args.certificate
+                                .fields
+                                .insert("__proto__".to_string(), String::new());
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "record bound",
+                            result,
+                            &refusal("fields", "an object with at most 100000 properties"),
+                        );
+                        let result = prove_args(false, |args| {
+                            args.certificate.fields.insert(String::new(), String::new());
+                            args.certificate
+                                .fields
+                                .insert("__proto__".to_string(), String::new());
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "safe keys before names",
+                            result,
+                            &refusal("fields", "an object with safe string keys"),
+                        );
                     }
 
                     // #291: certificate.fields at validationHelpers.ts:1478-1480

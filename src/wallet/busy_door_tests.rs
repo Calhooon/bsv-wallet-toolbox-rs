@@ -1219,7 +1219,8 @@ fn direct_certificate_args() -> bsv_rs::wallet::AcquireCertificateArgs {
         acquisition_protocol: bsv_rs::wallet::AcquisitionProtocol::Direct,
         fields,
         serial_number: Some("c2VyaWFsLW51bWJlcg==".to_string()),
-        revocation_outpoint: Some("abc123.0".to_string()),
+        // A well-formed outpoint: the direct acquire validates it (#291).
+        revocation_outpoint: Some(format!("{}.0", "ab".repeat(32))),
         signature: Some("deadbeef".to_string()),
         certifier_url: None,
         keyring_revealer: None,
