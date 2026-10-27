@@ -1,12 +1,19 @@
 //! Shared HTTP transport. Production uses reqwest directly; test and bench
 //! builds reject non-loopback destinations before executing any request.
 
-#[cfg(any(test, all(feature = "remote", feature = "bench-support")))]
+#[cfg(test)]
 pub(crate) use isolated::check_url;
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) use isolated::{Client, RequestBuilder, RequestError};
 #[cfg(not(any(test, feature = "bench-support")))]
 pub(crate) use reqwest::{Client, Error as RequestError, RequestBuilder};
+
+#[cfg(all(feature = "remote", any(test, feature = "bench-support")))]
+pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
+    let url = reqwest::Url::parse(url)
+        .map_err(|error| crate::Error::NetworkError(format!("Invalid transport URL: {error}")))?;
+    isolated::check_url(&url)
+}
 
 #[cfg(test)]
 #[path = "../../../tests/common/transport_isolation.rs"]
