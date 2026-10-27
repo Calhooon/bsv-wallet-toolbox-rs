@@ -23,7 +23,7 @@ use bsv_wallet_toolbox_rs::services::{
 // =============================================================================
 
 /// Arcade, the default mode (#317), at a loopback port nothing listens on:
-/// the defaults name no Arcade endpoint, and construction makes no request.
+/// construction makes no request.
 const LOOPBACK_ARCADE: &str = "http://127.0.0.1:9";
 
 fn loopback_services(chain: Chain) -> Services {
@@ -33,7 +33,8 @@ fn loopback_services(chain: Chain) -> Services {
 
 #[test]
 fn test_services_mainnet_creation() {
-    assert!(Services::mainnet().is_err(), "no Arcade endpoint named");
+    // `mainnet()` names the crate's public Arcade endpoint (PR #342).
+    assert!(Services::mainnet().is_ok());
     let services = loopback_services(Chain::Main);
     assert!(services.get_merkle_path_count().unwrap() >= 1);
     assert!(services.get_raw_tx_count().unwrap() >= 1);
@@ -43,6 +44,7 @@ fn test_services_mainnet_creation() {
 
 #[test]
 fn test_services_testnet_creation() {
+    // The crate has no Arcade testnet constant: `testnet()` names none.
     assert!(Services::testnet().is_err(), "no Arcade endpoint named");
     loopback_services(Chain::Test);
 }
@@ -452,10 +454,13 @@ fn test_services_options_default() {
     let options = ServicesOptions::default();
     assert!(options.whatsonchain_api_key.is_none());
     assert!(options.bitails_api_key.is_none());
-    // Arcade is the default mode with no endpoint named; GorillaPool's
-    // classic ARC is a rung of nothing (#317).
+    // Arcade is the default mode at the crate's public endpoint;
+    // GorillaPool's classic ARC is a rung of nothing (#317).
     assert!(options.arcade_v2);
-    assert!(options.arc_url.is_empty());
+    assert_eq!(
+        options.arc_url,
+        bsv_wallet_toolbox_rs::services::ARCADE_V2_MAINNET
+    );
     assert!(options.arc_gorillapool_url.is_none());
 }
 
@@ -463,7 +468,10 @@ fn test_services_options_default() {
 fn test_services_options_mainnet() {
     let options = ServicesOptions::mainnet();
     assert!(options.arcade_v2);
-    assert!(options.arc_url.is_empty());
+    assert_eq!(
+        options.arc_url,
+        bsv_wallet_toolbox_rs::services::ARCADE_V2_MAINNET
+    );
 }
 
 #[test]
