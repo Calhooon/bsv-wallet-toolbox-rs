@@ -9,8 +9,51 @@
 //! on the same servers waits out that second inside `reset`; on a runtime
 //! worker, that blocks the thread, and with every thread blocked the timers
 //! and the I/O of every other scene wait too.
+//!
+//! So every call that takes a server's lock runs on tokio's blocking pool
+//! (`spawn_blocking`): the reset and the mocks of each scene ([`script`])
+//! and the servers' drop. The worker awaits it; a scene after a sleeping
+//! answer still waits out that answer, on a blocking thread, and no
+//! runtime thread does. The alternatives: a fresh server per scene costs
+//! five server threads a scene and still locks in the old servers' drop
+//! (a reset), so it needs this anyway; awaiting the delayed answers before
+//! the reset needs a count kept in every delayed closure and misses an
+//! answer whose closure starts after the wait (a request the server queued
+//! behind a sleeping one and serves once it wakes).
 
 use super::*;
+
+/// Stand up the fixture's script on the servers off the runtime's workers:
+/// `reset` and mock creation wait there for any answer still sleeping
+/// under a server's lock, and this worker awaits them without blocking a
+/// thread. The mocks returned must live through the calls.
+pub(super) async fn script(
+    fixture: &Fixture,
+    servers: &mut Servers,
+    counts: &Counts,
+) -> Result<Vec<mockito::Mock>, String> {
+    let providers = fixture.providers.clone();
+    let counts = Arc::clone(counts);
+    let mut held = std::mem::take(&mut servers.0);
+    let (held, mocks) = tokio::task::spawn_blocking(move || {
+        let mocks = script_blocking(&providers, &mut held, &counts);
+        (held, mocks)
+    })
+    .await
+    .expect("the script's blocking task");
+    servers.0 = held;
+    mocks
+}
+
+/// A server's drop resets it under its lock: off the runtime's workers too.
+impl Drop for Servers {
+    fn drop(&mut self) {
+        let servers = std::mem::take(&mut self.0);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn_blocking(move || drop(servers));
+        }
+    }
+}
 
 /// Bitails's fault in call 2 of the late-second-answer scene, replayed in
 /// a queue of `company` scenes on `workers` workers: how long the call
