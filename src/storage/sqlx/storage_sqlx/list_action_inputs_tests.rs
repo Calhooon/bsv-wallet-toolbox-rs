@@ -42,10 +42,23 @@ fn raw_tx(inputs: &[(&Spent, u32, &str)]) -> Vec<u8> {
     tx.to_binary()
 }
 
-/// A store with one spending action holding `raw` and the `spent` rows
-/// inserted in order (so `output_id` follows the slice), each spent by it
-/// and created by a funding action of its txid.
+/// A store with one spending action holding `raw` both on its row and on a
+/// `completed` proof request, as `process_action` writes them, and the
+/// `spent` rows (see `store_with`).
 async fn store(raw: Option<Vec<u8>>, spent: &[Spent]) -> (StorageSqlx, AuthId) {
+    let req = raw.clone().map(|raw| ("completed", raw));
+    store_with(raw, req, spent).await
+}
+
+/// A store with one spending action whose row holds `raw`, a proof request
+/// for its txid in `req`'s status holding `req`'s bytes when given, and the
+/// `spent` rows inserted in order (so `output_id` follows the slice), each
+/// spent by it and created by a funding action of its txid.
+async fn store_with(
+    raw: Option<Vec<u8>>,
+    req: Option<(&str, Vec<u8>)>,
+    spent: &[Spent],
+) -> (StorageSqlx, AuthId) {
     let storage = StorageSqlx::in_memory().await.unwrap();
     storage.migrate("inputs", "inputs").await.unwrap();
     storage.make_available().await.unwrap();
@@ -63,6 +76,15 @@ async fn store(raw: Option<Vec<u8>>, spent: &[Spent]) -> (StorageSqlx, AuthId) {
     .await
     .unwrap()
     .last_insert_rowid();
+    if let Some((status, raw)) = req {
+        sqlx::query("INSERT INTO proven_tx_reqs (txid, status, raw_tx) VALUES (?, ?, ?)")
+            .bind("f".repeat(64))
+            .bind(status)
+            .bind(raw)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+    }
     let mut funding = std::collections::HashMap::new();
     for s in spent {
         if !funding.contains_key(&s.txid) {
