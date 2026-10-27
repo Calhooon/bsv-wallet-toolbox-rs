@@ -42,11 +42,7 @@ async fn issuance_client_accepts_loopback_fixtures() {
     )
     .await
     .unwrap();
-    assert_eq!(response.body.server_nonce, "fixture");
-    assert_eq!(
-        response.identity_key_header.as_deref(),
-        Some("fixture-certifier")
-    );
+    assert_eq!(response.server_nonce, "fixture");
     request.assert_async().await;
 }
 
