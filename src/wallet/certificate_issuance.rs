@@ -853,6 +853,135 @@ mod field_scheme_tests;
 mod tests {
     use super::*;
 
+    #[cfg(feature = "sqlite")]
+    fn corrupt_city_keyring_entry(
+        subject: bsv_rs::primitives::PrivateKey,
+        certifier: &PublicKey,
+        field_ciphertext: &str,
+        master_entry: &str,
+    ) -> String {
+        use bsv_rs::wallet::{DecryptArgs, EncryptArgs, ProtoWallet};
+
+        let protocol = Protocol::new(SecurityLevel::Counterparty, "certificate field encryption");
+        let subject_wallet = ProtoWallet::new(Some(subject));
+        let mut field_key = subject_wallet
+            .decrypt(DecryptArgs {
+                ciphertext: BASE64.decode(master_entry).unwrap(),
+                protocol_id: protocol.clone(),
+                key_id: "city".to_string(),
+                counterparty: Some(Counterparty::Other(certifier.clone())),
+                ..Default::default()
+            })
+            .unwrap()
+            .plaintext;
+        let ciphertext = BASE64.decode(field_ciphertext).unwrap();
+        let decrypt = |key: &[u8]| SymmetricKey::from_bytes(key).unwrap().decrypt(&ciphertext);
+        assert!(decrypt(&field_key).is_ok());
+        field_key[0] ^= 1;
+        assert!(decrypt(&field_key).is_err());
+        // The wallet envelope is authentic, but it carries the wrong AES key.
+        let wrong_entry = subject_wallet
+            .encrypt(EncryptArgs {
+                plaintext: field_key,
+                protocol_id: protocol,
+                key_id: "city".to_string(),
+                counterparty: Some(Counterparty::Other(certifier.clone())),
+                ..Default::default()
+            })
+            .unwrap();
+        BASE64.encode(wrong_entry.ciphertext)
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn prove_certificate_rejects_corrupt_master_keyring_entry() {
+        use bsv_rs::primitives::PrivateKey;
+        use bsv_rs::wallet::ProveCertificateArgs;
+
+        use crate::services::mock::MockWalletServices;
+        use crate::storage::WalletStorageWriter;
+        use crate::{StorageSqlx, Wallet};
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../conformance/upstream/261-certificate-field-value/certificate_field_value_261.json"
+        ))
+        .unwrap();
+        for issued in [&fixture["reference_issued"], &fixture["rust_issued"]] {
+            let private_key = |role: &str| {
+                PrivateKey::from_hex(&format!("{:064x}", issued["keys"][role].as_u64().unwrap()))
+                    .unwrap()
+            };
+            let subject = private_key("subject");
+            let identity_key = subject.public_key().to_hex();
+            let certifier = private_key("certifier").public_key();
+            let certificate: CertificateResponse =
+                serde_json::from_value(issued["certificate"].clone()).unwrap();
+            let parsed = parse_certificate_response(
+                &ProtocolIssuanceResponse {
+                    protocol: "certificate issuance".to_string(),
+                    certificate: Some(certificate.clone()),
+                    server_nonce: BASE64.encode([5; 32]),
+                    timestamp: String::new(),
+                    version: "1.0".to_string(),
+                },
+                &certificate.certifier,
+                &certificate.cert_type,
+            )
+            .unwrap();
+            let mut keyring: HashMap<String, String> =
+                serde_json::from_value(issued["master_keyring"].clone()).unwrap();
+            let wrong_entry = corrupt_city_keyring_entry(
+                subject.clone(),
+                &certifier,
+                &certificate.fields["city"],
+                &keyring["city"],
+            );
+            keyring.insert("city".to_string(), wrong_entry);
+
+            let storage = StorageSqlx::in_memory().await.unwrap();
+            storage
+                .migrate("verifier-decrypt", &identity_key)
+                .await
+                .unwrap();
+            storage.make_available().await.unwrap();
+            let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+            let auth = AuthId::with_user_id(identity_key.clone(), user.user_id);
+            let wallet = Wallet::new(Some(subject), storage, MockWalletServices::new())
+                .await
+                .unwrap();
+            let stored = store_certificate(
+                wallet.storage(),
+                &auth,
+                &parsed,
+                &keyring,
+                &certifier,
+                &identity_key,
+                &certificate.cert_type,
+            )
+            .await
+            .unwrap();
+            let result = wallet
+                .prove_certificate(
+                    ProveCertificateArgs {
+                        certificate: stored,
+                        fields_to_reveal: vec!["city".to_string()],
+                        verifier: private_key("verifier").public_key().to_hex(),
+                        privileged: None,
+                        privileged_reason: None,
+                    },
+                    "certificate.test",
+                )
+                .await;
+            // The reference throws Error, not WERR_INVALID_PARAMETER, at
+            // MasterCertificate.ts:621-622 (ts-stack@edf6e03).
+            assert!(
+                matches!(&result, Err(bsv_rs::Error::WalletError(message))
+                    if message == "Failed to decrypt certificate field!"),
+                "prove_certificate must refuse the corrupt master entry: {result:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_protocol_issuance_request_serialization() {
         let request = ProtocolIssuanceRequest {
