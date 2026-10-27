@@ -2,6 +2,8 @@
 // MonitorStorage Implementation
 // =============================================================================
 
+use crate::services::broadcast_memory::BROADCAST_STATUS_SEEN;
+
 use super::{
     async_trait, Duration, HeaderTrackerState, MonitorStorage, ProofIngestOutcome, ProvenTxAnchor,
     ProvenTxReqStatus, PurgeParams, PurgeResults, Result, ReviewStatusResult,
@@ -162,19 +164,14 @@ impl MonitorStorage for StorageSqlx {
         txid: &str,
         provider: &str,
     ) -> Result<bool> {
-        // The reporting plane has the tx: remember it for reduced sends.
-        self.record_broadcast_status_quiet(
-            txid,
-            provider,
-            crate::services::broadcast_memory::BROADCAST_STATUS_SEEN,
-        )
-        .await;
-
+        // One writer acquisition and busy wait for both statuses and the hint.
+        // A status error or cancellation before commit rolls back both rows.
+        let mut tx = self.write_tx().await?;
         let now = chrono::Utc::now();
 
         // Same transition a successful post_beef broadcast performs in
         // send_waiting_transactions: req → 'unmined' (awaiting proof),
-        // tx → 'unproven' (spendable). Only lift PRE-broadcast statuses —
+        // tx → 'unproven' (spendable). Only lift pre-broadcast statuses;
         // never demote 'completed'.
         let req_result = sqlx::query(
             "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? \
@@ -182,7 +179,7 @@ impl MonitorStorage for StorageSqlx {
         )
         .bind(now)
         .bind(txid)
-        .execute(&mut *self.writer_conn().await?)
+        .execute(&mut *tx)
         .await?;
 
         let tx_result = sqlx::query(
@@ -191,9 +188,24 @@ impl MonitorStorage for StorageSqlx {
         )
         .bind(now)
         .bind(txid)
-        .execute(&mut *self.writer_conn().await?)
+        .execute(&mut *tx)
         .await?;
 
+        // Keep the optional memory's logged, never returned errors (#201).
+        if let Err(e) = super::broadcast_seen::record_broadcast_status_on(
+            &mut tx,
+            txid,
+            provider,
+            BROADCAST_STATUS_SEEN,
+        )
+        .await
+        {
+            tracing::warn!(
+                txid = %txid, provider = %provider, status = %BROADCAST_STATUS_SEEN,
+                error = %e, "broadcast_seen: record failed"
+            );
+        }
+        super::commit(tx).await?;
         let updated = req_result.rows_affected() > 0 || tx_result.rows_affected() > 0;
         if updated {
             tracing::info!(txid = %txid, "marked seen-on-network: proven_tx_req → unmined, transaction → unproven");
