@@ -677,7 +677,7 @@ pub async fn internalize_action_internal(
 /// BRC-177's module prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:5`).
 const BRC177_NO_SEND_MODULE_PREFIX: &str = "p nosend ";
 
-/// The reference's WERR_INVALID_PARAMETER text for a `p nosend ` label on
+/// The reference's `WERR_INVALID_PARAMETER` text for a `p nosend ` label on
 /// internalizeAction (`Wallet.ts:1249`, built by `WERR_errors.ts:105`).
 const BRC177_INCOMING_REFUSAL: &str =
     "The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests";
