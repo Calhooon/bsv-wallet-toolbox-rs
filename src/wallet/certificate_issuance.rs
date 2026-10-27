@@ -716,15 +716,17 @@ async fn verify_issuance_serial<W: WalletInterface + Send + Sync>(
     originator: &str,
 ) -> Result<()> {
     let invalid = || Error::ValidationError("Invalid serialNumber".into());
+    // Wallet.ts:808-809 decode, then verifyHmac's validateByteArray(hmac, 32)
+    // at validationHelpers.ts:1774.
     let serial = decode_issuance_base64(&raw.serial_number)?;
+    let mut data = decode_issuance_base64(client_nonce)?;
+    data.extend(decode_issuance_base64(server_nonce)?);
     if serial.len() != NONCE_HMAC_SIZE {
         return Err(Error::ValidationError(
             "The hmac parameter must be exactly 32 bytes".into(),
         ));
     }
     let hmac = serial.try_into().map_err(|_| invalid())?;
-    let mut data = decode_issuance_base64(client_nonce)?;
-    data.extend(decode_issuance_base64(server_nonce)?);
     let result = wallet
         .verify_hmac(
             VerifyHmacArgs {
