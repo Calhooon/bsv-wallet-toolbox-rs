@@ -654,18 +654,25 @@ For #249, `prove_certificate` checks `certificate.certifier` and then
 `verifier` as arguments, after the permission check and before the
 certificate lookup and the helper's gate, as the reference's argument gate
 does (`ts-stack@edf6e03`, `validationHelpers.ts:1490-1493,1509`, ahead of
-`signer/methods/proveCertificate.ts:28`). Each must be 66 hex characters
-encoding a compressed secp256k1 key; the refusals are the reference's
+`signer/methods/proveCertificate.ts:28`). Each is trimmed with the ECMAScript
+WhiteSpace and LineTerminator set and lowercased, as `validateHexString`
+does at `validationHelpers.ts:524,533`. This accepts U+FEFF padding but
+retains U+0085, which fails the hexadecimal string check. The normalized
+value must be 66 hex characters encoding a compressed secp256k1 key; the
+refusals are the reference's
 `WERR_INVALID_PARAMETER` texts (`validationHelpers.ts:185-191,522-534`),
 `The <name> parameter must be <rule>` with `<name>` one of
 `certificate.certifier` or `verifier` and `<rule>` one of `even length, not N.`,
 `hexadecimal string.`, `at least 66 length.`, `no more than 66 length.` or
 `a valid compressed secp256k1 public key`, as `Error::ValidationError`, so the
 WalletInterface reads `Validation error: ...`. An empty request refuses the
-same way. The stored certifier is not parsed: the lookup matches it to the
-validated argument byte for byte, and `create_keyring_for_verifier` receives
-that parsed key, as the reference passes the stored certifier unparsed to
-`decrypt` (`MasterCertificate.ts:383-392,592-597`). Tests:
+same way. The lookup binds the normalized certifier, as
+`signer/methods/proveCertificate.ts:16` does. In SQLite, `certifier IN (?)`
+on an uncollated TEXT column matches the stored certifier to that value byte
+for byte; the remote storage server decides its own collation. The stored
+certifier is not parsed, and `create_keyring_for_verifier` receives the keys
+parsed from the normalized arguments, as the reference passes the stored
+certifier unparsed to `decrypt` (`MasterCertificate.ts:383-392,592-597`). Tests:
 `wallet.rs::prove_certificate_tests::preloop_gate::key_gate`.
 
 ### Protocol Flow
