@@ -1291,11 +1291,18 @@ fn issued_certificate(
     let subject = PublicKey::from_hex(&wallet.identity_key).unwrap();
     let mut cert_fields = HashMap::new();
     cert_fields.insert("name".to_string(), "encrypted".to_string());
+    let certificate = Certificate::new([7u8; 32], [9u8; 32], subject, certifier.clone());
     let parsed = super::super::certificate_issuance::ParseCertificateResponseResult {
-        certificate: Certificate::new([7u8; 32], [9u8; 32], subject, certifier.clone()),
+        certificate: super::super::certificate_issuance::CertificateResponse {
+            cert_type: certificate.type_base64(),
+            serial_number: certificate.serial_number_base64(),
+            subject: certificate.subject.to_hex(),
+            certifier: certificate.certifier.to_hex(),
+            revocation_outpoint: String::new(),
+            fields: cert_fields,
+            signature: String::new(),
+        },
         server_nonce: String::new(),
-        cert_fields,
-        serial_number: [9u8; 32],
     };
     (parsed, certifier)
 }
@@ -1378,7 +1385,7 @@ async fn a_busy_store_after_the_certifier_exchange_is_never_wallet_busy() {
         message
     );
     assert!(
-        message.contains(&parsed.certificate.serial_number_base64()),
+        message.contains(&parsed.certificate.serial_number.clone()),
         "the error names the issued certificate's serial number: {}",
         message
     );
@@ -1414,7 +1421,7 @@ async fn a_busy_store_that_clears_on_the_second_try_stores_the_issued_certificat
         .expect("the second try stores it");
     assert_eq!(
         stored.serial_number,
-        parsed.certificate.serial_number_base64()
+        parsed.certificate.serial_number.clone()
     );
     assert!(
         !wallet.storage().take_busy_next_certificate_field(),

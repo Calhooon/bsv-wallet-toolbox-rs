@@ -210,12 +210,38 @@ async fn normalized_args_reach_response_checks(
             "type": expected_type,
         })))
         .with_header(HEADER_IDENTITY_KEY, &canonical)
-        .with_body(serde_json::to_string(&response).unwrap())
+        .with_body_from_request(move |request| {
+            let request: ProtocolIssuanceRequest =
+                serde_json::from_slice(request.body().unwrap()).unwrap();
+            let signer =
+                ProtoWallet::new(Some(PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap()));
+            let mut response = response.clone();
+            let mut data = BASE64.decode(&request.client_nonce).unwrap();
+            data.extend(BASE64.decode(&response.server_nonce).unwrap());
+            let serial = signer
+                .create_hmac(CreateHmacArgs {
+                    data,
+                    protocol_id: Protocol::new(
+                        SecurityLevel::Counterparty,
+                        CERTIFICATE_ISSUANCE_PROTOCOL,
+                    ),
+                    key_id: format!("{}{}", response.server_nonce, request.client_nonce),
+                    counterparty: Some(Counterparty::Other(
+                        PublicKey::from_hex(&response.certificate.as_ref().unwrap().subject)
+                            .unwrap(),
+                    )),
+                    ..Default::default()
+                })
+                .unwrap()
+                .hmac;
+            response.certificate.as_mut().unwrap().serial_number = BASE64.encode(serial);
+            serde_json::to_vec(&response).unwrap()
+        })
         .expect(1)
         .create_async()
         .await;
     // A deliberately different type witnesses acceptance through preparation,
-    // transport, and both canonical certifier comparisons, before verification.
+    // transport, and a valid serial HMAC before the metadata comparison.
     acquisition.certifier_url = Some(format!("{}/issue", server.url()));
     let result = acquire_from_fixture(&wallet, acquisition).await;
     assert_wallet_error(
