@@ -13,7 +13,7 @@ async fn issuance_client_refuses_non_loopback_before_transport() {
         )
         .await
         .unwrap_err();
-        assert_isolated(error);
+        assert_isolated(&error);
     }
 }
 
@@ -59,6 +59,6 @@ async fn issuance_client_refuses_non_loopback_redirects() {
     let error = send_issuance_request(&format!("{}/issue", server.url()), b"{}", "fixture")
         .await
         .unwrap_err();
-    assert_isolated(error);
+    assert_isolated(&error);
     redirect.assert_async().await;
 }

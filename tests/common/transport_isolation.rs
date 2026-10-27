@@ -2,7 +2,7 @@
 
 use crate::Error;
 
-pub(crate) fn assert_isolated(error: Error) {
+pub(crate) fn assert_isolated(error: &Error) {
     assert!(matches!(error, Error::NetworkError(_)), "{error:?}");
     let message = error.to_string();
     assert!(
