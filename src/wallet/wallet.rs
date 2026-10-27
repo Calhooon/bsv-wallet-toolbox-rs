@@ -2725,14 +2725,6 @@ where
             )
         })?;
 
-        // Determine which fields to reveal
-        // If fields_to_reveal is empty, reveal all fields
-        let fields_to_reveal: Vec<String> = if args.fields_to_reveal.is_empty() {
-            storage_cert.certificate.fields.keys().cloned().collect()
-        } else {
-            args.fields_to_reveal.clone()
-        };
-
         // Parse the verifier public key
         let verifier = PublicKey::from_hex(&args.verifier).map_err(|e| {
             bsv_rs::Error::WalletError(format!("Invalid verifier public key: {}", e))
@@ -2752,7 +2744,7 @@ where
             &certifier,
             &verifier,
             &storage_cert.certificate.fields,
-            &fields_to_reveal,
+            &args.fields_to_reveal,
             master_keyring,
             &storage_cert.certificate.serial_number,
             originator,
