@@ -6,6 +6,9 @@ use super::{
     RelinquishCertificateArgs, Result, Row, StorageSqlx, TableCertificate, TableCertificateField,
     Utc,
 };
+use crate::storage::sqlx::internalize_action::{
+    validate_array_bound, MAXIMUM_WALLET_COLLECTION_ITEMS,
+};
 
 impl StorageSqlx {
     // =========================================================================
@@ -149,6 +152,16 @@ impl StorageSqlx {
         use std::collections::HashMap;
 
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+
+        // validateListCertificatesArgs (ts-stack@edf6e03 validationHelpers.ts
+        // 1189-1211): validateArray's bound (105-114) on certifiers at 1195,
+        // then on types at 1198 (#309).
+        validate_array_bound(
+            args.certifiers.len(),
+            "certifiers",
+            MAXIMUM_WALLET_COLLECTION_ITEMS,
+        )?;
+        validate_array_bound(args.types.len(), "types", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);

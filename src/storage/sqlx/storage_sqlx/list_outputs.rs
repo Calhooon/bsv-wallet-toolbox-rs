@@ -2,6 +2,9 @@ use super::{
     beef_bfs_walk, prune_beef_to_roots, AuthId, Beef, Error, HashSet, ListOutputsArgs,
     ListOutputsResult, Result, Row, StorageSqlx,
 };
+use crate::storage::sqlx::internalize_action::{
+    validate_array_bound, MAXIMUM_WALLET_COLLECTION_ITEMS,
+};
 
 impl StorageSqlx {
     pub(super) async fn list_outputs_impl(
@@ -12,6 +15,16 @@ impl StorageSqlx {
         use bsv_rs::wallet::{Outpoint, OutputInclude, QueryMode, WalletOutput};
 
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+
+        // validateListOutputsArgs (ts-stack@edf6e03 validationHelpers.ts
+        // 1620-1654): validateArray's bound (105-114) on tags at 1637, ahead
+        // of the basket lookup below (validateBasket at 1636 reads only the
+        // basket's text, so a basket not held is no answer ahead of it; #309).
+        validate_array_bound(
+            args.tags.as_ref().map_or(0, Vec::len),
+            "tags",
+            MAXIMUM_WALLET_COLLECTION_ITEMS,
+        )?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
