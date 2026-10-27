@@ -13,8 +13,11 @@
 //!    - `x-bsv-auth-version: 0.1`
 //!    - `x-bsv-identity-key: <wallet identity key hex>`
 //!
-//! 3. **ParseCertificateResponse**: Parse JSON response, validate headers,
-//!    extract certificate components
+//!    The response's `x-bsv-auth-identity-key` must equal the certifier before
+//!    the body is read; an absent header refuses as `Received: null`.
+//!
+//! 3. **ParseCertificateResponse**: Parse JSON response, extract certificate
+//!    components
 //!
 //! 4. **VerifyCertificateIssuance**: Check the server nonce, verify the serial
 //!    HMAC, validate metadata and fields, verify the signature, decrypt fields
@@ -65,6 +68,9 @@ const HEADER_AUTH_VERSION: &str = "x-bsv-auth-version";
 
 /// BRC-104 identity key header name
 const HEADER_IDENTITY_KEY: &str = "x-bsv-identity-key";
+
+/// The certifier's identity header, as ts-stack@edf6e03 Wallet.ts:789 reads it
+const HEADER_CERTIFIER_IDENTITY_KEY: &str = "x-bsv-auth-identity-key";
 
 /// Protocol for certificate issuance HMAC verification
 const CERTIFICATE_ISSUANCE_PROTOCOL: &str = "certificate issuance";
@@ -210,19 +216,9 @@ where
         prepare_issuance_action_data(wallet, &args, &certifier, &identity_pub_key, originator)
             .await?;
 
-    // Step 2: Send HTTP POST to certifier
-    let http_response = send_issuance_request(certifier_url, &prepared.body, identity_key).await?;
-
-    // Step 2.5: Validate response header matches expected certifier (per Go implementation)
-    if let Some(response_identity_key) = &http_response.identity_key_header {
-        if response_identity_key != &certifier_hex {
-            return Err(Error::ValidationError(format!(
-                "Invalid certifier! Expected: {}, Received: {}",
-                certifier_hex, response_identity_key
-            )));
-        }
-    }
-    // Note: Unlike Go, we don't require the header to be present, as some certifiers may not include it
+    // Step 2: Send HTTP POST to certifier; the identity header is checked before the body
+    let http_response =
+        send_issuance_request(certifier_url, &prepared.body, identity_key, &certifier_hex).await?;
 
     // Step 3: Parse and validate response
     let parsed = parse_certificate_response(&http_response.body)?;
@@ -531,15 +527,19 @@ where
 struct HttpIssuanceResponse {
     /// The parsed JSON body
     body: ProtocolIssuanceResponse,
-    /// The x-bsv-identity-key response header
+    /// The x-bsv-auth-identity-key response header, already equal to the certifier
     identity_key_header: Option<String>,
 }
 
 /// Sends the issuance request to the certifier URL.
+///
+/// The response's identity header must equal `certifier_hex` before the body is
+/// read, as at ts-stack@edf6e03 Wallet.ts:789-793.
 async fn send_issuance_request(
     certifier_url: &str,
     body: &[u8],
     identity_key: &str,
+    certifier_hex: &str,
 ) -> Result<HttpIssuanceResponse> {
     #[cfg(test)]
     let fixture_url = ISSUANCE_TEST_URL.try_with(Clone::clone).ok();
@@ -567,12 +567,14 @@ async fn send_issuance_request(
         )));
     }
 
-    // Extract identity key header for validation
-    let identity_key_header = response
-        .headers()
-        .get(HEADER_IDENTITY_KEY)
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
+    let identity_key_header = fetch_header_value(response.headers(), HEADER_CERTIFIER_IDENTITY_KEY);
+    if identity_key_header.as_deref() != Some(certifier_hex) {
+        return Err(Error::ValidationError(format!(
+            "Invalid certifier! Expected: {}, Received: {}",
+            certifier_hex,
+            identity_key_header.as_deref().unwrap_or("null")
+        )));
+    }
 
     // Parse response JSON
     let response_text = response
@@ -591,6 +593,17 @@ async fn send_issuance_request(
         body: parsed,
         identity_key_header,
     })
+}
+
+/// Reads a header as fetch's `Headers.get` does: `None` when absent, each byte
+/// decoded as one code point, and repeated values joined with ", ".
+fn fetch_header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    let values: Vec<String> = headers
+        .get_all(name)
+        .iter()
+        .map(|v| v.as_bytes().iter().map(|&b| char::from(b)).collect())
+        .collect();
+    (!values.is_empty()).then(|| values.join(", "))
 }
 
 // =============================================================================
@@ -1378,6 +1391,7 @@ mod tests {
         let result = send_issuance_request(
             "http://invalid-url-that-does-not-exist.local:12345",
             body,
+            identity_key,
             identity_key,
         )
         .await;
