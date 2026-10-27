@@ -49,6 +49,9 @@ use super::signer::{SignerInput, WalletSigner};
 #[path = "validation.rs"]
 mod validation;
 
+#[path = "direct_acquire.rs"]
+mod direct_acquire;
+
 #[cfg(test)]
 #[path = "rng_tests.rs"]
 mod rng_tests;
@@ -2587,26 +2590,18 @@ where
                 tracing::debug!("Acquiring certificate via direct protocol");
                 let auth = self.auth();
 
-                // Build the certificate from args
-                let mut certificate = build_wallet_certificate_from_args(&args)?;
+                // validateAcquireDirectCertificateArgs (validationHelpers.ts
+                // 1401-1450) before any write (#311): the stored row carries
+                // its normalized values, the outpoint's txid lowercased so a
+                // normalized prove argument finds it (#291).
+                let direct_acquire::ValidDirectAcquire {
+                    mut certificate,
+                    verifier,
+                    keyring,
+                } = direct_acquire::validate_acquire_direct_args(&args)?;
 
-                // Set the subject to the wallet's identity key (matching issuance behavior)
+                // Set the subject to the wallet's identity key (Wallet.ts:698-704)
                 certificate.subject = self.identity_key.clone();
-
-                // validateOutpointString at validationHelpers.ts:1435
-                // (1099-1116): the txid lowercased, so the stored row is the
-                // one a normalized prove argument finds (#291).
-                certificate.revocation_outpoint =
-                    validate_outpoint_arg(&certificate.revocation_outpoint, "revocationOutpoint")?;
-
-                // Determine the verifier from the keyring_revealer argument
-                let verifier = match &args.keyring_revealer {
-                    Some(bsv_rs::wallet::KeyringRevealer::Certifier) => {
-                        Some(args.certifier.clone())
-                    }
-                    Some(bsv_rs::wallet::KeyringRevealer::PublicKey(pk)) => Some(pk.to_hex()),
-                    None => None,
-                };
 
                 let now = chrono::Utc::now();
 
@@ -2618,7 +2613,7 @@ where
                     serial_number: certificate.serial_number.clone(),
                     certifier: certificate.certifier.clone(),
                     subject: certificate.subject.clone(),
-                    verifier,
+                    verifier: Some(verifier),
                     revocation_outpoint: certificate.revocation_outpoint.clone(),
                     signature: certificate.signature.clone(),
                     created_at: now,
@@ -2629,7 +2624,6 @@ where
                 // from the keyring) in one write: a busy store writes none
                 // of them, so a busy answer is honest and the call may be
                 // repeated (bsv-wallet-cli #44 review 4 G1).
-                let keyring = args.keyring_for_subject.as_ref();
                 let fields = certificate
                     .fields
                     .iter()
@@ -2639,10 +2633,7 @@ where
                         user_id: self.user_id,
                         field_name: field_name.clone(),
                         field_value: field_value.clone(),
-                        master_key: keyring
-                            .and_then(|kr| kr.get(field_name))
-                            .cloned()
-                            .unwrap_or_default(),
+                        master_key: keyring.get(field_name).cloned().unwrap_or_default(),
                         created_at: now,
                         updated_at: now,
                     })
@@ -3295,35 +3286,6 @@ fn build_unsigned_transaction(
     tx.extend_from_slice(&result.lock_time.to_le_bytes());
 
     Ok(tx)
-}
-
-/// Builds a WalletCertificate from AcquireCertificateArgs.
-fn build_wallet_certificate_from_args(
-    args: &AcquireCertificateArgs,
-) -> bsv_rs::Result<WalletCertificate> {
-    let serial_number = args.serial_number.clone().ok_or_else(|| {
-        bsv_rs::Error::WalletError("serial_number required for direct acquisition".to_string())
-    })?;
-
-    let revocation_outpoint = args.revocation_outpoint.clone().ok_or_else(|| {
-        bsv_rs::Error::WalletError(
-            "revocation_outpoint required for direct acquisition".to_string(),
-        )
-    })?;
-
-    let signature = args.signature.clone().ok_or_else(|| {
-        bsv_rs::Error::WalletError("signature required for direct acquisition".to_string())
-    })?;
-
-    Ok(WalletCertificate {
-        certificate_type: args.certificate_type.clone(),
-        subject: String::new(), // Will be set by storage based on identity key
-        serial_number,
-        certifier: args.certifier.clone(),
-        revocation_outpoint,
-        signature,
-        fields: args.fields.clone(),
-    })
 }
 
 /// Protocol for certificate field encryption (BRC-52/53).
@@ -5486,7 +5448,9 @@ mod tests {
                                     revocation_outpoint: Some(format!("{txid}.0")),
                                     signature: Some("300602010a02010b".to_string()),
                                     certifier_url: None,
-                                    keyring_revealer: None,
+                                    keyring_revealer: Some(
+                                        bsv_rs::wallet::KeyringRevealer::Certifier,
+                                    ),
                                     keyring_for_subject: Some(HashMap::from([(
                                         "name".to_string(),
                                         "Yg==".to_string(),
@@ -5563,8 +5527,10 @@ mod tests {
                                         revocation_outpoint: Some(outpoint.clone()),
                                         signature: Some("300602010a02010b".to_string()),
                                         certifier_url: None,
-                                        keyring_revealer: None,
-                                        keyring_for_subject: None,
+                                        keyring_revealer: Some(
+                                            bsv_rs::wallet::KeyringRevealer::Certifier,
+                                        ),
+                                        keyring_for_subject: Some(HashMap::new()),
                                         privileged: None,
                                         privileged_reason: None,
                                     },
@@ -6370,63 +6336,6 @@ mod tests {
     // =========================================================================
     // Direct certificate acquisition conversion tests
     // =========================================================================
-
-    #[test]
-    fn test_build_wallet_certificate_from_args_direct() {
-        use bsv_rs::wallet::AcquisitionProtocol;
-
-        let mut fields = HashMap::new();
-        fields.insert("name".to_string(), "encrypted_name_value".to_string());
-        fields.insert("email".to_string(), "encrypted_email_value".to_string());
-
-        let args = AcquireCertificateArgs {
-            certificate_type: "dGVzdC1jZXJ0LXR5cGU=".to_string(),
-            certifier: "02".to_string() + &"ab".repeat(32),
-            acquisition_protocol: AcquisitionProtocol::Direct,
-            fields: fields.clone(),
-            serial_number: Some("c2VyaWFsLW51bWJlcg==".to_string()),
-            revocation_outpoint: Some("abc123.0".to_string()),
-            signature: Some("deadbeef".to_string()),
-            certifier_url: None,
-            keyring_revealer: None,
-            keyring_for_subject: None,
-            privileged: None,
-            privileged_reason: None,
-        };
-
-        let cert = build_wallet_certificate_from_args(&args).expect("should build certificate");
-
-        assert_eq!(cert.certificate_type, "dGVzdC1jZXJ0LXR5cGU=");
-        assert_eq!(cert.serial_number, "c2VyaWFsLW51bWJlcg==");
-        assert_eq!(cert.revocation_outpoint, "abc123.0");
-        assert_eq!(cert.signature, "deadbeef");
-        assert_eq!(cert.fields.len(), 2);
-        assert_eq!(cert.fields.get("name").unwrap(), "encrypted_name_value");
-        assert_eq!(cert.fields.get("email").unwrap(), "encrypted_email_value");
-    }
-
-    #[test]
-    fn test_build_wallet_certificate_from_args_missing_serial_number() {
-        use bsv_rs::wallet::AcquisitionProtocol;
-
-        let args = AcquireCertificateArgs {
-            certificate_type: "dGVzdA==".to_string(),
-            certifier: "02".to_string() + &"ab".repeat(32),
-            acquisition_protocol: AcquisitionProtocol::Direct,
-            fields: HashMap::new(),
-            serial_number: None,
-            revocation_outpoint: Some("abc.0".to_string()),
-            signature: Some("sig".to_string()),
-            certifier_url: None,
-            keyring_revealer: None,
-            keyring_for_subject: None,
-            privileged: None,
-            privileged_reason: None,
-        };
-
-        let result = build_wallet_certificate_from_args(&args);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_direct_certificate_table_conversion() {
