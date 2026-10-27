@@ -514,12 +514,13 @@ mod tests {
                     request_status: Some("invalid"),
                     outputs: &[(true, Some(0))],
                 },
-                // A live request and an older failure are outside this transition.
+                // A live request is outside this transition.
                 ReviewStatusSeed {
                     status: "unproven",
                     request_status: Some("unmined"),
                     outputs: &[(true, None)],
                 },
+                // An older failure's spendable output is swept (#175).
                 ReviewStatusSeed {
                     status: "failed",
                     request_status: Some("invalid"),
@@ -529,6 +530,7 @@ mod tests {
         )
         .await;
         let newly_failed = &transaction_ids[1..3];
+        let older_failure = transaction_ids[4];
 
         const OUTPUT_STATE: &str = "SELECT transaction_id, spendable, spent_by, \
             CAST(updated_at AS TEXT) FROM outputs ORDER BY output_id";
@@ -542,6 +544,9 @@ mod tests {
 
         let review = MonitorStorage::review_status(&storage).await.unwrap();
         assert!(review.log.contains("Marked 2 transactions as failed"));
+        assert!(review
+            .log
+            .contains("Voided 1 outputs created by failed transactions"));
         let transactions: Vec<(String, String)> = sqlx::query_as(TRANSACTION_STATE)
             .fetch_all(storage.pool())
             .await
@@ -574,6 +579,10 @@ mod tests {
                     "a void output must keep spent_by unchanged"
                 );
                 assert_eq!(current.3, transactions[index].1);
+                assert_ne!(current.3, original.3, "the output timestamp must advance");
+            } else if original.0 == older_failure {
+                assert!(!current.1, "an older failure's created output must be void");
+                assert_eq!(current.2, original.2);
                 assert_ne!(current.3, original.3, "the output timestamp must advance");
             } else {
                 assert_eq!(
@@ -665,5 +674,99 @@ mod tests {
         assert!(review
             .log
             .contains("Retired the unproven descendants of 1 failed transactions"));
+    }
+
+    #[tokio::test]
+    async fn review_status_heals_failed_beside_spendable_left_by_an_earlier_release() {
+        // A store as 0.13.0 left it: transactions failed by an earlier pass
+        // whose created outputs kept `spendable = 1` (#175).
+        let (storage, transaction_ids) = seed_review_status(
+            "review status upgrade",
+            &[
+                ReviewStatusSeed {
+                    status: "completed",
+                    request_status: None,
+                    // Inputs the failures consumed stay as they are.
+                    outputs: &[(false, Some(1)), (false, Some(2))],
+                },
+                ReviewStatusSeed {
+                    status: "failed",
+                    request_status: Some("invalid"),
+                    // spent_by stays: check 4 walks it to the descendants.
+                    outputs: &[(true, None), (true, Some(6))],
+                },
+                ReviewStatusSeed {
+                    status: "failed",
+                    request_status: Some("doubleSpend"),
+                    outputs: &[(true, None)],
+                },
+                ReviewStatusSeed {
+                    status: "failed",
+                    request_status: None,
+                    outputs: &[(true, None)],
+                },
+                // A request that can still reconcile blocks the sweep.
+                ReviewStatusSeed {
+                    status: "failed",
+                    request_status: Some("unfail"),
+                    outputs: &[(true, None)],
+                },
+                ReviewStatusSeed {
+                    status: "failed",
+                    request_status: Some("unmined"),
+                    outputs: &[(true, None)],
+                },
+                ReviewStatusSeed {
+                    status: "completed",
+                    request_status: Some("completed"),
+                    outputs: &[(true, None)],
+                },
+            ],
+        )
+        .await;
+        let swept = &transaction_ids[1..4];
+
+        const OUTPUT_STATE: &str = "SELECT transaction_id, spendable, spent_by, \
+            CAST(updated_at AS TEXT) FROM outputs ORDER BY output_id";
+        type OutputState = (i64, bool, Option<i64>, String);
+        let before: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+
+        let review = MonitorStorage::review_status(&storage).await.unwrap();
+        assert!(
+            review
+                .log
+                .contains("Voided 4 outputs created by failed transactions"),
+            "{}",
+            review.log
+        );
+        let after: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(after.len(), before.len());
+        for (original, current) in before.iter().zip(&after) {
+            if swept.contains(&original.0) {
+                assert!(!current.1, "a failed creator's output must be void");
+                assert_eq!(current.2, original.2, "spent_by must stay");
+                assert_ne!(current.3, original.3, "the output timestamp must advance");
+            } else {
+                assert_eq!(current, original, "every other output stays unchanged");
+            }
+        }
+
+        let again = MonitorStorage::review_status(&storage).await.unwrap();
+        assert!(
+            !again.log.contains("Voided"),
+            "a repeat pass voids nothing: {}",
+            again.log
+        );
+        let unchanged: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
+            .fetch_all(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(unchanged, after, "a repeat pass must not rewrite outputs");
     }
 }
