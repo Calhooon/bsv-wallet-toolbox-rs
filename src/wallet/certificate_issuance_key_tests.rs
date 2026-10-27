@@ -41,11 +41,11 @@ fn args(certifier: String, url: String) -> AcquireCertificateArgs {
         serial_number: None,
         revocation_outpoint: None,
         signature: None,
-        certifier_url: Some(url),
         keyring_revealer: None,
         keyring_for_subject: None,
-        privileged: Some(false),
+        privileged: None,
         privileged_reason: None,
+        certifier_url: Some(url),
     }
 }
 

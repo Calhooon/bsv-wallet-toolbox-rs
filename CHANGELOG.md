@@ -26,6 +26,15 @@
   Permission checks retain the raw verifier, matching
   `packages/wallet/wallet-toolbox/src/WalletPermissionsManager.ts:5424-5434`.
 
+- #261: certificate issuance now shares the `prove_certificate` public-key
+  validator for `certifier`, before request preparation or HTTP. Invalid
+  certifiers return `Validation error: The certifier parameter must be <rule>`
+  with the reference's hex, length or compressed-key rule, replacing
+  `Invalid certifier public key: <detail>`. ECMAScript trimming and lowercasing
+  normalize the key for encryption and response comparisons, accepting
+  uppercase, space-padded and U+FEFF-padded certifiers. A differing response
+  identity header now reads `Invalid certifier! Expected: <expected>, Received: <received>`
+  inside `Validation error:`, matching `ts-stack@edf6e03 Wallet.ts:789-791`.
 - #248: unit-test and `bench-support` clients for overlay lookup, certificate
   issuance, and unauthenticated remote storage now use the #182 loopback-only
   transport. Remote requests and redirects are refused before transport with

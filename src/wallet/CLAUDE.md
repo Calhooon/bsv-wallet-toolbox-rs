@@ -596,6 +596,23 @@ that text's bytes for the signed representation (BRC-52 `0052.md:97`, #197);
 the pinned bsv-rs 0.9.0-beta.1 setter takes `value.as_bytes().to_vec()`.
 Decode a field's Base64 only when decrypting it.
 
+For #261, issuance checks `certifier` with the same `validate_public_key_arg`
+as `prove_certificate`, after requiring a certifier URL and before identity
+parsing, nonce generation, field encryption or HTTP. This follows the
+acquisition door at `ts-stack@edf6e03 Wallet.ts:770-778` and
+`validationHelpers.ts:1337-1340,185-191,522-534`. The wallet returns
+`Validation error: The certifier parameter must be <rule>`, where the rule is
+`even length, not N.`, `hexadecimal string.`, `at least 66 length.`,
+`no more than 66 length.`, or `a valid compressed secp256k1 public key`.
+ECMAScript trimming and lowercasing apply to the parsed key and the expected
+certifier in both response checks: uppercase, space padding and U+FEFF are
+accepted; U+0085 is retained and refused. A differing response identity
+header uses `Invalid certifier! Expected: <expected>, Received: <received>`
+inside `Validation error:`, as the reference does at `Wallet.ts:789-791`.
+`certificate_issuance_key_tests.rs` witnesses the refusal before preparation,
+normalization through the response checks, and that header text using
+loopback fixtures.
+
 The bsv-rs #261 fixture is pinned byte for byte under
 `conformance/upstream/261-certificate-field-value/`. The four tests in
 `certificate_issuance_tests.rs` cover intake bytes and reference signature
