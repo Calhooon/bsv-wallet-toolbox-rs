@@ -55,6 +55,25 @@
   and the outputs' ahead of the labels'. A bad input plus a bad output
   answered `outputs[0]: locking script cannot be empty` before and answers
   `inputs[0]: unlockingScript or unlockingScriptLength required` now.
+
+- #300: the certificate issuance client nonce is the pinned reference's
+  `createNonce` (`ts-stack@edf6e03` `createNonce.ts:21-44`, as `Wallet.ts:771`
+  calls it): 16 random bytes and their `[2, 'server hmac']` HMAC with the
+  certifier as counterparty, keyed by the bytes' TextDecoder text, base64 of
+  the 48 bytes. The `clientNonce` a certifier receives moves from 44
+  characters (32 random bytes, padded) to 64 characters without padding, so a
+  certifier that decodes `clientNonce + serverNonce` as one string no longer
+  meets `Invalid base64 padding`, and one that checks the client nonce with
+  `verifyNonce(clientNonce, wallet, subject)` accepts it. The serial check now
+  decodes the two nonces as one string (`Wallet.ts:809`): a bad character in
+  the server nonce is named at its index in the joined string (64 past its
+  own). With a server nonce long enough that `serverNonce + clientNonce`
+  passes 800 bytes, the refusal is `The keyID parameter must be no more than
+  800 length.` ahead of the serial's `The hmac parameter must be exactly 32
+  bytes` (`validationHelpers.ts:227` via `:1772`, before `:1774`). The
+  `client_nonce: String` field keeps its type. The CLI's captain and any
+  certifier operator are told: the nonce's length and these two texts move.
+
 - #295: both change allocators (the create door's and the public
   `StorageSqlx::allocate_change_input`) and both counts take only
   wallet-managed change, as `ts-stack@edf6e03`
@@ -141,7 +160,7 @@
   An empty master keyring answers `A MasterCertificate must have a valid
   masterKeyring!` before storage; otherwise returned fields must decrypt with
   the request's master keyring before storage.
-  The identity header (#269), client nonce generation and signature `Ok(false)`
+  The identity header (#269), client nonce generation (#300) and signature `Ok(false)`
   policy (#188/#199) retain their existing behavior. CLI error snapshots need
   review when this lands.
 - #187: a noSend-only `process_action` on stored actions (`is_new_tx`,
