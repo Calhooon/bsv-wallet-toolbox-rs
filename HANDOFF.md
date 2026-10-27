@@ -124,6 +124,18 @@ Launched on beta 84a5a49 and after, from the cold reviews of CLI PRs 262 and 263
 | #202 | #213 | 6b98355 | the storage client's JSON-RPC wire follows the reference's StorageServer names through a runtime adapter (`src/storage/client/wire.rs`; 16 field groups, `inputBEEF` among them; result aliases both ways); 41 request witnesses replayed by `tests/storage_wire.rs`; `docs/STORAGE-WIRE.md` the audit of record; the required `Test Suite` and `Clippy` steps build `sqlite,remote`; two reviews (fix, merge), two doc folds. The captain's decision: the adapter is the wire layer, since a serde rename on the shared public entity types would be a public shape change; the twelve rows marked as the owner's are in his decision brief of 2026-10-26 (the keeper's recommendation: the reference's shape on the 0.14 line) and become successor lanes on his word |
 | #212 | #215 | 1a0f3f1 | the create door refuses an empty unlocking script (`The unlockingScript parameter must be hexadecimal string.`, the reference's text) and a zero `unlockingScriptLength` (the port's own words in the reference's shape; the reference's helper permits 0 where BRC-100 types it positive, an upstream finding in the keeper's filing) before anything is stored; three reviews (fix on the parameter name, merge, merge on the test refactor) |
 | #203 | #219 | 3a4fbe3 | certificate issuance follows the reference's field scheme (a key per field, the field key wallet-encrypted into the master keyring, the field as base64 text); witnessed both ways against bsv-rs's #261 fixture pinned from its beta 2e4b477 under `conformance/upstream/261-certificate-field-value/`; hosts re-issue every certificate the toolbox issued before it; one review (merge; two ratchet falls re-recorded at landing; #222, #223 filed) |
+| #216 | #225 | f25c6fa | `sign_action` refuses a caller's spend longer than the `unlockingScriptLength` it declared, with the reference's text; the declared length rides the pending-action cache |
+| #222 | #227 | 4e0779c | `create_keyring_for_verifier` decrypts the field under the recovered key before disclosing it, as the reference does; a corrupt master entry is refused at prove time |
+| #221 | #231 | 5c5158e | dependents gate: a clone fault on any arm is one summary row, like the probe's |
+| #228, #229 | #232 | e5654b8 | `prove_certificate`'s field recovery as the reference has it: the verifier key padded to 32 bytes, one sentence for every failure, a non-UTF-8 plaintext refused |
+| #233 | #234 | 64724bd | an invalid field name in `fieldsToReveal` is refused inside the recovery with the reference's one sentence |
+| #205 | #235 | 5b02968 | the SEEN, IN_BLOCK and MINED arms commit their status and hint writes in one `write_tx`, so a busy store costs one wait against a webhook sender's 10 s; the typed StoreBusy is the answer (the CLI's two deadline tests had encoded the two waits: CLI #285) |
+| #237 | #239 | 666f568 | the one-wait tests' ceiling at 2x `busy_timeout` (superseded by #244 the same night) |
+| #236 | #238 | db425c1 | the reference's pre-loop gate on `fieldsToReveal`, the fields and the master keyring, with its texts byte for byte |
+| #244 | #246 | d5859ab | the three one-wait tests count writer acquisitions through a `cfg(test)` counter on `StorageSqlx` instead of timing them (GitHub's macOS runner read 3.5 to 4x the timeout for one wait; the Studio 1.3x) |
+| #193 | #241 | 0933d19 | a caller's named change input is refused in the reference's order and words, change before spendability (`The inputs[N] parameter must be an unmanaged input. Change outputs are managed by your wallet.`); the CLI's fixture 234 re-pins |
+| #182 | #242 | a1e7bdb | under `cfg(test)` and `bench-support` a provider request to a non-loopback host is refused before transport, whatever the post mode or environment; production untouched; the required integration step gains the feature in its own PR |
+| #240 | #247 | feb2839 | the certificate serial number is checked before the verifier key is derived, with the reference's three texts; an empty `fields_to_reveal` returns an empty keyring as the reference does (two issuance tests had used the empty vector as "reveal all") |
 
 Filed from the reviews, Phase 2: #216 (a spend longer than the declared `unlockingScriptLength` is accepted where the reference refuses it). Told to bsv-rs: its shared `validate_create_action_args` carries neither create bound (bsv-rs #282); the toolbox's door delegates to it when it lands.
 
@@ -135,16 +147,23 @@ What landing taught (the evening):
 - The landing script's "keep both CHANGELOG sides" repeats an entry once per rebased commit that touched the file; its guard refuses the push, and the captain keeps the last copy. Land PRs that share a file one at a time.
 - A refusal text is the reference's byte for byte or it is a finding: three reviews found a prefix, an ordering claim or a parameter name that followed nothing (`inputs.N.`), each corrected to the reference's rendering or named as the port's own.
 
+What landing taught (the night of 2026-10-26 to 27):
+
+- A PR run is one ubuntu cell (#204), so a macOS-only red shows on the push after landing: #205's timing tests passed every PR cell and failed three beta pushes in a row on GitHub's macOS runner (709 to 806 ms for one 200 ms wait). A proof that reads a clock is the runner's; the tests count now (#244). The keeper's label: a red badge on beta is a badge red, not a production red; it goes in the hour unless it blocks a landing.
+- The dependents gate caught a cross-crate contract the same hour: the CLI's two ARC-callback deadline tests had encoded the toolbox's two busy waits; the typed StoreBusy after one wait is the charter's word, so the CLI re-pins (CLI #285) and nothing is filed here. The CLI's own CI stayed green on the published beta.1, which is why the gate builds the line's branch against the tip.
+- A lane's bounds are the captain's to widen when the port's own shorthand is what fails (#240: an empty vector as "reveal all" in two issuance tests); a fix lane on the lane's tip, then one PR, one review.
+- The fuzz workspace is its own `[workspace]` and did not follow the bsv-rs pin at #184; a pin lane moves `fuzz/Cargo.toml` and its lock with `Cargo.toml` from now (#243, on #199's list).
+
 The ratchet's accepted falls (pedantic 3279 to 3277, cognitive 43 to 42, duplicated_blocks 6822 to the tree's reading after #215) are re-recorded in a measuring commit with `python3 tools/scoreboard-write` after this wave, never before.
 
-## Next (after the cut)
+## Next (2026-10-27)
 
-- Done 2026-10-26 evening: the CLI's beta pins both prereleases (bb0a149) and its one test moved (3268281); `dependents` and `semver` fail the run on beta again (#218, #220); #208 closed at the gate's green push run (40415011255). Open from the gate's review: #221.
-- #204 (CI balance) landed at beta 1f66578 (17:12Z) and main's copy #206 at 3a8610f; what remains of that thread is the fuzz workflow's one dispatch, which reads the cold-runner wall-clock when the queue is quiet (#159's thread).
-- Wave 3 landed (the table above: #200, #201, #211, #202, #212, #203). Next code lanes on beta: #216 (a spend longer than the declared length), #222 (the verifier keyring decrypts the field as the reference does), #223 (certificate field caps and canonical base64), #221 (the gate's clone fault row), #205 (the three paths' repeated reads), #175 sweep, #182, #187, #192, #193, #194; the owner's twelve storage-wire rows (#202's audit) as successor lanes on his word from the brief of 2026-10-26.
-- The bsv-rs 0.9.0-beta.2 pin lane is #199 (twelve items with the bsv-rs issue behind each: #261/#197, #137's `WalletRefusal` with the keeper's four door readings on #185, #266, #240, #249, #262, #251, #105 and the identity entry's required fields, #218, the `set_field` `Result`, #185/#188/#143/#144 remainders). It waits on bsv-rs's beta.2 index time and the owner's word for the pin.
-- Docs PR after the cut: the vector README and the CHANGELOG #103 line cite ts-stack#1380; this HANDOFF.
-- The owner's words still needed: #186 (the `privileged` pass-through) and #191's remaining RNG sites (shapes); #159's reshape; the beta.2 pin when it reaches the index.
+- Landed overnight: the Wave 3 table above through #247. Beta's badge: the macOS cells green from d5859ab; `dependents` red until the CLI's #285 lands on its beta (its captain tells the sha).
+- Running or queued on beta: the one-line CI follow-up (lane `p3-182-ci-bench`: `bench-support` on the required integration step so #182's four witnesses gate every PR); then #245 (the stored-input spendable guard gated on `!isNoSend` as the reference's), #249 (the verifier and certifier parsed before the lookup as the reference does), #248 (three raw HTTP clients outside services guarded under test), #243 (the fuzz workspace's pin, with the pin lane).
+- The bsv-rs 0.9.0-beta.2 pin lane is #199; its list now carries bsv-rs #275 (the 1 MiB field value bound; #223 closes with it), #294 (`assert_requested_certificate_set`), #297 (`MasterCertificate::new` returns `Result`; four error texts changed), and the fuzz lock. It runs at the owner's word for the pin, after bsv-rs cuts.
+- Open follow-ups from the reviews: #175 (the sweep), #187, #192, #194; the twelve storage-wire rows of #213 wait on the owner's brief (the keeper's recommendation stands: the reference's shape on 0.14).
+- Docs: `docs/DEPENDENTS.md` takes the CLI's #285 sha; this HANDOFF at each wave.
+- The owner's words still needed: #186 (the `privileged` pass-through) and #191's remaining RNG sites (shapes); #159's reshape; the beta.2 pin when it reaches the index; the twelve storage-wire rows.
 
 ## Open with the CLI's captain
 
