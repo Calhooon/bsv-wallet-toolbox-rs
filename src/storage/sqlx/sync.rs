@@ -1930,31 +1930,29 @@ async fn upsert_output(
         let local_id: i64 = row.get("output_id");
         let local_updated: DateTime<Utc> = row.get("updated_at");
 
-        // Update if chunk is newer
+        // Update if chunk is newer. EntityOutput.mergeExisting (ts-stack
+        // edf6e03, :340-357) assigns these columns and no others: it leaves
+        // transaction_id (the match key), satoshis, derivation_prefix,
+        // derivation_suffix and sequence_number as stored (#276, #298).
         if output.updated_at > local_updated {
             sqlx::query(
                 r#"
                 UPDATE outputs
-                SET transaction_id = ?, basket_id = ?, satoshis = ?, locking_script = ?,
+                SET basket_id = ?, locking_script = ?,
                     script_length = ?, script_offset = ?, type = ?, spendable = ?, change = ?,
-                    derivation_prefix = ?, derivation_suffix = ?, sender_identity_key = ?,
-                    custom_instructions = ?, provided_by = ?, purpose = ?,
+                    sender_identity_key = ?, custom_instructions = ?, provided_by = ?, purpose = ?,
                     output_description = ?, spent_by = ?, spending_description = ?,
                     updated_at = ?
                 WHERE output_id = ?
                 "#,
             )
-            .bind(tx_id)
             .bind(local_basket_id)
-            .bind(output.satoshis)
             .bind(&output.locking_script)
             .bind(output.script_length)
             .bind(output.script_offset)
             .bind(&output.output_type)
             .bind(output.spendable)
             .bind(output.change)
-            .bind(&output.derivation_prefix)
-            .bind(&output.derivation_suffix)
             .bind(&output.sender_identity_key)
             .bind(&output.custom_instructions)
             .bind(&output.provided_by)
