@@ -40,9 +40,14 @@ pub(super) async fn replay_queue(scenes: Vec<Scene>, workers: usize) -> Vec<Repl
                 };
                 let outcome = match fixture {
                     Err(e) => Err(e),
-                    Ok(fixture) => replay(&fixture, &mut servers)
+                    Ok(fixture) => stall::replay_scene(&fixture, &fixture, &mut servers)
                         .await
-                        .map(|actual| (fixture, actual)),
+                        .map(|(actual, history, retried)| {
+                            if let Some(note) = retried {
+                                stall::name_the_retry(&path, &note);
+                            }
+                            (fixture, (actual, history))
+                        }),
                 };
                 done.push((path, outcome));
             }
