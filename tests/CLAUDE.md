@@ -111,7 +111,8 @@ Tests service layer error handling, adaptive timeouts, and EMA convergence. Uses
 **Key tests:**
 - `test_service_500_error` - ARC provider wraps HTTP 500 as `PostBeefResult` with `service_error: true`
 - `test_service_429_rate_limit` - 429 response wrapped similarly
-- `test_connection_failure` - Unreachable host (RFC 5737 TEST-NET) produces service error
+- `test_connection_refused_on_closed_loopback_port` - a loopback port with nothing listening produces the transport's connection error, in every build
+- `test_non_loopback_host_refused_by_guard_before_transport` - an unreachable host (RFC 5737 TEST-NET) is refused by the #182 guard before transport, under `bench-support`
 - `test_json_error_response` - ARC-specific status 465 (FEE_TOO_LOW)
 - `test_all_providers_fail_collection` - 3 mock providers all fail; verifies `ServiceCollection` failover + call history
 - `test_adaptive_timeout_defaults` - `AdaptiveTimeoutConfig` defaults: min=5s, max=60s, multiplier=2.0, initial=30s
