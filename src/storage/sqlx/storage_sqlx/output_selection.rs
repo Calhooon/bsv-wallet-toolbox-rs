@@ -1,5 +1,11 @@
 use super::{sequence_number_from_row, Result, Row, StorageSqlx, TableOutput};
-use crate::storage::sqlx::create_action::MANAGED_CHANGE_CLAUSE;
+use crate::storage::sqlx::create_action::{MANAGED_CHANGE_CLAUSE, RECEIVED_COIN_CLAUSE};
+
+/// The received rule (R1 (d)) the public allocator binds: off. Its signature
+/// names no rule, so a received coin of a parent not `completed` is held, as
+/// the create door holds it for an action that does not name the rule
+/// (#304).
+const ALLOW_RECEIVED: bool = false;
 
 impl StorageSqlx {
     /// Find a spendable change output suitable for use as input.
@@ -8,7 +14,9 @@ impl StorageSqlx {
     /// `P2PKH`, `provided_by = 'storage'`, purpose `change` or `receive`,
     /// with a derivation prefix and suffix, its parent `completed`,
     /// `unproven`, or `sending` unless `exclude_sending` (the reference's
-    /// filters, #295).
+    /// filters, #295). A received coin (`purpose = 'receive'`) is taken only
+    /// once its parent is `completed`: the charter's R1 (d) with the rule
+    /// off, as the create door's allocator applies it (#304).
     ///
     /// The claim is the guarded `UPDATE` (`spendable = 1 AND spent_by IS
     /// NULL`), not the read: two callers never allocate the same coin. A
@@ -51,6 +59,7 @@ impl StorageSqlx {
               AND o.transaction_id != ?
               AND t.status IN {statuses}
               {MANAGED_CHANGE_CLAUSE}
+              {RECEIVED_COIN_CLAUSE}
             ORDER BY
               CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
               CASE WHEN o.satoshis >= ? THEN o.satoshis ELSE -o.satoshis END
@@ -65,6 +74,7 @@ impl StorageSqlx {
                     .bind(user_id)
                     .bind(basket_id)
                     .bind(transaction_id)
+                    .bind(ALLOW_RECEIVED)
                     .bind(target_satoshis)
                     .bind(target_satoshis)
                     .fetch_optional(&self.reader)
@@ -167,10 +177,12 @@ impl StorageSqlx {
               AND o.spent_by IS NULL
               AND t.status IN {statuses}
               {MANAGED_CHANGE_CLAUSE}
+              {RECEIVED_COIN_CLAUSE}
             "#
         ))
         .bind(user_id)
         .bind(basket_id)
+        .bind(ALLOW_RECEIVED)
         .fetch_one(self.pool())
         .await?;
 
