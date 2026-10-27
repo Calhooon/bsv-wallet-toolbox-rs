@@ -5494,6 +5494,67 @@ mod tests {
                             );
                         }
                     }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_fields_to_reveal_item_limit() {
+                        // validateArray at 1506 (its bound at 105-114) refuses more
+                        // than 100000 items before any name is checked.
+                        let limit = refusal("fieldsToReveal", "an array of at most 100000 items");
+                        let mut duplicated = names(100_000);
+                        duplicated.push("f0".to_string());
+                        let mut with_bad_name = names(100_000);
+                        with_bad_name.push(String::new());
+                        for stored in [false, true] {
+                            for reveal in
+                                [names(100_001), duplicated.clone(), with_bad_name.clone()]
+                            {
+                                let result = prove_args(stored, |args| {
+                                    args.fields_to_reveal = reveal;
+                                })
+                                .await;
+                                assert_wallet_error("item limit", result, &limit);
+                            }
+                        }
+                        // certificate.signature at 1502-1505 precedes the bound.
+                        let result = prove_args(false, |args| {
+                            args.certificate.signature = "zz".to_string();
+                            args.fields_to_reveal = names(100_001);
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "signature before item limit",
+                            result,
+                            &refusal("certificate.signature", "hexadecimal string."),
+                        );
+                        // privilegedReason at 1477 precedes the bound.
+                        let result = prove_args(false, |args| {
+                            args.privileged_reason = Some("abcd".to_string());
+                            args.fields_to_reveal = names(100_001);
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "reason before item limit",
+                            result,
+                            &refusal("privilegedReason", "at least 5 length."),
+                        );
+                        // The bound precedes verifier at 1509.
+                        let result = prove_args(false, |args| {
+                            args.fields_to_reveal = names(100_001);
+                            args.verifier = "abc".to_string();
+                        })
+                        .await;
+                        assert_wallet_error("item limit before verifier", result, &limit);
+                        // 100000 items pass the bound and meet the count at 1513.
+                        let result = prove_args(false, |args| {
+                            args.fields_to_reveal = names(100_000);
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "100000 items pass the bound",
+                            result,
+                            &refusal("fieldsToReveal", "at most 100 fields"),
+                        );
+                    }
                 }
 
                 #[tokio::test]
