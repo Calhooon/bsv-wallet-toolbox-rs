@@ -38,7 +38,7 @@ use super::wallet::{
     validate_public_key_arg,
 };
 use crate::error::{Error, Result};
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{Client, Url};
 use crate::storage::entities::{TableCertificate, TableCertificateField};
 use crate::storage::{not_busy, AuthId, WalletStorageProvider};
 
@@ -345,7 +345,7 @@ fn validate_issuance_url(value: &str) -> Result<String> {
     if value != trim_ecmascript_whitespace(value) {
         return Err(invalid("an exact HTTPS URL without whitespace"));
     }
-    let url = reqwest::Url::parse(value).map_err(|_| invalid("an absolute HTTPS URL"))?;
+    let url = Url::parse(value).map_err(|_| invalid("an absolute HTTPS URL"))?;
     if url.scheme() != "https" {
         return Err(invalid("an HTTPS URL"));
     }
