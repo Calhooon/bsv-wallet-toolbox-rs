@@ -142,3 +142,25 @@ async fn nosend_label_is_refused_on_internalize_through_wallet_interface() {
     }
     assert_eq!(store_snapshot(&wallet).await, before);
 }
+
+/// The label grammar answers ahead of the capability refusal (#359,
+/// `Wallet.ts:1163`; `brc177NoSendExpiry.ts:96-98`).
+#[tokio::test]
+async fn nosend_batch_label_is_refused_with_the_grammar_text_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    fund_tagged(&wallet, &own_lock(&wallet), 0).await;
+    let before = store_snapshot(&wallet).await;
+
+    let result = wallet
+        .create_action(expiry_payment("p nosend batch"), "nosend.example.com")
+        .await;
+    match result {
+        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
+            message,
+            "Validation error: The labels parameter must be exactly one BRC-177 noSend expiry label"
+        ),
+        Err(other) => panic!("refused with another error: {other:?}"),
+        Ok(_) => panic!("the action was created"),
+    }
+    assert_eq!(store_snapshot(&wallet).await, before);
+}

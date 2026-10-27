@@ -225,6 +225,9 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
 #[path = "tests/validation_bounds.rs"]
 mod bounds_tests;
 #[cfg(test)]
+#[path = "tests/validation_nosend_grammar.rs"]
+mod nosend_grammar_tests;
+#[cfg(test)]
 #[path = "tests/validation_nosend.rs"]
 mod nosend_tests;
 #[cfg(test)]
