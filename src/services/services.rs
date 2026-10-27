@@ -641,8 +641,9 @@ impl Services {
         Self::with_options(chain, options)
     }
 
-    /// Create new services with custom options. Refuses options in Arcade
-    /// mode (the default) whose `arc_url` is empty (#317).
+    /// Create new services with custom options. Refuses options whose
+    /// `arc_url` is empty: in Arcade mode (the default, #317) and in classic
+    /// mode (#345), each with a text naming its knob.
     pub fn with_options(chain: Chain, options: ServicesOptions) -> Result<Self> {
         // Create providers
         let woc_config = WhatsOnChainConfig {
@@ -672,8 +673,13 @@ impl Services {
         bitails: StdArc<Bitails>,
         bananablocks: Option<StdArc<BananaBlocks>>,
     ) -> Result<Self> {
-        if options.arcade_v2 && options.arc_url.trim().is_empty() {
-            return Err(Error::InvalidArgument(NO_ARCADE_URL.to_string()));
+        if options.arc_url.trim().is_empty() {
+            let text = if options.arcade_v2 {
+                NO_ARCADE_URL
+            } else {
+                NO_CLASSIC_ARC_URL
+            };
+            return Err(Error::InvalidArgument(text.to_string()));
         }
         // Arcade V2 mode (explicit flag, never inferred from the URL): the
         // configured arc_url IS the Arcade endpoint and the Arcade
