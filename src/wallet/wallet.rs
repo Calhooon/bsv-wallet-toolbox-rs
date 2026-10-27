@@ -3358,13 +3358,31 @@ fn create_keyring_for_verifier(
     use bsv_rs::primitives::SymmetricKey;
     use bsv_rs::wallet::{DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs};
 
-    // Match the pre-loop order at ts-stack@edf6e03 MasterCertificate.ts:348-364.
+    // Match the pre-loop order at ts-stack@edf6e03 MasterCertificate.ts:348-365.
     // Rust's borrowed string containers already provide stable typed inputs.
     validate_certificate_reveal_names(fields_to_reveal)?;
     validate_certificate_record(fields, "Certificate fields")?;
     validate_certificate_record(master_keyring, "Master certificate keyring")?;
     validate_certificate_base64_values(fields, "Certificate field")?;
     validate_certificate_base64_values(master_keyring, "Master certificate keyring field")?;
+
+    // canonical32ByteBase64 at MasterCertificate.ts:76-78,365 checks the
+    // encoding and length before the subset loop or any verifier key IDs.
+    let serial_bytes = BASE64.decode(serial_number).map_err(|_| {
+        bsv_rs::Error::WalletError(
+            "Certificate serial number must use canonical base64 encoding".to_string(),
+        )
+    })?;
+    if serial_bytes.is_empty() || serial_bytes.len() > 32 {
+        return Err(bsv_rs::Error::WalletError(
+            "Certificate serial number is empty, oversized, or non-canonical".to_string(),
+        ));
+    }
+    if serial_bytes.len() != 32 {
+        return Err(bsv_rs::Error::WalletError(
+            "Certificate serial number must encode exactly 32 bytes".to_string(),
+        ));
+    }
 
     let decryption_error =
         || bsv_rs::Error::WalletError("Failed to decrypt certificate field!".to_string());
