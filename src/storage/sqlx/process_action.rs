@@ -774,15 +774,17 @@ async fn post_stored_actions(
     user_id: i64,
     args: &StorageProcessActionArgs,
 ) -> Result<StorageProcessActionResults> {
+    // A noSend-only call shares nothing, so no handle is resolved (and none
+    // refused): the reference shares `[...args.sendWith]`, empty here.
+    if args.is_no_send && !args.is_send_with {
+        return Ok(stored_post_result(&[]));
+    }
     let mut handles = args.send_with.clone();
     handles.extend(args.reference.iter().chain(args.txid.iter()).cloned());
     let posts = {
         let mut conn = storage.pool().acquire().await?;
         resolve_stored_posts(&mut conn, user_id, &handles).await?
     };
-    if args.is_no_send && !args.is_send_with {
-        return Ok(stored_post_result(&[]));
-    }
     if !posts.iter().any(|post| post.status == "sending") {
         return Ok(stored_post_result(&posts));
     }
@@ -1779,6 +1781,38 @@ mod tests {
             .unwrap();
         assert!(result.send_with_results.is_some());
         assert!(result.send_with_results.unwrap().is_empty());
+    }
+
+    /// A noSend-only call on a stored action shares nothing, so a handle
+    /// naming an unsigned template is never resolved: the reference's
+    /// `processActionCore` shares `[...args.sendWith]`, empty here, and
+    /// `shareReqsWithWorld` returns `{ swr: [] }` (issue #187).
+    #[tokio::test]
+    async fn test_no_send_only_call_naming_a_template_answers_unchanged() {
+        let (storage, user_id, reference) = setup_storage_with_action().await;
+        let args = StorageProcessActionArgs {
+            is_new_tx: false,
+            is_send_with: false,
+            is_no_send: true,
+            is_delayed: false,
+            reference: Some(reference.clone()),
+            txid: None,
+            raw_tx: None,
+            send_with: vec![],
+        };
+
+        let result = process_action_internal(&storage, user_id, args)
+            .await
+            .unwrap();
+        assert!(result.send_with_results.is_some_and(|sent| sent.is_empty()));
+        assert!(result.not_delayed_results.is_none());
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM transactions WHERE reference = ?")
+                .bind(&reference)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "unsigned");
     }
 
     #[tokio::test]

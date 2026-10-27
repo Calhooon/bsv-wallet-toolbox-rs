@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- #187: a noSend-only `process_action` on stored actions (`is_new_tx`,
+  `is_send_with` false, `is_no_send` true) answers an empty
+  `send_with_results` before any handle is resolved, so one naming an
+  unsigned template no longer answers `InvalidTransactionStatus`. At
+  `ts-stack@edf6e03` `processAction.ts:113` shares only `args.sendWith`
+  (empty for such a call, `:55`) and `shareReqsWithWorld` returns
+  `{ swr: [] }` at `:313`. Nothing is written or posted, as before.
+  Test: `test_no_send_only_call_naming_a_template_answers_unchanged`.
 - #260: `prove_certificate` now validates type, serial, certifier, subject,
   signature, requested name lengths, then verifier before the certificate
   lookup, in the ported checks' order at `ts-stack@edf6e03`
