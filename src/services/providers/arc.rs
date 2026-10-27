@@ -8,7 +8,8 @@
 //! Supports BEEF format transaction broadcasting with callbacks for
 //! proof delivery and double-spend notifications.
 
-use reqwest::{Client, StatusCode};
+use crate::services::http_client::Client;
+use reqwest::StatusCode;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -358,7 +359,10 @@ impl Arc {
     /// The answer to one `POST /v1/tx`, whatever the body's form.
     async fn read_submit_response(
         &self,
-        response: std::result::Result<reqwest::Response, reqwest::Error>,
+        response: std::result::Result<
+            reqwest::Response,
+            crate::services::http_client::RequestError,
+        >,
         txid: String,
         bytes_sent: usize,
     ) -> Result<PostTxResultForTxid> {

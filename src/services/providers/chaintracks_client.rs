@@ -3,12 +3,12 @@
 //! Provides block header lookups and merkle root validation via a remote
 //! Chaintracks server. Also implements the `ChainTracker` trait from bsv-sdk.
 
+use crate::services::http_client::Client;
 use crate::services::{traits::BlockHeader, Chain};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use bsv_rs::transaction::beef_stream::ChainTip;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 /// Chaintracks service client configuration.
@@ -100,7 +100,7 @@ impl ChaintracksServiceClient {
         format!("{}{}", self.config.url.trim_end_matches('/'), path)
     }
 
-    fn build_request(&self, url: &str) -> reqwest::RequestBuilder {
+    fn build_request(&self, url: &str) -> crate::services::http_client::RequestBuilder {
         let mut req = self.client.get(url);
         if let Some(ref key) = self.config.api_key {
             req = req.header("Authorization", format!("Bearer {}", key));
