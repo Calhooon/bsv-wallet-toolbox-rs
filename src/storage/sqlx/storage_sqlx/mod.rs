@@ -55,7 +55,7 @@ mod users;
 #[cfg(test)]
 mod validation_tests;
 mod writer;
-pub(crate) use outputs::output_from_row;
+pub(crate) use outputs::{output_from_row, sequence_number_from_row};
 pub use proven_tx_reqs::{UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT};
 pub(crate) use proven_txs::{
     bump_leaf_index, store_validated_proof_on, StoreProofOutcome, ValidatedProofRow,

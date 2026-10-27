@@ -1,6 +1,6 @@
 use super::{
-    AbortActionArgs, AuthId, Duration, Error, ListActionsArgs, ListActionsResult, Result, Row,
-    StorageSqlx, Utc, WalletStorageWriter,
+    sequence_number_from_row, AbortActionArgs, AuthId, Duration, Error, ListActionsArgs,
+    ListActionsResult, Result, Row, StorageSqlx, Utc, WalletStorageWriter,
 };
 
 impl StorageSqlx {
@@ -373,7 +373,7 @@ impl StorageSqlx {
                             None
                         };
                     let input_description: Option<String> = i_row.get("output_description");
-                    let sequence_number: Option<i32> = i_row.get("sequence_number");
+                    let sequence_number = sequence_number_from_row(i_row)?;
 
                     // Parse source txid
                     let source_txid_bytes: [u8; 32] = if let Some(ref txid_hex) = source_txid {
@@ -400,7 +400,7 @@ impl StorageSqlx {
                         source_locking_script,
                         unlocking_script,
                         input_description: input_description.unwrap_or_default(),
-                        sequence_number: sequence_number.unwrap_or(0xffffffff_u32 as i32) as u32,
+                        sequence_number: sequence_number.unwrap_or(u32::MAX),
                     });
                 }
                 action.inputs = Some(wallet_inputs);
