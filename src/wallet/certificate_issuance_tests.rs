@@ -301,7 +301,13 @@ async fn reference_issued_certificate_proves_and_decrypts() {
         let (wallet, auth) = wallet(issued.keys.subject).await;
         let stored = store(&wallet, &auth, &parsed, &issued.master_keyring).await;
         assert_eq!(stored.fields, issued.certificate.fields);
-        let keyring = prove(&wallet, stored.clone(), issued.keys.verifier, Vec::new()).await;
+        let keyring = prove(
+            &wallet,
+            stored.clone(),
+            issued.keys.verifier,
+            issued.certificate.fields.keys().cloned().collect(),
+        )
+        .await;
         let verifier = ProtoWallet::new(Some(key(issued.keys.verifier)));
         let subject = key(issued.keys.subject).public_key();
         assert_eq!(
@@ -417,7 +423,13 @@ async fn toolbox_issued_certificate_decrypts_like_reference() {
         assert!(verify_like_reference(&parsed.certificate));
         assert_eq!(parsed.cert_fields, prepared.fields);
         let stored = store(&wallet, &auth, &parsed, &prepared.master_keyring).await;
-        let keyring = prove(&wallet, stored, issued.keys.verifier, Vec::new()).await;
+        let keyring = prove(
+            &wallet,
+            stored,
+            issued.keys.verifier,
+            cert_response.fields.keys().cloned().collect(),
+        )
+        .await;
         assert_eq!(
             decrypt_like_reference(
                 &ProtoWallet::new(Some(key(issued.keys.verifier))),
