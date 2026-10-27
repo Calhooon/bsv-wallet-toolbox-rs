@@ -454,3 +454,7 @@ mod tests {
         assert!(result.outputs.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "list_bounds_tests.rs"]
+mod bounds_tests;
