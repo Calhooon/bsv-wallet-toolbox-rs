@@ -203,9 +203,9 @@ two stores whose writers meet in SQLite's busy handler and two reservation sets.
 | a store opened twice has two writers; a shared store one | `storage.md section 2 S9` | `a_store_opened_twice_has_two_writers_and_a_shared_store_one` (`--test store_write_lock_tests`) |
 | a wallet and a monitor over one store share the writer | `storage.md section 2 S9` | `a_wallet_and_a_monitor_over_one_store_share_the_writer` |
 | the writer not acquired within the ceiling is `StoreBusy` | `storage.md section 2 S9` (a typed busy that promises nothing was written) | `the_writer_not_acquired_within_the_ceiling_is_store_busy` (`--test store_write_lock_tests`) |
-| Arcade SEEN status contention takes less than 1.5 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `seen_status_busy_waits_once_without_writes` |
-| Arcade IN_BLOCK status contention takes less than 1.5 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `in_block_status_busy_waits_once_without_writes` |
-| Arcade MINED status contention takes less than 1.5 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `mined_status_busy_waits_once_without_writes` |
+| Arcade SEEN status contention takes less than 2 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `seen_status_busy_waits_once_without_writes` |
+| Arcade IN_BLOCK status contention takes less than 2 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `in_block_status_busy_waits_once_without_writes` |
+| Arcade MINED status contention takes less than 2 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `mined_status_busy_waits_once_without_writes` |
 | Arcade status updates and their hint commit once per callback | `storage.md section 2 S9` | `status_delivery_commits_statuses_and_hint_once` |
 | cancellation during an Arcade status write leaves both statuses and the hint unchanged | `storage.md section 2 S9`; `wallet.md section 6` R8 | `cancelled_status_delivery_rolls_back_statuses_and_hint` |
 | an Arcade transaction-status failure rolls back its request status too | `storage.md section 2 S9` | `seen_status_updates_roll_back_together` |

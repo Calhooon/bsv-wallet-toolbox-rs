@@ -309,7 +309,7 @@ reply after the Arcade webhook sender's 10 s timeout at the default 5 s
 store timeout. The real-store `seen_status_busy_waits_once_without_writes`,
 `in_block_status_busy_waits_once_without_writes` and
 `mined_status_busy_waits_once_without_writes` tests check both known and
-unknown txids below 1.5 times a 200 ms timeout.
+unknown txids below 2 times a 200 ms timeout.
 
 On MINED and IMMUTABLE, inline proof ingestion follows the committed status
 transaction. The tracker check holds no writer, and the later ingest has its
