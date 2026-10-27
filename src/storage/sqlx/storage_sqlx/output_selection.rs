@@ -98,10 +98,19 @@ impl StorageSqlx {
             }
 
             // Fetch the full output record
-            let full_row = sqlx::query("SELECT * FROM outputs WHERE output_id = ?")
-                .bind(output_id)
-                .fetch_one(&self.reader)
-                .await?;
+            let full_row = sqlx::query(
+                r#"
+                SELECT output_id, user_id, transaction_id, basket_id, txid, vout,
+                       satoshis, locking_script, script_length, script_offset,
+                       type, provided_by, purpose, output_description, spent_by, sequence_number,
+                       spending_description, spendable, change, derivation_prefix, derivation_suffix,
+                       sender_identity_key, custom_instructions, created_at, updated_at
+                FROM outputs WHERE output_id = ?
+                "#,
+            )
+            .bind(output_id)
+            .fetch_one(&self.reader)
+            .await?;
 
             let now = chrono::Utc::now();
             let output = TableOutput {

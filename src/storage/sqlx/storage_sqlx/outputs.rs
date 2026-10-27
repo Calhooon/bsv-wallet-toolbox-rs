@@ -107,7 +107,7 @@ impl StorageSqlx {
 
         let mut outputs = Vec::new();
         for row in rows {
-            let mut output = output_from_row(&row);
+            let mut output = output_from_row(&row)?;
             if args.no_script.unwrap_or(false) {
                 output.locking_script = None;
             }
@@ -128,7 +128,8 @@ impl StorageSqlx {
             .find_output_row_by_outpoint(user_id, txid, vout)
             .await?
             .as_ref()
-            .map(output_from_row))
+            .map(output_from_row)
+            .transpose()?)
     }
 
     /// Keep nullable columns intact for stored-input validation before mapping.
@@ -193,39 +194,40 @@ impl StorageSqlx {
 }
 
 /// One `outputs` row as a `TableOutput`, every column the SELECT lists; the
-/// shared shape of the readers that fetch whole rows.
-pub(crate) fn output_from_row(row: &sqlx::sqlite::SqliteRow) -> TableOutput {
-    TableOutput {
-        output_id: row.get("output_id"),
-        user_id: row.get("user_id"),
-        transaction_id: row.get("transaction_id"),
-        basket_id: row.get("basket_id"),
-        txid: row.get("txid"),
-        vout: row.get("vout"),
-        satoshis: row.get("satoshis"),
-        locking_script: row.get("locking_script"),
-        script_length: row.get("script_length"),
-        script_offset: row.get("script_offset"),
-        output_type: row.get("type"),
-        provided_by: row.try_get("provided_by").unwrap_or("you".to_string()),
-        purpose: row.try_get("purpose").ok().flatten(),
-        output_description: row.try_get("output_description").ok().flatten(),
-        spent_by: row.try_get("spent_by").ok().flatten(),
+/// shared shape of the readers that fetch whole rows. Missing or invalid columns
+/// return a SQLx error; SQL NULL stays absent for optional fields.
+pub(crate) fn output_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> std::result::Result<TableOutput, sqlx::Error> {
+    Ok(TableOutput {
+        output_id: row.try_get("output_id")?,
+        user_id: row.try_get("user_id")?,
+        transaction_id: row.try_get("transaction_id")?,
+        basket_id: row.try_get("basket_id")?,
+        txid: row.try_get("txid")?,
+        vout: row.try_get("vout")?,
+        satoshis: row.try_get("satoshis")?,
+        locking_script: row.try_get("locking_script")?,
+        script_length: row.try_get("script_length")?,
+        script_offset: row.try_get("script_offset")?,
+        output_type: row.try_get("type")?,
+        provided_by: row.try_get("provided_by")?,
+        purpose: row.try_get("purpose")?,
+        output_description: row.try_get("output_description")?,
+        spent_by: row.try_get("spent_by")?,
         sequence_number: row
-            .try_get::<Option<i32>, _>("sequence_number")
-            .ok()
-            .flatten()
+            .try_get::<Option<i32>, _>("sequence_number")?
             .map(|v| v as u32),
-        spending_description: row.try_get("spending_description").ok().flatten(),
-        spendable: row.get("spendable"),
-        change: row.get("change"),
-        derivation_prefix: row.get("derivation_prefix"),
-        derivation_suffix: row.get("derivation_suffix"),
-        sender_identity_key: row.get("sender_identity_key"),
-        custom_instructions: row.get("custom_instructions"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }
+        spending_description: row.try_get("spending_description")?,
+        spendable: row.try_get("spendable")?,
+        change: row.try_get("change")?,
+        derivation_prefix: row.try_get("derivation_prefix")?,
+        derivation_suffix: row.try_get("derivation_suffix")?,
+        sender_identity_key: row.try_get("sender_identity_key")?,
+        custom_instructions: row.try_get("custom_instructions")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
 }
 
 #[cfg(test)]
@@ -235,6 +237,7 @@ mod tests {
         WalletStorageWriter,
     };
     use bsv_rs::wallet::OutputInclude;
+    use sqlx::{Column, Row};
 
     async fn stored_received_output() -> (StorageSqlx, AuthId, String, i64) {
         let storage = StorageSqlx::in_memory().await.unwrap();
@@ -277,6 +280,35 @@ mod tests {
             (output.purpose.as_deref(), output.provided_by.as_str()),
             (Some("receive"), "storage")
         );
+    }
+
+    #[tokio::test]
+    async fn test_output_decoder_rejects_missing_columns() {
+        let (storage, auth, txid, _) = stored_received_output().await;
+        let full_row = storage
+            .find_output_row_by_outpoint(auth.user_id.unwrap(), &txid, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let columns: Vec<_> = full_row.columns().iter().map(|c| c.name()).collect();
+        for missing in &columns {
+            let selected = columns
+                .iter()
+                .filter(|name| *name != missing)
+                .map(|name| format!("\"{name}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let row = sqlx::query(&format!("SELECT {selected} FROM outputs WHERE txid = ?"))
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+            let error = super::output_from_row(&row).unwrap_err();
+            assert!(
+                matches!(&error, sqlx::Error::ColumnNotFound(name) if name.as_str() == *missing),
+                "omitted {missing}: {error:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -758,7 +758,8 @@ async fn load_existing_outputs(
         r#"
         SELECT output_id, user_id, transaction_id, basket_id, txid, vout,
                satoshis, locking_script, script_length, script_offset,
-               type, spendable, change, derivation_prefix, derivation_suffix,
+               type, provided_by, purpose, output_description, spent_by, sequence_number,
+               spending_description, spendable, change, derivation_prefix, derivation_suffix,
                sender_identity_key, custom_instructions, created_at, updated_at
         FROM outputs
         WHERE user_id = ? AND txid = ?
@@ -769,10 +770,10 @@ async fn load_existing_outputs(
     .fetch_all(&mut *conn)
     .await?;
 
-    let outputs: Vec<TableOutput> = rows
+    let outputs = rows
         .iter()
         .map(super::storage_sqlx::output_from_row)
-        .collect();
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     Ok(outputs)
 }

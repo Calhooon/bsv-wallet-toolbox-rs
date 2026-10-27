@@ -163,7 +163,7 @@ async fn apply_stored_input_script(
             "The {txid}.{vout} parameter must be output with valid lockingScript and satoshis"
         )));
     };
-    Ok((output_from_row(row), script))
+    Ok((output_from_row(row)?, script))
 }
 
 /// Reads locking script from rawTx in proven_tx_reqs table.
