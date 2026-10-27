@@ -131,14 +131,14 @@ struct Fixture {
     expected: Option<Expected>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Provider {
     name: String,
     routes: Vec<Route>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Route {
     route: String,
@@ -282,7 +282,6 @@ async fn ladder_fixtures_post_bodies_are_normalized() {
         &answer,
         &counts,
     )
-    .await
     .unwrap();
     let client = reqwest::Client::new();
     for body in [
@@ -429,7 +428,8 @@ fn check_shape(path: &Path, fixture: &Fixture) -> Result<(), String> {
     Ok(())
 }
 
-/// One worker's servers, one per provider, reset between fixtures.
+/// One worker's servers, one per provider, reset between fixtures: off the
+/// runtime's workers (`lock::script`), and dropped off them too.
 struct Servers(Vec<(&'static str, mockito::Server)>);
 
 impl Servers {
@@ -452,15 +452,16 @@ impl Servers {
     }
 }
 
-/// Stand up the fixture's script on the servers; the mocks returned must
-/// live through the calls.
-async fn script(
-    fixture: &Fixture,
-    servers: &mut Servers,
+/// Stand up the providers' script on the servers; the mocks returned must
+/// live through the calls. Each server's lock is taken here, so this runs
+/// on a blocking thread (`lock::script`), never on a runtime worker.
+fn script_blocking(
+    providers: &[Provider],
+    servers: &mut [(&'static str, mockito::Server)],
     counts: &Counts,
 ) -> Result<Vec<mockito::Mock>, String> {
     let mut mocks = Vec::new();
-    for (name, server) in servers.0.iter_mut() {
+    for (name, server) in servers.iter_mut() {
         server.reset();
         // Made before the routes, wanting no request: it answers only what
         // no route scripts (mockito takes the earliest match still owed a
@@ -476,11 +477,10 @@ async fn script(
                     501
                 })
                 .expect(0)
-                .create_async()
-                .await;
+                .create();
             mocks.push(mock);
         }
-        let Some(provider) = fixture.providers.iter().find(|p| p.name == *name) else {
+        let Some(provider) = providers.iter().find(|p| p.name == *name) else {
             continue;
         };
         for route in &provider.routes {
@@ -492,16 +492,22 @@ async fn script(
                 return Err(format!("route {:?} has no answers", route.route));
             }
             for answer in &route.answers {
-                mocks.push(
-                    mock_answer(server, name, method, path, &route.route, answer, counts).await?,
-                );
+                mocks.push(mock_answer(
+                    server,
+                    name,
+                    method,
+                    path,
+                    &route.route,
+                    answer,
+                    counts,
+                )?);
             }
         }
     }
     Ok(mocks)
 }
 
-async fn mock_answer(
+fn mock_answer(
     server: &mut mockito::Server,
     provider: &str,
     method: &str,
@@ -541,7 +547,7 @@ async fn mock_answer(
     } else {
         mock.with_body(body)
     };
-    Ok(mock.create_async().await)
+    Ok(mock.create())
 }
 
 fn arg<'a>(call: &'a Value, key: &str) -> Result<&'a Value, String> {
@@ -664,7 +670,7 @@ async fn replay(
     servers: &mut Servers,
 ) -> Result<(Expected, Vec<stall::Rung>), String> {
     let counts: Counts = Arc::default();
-    let _mocks = script(fixture, servers, &counts).await?;
+    let _mocks = lock::script(fixture, servers, &counts).await?;
     let named = |name: &str| fixture.providers.iter().any(|p| p.name == name);
     let mut options = ServicesOptions::mainnet();
     if named("Chaintracks") {
@@ -727,7 +733,7 @@ async fn ladder_status_429_without_retry_after_uses_the_controlled_clock() {
     assert_eq!(fixture.calls.len(), 2);
     let mut servers = Servers::new().await;
     let counts: Counts = Arc::default();
-    let _mocks = script(&fixture, &mut servers, &counts).await.unwrap();
+    let _mocks = lock::script(&fixture, &mut servers, &counts).await.unwrap();
     let (services, clock) = services_at(
         ServicesOptions::mainnet(),
         &servers.url("WhatsOnChain"),
