@@ -103,17 +103,18 @@ pub(super) async fn validate_and_extend_inputs(
                 )));
             };
 
-            // Check that output is spendable
+            // Reject caller-named change before checking spendability, as in
+            // ts-stack@edf6e03 createAction.ts:972-983.
             if let Some(ref out) = output {
+                if out.change {
+                    return Err(Error::ValidationError(format!(
+                        "The inputs[{}] parameter must be an unmanaged input. Change outputs are managed by your wallet.",
+                        i
+                    )));
+                }
                 if !out.spendable {
                     return Err(Error::ValidationError(format!(
                         "inputs[{}]: output {}:{} is not spendable",
-                        i, txid, vout
-                    )));
-                }
-                if out.change {
-                    return Err(Error::ValidationError(format!(
-                        "inputs[{}]: cannot spend change output {}:{} directly. Change is managed by the wallet.",
                         i, txid, vout
                     )));
                 }
