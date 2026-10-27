@@ -773,26 +773,36 @@ async fn verify_issuance_serial<W: WalletInterface + Send + Sync>(
         ));
     }
     let hmac = serial.try_into().map_err(|_| invalid())?;
-    let result = wallet
-        .verify_hmac(
-            VerifyHmacArgs {
-                hmac,
-                data,
-                protocol_id: Protocol::new(
-                    SecurityLevel::Counterparty,
-                    CERTIFICATE_ISSUANCE_PROTOCOL,
-                ),
-                key_id,
-                counterparty: Some(Counterparty::Other(certifier.clone())),
-                ..Default::default()
-            },
-            originator,
-        )
-        .await?;
-    if !result.valid {
+    let protocol = CERTIFICATE_ISSUANCE_PROTOCOL;
+    let valid =
+        verify_counterparty_hmac(wallet, hmac, data, protocol, key_id, certifier, originator)
+            .await?;
+    if !valid {
         return Err(invalid());
     }
     Ok(())
+}
+
+// The level 2 verifyHmac both response checks make (Wallet.ts:806 through
+// verifyNonce, and :810), with the certifier as counterparty.
+async fn verify_counterparty_hmac<W: WalletInterface + Send + Sync>(
+    wallet: &W,
+    hmac: [u8; NONCE_HMAC_SIZE],
+    data: Vec<u8>,
+    protocol: &str,
+    key_id: String,
+    counterparty: &PublicKey,
+    originator: &str,
+) -> Result<bool> {
+    let args = VerifyHmacArgs {
+        hmac,
+        data,
+        protocol_id: Protocol::new(SecurityLevel::Counterparty, protocol),
+        key_id,
+        counterparty: Some(Counterparty::Other(counterparty.clone())),
+        ..Default::default()
+    };
+    Ok(wallet.verify_hmac(args, originator).await?.valid)
 }
 
 fn validate_issued_certificate(
@@ -851,20 +861,9 @@ async fn verify_server_nonce<W: WalletInterface + Send + Sync>(
     let mut hmac = [0; NONCE_HMAC_SIZE];
     hmac.copy_from_slice(&bytes[NONCE_SIZE..]);
     let key_id = nonce_key_id(&bytes[..NONCE_SIZE]);
-    let result = wallet
-        .verify_hmac(
-            VerifyHmacArgs {
-                hmac,
-                data: bytes[..NONCE_SIZE].to_vec(),
-                protocol_id: Protocol::new(SecurityLevel::Counterparty, "server hmac"),
-                key_id,
-                counterparty: Some(Counterparty::Other(certifier.clone())),
-                ..Default::default()
-            },
-            originator,
-        )
-        .await?;
-    Ok(result.valid)
+    let data = bytes[..NONCE_SIZE].to_vec();
+    let protocol = "server hmac";
+    verify_counterparty_hmac(wallet, hmac, data, protocol, key_id, certifier, originator).await
 }
 
 /// Runs the response guards in Wallet.ts:806-816 order.
