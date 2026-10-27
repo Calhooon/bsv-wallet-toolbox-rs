@@ -29,6 +29,26 @@ marked `yes`; a private repository needs a token the job does not hold, so its
 row runs on a laptop with `--from`.
 Every probe or clone fault appears as a summary row, and the job fails for the named reason.
 
+The rows a test run carries (#252). Every dependent's tests run with
+`WIRE_TEXT_DIFF=report` in their environment (a dependent that does not read
+it ignores it) and `--no-fail-fast`, so every target runs; the output is
+printed and captured. Under the knob the CLI's wire replay (bsv-wallet-cli
+#290) prints one line `TEXT-DIFF: <fixture file> <expected message> <actual
+message>` for a fixture whose replayed refusal differs from it in the message
+text alone (status, class, offset, reason and stored state equal), and counts
+the fixture as replayed. The gate lifts each such line into a row `text
+differs: <fixture file> (pending re-record at the pin)`, which never fails the
+job: a refusal's words are this crate's and move with the reference's, so a
+text-only difference closes when the dependent re-records at its next pin of
+this crate. A difference in anything else fails the dependent's test, and its
+row reads `FAIL (<command>): <test>, <test>, ...`, the libtest `test NAME ...
+FAILED` lines, eight named and then `and N more`, so a reader tells a
+row-level red from a text one without the log. The marker reaches the gate
+only where libtest shows it (a passing test's `println!` and `eprintln!` are
+captured). The rows go to the terminal and, in CI, to the job summary;
+`tools/dependents-check.sh --parse FILE` reads a captured output alone, and
+`tools/dependents-check-test.sh` proves the parsing on fixed output.
+
 What the check found against 0.13.0 on 2026-10-23: `bsv-wallet-cli` at
 `main` builds `--locked` and `cargo test --locked` passes on every target
 (rerun with every target the same day, at its `5e0dbb0`); `agent-manage` and
