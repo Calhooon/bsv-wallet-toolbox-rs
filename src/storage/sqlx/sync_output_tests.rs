@@ -473,27 +473,20 @@ impl OutputSync {
 
     /// The managed-change count and both allocators on the target.
     async fn change_offered(&self) -> (i64, bool, bool) {
-        let user = self
-            .target
-            .find_user(&self.args.identity_key)
+        let user_id: i64 = sqlx::query_scalar("SELECT user_id FROM outputs")
+            .fetch_one(self.target.pool())
             .await
-            .unwrap()
             .unwrap();
         let basket = self.map.basket[&self.expected.basket_id.unwrap()];
         let spender = self.map.transaction[&202];
         let count = self
             .target
-            .count_change_inputs(user.user_id, basket, false)
+            .count_change_inputs(user_id, basket, false)
             .await
             .unwrap();
         let mut conn = self.target.writer().acquire().await.unwrap();
         let door = super::super::create_action::allocate_change_input(
-            &mut conn,
-            user.user_id,
-            basket,
-            spender,
-            1,
-            true,
+            &mut conn, user_id, basket, spender, 1, true,
         )
         .await
         .unwrap()
@@ -506,7 +499,7 @@ impl OutputSync {
         drop(conn);
         let public = self
             .target
-            .allocate_change_input(user.user_id, basket, 1, false, spender)
+            .allocate_change_input(user_id, basket, 1, false, spender)
             .await
             .unwrap()
             .is_some();
