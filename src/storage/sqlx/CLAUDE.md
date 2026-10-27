@@ -229,6 +229,11 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `get_tags_for_output_id()` | Get tags for an output |
 | `admin_stats()` | Get administrative statistics |
 
+`StorageSqlx::allocate_change_input()` in `storage_sqlx/output_selection.rs`
+returns the claimed row's `type` column as `TableOutput.output_type`.
+The create door uses the separate allocator in `create_action/allocation.rs`,
+whose inputs are returned with the `P2PKH` type.
+
 Bench seam: `benchmark_allocate_change_input()` (create_action/allocation.rs) wraps the test-only allocator for the door bench; it and `benchmark_support::allocate_change_input` compile only under the non-default `bench-support` feature.
 
 ## Commission Tracking

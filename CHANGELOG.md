@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- #287: `StorageSqlx::allocate_change_input` returns the stored `outputs.type`
+  in `TableOutput.output_type` and its serialized `outputType` field instead
+  of silently returning an empty string for the missing `output_type` column.
 - #187: a noSend-only `process_action` on stored actions (`is_new_tx`,
   `is_send_with` false, `is_no_send` true) answers an empty
   `send_with_results` before any handle is resolved, so one naming an

@@ -124,7 +124,7 @@ impl StorageSqlx {
                 locking_script: full_row.try_get("locking_script").ok().flatten(),
                 script_length: full_row.try_get("script_length").unwrap_or(0),
                 script_offset: full_row.try_get("script_offset").unwrap_or(0),
-                output_type: full_row.try_get("output_type").unwrap_or_default(),
+                output_type: full_row.get("type"),
                 provided_by: full_row.try_get("provided_by").unwrap_or_default(),
                 purpose: full_row.try_get("purpose").ok(),
                 output_description: full_row.try_get("output_description").ok(),
