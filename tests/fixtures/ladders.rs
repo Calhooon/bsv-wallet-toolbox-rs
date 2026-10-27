@@ -41,7 +41,8 @@
 //!
 //! A difference prints the ladder's call history (each rung asked, per
 //! call, in order, with its answer or fault and how long it took) and the
-//! requests per provider (`ladder_stall.rs`, #194).
+//! requests per provider; a difference that is the runner's, not the
+//! ladder's, is read as a runner stall (`ladder_stall.rs`, #194).
 //!
 //! The host gives two names: `toolbox` (the crate) and `services_at`.
 
