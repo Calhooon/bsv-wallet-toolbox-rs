@@ -245,7 +245,15 @@ non-empty `derivation_prefix` and `derivation_suffix`, spendable and
 public allocator takes those and `sending` unless `exclude_sending`
 (2230-2231, 2256). A caller-provided coin, a non-P2PKH coin, a coin with
 any other purpose (a synced row without one is stored `''`, #313) or no
-derivation fields is never picked as change. The
+derivation fields is never picked as change.
+
+The two allocators share a second clause, `RECEIVED_COIN_CLAUSE` (R1 (d)
+of the wallet charter, #169, #304): a received coin (`purpose = 'receive'`)
+whose parent is not `completed` is taken only under the rule its one `?`
+binds. The door binds the action's recorded `underReceivedRule`; the public
+allocator and its count name no rule and bind it off (`ALLOW_RECEIVED`), so
+they never take an unproven or sending receipt. The wallet's own unproven
+change is not a receipt and stays eligible in both. The
 reference's `action_batch_outputs` exclusion (2252-2255) has no port
 equivalent: the port has no action batches.
 
