@@ -4177,6 +4177,18 @@ mod tests {
                     certifier: &str,
                     verifier: &str,
                 ) -> bsv_rs::Result<ProveCertificateResult> {
+                    self.prove_with_args(stored_certifier, certifier, verifier, |_| {})
+                        .await
+                }
+
+                #[cfg(feature = "sqlite")]
+                async fn prove_with_args(
+                    &self,
+                    stored_certifier: Option<&str>,
+                    certifier: &str,
+                    verifier: &str,
+                    mutate: impl FnOnce(&mut ProveCertificateArgs),
+                ) -> bsv_rs::Result<ProveCertificateResult> {
                     use crate::services::mock::MockWalletServices;
                     use crate::storage::WalletStorageWriter;
 
@@ -4194,7 +4206,9 @@ mod tests {
                         subject: public_key.clone(),
                         certifier: certifier.to_string(),
                         revocation_outpoint: format!("{}.0", "00".repeat(32)),
-                        signature: "00".to_string(),
+                        // Canonical DER with in-range scalars; this door does not
+                        // verify the certificate's signature cryptographically.
+                        signature: "300602010a02010b".to_string(),
                         fields: self.fields.clone(),
                     };
                     let auth = wallet.auth();
@@ -4233,18 +4247,16 @@ mod tests {
                             .await
                             .unwrap();
                     }
-                    wallet
-                        .prove_certificate(
-                            ProveCertificateArgs {
-                                certificate,
-                                fields_to_reveal: self.reveal.clone(),
-                                verifier: verifier.to_string(),
-                                privileged: None,
-                                privileged_reason: None,
-                            },
-                            "certificate.test",
-                        )
-                        .await
+                    let mut args = ProveCertificateArgs {
+                        certificate,
+                        fields_to_reveal: self.reveal.clone(),
+                        verifier: verifier.to_string(),
+                        privileged: None,
+                        privileged_reason: None,
+                    };
+                    // Mutate only the request, preserving the stored certificate.
+                    mutate(&mut args);
+                    wallet.prove_certificate(args, "certificate.test").await
                 }
 
                 #[cfg(feature = "sqlite")]
@@ -4704,6 +4716,259 @@ mod tests {
                         result,
                         &refusal("certificate.certifier", "even length, not 3."),
                     );
+                }
+
+                // #260: the same argument refusals with no matching row and
+                // with a stored row, ahead of the helper and its distinct texts.
+                mod arg_gate {
+                    use super::*;
+
+                    async fn prove_args(
+                        stored: bool,
+                        mutate: impl FnOnce(&mut ProveCertificateArgs),
+                    ) -> bsv_rs::Result<ProveCertificateResult> {
+                        let mut request = Request::new();
+                        request.reveal.clear();
+                        let public_key = key(31);
+                        request
+                            .prove_with_args(
+                                stored.then_some(public_key.as_str()),
+                                &public_key,
+                                &public_key,
+                                mutate,
+                            )
+                            .await
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_bad_subject_before_lookup() {
+                        for stored in [false, true] {
+                            for (bad, rule) in bad_keys() {
+                                let result = prove_args(stored, |args| {
+                                    args.certificate.subject = bad;
+                                })
+                                .await;
+                                assert_wallet_error(
+                                    "subject before lookup",
+                                    result,
+                                    &refusal("certificate.subject", rule),
+                                );
+                            }
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_bad_signature_before_lookup() {
+                        let signatures = [
+                            ("", "hexadecimal string."),
+                            ("abc", "even length, not 3."),
+                            ("zz", "hexadecimal string."),
+                            ("00", "a canonical DER-encoded ECDSA signature"),
+                            (
+                                "3006020100020101",
+                                "a canonical DER-encoded ECDSA signature",
+                            ),
+                            (
+                                "3006020180020101",
+                                "a canonical DER-encoded ECDSA signature",
+                            ),
+                            (
+                                "300702020001020101",
+                                "a canonical DER-encoded ECDSA signature",
+                            ),
+                            (
+                                "300602010102010100",
+                                "a canonical DER-encoded ECDSA signature",
+                            ),
+                            ("30050201010200", "a canonical DER-encoded ECDSA signature"),
+                        ];
+                        for stored in [false, true] {
+                            for (signature, rule) in signatures {
+                                let result = prove_args(stored, |args| {
+                                    args.certificate.signature = signature.to_string();
+                                })
+                                .await;
+                                assert_wallet_error(
+                                    signature,
+                                    result,
+                                    &refusal("certificate.signature", rule),
+                                );
+                            }
+                        }
+                        // The reference also rejects scalars at the curve order.
+                        for signature in [
+                            format!(
+                                "3026022100{}020101",
+                                "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+                            ),
+                            format!(
+                                "3026020101022100{}",
+                                "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+                            ),
+                        ] {
+                            let result = prove_args(false, |args| {
+                                args.certificate.signature = signature;
+                            })
+                            .await;
+                            assert_wallet_error(
+                                "scalar at curve order",
+                                result,
+                                &refusal(
+                                    "certificate.signature",
+                                    "a canonical DER-encoded ECDSA signature",
+                                ),
+                            );
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_field_name_before_lookup() {
+                        for stored in [false, true] {
+                            for name in [String::new(), "n".repeat(51), "é".repeat(26)] {
+                                let rule = if name.is_empty() {
+                                    "at least 1 length."
+                                } else {
+                                    "no more than 50 length."
+                                };
+                                let result = prove_args(stored, |args| {
+                                    args.fields_to_reveal = vec![name.clone()];
+                                })
+                                .await;
+                                assert_wallet_error(
+                                    "field name before lookup",
+                                    result,
+                                    &refusal(&format!("fieldsToReveal {name}"), rule),
+                                );
+                            }
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_field_name_before_verifier() {
+                        for name in [String::new(), "n".repeat(51)] {
+                            let rule = if name.is_empty() {
+                                "at least 1 length."
+                            } else {
+                                "no more than 50 length."
+                            };
+                            let result = prove_args(false, |args| {
+                                args.fields_to_reveal = vec![name.clone()];
+                                args.verifier = "abc".to_string();
+                            })
+                            .await;
+                            assert_wallet_error(
+                                "field name before bad verifier",
+                                result,
+                                &refusal(&format!("fieldsToReveal {name}"), rule),
+                            );
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_type_and_serial_before_lookup() {
+                        for parameter in ["certificate.type", "certificate.serialNumber"] {
+                            for (value, rule) in [
+                                ("!".to_string(), "valid base64 string"),
+                                (String::new(), "valid base64 string"),
+                                ("A".to_string(), "valid base64 string"),
+                                (BASE64.encode([1; 31]), "at least 32 bytes"),
+                                (BASE64.encode([1; 33]), "no more than 32 bytes"),
+                            ] {
+                                let result = prove_args(false, |args| {
+                                    if parameter == "certificate.type" {
+                                        args.certificate.certificate_type = value;
+                                    } else {
+                                        args.certificate.serial_number = value;
+                                    }
+                                })
+                                .await;
+                                assert_wallet_error(parameter, result, &refusal(parameter, rule));
+                            }
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_argument_order() {
+                        for stage in 0..5 {
+                            let result = prove_args(false, |args| {
+                                if stage == 0 {
+                                    args.certificate.certificate_type = "!".to_string();
+                                }
+                                if stage <= 1 {
+                                    args.certificate.serial_number = "!".to_string();
+                                }
+                                if stage <= 2 {
+                                    args.certificate.certifier = "abc".to_string();
+                                }
+                                if stage <= 3 {
+                                    args.certificate.subject = "abc".to_string();
+                                }
+                                args.certificate.signature = "zz".to_string();
+                                args.fields_to_reveal = vec![String::new()];
+                                args.verifier = "abc".to_string();
+                            })
+                            .await;
+                            let (parameter, rule) = [
+                                ("certificate.type", "valid base64 string"),
+                                ("certificate.serialNumber", "valid base64 string"),
+                                ("certificate.certifier", "even length, not 3."),
+                                ("certificate.subject", "even length, not 3."),
+                                ("certificate.signature", "hexadecimal string."),
+                            ][stage];
+                            assert_wallet_error(
+                                "argument order",
+                                result,
+                                &refusal(parameter, rule),
+                            );
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_normalized_args_match_row() {
+                        let result = prove_args(true, |args| {
+                            args.certificate.subject =
+                                format!("\u{feff}{} ", key(31).to_uppercase());
+                            args.certificate.signature =
+                                format!(" {}\u{feff}", args.certificate.signature.to_uppercase());
+                            args.certificate.certificate_type =
+                                format!(" {} ", args.certificate.certificate_type);
+                            args.certificate.serial_number =
+                                format!(" {}\n", args.certificate.serial_number);
+                        })
+                        .await
+                        .unwrap();
+                        assert!(result.keyring_for_verifier.is_empty());
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_valid_arg_boundaries() {
+                        for name in [
+                            "n".to_string(),
+                            "n".repeat(50),
+                            "é".repeat(25),
+                            " ".to_string(),
+                        ] {
+                            let result = prove_args(false, |args| {
+                                args.fields_to_reveal = vec![name];
+                                // High S is canonical DER in the reference, with no low-S gate.
+                                args.certificate.signature = format!("3026020101022100{}", "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140");
+                            })
+                            .await;
+                            assert_wallet_error("valid arguments reach lookup", result, NOT_FOUND);
+                        }
+                        // Reserved names pass the argument length check, then the
+                        // verifier check. The helper retains its safe-name gate.
+                        let result = prove_args(false, |args| {
+                            args.fields_to_reveal = vec!["prototype".to_string()];
+                            args.verifier = "abc".to_string();
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "reserved name",
+                            result,
+                            &refusal("verifier", "even length, not 3."),
+                        );
+                    }
                 }
 
                 #[tokio::test]
