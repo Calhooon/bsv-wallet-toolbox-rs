@@ -4765,8 +4765,8 @@ mod tests {
             #[cfg(feature = "sqlite")]
             #[tokio::test]
             async fn test_create_keyring_preloop_invalid_field_key() {
-                // #291: the prove door refuses the argument's map first
-                // (validationHelpers.ts:1478-1480); the helper keeps its text.
+                // #291: the prove door refuses the argument's map ahead of the
+                // helper (validationHelpers.ts:1478-1480); the helper keeps its text.
                 for name in invalid_field_names() {
                     let door = match name.as_str() {
                         "" => "The field name parameter must be at least 1 length.",

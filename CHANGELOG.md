@@ -38,7 +38,10 @@
   certificate carries the stored value. A malformed outpoint is now refused
   with `Validation error: The revocationOutpoint parameter must be a 32-byte txid and canonical numeric output index joined with '.'`
   (or the `revocationOutpoint vout` texts `a safe integer` and
-  `no more than 4294967295 length.`) instead of being stored.
+  `no more than 4294967295 length.`) instead of being stored. A row stored
+  raw before this change with an uppercase txid stays out of
+  `prove_certificate`'s reach, as it was (the reference never stores such a
+  row: 1435 runs on every direct acquire).
   `prove_certificate` now checks the argument's `certificate.fields` between
   `privilegedReason` and `certificate.type` (1478-1480): an unsafe key reads
   `The fields parameter must be an object with safe string keys`, more than
