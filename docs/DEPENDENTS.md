@@ -27,6 +27,7 @@ target (`cargo test` when the build fell back). A row whose test column is not
 a narrowed row is noted in the summary. The CI job `dependents` runs the rows
 marked `yes`; a private repository needs a token the job does not hold, so its
 row runs on a laptop with `--from`.
+Every probe or clone fault appears as a summary row, and the job fails for the named reason.
 
 What the check found against 0.13.0 on 2026-10-23: `bsv-wallet-cli` at
 `main` builds `--locked` and `cargo test --locked` passes on every target
