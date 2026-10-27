@@ -57,6 +57,10 @@ mod rng_tests;
 #[path = "named_input_tests.rs"]
 mod named_input_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "nosend_label_tests.rs"]
+mod nosend_label_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
