@@ -145,3 +145,78 @@ async fn classic_mode_broadcaster_statuses_ask_both_arcs() {
         [PROVIDER_TAAL_ARC, PROVIDER_GORILLAPOOL_ARC]
     );
 }
+
+// The default mode is Arcade (#317, the owner's word of 2026-10-27: "arc is
+// just deprecated, arcade is the standard"). No Arcade endpoint is the
+// crate's to name, so options that set none refuse at construction; classic
+// ARC is built only behind the deprecated knob. The URLs here are loopback:
+// constructing `Services` makes no request.
+
+const LOOPBACK: &str = "http://127.0.0.1:9";
+
+#[test]
+fn default_options_with_no_arcade_url_refuse_construction() {
+    for (chain, options) in [
+        (Chain::Main, ServicesOptions::default()),
+        (Chain::Main, ServicesOptions::mainnet()),
+        (Chain::Test, ServicesOptions::testnet()),
+    ] {
+        assert!(options.arcade_v2, "{chain:?}: Arcade is the default mode");
+        let err = Services::with_options(chain, options)
+            .err()
+            .unwrap_or_else(|| panic!("{chain:?}: built with no Arcade URL"));
+        assert_eq!(err.to_string(), format!("Invalid argument: {NO_ARCADE_URL}"));
+        assert!(err.to_string().contains("with_arcade"), "{err}");
+    }
+    for chain in [Chain::Main, Chain::Test] {
+        assert!(Services::new(chain).is_err(), "{chain:?}");
+    }
+}
+
+#[test]
+fn mainnet_with_arcade_builds_the_arcade_ladder() {
+    let options = ServicesOptions::mainnet().with_arcade(LOOPBACK, None);
+    let services = Services::with_options(Chain::Main, options).unwrap();
+
+    assert_eq!(
+        post_names(&services),
+        [PROVIDER_ARCADE_V2, PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]
+    );
+    assert!(services.arcade.is_some());
+    assert!(services.arc_taal.is_none());
+    assert!(services.arc_gorillapool.is_none());
+}
+
+#[test]
+#[allow(deprecated)]
+fn the_deprecated_classic_knob_builds_the_classic_ladder() {
+    let options = ServicesOptions::mainnet()
+        .with_classic_arc(LOOPBACK, None)
+        .with_gorillapool(LOOPBACK, None);
+    assert!(!options.arcade_v2);
+    let services = Services::with_options(Chain::Main, options).unwrap();
+    assert_eq!(
+        post_names(&services),
+        [
+            PROVIDER_TAAL_ARC,
+            PROVIDER_GORILLAPOOL_ARC,
+            PROVIDER_BITAILS,
+            PROVIDER_WHATSONCHAIN
+        ]
+    );
+    assert!(services.arcade.is_none());
+
+    let options = ServicesOptions::mainnet().with_classic_arc(LOOPBACK, None);
+    let services = Services::with_options(Chain::Main, options).unwrap();
+    assert_eq!(
+        post_names(&services),
+        [PROVIDER_TAAL_ARC, PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]
+    );
+}
+
+#[test]
+fn gorillapool_defaults_to_none() {
+    assert_eq!(ServicesOptions::default().arc_gorillapool_url, None);
+    assert_eq!(ServicesOptions::mainnet().arc_gorillapool_url, None);
+    assert_eq!(ServicesOptions::testnet().arc_gorillapool_url, None);
+}
