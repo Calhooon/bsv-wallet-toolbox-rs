@@ -292,7 +292,10 @@ ladder's scenes (`ladder_fixtures_replay`, a lib test: `tests/fixtures/ladders.r
 is included by `src/services/ladder_fixtures_tests.rs` through `#[path]`, not
 declared in `tests/fixtures/main.rs`, so it runs under
 `cargo test --lib ladder_fixtures` and not under the `fixtures` integration
-binary).
+binary). A replay that differs prints the ladder's call history and the
+requests per provider, and a fault at the client's deadline followed by an
+unscripted rung reads as a runner stall, not a verdict
+(`tests/fixtures/ladder_stall.rs`, #194).
 
 **The verdict rules.** A negative needs two clean answers: `get_utxo_status`
 returns "not in the unspent set" only when `UTXO_NEGATIVE_PROVIDERS` (two)
@@ -422,6 +425,8 @@ proof checked against our headers writes `doubleSpend`.
 | the sticky provider never moves ahead of a configured Arcade | (no charter) | `sticky_never_moves_ahead_of_a_configured_arcade` |
 | every ladder scene under `tests/fixtures/data/ladders/` replays from its fixture | (no charter; #53) | `ladder_fixtures_replay` (a lib test, included from `src/services/ladder_fixtures_tests.rs`; not in the `fixtures` integration binary) |
 | the status scene's 429 without Retry-After closes the rung at 999 ms and reopens it at 1000 ms on a controlled clock | (no charter window; #194, WhatsOnChain's one-second default) | `ladder_status_429_without_retry_after_uses_the_controlled_clock` |
+| a ladder replay that differs prints the call history and the requests per provider | (no charter; #194) | `ladder_fixtures_a_mismatch_prints_the_call_history` |
+| a late second answer (WhatsOnChain 429, Bitails 200, then Bitails past the client's deadline) falls to the unscripted rung and reads as a runner stall, not a ladder verdict | (no charter; #194) | `ladder_fixtures_a_late_second_answer_reads_as_a_runner_stall` |
 | a service answer is built only by services | (no charter; #56) | `service_answers_are_only_built_by_services` |
 | provider requests stay in providers | (no charter; #56) | `provider_requests_stay_in_providers` |
 
