@@ -209,7 +209,7 @@ async fn normalized_args_reach_response_checks(
         .match_body(mockito::Matcher::PartialJson(serde_json::json!({
             "type": expected_type,
         })))
-        .with_header(HEADER_IDENTITY_KEY, &canonical)
+        .with_header(HEADER_CERTIFIER_IDENTITY_KEY, &canonical)
         .with_body_from_request(move |request| {
             let request: ProtocolIssuanceRequest =
                 serde_json::from_slice(request.body().unwrap()).unwrap();
@@ -291,7 +291,7 @@ async fn mismatched_response(field: Option<&str>) -> (bsv_rs::Result<WalletCerti
     let request = server
         .mock("POST", "/issue")
         .match_header(HEADER_IDENTITY_KEY, wallet.identity_key())
-        .with_header(HEADER_IDENTITY_KEY, &certifier())
+        .with_header(HEADER_CERTIFIER_IDENTITY_KEY, &certifier())
         .with_body_from_request(move |request| {
             let issued: ProtocolIssuanceRequest =
                 serde_json::from_slice(request.body().unwrap()).unwrap();
@@ -384,7 +384,7 @@ async fn test_issuance_header_certifier_mismatch_uses_reference_text() {
     let unexpected = wallet.identity_key();
     let request = server
         .mock("POST", "/issue")
-        .with_header(HEADER_IDENTITY_KEY, unexpected)
+        .with_header(HEADER_CERTIFIER_IDENTITY_KEY, unexpected)
         .with_body(r#"{"serverNonce":"fixture","certificate":null}"#)
         .expect(1)
         .create_async()

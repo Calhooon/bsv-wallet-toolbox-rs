@@ -10,6 +10,7 @@ async fn issuance_client_refuses_non_loopback_before_transport() {
             &format!("{scheme}://provider.invalid/issue"),
             b"{}",
             "fixture",
+            "fixture-certifier",
         )
         .await
         .unwrap_err();
@@ -27,16 +28,20 @@ async fn issuance_client_accepts_loopback_fixtures() {
         .match_header("x-bsv-identity-key", "fixture-client")
         .match_body("{}")
         .with_header("content-type", "application/json")
-        .with_header("x-bsv-identity-key", "fixture-certifier")
+        .with_header("x-bsv-auth-identity-key", "fixture-certifier")
         .with_body(r#"{"serverNonce":"fixture","certificate":null}"#)
         .expect(1)
         .create_async()
         .await;
 
-    let response =
-        send_issuance_request(&format!("{}/issue", server.url()), b"{}", "fixture-client")
-            .await
-            .unwrap();
+    let response = send_issuance_request(
+        &format!("{}/issue", server.url()),
+        b"{}",
+        "fixture-client",
+        "fixture-certifier",
+    )
+    .await
+    .unwrap();
     assert_eq!(response.body.server_nonce, "fixture");
     assert_eq!(
         response.identity_key_header.as_deref(),
@@ -56,9 +61,14 @@ async fn issuance_client_refuses_non_loopback_redirects() {
         .create_async()
         .await;
 
-    let error = send_issuance_request(&format!("{}/issue", server.url()), b"{}", "fixture")
-        .await
-        .unwrap_err();
+    let error = send_issuance_request(
+        &format!("{}/issue", server.url()),
+        b"{}",
+        "fixture",
+        "fixture",
+    )
+    .await
+    .unwrap_err();
     assert_isolated(&error);
     redirect.assert_async().await;
 }
