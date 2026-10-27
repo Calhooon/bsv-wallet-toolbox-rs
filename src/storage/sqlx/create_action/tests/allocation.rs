@@ -622,7 +622,9 @@ mod sync_received {
     }
 
     #[tokio::test]
-    async fn sync_received_missing_purpose_keeps_legacy_default() {
+    async fn sync_received_missing_purpose_is_stored_empty() {
+        // #313: a missing purpose lands as the reference's EntityOutput
+        // default '' (ts-stack edf6e03 :45), never 'change'.
         let storage = empty_storage().await;
         let args = sync_args();
         let mut chunk = received_chunk(&args);
@@ -632,7 +634,7 @@ mod sync_received {
             .unwrap();
         assert_eq!(
             stored_output(&storage).await.get::<String, _>("purpose"),
-            "change"
+            ""
         );
     }
 }
