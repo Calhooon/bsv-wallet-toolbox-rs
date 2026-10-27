@@ -33,7 +33,10 @@ use bsv_rs::wallet::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::wallet::{validate_certificate_base64_arg, validate_public_key_arg};
+use super::wallet::{
+    invalid_certificate_argument, trim_ecmascript_whitespace, validate_certificate_base64_arg,
+    validate_public_key_arg,
+};
 use crate::error::{Error, Result};
 use crate::services::providers::http_client::Client;
 use crate::storage::entities::{TableCertificate, TableCertificateField};
@@ -42,6 +45,13 @@ use crate::storage::{not_busy, AuthId, WalletStorageProvider};
 #[cfg(test)]
 #[path = "certificate_issuance_network_isolation_tests.rs"]
 mod network_isolation_tests;
+
+#[cfg(test)]
+tokio::task_local! {
+    // Route a validated public URL to a loopback fixture within one test future.
+    // Argument validation always runs, and production has no override.
+    static ISSUANCE_TEST_URL: String;
+}
 
 // =============================================================================
 // Constants
@@ -190,15 +200,8 @@ where
     W: WalletInterface + Send + Sync,
     S: WalletStorageProvider + Send + Sync,
 {
-    // Validate certifier_url is provided
-    let certifier_url = args.certifier_url.as_ref().ok_or_else(|| {
-        Error::ValidationError("certifier_url is required for issuance protocol".to_string())
-    })?;
-
-    // The reference checks type before certifier, using the same structural
-    // Base64 and public-key validators as prove (validationHelpers.ts:1338-1339).
-    args.certificate_type = validate_certificate_base64_arg(&args.certificate_type, "type")?;
-    let (certifier_hex, certifier) = validate_public_key_arg(&args.certifier, "certifier")?;
+    let (certifier_hex, certifier) = validate_issuance_args(&mut args)?;
+    let certifier_url = args.certifier_url.as_deref().unwrap_or_default();
 
     // Parse identity key to PublicKey
     let identity_pub_key = PublicKey::from_hex(identity_key)
@@ -254,6 +257,140 @@ where
     .await?;
 
     Ok(wallet_cert)
+}
+
+// The Rust argument types provide the record, boolean, and string shape checks.
+// The remaining guards follow validationHelpers.ts:1307-1349 in order.
+fn validate_issuance_args(args: &mut AcquireCertificateArgs) -> Result<(String, PublicKey)> {
+    if let Some(reason) = &args.privileged_reason {
+        validate_issuance_string(reason, "privilegedReason", 5, 50)?;
+    } else if args.privileged == Some(true) {
+        return Err(invalid_certificate_argument(
+            "privilegedReason",
+            "a value when 'privileged' is true",
+        )
+        .into());
+    }
+    if args.acquisition_protocol != bsv_rs::wallet::AcquisitionProtocol::Issuance {
+        return Err(Error::ValidationError(
+            "Only acquire certificate via issuance requests allowed here.".into(),
+        ));
+    }
+    for (name, present) in [
+        (
+            "serialNumber",
+            args.serial_number.as_deref().is_some_and(|v| !v.is_empty()),
+        ),
+        (
+            "signature",
+            args.signature.as_deref().is_some_and(|v| !v.is_empty()),
+        ),
+        (
+            "revocationOutpoint",
+            args.revocation_outpoint
+                .as_deref()
+                .is_some_and(|v| !v.is_empty()),
+        ),
+        ("keyringRevealer", args.keyring_revealer.is_some()),
+        ("keyringForSubject", args.keyring_for_subject.is_some()),
+    ] {
+        if present {
+            return Err(invalid_certificate_argument(
+                name,
+                "valid when acquisitionProtocol is \"direct\"",
+            )
+            .into());
+        }
+    }
+    let url = args
+        .certifier_url
+        .as_deref()
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| {
+            invalid_certificate_argument(
+                "certifierUrl",
+                "valid when acquisitionProtocol is \"issuance\"",
+            )
+        })?;
+    args.certificate_type = validate_certificate_base64_arg(&args.certificate_type, "type")?;
+    let certifier = validate_public_key_arg(&args.certifier, "certifier")?;
+    args.certifier_url = Some(validate_issuance_url(url)?);
+    validate_issuance_fields(&args.fields)?;
+    args.privileged = Some(args.privileged.unwrap_or(false));
+    // The repeated privilege checks at :1342-1348 cannot refuse after :1308.
+    Ok(certifier)
+}
+
+fn validate_issuance_string(value: &str, name: &str, min: usize, max: usize) -> Result<()> {
+    if value.len() < min {
+        return Err(invalid_certificate_argument(name, &format!("at least {min} length.")).into());
+    }
+    if value.len() > max {
+        return Err(
+            invalid_certificate_argument(name, &format!("no more than {max} length.")).into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_issuance_url(value: &str) -> Result<String> {
+    let invalid = |rule| Error::from(invalid_certificate_argument("certifierUrl", rule));
+    validate_issuance_string(value, "certifierUrl", 1, 2048)?;
+    if value != trim_ecmascript_whitespace(value) {
+        return Err(invalid("an exact HTTPS URL without whitespace"));
+    }
+    let url = reqwest::Url::parse(value).map_err(|_| invalid("an absolute HTTPS URL"))?;
+    if url.scheme() != "https" {
+        return Err(invalid("an HTTPS URL"));
+    }
+    if !url.username().is_empty() || url.password().is_some_and(|p| !p.is_empty()) {
+        return Err(invalid("a URL without credentials"));
+    }
+    if url.query().is_some_and(|q| !q.is_empty()) || url.fragment().is_some_and(|f| !f.is_empty()) {
+        return Err(invalid("a URL without a query or fragment"));
+    }
+    let hostname = url.host_str().unwrap_or_default();
+    let valid_label = |label: &str| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.as_bytes()[0].is_ascii_alphanumeric()
+            && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    if hostname == "localhost"
+        || hostname.ends_with(".localhost")
+        || hostname.contains(':')
+        || hostname.parse::<std::net::IpAddr>().is_ok()
+        || !hostname.contains('.')
+        || !hostname.split('.').all(valid_label)
+    {
+        return Err(invalid("a public DNS hostname"));
+    }
+    Ok(value.trim_end_matches('/').to_string())
+}
+
+fn validate_issuance_fields(fields: &HashMap<String, String>) -> Result<()> {
+    if fields.len() > 100_000 {
+        return Err(invalid_certificate_argument(
+            "fields",
+            "an object with at most 100000 properties",
+        )
+        .into());
+    }
+    if fields
+        .keys()
+        .any(|key| matches!(key.as_str(), "__proto__" | "constructor" | "prototype"))
+    {
+        return Err(
+            invalid_certificate_argument("fields", "an object with safe string keys").into(),
+        );
+    }
+    for name in fields.keys() {
+        validate_issuance_string(name, "field name", 1, 50)?;
+    }
+    Ok(())
 }
 
 // =============================================================================
@@ -398,6 +535,10 @@ async fn send_issuance_request(
     body: &[u8],
     identity_key: &str,
 ) -> Result<HttpIssuanceResponse> {
+    #[cfg(test)]
+    let fixture_url = ISSUANCE_TEST_URL.try_with(Clone::clone).ok();
+    #[cfg(test)]
+    let certifier_url = fixture_url.as_deref().unwrap_or(certifier_url);
     let client = Client::new();
 
     let response = client
