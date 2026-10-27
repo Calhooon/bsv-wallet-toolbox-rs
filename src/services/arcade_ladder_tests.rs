@@ -3,7 +3,7 @@
 //! classic ARC provider exists: the post ladder is Arcade, then Bitails and
 //! WhatsOnChain, and the broadcaster-status read asks Arcade alone. In
 //! classic mode (`arcade_v2` false) TAAL from `arc_url`, GorillaPool when
-//! configured, then Bitails and WhatsOnChain, as before, now only behind
+//! configured, then Bitails and `WhatsOnChain`, as before, now only behind
 //! the deprecated `with_classic_arc`. Constructing
 //! `Services` makes no request; the status reads go to a loopback mock.
 
@@ -20,7 +20,7 @@ fn post_names(services: &Services) -> Vec<String> {
         .collect()
 }
 
-/// Arcade mode's post ladder: Arcade, Bitails, WhatsOnChain; no classic ARC.
+/// Arcade mode's post ladder: Arcade, Bitails, `WhatsOnChain`; no classic ARC.
 fn assert_arcade_ladder(services: &Services) {
     assert_eq!(
         post_names(services),
@@ -31,8 +31,8 @@ fn assert_arcade_ladder(services: &Services) {
     assert!(services.arc_gorillapool.is_none());
 }
 
-/// Classic mode's post ladder: TAAL, GorillaPool when configured, Bitails,
-/// WhatsOnChain; no Arcade.
+/// Classic mode's post ladder: TAAL, `GorillaPool` when configured, Bitails,
+/// `WhatsOnChain`; no Arcade.
 fn assert_classic_ladder(services: &Services, gorillapool: bool) {
     let mut expected = vec![PROVIDER_TAAL_ARC];
     if gorillapool {
