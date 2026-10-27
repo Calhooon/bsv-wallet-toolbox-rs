@@ -5,6 +5,7 @@
 use super::*;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError, MerklePath, MockChainTracker};
 use sqlx::{Connection, SqliteConnection};
+use std::time::Instant;
 
 use crate::services::mock::MockWalletServices;
 use crate::storage::StorageSqlx;
@@ -252,7 +253,12 @@ async fn replayed_mined_inline_proof_keeps_store_busy_without_fetch() {
         let trigger = AtomicBool::new(false);
         let writes_before = writer_changes(storage).await;
 
+        let started = Instant::now();
         let result = ArcadeEventsTask::apply_event(storage, &scene.event(status), &trigger).await;
+        eprintln!(
+            "{status} replay inline ingest: elapsed={:?}, timeout=50ms",
+            started.elapsed()
+        );
 
         sqlx::query("ROLLBACK")
             .execute(&mut *tracker.other.lock().await)
@@ -284,7 +290,12 @@ async fn mined_inline_proof_busy_after_sending_status_commit_retries_idempotentl
         let fields_before = unchanged_event_fields(storage).await;
         let writes_before = writer_changes(storage).await;
 
+        let started = Instant::now();
         let result = ArcadeEventsTask::apply_event(storage, &ev, &trigger).await;
+        eprintln!(
+            "{status} after status commit inline ingest: elapsed={:?}, timeout=50ms",
+            started.elapsed()
+        );
 
         assert!(is_inline_proof_busy(&result), "{status}: {result:?}");
         assert!(tracker.checked.load(Ordering::SeqCst), "ingest was reached");
@@ -356,6 +367,186 @@ async fn status_writes_keep_store_busy_without_fetch() {
             "{status}: no fetch fallback"
         );
     }
+}
+
+async fn status_words(storage: &StorageSqlx) -> Vec<String> {
+    let mut words = Vec::new();
+    for table in ["proven_tx_reqs", "transactions"] {
+        words.push(
+            sqlx::query_scalar(&format!("SELECT status FROM {table}"))
+                .fetch_one(storage.pool())
+                .await
+                .unwrap(),
+        );
+    }
+    words
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct StoredEventState {
+    writes: i64,
+    words: Vec<String>,
+    fields: Vec<String>,
+    proofs: Vec<String>,
+    memory: Vec<crate::services::broadcast_memory::BroadcastSeenRecord>,
+}
+
+async fn stored_event_state(storage: &StorageSqlx, txid: &str) -> StoredEventState {
+    StoredEventState {
+        writes: writer_changes(storage).await,
+        words: status_words(storage).await,
+        fields: unchanged_event_fields(storage).await,
+        proofs: proof_rows(storage).await,
+        memory: storage
+            .broadcast_records(None, &[txid.to_string()])
+            .await
+            .unwrap(),
+    }
+}
+
+async fn measure_status_busy(status: &str, known: bool) -> Duration {
+    let timeout = Duration::from_millis(200);
+    let ceiling = timeout.mul_f64(1.5);
+    let scene = Scene::new().await;
+    let storage = &scene.storage;
+    scene.set_sending().await;
+    let services = Arc::new(MockWalletServices::new());
+    storage.set_services(services.clone());
+    let mut ev = scene.event(status);
+    if !known {
+        ev.txid = "ef".repeat(32);
+        ev.merkle_path = Some(MerklePath::from_coinbase_txid(&ev.txid, HEIGHT).to_hex());
+    }
+    sqlx::query("PRAGMA busy_timeout = 200")
+        .execute(storage.writer())
+        .await
+        .unwrap();
+    let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    let query_only: i64 = sqlx::query_scalar("PRAGMA query_only")
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    assert_eq!(journal, "wal");
+    assert_eq!(query_only, 1);
+    let before = stored_event_state(storage, &ev.txid).await;
+    let mut other = scene.other.lock().await;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let trigger = AtomicBool::new(false);
+
+    let started = Instant::now();
+    let result = ArcadeEventsTask::apply_event(storage, &ev, &trigger).await;
+    let elapsed = started.elapsed();
+
+    sqlx::query("ROLLBACK").execute(&mut *other).await.unwrap();
+    eprintln!(
+        "{status} known={known}: elapsed={elapsed:?}, timeout={timeout:?}, ceiling={ceiling:?}, result={result:?}"
+    );
+    assert!(is_inline_proof_busy(&result), "{status}: {result:?}");
+    assert!(!trigger.load(Ordering::SeqCst), "no fetch fallback");
+    assert_eq!(services.total_calls(), 0);
+    assert_eq!(
+        stored_event_state(storage, &ev.txid).await,
+        before,
+        "no writes or status changes"
+    );
+    elapsed
+}
+
+async fn assert_status_busy_waits_once(status: &str) {
+    let unknown_wait = measure_status_busy(status, false).await;
+    let known_wait = measure_status_busy(status, true).await;
+    let ceiling = Duration::from_millis(300);
+    for (known, elapsed) in [(false, unknown_wait), (true, known_wait)] {
+        assert!(
+            elapsed < ceiling,
+            "{status} known={known}: {elapsed:?} must be below {ceiling:?} (one busy wait)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn seen_status_busy_waits_once_without_writes() {
+    assert_status_busy_waits_once("SEEN_ON_NETWORK").await;
+}
+
+#[tokio::test]
+async fn in_block_status_busy_waits_once_without_writes() {
+    assert_status_busy_waits_once("STUMP_PROCESSING").await;
+}
+
+#[tokio::test]
+async fn mined_status_busy_waits_once_without_writes() {
+    assert_status_busy_waits_once("MINED").await;
+}
+
+async fn status_fault_scene(trigger_sql: &str) -> Scene {
+    let scene = Scene::new().await;
+    let storage = &scene.storage;
+    scene.set_sending().await;
+    sqlx::query("DELETE FROM broadcast_seen")
+        .execute(storage.writer())
+        .await
+        .unwrap();
+    sqlx::query(trigger_sql)
+        .execute(storage.writer())
+        .await
+        .unwrap();
+    scene
+}
+
+async fn assert_no_broadcast_memory(scene: &Scene) {
+    assert!(scene
+        .storage
+        .broadcast_records(None, std::slice::from_ref(&scene.txid))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn seen_status_updates_roll_back_together() {
+    let scene = status_fault_scene(
+        "CREATE TRIGGER refuse_seen_status BEFORE UPDATE OF status ON transactions \
+         BEGIN SELECT RAISE(ABORT, 'test status fault'); END",
+    )
+    .await;
+    let storage = &scene.storage;
+    let trigger = AtomicBool::new(false);
+
+    let result =
+        ArcadeEventsTask::apply_event(storage, &scene.event("SEEN_ON_NETWORK"), &trigger).await;
+
+    assert!(matches!(result, Err(Error::SqlxError(_))), "{result:?}");
+    assert_eq!(status_words(storage).await, ["sending", "sending"]);
+    assert_no_broadcast_memory(&scene).await;
+    assert!(!trigger.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn non_busy_broadcast_memory_error_keeps_status_updates() {
+    let scene = status_fault_scene(
+        "CREATE TRIGGER refuse_seen_memory BEFORE INSERT ON broadcast_seen \
+         BEGIN SELECT RAISE(ABORT, 'test memory fault'); END",
+    )
+    .await;
+    let storage = &scene.storage;
+    let trigger = AtomicBool::new(false);
+
+    assert!(
+        ArcadeEventsTask::apply_event(storage, &scene.event("SEEN_ON_NETWORK"), &trigger)
+            .await
+            .unwrap()
+    );
+
+    assert_eq!(status_words(storage).await, ["unmined", "unproven"]);
+    assert_no_broadcast_memory(&scene).await;
+    assert!(!trigger.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
