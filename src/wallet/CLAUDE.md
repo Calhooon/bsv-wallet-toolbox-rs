@@ -745,10 +745,15 @@ A vout past 2^53 - 1 reads `The certificate.revocationOutpoint vout parameter mu
 one past 4294967295 reads `... vout parameter must be no more than 4294967295 length.`
 (`validateInteger` at 306-324). The txid is lowercased and the lookup
 matches that normalized outpoint (`signer/methods/proveCertificate.ts:18`).
-After verifier, a present `privileged_reason` must be 5 to 50 UTF-8 bytes
-(`validationHelpers.ts:247-255,348-355,1511`):
-`The privilegedReason parameter must be at least 5 length.` or
-`... must be no more than 50 length.`. Then, after every vargs check, more
+Ahead of `certificate.type`, `validatePrivilege(args, false)` runs
+(`validationHelpers.ts:1477`, its body at 207-222): a present
+`privileged_reason` must be 5 to 50 UTF-8 bytes (212-217, via 247-255 and
+348-355), `The privilegedReason parameter must be at least 5 length.` or
+`... must be no more than 50 length.`; then `privileged: Some(true)` with no
+reason reads
+`The privilegedReason parameter must be a value when 'privileged' is true`
+(218-220). The check at 1511 repeats 1477 on the same value and never fires.
+After every vargs check, more
 than 100 requested names read
 `The fieldsToReveal parameter must be at most 100 fields` and a repeated name
 `The fieldsToReveal parameter must be unique field names` (1513-1518, the
