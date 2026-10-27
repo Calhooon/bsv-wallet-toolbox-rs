@@ -655,8 +655,22 @@ of keys.`, `Missing field: <field> in certificate.fields`, and
 `Invalid field! Expected: <sent>, Received: <received>`. Signature errors use
 `Certificate verification failed`; decryption errors use
 `Failed to decrypt all master certificate fields.` (`MasterCertificate.ts:560`).
-The existing error envelope is retained. The identity header's name/presence
-belongs to #269; the internal identity-key parse is also unchanged.
+The existing error envelope is retained; the internal identity-key parse is
+unchanged.
+
+For #269, the certifier's identity header is read as `Wallet.ts:789-793`
+reads it, after the HTTP status check and before the body is read: the name
+is `x-bsv-auth-identity-key` (the name `AuthFetch.ts:479` sets on the
+response from the authenticated sender's key, and the auth middleware sends
+at `auth-express-middleware/src/index.ts:936,1008`), it is required, and it
+must equal the normalized certifier. An absent header refuses with
+`Invalid certifier! Expected: <certifier>, Received: null`, so a body that
+would fail the JSON parse is never the error named. The value is read as
+fetch's `Headers.get` reads it: each byte one code point (a non-ASCII value
+is compared, and refused, rather than dropped) and repeated values joined
+with `, `. The old `x-bsv-identity-key` response header is not read; the
+reference reads one name. The request still sends `x-bsv-identity-key`.
+Tests: `certificate_issuance_header_tests.rs`.
 
 `certificate_issuance_guard_tests.rs` checks the representable argument guards
 and their precedence. `certificate_issuance_response_tests.rs` exercises the
@@ -840,9 +854,10 @@ runs on `storageCert.fields`, `signer/methods/proveCertificate.ts:35`).
 
 1. **PrepareIssuanceActionData**: Generate a random 32-byte nonce, encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
 2. **HTTP POST**: Send request to certifier URL with BRC-104 headers (`x-bsv-auth-version: 0.1`, `x-bsv-identity-key`)
-3. **ParseCertificateResponse**: Require the certificate, then nonce, and retain the supplied certificate text
-4. **VerifyCertificateIssuance**: Run the nonce helper, verify the serial HMAC, validate metadata and fields, verify the signature, then decrypt every master field
-5. **StoreCertificate**: Save certificate to storage with encrypted fields and master keyring
+3. **Identity header**: Require `x-bsv-auth-identity-key` equal to the certifier before the body is read (#269)
+4. **ParseCertificateResponse**: Require the certificate, then nonce, and retain the supplied certificate text
+5. **VerifyCertificateIssuance**: Run the nonce helper, verify the serial HMAC, validate metadata and fields, verify the signature, then decrypt every master field
+6. **StoreCertificate**: Save certificate to storage with encrypted fields and master keyring
 
 ### Key Types
 
@@ -871,7 +886,8 @@ pub struct ProtocolIssuanceResponse {
 |----------|-------|-------------|
 | `BRC104_AUTH_VERSION` | "0.1" | BRC-104 authentication version |
 | `HEADER_AUTH_VERSION` | "x-bsv-auth-version" | Version header name |
-| `HEADER_IDENTITY_KEY` | "x-bsv-identity-key" | Identity key header name |
+| `HEADER_IDENTITY_KEY` | "x-bsv-identity-key" | Request identity key header name |
+| `HEADER_CERTIFIER_IDENTITY_KEY` | "x-bsv-auth-identity-key" | Response header the certifier's key must be sent under (#269) |
 | `CERTIFICATE_ISSUANCE_PROTOCOL` | "certificate issuance" | Protocol for HMAC verification |
 | `NONCE_HMAC_SIZE` | 32 | Expected HMAC/serial number size |
 | `NONCE_SIZE` | 32 | Random nonce size in bytes |
