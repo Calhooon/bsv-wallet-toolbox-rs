@@ -2712,23 +2712,7 @@ where
         // never fires. The helper retains its own name, map and serial checks
         // on the stored row (MasterCertificate.ts:348-365). SQLite matches the normalized certifier byte for
         // byte; the remote storage server decides its own collation.
-        if let Some(reason) = &args.privileged_reason {
-            let rule = if reason.len() < 5 {
-                Some("at least 5 length.")
-            } else if reason.len() > 50 {
-                Some("no more than 50 length.")
-            } else {
-                None
-            };
-            if let Some(rule) = rule {
-                return Err(invalid_certificate_argument("privilegedReason", rule));
-            }
-        } else if args.privileged == Some(true) {
-            return Err(invalid_certificate_argument(
-                "privilegedReason",
-                "a value when 'privileged' is true",
-            ));
-        }
+        validate_privilege_arg(args.privileged, args.privileged_reason.as_deref())?;
         validate_certificate_fields_arg(&args.certificate.fields)?;
         let certificate_type = validate_certificate_base64_arg(
             &args.certificate.certificate_type,
@@ -2746,7 +2730,10 @@ where
             &args.certificate.revocation_outpoint,
             "certificate.revocationOutpoint",
         )?;
-        let signature = validate_certificate_signature_arg(&args.certificate.signature)?;
+        let signature = validate_certificate_signature_arg(
+            &args.certificate.signature,
+            "certificate.signature",
+        )?;
         if args.fields_to_reveal.len() > MAXIMUM_WALLET_COLLECTION_ITEMS {
             return Err(invalid_certificate_argument(
                 "fieldsToReveal",
@@ -3482,6 +3469,19 @@ pub(crate) fn validate_public_key_arg(
 // validateBase64String at validationHelpers.ts:439-497 checks structure and
 // decoded size, without enforcing the helper's canonical padding bits.
 pub(crate) fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
+    let (value, bytes) = validate_base64_structure_arg(value, name)?;
+    if bytes < 32 {
+        return Err(invalid_certificate_argument(name, "at least 32 bytes"));
+    }
+    if bytes > 32 {
+        return Err(invalid_certificate_argument(name, "no more than 32 bytes"));
+    }
+    Ok(value)
+}
+
+// validateBase64String's structure checks (488-494) without a size bound:
+// the trimmed text and its decoded byte count.
+fn validate_base64_structure_arg(value: &str, name: &str) -> bsv_rs::Result<(String, usize)> {
     let value = trim_ecmascript_whitespace(value);
     let invalid = || invalid_certificate_argument(name, "valid base64 string");
     if value.is_empty() {
@@ -3505,13 +3505,7 @@ pub(crate) fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs
         return Err(invalid());
     }
     let bytes = (value.len() - padding) * 3 / 4;
-    if bytes < 32 {
-        return Err(invalid_certificate_argument(name, "at least 32 bytes"));
-    }
-    if bytes > 32 {
-        return Err(invalid_certificate_argument(name, "no more than 32 bytes"));
-    }
-    Ok(value.to_string())
+    Ok((value.to_string(), bytes))
 }
 
 // validateCertificateFields at validationHelpers.ts:1232-1241 on the
@@ -3521,37 +3515,73 @@ pub(crate) fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs
 // map holds only string values, so 1238 cannot fail; names are checked in
 // sorted order, as a map keeps no insertion order.
 fn validate_certificate_fields_arg(fields: &HashMap<String, String>) -> bsv_rs::Result<()> {
-    const MAXIMUM_WALLET_COLLECTION_ITEMS: usize = 100_000;
-    if fields.len() > MAXIMUM_WALLET_COLLECTION_ITEMS {
+    for name in validate_record_arg(fields, "fields")? {
+        validate_record_name_arg(name, "field name")?;
+    }
+    Ok(())
+}
+
+// validateRecord (81-103) on a string map: the 100000-key bound, then the
+// unsafe keys; the names in sorted order, as a map keeps no insertion order.
+fn validate_record_arg<'a>(
+    map: &'a HashMap<String, String>,
+    name: &str,
+) -> bsv_rs::Result<Vec<&'a String>> {
+    if map.len() > MAXIMUM_WALLET_COLLECTION_ITEMS {
         return Err(invalid_certificate_argument(
-            "fields",
+            name,
             &format!("an object with at most {MAXIMUM_WALLET_COLLECTION_ITEMS} properties"),
         ));
     }
-    if fields
+    if map
         .keys()
-        .any(|name| matches!(name.as_str(), "__proto__" | "constructor" | "prototype"))
+        .any(|key| matches!(key.as_str(), "__proto__" | "constructor" | "prototype"))
     {
         return Err(invalid_certificate_argument(
-            "fields",
+            name,
             "an object with safe string keys",
         ));
     }
-    let mut names: Vec<&String> = fields.keys().collect();
+    let mut names: Vec<&String> = map.keys().collect();
     names.sort();
-    for name in names {
-        if name.is_empty() {
-            return Err(invalid_certificate_argument(
-                "field name",
-                "at least 1 length.",
-            ));
-        }
-        if name.len() > 50 {
-            return Err(invalid_certificate_argument(
-                "field name",
-                "no more than 50 length.",
-            ));
-        }
+    Ok(names)
+}
+
+// validateStringLength(name, parameter, 1, 50) at 348-355.
+fn validate_record_name_arg(name: &str, parameter: &str) -> bsv_rs::Result<()> {
+    if name.is_empty() {
+        return Err(invalid_certificate_argument(
+            parameter,
+            "at least 1 length.",
+        ));
+    }
+    if name.len() > 50 {
+        return Err(invalid_certificate_argument(
+            parameter,
+            "no more than 50 length.",
+        ));
+    }
+    Ok(())
+}
+
+// validatePrivilege(args, false) at validationHelpers.ts:207-222: a present
+// reason is 5 to 50 UTF-8 bytes (212-217), then privileged needs one (218-220).
+fn validate_privilege_arg(privileged: Option<bool>, reason: Option<&str>) -> bsv_rs::Result<()> {
+    if let Some(reason) = reason {
+        let rule = if reason.len() < 5 {
+            "at least 5 length."
+        } else if reason.len() > 50 {
+            "no more than 50 length."
+        } else {
+            return Ok(());
+        };
+        return Err(invalid_certificate_argument("privilegedReason", rule));
+    }
+    if privileged == Some(true) {
+        return Err(invalid_certificate_argument(
+            "privilegedReason",
+            "a value when 'privileged' is true",
+        ));
     }
     Ok(())
 }
@@ -3639,8 +3669,7 @@ fn is_canonical_certificate_signature(bytes: &[u8]) -> bool {
     offset == bytes.len()
 }
 
-fn validate_certificate_signature_arg(value: &str) -> bsv_rs::Result<String> {
-    let name = "certificate.signature";
+fn validate_certificate_signature_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
     let normalized = validate_certificate_hex_arg(value, name)?;
     let bytes = hex::decode(&normalized)
         .map_err(|_| invalid_certificate_argument(name, "hexadecimal string."))?;
