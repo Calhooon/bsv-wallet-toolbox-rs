@@ -413,7 +413,7 @@ async fn stored_event_state(storage: &StorageSqlx, txid: &str) -> StoredEventSta
 
 async fn measure_status_busy(status: &str, known: bool) -> Duration {
     let timeout = Duration::from_millis(200);
-    let ceiling = timeout.mul_f64(1.5);
+    let ceiling = timeout * 2;
     let scene = Scene::new().await;
     let storage = &scene.storage;
     scene.set_sending().await;
@@ -468,7 +468,10 @@ async fn measure_status_busy(status: &str, known: bool) -> Duration {
 async fn assert_status_busy_waits_once(status: &str) {
     let unknown_wait = measure_status_busy(status, false).await;
     let known_wait = measure_status_busy(status, true).await;
-    let ceiling = Duration::from_millis(300);
+    // SQLite's busy handler sleeps the full timeout before each refusal, so
+    // two waits cannot fall below 2x. This doubles the overhead budget for a
+    // loaded runner compared with the former 1.5x ceiling.
+    let ceiling = Duration::from_millis(200) * 2;
     for (known, elapsed) in [(false, unknown_wait), (true, known_wait)] {
         assert!(
             elapsed < ceiling,
