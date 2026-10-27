@@ -98,7 +98,7 @@ async fn test_issuance_bad_certifier_precedes_identity() {
     let wallet = wallet().await;
     let mut server = mockito::Server::new_async().await;
     let request = server.mock("POST", "/issue").expect(0).create_async().await;
-    let mut invalid = args("gg".to_string(), format!("{}/issue", server.url()));
+    let invalid = args("gg".to_string(), format!("{}/issue", server.url()));
     // Poison the later identity parse so running it before the certifier
     // check changes the observed refusal. The type is left valid: the
     // reference validates type (validationHelpers.ts:1338) before certifier
