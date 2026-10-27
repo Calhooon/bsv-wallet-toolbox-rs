@@ -39,9 +39,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A pull request runs the required cell only; a push or a tag runs every cell.
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
-        rust: ${{ github.event_name == 'pull_request' && fromJSON('["stable"]') || fromJSON('["stable", "beta"]') }}
+        # The required cell only, on a pull request, a push and a tag alike (the
+        # owner's word of 2026-10-27); matrix.yml runs every cell on dispatch.
+        os: [ubuntu-latest]
+        rust: [stable]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -186,46 +187,6 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
-  coverage:
-    name: Code Coverage
-    if: ${{ github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-          components: llvm-tools-preview
-
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ubuntu-coverage-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            ubuntu-coverage-
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
-        with:
-          tool: cargo-llvm-cov
-
-      - name: Generate coverage
-        run: cargo llvm-cov --lib --features sqlite --lcov --output-path lcov.info
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
-
-  # One bsv-rs per lock (bsv-stack-lean #182): a committed Cargo.lock holding
-  # two bsv-rs entries fails, the gate a self-merging stack PR stands behind.
   locks:
     runs-on: ubuntu-latest
     steps:

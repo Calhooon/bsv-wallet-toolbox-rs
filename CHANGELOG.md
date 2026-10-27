@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### CI
+
+- A push to `main` runs exactly the required set, the same as a pull request
+  (the owner's word of 2026-10-27, through the stack keeper). Coverage and the
+  full OS and toolchain matrix left `ci.yml` for the dispatched `coverage.yml`
+  and `matrix.yml`, run once before a tag and never on a push; the README
+  carries their badges beside CI's; `nightly-mutants.yml` is `mutants.yml`
+  (`Mutants`). A cancelled push run is never a red. The required contexts are
+  unchanged.
+
 ## [0.13.1] - 2026-10-25
 
 A quick fix release on the stable line: the mock's spender setter for bsv-wallet-cli, the two #96 corrections to the 0.13.0 ladder, the #161 review-pass fix that voids a failed transaction's created outputs, and the mutation nightly's workflow file, all below. No other public shape moves.

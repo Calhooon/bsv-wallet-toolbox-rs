@@ -1,4 +1,4 @@
-name: Nightly mutants
+name: Mutants
 
 # Informational, never a required branch protection context. Manual dispatch
 # only: the 04:41 UTC schedule is off (#153), because sixteen shards at about
@@ -15,7 +15,7 @@ permissions:
 
 # One run per ref at a time; a second dispatch against the same ref queues.
 concurrency:
-  group: nightly-mutants-${{ github.ref }}
+  group: mutants-${{ github.ref }}
   cancel-in-progress: false
 
 env:
