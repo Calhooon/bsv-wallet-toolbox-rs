@@ -61,6 +61,10 @@ mod named_input_tests;
 #[path = "nosend_label_tests.rs"]
 mod nosend_label_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "direct_acquire_tests.rs"]
+mod direct_acquire_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
