@@ -125,7 +125,7 @@ status=0
 
 run_one() {
   local crate="$1" clone="$2" dir="$3" testcmd="$4"
-  local src dest from
+  local src dest from probe rc=0
   dest="$WORK/$crate"
   rm -rf "$dest"
   mkdir -p "$WORK"
@@ -147,12 +147,12 @@ run_one() {
     case "$probe" in
       0)
         echo "== $crate: cloning $clone at its $line branch (the line under test)"
-        git clone --quiet --depth 1 --branch "$line" "$clone" "$dest"
+        git clone --quiet --depth 1 --branch "$line" "$clone" "$dest" || rc=$?
         ;;
       2)
         [ -n "$line" ] && [ "$line" != main ] && echo "   NOTE: $clone has no $line branch; its default branch stands in"
         echo "== $crate: cloning $clone at its default branch"
-        git clone --quiet --depth 1 "$clone" "$dest"
+        git clone --quiet --depth 1 "$clone" "$dest" || rc=$?
         ;;
       *)
         echo "== $crate: the branch probe of $clone failed (git ls-remote exit $probe); a fault is not a verdict"
@@ -161,6 +161,12 @@ run_one() {
         return
         ;;
     esac
+    if [ "$rc" -ne 0 ]; then
+      echo "== $crate: the clone of $clone failed (git clone exit $rc); a fault is not a verdict"
+      summary+=("$crate|clone fault (exit $rc)|-")
+      status=1
+      return
+    fi
     echo "   at $(git -C "$dest" rev-parse --short HEAD) ($(git -C "$dest" rev-parse --abbrev-ref HEAD))"
   fi
   src="$dest/$dir"
