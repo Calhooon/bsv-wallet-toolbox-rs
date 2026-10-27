@@ -153,18 +153,18 @@ fn test_describe_invalid_beef_names_the_missing_parent_and_dumps_the_bytes() {
 #[test]
 fn test_describe_invalid_beef_two_dumps_name_distinct_files() {
     let chain = synth_chain(3); // a <- b <- c
-    let mut first = Beef::new();
-    first.merge_raw_tx(chain[2].0.clone(), None); // c without b
+    let mut one = Beef::new();
+    one.merge_raw_tx(chain[2].0.clone(), None); // c without b
     let mut second = Beef::new();
     second.merge_raw_tx(chain[1].0.clone(), None); // b without a
-    let first_bytes = hex::encode(first.to_binary());
+    let one_bytes = hex::encode(one.to_binary());
     let second_bytes = hex::encode(second.to_binary());
-    assert_ne!(first_bytes, second_bytes, "the two rejected BEEFs differ");
+    assert_ne!(one_bytes, second_bytes, "the two rejected BEEFs differ");
 
     let dumps: Vec<(String, String)> = (0..32)
         .map(|i| {
             let (beef, root, bytes) = if i % 2 == 0 {
-                (&mut first, &chain[2].1, &first_bytes)
+                (&mut one, &chain[2].1, &one_bytes)
             } else {
                 (&mut second, &chain[1].1, &second_bytes)
             };
