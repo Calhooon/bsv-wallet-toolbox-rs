@@ -12,6 +12,13 @@ use crate::storage::StorageSqlx;
 use crate::{Error, StoreBusyReason, WalletStorageProvider, WalletStorageWriter};
 
 const HEIGHT: u32 = 850_000;
+const STATUS_EVENTS: [&str; 5] = [
+    "SEEN_ON_NETWORK",
+    "SEEN_MULTIPLE_NODES",
+    "STUMP_PROCESSING",
+    "MINED",
+    "IMMUTABLE",
+];
 
 struct Scene {
     storage: StorageSqlx,
@@ -485,19 +492,116 @@ async fn mined_status_busy_waits_once_without_writes() {
     assert_status_busy_waits_once("MINED").await;
 }
 
-async fn status_fault_scene(trigger_sql: &str) -> Scene {
+async fn unremembered_sending_scene() -> Scene {
     let scene = Scene::new().await;
-    let storage = &scene.storage;
     scene.set_sending().await;
     sqlx::query("DELETE FROM broadcast_seen")
-        .execute(storage.writer())
-        .await
-        .unwrap();
-    sqlx::query(trigger_sql)
-        .execute(storage.writer())
+        .execute(scene.storage.writer())
         .await
         .unwrap();
     scene
+}
+
+async fn status_fault_scene(trigger_sql: &str) -> Scene {
+    let scene = unremembered_sending_scene().await;
+    sqlx::query(trigger_sql)
+        .execute(scene.storage.writer())
+        .await
+        .unwrap();
+    scene
+}
+
+#[tokio::test]
+async fn status_delivery_commits_statuses_and_hint_once() {
+    for status in STATUS_EVENTS {
+        let scene = unremembered_sending_scene().await;
+        let commits = Arc::new(AtomicU64::new(0));
+        let counted = commits.clone();
+        {
+            let mut conn = scene.storage.writer().acquire().await.unwrap();
+            conn.lock_handle().await.unwrap().set_commit_hook(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                true
+            });
+        }
+        // Count the status transaction only; inline proof ingestion has its
+        // own transaction after the tracker check, as the #201 tests cover.
+        let mut ev = scene.event(status);
+        ev.merkle_path = None;
+        let trigger = AtomicBool::new(false);
+        assert!(ArcadeEventsTask::apply_event(&scene.storage, &ev, &trigger)
+            .await
+            .unwrap());
+        assert_eq!(commits.load(Ordering::SeqCst), 1, "{status}");
+        assert_eq!(status_words(&scene.storage).await, ["unmined", "unproven"]);
+        let memory = scene
+            .storage
+            .broadcast_records(None, std::slice::from_ref(&scene.txid))
+            .await
+            .unwrap();
+        assert_eq!(memory.len(), 1, "{status}");
+        assert_eq!(memory[0].status, "seen", "{status}");
+    }
+}
+
+async fn pause_next_req_update(
+    storage: &StorageSqlx,
+) -> (
+    tokio::sync::oneshot::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (entered, arrival) = tokio::sync::oneshot::channel();
+    let (resume, release) = std::sync::mpsc::channel();
+    let mut entered = Some(entered);
+    let mut conn = storage.writer().acquire().await.unwrap();
+    conn.lock_handle()
+        .await
+        .unwrap()
+        .set_update_hook(move |row| {
+            if row.table == "proven_tx_reqs" {
+                if let Some(entered) = entered.take() {
+                    let _ = entered.send(());
+                    // This runs on SQLx's SQLite worker, leaving Tokio free to
+                    // cancel the callback while its request update is in flight.
+                    let _ = release.recv_timeout(Duration::from_secs(5));
+                }
+            }
+        });
+    (arrival, resume)
+}
+
+#[tokio::test]
+async fn cancelled_status_delivery_rolls_back_statuses_and_hint() {
+    for status in STATUS_EVENTS {
+        let scene = unremembered_sending_scene().await;
+        let fields = unchanged_event_fields(&scene.storage).await;
+        let (entered, resume) = pause_next_req_update(&scene.storage).await;
+        let trigger = Arc::new(AtomicBool::new(false));
+        let callback_trigger = trigger.clone();
+        let store = scene.storage.clone();
+        let ev = scene.event(status);
+        let delivery = tokio::spawn(async move {
+            ArcadeEventsTask::apply_event(&store, &ev, &callback_trigger).await
+        });
+        let arrived = tokio::time::timeout(Duration::from_secs(5), entered).await;
+        delivery.abort();
+        let cancelled = delivery.await;
+        let resumed = resume.send(());
+        arrived.unwrap().unwrap();
+        resumed.unwrap();
+        assert!(cancelled.unwrap_err().is_cancelled(), "{status}");
+        {
+            // Wait for the SQLite worker to finish the cancelled statement
+            // and the transaction's queued rollback before inspecting it.
+            let mut conn = scene.storage.writer().acquire().await.unwrap();
+            conn.lock_handle().await.unwrap().remove_update_hook();
+        }
+        assert_eq!(status_words(&scene.storage).await, ["sending", "sending"]);
+        assert_eq!(unchanged_event_fields(&scene.storage).await, fields);
+        assert_no_broadcast_memory(&scene).await;
+        assert!(proof_rows(&scene.storage).await.is_empty());
+        assert!(!trigger.load(Ordering::SeqCst), "{status}");
+    }
 }
 
 async fn assert_no_broadcast_memory(scene: &Scene) {
