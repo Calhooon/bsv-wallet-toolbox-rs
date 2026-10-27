@@ -3255,6 +3255,75 @@ fn build_wallet_certificate_from_args(
 /// Protocol for certificate field encryption (BRC-52/53).
 const CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL: &str = "certificate field encryption";
 
+// Input validation used only by create_keyring_for_verifier.
+const MAX_CERTIFICATE_FIELDS: usize = 100;
+
+fn validate_certificate_field_name(name: &str) -> bsv_rs::Result<()> {
+    if name.is_empty()
+        || name.len() > 50
+        || matches!(name, "__proto__" | "constructor" | "prototype")
+    {
+        return Err(bsv_rs::Error::WalletError(
+            "Certificate field name must be a safe UTF-8 string of 1–50 bytes".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_certificate_reveal_names(names: &[String]) -> bsv_rs::Result<()> {
+    if names.len() > MAX_CERTIFICATE_FIELDS {
+        return Err(bsv_rs::Error::WalletError(format!(
+            "fieldsToReveal must be an array of at most {MAX_CERTIFICATE_FIELDS} strings"
+        )));
+    }
+    let mut seen = HashSet::new();
+    for name in names {
+        validate_certificate_field_name(name)?;
+        if !seen.insert(name) {
+            return Err(bsv_rs::Error::WalletError(format!(
+                "fieldsToReveal contains duplicate field: {name}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_certificate_record(
+    record: &HashMap<String, String>,
+    label: &str,
+) -> bsv_rs::Result<()> {
+    if record.len() > MAX_CERTIFICATE_FIELDS {
+        return Err(bsv_rs::Error::WalletError(format!(
+            "{label} cannot contain more than {MAX_CERTIFICATE_FIELDS} entries"
+        )));
+    }
+    for name in record.keys() {
+        validate_certificate_field_name(name)?;
+    }
+    Ok(())
+}
+
+fn validate_certificate_base64_values(
+    record: &HashMap<String, String>,
+    label: &str,
+) -> bsv_rs::Result<()> {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+
+    for (name, value) in record {
+        // STANDARD requires padding and zero trailing bits, as does the
+        // reference's base64ToBytes. Value size caps remain with #223.
+        let decoded = BASE64.decode(value).map_err(|_| {
+            bsv_rs::Error::WalletError(format!("{label} {name} must use canonical base64 encoding"))
+        })?;
+        if decoded.is_empty() {
+            return Err(bsv_rs::Error::WalletError(format!(
+                "{label} {name} is empty, oversized, or non-canonical"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Creates a keyring for a verifier, enabling them to decrypt specific certificate fields.
 ///
 /// This function follows the TypeScript/Go implementation:
@@ -3289,13 +3358,16 @@ fn create_keyring_for_verifier(
     use bsv_rs::primitives::SymmetricKey;
     use bsv_rs::wallet::{DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs};
 
+    // Match the pre-loop order at ts-stack@edf6e03 MasterCertificate.ts:348-364.
+    // Rust's borrowed string containers already provide stable typed inputs.
+    validate_certificate_reveal_names(fields_to_reveal)?;
+    validate_certificate_record(fields, "Certificate fields")?;
+    validate_certificate_record(master_keyring, "Master certificate keyring")?;
+    validate_certificate_base64_values(fields, "Certificate field")?;
+    validate_certificate_base64_values(master_keyring, "Master certificate keyring field")?;
+
     let decryption_error =
         || bsv_rs::Error::WalletError("Failed to decrypt certificate field!".to_string());
-
-    // Validate master keyring is not empty
-    if master_keyring.is_empty() {
-        return Err(decryption_error());
-    }
 
     let protocol = Protocol::new(
         SecurityLevel::Counterparty,
@@ -3305,11 +3377,11 @@ fn create_keyring_for_verifier(
     let mut keyring_for_verifier = HashMap::new();
 
     for field_name in fields_to_reveal {
-        // Verify field exists in the certificate
-        if !fields.contains_key(field_name) {
+        // Match the subset check at MasterCertificate.ts:370-379, including
+        // its empty-value arm (refused by the earlier value validation).
+        if fields.get(field_name).is_none_or(String::is_empty) {
             return Err(bsv_rs::Error::WalletError(format!(
-                "Field '{}' not found in certificate - fields_to_reveal must be a subset of certificate fields",
-                field_name
+                "Fields to reveal must be a subset of the certificate fields. Missing the \"{field_name}\" field."
             )));
         }
 
@@ -3932,26 +4004,35 @@ mod tests {
                 HashMap::from([("name".to_string(), "not-valid-base64!!!".to_string())]);
             let fields_to_reveal = vec!["name".to_string()];
 
-            let result = create_keyring_for_verifier(
-                &subject_wallet,
-                &certifier_key.public_key(),
-                &verifier_key.public_key(),
-                &fields,
-                &fields_to_reveal,
-                &master_keyring,
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                "test.app.com",
-            );
-
             assert_wallet_error(
                 "non-base64 master entry",
-                result,
+                create_keyring_for_verifier(
+                    &subject_wallet,
+                    &certifier_key.public_key(),
+                    &verifier_key.public_key(),
+                    &fields,
+                    &fields_to_reveal,
+                    &master_keyring,
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    "test.app.com",
+                ),
                 "Master certificate keyring field name must use canonical base64 encoding",
             );
         }
 
         mod preloop_gate {
             use super::*;
+
+            fn invalid_field_names() -> [String; 6] {
+                [
+                    String::new(),
+                    "n".repeat(51),
+                    "é".repeat(26),
+                    "__proto__".to_string(),
+                    "constructor".to_string(),
+                    "prototype".to_string(),
+                ]
+            }
 
             struct Request {
                 fields: HashMap<String, String>,
@@ -4104,14 +4185,7 @@ mod tests {
             #[cfg(feature = "sqlite")]
             #[tokio::test]
             async fn test_create_keyring_preloop_invalid_field_key() {
-                for name in [
-                    "".to_string(),
-                    "n".repeat(51),
-                    "é".repeat(26),
-                    "__proto__".to_string(),
-                    "constructor".to_string(),
-                    "prototype".to_string(),
-                ] {
+                for name in invalid_field_names() {
                     let mut request = Request::new();
                     request.fields.insert(name, "YQ==".to_string());
                     request.assert_gate_error(FIELD_NAME_ERROR).await;
@@ -4121,14 +4195,7 @@ mod tests {
             #[test]
             fn test_create_keyring_preloop_invalid_master_key() {
                 // SQL has no master-only rows; exercise the helper's separate map.
-                for name in [
-                    "".to_string(),
-                    "n".repeat(51),
-                    "é".repeat(26),
-                    "__proto__".to_string(),
-                    "constructor".to_string(),
-                    "prototype".to_string(),
-                ] {
+                for name in invalid_field_names() {
                     let mut request = Request::new();
                     request.reveal.clear();
                     request.master.insert(name, "YQ==".to_string());
