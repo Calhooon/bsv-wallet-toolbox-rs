@@ -597,7 +597,13 @@ including `provided_by`, `purpose`,
 `output_description`, `spent_by`, `sequence_number`, and
 `spending_description`. The decoder is strict: every column uses
 `try_get(...)?`, so a missing or invalid column returns an error instead of
-a default. SQL NULL remains `None` for nullable fields. A received output reads
+a default. SQL NULL remains `None` for nullable fields. `sequence_number` is read
+only through `sequence_number_from_row` (`storage_sqlx/outputs.rs`), shared by
+`output_from_row`, the `list_actions` input read, the sync export and the
+allocator: the INTEGER column decodes as i64 and converts to the full u32 the
+writers store; a negative i32 an earlier writer left keeps its bits (-1 is
+0xFFFFFFFF), anything outside both ranges is a `ColumnDecode` error (#301,
+witnesses in `sequence_number_tests.rs`). A received output reads
 back as `providedBy: "storage"`, `purpose: "receive"` when those are stored.
 The default finder includes the locking script; `no_script: true` suppresses
 only the returned script and retains the origin and spending metadata.

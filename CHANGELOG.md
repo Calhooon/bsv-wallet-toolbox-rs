@@ -13,6 +13,17 @@
   with a null or empty derivation prefix or suffix. The public allocator
   and its count also no longer pick a coin whose parent is not
   `completed`, `unproven`, or (unless `exclude_sending`) `sending`.
+- #301: every `StorageSqlx` output reader returns the stored
+  `sequence_number` as the full u32. `find_outputs`, `find_output_by_outpoint`,
+  the create door's stored inputs and internalization's existing rows returned
+  a decode error for a value at or above 2^31 (0xFFFFFFFF included), and
+  `list_actions` with `includeInputs` panicked on it; they now return the
+  value. The sync export panicked and `allocate_change_input` returned `None`
+  on a negative stored value; a negative i32 now reads as the same bits
+  (-1 is 0xFFFFFFFF) in every reader. A value outside both ranges is a decode
+  error (the allocator still reads it as `None`). The reference's column is
+  `integer('sequenceNumber').unsigned()` (`ts-stack@edf6e03`
+  `KnexMigrations.ts:766`). No schema or public shape change.
 - #287: `StorageSqlx::allocate_change_input` returns the stored `outputs.type`
   in `TableOutput.output_type` and its serialized `outputType` field instead
   of silently returning an empty string for the missing `output_type` column.
