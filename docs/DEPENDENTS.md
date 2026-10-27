@@ -21,17 +21,18 @@ dependent without such a branch is cloned at its default with a note, and a prob
 that faults rather than answers marks the row failed, #208) into a
 scratch directory, rewrites its dependency on this crate
 to a path dependency on the tree under test, and runs `cargo build --locked`
-(falling back to `cargo build` with a note) and `cargo test --locked` on every
-target (`cargo test` when the build fell back). A row whose test column is not
+(falling back to `cargo build` with a note) and `cargo test --locked --no-fail-fast`
+on every target (`cargo test --no-fail-fast` when the build fell back). A row whose test column is not
 `default` runs that narrower command instead, and its reason column says why;
 a narrowed row is noted in the summary. The CI job `dependents` runs the rows
 marked `yes`; a private repository needs a token the job does not hold, so its
 row runs on a laptop with `--from`.
 Every probe or clone fault appears as a summary row, and the job fails for the named reason.
 
-The rows a test run carries (#252). Every dependent's tests run with
+The rows a test run carries (#252). A `default` row's tests run with
 `WIRE_TEXT_DIFF=report` in their environment (a dependent that does not read
-it ignores it) and `--no-fail-fast`, so every target runs; the output is
+it ignores it) and `--no-fail-fast`, so every target runs (a narrowed row runs
+its own command as written); the output is
 printed and captured. Under the knob the CLI's wire replay (bsv-wallet-cli
 #290) prints one line `TEXT-DIFF: <fixture file> <expected message> <actual
 message>` for a fixture whose replayed refusal differs from it in the message
