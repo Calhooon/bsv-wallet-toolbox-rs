@@ -168,6 +168,18 @@ plain SQLx error. Never a `StoreBusy` after a committed write: a write that
 fails after the commit (the status write after a post, the retirement after a
 broadcast abort) is logged and the call answers its success.
 
+The Arcade SEEN, IN_BLOCK and MINED status paths all use
+`mark_transaction_seen_on_network_by` in `storage_sqlx/monitor.rs`. It groups
+the request and transaction status updates with the provider hint in one
+`write_tx()`: one writer acquisition and one `busy_timeout` (#205), with
+rollback on a status error or cancellation before commit. Hint-write errors
+remain logged without being returned. Previously the hint write's wait was
+followed by the status write's wait, risking the Arcade webhook sender's 10 s
+timeout with the default 5 s store timeout. MINED's later proof-ingest
+transaction stays separate (#201): it checks the tracker outside the writer,
+and a busy there can follow committed statuses; a delivery retry is
+idempotent. CLI #249 retains the deadline for the whole callback.
+
 Nothing awaits a service or a chain tracker while holding the writer or a
 `write_tx`: ask the network, then write. The BEEF walk reads on a reader
 connection and writes its read checks through the writer it is passed, never
@@ -191,6 +203,13 @@ two stores whose writers meet in SQLite's busy handler and two reservation sets.
 | a store opened twice has two writers; a shared store one | `storage.md section 2 S9` | `a_store_opened_twice_has_two_writers_and_a_shared_store_one` (`--test store_write_lock_tests`) |
 | a wallet and a monitor over one store share the writer | `storage.md section 2 S9` | `a_wallet_and_a_monitor_over_one_store_share_the_writer` |
 | the writer not acquired within the ceiling is `StoreBusy` | `storage.md section 2 S9` (a typed busy that promises nothing was written) | `the_writer_not_acquired_within_the_ceiling_is_store_busy` (`--test store_write_lock_tests`) |
+| Arcade SEEN status contention takes less than 1.5 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `seen_status_busy_waits_once_without_writes` |
+| Arcade IN_BLOCK status contention takes less than 1.5 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `in_block_status_busy_waits_once_without_writes` |
+| Arcade MINED status contention takes less than 1.5 times `busy_timeout`, returns typed busy and writes nothing (#44, #205) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `mined_status_busy_waits_once_without_writes` |
+| Arcade status updates and their hint commit once per callback | `storage.md section 2 S9` | `status_delivery_commits_statuses_and_hint_once` |
+| cancellation during an Arcade status write leaves both statuses and the hint unchanged | `storage.md section 2 S9`; `wallet.md section 6` R8 | `cancelled_status_delivery_rolls_back_statuses_and_hint` |
+| an Arcade transaction-status failure rolls back its request status too | `storage.md section 2 S9` | `seen_status_updates_roll_back_together` |
+| an optional Arcade hint-write failure keeps the status updates | `broadcaster.md section 1 B1`; toolbox #201 | `non_busy_broadcast_memory_error_keeps_status_updates` |
 | an Arcade MINED or IMMUTABLE proof-ingest busy keeps its type and skips the fetch fallback (#44, #201) | `storage.md section 2 S9`; `wallet.md section 6` R8 | `replayed_mined_inline_proof_keeps_store_busy_without_fetch`, `mined_inline_proof_busy_after_sending_status_commit_retries_idempotently` |
 | a unique violation is not `StoreBusy` | `storage.md section 2 S9` | `a_unique_violation_is_not_store_busy` (`--test store_write_lock_tests`) |
 | both pools keep their pragmas | `storage.md section 2 S9` | `both_pools_keep_the_pragmas` (`--test store_write_lock_tests`) |
