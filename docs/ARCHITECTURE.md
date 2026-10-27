@@ -156,6 +156,15 @@ it (`UnspendableCoin`).
 | empty raw master values refuse with the reference's value-check text | `ts-stack@edf6e03 MasterCertificate.ts:70-71,358-364`; toolbox #236 | `test_create_keyring_preloop_empty_master_value` |
 | requested names precede map validation, and both maps' keys precede values | `ts-stack@edf6e03 MasterCertificate.ts:348-364`; toolbox #236 | `test_create_keyring_preloop_order` |
 | 100 entries pass the gate, and empty requests with empty maps return an empty keyring | `ts-stack@edf6e03 MasterCertificate.ts:43-45,125-129,348-415`; toolbox #236 | `test_create_keyring_preloop_accepts_limits_and_empty_request` |
+| a noncanonical serial refuses before verifier key derivation with the exact canonical-Base64 WalletError | `ts-stack@edf6e03 MasterCertificate.ts:63-78,365`; toolbox #240 | `test_create_keyring_serial_noncanonical` |
+| a stored certificate with a noncanonical serial refuses at the prove door with the exact WalletError | `ts-stack@edf6e03 MasterCertificate.ts:365`; `signer/methods/proveCertificate.ts:31-43`; toolbox #240 | `test_prove_certificate_serial_noncanonical` |
+| serial numbers encoding zero, fewer than 32, or more than 32 bytes use the reference's distinct length refusals | `ts-stack@edf6e03 MasterCertificate.ts:70-78,365`; toolbox #240 | `test_create_keyring_serial_length` |
+| serial validation precedes subset checks and field recovery, including an empty request with empty maps | `ts-stack@edf6e03 MasterCertificate.ts:365-393`; toolbox #240 | `test_create_keyring_serial_before_subset_and_recovery` |
+| all map values are validated before the serial number | `ts-stack@edf6e03 MasterCertificate.ts:351-365`; toolbox #240 | `test_create_keyring_serial_after_map_values` |
+| canonical serials encoding exactly 32 bytes still produce verifier keyrings through both doors | `ts-stack@edf6e03 MasterCertificate.ts:76-78,365`; toolbox #240 | `test_create_keyring_serial_accepts_32_bytes` |
+| an empty disclosure request for a populated certificate returns an empty verifier keyring | `ts-stack@edf6e03 validationHelpers.ts:1506-1508`; `signer/methods/proveCertificate.ts:31-43`; `MasterCertificate.ts:348,370-415`; toolbox #240 | `test_prove_certificate_empty_request_reveals_nothing` |
+| an empty disclosure request performs no field recovery | `ts-stack@edf6e03 MasterCertificate.ts:370-415`; toolbox #240 | `test_prove_certificate_empty_request_skips_recovery` |
+| an empty disclosure request still validates the maps and serial number | `ts-stack@edf6e03 MasterCertificate.ts:348-365`; toolbox #240 | `test_prove_certificate_empty_request_validates_inputs` |
 | equal and empty plaintext fields receive distinct 32-byte keys across fields and issuances | `ts-stack@edf6e03 MasterCertificate.ts:277-293`; toolbox #203 | `issuance_uses_fresh_keys_for_equal_and_empty_plaintexts` |
 
 ## 2. The writer and the pool
