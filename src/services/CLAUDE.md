@@ -287,7 +287,7 @@ pub struct ServicesOptions {
 - `with_bananablocks_base(url)` - BananaBlocks API base (default per chain; empty = off)
 - `without_bananablocks()` - Leave BananaBlocks out of every ladder
 - `with_arcade(url, config)` - Arcade mode: `arc_url` is the Arcade endpoint (another than the default `ARCADE_V2_MAINNET`, or on testnet); no classic ARC provider is built
-- `with_classic_arc(url, config)` - **Deprecated** (0.14.0): classic mode (`arcade_v2 = false`), TAAL ARC from `url`; serves the CLI's hermetic stub until it speaks Arcade
+- `with_classic_arc(url, config)` - **Deprecated** (0.14.0): classic mode (`arcade_v2 = false`), TAAL ARC from `url`; serves the CLI's hermetic stub until it speaks Arcade. An empty or blank `url` refuses at construction (`NO_CLASSIC_ARC_URL`, #345)
 - `with_arc(url, config)` - **Deprecated** (0.14.0): the same as `with_classic_arc`
 - `with_gorillapool(url, config)` - Set GorillaPool ARC configuration (classic mode only)
 - `with_bhs_url(url)` - Set Block Header Service URL
@@ -451,7 +451,12 @@ Arcade testnet constant) name no Arcade endpoint, and `Services::with_options` r
 default mode (#317); set one with ServicesOptions::with_arcade(url, config)`
 (`NO_ARCADE_URL`; the reference has no counterpart). The classic ladder
 stays behind the deprecated `with_classic_arc` for the CLI's hermetic stub
-until it speaks Arcade. Pinned by `arcade_ladder_tests.rs`. Unit tests build
+until it speaks Arcade; given an empty `url` it refuses as Arcade mode does
+(#345), with `Invalid argument: ServicesOptions names no classic ARC
+endpoint: with_classic_arc(url) was given an empty url; name the TAAL ARC
+endpoint, or use ServicesOptions::with_arcade(url, config)`
+(`NO_CLASSIC_ARC_URL`, the port's own text: the reference has no classic
+knob). Pinned by `arcade_ladder_tests.rs`. Unit tests build
 read-side `Services` from `arcade_test_options()` (Arcade at a loopback port
 nothing listens on).
 
