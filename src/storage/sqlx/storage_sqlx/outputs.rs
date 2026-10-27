@@ -208,15 +208,15 @@ pub(crate) fn output_from_row(row: &sqlx::sqlite::SqliteRow) -> TableOutput {
         script_offset: row.get("script_offset"),
         output_type: row.get("type"),
         provided_by: row.try_get("provided_by").unwrap_or("you".to_string()),
-        purpose: row.try_get("purpose").ok(),
-        output_description: row.try_get("output_description").ok(),
+        purpose: row.try_get("purpose").ok().flatten(),
+        output_description: row.try_get("output_description").ok().flatten(),
         spent_by: row.try_get("spent_by").ok().flatten(),
         sequence_number: row
             .try_get::<Option<i32>, _>("sequence_number")
             .ok()
             .flatten()
             .map(|v| v as u32),
-        spending_description: row.try_get("spending_description").ok(),
+        spending_description: row.try_get("spending_description").ok().flatten(),
         spendable: row.get("spendable"),
         change: row.get("change"),
         derivation_prefix: row.get("derivation_prefix"),
