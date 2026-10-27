@@ -652,3 +652,37 @@ async fn truthy_outpoint_text_is_retained_in_storage() {
     expected.sort();
     assert_eq!(actual, expected);
 }
+
+#[tokio::test]
+async fn server_nonce_uses_the_requested_certifier_key() {
+    let observer = ObservedWallet::default();
+    let signer = ProtoWallet::new(Some(PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap()));
+    let data = vec![b'a'; 16];
+    let hmac = signer
+        .create_hmac(CreateHmacArgs {
+            data: data.clone(),
+            protocol_id: Protocol::new(SecurityLevel::Counterparty, "server hmac"),
+            key_id: "a".repeat(16),
+            counterparty: Some(Counterparty::Other(
+                PrivateKey::from_hex(&format!("{:064x}", 37))
+                    .unwrap()
+                    .public_key(),
+            )),
+            ..Default::default()
+        })
+        .unwrap()
+        .hmac;
+    let nonce = [data, hmac.to_vec()].concat();
+    let (result, _) = response_run(&observer, BASE64.encode([7; 32]), nonce.clone(), |_| {}).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(observer.calls.lock().unwrap().len(), 2);
+
+    let observer = ObservedWallet::default();
+    let mut tampered = nonce;
+    tampered[16] ^= 1;
+    let (result, _) = response_run(&observer, BASE64.encode([7; 32]), tampered, |_| {}).await;
+    assert!(
+        matches!(result, Err(Error::SdkError(bsv_rs::Error::WalletError(message))) if message == "HMAC is not valid")
+    );
+    assert_eq!(observer.calls.lock().unwrap().len(), 1);
+}
