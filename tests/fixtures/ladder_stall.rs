@@ -260,6 +260,29 @@ pub(super) fn difference(fixture: &Fixture, actual: &Expected, history: &[Rung])
     ))
 }
 
+/// A scene replayed on a worker's servers, `first` stood up for its first
+/// attempt (the scene itself; in a test, the scene as a loaded runner
+/// serves it): what it recorded, the ladder's call history, and the runner
+/// stall it was replayed once more for.
+pub(super) async fn replay_scene(
+    fixture: &Fixture,
+    first: &Fixture,
+    servers: &mut Servers,
+) -> Result<(Expected, Vec<Rung>, Option<String>), String> {
+    assert_eq!(fixture.calls, first.calls, "one scene's calls");
+    let (actual, history) = replay(first, servers).await?;
+    Ok((actual, history, None))
+}
+
+/// A scene replayed once more for a runner stall, named in the run's log
+/// whether it then agrees or not: straight to the process's stderr, past
+/// the test harness's capture, so a passing run names it too.
+pub(super) fn name_the_retry(path: &Path, note: &str) {
+    use std::io::Write;
+    let name = path.strip_prefix(fixture_root()).unwrap_or(path).display();
+    let _ = writeln!(std::io::stderr(), "{name}: {note}");
+}
+
 /// The recorded scene of run 40310320187: `WhatsOnChain`'s 429 with no
 /// Retry-After closes its rung, Bitails answers both calls.
 fn recorded_scene() -> Fixture {
@@ -398,4 +421,91 @@ async fn ladder_fixtures_a_late_second_answer_reads_as_a_runner_stall() {
     // A fixture that scripts the late answer is a verdict, not a stall.
     let deadline = Duration::from_secs(CLIENT_TIMEOUT_SECS);
     assert_eq!(reading(&stalled, &actual, &history, deadline), None);
+}
+
+/// `fixture` as a loaded runner serves it: `provider`'s answer to its
+/// request `nth` (from 1, on its first route) held back past the client's
+/// deadline by less than [`LATE_SLACK_MS`], where the fixture scripts it
+/// immediate. The route's first answer must serve that request.
+fn held_past_the_deadline(fixture: &Fixture, provider: &str, nth: usize) -> Fixture {
+    let mut loaded = Fixture {
+        about: fixture.about.clone(),
+        ladder: fixture.ladder.clone(),
+        providers: fixture.providers.clone(),
+        calls: fixture.calls.clone(),
+        expected: None,
+    };
+    let route = &mut loaded
+        .providers
+        .iter_mut()
+        .find(|p| p.name == provider)
+        .unwrap()
+        .routes[0];
+    let scripted = route.answers.remove(0);
+    let serves = scripted.times.unwrap_or(1);
+    assert!(scripted.delay_ms.is_none() && nth <= serves, "{scripted:?}");
+    let mut late = scripted.clone();
+    late.times = Some(1);
+    late.delay_ms = Some(CLIENT_TIMEOUT_SECS * 1000 + LATE_SLACK_MS / 2);
+    let mut answers = Vec::new();
+    for (times, answer) in [(nth - 1, &scripted), (1, &late), (serves - nth, &scripted)] {
+        if times > 0 {
+            let mut answer = answer.clone();
+            answer.times = Some(times);
+            answers.push(answer);
+        }
+    }
+    answers.append(&mut route.answers);
+    route.answers = answers;
+    loaded
+}
+
+/// A fault at the client's deadline where the scene scripts an immediate
+/// answer is the runner's (#194: runs 40515505707 and 40522857063, each a
+/// rung faulted at 2.2 to 3.0 s beside ordinary answers of 1.2 to 1.5 s on
+/// a loaded hosted runner). Two recorded scenes, each with one Bitails
+/// answer held past the deadline by less than [`LATE_SLACK_MS`] on its
+/// first attempt: the merkle path scene asks nothing unscripted after the
+/// fault, the status scene falls to an unscripted rung. Each is replayed
+/// once more, agrees with its fixture, and names the stall.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ladder_fixtures_a_fault_at_the_deadline_is_replayed_once_more() {
+    let deadline_ms = CLIENT_TIMEOUT_SECS * 1000;
+    let mut servers = Servers::new().await;
+    for (scene, nth) in [
+        ("get_merkle_path/429_retry_after_closes_the_rung.json", 1),
+        (
+            "get_status_for_txids/429_without_retry_after_closes_the_rung.json",
+            2,
+        ),
+    ] {
+        let path = fixture_root().join(scene);
+        let (_, fixture) = pool::load(path.clone());
+        let fixture = fixture.unwrap();
+        let loaded = held_past_the_deadline(&fixture, "Bitails", nth);
+        eprintln!(
+            "{scene}: Bitails's answer {nth} held {} ms against the client's {deadline_ms} ms \
+             deadline",
+            deadline_ms + LATE_SLACK_MS / 2
+        );
+        let (actual, history, retried) =
+            replay_scene(&fixture, &loaded, &mut servers).await.unwrap();
+        if let Some(difference) = difference(&fixture, &actual, &history) {
+            panic!("{scene}: the loaded runner's fault failed the scene:\n{difference}");
+        }
+        let note = retried.expect("the stall is named");
+        eprintln!("{scene}: {note}");
+        assert!(
+            note.contains(&format!(
+                "RUNNER STALL, not a ladder verdict: Bitails's answer in call {nth} faulted"
+            )),
+            "{note}"
+        );
+        assert!(
+            note.contains(&format!(
+                "at the fixture client's {deadline_ms} ms deadline"
+            )),
+            "{note}"
+        );
+    }
 }
