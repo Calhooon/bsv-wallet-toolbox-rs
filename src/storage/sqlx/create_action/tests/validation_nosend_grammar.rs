@@ -99,7 +99,7 @@ async fn expiry_without_separator_is_not_a_valid_label() {
     assert_grammar(&["p nosend expiry seconds"], VALID_LABEL).await;
 }
 
-/// The SDK trims the label first, so a trailing separator leaves none.
+/// The SDK trims the label before the match, so a trailing separator leaves none.
 #[tokio::test]
 async fn trailing_separator_is_trimmed_and_not_a_valid_label() {
     assert_grammar(&["p nosend expiry seconds "], VALID_LABEL).await;
