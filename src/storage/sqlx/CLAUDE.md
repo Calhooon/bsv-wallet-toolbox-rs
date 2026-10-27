@@ -374,6 +374,7 @@ pub async fn process_sync_chunk_internal(
     storage: &StorageSqlx,
     args: RequestSyncChunkArgs,
     chunk: SyncChunk,
+    sync_map: &mut crate::storage::SyncMap,
 ) -> Result<ProcessSyncChunkResult>
 ```
 
@@ -386,6 +387,18 @@ Constants for sync offsets (exported as `entity_names` module):
 ### Key Features
 - **get_sync_chunk**: Dependency-ordered entity processing, offset-based resumption, size/item limiting, since filtering
 - **process_sync_chunk**: Upsert logic (INSERT/UPDATE by updated_at), ID translation for foreign keys, empty detection, change tracking
+
+Output sync preserves all 25 `TableOutput` columns, including
+`output_description`, `spent_by`, `sequence_number`, `spending_description`,
+`purpose`, and `provided_by` (#276). The exporter selects each column explicitly
+and decodes nullable metadata without hiding missing columns. Sequence numbers
+retain the full `u32` range. Both inserts and newer-row updates write the four
+nullable metadata fields; an incoming null clears the stored value. Equal or
+older rows keep the existing values. `spent_by`, like the parent transaction,
+uses the session's transaction ID map, including transactions from earlier
+chunks; an unmapped spender becomes null, matching the reference merge.
+The witness module is `sync_output_tests.rs`; the complete wire column list and
+the pinned reference's merge details are in `docs/STORAGE-WIRE.md`.
 
 ## BEEF Verification Implementation
 
