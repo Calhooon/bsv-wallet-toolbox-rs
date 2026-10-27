@@ -34,27 +34,30 @@ fn expiry_payment(label: &str) -> CreateActionArgs {
     }
 }
 
-#[tokio::test]
-async fn nosend_expiry_label_is_refused_through_wallet_interface() {
+/// `create_action` refuses `label` with `text` and the store is unchanged.
+async fn assert_refused(label: &str, text: &str) {
     let (_dir, wallet) = wallet().await;
     fund_tagged(&wallet, &own_lock(&wallet), 0).await;
     let before = store_snapshot(&wallet).await;
 
     let result = wallet
-        .create_action(
-            expiry_payment("p nosend expiry seconds 300"),
-            "nosend.example.com",
-        )
+        .create_action(expiry_payment(label), "nosend.example.com")
         .await;
     match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
-            message,
-            "Invalid operation: Active storage does not support BRC-177 noSend expiry"
-        ),
-        Err(other) => panic!("refused with another error: {other:?}"),
-        Ok(_) => panic!("the action was created"),
+        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, text, "{label}"),
+        Err(other) => panic!("{label}: refused with another error: {other:?}"),
+        Ok(_) => panic!("{label}: the action was created"),
     }
-    assert_eq!(store_snapshot(&wallet).await, before);
+    assert_eq!(store_snapshot(&wallet).await, before, "{label}");
+}
+
+#[tokio::test]
+async fn nosend_expiry_label_is_refused_through_wallet_interface() {
+    assert_refused(
+        "p nosend expiry seconds 300",
+        "Invalid operation: Active storage does not support BRC-177 noSend expiry",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -147,20 +150,9 @@ async fn nosend_label_is_refused_on_internalize_through_wallet_interface() {
 /// `Wallet.ts:1163`; `brc177NoSendExpiry.ts:96-98`).
 #[tokio::test]
 async fn nosend_batch_label_is_refused_with_the_grammar_text_through_wallet_interface() {
-    let (_dir, wallet) = wallet().await;
-    fund_tagged(&wallet, &own_lock(&wallet), 0).await;
-    let before = store_snapshot(&wallet).await;
-
-    let result = wallet
-        .create_action(expiry_payment("p nosend batch"), "nosend.example.com")
-        .await;
-    match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
-            message,
-            "Validation error: The labels parameter must be exactly one BRC-177 noSend expiry label"
-        ),
-        Err(other) => panic!("refused with another error: {other:?}"),
-        Ok(_) => panic!("the action was created"),
-    }
-    assert_eq!(store_snapshot(&wallet).await, before);
+    assert_refused(
+        "p nosend batch",
+        "Validation error: The labels parameter must be exactly one BRC-177 noSend expiry label",
+    )
+    .await;
 }

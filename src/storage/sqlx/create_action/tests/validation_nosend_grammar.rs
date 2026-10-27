@@ -8,11 +8,8 @@
 //! stop. A label the grammar accepts still meets the capability refusal.
 
 use super::super::create_action_internal;
-use super::super::test_support::seed_change_output;
+use super::nosend_tests::{funded_store, no_send_args, transaction_rows};
 use crate::error::Error;
-use crate::storage::sqlx::StorageSqlx;
-use crate::storage::traits::WalletStorageWriter;
-use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
 
 /// `brc177NoSendExpiry.ts:97`.
 const EXACTLY_ONE: &str = "The labels parameter must be exactly one BRC-177 noSend expiry label";
@@ -29,50 +26,6 @@ const SECONDS_ZERO: &str =
     "The labels parameter must be a BRC-177 seconds duration greater than zero";
 /// `createNoSendExpiryAction.ts:202`.
 const CAPABILITY: &str = "Active storage does not support BRC-177 noSend expiry";
-
-async fn funded_store() -> (StorageSqlx, i64) {
-    let storage = StorageSqlx::in_memory().await.unwrap();
-    storage.migrate("test-wallet", "02test_key").await.unwrap();
-    storage.make_available().await.unwrap();
-    let (user, _) = storage
-        .find_or_insert_user("02user_identity_key")
-        .await
-        .unwrap();
-    seed_change_output(&storage, user.user_id, 100_000).await;
-    (storage, user.user_id)
-}
-
-fn no_send_args(labels: &[&str]) -> CreateActionArgs {
-    CreateActionArgs {
-        description: "A BRC-177 grammar test".to_string(),
-        input_beef: None,
-        inputs: None,
-        outputs: Some(vec![CreateActionOutput {
-            locking_script: hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac")
-                .unwrap(),
-            satoshis: 1000,
-            output_description: "Test output".to_string(),
-            basket: None,
-            custom_instructions: None,
-            tags: None,
-        }]),
-        lock_time: None,
-        version: None,
-        labels: Some(labels.iter().map(|l| l.to_string()).collect()),
-        options: Some(CreateActionOptions {
-            no_send: Some(true),
-            sign_and_process: Some(false),
-            ..Default::default()
-        }),
-    }
-}
-
-async fn transaction_rows(storage: &StorageSqlx) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
-        .fetch_one(storage.pool())
-        .await
-        .unwrap()
-}
 
 /// The door refuses `labels` and writes no row; returns the error.
 async fn refusal(labels: &[&str]) -> Error {

@@ -17,7 +17,7 @@ use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
 /// The reference's refusal, byte for byte.
 const REFUSAL: &str = "Active storage does not support BRC-177 noSend expiry";
 
-async fn funded_store() -> (StorageSqlx, i64) {
+pub(super) async fn funded_store() -> (StorageSqlx, i64) {
     let storage = StorageSqlx::in_memory().await.unwrap();
     storage.migrate("test-wallet", "02test_key").await.unwrap();
     storage.make_available().await.unwrap();
@@ -29,7 +29,7 @@ async fn funded_store() -> (StorageSqlx, i64) {
     (storage, user.user_id)
 }
 
-fn no_send_args(labels: &[&str]) -> CreateActionArgs {
+pub(super) fn no_send_args(labels: &[&str]) -> CreateActionArgs {
     CreateActionArgs {
         description: "A BRC-177 label test".to_string(),
         input_beef: None,
@@ -60,7 +60,7 @@ fn no_send_args(labels: &[&str]) -> CreateActionArgs {
     }
 }
 
-async fn transaction_rows(storage: &StorageSqlx) -> i64 {
+pub(super) async fn transaction_rows(storage: &StorageSqlx) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
         .fetch_one(storage.pool())
         .await
