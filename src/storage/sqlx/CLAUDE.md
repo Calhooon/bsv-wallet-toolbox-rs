@@ -214,8 +214,8 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `find_user_by_id()` | Find user by ID |
 | `insert_user()` | Insert a new user |
 | `update_user_active_storage()` | Update user's active storage |
-| `find_outputs_internal()` | Internal output query (no auth) |
-| `find_output_by_outpoint()` | Find output by txid + vout |
+| `find_outputs_internal()` | User-scoped full output rows, including stored origin and spending metadata (no auth) |
+| `find_output_by_outpoint()` | User-scoped full output row by txid + vout |
 | `allocate_change_input()` | Allocate a change input for transaction |
 | `count_change_inputs()` | Count available change inputs |
 | `find_output_baskets_internal()` | Internal basket query |
@@ -553,6 +553,22 @@ Certificates and baskets use `is_deleted` flag for soft deletes rather than actu
 
 ### Dynamic Query Building
 The `find_*` and `list_*` methods build SQL dynamically based on provided filter arguments. Parameters are bound safely to prevent SQL injection.
+
+`find_outputs_internal` (called by the authenticated `find_outputs`) and
+`find_output_row_by_outpoint` (called by `find_output_by_outpoint` and the
+create-action stored-input path) select every `TableOutput` column. Their
+shared `output_from_row` mapper preserves `provided_by`, `purpose`,
+`output_description`, `spent_by`, `sequence_number`, and
+`spending_description` from those selected columns. A received output reads
+back as `providedBy: "storage"`, `purpose: "receive"` when those are stored.
+The default finder includes the locking script; `no_script: true` suppresses
+only the returned script and retains the origin and spending metadata.
+The internalization merge query remains a partial-row caller of this mapper,
+so the mapper still tolerates omitted columns for that caller.
+
+`list_outputs` uses a separate `WalletOutput` projection whose existing wire
+fields do not include `providedBy` or `purpose`. The sync export has its own
+query and already selects those two origin columns.
 
 ### Settings Caching
 Settings are loaded once via `make_available()` and cached in an `RwLock`. The `get_settings()` method returns a reference to cached data.
