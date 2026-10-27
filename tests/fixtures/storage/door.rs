@@ -347,7 +347,8 @@ async fn post_service_fault_is_recorded_without_fabricating_an_instance() -> Res
     let note = history["notes"]
         .as_array()
         .context("notes")?
-        .last()
+        .iter()
+        .find(|note| note["what"] == "processActionPost")
         .context("post fault")?;
     assert_eq!(note["words"], json!([]));
     assert!(note["serviceError"]
