@@ -1,10 +1,14 @@
 use super::{Result, Row, StorageSqlx, TableOutput};
+use crate::storage::sqlx::create_action::MANAGED_CHANGE_CLAUSE;
 
 impl StorageSqlx {
     /// Find a spendable change output suitable for use as input.
     ///
-    /// Looks for change outputs that are spendable and belong to the specified basket.
-    /// Optionally excludes outputs from transactions currently in 'sending' status.
+    /// Looks for wallet-managed change in the specified basket: spendable,
+    /// `P2PKH`, `provided_by = 'storage'`, purpose `change` or `receive`,
+    /// with a derivation prefix and suffix, its parent `completed`,
+    /// `unproven`, or `sending` unless `exclude_sending` (the reference's
+    /// filters, #295).
     ///
     /// The claim is the guarded `UPDATE` (`spendable = 1 AND spent_by IS
     /// NULL`), not the read: two callers never allocate the same coin. A
@@ -25,51 +29,39 @@ impl StorageSqlx {
         exclude_sending: bool,
         transaction_id: i64,
     ) -> Result<Option<TableOutput>> {
-        // Find a spendable change output suitable for use as a transaction input.
         // Strategy: select the smallest output >= target_satoshis to minimize change,
-        // or the largest output if none meet the target.
-        // Find a spendable change output suitable for use as a transaction input.
-        // Strategy: select the smallest output >= target_satoshis to minimize change,
-        // or the largest output if none meet the target.
-        let base_query = if exclude_sending {
-            r#"
-            SELECT output_id, satoshis, vout, txid, locking_script
-            FROM outputs
-            WHERE user_id = ?
-              AND basket_id = ?
-              AND change = 1
-              AND spendable = 1
-              AND spent_by IS NULL
-              AND transaction_id != ?
-              AND transaction_id NOT IN (
-                SELECT transaction_id FROM transactions WHERE status = 'sending'
-              )
-            ORDER BY
-              CASE WHEN satoshis >= ? THEN 0 ELSE 1 END,
-              CASE WHEN satoshis >= ? THEN satoshis ELSE -satoshis END
-            LIMIT 1
-            "#
+        // or the largest output if none meet the target. The filters are the
+        // reference's (#295): its managed-change WHERE and its parent statuses
+        // (`StorageKnex.allocateChangeInput` 2230-2231, 2241-2250, 2256).
+        let statuses = if exclude_sending {
+            "('completed', 'unproven')"
         } else {
+            "('completed', 'unproven', 'sending')"
+        };
+        let base_query = format!(
             r#"
-            SELECT output_id, satoshis, vout, txid, locking_script
-            FROM outputs
-            WHERE user_id = ?
-              AND basket_id = ?
-              AND change = 1
-              AND spendable = 1
-              AND spent_by IS NULL
-              AND transaction_id != ?
+            SELECT o.output_id, o.satoshis, o.vout, o.txid, o.locking_script
+            FROM outputs o
+            JOIN transactions t ON o.transaction_id = t.transaction_id
+            WHERE o.user_id = ?
+              AND o.basket_id = ?
+              AND o.change = 1
+              AND o.spendable = 1
+              AND o.spent_by IS NULL
+              AND o.transaction_id != ?
+              AND t.status IN {statuses}
+              {MANAGED_CHANGE_CLAUSE}
             ORDER BY
-              CASE WHEN satoshis >= ? THEN 0 ELSE 1 END,
-              CASE WHEN satoshis >= ? THEN satoshis ELSE -satoshis END
+              CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
+              CASE WHEN o.satoshis >= ? THEN o.satoshis ELSE -o.satoshis END
             LIMIT 1
             "#
-        };
+        );
 
         loop {
             #[allow(clippy::type_complexity)]
             let row: Option<(i64, i64, i64, Option<String>, Option<Vec<u8>>)> =
-                sqlx::query_as(base_query)
+                sqlx::query_as(&base_query)
                     .bind(user_id)
                     .bind(basket_id)
                     .bind(transaction_id)
@@ -145,7 +137,8 @@ impl StorageSqlx {
         }
     }
 
-    /// Count spendable change outputs for a user in a basket.
+    /// Count the change outputs `allocate_change_input` would take for a
+    /// user in a basket.
     ///
     /// # Arguments
     /// * `_user_id` - The user who owns the outputs
@@ -157,42 +150,29 @@ impl StorageSqlx {
         basket_id: i64,
         exclude_sending: bool,
     ) -> Result<i64> {
-        let count: (i64,) = if exclude_sending {
-            sqlx::query_as(
-                r#"
-                SELECT COUNT(*)
-                FROM outputs o
-                WHERE o.user_id = ?
-                  AND o.basket_id = ?
-                  AND o.change = 1
-                  AND o.spendable = 1
-                  AND o.spent_by IS NULL
-                  AND o.transaction_id NOT IN (
-                    SELECT transaction_id FROM transactions WHERE status = 'sending'
-                  )
-                "#,
-            )
-            .bind(user_id)
-            .bind(basket_id)
-            .fetch_one(self.pool())
-            .await?
+        let statuses = if exclude_sending {
+            "('completed', 'unproven')"
         } else {
-            sqlx::query_as(
-                r#"
-                SELECT COUNT(*)
-                FROM outputs o
-                WHERE o.user_id = ?
-                  AND o.basket_id = ?
-                  AND o.change = 1
-                  AND o.spendable = 1
-                  AND o.spent_by IS NULL
-                "#,
-            )
-            .bind(user_id)
-            .bind(basket_id)
-            .fetch_one(self.pool())
-            .await?
+            "('completed', 'unproven', 'sending')"
         };
+        let count: (i64,) = sqlx::query_as(&format!(
+            r#"
+            SELECT COUNT(*)
+            FROM outputs o
+            JOIN transactions t ON o.transaction_id = t.transaction_id
+            WHERE o.user_id = ?
+              AND o.basket_id = ?
+              AND o.change = 1
+              AND o.spendable = 1
+              AND o.spent_by IS NULL
+              AND t.status IN {statuses}
+              {MANAGED_CHANGE_CLAUSE}
+            "#
+        ))
+        .bind(user_id)
+        .bind(basket_id)
+        .fetch_one(self.pool())
+        .await?;
 
         Ok(count.0)
     }
