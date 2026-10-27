@@ -292,6 +292,32 @@ Broadcasts transactions waiting to be sent.
 5. On double-spend: mark as 'failed'
 6. On error: log and retry next cycle
 
+#### ArcadeEventsTask
+
+`apply_event` serves the SSE and webhook paths. The SEEN, IN_BLOCK
+(`STUMP_PROCESSING`) and MINED arms all call the existing
+`mark_transaction_seen_on_network_by`. Its SQLx implementation uses one
+`BEGIN IMMEDIATE` transaction for the request's `unmined` status, the
+transaction's `unproven` status, and the provider's broadcast hint (#205).
+Cancellation or a status-write error before commit rolls back the group.
+The hint is optional: a hint-write error is logged without being returned.
+
+Under a held writer, each status path waits one `busy_timeout` and returns
+typed `StoreBusy` with nothing written and no proof-fetch flag (#44).
+Previously the hint write and status write waited separately, risking a
+reply after the Arcade webhook sender's 10 s timeout at the default 5 s
+store timeout. The real-store `seen_status_busy_waits_once_without_writes`,
+`in_block_status_busy_waits_once_without_writes` and
+`mined_status_busy_waits_once_without_writes` tests check both known and
+unknown txids below 1.5 times a 200 ms timeout.
+
+On MINED and IMMUTABLE, inline proof ingestion follows the committed status
+transaction. The tracker check holds no writer, and the later ingest has its
+own write transaction. An ingest `StoreBusy` can therefore follow committed
+status changes; it returns unchanged, skips the fetch fallback, and retrying
+the delivery is idempotent (#201). Other missed ingests raise the fetch flag.
+The CLI's #249 host deadline still bounds the callback as a whole.
+
 #### FailAbandonedTask
 
 Marks abandoned transactions as failed to release locked UTXOs.

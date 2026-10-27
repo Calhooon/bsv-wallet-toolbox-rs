@@ -29,6 +29,20 @@
   `packages/sdk/src/auth/certificates/MasterCertificate.ts:573-622`, including
   strict UTF-8 decoding at `:619`. The plaintext size bound at `:614-615`
   remains with #223; this change adds no size bound.
+- #205: `StorageSqlx::mark_transaction_seen_on_network_by` in
+  `src/storage/sqlx/storage_sqlx/monitor.rs` now puts both status updates and
+  the broadcast hint in one `write_tx()`, using `record_broadcast_status_on`
+  on that connection. The SEEN, IN_BLOCK and MINED callback arms previously
+  waited once for the hint write and again for the status write under
+  contention; two 5 s `busy_timeout` waits could exceed the Arcade webhook
+  sender's 10 s timeout. They now take one status-transaction wait and retain
+  the typed `StoreBusy` required by #44, with no writes on that busy. A status
+  error or cancellation before commit rolls back both statuses and the hint.
+  Hint-write errors remain logged without being returned. The existing
+  `mark_transaction_seen_on_network` wrapper delegates to this method; MINED
+  proof ingestion still runs separately after the tracker check, preserving
+  #201's idempotent retry after a committed status update. CLI #249 keeps its
+  host-side deadline.
 
 - #222: `prove_certificate` now decrypts each requested field under its
   recovered master key before wrapping that key for the verifier. Previously,
