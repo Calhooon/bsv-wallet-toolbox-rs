@@ -861,6 +861,12 @@ async fn decrypt_issued_fields<W: WalletInterface + Send + Sync>(
     certifier: &PublicKey,
     originator: &str,
 ) -> Result<()> {
+    // MasterCertificate.ts:522-524, outside the decrypt try at 525-561.
+    if keyring.is_empty() {
+        return Err(Error::ValidationError(
+            "A MasterCertificate must have a valid masterKeyring!".into(),
+        ));
+    }
     let decrypt_all = async {
         for (name, field) in fields {
             let key = keyring.get(name).ok_or(())?;
