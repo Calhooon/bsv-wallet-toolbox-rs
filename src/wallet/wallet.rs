@@ -2682,7 +2682,8 @@ where
 
         // Argument checks in ts-stack@edf6e03 validationHelpers.ts order:
         // validatePrivilege(args, false) at 1477 (its body at 207-222) ahead
-        // of 1483-1518; the privilegedReason check at 1511 repeats 1477 on the
+        // of 1483-1518, validateArray's 100000-item bound (105-114) at 1506
+        // ahead of the names; the privilegedReason check at 1511 repeats 1477 on the
         // same value and never fires. The helper retains its own name, map and
         // serial checks. SQLite matches the normalized certifier byte for
         // byte; the remote storage server decides its own collation.
@@ -2720,6 +2721,12 @@ where
             "certificate.revocationOutpoint",
         )?;
         let signature = validate_certificate_signature_arg(&args.certificate.signature)?;
+        if args.fields_to_reveal.len() > MAXIMUM_WALLET_COLLECTION_ITEMS {
+            return Err(invalid_certificate_argument(
+                "fieldsToReveal",
+                &format!("an array of at most {MAXIMUM_WALLET_COLLECTION_ITEMS} items"),
+            ));
+        }
         for name in &args.fields_to_reveal {
             let rule = if name.is_empty() {
                 "at least 1 length."
@@ -3483,6 +3490,10 @@ pub(crate) fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs
 
 /// `MAXIMUM_CERTIFICATE_REVEAL_FIELDS` at ts-stack@edf6e03 validationHelpers.ts:70.
 const MAXIMUM_CERTIFICATE_REVEAL_FIELDS: usize = 100;
+
+/// `MAXIMUM_WALLET_COLLECTION_ITEMS` at ts-stack@edf6e03 validationHelpers.ts:67,
+/// validateArray's default bound (105-114).
+const MAXIMUM_WALLET_COLLECTION_ITEMS: usize = 100_000;
 
 // validateOutpointString at validationHelpers.ts:1099-1116: the shape
 // /^([0-9A-Fa-f]{64})\.(0|[1-9]\d*)$/ untrimmed with ASCII digits, the txid
