@@ -94,6 +94,17 @@
 
 ### Fixed
 
+- #357: internalizeAction refuses a request carrying a BRC-177 `p nosend `
+  label (matched trimmed and lowercased, as the SDK's validateLabel leaves
+  it) with `The labels parameter must be BRC-177 noSend expiry labels only on
+  outgoing createAction requests`, no full stop (through `WalletInterface`, a
+  `WalletError` reading `Validation error: ` and that text), the reference's
+  `WERR_INVALID_PARAMETER` at ts-stack@edf6e03 `Wallet.ts:1248-1250` (the
+  prefix `startsWith` at `brc177NoSendExpiry.ts:119`). The door refuses it
+  after the labels bound and writes nothing. Such a request was internalized,
+  the label stored as metadata on the incoming action. This is a new refusal
+  of input that succeeded before. `p nosendx` and `p nosend` alone stay
+  ordinary labels.
 - #312: createAction refuses a request carrying a BRC-177 `p nosend ` label
   (matched trimmed and lowercased, as the SDK's validateLabel leaves it)
   with `Invalid operation: Active storage does not support BRC-177 noSend expiry`

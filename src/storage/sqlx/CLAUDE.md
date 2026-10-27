@@ -373,6 +373,7 @@ pub async fn internalize_action_internal(
 - Label and tag support for transaction/output organization
 - Received wallet payments carry `outputs.purpose = "receive"`, including converted custom outputs; `create_action` offers unproven receipts only under its exact `underReceivedRule` label, recorded on that action, while completed receipts and own change keep their eligibility (#169).
 - ProvenTxReq creation for unproven transactions
+- BRC-177 (#357): after the labels bound, ahead of any write, a label starting `p nosend ` (trimmed and lowercased, as the SDK's validateLabel leaves it at `validationHelpers.ts:1054`; `startsWith`, ts-stack@edf6e03 `brc177NoSendExpiry.ts:5,119`) refuses `Error::ValidationError("The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests")`, the reference's `WERR_INVALID_PARAMETER` on internalizeAction (`Wallet.ts:1248-1250`). The create door's refusal is #312 (Create Action, Features). `p nosendx` and `p nosend` alone are ordinary labels. Witnesses: `internalize_nosend_tests.rs`, `src/wallet/nosend_label_tests.rs`
 
 ### Merge Behavior
 | Scenario | Balance Change |
