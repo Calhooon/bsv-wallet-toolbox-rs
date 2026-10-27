@@ -5,6 +5,7 @@
 //! remittance`, one remittance per output, before validateWalletPayment and
 //! validateBasketInsertion read any field of either remittance (981-982).
 
+use super::bounds_tests::{args, refusal};
 use super::*;
 use bsv_rs::wallet::InternalizeOutput;
 
@@ -41,23 +42,6 @@ fn output(
         protocol: protocol.to_string(),
         payment_remittance: payment,
         insertion_remittance: insertion,
-    }
-}
-
-fn args(outputs: Vec<InternalizeOutput>) -> InternalizeActionArgs {
-    InternalizeActionArgs {
-        tx: vec![],
-        outputs,
-        description: "internalize remittance".to_string(),
-        labels: None,
-        seek_permission: None,
-    }
-}
-
-fn refusal(args: &InternalizeActionArgs) -> String {
-    match validate_internalize_action_args(args) {
-        Err(Error::ValidationError(text)) => text,
-        other => panic!("expected a ValidationError, got {other:?}"),
     }
 }
 
