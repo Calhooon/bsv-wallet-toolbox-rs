@@ -3342,16 +3342,17 @@ fn create_keyring_for_verifier(
             })
             .map_err(|_| decryption_error())?;
 
-        // The decrypted plaintext is the symmetric key bytes
-        let symmetric_key = decrypted.plaintext;
-
         // Match MasterCertificate.decryptField before releasing the key to a
         // verifier (ts-stack@edf6e03 MasterCertificate.ts:382-393,612-622).
         let field_ciphertext = BASE64
             .decode(&fields[field_name])
             .map_err(|_| decryption_error())?;
-        SymmetricKey::from_bytes(&symmetric_key)
-            .and_then(|key| key.decrypt(&field_ciphertext))
+        // Restore omitted leading zero bytes in legacy keys before sharing
+        // them (ts-stack@edf6e03 MasterCertificate.ts:606-619).
+        let symmetric_key =
+            SymmetricKey::from_bytes(&decrypted.plaintext).map_err(|_| decryption_error())?;
+        symmetric_key
+            .decrypt(&field_ciphertext)
             .map_err(|_| decryption_error())?;
 
         // Re-encrypt the symmetric key for the verifier
@@ -3359,7 +3360,7 @@ fn create_keyring_for_verifier(
         let verifiable_key_id = format!("{} {}", serial_number, field_name);
 
         let re_encrypted = subject_wallet.encrypt(ProtoEncryptArgs {
-            plaintext: symmetric_key,
+            plaintext: symmetric_key.as_bytes().to_vec(),
             protocol_id: protocol.clone(),
             key_id: verifiable_key_id,
             counterparty: Some(Counterparty::Other(verifier.clone())),
@@ -3938,6 +3939,77 @@ mod tests {
             // Verify we got back the original plaintext
             let decrypted_str = String::from_utf8(decrypted_field).unwrap();
             assert_eq!(decrypted_str, field_plaintext);
+        }
+
+        #[test]
+        fn test_create_keyring_pads_legacy_field_key_for_verifier() {
+            use bsv_rs::primitives::SymmetricKey;
+            use bsv_rs::wallet::{DecryptArgs, EncryptArgs};
+
+            let protocol = Protocol::new(
+                SecurityLevel::Counterparty,
+                CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+            );
+            let subject_key = PrivateKey::from_hex(&format!("{:064x}", 1)).unwrap();
+            let certifier_key = PrivateKey::from_hex(&format!("{:064x}", 2)).unwrap();
+            let verifier_key = PrivateKey::from_hex(&format!("{:064x}", 3)).unwrap();
+            let subject_wallet = ProtoWallet::new(Some(subject_key.clone()));
+            let certifier_wallet = ProtoWallet::new(Some(certifier_key.clone()));
+            let verifier_wallet = ProtoWallet::new(Some(verifier_key.clone()));
+            let serial_number = BASE64.encode([42; 32]);
+            let legacy_key = vec![0x42; 31];
+            let mut expected_key = vec![0];
+            expected_key.extend_from_slice(&legacy_key);
+            let field_ciphertext = SymmetricKey::from_bytes(&expected_key)
+                .unwrap()
+                .encrypt(b"legacy certificate field")
+                .unwrap();
+            let master_entry = certifier_wallet
+                .encrypt(EncryptArgs {
+                    plaintext: legacy_key,
+                    protocol_id: protocol.clone(),
+                    key_id: "name".to_string(),
+                    counterparty: Some(Counterparty::Other(subject_key.public_key())),
+                    ..Default::default()
+                })
+                .unwrap();
+            let fields = HashMap::from([("name".to_string(), BASE64.encode(&field_ciphertext))]);
+            let master_keyring =
+                HashMap::from([("name".to_string(), BASE64.encode(master_entry.ciphertext))]);
+
+            let keyring = create_keyring_for_verifier(
+                &subject_wallet,
+                &certifier_key.public_key(),
+                &verifier_key.public_key(),
+                &fields,
+                &["name".to_string()],
+                &master_keyring,
+                &serial_number,
+                "certificate.test",
+            )
+            .unwrap();
+            let recovered = verifier_wallet
+                .decrypt(DecryptArgs {
+                    ciphertext: BASE64.decode(&keyring["name"]).unwrap(),
+                    protocol_id: protocol,
+                    key_id: format!("{serial_number} name"),
+                    counterparty: Some(Counterparty::Other(subject_key.public_key())),
+                    ..Default::default()
+                })
+                .unwrap()
+                .plaintext;
+
+            // MasterCertificate.ts:606-619 returns the restored 32-byte key;
+            // VerifiableCertificate.ts:203 requires that exact length.
+            assert_eq!(recovered.len(), 32, "verifier requires a 32-byte key");
+            assert_eq!(recovered, expected_key);
+            assert_eq!(
+                SymmetricKey::from_bytes(&recovered)
+                    .unwrap()
+                    .decrypt(&field_ciphertext)
+                    .unwrap(),
+                b"legacy certificate field"
+            );
         }
 
         /// Test that multiple fields can be revealed correctly
