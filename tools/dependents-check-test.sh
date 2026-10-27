@@ -89,11 +89,13 @@ cat >"$dir/doctest.log" <<'EOF'
 test src/lib.rs - (line 1) ... FAILED
 test src/lib.rs - module::item (line 5) ... FAILED
 test src/lib.rs - module::cf (line 9) - compile fail ... FAILED
+test src/lib.rs - module::nr (line 16) - compile ... FAILED
 failures:
     src/lib.rs - (line 1)
     src/lib.rs - module::cf (line 9)
     src/lib.rs - module::item (line 5)
-test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
+    src/lib.rs - module::nr (line 16)
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
 EOF
 cat >"$dir/should-panic.log" <<'EOF'
 test tests::panics_not - should panic ... FAILED
@@ -110,8 +112,8 @@ expect 1 "  bsv-wallet-cli   build: parsed                       test: FAIL: tes
 expect 1 "  bsv-wallet-cli   build: parsed                       test: FAIL: integration_fails" \
   "an integration test is named" -- "$dir/integration.log"
 
-expect 1 "  bsv-wallet-cli   build: parsed                       test: FAIL: src/lib.rs - (line 1), src/lib.rs - module::item (line 5), src/lib.rs - module::cf (line 9)" \
-  "a doctest alone fails the row, named with its path and line" -- "$dir/doctest.log"
+expect 1 "  bsv-wallet-cli   build: parsed                       test: FAIL: src/lib.rs - (line 1), src/lib.rs - module::item (line 5), src/lib.rs - module::cf (line 9), src/lib.rs - module::nr (line 16)" \
+  "a doctest alone fails the row, named with its path and line; compile_fail and no_run modes dropped" -- "$dir/doctest.log"
 
 expect 1 "  bsv-wallet-cli   build: parsed                       test: FAIL: tests::panics_not, tests::panics_wrong" \
   "a should_panic test is named without libtest's mode" -- "$dir/should-panic.log"
