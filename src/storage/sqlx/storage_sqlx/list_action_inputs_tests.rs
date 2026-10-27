@@ -8,7 +8,7 @@
 use crate::storage::{AuthId, StorageSqlx, WalletStorageReader, WalletStorageWriter};
 use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{Transaction, TransactionInput, TransactionOutput};
-use bsv_rs::wallet::{ListActionsArgs, WalletActionInput};
+use bsv_rs::wallet::{ListActionsArgs, ListActionsResult, WalletActionInput};
 
 /// One output the action spends: its outpoint and its `sequence_number` column.
 struct Spent {
@@ -123,7 +123,18 @@ async fn store_with(
 
 /// The spending action's inputs, with unlocking scripts.
 async fn inputs(storage: &StorageSqlx, auth: &AuthId) -> Vec<WalletActionInput> {
-    let result = storage
+    listed(storage, auth)
+        .await
+        .unwrap()
+        .actions
+        .into_iter()
+        .flat_map(|action| action.inputs.unwrap_or_default())
+        .collect()
+}
+
+/// `list_actions` with inputs and unlocking scripts, as answered.
+async fn listed(storage: &StorageSqlx, auth: &AuthId) -> crate::Result<ListActionsResult> {
+    storage
         .list_actions(
             auth,
             ListActionsArgs {
@@ -141,12 +152,6 @@ async fn inputs(storage: &StorageSqlx, auth: &AuthId) -> Vec<WalletActionInput> 
             },
         )
         .await
-        .unwrap();
-    result
-        .actions
-        .into_iter()
-        .flat_map(|action| action.inputs.unwrap_or_default())
-        .collect()
 }
 
 /// (a) The raw transaction's nSequence wins over a column that disagrees.
@@ -227,5 +232,115 @@ async fn inputs_come_by_output_id_each_matched_by_outpoint() {
             (0, 20, vec![0x52]),
             (1, 30, vec![0x53])
         ]
+    );
+}
+
+/// The proof-request statuses whose raw bytes the reference serves:
+/// `getProvenOrRawTx` (ts-stack@edf6e03 `StorageKnex.ts:197-203`), which
+/// `getRawTxOfKnownValidTransaction` (:507) answers for `enrichActionInputs`
+/// (`listActionsKnex.ts:79`).
+const SERVED: [&str; 6] = [
+    "unsent",
+    "unmined",
+    "unconfirmed",
+    "sending",
+    "nosend",
+    "completed",
+];
+
+/// (e) A request in a served status with the action's row holding no raw
+/// transaction is served its sequence and unlocking script (#351 case 2).
+#[tokio::test]
+async fn a_served_request_without_the_row_copy_is_served_the_raw_sequence() {
+    for status in SERVED {
+        let a = spent('1', 0, None);
+        let raw = raw_tx(&[(&a, 5, "52")]);
+        let (storage, auth) = store_with(None, Some((status, raw)), &[a]).await;
+        let served = inputs(&storage, &auth).await;
+        assert_eq!(served.len(), 1, "status {status}");
+        assert_eq!(served[0].sequence_number, 5, "status {status}");
+        assert_eq!(
+            served[0].unlocking_script,
+            Some(vec![0x52]),
+            "status {status}"
+        );
+    }
+}
+
+/// (f) A request the monitor gave up on (`invalid`, `doubleSpend`) is not
+/// read, though `process_action` left the same bytes on the action's row:
+/// the reference serves 0, its reader never reading `transactions.rawTx`
+/// (#351 case 1). The row stays `sending` until the review pass fails it,
+/// so `list_actions` still lists it.
+#[tokio::test]
+async fn an_invalid_or_double_spend_request_serves_zero_whatever_the_row_holds() {
+    for status in ["invalid", "doubleSpend"] {
+        let a = spent('1', 0, None);
+        let raw = raw_tx(&[(&a, 5, "52")]);
+        let (storage, auth) = store_with(Some(raw.clone()), Some((status, raw)), &[a]).await;
+        sqlx::query("UPDATE transactions SET status = 'sending' WHERE reference = 'spender'")
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        let served = inputs(&storage, &auth).await;
+        assert_eq!(served.len(), 1, "status {status}");
+        assert_eq!(served[0].sequence_number, 0, "status {status}");
+        assert_eq!(served[0].unlocking_script, None, "status {status}");
+    }
+}
+
+/// (g) Every other request status serves 0, the row's copy notwithstanding.
+#[tokio::test]
+async fn an_unserved_request_status_serves_zero() {
+    for status in ["unprocessed", "unknown", "callback", "unfail", "nonfinal"] {
+        let a = spent('1', 0, None);
+        let raw = raw_tx(&[(&a, 5, "52")]);
+        let (storage, auth) = store_with(Some(raw.clone()), Some((status, raw)), &[a]).await;
+        let served = inputs(&storage, &auth).await;
+        assert_eq!(served.len(), 1, "status {status}");
+        assert_eq!(served[0].sequence_number, 0, "status {status}");
+    }
+}
+
+/// (h) A proven transaction wins over the request (`StorageKnex.ts:197-198`).
+#[tokio::test]
+async fn a_proven_transaction_wins_over_the_request() {
+    let a = spent('1', 0, None);
+    let proven = raw_tx(&[(&a, 9, "53")]);
+    let req = raw_tx(&[(&a, 5, "52")]);
+    let (storage, auth) = store_with(None, Some(("completed", req)), &[a]).await;
+    sqlx::query(
+        "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx)
+         VALUES (?, 1, 0, ?, ?, X'00', ?)",
+    )
+    .bind("f".repeat(64))
+    .bind("b".repeat(64))
+    .bind("d".repeat(64))
+    .bind(proven)
+    .execute(storage.writer())
+    .await
+    .unwrap();
+    let served = inputs(&storage, &auth).await;
+    assert_eq!(served.len(), 1);
+    assert_eq!(served[0].sequence_number, 9);
+    assert_eq!(served[0].unlocking_script, Some(vec![0x53]));
+}
+
+/// (i) Raw bytes that do not parse are the call's error, as the reference's
+/// `BsvTransaction.fromBinary` throws (`listActionsKnex.ts:81`): two bytes
+/// where the version needs four.
+#[tokio::test]
+async fn raw_bytes_that_do_not_parse_are_the_calls_error() {
+    let (storage, auth) = store(Some(vec![0x01, 0x00]), &[spent('1', 0, None)]).await;
+    let answer = listed(&storage, &auth).await;
+    assert!(
+        matches!(
+            answer,
+            Err(crate::Error::SdkError(bsv_rs::Error::ReaderUnderflow {
+                needed: 4,
+                available: 2
+            }))
+        ),
+        "{answer:?}"
     );
 }
