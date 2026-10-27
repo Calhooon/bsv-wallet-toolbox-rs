@@ -183,7 +183,7 @@ async fn witness(deferred: bool, known: bool) {
         let signed = wallet
             .sign_action(
                 SignActionArgs {
-                    reference: String::from_utf8(signable.reference).expect("reference"),
+                    reference: bsv_rs::primitives::to_base64(&signable.reference),
                     spends: Default::default(),
                     options: None,
                 },

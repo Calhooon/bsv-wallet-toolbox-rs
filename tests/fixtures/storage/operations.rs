@@ -347,7 +347,7 @@ impl Replay {
             Ok(result) => {
                 let txid = result.txid.map(hex::encode);
                 let reference = if let Some(signable) = &result.signable_transaction {
-                    String::from_utf8(signable.reference.clone())?
+                    bsv_rs::primitives::to_base64(&signable.reference)
                 } else {
                     sqlx::query_scalar(
                         "SELECT reference FROM transactions WHERE txid = ? AND user_id = ?",
