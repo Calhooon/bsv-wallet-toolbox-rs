@@ -17,16 +17,17 @@ use crate::services::providers::pace::Clock;
 /// gives up after `timeout_secs`; the rest from `options`. The three gates
 /// read one clock held still for the scene: a 429 with no Retry-After
 /// closes a rung for a second, and the scene's next call must find it
-/// closed however slow the runner (bsv-wallet-toolbox-rs#53).
+/// closed however slow the runner (bsv-wallet-toolbox-rs#53). Return that
+/// clock too so a replay can advance to the window's boundary (#194).
 fn services_at(
     options: ServicesOptions,
     woc: &str,
     bitails: &str,
     bananablocks: Option<&str>,
     timeout_secs: u64,
-) -> Services {
+) -> (Services, Clock) {
     let clock = Clock::held();
-    Services::with_explorers(
+    let services = Services::with_explorers(
         Chain::Main,
         options,
         StdArc::new(
@@ -54,11 +55,12 @@ fn services_at(
         bananablocks.map(|base| {
             StdArc::new(
                 BananaBlocks::with_base_unshared_timeout(base, Some(timeout_secs))
-                    .with_clock(clock),
+                    .with_clock(clock.clone()),
             )
         }),
     )
-    .unwrap()
+    .unwrap();
+    (services, clock)
 }
 
 #[path = "../../tests/fixtures/ladders.rs"]

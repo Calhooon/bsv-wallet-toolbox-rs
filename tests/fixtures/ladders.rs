@@ -30,7 +30,9 @@
 //! slow runner); the call that received the 429 stays exact. The host's
 //! `services_at` holds the explorers' rate gates on one clock that does not
 //! move during a scene, so a rung a 429 closed for its default second is
-//! still closed for the scene's next call however slow the runner.
+//! still closed for the scene's next call however slow the runner. The
+//! boundary test advances that same clock, without sleeping, to prove the
+//! status rung stays closed at 999 ms and opens at 1000 ms (#194).
 //! `LADDER_FIXTURES_BLESS=1` writes each fixture's `expected` from
 //! the replay instead of comparing: read the diff against the rules
 //! `services.rs` documents (a fault is "could not look", a negative needs
@@ -654,7 +656,7 @@ async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, St
         options = options.with_bhs_url(servers.url("BHS"));
     }
     let bananablocks = named("BananaBlocks").then(|| servers.url("BananaBlocks"));
-    let services = services_at(
+    let (services, _clock) = services_at(
         options,
         &servers.url("WhatsOnChain"),
         &servers.url("Bitails"),
@@ -690,6 +692,62 @@ async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, St
         requests,
         request_bodies,
     })
+}
+
+/// Replay the recorded status scene before the default deadline, then ask
+/// again at the deadline. Only the returned clock moves the window.
+#[tokio::test]
+async fn ladder_status_429_without_retry_after_uses_the_controlled_clock() {
+    let path =
+        fixture_root().join("get_status_for_txids/429_without_retry_after_closes_the_rung.json");
+    let fixture: Fixture = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let expected = fixture.expected.as_ref().unwrap();
+    assert_eq!(fixture.calls.len(), 2);
+    let mut servers = Servers::new().await;
+    let counts: Counts = Arc::default();
+    let _mocks = script(&fixture, &mut servers, &counts).await.unwrap();
+    let (services, clock) = services_at(
+        ServicesOptions::mainnet(),
+        &servers.url("WhatsOnChain"),
+        &servers.url("Bitails"),
+        Some(&servers.url("BananaBlocks")),
+        CLIENT_TIMEOUT_SECS,
+    );
+    assert!(services.whatsonchain.rate_gate().admit().is_ok());
+    for (index, call) in fixture.calls.iter().enumerate() {
+        if index > 0 {
+            clock.advance(Duration::from_millis(999));
+        }
+        let actual = call_ladder(&services, &fixture.ladder, call).await.unwrap();
+        assert_eq!(actual, expected.results[index]);
+    }
+    assert!(matches!(
+        services.whatsonchain.rate_gate().admit(),
+        Err(super::toolbox::Error::RateLimited {
+            retry_after_secs: 1,
+            ..
+        })
+    ));
+    {
+        let recorded = counts.lock().unwrap();
+        assert!(recorded.errors.is_empty());
+        assert_eq!(recorded.counts, expected.requests);
+        assert_eq!(recorded.bodies, expected.request_bodies);
+    }
+
+    clock.advance(Duration::from_millis(1));
+    assert!(
+        services.whatsonchain.rate_gate().admit().is_ok(),
+        "the status rung opens at 1000 ms on the controlled clock"
+    );
+    let actual = call_ladder(&services, &fixture.ladder, &fixture.calls[0])
+        .await
+        .unwrap();
+    assert_eq!(actual, expected.results[0]);
+    let recorded = counts.lock().unwrap();
+    assert!(recorded.errors.is_empty());
+    assert_eq!(recorded.counts["WhatsOnChain"]["POST /txs/status"], 2);
+    assert_eq!(recorded.bodies["WhatsOnChain"]["POST /txs/status"].len(), 2);
 }
 
 /// A fixture file as written: two-space JSON and a final newline.
