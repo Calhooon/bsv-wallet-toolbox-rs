@@ -45,6 +45,10 @@
   return the existing rule 28 refusal; loopback handshakes reach the SDK.
   The SDK still owns redirects and proxy handling. Production keeps its
   transport and public types; wire fields are unchanged.
+- #192: output finders now return the stored `purpose` and `providedBy`,
+  including received outputs marked `receive` and `storage`. These reads
+  also preserve output descriptions, spender IDs, sequence numbers,
+  and spending descriptions. The `list_outputs` wire fields are unchanged.
 
 - #260: `prove_certificate` now validates type, serial, certifier, subject,
   signature, requested name lengths, then verifier before the certificate
