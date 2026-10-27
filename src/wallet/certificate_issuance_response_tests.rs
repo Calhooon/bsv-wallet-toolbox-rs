@@ -489,6 +489,46 @@ async fn nonce_decode_precedes_hmac_length() {
     .await;
 }
 
+// #300: Wallet.ts:809 decodes `clientNonce + serverNonce` as one string, so a
+// bad character in the server nonce is named past the client's 64 characters.
+#[tokio::test]
+async fn nonces_decode_as_one_string() {
+    response_error(
+        |r| {
+            r["serverNonce"] = json!("AA!A");
+        },
+        "Invalid base64 character at index 66",
+    )
+    .await;
+}
+
+// #300: verifyHmac checks the keyID (`serverNonce + clientNonce`, 1 to 800
+// bytes, validationHelpers.ts:227 via :1772) before the hmac's length at :1774.
+#[tokio::test]
+async fn key_id_length_precedes_hmac_length() {
+    let long = BASE64.encode([5; 552]);
+    for (server_nonce, expected) in [
+        (
+            format!("{long}AAAA"),
+            "The keyID parameter must be no more than 800 length.",
+        ),
+        (
+            format!("{long} "),
+            "The keyID parameter must be no more than 800 length.",
+        ),
+        (long, "The hmac parameter must be exactly 32 bytes"),
+    ] {
+        response_error(
+            move |r| {
+                r["serverNonce"] = json!(server_nonce);
+                r["certificate"]["serialNumber"] = json!(BASE64.encode([1; 16]));
+            },
+            expected,
+        )
+        .await;
+    }
+}
+
 #[tokio::test]
 async fn unparsable_truthy_outpoint_reaches_field_checks() {
     response_error(
@@ -579,6 +619,13 @@ async fn outpoint_grammar_is_to_binary_grammar() {
         .await;
         // response_run_with also checks the stored row keeps the answered text.
         assert_eq!(result.unwrap().revocation_outpoint, text);
+    }
+    // #300: the accept branch's txid and vout, asserted where they are parsed.
+    let hex: String = (0u8..32).map(|b| format!("{b:02x}")).collect();
+    for (text, vout) in [(hex.clone(), 0), (format!("{hex}.7"), 7)] {
+        let outpoint = parse_revocation_outpoint(&text).unwrap();
+        assert_eq!(hex::encode(outpoint.txid), hex);
+        assert_eq!(outpoint.vout, vout);
     }
 }
 
