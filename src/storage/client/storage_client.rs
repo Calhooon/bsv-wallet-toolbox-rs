@@ -36,18 +36,12 @@ use bsv_rs::wallet::{
 };
 
 use crate::error::{Error, Result};
-#[cfg(test)]
-use crate::services::providers::http_client::test_support::assert_isolated;
 use crate::services::providers::http_client::Client;
 use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
 use super::json_rpc::{JsonRpcRequest, JsonRpcResponse};
-
-#[cfg(test)]
-#[path = "storage_client_network_isolation_tests.rs"]
-mod network_isolation_tests;
 
 // =============================================================================
 // ValidCreateActionArgs
@@ -1365,6 +1359,13 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         })
     }
 }
+
+#[cfg(test)]
+use crate::services::providers::http_client::test_support::assert_isolated;
+
+#[cfg(test)]
+#[path = "storage_client_network_isolation_tests.rs"]
+mod network_isolation_tests;
 
 #[cfg(test)]
 mod tests {
