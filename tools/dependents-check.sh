@@ -16,8 +16,8 @@
 #      printed;
 #   4. `cargo build --locked`, falling back to `cargo build` with a note when
 #      the lock still needs a change (or the dependent commits no lock);
-#   5. `cargo test --locked`, every target (`cargo test` when the build was
-#      unlocked), with WIRE_TEXT_DIFF=report in its environment; a row's test
+#   5. `cargo test --locked --no-fail-fast`, every target (`cargo test
+#      --no-fail-fast` when the build was unlocked), with WIRE_TEXT_DIFF=report in its environment; a row's test
 #      column may name a narrower command, with the reason in its reason column;
 #   6. read the test output: every `TEXT-DIFF: <fixture file> ...` line is a row
 #      `text differs` (a re-record pending at the pin, never a failure), and a
@@ -315,14 +315,15 @@ run_one() {
     fi
   fi
 
-  # Every target by default: a test the build does not reach is not a test.
+  # Every target by default: a test the build does not reach is not a test. Past
+  # a failing target too (--no-fail-fast), so the row names every failed test.
   if [ "${build#ok}" != "$build" ]; then
-    local what="cargo test --locked"
+    local what="cargo test --locked --no-fail-fast"
     if [ -n "$testcmd" ] && [ "$testcmd" != "default" ]; then
       what="${testcmd//\`/}"
       note="${note:+$note; }narrowed: $what"
     elif [ "$build" = "ok (unlocked)" ]; then
-      what="cargo test"
+      what="cargo test --no-fail-fast"
     fi
     echo "   $what"
     # The knob for every row, not the CLI's alone: a dependent whose tests do not
