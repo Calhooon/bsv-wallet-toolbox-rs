@@ -33,7 +33,7 @@ use bsv_rs::wallet::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::wallet::validate_public_key_arg;
+use super::wallet::{validate_certificate_base64_arg, validate_public_key_arg};
 use crate::error::{Error, Result};
 use crate::services::providers::http_client::Client;
 use crate::storage::entities::{TableCertificate, TableCertificateField};
@@ -182,7 +182,7 @@ pub async fn acquire_certificate_issuance<W, S>(
     wallet: &W,
     storage: &S,
     auth: &AuthId,
-    args: AcquireCertificateArgs,
+    mut args: AcquireCertificateArgs,
     identity_key: &str,
     originator: &str,
 ) -> Result<WalletCertificate>
@@ -195,8 +195,9 @@ where
         Error::ValidationError("certifier_url is required for issuance protocol".to_string())
     })?;
 
-    // The acquisition gate uses the same normalization and texts as prove:
-    // ts-stack@edf6e03 validationHelpers.ts:1339,185-191,522-534.
+    // The reference checks type before certifier, using the same structural
+    // Base64 and public-key validators as prove (validationHelpers.ts:1338-1339).
+    args.certificate_type = validate_certificate_base64_arg(&args.certificate_type, "type")?;
     let (certifier_hex, certifier) = validate_public_key_arg(&args.certifier, "certifier")?;
 
     // Parse identity key to PublicKey
@@ -277,22 +278,8 @@ where
     let nonce_bytes: [u8; NONCE_SIZE] = rand::random();
     let client_nonce = BASE64.encode(nonce_bytes);
 
-    // Encode certificate type as base64
-    // The certificate_type is already a string - decode it to get the 32 bytes
-    let cert_type_bytes = BASE64.decode(&args.certificate_type).map_err(|e| {
-        Error::ValidationError(format!(
-            "Invalid certificate_type (not valid base64): {}",
-            e
-        ))
-    })?;
-    if cert_type_bytes.len() != 32 {
-        return Err(Error::ValidationError(format!(
-            "certificate_type must be 32 bytes when decoded, got {}",
-            cert_type_bytes.len()
-        )));
-    }
-    let mut cert_type_array = [0u8; 32];
-    cert_type_array.copy_from_slice(&cert_type_bytes);
+    // The acquisition gate has validated and trimmed the type. Preserve its
+    // text in the request, as Wallet.ts:784 does, without a stricter decoder.
     let cert_type_b64 = args.certificate_type.clone();
 
     // Create field ciphertexts and wrap their keys from subject to certifier.
@@ -301,7 +288,6 @@ where
         certifier,
         subject,
         &args.fields,
-        &cert_type_array,
         originator,
     )
     .await?;
@@ -347,7 +333,6 @@ async fn create_certificate_fields_for_issuance<W>(
     certifier: &PublicKey,
     _subject: &PublicKey,
     plain_fields: &HashMap<String, String>,
-    _cert_type: &[u8; 32],
     originator: &str,
 ) -> Result<(HashMap<String, Vec<u8>>, HashMap<String, Vec<u8>>)>
 where
@@ -672,10 +657,10 @@ where
         )));
     }
 
-    // 6. Validate revocation outpoint exists (required per Go implementation)
+    // 6. Validate revocation outpoint exists (ts-stack@edf6e03 Wallet.ts:763-764)
     if parsed.certificate.revocation_outpoint.is_none() {
         return Err(Error::ValidationError(
-            "Invalid revocationOutpoint: certificate must have a revocation outpoint".to_string(),
+            "Invalid revocationOutpoint!".to_string(),
         ));
     }
 
@@ -698,8 +683,8 @@ where
 
         if received_value != sent_value {
             return Err(Error::ValidationError(format!(
-                "Invalid field '{}'! Expected: {}, Received: {}",
-                field_name, sent_value, received_value
+                "Invalid field! Expected: {}, Received: {}",
+                sent_value, received_value
             )));
         }
     }

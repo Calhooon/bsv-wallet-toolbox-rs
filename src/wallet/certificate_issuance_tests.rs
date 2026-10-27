@@ -460,7 +460,6 @@ async fn issuance_uses_fresh_keys_for_equal_and_empty_plaintexts() {
             &certifier,
             &subject.public_key(),
             &plaintexts,
-            &[6; 32],
             ORIGINATOR,
         )
         .await
