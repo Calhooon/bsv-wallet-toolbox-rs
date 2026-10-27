@@ -24,7 +24,7 @@ cargo run --example monitor_demo       # Monitor daemon task scheduling
 
 Demonstrates the `Services` orchestrator and `ServicesOptions` builder:
 
-- `Services::mainnet()` / `Services::testnet()` - Refuse: the defaults name no Arcade endpoint (#317)
+- `Services::mainnet()` - Arcade at the crate's public `ARCADE_V2_MAINNET`; `Services::testnet()` refuses: no Arcade testnet endpoint is named (#317)
 - `Services::with_options(Chain, ServicesOptions::mainnet().with_arcade(url, None))` - Arcade, the default mode, at `ARCADE_URL` (a loopback placeholder when unset)
 - `ServicesOptions::default().with_arcade().with_bhs_url().with_bhs_api_key()` - Builder methods
 - `ServicesOptions::mainnet().with_woc_api_key().with_bitails_api_key().with_bhs()` - Full builder chain
