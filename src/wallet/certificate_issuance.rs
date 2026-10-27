@@ -558,7 +558,13 @@ async fn send_issuance_request(
         )));
     }
 
-    let identity_key_header = fetch_header_value(response.headers(), HEADER_CERTIFIER_IDENTITY_KEY);
+    let identity_key_header = fetch_header_value(
+        response
+            .headers()
+            .get_all(HEADER_CERTIFIER_IDENTITY_KEY)
+            .iter()
+            .map(|v| v.as_bytes()),
+    );
     if identity_key_header.as_deref() != Some(certifier_hex) {
         return Err(Error::ValidationError(format!(
             "Invalid certifier! Expected: {}, Received: {}",
@@ -583,13 +589,11 @@ async fn send_issuance_request(
     Ok(parsed)
 }
 
-/// Reads a header as fetch's `Headers.get` does: `None` when absent, each byte
-/// decoded as one code point, and repeated values joined with ", ".
-fn fetch_header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
-    let values: Vec<String> = headers
-        .get_all(name)
-        .iter()
-        .map(|v| v.as_bytes().iter().map(|&b| char::from(b)).collect())
+/// Reads a header's values as fetch's `Headers.get` does: `None` when absent,
+/// each byte decoded as one code point, and repeated values joined with ", ".
+fn fetch_header_value<'a>(values: impl Iterator<Item = &'a [u8]>) -> Option<String> {
+    let values: Vec<String> = values
+        .map(|v| v.iter().map(|&b| char::from(b)).collect())
         .collect();
     (!values.is_empty()).then(|| values.join(", "))
 }
