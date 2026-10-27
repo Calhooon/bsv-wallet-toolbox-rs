@@ -169,5 +169,8 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
     Ok(())
 }
 #[cfg(test)]
+#[path = "tests/validation_bounds.rs"]
+mod bounds_tests;
+#[cfg(test)]
 #[path = "tests/validation.rs"]
 mod tests;
