@@ -731,16 +731,19 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
     // never lands as metadata on an incoming action. The label is matched
     // as the SDK's validateLabel leaves it, trimmed and lowercased
     // (validationHelpers.ts:1054).
-    let labels = args.labels.as_deref().unwrap_or_default();
-    if labels.iter().any(|label| {
-        label
-            .trim()
-            .to_lowercase()
-            .starts_with(BRC177_NO_SEND_MODULE_PREFIX)
-    }) {
+    if has_brc177_no_send_label(args.labels.as_deref()) {
         return Err(Error::ValidationError(BRC177_INCOMING_REFUSAL.to_string()));
     }
     Ok(())
+}
+
+/// The reference's `hasBrc177NoSendExpiryLabel` (brc177NoSendExpiry.ts:118-120)
+/// over labels normalized as validateLabel leaves them.
+fn has_brc177_no_send_label(labels: Option<&[String]>) -> bool {
+    labels.into_iter().flatten().any(|label| {
+        let normalized = label.trim().to_lowercase();
+        normalized.starts_with(BRC177_NO_SEND_MODULE_PREFIX)
+    })
 }
 
 /// bsv-rs's customInstructions check (#143), its refusal in bsv-rs's words.
