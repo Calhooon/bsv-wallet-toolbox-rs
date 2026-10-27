@@ -31,12 +31,6 @@
   SQLite, `certifier IN (?)` on an uncollated TEXT column matches it to the
   normalized argument byte for byte. The remote storage server decides its
   own collation.
-- #245: `create_action` now accepts a caller-named unspendable stored output
-  when `options.no_send` is true, allowing an unsigned, unsent action with
-  `sign_and_process = false`. The stored-input guards check change, then
-  locking script and integer satoshis, then spendability only without
-  `noSend`, following `ts-stack@edf6e03`
-  `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts:972-983`.
 - #245: `create_action` refuses a caller-named unspendable stored output
   under `noSend` too, preserving its previous spender if a later action is
   aborted. The stored-input guards check change, then locking script and
