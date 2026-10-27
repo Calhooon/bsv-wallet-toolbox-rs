@@ -5,6 +5,7 @@ use chrono::Utc;
 use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use sqlx::Row;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Validate a stored BEEF's merkle proofs against ChainTracker.
 ///
@@ -139,8 +140,10 @@ pub(super) fn merge_beef_linked(beef: &mut Beef, other: &Beef) {
 /// bytes on disk. "BEEF structure is invalid" alone cost a seat a day of
 /// diagnosis (LOW p25, 2026-09-04): the sorter knows exactly which inputs
 /// are missing and which entries it could not place, so say so, and write
-/// the hex to `beef-rejected-<millis>.hex` under `std::env::temp_dir()`
-/// (`$TMPDIR`) for a repro.
+/// the hex to `beef-rejected-<millis>-<pid>-<n>.hex` under
+/// `std::env::temp_dir()` (`$TMPDIR`) for a repro. The process id and the
+/// process-wide counter `n` keep two dumps in one millisecond, in one process
+/// or two, out of each other's file (#336).
 pub(in crate::storage::sqlx) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String {
     let sr = beef.sort_txs();
     let short = |v: &[String]| -> String {
@@ -154,9 +157,12 @@ pub(in crate::storage::sqlx) fn describe_invalid_beef(beef: &mut Beef, roots: &[
         }
     };
     let bytes = beef.to_binary();
+    static DUMPS: AtomicU64 = AtomicU64::new(0);
     let dump = std::env::temp_dir().join(format!(
-        "beef-rejected-{}.hex",
-        Utc::now().timestamp_millis()
+        "beef-rejected-{}-{}-{}.hex",
+        Utc::now().timestamp_millis(),
+        std::process::id(),
+        DUMPS.fetch_add(1, Ordering::Relaxed)
     ));
     let dumped = match std::fs::write(&dump, hex::encode(&bytes)) {
         Ok(()) => dump.display().to_string(),
