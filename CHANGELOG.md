@@ -94,6 +94,20 @@
 
 ### Fixed
 
+- #351: `list_actions` with `includeInputs` reads the action's raw
+  transaction where `ts-stack@edf6e03` does (`getRawTxOfKnownValidTransaction`,
+  `StorageKnex.ts:507-508`, through `getProvenOrRawTx` at 189-211): the
+  `proven_txs` row, else a `proven_tx_reqs` row `unsent`, `unmined`,
+  `unconfirmed`, `sending`, `nosend` or `completed`; no longer
+  `transactions.raw_tx` (`StorageSqlx::get_proven_or_raw_tx`, its one
+  caller). Served values move: an action whose request is `invalid`,
+  `doubleSpend` or in any other status outside the six (a listed `sending`
+  row the review pass has not yet failed, an `unprocessed` request) answers
+  `sequenceNumber` 0 and no `unlockingScript` where it answered the row's
+  copy; a request in the six with no copy on the action's row answers its
+  sequence where it answered 0. Raw bytes that do not parse stay the call's
+  error (`SdkError(ReaderUnderflow { .. })` for short bytes), now witnessed.
+
 - #357: internalizeAction refuses a request carrying a BRC-177 `p nosend `
   label (matched trimmed and lowercased, as the SDK's validateLabel leaves
   it) with `The labels parameter must be BRC-177 noSend expiry labels only on
