@@ -280,7 +280,6 @@ async fn output_metadata_updates_clear_and_ignore_older_chunks() {
 
     sync.expected.output_description = Some("updated output".into());
     sync.expected.spent_by = Some(203);
-    sync.expected.sequence_number = Some(42);
     sync.expected.spending_description = Some("updated spending".into());
     sync.expected.provided_by = "you".into();
     sync.expected.purpose = Some("custom".into());
@@ -292,7 +291,6 @@ async fn output_metadata_updates_clear_and_ignore_older_chunks() {
 
     sync.expected.output_description = None;
     sync.expected.spent_by = None;
-    sync.expected.sequence_number = None;
     sync.expected.spending_description = None;
     sync.expected.updated_at += Duration::seconds(1);
     sync.update_source_metadata().await;
@@ -305,6 +303,34 @@ async fn output_metadata_updates_clear_and_ignore_older_chunks() {
     let mut equal_time = cleared;
     equal_time.outputs.as_mut().unwrap()[0].output_description = Some("must not win".into());
     sync.apply(equal_time).await;
+    sync.assert_stored().await;
+}
+
+#[tokio::test]
+async fn output_newer_row_update_leaves_sequence_number() {
+    // EntityOutput.mergeExisting (ts-stack edf6e03, :340-357) does not assign
+    // sequenceNumber; only mergeNew writes it, with the whole row.
+    let mut sync = OutputSync::new().await;
+    let original = sync.export().await;
+    sync.apply(original).await;
+    sync.assert_stored().await;
+
+    let stored = sync.expected.sequence_number;
+    sync.expected.output_description = Some("updated output".into());
+    sync.expected.spent_by = Some(203);
+    sync.expected.sequence_number = Some(42);
+    sync.expected.spending_description = Some("updated spending".into());
+    sync.expected.provided_by = "you".into();
+    sync.expected.purpose = Some("custom".into());
+    sync.expected.updated_at += Duration::seconds(1);
+    sync.update_source_metadata().await;
+    let updated = sync.export().await;
+    assert_eq!(
+        updated.outputs.as_ref().unwrap()[0].sequence_number,
+        Some(42)
+    );
+    sync.apply(updated).await;
+    sync.expected.sequence_number = stored;
     sync.assert_stored().await;
 }
 
