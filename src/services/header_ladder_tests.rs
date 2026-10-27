@@ -42,7 +42,7 @@ fn bhs_header(height: u32, nonce: u32) -> BlockHeader {
 }
 
 fn services(chaintracks: Option<&str>, bhs: Option<&str>) -> Services {
-    let mut options = ServicesOptions::mainnet();
+    let mut options = crate::services::arcade_test_options();
     if let Some(url) = chaintracks {
         options = options.with_chaintracks_url(url);
     }

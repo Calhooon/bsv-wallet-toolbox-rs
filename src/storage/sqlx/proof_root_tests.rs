@@ -704,7 +704,7 @@ async fn with_the_header_service_down_a_proof_is_refused_never_checked_against_a
 /// tracker; the run is offline.
 #[tokio::test]
 async fn the_services_tracker_with_its_header_service_down_refuses_the_proof() {
-    use crate::services::{Chain, Services, ServicesOptions};
+    use crate::services::{Chain, Services};
 
     let s = storage().await;
     let txid = COINBASE_TXID;
@@ -721,7 +721,7 @@ async fn the_services_tracker_with_its_header_service_down_refuses_the_proof() {
     open_gate(&s, 100).await;
     let services = Services::with_options(
         Chain::Main,
-        ServicesOptions::mainnet().with_chaintracks_url("http://127.0.0.1:9"),
+        crate::services::arcade_test_options().with_chaintracks_url("http://127.0.0.1:9"),
     )
     .unwrap();
     let tracker = services.chaintracks.clone().expect("a tracker");

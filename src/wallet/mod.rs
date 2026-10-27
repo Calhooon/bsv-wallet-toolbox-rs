@@ -25,7 +25,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use bsv_wallet_toolbox_rs::{Wallet, StorageSqlx, Services};
+//! use bsv_wallet_toolbox_rs::{Chain, Wallet, StorageSqlx, Services, ServicesOptions};
 //! use bsv_rs::primitives::PrivateKey;
 //! use bsv_rs::wallet::WalletInterface;
 //!
@@ -36,8 +36,10 @@
 //!     storage.migrate("my-wallet", &storage_identity_key).await?;
 //!     storage.make_available().await?;
 //!
-//!     // Create services for blockchain interaction
-//!     let services = Services::mainnet();
+//!     // Create services for blockchain interaction: Arcade is the default
+//!     // mode, so name its endpoint (#317)
+//!     let options = ServicesOptions::mainnet().with_arcade(arcade_url, None);
+//!     let services = Services::with_options(Chain::Main, options)?;
 //!
 //!     // Create wallet with root key
 //!     let root_key = PrivateKey::random();

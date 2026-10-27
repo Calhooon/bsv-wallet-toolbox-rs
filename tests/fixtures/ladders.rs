@@ -371,6 +371,14 @@ fn ladder_fixtures_mask_only_a_later_calls_remainder() {
     );
 }
 
+/// The fixtures recorded the explorer read ladders, which carry no
+/// broadcaster rung only in classic mode: the deprecated knob, at a
+/// loopback port nothing listens on, since no fixture posts (#317).
+#[allow(deprecated)]
+fn classic_options() -> ServicesOptions {
+    ServicesOptions::mainnet().with_classic_arc("http://127.0.0.1:9", None)
+}
+
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data/ladders")
 }
@@ -672,7 +680,7 @@ async fn replay(
     let counts: Counts = Arc::default();
     let _mocks = lock::script(fixture, servers, &counts).await?;
     let named = |name: &str| fixture.providers.iter().any(|p| p.name == name);
-    let mut options = ServicesOptions::mainnet();
+    let mut options = classic_options();
     if named("Chaintracks") {
         options = options.with_chaintracks_url(servers.url("Chaintracks"));
     }
@@ -735,7 +743,7 @@ async fn ladder_status_429_without_retry_after_uses_the_controlled_clock() {
     let counts: Counts = Arc::default();
     let _mocks = lock::script(&fixture, &mut servers, &counts).await.unwrap();
     let (services, clock) = services_at(
-        ServicesOptions::mainnet(),
+        classic_options(),
         &servers.url("WhatsOnChain"),
         &servers.url("Bitails"),
         Some(&servers.url("BananaBlocks")),

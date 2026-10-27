@@ -22,11 +22,19 @@ use bsv_wallet_toolbox_rs::services::{
 // Services Creation Tests
 // =============================================================================
 
+/// Arcade, the default mode (#317), at a loopback port nothing listens on:
+/// the defaults name no Arcade endpoint, and construction makes no request.
+const LOOPBACK_ARCADE: &str = "http://127.0.0.1:9";
+
+fn loopback_services(chain: Chain) -> Services {
+    let options = ServicesOptions::mainnet().with_arcade(LOOPBACK_ARCADE, None);
+    Services::with_options(chain, options).unwrap()
+}
+
 #[test]
 fn test_services_mainnet_creation() {
-    let services = Services::mainnet();
-    assert!(services.is_ok());
-    let services = services.unwrap();
+    assert!(Services::mainnet().is_err(), "no Arcade endpoint named");
+    let services = loopback_services(Chain::Main);
     assert!(services.get_merkle_path_count().unwrap() >= 1);
     assert!(services.get_raw_tx_count().unwrap() >= 1);
     assert!(services.post_beef_count().unwrap() >= 1);
@@ -35,13 +43,14 @@ fn test_services_mainnet_creation() {
 
 #[test]
 fn test_services_testnet_creation() {
-    let services = Services::testnet();
-    assert!(services.is_ok());
+    assert!(Services::testnet().is_err(), "no Arcade endpoint named");
+    loopback_services(Chain::Test);
 }
 
 #[test]
 fn test_services_with_options() {
     let options = ServicesOptions::mainnet()
+        .with_arcade(LOOPBACK_ARCADE, None)
         .with_woc_api_key("test-api-key")
         .with_bitails_api_key("bitails-key");
 
@@ -443,33 +452,41 @@ fn test_services_options_default() {
     let options = ServicesOptions::default();
     assert!(options.whatsonchain_api_key.is_none());
     assert!(options.bitails_api_key.is_none());
-    assert!(options.arc_gorillapool_url.is_some());
+    // Arcade is the default mode with no endpoint named; GorillaPool's
+    // classic ARC is a rung of nothing (#317).
+    assert!(options.arcade_v2);
+    assert!(options.arc_url.is_empty());
+    assert!(options.arc_gorillapool_url.is_none());
 }
 
 #[test]
 fn test_services_options_mainnet() {
     let options = ServicesOptions::mainnet();
-    assert!(options.arc_url.contains("taal.com"));
+    assert!(options.arcade_v2);
+    assert!(options.arc_url.is_empty());
 }
 
 #[test]
 fn test_services_options_testnet() {
     let options = ServicesOptions::testnet();
-    assert!(options.arc_url.contains("test"));
+    assert!(options.arcade_v2);
+    assert!(options.arc_url.is_empty());
     assert!(options.arc_gorillapool_url.is_none());
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_services_options_builder() {
     let options = ServicesOptions::mainnet()
         .with_woc_api_key("woc-key")
         .with_bitails_api_key("bitails-key")
-        .with_arc("https://custom-arc.com", None)
+        .with_classic_arc("https://custom-arc.invalid", None)
         .with_gorillapool("https://custom-gp.com", None);
 
     assert_eq!(options.whatsonchain_api_key, Some("woc-key".to_string()));
     assert_eq!(options.bitails_api_key, Some("bitails-key".to_string()));
-    assert_eq!(options.arc_url, "https://custom-arc.com");
+    assert!(!options.arcade_v2);
+    assert_eq!(options.arc_url, "https://custom-arc.invalid");
     assert_eq!(
         options.arc_gorillapool_url,
         Some("https://custom-gp.com".to_string())
@@ -534,7 +551,9 @@ async fn test_services_get_height() {
     let header_service = header_service_with_tip(900_001).await;
     let services = Services::with_options(
         Chain::Main,
-        ServicesOptions::mainnet().with_chaintracks_url(header_service.url()),
+        ServicesOptions::mainnet()
+            .with_arcade(LOOPBACK_ARCADE, None)
+            .with_chaintracks_url(header_service.url()),
     )
     .unwrap();
     assert_eq!(services.get_height().await.unwrap(), 900_001);
@@ -778,7 +797,7 @@ fn test_n_lock_time_sequence_affects_finality() {
 async fn test_services_get_beef_mined_transaction() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
-    let services = Services::mainnet().unwrap();
+    let services = loopback_services(Chain::Main);
 
     // Genesis coinbase txid (always available on mainnet)
     let genesis_txid = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
@@ -797,7 +816,7 @@ async fn test_services_get_beef_mined_transaction() {
 async fn test_services_get_beef_with_known_txids() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
-    let services = Services::mainnet().unwrap();
+    let services = loopback_services(Chain::Main);
 
     // Use a well-known mined transaction
     let txid = "e8b0f9f6b92e31b97d39f6f5c7f8fb2def8a13f1d5f9c5b3a2e1d0c4b3a2e1d0";
@@ -815,7 +834,7 @@ async fn test_services_get_beef_with_known_txids() {
 async fn test_services_get_beef_nonexistent_tx() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
 
-    let services = Services::mainnet().unwrap();
+    let services = loopback_services(Chain::Main);
 
     // Use an obviously fake txid
     let fake_txid = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -835,7 +854,9 @@ async fn test_services_n_lock_time_finality_integration() {
     let header_service = header_service_with_tip(900_001).await;
     let services = Services::with_options(
         Chain::Main,
-        ServicesOptions::mainnet().with_chaintracks_url(header_service.url()),
+        ServicesOptions::mainnet()
+            .with_arcade(LOOPBACK_ARCADE, None)
+            .with_chaintracks_url(header_service.url()),
     )
     .unwrap();
 
@@ -922,9 +943,9 @@ fn test_n_lock_time_input_from_hex_invalid() {
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_with_final_sequences() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
-    use bsv_wallet_toolbox_rs::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox_rs::services::NLockTimeInput;
 
-    let services = Services::mainnet().unwrap();
+    let services = loopback_services(Chain::Main);
 
     // Create NLockTimeInput with max sequence (all_sequences_final = true)
     // This simulates a transaction where all inputs have max sequence
@@ -941,9 +962,9 @@ async fn test_n_lock_time_is_final_for_tx_with_final_sequences() {
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_with_non_final_sequences() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
-    use bsv_wallet_toolbox_rs::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox_rs::services::NLockTimeInput;
 
-    let services = Services::mainnet().unwrap();
+    let services = loopback_services(Chain::Main);
 
     // Create NLockTimeInput with non-max sequence (all_sequences_final = false)
     let input = NLockTimeInput {
@@ -959,12 +980,14 @@ async fn test_n_lock_time_is_final_for_tx_with_non_final_sequences() {
 #[tokio::test]
 async fn test_n_lock_time_is_final_for_tx_from_raw_locktime() {
     use bsv_wallet_toolbox_rs::services::traits::WalletServices;
-    use bsv_wallet_toolbox_rs::services::{NLockTimeInput, Services};
+    use bsv_wallet_toolbox_rs::services::NLockTimeInput;
 
     let header_service = header_service_with_tip(900_001).await;
     let services = Services::with_options(
         Chain::Main,
-        ServicesOptions::mainnet().with_chaintracks_url(header_service.url()),
+        ServicesOptions::mainnet()
+            .with_arcade(LOOPBACK_ARCADE, None)
+            .with_chaintracks_url(header_service.url()),
     )
     .unwrap();
 

@@ -480,7 +480,12 @@ async fn beef_diag_live_store() {
     // that path (writes land on the copy only).
     let with_services = std::env::var("BEEF_DIAG_SERVICES").is_ok();
     if with_services {
-        let services = crate::services::Services::new(crate::Chain::Main).unwrap();
+        // Arcade is the default mode and the defaults name no endpoint
+        // (#317): this opt-in diagnostic names the crate's mainnet one.
+        let options = crate::services::ServicesOptions::mainnet()
+            .with_arcade(crate::services::ARCADE_V2_MAINNET, None);
+        let services =
+            crate::services::Services::with_options(crate::Chain::Main, options).unwrap();
         crate::storage::traits::WalletStorageProvider::set_services(
             &storage,
             std::sync::Arc::new(services),

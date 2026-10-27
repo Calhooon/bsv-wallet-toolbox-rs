@@ -42,8 +42,10 @@
 //!     // Open local SQLite storage
 //!     let storage = StorageSqlx::open("wallet.db").await?;
 //!
-//!     // Configure mainnet services with a header service
+//!     // Configure mainnet services: Arcade, the default mode, needs its
+//!     // endpoint named (#317); and a header service
 //!     let options = ServicesOptions::mainnet()
+//!         .with_arcade(arcade_url, None)
 //!         .with_chaintracks_url("https://mainnet-chaintracks.babbage.systems");
 //!     let services = Services::with_options(Chain::Main, options)?;
 //!
