@@ -95,14 +95,31 @@ fn single_insertion_over_the_tags_bound_answers_the_bound() {
 fn earlier_output_refusal_runs_ahead_of_a_later_exclusivity() {
     // The outputs map in order: output 0's tags bound answers before output
     // 1's exclusivity is reached.
-    let first = output(BASKET_INSERTION_PROTOCOL, None, Some(insertion(LIMIT + 1)));
-    let second = output(WALLET_PAYMENT_PROTOCOL, Some(payment()), Some(insertion(1)));
-    assert_eq!(refusal(&args(vec![first, second])), tags_text());
+    let earlier = output(BASKET_INSERTION_PROTOCOL, None, Some(insertion(LIMIT + 1)));
+    let later = output(WALLET_PAYMENT_PROTOCOL, Some(payment()), Some(insertion(1)));
+    assert_eq!(refusal(&args(vec![earlier, later])), tags_text());
 }
 
 #[test]
 fn earlier_exclusivity_runs_ahead_of_a_later_tags_bound() {
-    let first = output(WALLET_PAYMENT_PROTOCOL, Some(payment()), Some(insertion(1)));
-    let second = output(BASKET_INSERTION_PROTOCOL, None, Some(insertion(LIMIT + 1)));
-    assert_eq!(refusal(&args(vec![first, second])), PAYMENT_TEXT);
+    let earlier = output(WALLET_PAYMENT_PROTOCOL, Some(payment()), Some(insertion(1)));
+    let later = output(BASKET_INSERTION_PROTOCOL, None, Some(insertion(LIMIT + 1)));
+    assert_eq!(refusal(&args(vec![earlier, later])), PAYMENT_TEXT);
+}
+
+#[test]
+fn earlier_custom_instructions_run_ahead_of_a_later_exclusivity() {
+    // The outputs map in order: output 0's customInstructions (946) answer
+    // before output 1's exclusivity (971-977) is reached.
+    let mut earlier = output(BASKET_INSERTION_PROTOCOL, None, Some(insertion(1)));
+    earlier
+        .insertion_remittance
+        .as_mut()
+        .expect("the insertion remittance")
+        .custom_instructions = Some("x".repeat(1001));
+    let later = output(WALLET_PAYMENT_PROTOCOL, Some(payment()), Some(insertion(1)));
+    assert_eq!(
+        refusal(&args(vec![earlier, later])),
+        "Invalid outputs[0].insertionRemittance.customInstructions: must be no more than 1000 bytes, got 1001"
+    );
 }
