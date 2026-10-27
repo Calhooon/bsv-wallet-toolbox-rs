@@ -492,6 +492,18 @@ mod tests {
         (storage, transaction_ids)
     }
 
+    type ReviewOutputState = (i64, bool, Option<i64>, String);
+
+    async fn review_output_state(storage: &StorageSqlx) -> Vec<ReviewOutputState> {
+        sqlx::query_as(
+            "SELECT transaction_id, spendable, spent_by, CAST(updated_at AS TEXT) \
+             FROM outputs ORDER BY output_id",
+        )
+        .fetch_all(storage.pool())
+        .await
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn review_status_voids_created_outputs_of_newly_failed_transactions() {
         let (storage, transaction_ids) = seed_review_status(
@@ -532,15 +544,9 @@ mod tests {
         let newly_failed = &transaction_ids[1..3];
         let older_failure = transaction_ids[4];
 
-        const OUTPUT_STATE: &str = "SELECT transaction_id, spendable, spent_by, \
-            CAST(updated_at AS TEXT) FROM outputs ORDER BY output_id";
         const TRANSACTION_STATE: &str = "SELECT status, CAST(updated_at AS TEXT) \
             FROM transactions ORDER BY transaction_id";
-        type OutputState = (i64, bool, Option<i64>, String);
-        let before: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
-            .fetch_all(storage.pool())
-            .await
-            .unwrap();
+        let before = review_output_state(&storage).await;
 
         let review = MonitorStorage::review_status(&storage).await.unwrap();
         assert!(review.log.contains("Marked 2 transactions as failed"));
@@ -559,10 +565,7 @@ mod tests {
             ["completed", "failed", "failed", "unproven", "failed"]
         );
 
-        let after: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
-            .fetch_all(storage.pool())
-            .await
-            .unwrap();
+        let after = review_output_state(&storage).await;
         assert_eq!(after.len(), before.len());
         for (original, current) in before.iter().zip(&after) {
             if let Some(index) = transaction_ids
@@ -594,10 +597,7 @@ mod tests {
 
         let again = MonitorStorage::review_status(&storage).await.unwrap();
         assert_eq!(again.log, "No status mismatches found\n");
-        let unchanged: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
-            .fetch_all(storage.pool())
-            .await
-            .unwrap();
+        let unchanged = review_output_state(&storage).await;
         assert_eq!(unchanged, after, "a repeat pass must not rewrite outputs");
 
         // An output-write failure must roll back the status write too.
@@ -687,7 +687,7 @@ mod tests {
                     status: "completed",
                     request_status: None,
                     // Inputs the failures consumed stay as they are.
-                    outputs: &[(false, Some(1)), (false, Some(2))],
+                    outputs: &[(false, Some(2)), (false, Some(1))],
                 },
                 ReviewStatusSeed {
                     status: "failed",
@@ -726,13 +726,7 @@ mod tests {
         .await;
         let swept = &transaction_ids[1..4];
 
-        const OUTPUT_STATE: &str = "SELECT transaction_id, spendable, spent_by, \
-            CAST(updated_at AS TEXT) FROM outputs ORDER BY output_id";
-        type OutputState = (i64, bool, Option<i64>, String);
-        let before: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
-            .fetch_all(storage.pool())
-            .await
-            .unwrap();
+        let before = review_output_state(&storage).await;
 
         let review = MonitorStorage::review_status(&storage).await.unwrap();
         assert!(
@@ -742,10 +736,7 @@ mod tests {
             "{}",
             review.log
         );
-        let after: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
-            .fetch_all(storage.pool())
-            .await
-            .unwrap();
+        let after = review_output_state(&storage).await;
         assert_eq!(after.len(), before.len());
         for (original, current) in before.iter().zip(&after) {
             if swept.contains(&original.0) {
@@ -763,10 +754,7 @@ mod tests {
             "a repeat pass voids nothing: {}",
             again.log
         );
-        let unchanged: Vec<OutputState> = sqlx::query_as(OUTPUT_STATE)
-            .fetch_all(storage.pool())
-            .await
-            .unwrap();
+        let unchanged = review_output_state(&storage).await;
         assert_eq!(unchanged, after, "a repeat pass must not rewrite outputs");
     }
 }
