@@ -5,6 +5,33 @@
 
 The services module provides a unified interface for interacting with BSV blockchain services. It coordinates multiple service providers (WhatsOnChain, ARC, Bitails, BHS) with automatic failover and call tracking. The system uses a collection-based pattern where each operation type maintains an ordered list of providers that are tried sequentially until one succeeds.
 
+## Test and bench isolation (#182)
+
+Every service HTTP client is imported from private `http_client.rs`. Under
+`cfg(test)` or `feature = "bench-support"`, it checks the built request URL
+before execution and permits only `127.0.0.1`, `localhost`, and `::1`.
+Other hosts return `Error::NetworkError` naming the host, #182, and rule 28.
+Redirects pass the same check, proxy configuration is disabled, and
+`localhost` resolution is pinned to loopback addresses. The guard covers
+all providers, the explorer header fallback, Arcade SSE, and fiat rates.
+Changing a provider URL or post mode cannot disable it.
+
+Constructors can still describe production defaults in these builds, so
+configuration and ordering tests keep their existing assertions. A request
+to those defaults is refused before any connection. Use `MockWalletServices`
+for pure wallet tests, or give the existing fixture seams loopback URLs.
+The production configuration (neither test nor `bench-support`) re-exports
+the original reqwest types and keeps their behavior and public API.
+
+`network_isolation_tests.rs` captures a default request without sending it
+and checks the URL policy and redirects. `network_post_tests.rs` exercises
+both post modes, configured providers, and hostile proxy environments in
+child processes. `tests/network_isolation_tests.rs` runs those witnesses
+against the library compiled as an external dependency with `bench-support`.
+Cargo does not set `cfg(test)` on that dependency, so integration isolation
+coverage must enable the feature. Keep the lane's proxy prefix on every
+`cargo test` as well.
+
 ## Architecture
 
 ```
