@@ -5357,18 +5357,27 @@ mod tests {
 
                     #[tokio::test]
                     async fn test_prove_certificate_privileged_reason_order() {
-                        // verifier at 1509 precedes privilegedReason at 1511.
-                        let result = prove_args(false, |args| {
-                            args.verifier = "abc".to_string();
-                            args.privileged_reason = Some("abcd".to_string());
-                        })
-                        .await;
-                        assert_wallet_error(
-                            "verifier before reason",
-                            result,
-                            &refusal("verifier", "even length, not 3."),
-                        );
-                        // privilegedReason at 1511 precedes the count and uniqueness at 1513-1518.
+                        // validatePrivilege at 1477 precedes certificate.type at 1483,
+                        // the certifier at 1490-1493 and the verifier at 1509.
+                        for mutate in [
+                            (|args: &mut ProveCertificateArgs| {
+                                args.certificate.certificate_type = "zz".to_string();
+                            }) as fn(&mut ProveCertificateArgs),
+                            |args| args.certificate.certifier = "abc".to_string(),
+                            |args| args.verifier = "abc".to_string(),
+                        ] {
+                            let result = prove_args(false, |args| {
+                                mutate(args);
+                                args.privileged_reason = Some("abcd".to_string());
+                            })
+                            .await;
+                            assert_wallet_error(
+                                "reason before certificate arguments",
+                                result,
+                                &refusal("privilegedReason", "at least 5 length."),
+                            );
+                        }
+                        // privilegedReason at 1477 precedes the count and uniqueness at 1513-1518.
                         for reveal in [names(101), vec!["a".to_string(), "a".to_string()]] {
                             let result = prove_args(false, |args| {
                                 args.fields_to_reveal = reveal;
@@ -5380,6 +5389,42 @@ mod tests {
                                 result,
                                 &refusal("privilegedReason", "at least 5 length."),
                             );
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_privileged_without_reason() {
+                        // validatePrivilege at 218-220 refuses a privileged request
+                        // with no reason before certificate.type at 1483.
+                        let rule = refusal("privilegedReason", "a value when 'privileged' is true");
+                        for stored in [false, true] {
+                            let result = prove_args(stored, |args| {
+                                args.privileged = Some(true);
+                                args.privileged_reason = None;
+                                args.certificate.certificate_type = "zz".to_string();
+                                args.verifier = "abc".to_string();
+                            })
+                            .await;
+                            assert_wallet_error("privileged without reason", result, &rule);
+                        }
+                        // The length rule at 212-217 precedes the missing-value rule.
+                        let result = prove_args(false, |args| {
+                            args.privileged = Some(true);
+                            args.privileged_reason = Some("abcd".to_string());
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "length before missing value",
+                            result,
+                            &refusal("privilegedReason", "at least 5 length."),
+                        );
+                        for privileged in [None, Some(false)] {
+                            let result = prove_args(false, |args| {
+                                args.privileged = privileged;
+                                args.privileged_reason = None;
+                            })
+                            .await;
+                            assert_wallet_error("unprivileged reaches lookup", result, NOT_FOUND);
                         }
                     }
 
