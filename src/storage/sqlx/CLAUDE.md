@@ -491,7 +491,7 @@ With `sign_and_process` the template is signed and processed inside the create s
 | `MAX_LABEL_LENGTH` | 300 | Maximum label chars |
 
 ### Features
-- Validation in ts-stack@edf6e03 validateCreateActionArgs order (749-808): description, inputs, outputs (each output's tags last), labels, options (knownTxids, noSendChange and its duplicates, sendWith)
+- Validation in ts-stack@edf6e03 validateCreateActionArgs order (749-808): description, inputs, outputs (each output's tags last), labels, options (knownTxids, noSendChange and its duplicates, sendWith); before #309 it ran labels, outputs, inputs, so a request with several bad arguments now answers the inputs' texts ahead of the outputs' and the labels'
 - Fee calculation with accurate transaction size estimation
 - Change generation with automatic UTXO management
 - Full input/output database state management

@@ -48,9 +48,13 @@
   insertion's `tags` and `labels`; listCertificates' `certifiers` and
   `types`; listOutputs' `tags`; listActions' `labels`; and
   `Validation error: The sendWith parameter must be an array of at most 1000 items`
-  for createAction's `sendWith`. The create door now checks outputs ahead of
-  labels, as the reference does: a bad output and a bad label are refused
-  by the output's text.
+  for createAction's `sendWith`. The create door's checks now run inputs,
+  outputs, labels, where they ran labels, outputs, inputs, as the reference
+  does (validateCreateActionArgs 758, 759, 762): a request with several bad
+  arguments answers the inputs' texts ahead of the outputs' and the labels',
+  and the outputs' ahead of the labels'. A bad input plus a bad output
+  answered `outputs[0]: locking script cannot be empty` before and answers
+  `inputs[0]: unlockingScript or unlockingScriptLength required` now.
 - #295: both change allocators (the create door's and the public
   `StorageSqlx::allocate_change_input`) and both counts take only
   wallet-managed change, as `ts-stack@edf6e03`
