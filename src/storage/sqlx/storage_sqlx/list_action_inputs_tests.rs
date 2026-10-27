@@ -88,7 +88,7 @@ async fn store(raw: Option<Vec<u8>>, spent: &[Spent]) -> (StorageSqlx, AuthId) {
         )
         .bind(user.user_id)
         .bind(funding[&s.txid])
-        .bind(s.vout as i64)
+        .bind(i64::from(s.vout))
         .bind(&s.txid)
         .bind(spender)
         .bind(s.column)

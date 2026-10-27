@@ -382,7 +382,7 @@ impl StorageSqlx {
 
                 for i_row in input_rows.iter() {
                     let source_txid: Option<String> = i_row.get("txid");
-                    let source_vout: i32 = i_row.get("vout");
+                    let source_vout = i_row.get::<i32, _>("vout") as u32;
                     let source_satoshis: i64 = i_row.get("satoshis");
                     let source_locking_script: Option<Vec<u8>> =
                         if include_input_source_locking_scripts {
@@ -393,8 +393,7 @@ impl StorageSqlx {
                     let input_description: Option<String> = i_row.get("output_description");
                     // The raw input spending this outpoint (:84).
                     let raw_input = raw_inputs.iter().find(|input| {
-                        input.source_txid == source_txid
-                            && input.source_output_index == source_vout as u32
+                        input.source_txid == source_txid && input.source_output_index == source_vout
                     });
 
                     // Parse source txid
@@ -413,7 +412,7 @@ impl StorageSqlx {
                     let unlocking_script: Option<Vec<u8>> = if include_input_unlocking_scripts {
                         raw_input
                             .and_then(|input| input.unlocking_script.as_ref())
-                            .map(|script| script.to_binary())
+                            .map(bsv_rs::script::UnlockingScript::to_binary)
                     } else {
                         None
                     };
@@ -421,7 +420,7 @@ impl StorageSqlx {
                     wallet_inputs.push(WalletActionInput {
                         source_outpoint: Outpoint {
                             txid: source_txid_bytes,
-                            vout: source_vout as u32,
+                            vout: source_vout,
                         },
                         source_satoshis: source_satoshis as u64,
                         source_locking_script,
