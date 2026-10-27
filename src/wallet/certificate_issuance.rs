@@ -6,7 +6,7 @@
 //!
 //! ## Protocol Flow
 //!
-//! 1. **PrepareIssuanceActionData**: Generate random nonce, encrypt fields using
+//! 1. **PrepareIssuanceActionData**: Create the client nonce as createNonce, encrypt fields using
 //!    MasterCertificate::create_certificate_fields, build JSON request body
 //!
 //! 2. **HTTP POST**: Send request to certifier URL with BRC-104 headers:
@@ -31,7 +31,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bsv_rs::auth::certificates::Certificate;
 use bsv_rs::primitives::{PublicKey, SymmetricKey};
 use bsv_rs::wallet::{
-    AcquireCertificateArgs, Counterparty, Protocol, SecurityLevel, VerifyHmacArgs,
+    AcquireCertificateArgs, Counterparty, CreateHmacArgs, Protocol, SecurityLevel, VerifyHmacArgs,
     WalletCertificate, WalletInterface,
 };
 use serde::{Deserialize, Serialize};
@@ -78,8 +78,11 @@ const CERTIFICATE_ISSUANCE_PROTOCOL: &str = "certificate issuance";
 /// Expected HMAC size (32 bytes)
 const NONCE_HMAC_SIZE: usize = 32;
 
-/// Random nonce size in bytes
-const NONCE_SIZE: usize = 32;
+/// The client nonce's random part in bytes (createNonce.ts:27)
+const NONCE_SIZE: usize = 16;
+
+/// verifyHmac's keyID bound in UTF-8 bytes (validationHelpers.ts:227)
+const MAX_KEY_ID_BYTES: usize = 800;
 
 // =============================================================================
 // Request/Response Types
@@ -413,9 +416,7 @@ async fn prepare_issuance_action_data<W>(
 where
     W: WalletInterface + Send + Sync,
 {
-    // Generate random client nonce
-    let nonce_bytes: [u8; NONCE_SIZE] = rand::random();
-    let client_nonce = BASE64.encode(nonce_bytes);
+    let client_nonce = create_client_nonce(wallet, certifier, originator).await?;
 
     // The acquisition gate has validated and trimmed the type. Preserve its
     // text in the request, as Wallet.ts:784 does, without a stricter decoder.
@@ -461,6 +462,39 @@ where
         cert_type_b64,
         client_nonce,
     })
+}
+
+// createNonce.ts:21-44 as Wallet.ts:771 calls it: 16 random bytes, their
+// `[2, 'server hmac']` hmac with the certifier under the TextDecoder text of
+// those bytes, base64 of the 48 bytes (64 characters, no padding). The SDK
+// helper uses another security level and key ID, so it cannot be substituted.
+async fn create_client_nonce<W: WalletInterface + Send + Sync>(
+    wallet: &W,
+    certifier: &PublicKey,
+    originator: &str,
+) -> Result<String> {
+    let random: [u8; NONCE_SIZE] = rand::random();
+    let hmac = wallet
+        .create_hmac(
+            CreateHmacArgs {
+                data: random.to_vec(),
+                protocol_id: Protocol::new(SecurityLevel::Counterparty, "server hmac"),
+                key_id: nonce_key_id(&random),
+                counterparty: Some(Counterparty::Other(certifier.clone())),
+                ..Default::default()
+            },
+            originator,
+        )
+        .await?
+        .hmac;
+    Ok(BASE64.encode([random.as_slice(), &hmac].concat()))
+}
+
+// utils.ts:211-213: toUTF8 is TextDecoder().decode, one U+FFFD per maximal
+// subpart (as from_utf8_lossy) and one leading BOM removed.
+fn nonce_key_id(random: &[u8]) -> String {
+    let text = String::from_utf8_lossy(random);
+    text.strip_prefix('\u{feff}').unwrap_or(&text).to_string()
 }
 
 /// Creates encrypted certificate fields for issuance.
@@ -721,11 +755,18 @@ async fn verify_issuance_serial<W: WalletInterface + Send + Sync>(
     originator: &str,
 ) -> Result<()> {
     let invalid = || Error::ValidationError("Invalid serialNumber".into());
-    // Wallet.ts:808-809 decode, then verifyHmac's validateByteArray(hmac, 32)
-    // at validationHelpers.ts:1774.
+    // Wallet.ts:808-809 decode the serial, then `clientNonce + serverNonce` as
+    // one string; verifyHmac checks the keyID (validationHelpers.ts:227 via
+    // :1772), then the hmac's 32 bytes (:1774). The keyID holds the non-empty
+    // server nonce, so only its upper bound can refuse.
     let serial = decode_issuance_base64(&raw.serial_number)?;
-    let mut data = decode_issuance_base64(client_nonce)?;
-    data.extend(decode_issuance_base64(server_nonce)?);
+    let data = decode_issuance_base64(&format!("{client_nonce}{server_nonce}"))?;
+    let key_id = format!("{server_nonce}{client_nonce}");
+    if key_id.len() > MAX_KEY_ID_BYTES {
+        return Err(Error::ValidationError(format!(
+            "The keyID parameter must be no more than {MAX_KEY_ID_BYTES} length."
+        )));
+    }
     if serial.len() != NONCE_HMAC_SIZE {
         return Err(Error::ValidationError(
             "The hmac parameter must be exactly 32 bytes".into(),
@@ -741,7 +782,7 @@ async fn verify_issuance_serial<W: WalletInterface + Send + Sync>(
                     SecurityLevel::Counterparty,
                     CERTIFICATE_ISSUANCE_PROTOCOL,
                 ),
-                key_id: format!("{server_nonce}{client_nonce}"),
+                key_id,
                 counterparty: Some(Counterparty::Other(certifier.clone())),
                 ..Default::default()
             },
@@ -804,22 +845,17 @@ async fn verify_server_nonce<W: WalletInterface + Send + Sync>(
     let Ok(bytes) = BASE64.decode(nonce) else {
         return Ok(false);
     };
-    if bytes.len() != 16 + NONCE_HMAC_SIZE || BASE64.encode(&bytes) != nonce {
+    if bytes.len() != NONCE_SIZE + NONCE_HMAC_SIZE || BASE64.encode(&bytes) != nonce {
         return Ok(false);
     }
     let mut hmac = [0; NONCE_HMAC_SIZE];
-    hmac.copy_from_slice(&bytes[16..]);
-    // TextDecoder strips one leading BOM before returning the decoded text.
-    let data_text = String::from_utf8_lossy(&bytes[..16]);
-    let key_id = data_text
-        .strip_prefix('\u{feff}')
-        .unwrap_or(&data_text)
-        .to_string();
+    hmac.copy_from_slice(&bytes[NONCE_SIZE..]);
+    let key_id = nonce_key_id(&bytes[..NONCE_SIZE]);
     let result = wallet
         .verify_hmac(
             VerifyHmacArgs {
                 hmac,
-                data: bytes[..16].to_vec(),
+                data: bytes[..NONCE_SIZE].to_vec(),
                 protocol_id: Protocol::new(SecurityLevel::Counterparty, "server hmac"),
                 key_id,
                 counterparty: Some(Counterparty::Other(certifier.clone())),
@@ -1259,7 +1295,7 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(NONCE_HMAC_SIZE, 32);
-        assert_eq!(NONCE_SIZE, 32);
+        assert_eq!(NONCE_SIZE, 16);
         assert_eq!(BRC104_AUTH_VERSION, "0.1");
         assert_eq!(CERTIFICATE_ISSUANCE_PROTOCOL, "certificate issuance");
     }
