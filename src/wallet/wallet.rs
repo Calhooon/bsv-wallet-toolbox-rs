@@ -4296,6 +4296,50 @@ mod tests {
 
             #[cfg(feature = "sqlite")]
             #[tokio::test]
+            async fn test_prove_certificate_empty_request_reveals_nothing() {
+                let mut request = Request::valid();
+                let disclosed = request.prove().await.unwrap().keyring_for_verifier;
+                assert!(disclosed.contains_key("name"));
+                request.reveal.clear();
+                assert!(request.create().unwrap().is_empty());
+                let empty = request.prove().await.unwrap().keyring_for_verifier;
+                assert!(
+                    empty.is_empty(),
+                    "empty request disclosed fields: {empty:?}"
+                );
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_prove_certificate_empty_request_skips_recovery() {
+                // These values pass the Base64 gate but cannot be decrypted.
+                let mut request = Request::new();
+                request.reveal.clear();
+                assert!(request.create().unwrap().is_empty());
+                let result = request.prove().await.unwrap();
+                assert!(result.keyring_for_verifier.is_empty());
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_prove_certificate_empty_request_validates_inputs() {
+                let mut request = Request::new();
+                request.reveal.clear();
+                request.serial = "!".to_string();
+                request
+                    .assert_gate_error(
+                        "Certificate serial number must use canonical base64 encoding",
+                    )
+                    .await;
+                request.serial = BASE64.encode([32; 32]);
+                request.fields.insert("name".to_string(), "!".to_string());
+                request
+                    .assert_gate_error("Certificate field name must use canonical base64 encoding")
+                    .await;
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
             async fn test_create_keyring_preloop_overlong_requested_name() {
                 for name in ["n".repeat(51), "é".repeat(26)] {
                     let mut request = Request::new();
