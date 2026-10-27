@@ -1231,7 +1231,9 @@ fn direct_certificate_args() -> bsv_rs::wallet::AcquireCertificateArgs {
 }
 
 /// `(certificates, certificate_fields)` rows.
-async fn certificate_rows(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> (i64, i64) {
+pub(super) async fn certificate_rows(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+) -> (i64, i64) {
     let pool = wallet.storage().pool();
     let certificates: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM certificates")
         .fetch_one(pool)
