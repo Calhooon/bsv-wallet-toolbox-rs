@@ -87,6 +87,16 @@
 
 ### Fixed
 
+- #312: createAction refuses a request carrying a BRC-177 `p nosend ` label
+  (matched trimmed and lowercased, as the SDK's validateLabel leaves it)
+  with `Invalid operation: Active storage does not support BRC-177 noSend expiry`
+  (through `WalletInterface`, a `WalletError` with that text), the
+  reference's refusal on a store without the capability (ts-stack@edf6e03
+  `createNoSendExpiryAction.ts:201-203`), as BRC-177 `0177.md:53` asks; it
+  ran after every other argument check and writes nothing. Such a request
+  was accepted as an ordinary action, the label stored as metadata. This is
+  a new refusal of input that succeeded before; BRC-177 itself is the 0.15
+  epic #352.
 - #313: sync writes an incoming output's `purpose` as given, on insert and on
   the newer-row update, as `ts-stack@edf6e03` `EntityOutput.mergeNew` and
   `mergeExisting` do. A chunk row without `purpose` was stored as `change`;
