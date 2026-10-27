@@ -34,11 +34,12 @@
 pub mod broadcast_memory;
 pub mod cadence;
 pub mod collection;
-#[cfg(test)]
 mod http_client;
 pub mod mock;
 #[cfg(test)]
 mod network_isolation_tests;
+#[cfg(test)]
+mod network_post_tests;
 pub mod providers;
 #[allow(clippy::module_inception)]
 pub mod services;

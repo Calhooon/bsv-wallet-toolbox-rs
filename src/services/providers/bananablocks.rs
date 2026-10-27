@@ -34,7 +34,8 @@
 //! - Mainnet: `https://bananablocks.com/api/v1`
 //! - Testnet: `https://test.bananablocks.com/api/v1`
 
-use reqwest::{Client, StatusCode};
+use crate::services::http_client::Client;
+use reqwest::StatusCode;
 use std::time::Duration;
 
 #[cfg(test)]

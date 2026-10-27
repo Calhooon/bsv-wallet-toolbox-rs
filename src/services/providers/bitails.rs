@@ -11,7 +11,8 @@
 //! - Mainnet: `https://api.bitails.io/`
 //! - Testnet: `https://test-api.bitails.io/`
 
-use reqwest::{Client, StatusCode};
+use crate::services::http_client::Client;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
