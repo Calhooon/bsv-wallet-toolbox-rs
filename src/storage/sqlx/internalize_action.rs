@@ -690,7 +690,7 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
         "outputs",
         MAXIMUM_WALLET_COLLECTION_ITEMS,
     )?;
-    // The first insertion whose tags pass the bound is refused only once
+    // The earliest insertion whose tags pass the bound is refused only once
     // every output up to it has passed its customInstructions, as the
     // reference maps the outputs in order; bsv-rs reads only the outputs.
     let over = args.outputs.iter().enumerate().find_map(|(index, output)| {
