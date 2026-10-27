@@ -8,7 +8,8 @@
 #
 #   tools/arch-doc-tests.sh            # every row
 #   tools/arch-doc-tests.sh --dry-run  # parse only, no cargo
-#   ARCH_DOC_TEST_FEATURES=sqlite,remote tools/arch-doc-tests.sh  # CI's form
+#   ARCH_DOC_LIB_FEATURES=sqlite,remote \
+#   ARCH_DOC_TEST_FEATURES=sqlite,remote,bench-support tools/arch-doc-tests.sh  # CI's form
 #
 # A row's test column is `name` for a lib test, or `name` (`--test file`)
 # for an integration test. The invariants tables are the ones whose header
@@ -17,10 +18,12 @@
 set -u
 cd "$(dirname "$0")/.."
 dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
-# ARCH_DOC_TEST_FEATURES names the cargo features to build with (CI passes the
-# unit-test step's `sqlite,remote` so that step's build is reused); empty means
-# the defaults.
-features="${ARCH_DOC_TEST_FEATURES:+--features $ARCH_DOC_TEST_FEATURES}"
+# ARCH_DOC_LIB_FEATURES names the cargo features for the `--lib` rows and
+# ARCH_DOC_TEST_FEATURES those for the `--test` rows (CI passes its unit-test
+# step's `sqlite,remote` and its integration step's `sqlite,remote,bench-support`
+# so each row lists from a build already made); empty means the defaults.
+lib_features="${ARCH_DOC_LIB_FEATURES:+ --features $ARCH_DOC_LIB_FEATURES}"
+test_features="${ARCH_DOC_TEST_FEATURES:+ --features $ARCH_DOC_TEST_FEATURES}"
 docs="docs/ARCHITECTURE.md"
 [ -d docs/architecture ] && docs="$docs $(ls docs/architecture/*.md 2>/dev/null)"
 
@@ -38,8 +41,8 @@ while IFS= read -r line; do
     echo "NO NAME: $line"; failed=$((failed + 1)); continue
   fi
   tested=$((tested + 1))
-  if [ -n "$file" ]; then cmd="cargo test --test $file $features $name -- --list"
-  else cmd="cargo test --lib $features $name -- --list"; fi
+  if [ -n "$file" ]; then cmd="cargo test --test $file$test_features $name -- --list"
+  else cmd="cargo test --lib$lib_features $name -- --list"; fi
   if [ "$dry" = 1 ]; then echo "$cmd"; continue; fi
   out=$($cmd 2>/dev/null | grep -E "(^|::)$name: test\$")
   n=$(printf '%s\n' "$out" | grep -c ': test$')
