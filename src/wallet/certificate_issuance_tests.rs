@@ -166,9 +166,9 @@ async fn store(
         auth,
         parsed,
         master_keyring,
-        &parsed.certificate.certifier,
+        &PublicKey::from_hex(&parsed.certificate.certifier).unwrap(),
         &auth.identity_key,
-        &parsed.certificate.type_base64(),
+        &parsed.certificate.cert_type,
     )
     .await
     .unwrap()
@@ -264,12 +264,7 @@ fn certifier_response(
 }
 
 fn parse_issued(issued: &Issued) -> ParseCertificateResponseResult {
-    parse_certificate_response(
-        &response(issued.certificate.clone()),
-        &issued.certificate.certifier,
-        &issued.certificate.cert_type,
-    )
-    .unwrap()
+    parse_certificate_response(&response(issued.certificate.clone())).unwrap()
 }
 
 #[test]
@@ -278,16 +273,27 @@ fn reference_issued_certificate_survives_intake() {
     for issued in [fixture.reference_issued, fixture.rust_issued] {
         let parsed = parse_issued(&issued);
         assert_eq!(
-            verify_like_reference(&parsed.certificate),
+            verify_like_reference(&decode_issued_certificate(&parsed.certificate).unwrap()),
             issued.reference_verify,
             "intake must preserve the reference's signed Base64 field text"
         );
         assert_eq!(
-            hex::encode(parsed.certificate.to_binary(true)),
+            hex::encode(
+                decode_issued_certificate(&parsed.certificate)
+                    .unwrap()
+                    .to_binary(true)
+            ),
             issued.binary_hex
         );
         if let Some(hash) = issued.preimage_sha256 {
-            assert_eq!(hex::encode(parsed.certificate.signing_hash()), hash);
+            assert_eq!(
+                hex::encode(
+                    decode_issued_certificate(&parsed.certificate)
+                        .unwrap()
+                        .signing_hash()
+                ),
+                hash
+            );
         }
     }
 }
@@ -297,7 +303,9 @@ async fn reference_issued_certificate_proves_and_decrypts() {
     let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
     for issued in [fixture.reference_issued, fixture.rust_issued] {
         let parsed = parse_issued(&issued);
-        assert!(verify_like_reference(&parsed.certificate));
+        assert!(verify_like_reference(
+            &decode_issued_certificate(&parsed.certificate).unwrap()
+        ));
         let (wallet, auth) = wallet(issued.keys.subject).await;
         let stored = store(&wallet, &auth, &parsed, &issued.master_keyring).await;
         assert_eq!(stored.fields, issued.certificate.fields);
@@ -401,12 +409,7 @@ async fn toolbox_issued_certificate_decrypts_like_reference() {
             );
         }
 
-        let parsed = parse_certificate_response(
-            &response,
-            &cert_response.certifier,
-            &cert_response.cert_type,
-        )
-        .unwrap();
+        let parsed = parse_certificate_response(&response).unwrap();
         verify_certificate_issuance(
             &wallet,
             &parsed,
@@ -420,8 +423,10 @@ async fn toolbox_issued_certificate_decrypts_like_reference() {
         )
         .await
         .unwrap();
-        assert!(verify_like_reference(&parsed.certificate));
-        assert_eq!(parsed.cert_fields, prepared.fields);
+        assert!(verify_like_reference(
+            &decode_issued_certificate(&parsed.certificate).unwrap()
+        ));
+        assert_eq!(parsed.certificate.fields, prepared.fields);
         let stored = store(&wallet, &auth, &parsed, &prepared.master_keyring).await;
         let keyring = prove(
             &wallet,

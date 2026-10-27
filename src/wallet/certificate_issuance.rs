@@ -104,6 +104,7 @@ pub struct ProtocolIssuanceResponse {
     /// The signed certificate
     pub certificate: Option<CertificateResponse>,
     /// Server nonce (base64 encoded)
+    #[serde(default)]
     pub server_nonce: String,
     /// Timestamp of issuance
     #[serde(default)]
@@ -127,6 +128,7 @@ pub struct CertificateResponse {
     /// Certifier public key (hex)
     pub certifier: String,
     /// Revocation outpoint (txid.vout format)
+    #[serde(default)]
     pub revocation_outpoint: String,
     /// Encrypted field values
     pub fields: HashMap<String, String>,
@@ -155,14 +157,10 @@ pub(crate) struct PrepareIssuanceActionDataResult {
 /// Result of parsing certificate response
 #[derive(Debug)]
 pub(crate) struct ParseCertificateResponseResult {
-    /// Parsed certificate
-    pub certificate: Certificate,
-    /// Server nonce (base64 encoded)
+    /// Original certificate text, retained through validation and storage.
+    pub certificate: CertificateResponse,
+    /// Server nonce (base64 encoded).
     pub server_nonce: String,
-    /// Certificate fields from response
-    pub cert_fields: HashMap<String, String>,
-    /// Serial number as raw bytes
-    pub serial_number: [u8; 32],
 }
 
 // =============================================================================
@@ -227,8 +225,7 @@ where
     // Note: Unlike Go, we don't require the header to be present, as some certifiers may not include it
 
     // Step 3: Parse and validate response
-    let parsed =
-        parse_certificate_response(&http_response.body, &certifier_hex, &prepared.cert_type_b64)?;
+    let parsed = parse_certificate_response(&http_response.body)?;
 
     // Step 4: Verify certificate issuance
     verify_certificate_issuance(
@@ -591,122 +588,178 @@ async fn send_issuance_request(
 // Step 3: Parse Certificate Response
 // =============================================================================
 
-/// Parses and validates the certificate response from the certifier.
+/// Parses the envelope without imposing checks ahead of Wallet.ts:806-817.
 fn parse_certificate_response(
     response: &ProtocolIssuanceResponse,
-    expected_certifier: &str,
-    expected_type: &str,
 ) -> Result<ParseCertificateResponseResult> {
-    // Validate server nonce is present
+    let certificate = response
+        .certificate
+        .as_ref()
+        .ok_or_else(|| Error::ValidationError("No certificate received from certifier!".into()))?;
     if response.server_nonce.is_empty() {
         return Err(Error::ValidationError(
-            "No serverNonce received from certifier".to_string(),
+            "No serverNonce received from certifier!".into(),
         ));
     }
-
-    // Validate certificate is present
-    let cert_resp = response.certificate.as_ref().ok_or_else(|| {
-        Error::ValidationError("No certificate received from certifier".to_string())
-    })?;
-
-    // Parse subject public key
-    let subject = PublicKey::from_hex(&cert_resp.subject).map_err(|e| {
-        Error::ValidationError(format!("Failed to parse subject public key: {}", e))
-    })?;
-
-    // Parse certifier public key
-    let certifier = PublicKey::from_hex(&cert_resp.certifier).map_err(|e| {
-        Error::ValidationError(format!("Failed to parse certifier public key: {}", e))
-    })?;
-
-    // Validate certifier matches expected
-    if cert_resp.certifier != expected_certifier {
-        return Err(Error::ValidationError(format!(
-            "Invalid certifier! Expected: {}, Received: {}",
-            expected_certifier, cert_resp.certifier
-        )));
-    }
-
-    // Validate certificate type matches
-    if cert_resp.cert_type != expected_type {
-        return Err(Error::ValidationError(format!(
-            "Invalid certificate type! Expected: {}, Received: {}",
-            expected_type, cert_resp.cert_type
-        )));
-    }
-
-    // Decode serial number
-    let serial_bytes = BASE64
-        .decode(&cert_resp.serial_number)
-        .map_err(|e| Error::ValidationError(format!("Failed to decode serial number: {}", e)))?;
-    if serial_bytes.len() != 32 {
-        return Err(Error::ValidationError(format!(
-            "Invalid serial number length: expected 32, got {}",
-            serial_bytes.len()
-        )));
-    }
-    let mut serial_number = [0u8; 32];
-    serial_number.copy_from_slice(&serial_bytes);
-
-    // Decode certificate type
-    let cert_type_bytes = BASE64
-        .decode(&cert_resp.cert_type)
-        .map_err(|e| Error::ValidationError(format!("Failed to decode certificate type: {}", e)))?;
-    if cert_type_bytes.len() != 32 {
-        return Err(Error::ValidationError(format!(
-            "Invalid certificate type length: expected 32, got {}",
-            cert_type_bytes.len()
-        )));
-    }
-    let mut cert_type = [0u8; 32];
-    cert_type.copy_from_slice(&cert_type_bytes);
-
-    // Build the Certificate struct
-    let mut certificate = Certificate::new(cert_type, serial_number, subject, certifier);
-
-    // Set revocation outpoint if valid
-    if !cert_resp.revocation_outpoint.is_empty() && cert_resp.revocation_outpoint != "." {
-        // Parse txid.vout format
-        let parts: Vec<&str> = cert_resp.revocation_outpoint.split('.').collect();
-        if parts.len() == 2 {
-            if let (Ok(txid_bytes), Ok(vout)) = (hex::decode(parts[0]), parts[1].parse::<u32>()) {
-                if txid_bytes.len() == 32 {
-                    let mut txid = [0u8; 32];
-                    txid.copy_from_slice(&txid_bytes);
-                    certificate.revocation_outpoint =
-                        Some(bsv_rs::wallet::Outpoint::new(txid, vout));
-                }
-            }
-        }
-    }
-
-    // The signed field value is the Base64 text's UTF-8 bytes (BRC-52).
-    // bsv-rs 0.9.0-beta.1 takes bytes here; decode only when decrypting.
-    for (name, value) in &cert_resp.fields {
-        certificate.set_field(name.clone(), value.as_bytes().to_vec());
-    }
-
-    // Set signature
-    let signature_bytes = hex::decode(&cert_resp.signature)
-        .map_err(|e| Error::ValidationError(format!("Failed to decode signature: {}", e)))?;
-    certificate.signature = Some(signature_bytes);
-
     Ok(ParseCertificateResponseResult {
-        certificate,
+        certificate: certificate.clone(),
         server_nonce: response.server_nonce.clone(),
-        cert_fields: cert_resp.fields.clone(),
-        serial_number,
     })
 }
 
-// =============================================================================
-// Step 4: Verify Certificate Issuance
-// =============================================================================
+// Utils.toArray(..., 'base64') accepts omitted padding, URL-safe characters,
+// ASCII whitespace and nonzero padding bits. Keep the original text separately.
+fn decode_issuance_base64(value: &str) -> Result<Vec<u8>> {
+    let mut encoded: String = trim_ecmascript_whitespace(value)
+        .chars()
+        .filter(|c| !matches!(c, '\r' | '\n' | '\t' | '\u{000c}' | '\u{000b}' | ' '))
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            c => c,
+        })
+        .collect();
+    if let Some(index) = encoded.find('=') {
+        if !matches!(&encoded[index..], "=" | "==") {
+            return Err(Error::ValidationError("Invalid base64 padding".into()));
+        }
+        encoded.truncate(index);
+    }
+    let mut decoded = Vec::with_capacity(encoded.len() * 3 / 4);
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for (index, byte) in encoded.bytes().enumerate() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => {
+                return Err(Error::ValidationError(format!(
+                    "Invalid base64 character at index {index}"
+                )))
+            }
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            decoded.push((buffer >> bits).to_le_bytes()[0]);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Ok(decoded)
+}
 
-/// Verifies the certificate against the original request parameters.
-///
-/// This includes HMAC verification of the serial number and validation
-/// of all certificate fields.
+fn decode_issued_certificate(raw: &CertificateResponse) -> Result<Certificate> {
+    let invalid = || Error::ValidationError("Certificate verification failed".into());
+    let cert_type = decode_issuance_base64(&raw.cert_type)
+        .map_err(|_| invalid())?
+        .try_into()
+        .map_err(|_| invalid())?;
+    let serial = decode_issuance_base64(&raw.serial_number)
+        .map_err(|_| invalid())?
+        .try_into()
+        .map_err(|_| invalid())?;
+    let subject = PublicKey::from_hex(&raw.subject).map_err(|_| invalid())?;
+    let certifier = PublicKey::from_hex(&raw.certifier).map_err(|_| invalid())?;
+    let mut certificate = Certificate::new(cert_type, serial, subject, certifier);
+    // Preserve the wire outpoint for validation/storage. The SDK needs a parsed
+    // outpoint only for its binary representation, after the truthiness guard.
+    certificate.revocation_outpoint =
+        raw.revocation_outpoint
+            .split_once('.')
+            .and_then(|(txid, vout)| {
+                let txid = hex::decode(txid).ok()?.try_into().ok()?;
+                Some(bsv_rs::wallet::Outpoint::new(txid, vout.parse().ok()?))
+            });
+    for (name, value) in &raw.fields {
+        certificate.set_field(name.clone(), value.as_bytes().to_vec());
+    }
+    certificate.signature = Some(hex::decode(&raw.signature).map_err(|_| invalid())?);
+    Ok(certificate)
+}
+
+async fn verify_issuance_serial<W: WalletInterface + Send + Sync>(
+    wallet: &W,
+    raw: &CertificateResponse,
+    client_nonce: &str,
+    server_nonce: &str,
+    certifier: &PublicKey,
+    originator: &str,
+) -> Result<()> {
+    let invalid = || Error::ValidationError("Invalid serialNumber".into());
+    let serial = decode_issuance_base64(&raw.serial_number)?;
+    if serial.len() != NONCE_HMAC_SIZE {
+        return Err(Error::ValidationError(
+            "The hmac parameter must be exactly 32 bytes".into(),
+        ));
+    }
+    let hmac = serial.try_into().map_err(|_| invalid())?;
+    let mut data = decode_issuance_base64(client_nonce)?;
+    data.extend(decode_issuance_base64(server_nonce)?);
+    let result = wallet
+        .verify_hmac(
+            VerifyHmacArgs {
+                hmac,
+                data,
+                protocol_id: Protocol::new(
+                    SecurityLevel::Counterparty,
+                    CERTIFICATE_ISSUANCE_PROTOCOL,
+                ),
+                key_id: format!("{server_nonce}{client_nonce}"),
+                counterparty: Some(Counterparty::Other(certifier.clone())),
+                ..Default::default()
+            },
+            originator,
+        )
+        .await?;
+    if !result.valid {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn validate_issued_certificate(
+    raw: &CertificateResponse,
+    sent_fields: &HashMap<String, String>,
+    cert_type: &str,
+    identity: &str,
+    certifier: &str,
+) -> Result<()> {
+    for (name, expected, received) in [
+        ("certificate type", cert_type, raw.cert_type.as_str()),
+        ("certificate subject", identity, raw.subject.as_str()),
+        ("certifier", certifier, raw.certifier.as_str()),
+    ] {
+        if received != expected {
+            return Err(Error::ValidationError(format!(
+                "Invalid {name}! Expected: {expected}, Received: {received}"
+            )));
+        }
+    }
+    if raw.revocation_outpoint.is_empty() {
+        return Err(Error::ValidationError("Invalid revocationOutpoint!".into()));
+    }
+    if raw.fields.len() != sent_fields.len() {
+        return Err(Error::ValidationError(
+            "Fields mismatch! Objects have different numbers of keys.".into(),
+        ));
+    }
+    for (name, expected) in sent_fields {
+        let received = raw.fields.get(name).ok_or_else(|| {
+            Error::ValidationError(format!("Missing field: {name} in certificate.fields"))
+        })?;
+        if received != expected {
+            return Err(Error::ValidationError(format!(
+                "Invalid field! Expected: {expected}, Received: {received}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Runs the response guards in Wallet.ts:806-817 order.
 #[allow(clippy::too_many_arguments)]
 async fn verify_certificate_issuance<W>(
     wallet: &W,
@@ -722,119 +775,25 @@ async fn verify_certificate_issuance<W>(
 where
     W: WalletInterface + Send + Sync,
 {
-    // 1. Verify serial number length
-    if parsed.serial_number.len() != NONCE_HMAC_SIZE {
-        return Err(Error::ValidationError(format!(
-            "Invalid serialNumber length: got {}, want {}",
-            parsed.serial_number.len(),
-            NONCE_HMAC_SIZE
-        )));
-    }
-
-    // 2. Verify serial number via HMAC
-    // Data = clientNonceBytes + serverNonceBytes
-    let client_nonce_bytes = BASE64
-        .decode(client_nonce)
-        .map_err(|e| Error::ValidationError(format!("Failed to decode client nonce: {}", e)))?;
-    let server_nonce_bytes = BASE64
-        .decode(&parsed.server_nonce)
-        .map_err(|e| Error::ValidationError(format!("Failed to decode server nonce: {}", e)))?;
-
-    let mut data_to_verify =
-        Vec::with_capacity(client_nonce_bytes.len() + server_nonce_bytes.len());
-    data_to_verify.extend_from_slice(&client_nonce_bytes);
-    data_to_verify.extend_from_slice(&server_nonce_bytes);
-
-    // KeyID = serverNonce + clientNonce
-    let hmac_key_id = format!("{}{}", parsed.server_nonce, client_nonce);
-
-    let protocol = Protocol::new(SecurityLevel::Counterparty, CERTIFICATE_ISSUANCE_PROTOCOL);
-
-    let verify_result = wallet
-        .verify_hmac(
-            VerifyHmacArgs {
-                hmac: parsed.serial_number,
-                data: data_to_verify,
-                protocol_id: protocol,
-                key_id: hmac_key_id,
-                counterparty: Some(Counterparty::Other(certifier.clone())),
-                ..Default::default()
-            },
-            originator,
-        )
-        .await
-        .map_err(|e| Error::ValidationError(format!("Failed to verify HMAC signature: {}", e)))?;
-
-    if !verify_result.valid {
-        return Err(Error::ValidationError(
-            "Invalid serialNumber - HMAC verification failed".to_string(),
-        ));
-    }
-
-    // 3. Validate certificate type
-    if parsed.certificate.type_base64() != cert_type_b64 {
-        return Err(Error::ValidationError(format!(
-            "Invalid certificate type! Expected: {}, Received: {}",
-            cert_type_b64,
-            parsed.certificate.type_base64()
-        )));
-    }
-
-    // 4. Validate certificate subject matches our identity key
-    let subject_hex = parsed.certificate.subject.to_hex();
-    if subject_hex != identity_key {
-        return Err(Error::ValidationError(format!(
-            "Invalid certificate subject! Expected: {}, Received: {}",
-            identity_key, subject_hex
-        )));
-    }
-
-    // 5. Validate certifier
-    let cert_certifier_hex = parsed.certificate.certifier.to_hex();
-    if cert_certifier_hex != certifier_hex {
-        return Err(Error::ValidationError(format!(
-            "Invalid certifier! Expected: {}, Received: {}",
-            certifier_hex, cert_certifier_hex
-        )));
-    }
-
-    // 6. Validate revocation outpoint exists (ts-stack@edf6e03 Wallet.ts:763-764)
-    if parsed.certificate.revocation_outpoint.is_none() {
-        return Err(Error::ValidationError(
-            "Invalid revocationOutpoint!".to_string(),
-        ));
-    }
-
-    // 7. Validate that certificate fields match what we sent
-    if parsed.cert_fields.len() != sent_fields.len() {
-        return Err(Error::ValidationError(format!(
-            "Fields mismatch! Objects have different number of keys. Expected: {}, Received: {}",
-            sent_fields.len(),
-            parsed.cert_fields.len()
-        )));
-    }
-
-    for (field_name, sent_value) in sent_fields {
-        let received_value = parsed.cert_fields.get(field_name).ok_or_else(|| {
-            Error::ValidationError(format!(
-                "Missing field: {} in certificate fields from the certifier",
-                field_name
-            ))
-        })?;
-
-        if received_value != sent_value {
-            return Err(Error::ValidationError(format!(
-                "Invalid field! Expected: {}, Received: {}",
-                sent_value, received_value
-            )));
-        }
-    }
-
-    // 8. Verify certificate signature
-    parsed.certificate.verify().map_err(|e| {
-        Error::ValidationError(format!("Failed to verify certificate signature: {}", e))
-    })?;
-
+    verify_issuance_serial(
+        wallet,
+        &parsed.certificate,
+        client_nonce,
+        &parsed.server_nonce,
+        certifier,
+        originator,
+    )
+    .await?;
+    validate_issued_certificate(
+        &parsed.certificate,
+        sent_fields,
+        cert_type_b64,
+        identity_key,
+        certifier_hex,
+    )?;
+    decode_issued_certificate(&parsed.certificate)?
+        .verify()
+        .map_err(|_| Error::ValidationError("Certificate verification failed".into()))?;
     Ok(())
 }
 
@@ -874,27 +833,15 @@ where
 {
     let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
-    // Format revocation outpoint
-    let revocation_outpoint = if let Some(ref outpoint) = parsed.certificate.revocation_outpoint {
-        format!("{}.{}", hex::encode(outpoint.txid), outpoint.vout)
-    } else {
-        String::new()
-    };
-
-    // Format signature as hex
-    let signature = parsed
-        .certificate
-        .signature
-        .as_ref()
-        .map(hex::encode)
-        .unwrap_or_default();
+    let revocation_outpoint = parsed.certificate.revocation_outpoint.clone();
+    let signature = parsed.certificate.signature.clone();
 
     // Build TableCertificate
     let table_cert = TableCertificate {
         certificate_id: 0, // Will be assigned by storage
         user_id,
         cert_type: cert_type_b64.to_string(),
-        serial_number: parsed.certificate.serial_number_base64(),
+        serial_number: parsed.certificate.serial_number.clone(),
         certifier: certifier.to_hex(),
         subject: identity_key.to_string(),
         verifier: Some(certifier.to_hex()), // Certifier is also the verifier for KeyringRevealer.Certifier
@@ -912,7 +859,8 @@ where
     // nothing stored (bsv-wallet-cli #44 review 4 G1, review 5 H2).
     let now = chrono::Utc::now();
     let fields: Vec<TableCertificateField> = parsed
-        .cert_fields
+        .certificate
+        .fields
         .iter()
         .map(|(field_name, field_value)| TableCertificateField {
             certificate_field_id: 0, // Will be assigned by storage
@@ -960,12 +908,12 @@ where
     // Build and return WalletCertificate
     Ok(WalletCertificate {
         certificate_type: cert_type_b64.to_string(),
-        serial_number: parsed.certificate.serial_number_base64(),
+        serial_number: parsed.certificate.serial_number.clone(),
         subject: identity_key.to_string(),
         certifier: certifier.to_hex(),
         revocation_outpoint,
         signature,
-        fields: parsed.cert_fields.clone(),
+        fields: parsed.certificate.fields.clone(),
     })
 }
 
@@ -1048,17 +996,13 @@ mod tests {
             let certifier = private_key("certifier").public_key();
             let certificate: CertificateResponse =
                 serde_json::from_value(issued["certificate"].clone()).unwrap();
-            let parsed = parse_certificate_response(
-                &ProtocolIssuanceResponse {
-                    protocol: "certificate issuance".to_string(),
-                    certificate: Some(certificate.clone()),
-                    server_nonce: BASE64.encode([5; 32]),
-                    timestamp: String::new(),
-                    version: "1.0".to_string(),
-                },
-                &certificate.certifier,
-                &certificate.cert_type,
-            )
+            let parsed = parse_certificate_response(&ProtocolIssuanceResponse {
+                protocol: "certificate issuance".to_string(),
+                certificate: Some(certificate.clone()),
+                server_nonce: BASE64.encode([5; 32]),
+                timestamp: String::new(),
+                version: "1.0".to_string(),
+            })
             .unwrap();
             let mut keyring: HashMap<String, String> =
                 serde_json::from_value(issued["master_keyring"].clone()).unwrap();
@@ -1155,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_certificate_response_missing_server_nonce() {
+    fn test_parse_certificate_response_missing_both() {
         let response = ProtocolIssuanceResponse {
             protocol: "test".to_string(),
             certificate: None,
@@ -1164,9 +1108,9 @@ mod tests {
             version: String::new(),
         };
 
-        let result = parse_certificate_response(&response, "certifier", "type");
+        let result = parse_certificate_response(&response);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("serverNonce"));
+        assert!(result.unwrap_err().to_string().contains("No certificate"));
     }
 
     #[test]
@@ -1179,7 +1123,7 @@ mod tests {
             version: String::new(),
         };
 
-        let result = parse_certificate_response(&response, "certifier", "type");
+        let result = parse_certificate_response(&response);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No certificate"));
     }
@@ -1218,12 +1162,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_certificate_response_certifier_mismatch() {
+    fn test_parse_certificate_response_defers_certifier_mismatch() {
         use bsv_rs::primitives::PrivateKey;
 
         // Use real key pairs for valid public keys
         let certifier_key = PrivateKey::random();
-        let different_certifier_key = PrivateKey::random();
+
         let subject_key = PrivateKey::random();
 
         let response = ProtocolIssuanceResponse {
@@ -1243,20 +1187,15 @@ mod tests {
         };
 
         // Expect different certifier
-        let result = parse_certificate_response(
-            &response,
-            &different_certifier_key.public_key().to_hex(),
-            &BASE64.encode([0u8; 32]),
+        let result = parse_certificate_response(&response);
+        assert_eq!(
+            result.unwrap().certificate.certifier,
+            certifier_key.public_key().to_hex()
         );
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid certifier"));
     }
 
     #[test]
-    fn test_parse_certificate_response_type_mismatch() {
+    fn test_parse_certificate_response_defers_type_mismatch() {
         use bsv_rs::primitives::PrivateKey;
 
         let certifier_key = PrivateKey::random();
@@ -1279,16 +1218,11 @@ mod tests {
         };
 
         // Expect different type
-        let result = parse_certificate_response(
-            &response,
-            &certifier_key.public_key().to_hex(),
-            &BASE64.encode([99u8; 32]), // Different type
+        let result = parse_certificate_response(&response);
+        assert_eq!(
+            result.unwrap().certificate.cert_type,
+            BASE64.encode([0u8; 32])
         );
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid certificate type"));
     }
 
     #[test]
@@ -1310,7 +1244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_serial_number_length_validation() {
+    fn test_serial_number_length_validation_is_deferred() {
         // Test that invalid serial number length is rejected
         use bsv_rs::primitives::PrivateKey;
 
@@ -1338,16 +1272,14 @@ mod tests {
             version: String::new(),
         };
 
-        let result = parse_certificate_response(
-            &response,
-            &certifier_key.public_key().to_hex(),
-            &BASE64.encode([0u8; 32]),
+        let result = parse_certificate_response(&response);
+        assert_eq!(
+            BASE64
+                .decode(result.unwrap().certificate.serial_number)
+                .unwrap()
+                .len(),
+            16
         );
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("serial number length"));
     }
 
     #[tokio::test]

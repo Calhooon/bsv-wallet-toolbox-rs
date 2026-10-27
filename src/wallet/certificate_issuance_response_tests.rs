@@ -283,6 +283,25 @@ async fn response_run(
         .await;
     request.assert_async().await;
     let response = issued_response.lock().unwrap().clone();
+    if let Ok(certificate) = &result {
+        use crate::storage::{FindCertificatesArgs, WalletStorageReader};
+        let stored = wallet
+            .storage()
+            .find_certificates(
+                &AuthId::with_user_id(wallet.identity_key(), 1),
+                FindCertificatesArgs::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].cert_type, certificate.certificate_type);
+        assert_eq!(
+            stored[0].revocation_outpoint,
+            response["certificate"]["revocationOutpoint"]
+                .as_str()
+                .unwrap()
+        );
+    }
     (result, response)
 }
 
@@ -352,20 +371,38 @@ async fn serial_hmac_precedes_certificate_type() {
 
 #[tokio::test]
 async fn invalid_serial_encoding_and_length_use_reference_text() {
-    for serial in [
-        "!".to_string(),
-        BASE64.encode([1; 16]),
-        BASE64.encode([1; 33]),
-        BASE64.encode([9; 32]),
+    for (serial, expected) in [
+        ("!".to_string(), "Invalid base64 character at index 0"),
+        ("AA=A".to_string(), "Invalid base64 padding"),
+        (
+            BASE64.encode([1; 16]),
+            "The hmac parameter must be exactly 32 bytes",
+        ),
+        (
+            BASE64.encode([1; 33]),
+            "The hmac parameter must be exactly 32 bytes",
+        ),
     ] {
         response_error(
             move |r| {
                 r["certificate"]["serialNumber"] = json!(serial);
             },
-            "Invalid serialNumber",
+            expected,
         )
         .await;
     }
+    let (result, _) = response_run(
+        &ObservedWallet::default(),
+        BASE64.encode([7; 32]),
+        vec![5; 32],
+        |r| {
+            r["certificate"]["serialNumber"] = json!(BASE64.encode([9; 32]));
+        },
+    )
+    .await;
+    assert!(
+        matches!(result, Err(Error::SdkError(bsv_rs::Error::WalletError(message))) if message == "HMAC is not valid")
+    );
 }
 
 #[tokio::test]
@@ -559,4 +596,59 @@ async fn false_server_nonce_result_is_ignored_as_in_reference() {
         calls[1].protocol_id.protocol_name,
         CERTIFICATE_ISSUANCE_PROTOCOL
     );
+}
+
+#[tokio::test]
+async fn truthy_outpoint_text_is_retained_in_storage() {
+    use crate::storage::{FindCertificatesArgs, WalletStorageReader};
+
+    let wallet = wallet().await;
+    let auth = AuthId::with_user_id(wallet.identity_key(), 1);
+    for (index, outpoint) in ["unparsable".to_string(), format!("{}.07", "AB".repeat(32))]
+        .into_iter()
+        .enumerate()
+    {
+        let certificate = CertificateResponse {
+            cert_type: BASE64.encode([7; 32]),
+            serial_number: BASE64.encode([u8::try_from(index).unwrap(); 32]),
+            subject: wallet.identity_key().to_string(),
+            certifier: certifier(),
+            revocation_outpoint: outpoint.clone(),
+            fields: HashMap::new(),
+            signature: String::new(),
+        };
+        let parsed = parse_certificate_response(&ProtocolIssuanceResponse {
+            certificate: Some(certificate),
+            server_nonce: "fixture".into(),
+            protocol: String::new(),
+            timestamp: String::new(),
+            version: String::new(),
+        })
+        .unwrap();
+        let stored = store_certificate(
+            wallet.storage(),
+            &auth,
+            &parsed,
+            &HashMap::new(),
+            &PublicKey::from_hex(&certifier()).unwrap(),
+            wallet.identity_key(),
+            &BASE64.encode([7; 32]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored.revocation_outpoint, outpoint);
+    }
+    let rows = wallet
+        .storage()
+        .find_certificates(&auth, FindCertificatesArgs::default())
+        .await
+        .unwrap();
+    let mut actual: Vec<_> = rows
+        .into_iter()
+        .map(|row| row.revocation_outpoint)
+        .collect();
+    actual.sort();
+    let mut expected = vec!["unparsable".to_string(), format!("{}.07", "AB".repeat(32))];
+    expected.sort();
+    assert_eq!(actual, expected);
 }
