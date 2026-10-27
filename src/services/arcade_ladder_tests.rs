@@ -20,6 +20,31 @@ fn post_names(services: &Services) -> Vec<String> {
         .collect()
 }
 
+/// Arcade mode's post ladder: Arcade, Bitails, WhatsOnChain; no classic ARC.
+fn assert_arcade_ladder(services: &Services) {
+    assert_eq!(
+        post_names(services),
+        [PROVIDER_ARCADE_V2, PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]
+    );
+    assert!(services.arcade.is_some());
+    assert!(services.arc_taal.is_none());
+    assert!(services.arc_gorillapool.is_none());
+}
+
+/// Classic mode's post ladder: TAAL, GorillaPool when configured, Bitails,
+/// WhatsOnChain; no Arcade.
+fn assert_classic_ladder(services: &Services, gorillapool: bool) {
+    let mut expected = vec![PROVIDER_TAAL_ARC];
+    if gorillapool {
+        expected.push(PROVIDER_GORILLAPOOL_ARC);
+    }
+    expected.extend([PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]);
+    assert_eq!(post_names(services), expected);
+    assert!(services.arcade.is_none());
+    assert!(services.arc_taal.is_some());
+    assert_eq!(services.arc_gorillapool.is_some(), gorillapool);
+}
+
 fn status_names(statuses: &[(String, BroadcastStatus)]) -> Vec<&str> {
     statuses.iter().map(|(name, _)| name.as_str()).collect()
 }
@@ -49,15 +74,7 @@ fn arcade_mode_post_ladder_is_arcade_bitails_whatsonchain() {
         .with_arcade(crate::services::ARCADE_V2_MAINNET, None)
         .with_gorillapool(LOOPBACK, None);
     assert!(options.arc_gorillapool_url.is_some());
-    let services = Services::with_options(Chain::Main, options).unwrap();
-
-    assert_eq!(
-        post_names(&services),
-        [PROVIDER_ARCADE_V2, PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]
-    );
-    assert!(services.arcade.is_some());
-    assert!(services.arc_taal.is_none());
-    assert!(services.arc_gorillapool.is_none());
+    assert_arcade_ladder(&Services::with_options(Chain::Main, options).unwrap());
 }
 
 #[test]
@@ -108,20 +125,7 @@ fn classic_mode_post_ladder_is_unchanged() {
     let options = ServicesOptions::mainnet()
         .with_classic_arc(LOOPBACK, None)
         .with_gorillapool(LOOPBACK, None);
-    let services = Services::with_options(Chain::Main, options).unwrap();
-
-    assert_eq!(
-        post_names(&services),
-        [
-            PROVIDER_TAAL_ARC,
-            PROVIDER_GORILLAPOOL_ARC,
-            PROVIDER_BITAILS,
-            PROVIDER_WHATSONCHAIN
-        ]
-    );
-    assert!(services.arcade.is_none());
-    assert!(services.arc_taal.is_some());
-    assert!(services.arc_gorillapool.is_some());
+    assert_classic_ladder(&Services::with_options(Chain::Main, options).unwrap(), true);
 }
 
 #[test]
@@ -129,13 +133,10 @@ fn classic_mode_post_ladder_is_unchanged() {
 fn classic_mode_without_gorillapool_is_taal_bitails_whatsonchain() {
     let options = ServicesOptions::mainnet().with_classic_arc(LOOPBACK, None);
     assert!(options.arc_gorillapool_url.is_none());
-    let services = Services::with_options(Chain::Main, options).unwrap();
-
-    assert_eq!(
-        post_names(&services),
-        [PROVIDER_TAAL_ARC, PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]
+    assert_classic_ladder(
+        &Services::with_options(Chain::Main, options).unwrap(),
+        false,
     );
-    assert!(services.arc_gorillapool.is_none());
 }
 
 #[tokio::test]
@@ -188,15 +189,7 @@ fn default_options_with_no_arcade_url_refuse_construction() {
 #[test]
 fn mainnet_with_arcade_builds_the_arcade_ladder() {
     let options = ServicesOptions::mainnet().with_arcade(LOOPBACK, None);
-    let services = Services::with_options(Chain::Main, options).unwrap();
-
-    assert_eq!(
-        post_names(&services),
-        [PROVIDER_ARCADE_V2, PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]
-    );
-    assert!(services.arcade.is_some());
-    assert!(services.arc_taal.is_none());
-    assert!(services.arc_gorillapool.is_none());
+    assert_arcade_ladder(&Services::with_options(Chain::Main, options).unwrap());
 }
 
 #[test]
@@ -206,23 +199,12 @@ fn the_deprecated_classic_knob_builds_the_classic_ladder() {
         .with_classic_arc(LOOPBACK, None)
         .with_gorillapool(LOOPBACK, None);
     assert!(!options.arcade_v2);
-    let services = Services::with_options(Chain::Main, options).unwrap();
-    assert_eq!(
-        post_names(&services),
-        [
-            PROVIDER_TAAL_ARC,
-            PROVIDER_GORILLAPOOL_ARC,
-            PROVIDER_BITAILS,
-            PROVIDER_WHATSONCHAIN
-        ]
-    );
-    assert!(services.arcade.is_none());
+    assert_classic_ladder(&Services::with_options(Chain::Main, options).unwrap(), true);
 
     let options = ServicesOptions::mainnet().with_classic_arc(LOOPBACK, None);
-    let services = Services::with_options(Chain::Main, options).unwrap();
-    assert_eq!(
-        post_names(&services),
-        [PROVIDER_TAAL_ARC, PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]
+    assert_classic_ladder(
+        &Services::with_options(Chain::Main, options).unwrap(),
+        false,
     );
 }
 
