@@ -612,7 +612,26 @@ master key before wrapping it for the verifier, refusing a mismatched pair with
 reference's plain `Error` does (`ts-stack@edf6e03`,
 `MasterCertificate.ts:382-393,612-622`).
 For #228 and #229, this recovery restores legacy keys to 32 bytes before wrapping them for the verifier and uses the same `WalletError` for every recovery failure, including non-UTF-8 plaintext (`ts-stack@edf6e03`, `MasterCertificate.ts:573-622`, `VerifiableCertificate.ts:54-60,203`); the plaintext size bound remains with #223.
-For #233, the requested name must contain 1 to 50 UTF-8 bytes and differ from `__proto__`, `constructor`, and `prototype`, with violations using that same recovery error after the subset check (`ts-stack@edf6e03`, `MasterCertificate.ts:23-29,573-574,621-622`, `SafeRecord.ts:2-3`). The reference applies the same rule before its subset loop as well (`snapshotFieldsToReveal` at `MasterCertificate.ts:348` through `:138` on every requested name, `snapshotStringRecord` at `:349-350` through `:49` on every key of the fields and the master keyring, with the sentence `Certificate field name must be a safe UTF-8 string of 1–50 bytes`); this port keeps the rule inside the recovery by #233's choice, so an invalid requested name reads the recovery's sentence here and the pre-loop sentence there.
+For #233, the requested name must contain 1 to 50 UTF-8 bytes and differ from
+`__proto__`, `constructor`, and `prototype`. The check inside recovery remains
+(`ts-stack@edf6e03`, `MasterCertificate.ts:23-29,573-574,621-622`,
+`SafeRecord.ts:2-3`). For #236, the gate is here too: before the subset loop,
+`create_keyring_for_verifier` checks the requested names, then the keys of
+`fields` and the master keyring, then every value in `fields` and the master
+keyring, in that order (`MasterCertificate.ts:348-364`). Invalid names now
+read `Certificate field name must be a safe UTF-8 string of 1–50 bytes`;
+duplicate requests read `fieldsToReveal contains duplicate field: <name>`.
+Requests and maps are limited to 100 entries (`:43-45,125-142`). Non-canonical
+Base64 reads `<label> <name> must use canonical base64 encoding`, and empty
+values read `<label> <name> is empty, oversized, or non-canonical`, with
+`Certificate field` or `Master certificate keyring field` as the label
+(`:63-73,351-364`). The subset check includes the empty-value condition and
+uses `Fields to reveal must be a subset of the certificate fields. Missing the "<name>" field.`
+(`:370-379`); empty values are refused by the earlier value check.
+The gate's plain JavaScript `Error` maps to `WalletError`, as does the
+requested-array limit's `TypeError`. Empty requests and maps return an empty
+keyring. Failures reached inside recovery keep its one sentence; the value
+size caps beyond canonical Base64 remain with #223.
 
 ### Protocol Flow
 

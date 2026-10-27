@@ -4,6 +4,29 @@
 
 ### Fixed
 
+- #236: `prove_certificate` now validates requested names, both field maps,
+  and every map value before the subset check and field recovery, following
+  `ts-stack@edf6e03`
+  `packages/sdk/src/auth/certificates/MasterCertificate.ts:348-364`.
+  Empty, overlong, and reserved names use
+  `Certificate field name must be a safe UTF-8 string of 1–50 bytes`
+  (`:23-29,49,138`); duplicate requests use
+  `fieldsToReveal contains duplicate field: <name>` (`:139-142`).
+  The 100-entry limits use
+  `fieldsToReveal must be an array of at most 100 strings` (`:125-129`),
+  `Certificate fields cannot contain more than 100 entries`, or
+  `Master certificate keyring cannot contain more than 100 entries` (`:43-45`).
+  Invalid Base64 uses `<label> <name> must use canonical base64 encoding`;
+  empty values use `<label> <name> is empty, oversized, or non-canonical`,
+  where the label is `Certificate field` or `Master certificate keyring field`
+  (`:63-73,351-364`). Missing fields use
+  `Fields to reveal must be a subset of the certificate fields. Missing the "<name>" field.`
+  (`:370-379`). These refusals use `bsv_rs::Error::WalletError`, mapping the
+  reference's plain `Error` (and its array-limit `TypeError`). An empty
+  request with empty maps now returns an empty keyring. Recovery failures
+  still use `Failed to decrypt certificate field!`; value size caps beyond
+  canonical Base64 remain with #223.
+
 - #233: `prove_certificate` now refuses requested field names outside 1 to 50
   UTF-8 bytes or equal to `__proto__`, `constructor`, or `prototype`, using
   `bsv_rs::Error::WalletError("Failed to decrypt certificate field!")` after
