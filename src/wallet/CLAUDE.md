@@ -612,6 +612,7 @@ master key before wrapping it for the verifier, refusing a mismatched pair with
 reference's plain `Error` does (`ts-stack@edf6e03`,
 `MasterCertificate.ts:382-393,612-622`).
 For #228 and #229, this recovery restores legacy keys to 32 bytes before wrapping them for the verifier and uses the same `WalletError` for every recovery failure, including non-UTF-8 plaintext (`ts-stack@edf6e03`, `MasterCertificate.ts:573-622`, `VerifiableCertificate.ts:54-60,203`); the plaintext size bound remains with #223.
+For #233, the requested name must contain 1 to 50 UTF-8 bytes and differ from `__proto__`, `constructor`, and `prototype`, with violations using that same recovery error after the subset check (`ts-stack@edf6e03`, `MasterCertificate.ts:23-29,573-574,621-622`, `SafeRecord.ts:2-3`).
 
 ### Protocol Flow
 
