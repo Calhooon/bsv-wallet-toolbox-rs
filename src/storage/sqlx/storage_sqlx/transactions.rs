@@ -6,6 +6,10 @@ use crate::storage::sqlx::internalize_action::{
     validate_array_bound, MAXIMUM_WALLET_COLLECTION_ITEMS,
 };
 
+#[cfg(test)]
+#[path = "list_action_inputs_tests.rs"]
+mod list_action_inputs_tests;
+
 impl StorageSqlx {
     /// Get a raw transaction, preferring proven_tx but falling back to transactions table.
     pub async fn get_proven_or_raw_tx(&self, txid: &str) -> Result<Option<Vec<u8>>> {
