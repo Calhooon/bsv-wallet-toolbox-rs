@@ -1,0 +1,60 @@
+name: Matrix
+
+# The test suite on every OS and toolchain cell (both OSes, stable and beta Rust), where the push run keeps the required ubuntu-stable cell alone.
+# Dispatched by the captain (`gh workflow run "Matrix" --ref beta|main`), once
+# before a tag and when a reading asks; never on a push run (the owner's word of
+# 2026-10-27, through the stack keeper: a push runs the required set alone).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every cell: both OSes and the beta toolchain. The push run keeps the
+        # required cell alone (ci.yml); this workflow is the measurement.
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable, beta]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      # Cargo.lock is not tracked (a library), so the key follows the manifest.
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.rust }}-
+
+      - name: Run unit tests (sqlite)
+        run: cargo test --lib --features sqlite,remote --verbose
+
+      # Every target under tests/, not services_tests alone: the witnesses of
+      # the 0.4.x fixes live in the other files.
+      # `bench-support` also runs the four network-isolation witnesses of #182.
+      - name: Run integration tests
+        run: cargo test --test '*' --features sqlite,remote,bench-support --verbose
+
+      # The integration step's feature set, so the library it built is reused
+      # here and the job compiles it once less (#253).
+      - name: Run doc tests
+        run: cargo test --doc --features sqlite,remote,bench-support
