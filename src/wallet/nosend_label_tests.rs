@@ -68,37 +68,40 @@ async fn label_outside_the_prefix_still_creates_through_wallet_interface() {
         .unwrap();
 }
 
-/// An AtomicBEEF paying `OP_DROP OP_1` (`7551`) to a basket insertion, its
-/// parent proven by a coinbase-shaped BUMP.
-fn insertion(label: &str) -> InternalizeActionArgs {
-    use bsv_rs::script::{LockingScript, UnlockingScript};
-    use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
-    use bsv_rs::wallet::{BasketInsertion, InternalizeOutput};
+/// The originator of the internalize fixture.
+const ORIGIN: &str = "nosend.example.com";
 
-    let mut parent = Transaction::new();
-    let mut parent_input = TransactionInput::new("11".repeat(32), 0);
-    parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(parent_input);
-    parent.outputs.push(TransactionOutput {
-        satoshis: Some(20_000),
-        locking_script: LockingScript::from_hex("7551").unwrap(),
-        change: false,
-    });
-    let parent_txid = parent.id();
+/// A one-input, one-output transaction spending `outpoint`'s output 0 to
+/// `7551` (`OP_DROP OP_1`).
+fn spend_to_drop_one(outpoint: String, satoshis: u64) -> bsv_rs::transaction::Transaction {
+    use bsv_rs::script::{LockingScript, UnlockingScript};
+    use bsv_rs::transaction::{Transaction, TransactionInput, TransactionOutput};
     let mut tx = Transaction::new();
-    let mut input = TransactionInput::new(parent_txid.clone(), 0);
+    let mut input = TransactionInput::new(outpoint, 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
     tx.inputs.push(input);
     tx.outputs.push(TransactionOutput {
-        satoshis: Some(10_000),
+        satoshis: Some(satoshis),
         locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
     });
-    let txid = tx.id();
+    tx
+}
+
+/// A basket insertion of an AtomicBEEF whose parent is proven by a
+/// coinbase-shaped BUMP, carrying `label`.
+fn insertion(label: &str) -> InternalizeActionArgs {
+    use bsv_rs::transaction::{Beef, MerklePath};
+    use bsv_rs::wallet::{BasketInsertion, InternalizeOutput};
+
+    let parent = spend_to_drop_one("11".repeat(32), 20_000);
+    let parent_txid = parent.id();
+    let child = spend_to_drop_one(parent_txid.clone(), 10_000);
+    let txid = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
-    beef.merge_transaction(tx);
+    beef.merge_transaction(child);
     InternalizeActionArgs {
         tx: beef.to_binary_atomic(&txid).unwrap(),
         outputs: vec![InternalizeOutput {
@@ -127,10 +130,7 @@ async fn nosend_label_is_refused_on_internalize_through_wallet_interface() {
     let before = store_snapshot(&wallet).await;
 
     let result = wallet
-        .internalize_action(
-            insertion("p nosend expiry seconds 300"),
-            "nosend.example.com",
-        )
+        .internalize_action(insertion("p nosend expiry seconds 300"), ORIGIN)
         .await;
     match result {
         Err(bsv_rs::Error::WalletError(message)) => assert_eq!(

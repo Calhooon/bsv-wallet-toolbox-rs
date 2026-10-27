@@ -63,7 +63,7 @@ async fn assert_internalized(label: &str) {
 }
 
 #[tokio::test]
-async fn nosend_expiry_seconds_label_is_refused_and_writes_no_row() {
+async fn seconds_expiry_label_is_refused_on_internalize() {
     assert_refused(&["p nosend expiry seconds 300"]).await;
 }
 
