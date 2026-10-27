@@ -114,9 +114,29 @@
   ran after every other argument check and writes nothing. Such a request
   was accepted as an ordinary action, the label stored as metadata. This is
   a new refusal of input that succeeded before; BRC-177 itself is the 0.15
-  epic #352. Every `p nosend ` label gets that one text; the reference's
-  label grammar answers `p nosend batch`, two expiry labels and
-  `p nosend expiry never` with its own texts ahead of it (#359).
+  epic #352. A label the BRC-177 grammar refuses gets the grammar's own
+  text ahead of it (#359, below).
+- #359: the create door answers the BRC-177 label grammar's refusals ahead of
+  the capability refusal, with the reference's texts. Since #312 every label
+  starting `p nosend ` (trimmed and lowercased) received `Invalid operation:
+  Active storage does not support BRC-177 noSend expiry`; a request the
+  grammar refuses now receives `Validation error: The labels parameter must
+  be <mustBe>` (the reference's `WERR_INVALID_PARAMETER('labels', mustBe)`,
+  ts-stack@edf6e03 `WERR_errors.ts:105`, no full stop; through
+  `WalletInterface`, a `WalletError` with that text), as
+  `parseBrc177NoSendExpiryLabels` runs at `Wallet.ts:1163` ahead of
+  `createNoSendExpiryAction.ts:201-203`, in its order
+  (`brc177NoSendExpiry.ts:81-116`): no expiry label, two of them or two
+  module labels (`p nosend batch`, `p nosend expiry`) get `exactly one
+  BRC-177 noSend expiry label` (:97); no single space between mode and value
+  (`p nosend expiry never`, `p nosend expiry seconds 300 extra`) gets `a
+  valid BRC-177 noSend expiry label` (:104); a mode outside `seconds`,
+  `timestamp`, `blockheight` gets `a supported BRC-177 expiry mode` (:109);
+  a leading zero, a sign or a non-digit gets `a canonical unsigned BRC-177
+  expiry value` (:83); a value past 2^53 - 1 gets `a safely supported
+  BRC-177 expiry value` (:87); `seconds 0` gets `a BRC-177 seconds duration
+  greater than zero` (:113). A label the grammar accepts still gets the
+  capability text. Nothing is written either way.
 - #313: sync writes an incoming output's `purpose` as given, on insert and on
   the newer-row update, as `ts-stack@edf6e03` `EntityOutput.mergeNew` and
   `mergeExisting` do. A chunk row without `purpose` was stored as `change`;
