@@ -15,6 +15,10 @@ use bsv_rs::wallet::{IdentityCertificate, WalletCertificate};
 
 use crate::Result;
 
+#[cfg(test)]
+#[path = "lookup_network_isolation_tests.rs"]
+mod network_isolation_tests;
+
 // =============================================================================
 // OverlayCertificate
 // =============================================================================

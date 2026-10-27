@@ -42,6 +42,10 @@ use crate::storage::traits::*;
 
 use super::json_rpc::{JsonRpcRequest, JsonRpcResponse};
 
+#[cfg(test)]
+#[path = "storage_client_network_isolation_tests.rs"]
+mod network_isolation_tests;
+
 // =============================================================================
 // ValidCreateActionArgs
 // =============================================================================

@@ -7,3 +7,13 @@ use bsv_wallet_toolbox_rs::services::{
 
 #[path = "../src/services/network_post_tests.rs"]
 mod network_post_tests;
+
+#[cfg(feature = "remote")]
+use bsv_wallet_toolbox_rs::{
+    storage::{entities::TableSettings, StorageClient, WalletStorageWriter},
+    Error,
+};
+
+#[cfg(feature = "remote")]
+#[path = "../src/storage/client/storage_client_network_isolation_tests.rs"]
+mod storage_client_network_isolation_tests;
