@@ -40,7 +40,7 @@
 //! (which sets `arcade_v2 = true`) to register the Arcade broadcaster as the
 //! first postBeef provider.
 
-use crate::services::http_client::Client;
+use crate::services::providers::http_client::Client;
 use bsv_rs::transaction::MerklePath;
 use futures_util::StreamExt;
 use serde::Deserialize;

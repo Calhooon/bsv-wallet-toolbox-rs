@@ -26,7 +26,7 @@
 //! header here: two words agreeing is the whole of the check, which is why
 //! the setting is break-glass.
 
-use crate::services::http_client::Client;
+use crate::services::providers::http_client::Client;
 use async_trait::async_trait;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 use serde::Deserialize;

@@ -2,7 +2,7 @@
 //! builds reject non-loopback destinations before executing any request.
 
 #[cfg(test)]
-pub(super) use isolated::check_url;
+pub(crate) use isolated::check_url;
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) use isolated::{Client, RequestBuilder, RequestError};
 #[cfg(not(any(test, feature = "bench-support")))]
@@ -15,7 +15,22 @@ mod isolated {
 
     use crate::{Error, Result};
 
-    pub(crate) type RequestError = Error;
+    #[derive(Debug, thiserror::Error)]
+    pub(crate) enum RequestError {
+        #[error(transparent)]
+        Transport(#[from] reqwest::Error),
+        #[error(transparent)]
+        Isolated(#[from] Error),
+    }
+
+    impl From<RequestError> for Error {
+        fn from(error: RequestError) -> Self {
+            match error {
+                RequestError::Transport(error) => error.into(),
+                RequestError::Isolated(error) => error,
+            }
+        }
+    }
 
     pub(crate) fn check_url(url: &reqwest::Url) -> Result<()> {
         match url.host_str() {
@@ -114,7 +129,7 @@ mod isolated {
             Self(self.0.body(body))
         }
 
-        pub(crate) async fn send(self) -> Result<reqwest::Response> {
+        pub(crate) async fn send(self) -> std::result::Result<reqwest::Response, RequestError> {
             let (client, request) = self.0.build_split();
             let request = request?;
             check_url(request.url())?;
@@ -122,14 +137,14 @@ mod isolated {
                 if error.is_redirect() {
                     // reqwest's Display omits the policy error. Keep its
                     // host and rule in the typed error returned to the test.
-                    Error::NetworkError(format!(
+                    RequestError::Isolated(Error::NetworkError(format!(
                         "{error}: {}",
                         std::error::Error::source(&error)
                             .map(ToString::to_string)
                             .unwrap_or_default()
-                    ))
+                    )))
                 } else {
-                    error.into()
+                    RequestError::Transport(error)
                 }
             })
         }

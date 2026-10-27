@@ -3,7 +3,7 @@
 //! Provides block header lookups and merkle root validation via a dedicated
 //! header service API. This is the primary source for header data in production.
 
-use crate::services::http_client::Client;
+use crate::services::providers::http_client::Client;
 use crate::services::traits::BlockHeader;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@ impl BlockHeaderService {
         format!("{}{}", self.config.url.trim_end_matches('/'), path)
     }
 
-    fn build_request(&self, url: &str) -> crate::services::http_client::RequestBuilder {
+    fn build_request(&self, url: &str) -> crate::services::providers::http_client::RequestBuilder {
         let mut req = self.client.get(url);
         if let Some(ref key) = self.config.api_key {
             req = req.header("Authorization", format!("Bearer {}", key));

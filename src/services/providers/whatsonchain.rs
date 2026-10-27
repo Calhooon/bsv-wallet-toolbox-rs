@@ -13,7 +13,7 @@
 //! - Mainnet: `https://api.whatsonchain.com/v1/bsv/main`
 //! - Testnet: `https://api.whatsonchain.com/v1/bsv/test`
 
-use crate::services::http_client::Client;
+use crate::services::providers::http_client::Client;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

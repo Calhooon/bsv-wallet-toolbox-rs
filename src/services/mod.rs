@@ -34,7 +34,6 @@
 pub mod broadcast_memory;
 pub mod cadence;
 pub mod collection;
-mod http_client;
 pub mod mock;
 #[cfg(test)]
 mod network_isolation_tests;

@@ -1,6 +1,7 @@
 //! #182: capture a default post destination without sending a request.
 
-use super::{http_client::check_url, Chain, Services};
+use super::{providers::http_client, Chain, Services};
+use http_client::check_url;
 
 #[test]
 fn only_loopback_request_addresses_are_allowed() {
@@ -31,14 +32,17 @@ fn only_loopback_request_addresses_are_allowed() {
 
 #[tokio::test]
 async fn the_client_refuses_remote_requests_before_execution() {
-    let client = super::http_client::Client::default();
+    let client = http_client::Client::default();
     let error = client
         .post("http://provider.invalid/tx")
         .body("synthetic request")
         .send()
         .await
         .unwrap_err();
-    assert!(matches!(error, crate::Error::NetworkError(_)));
+    assert!(matches!(
+        error,
+        http_client::RequestError::Isolated(crate::Error::NetworkError(_))
+    ));
     let message = error.to_string();
     assert!(message.contains("provider.invalid") && message.contains("#182"));
 }
@@ -61,7 +65,7 @@ async fn loopback_redirects_stay_local() {
         .expect(1)
         .create_async()
         .await;
-    let client = super::http_client::Client::default();
+    let client = http_client::Client::default();
     let response = client
         .post(format!("{}/redirect", server.url()))
         .body("fixture")
@@ -83,7 +87,7 @@ async fn a_loopback_redirect_cannot_leave_loopback() {
         .expect(1)
         .create_async()
         .await;
-    let client = super::http_client::Client::default();
+    let client = http_client::Client::default();
     let error = client
         .post(format!("{}/redirect", server.url()))
         .body("fixture")
