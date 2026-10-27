@@ -600,34 +600,59 @@ that text's bytes for the signed representation (BRC-52 `0052.md:97`, #197);
 the pinned bsv-rs 0.9.0-beta.1 setter takes `value.as_bytes().to_vec()`.
 Decode a field's Base64 only when decrypting it.
 
-For #261 and #271, issuance requires a certifier URL, then validates `type`
-and `certifier` with `validate_certificate_base64_arg` and `validate_public_key_arg`,
-shared with `prove_certificate`. Both run before identity parsing, nonce
-generation, encryption or HTTP. In `ts-stack@edf6e03`, `Wallet.ts:770` calls
-`validateAuthAndArgs` in both the default telemetry-disabled branch (`:606-609`)
-and the enabled branch (`:617`); `validationHelpers.ts:1338-1339` orders type before certifier.
-Type uses ECMAScript trimming and structural Base64 with calculated decoded
-size 32 (`:439-497`), preserving trimmed text without canonical padding checks.
-Its refusal is `Validation error: The type parameter must be <rule>`, using
-`valid base64 string`, `at least 32 bytes`, or `no more than 32 bytes`.
-An invalid type wins over an invalid certifier. Certifier uses
-`Validation error: The certifier parameter must be <rule>`, with
-`even length, not N.`, `hexadecimal string.`, `at least 66 length.`,
-`no more than 66 length.`, or `a valid compressed secp256k1 public key`.
-ECMAScript trimming and lowercasing normalize the certifier for both response
-checks: uppercase, space and U+FEFF padding pass; U+0085 fails.
-A differing header uses `Invalid certifier! Expected: <expected>, Received: <received>`
-with `Validation error: ` (`Wallet.ts:789-791`). The internal
-`Invalid identity key: <SDK detail>` parse remains: the reference derives
-that key at `KeyDeriver.ts:149`, copies it at `Wallet.ts:418`, and has no
-matching issuance guard or error text.
+For #283, `Wallet::acquire_certificate` selects the issuance helper and its
+argument guards follow `ts-stack@edf6e03 validationHelpers.ts:1307-1349`:
+privilege/reason (5-50 UTF-8 bytes), issuance protocol, direct-only serial,
+signature, revocation outpoint, revealer and subject keyring, URL presence,
+type, certifier, URL syntax, then fields. Empty direct-only strings pass;
+even an empty subject keyring refuses. Rust's typed struct supplies the
+record/boolean/string shape guarantees. The later privilege validators at
+1342-1348 repeat the earlier check and cannot refuse an otherwise valid call.
 
-After the serial HMAC check, a missing revocation outpoint uses
-`Invalid revocationOutpoint!` (`Wallet.ts:763-764`). A differing field value uses
-`Invalid field! Expected: <sent>, Received: <received>` without a field name
-(`:744`, called through `:766,815`). Both retain `Validation error: `.
-`certificate_issuance_key_tests.rs` covers order, normalization and response texts
-through the public wallet method with loopback fixtures and valid HMACs.
+The shared `validate_certificate_base64_arg` and `validate_public_key_arg`
+retain #261/#271's type-before-certifier order, ECMAScript trimming and
+canonical public-key text. The new guards share the argument error constructor
+and UTF-8 length helper. URL validation requires exact whitespace, an absolute
+HTTPS URL, no credentials/query/fragment and a public DNS hostname, in that
+order, then removes trailing slashes. Fields permit at most 100000 entries,
+reject unsafe record keys before checking names, and require 1-50 UTF-8 bytes
+per name. Every argument guard runs before identity parsing, encryption or
+HTTP. Both `Wallet.ts:607` (ordinary telemetry-disabled execution) and `:617`
+call the same validator via `:770`.
+
+Response guards follow `Wallet.ts:794-817`: certificate presence before nonce
+presence, the server nonce helper, the serial HMAC, type, subject, certifier,
+truthy revocation outpoint, field count, missing field, field value, signature,
+then master-field decryption. Certificate and nonce presence errors end in `!`.
+The parser retains the supplied strings; decoding for the SDK occurs only
+after metadata checks, and the stored outpoint keeps its supplied text.
+Type decoding accepts nonzero Base64 padding bits rather than rejecting a
+value admitted by the argument gate. This does not claim that the pin's later
+`Certificate.toBinary:232-237` accepts noncanonical types: it requires canonical
+encoding. Signature `Ok(false)` handling remains with #188/#199.
+
+The server nonce helper matches `verifyNonce.ts:26-57`, using the requested
+certifier, `[2, 'server hmac']`, and the UTF-8-decoded random part as key ID, including TextDecoder's leading-BOM removal.
+As at `Wallet.ts:806`, its false return is ignored; an error propagates before
+the serial HMAC. This differs from the pinned SDK nonce helper, so that helper
+cannot be substituted. The existing client nonce generation remains separate.
+Serial decoding and length errors follow the earlier Base64/HMAC validators;
+the ordinary verifier throws `HMAC is not valid` on a bad tag. A verifier's
+false return uses exactly `Invalid serialNumber` at `:814`.
+
+Response field errors are `Fields mismatch! Objects have different numbers
+of keys.`, `Missing field: <field> in certificate.fields`, and
+`Invalid field! Expected: <sent>, Received: <received>`. Signature errors use
+`Certificate verification failed`; decryption errors use
+`Failed to decrypt all master certificate fields.` (`MasterCertificate.ts:560`).
+The existing error envelope is retained. The identity header's name/presence
+belongs to #269; the internal identity-key parse is also unchanged.
+
+`certificate_issuance_guard_tests.rs` checks the representable argument guards
+and their precedence. `certificate_issuance_response_tests.rs` exercises the
+response order, texts, nonce calls, raw storage and lenient intake through
+loopback HTTP. A task-scoped test transport override routes an already
+validated public URL to the local fixture; production has no override.
 
 The bsv-rs #261 fixture is pinned byte for byte under
 `conformance/upstream/261-certificate-field-value/`. The four tests in
@@ -765,8 +790,8 @@ at 105-114 is not ported.
 
 1. **PrepareIssuanceActionData**: Generate a random 32-byte nonce, encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
 2. **HTTP POST**: Send request to certifier URL with BRC-104 headers (`x-bsv-auth-version: 0.1`, `x-bsv-identity-key`)
-3. **ParseCertificateResponse**: Parse JSON response, validate headers and certificate components
-4. **VerifyCertificateIssuance**: Verify serial number via HMAC, validate certificate type/subject/certifier/fields, verify signature
+3. **ParseCertificateResponse**: Require the certificate, then nonce, and retain the supplied certificate text
+4. **VerifyCertificateIssuance**: Run the nonce helper, verify the serial HMAC, validate metadata and fields, verify the signature, then decrypt every master field
 5. **StoreCertificate**: Save certificate to storage with encrypted fields and master keyring
 
 ### Key Types

@@ -12,6 +12,18 @@
   merge's columns and leaves the stored sequence number, as the reference does.
   Spender references are translated to the receiving store's transaction IDs.
 
+- #283: certificate issuance now checks privilege, direct-only arguments,
+  issuer URL and field records in the pinned reference's order before protocol
+  work. Response checks require certificate before server nonce, retain both
+  presence errors' `!`, and use the reference's field-count, missing-field,
+  serial false-result, signature-error and master-decryption texts. Accepted
+  type text is decoded leniently; response outpoint, serial and signature text
+  are retained through storage. The server nonce verifier now runs before the serial HMAC, using the
+  reference's derivation inputs and ignoring its false result as Wallet.ts does.
+  Returned fields must decrypt with the request's master keyring before storage.
+  The identity header (#269), client nonce generation and signature `Ok(false)`
+  policy (#188/#199) retain their existing behavior. CLI error snapshots need
+  review when this lands.
 - #187: a noSend-only `process_action` on stored actions (`is_new_tx`,
   `is_send_with` false, `is_no_send` true) answers an empty
   `send_with_results` before any handle is resolved, so one naming an
