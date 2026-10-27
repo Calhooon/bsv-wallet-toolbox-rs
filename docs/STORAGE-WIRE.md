@@ -261,8 +261,8 @@ The related `basket` and `tags` objects belong to `TableOutputX`
 translates its user, basket, parent transaction, and spender IDs.
 `:340-357` updates only when the incoming timestamp is newer, translating
 `spentBy` again and writing both descriptions. Its update assignment list
-does not include `sequenceNumber`; #276 also preserves that received metadata
-on newer SQLx rows. Null metadata clears the stored value; equal or older rows
+does not include `sequenceNumber`; #276 preserves that received metadata on newer SQLx
+rows, `sequenceNumber` excepted, which the reference's `mergeExisting` leaves as stored. Null metadata clears the stored value; equal or older rows
 leave it alone. This adds no validation guard. The existing timestamp check
 runs in `upsert_output`, called by `process_sync_chunk_internal`; no earlier
 helper compares incoming and local output timestamps.
