@@ -36,6 +36,8 @@ use bsv_rs::wallet::{
 };
 
 use crate::error::{Error, Result};
+#[cfg(test)]
+use crate::services::providers::http_client::test_support::assert_isolated;
 use crate::services::providers::http_client::Client;
 use crate::services::WalletServices;
 use crate::storage::entities::*;

@@ -1,10 +1,7 @@
 //! #248: issuance refuses remote transport while retaining its HTTP contract.
 
-use super::{send_issuance_request, Error};
-
-#[path = "../../tests/common/transport_isolation.rs"]
-mod transport_isolation;
-use transport_isolation::assert_isolated;
+use super::send_issuance_request;
+use crate::services::providers::http_client::test_support::assert_isolated;
 
 #[tokio::test]
 async fn issuance_client_refuses_non_loopback_before_transport() {

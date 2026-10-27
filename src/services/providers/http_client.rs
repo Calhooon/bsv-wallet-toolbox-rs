@@ -8,6 +8,10 @@ pub(crate) use isolated::{Client, RequestBuilder, RequestError};
 #[cfg(not(any(test, feature = "bench-support")))]
 pub(crate) use reqwest::{Client, Error as RequestError, RequestBuilder};
 
+#[cfg(test)]
+#[path = "../../../tests/common/transport_isolation.rs"]
+pub(crate) mod test_support;
+
 #[cfg(any(test, feature = "bench-support"))]
 mod isolated {
     use std::net::{Ipv6Addr, SocketAddr};

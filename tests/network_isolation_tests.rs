@@ -15,5 +15,11 @@ use bsv_wallet_toolbox_rs::{
 };
 
 #[cfg(feature = "remote")]
+#[path = "common/transport_isolation.rs"]
+mod transport_isolation;
+#[cfg(feature = "remote")]
+use transport_isolation::assert_isolated;
+
+#[cfg(feature = "remote")]
 #[path = "../src/storage/client/storage_client_network_isolation_tests.rs"]
 mod storage_client_network_isolation_tests;

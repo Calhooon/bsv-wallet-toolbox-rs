@@ -1,11 +1,7 @@
 //! #248: every resolver constructor uses the isolated transport.
 
 use super::{HttpLookupResolver, NetworkPreset, OverlayLookupResolver};
-use crate::Error;
-
-#[path = "../../tests/common/transport_isolation.rs"]
-mod transport_isolation;
-use transport_isolation::assert_isolated;
+use crate::services::providers::http_client::test_support::assert_isolated;
 
 fn resolvers(endpoint: &str) -> [HttpLookupResolver; 3] {
     let mut preset = HttpLookupResolver::for_network(NetworkPreset::Local);
