@@ -235,6 +235,45 @@ without changing those types or their local serialization.
 | Deletion markers | absent on Basket, Label, Tag, LabelMap, TagMap, Certificate | `isDeleted:F` respective tables | needed to replicate deletion | reference-only; owner must provide storage/schema support |
 | Synthetic row IDs | `certificateFieldId:N,txLabelMapId:N,outputTagMapId:N` | absent on composite-key tables | ignored unknown fields | toolbox-only; fields caller already omits certificateFieldId |
 
+### Output rows in sync (#276)
+
+The SQLx exporter and importer preserve the 25 columns of `T/Output:6-31`:
+`created_at`, `updated_at`, `outputId`, `userId`, `transactionId`, `basketId`,
+`spendable`, `change`, `outputDescription`, `vout`, `satoshis`, `providedBy`,
+`purpose`, `type`, `txid`, `senderIdentityKey`, `derivationPrefix`,
+`derivationSuffix`, `customInstructions`, `spentBy`, `sequenceNumber`,
+`spendingDescription`, `scriptLength`, `scriptOffset`, and `lockingScript`.
+These are the existing wire names; E1 and E6 describe the client conversion.
+The public Rust entity and schema do not change.
+
+At `edf6e03`, WT `storage/methods/getSyncChunk.ts:165-179` pushes the
+`TableOutput` returned by `findOutputs` without selecting a smaller shape;
+`I:704` declares `outputs?: TableOutput[]`. No output column is deliberately
+omitted from default sync. `T/Output:39-65` omits `lockingScript` only for
+`noScript` queries (`StorageKnex.ts:1290-1293`); sync does not set that flag.
+The related `basket` and `tags` objects belong to `TableOutputX`
+(`T/Output:34-37`), not the row.
+
+`EntitySyncState.processSyncChunk` delegates outputs to `MergeEntity`
+(`storage/schema/entities/EntitySyncState.ts:387,414-415`), which calls
+`EntityOutput.mergeNew` for a missing row or `mergeExisting` for a found row
+(`MergeEntity.ts:55-62`). `EntityOutput.ts:320-329` inserts the whole row and
+translates its user, basket, parent transaction, and spender IDs.
+`:340-357` updates only when the incoming timestamp is newer, translating
+`spentBy` again and writing both descriptions. Its update assignment list
+does not include `sequenceNumber`; #276 also preserves that received metadata
+on newer SQLx rows. Null metadata clears the stored value; equal or older rows
+leave it alone. This adds no validation guard. The existing timestamp check
+runs in `upsert_output`, called by `process_sync_chunk_internal`; no earlier
+helper compares incoming and local output timestamps.
+
+The existing `processSyncChunk.json` request witness already contains all four
+metadata fields plus `purpose` and `providedBy`; `getSyncChunk.json` records
+only request arguments. Neither recorded an output-column omission, so neither
+fixture changes. `sync_output_tests.rs` checks the stored columns after JSON
+round trips, with different local IDs, full-range sequence numbers, newer and
+null metadata, stale replays, and a spender sent in an earlier chunk.
+
 ## Boundaries and follow-up
 
 The request audit covers the forty methods, including unsupported extensions.
