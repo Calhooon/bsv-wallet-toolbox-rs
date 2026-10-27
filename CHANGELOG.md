@@ -30,6 +30,23 @@
   name checks, as `ts-stack@edf6e03` `validationHelpers.ts:1506` does through
   `validateArray` (105-114, bound at 67). Such a request previously read
   `... must be at most 100 fields`, or a name or verifier text.
+- #291: a direct `acquire_certificate` validates `revocationOutpoint` and
+  stores it with its txid lowercased, as `ts-stack@edf6e03`
+  `packages/sdk/src/wallet/validationHelpers.ts:1435` does, so a certificate
+  acquired with an uppercase txid is found by `prove_certificate` (it answered
+  `Certificate not found with the provided arguments` before) and the returned
+  certificate carries the stored value. A malformed outpoint is now refused
+  with `Validation error: The revocationOutpoint parameter must be a 32-byte txid and canonical numeric output index joined with '.'`
+  (or the `revocationOutpoint vout` texts `a safe integer` and
+  `no more than 4294967295 length.`) instead of being stored.
+  `prove_certificate` now checks the argument's `certificate.fields` between
+  `privilegedReason` and `certificate.type` (1478-1480): an unsafe key reads
+  `The fields parameter must be an object with safe string keys`, more than
+  100000 keys `... an object with at most 100000 properties`, and an empty or
+  overlong name `The field name parameter must be at least 1 length.` or
+  `... no more than 50 length.`, all with `Validation error: `, replacing the
+  helper's `Certificate field name must be a safe UTF-8 string of 1–50 bytes`
+  for a bad argument name and preceding a bad type.
 - #287: `StorageSqlx::allocate_change_input` returns the stored `outputs.type`
   in `TableOutput.output_type` and its serialized `outputType` field instead
   of silently returning an empty string for the missing `output_type` column.
