@@ -642,10 +642,24 @@ must have a valid masterKeyring!` before decryption and storage
 The server nonce helper matches `verifyNonce.ts:26-57`, using the requested
 certifier, `[2, 'server hmac']`, and the UTF-8-decoded random part as key ID, including TextDecoder's leading-BOM removal.
 As at `Wallet.ts:806`, its false return is ignored; an error propagates before
-the serial HMAC. This differs from the pinned SDK nonce helper, so that helper
-cannot be substituted. The existing client nonce generation remains separate.
-Serial decoding and length errors follow the earlier Base64/HMAC validators,
-the serial and nonce decodes (`Wallet.ts:808-809`) before the hmac length
+the serial HMAC. This differs from the pinned SDK nonce helper (security
+level 1, a base64 key ID), so that helper cannot be substituted.
+
+For #300, the client nonce is `createNonce.ts:21-44` as `Wallet.ts:771` calls
+it: 16 random bytes, their HMAC through the wallet's `create_hmac` with
+`[2, 'server hmac']`, the certifier as counterparty and the bytes'
+TextDecoder text as key ID (`nonce_key_id`, shared with the server nonce
+check: `from_utf8_lossy`, one U+FFFD per maximal subpart, then one leading
+BOM removed), base64 of the 48 bytes. A certifier receives a 64-character
+`clientNonce` without padding (it was 44, padded, with no HMAC), which
+`verifyNonce(clientNonce, wallet, subject)` accepts and which joins a server
+nonce as one base64 string. Tests: `certificate_issuance_nonce_tests.rs`.
+Serial decoding and length errors follow the earlier Base64/HMAC validators:
+the serial, then `clientNonce + serverNonce` decoded as one string
+(`Wallet.ts:808-809`, so a bad server nonce character is named at its index
+in the joined text), then the keyID `serverNonce + clientNonce` past 800
+UTF-8 bytes (`The keyID parameter must be no more than 800 length.`,
+`validationHelpers.ts:227` via `:1772`), then the hmac length
 (`validationHelpers.ts:1774`);
 the ordinary verifier throws `HMAC is not valid` on a bad tag. A verifier's
 false return uses exactly `Invalid serialNumber` at `:814`.
@@ -852,7 +866,7 @@ runs on `storageCert.fields`, `signer/methods/proveCertificate.ts:35`).
 
 ### Protocol Flow
 
-1. **PrepareIssuanceActionData**: Generate a random 32-byte nonce, encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
+1. **PrepareIssuanceActionData**: Create the client nonce as `createNonce` (16 random bytes and their 32-byte HMAC, 64 base64 characters), encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
 2. **HTTP POST**: Send request to certifier URL with BRC-104 headers (`x-bsv-auth-version: 0.1`, `x-bsv-identity-key`)
 3. **Identity header**: Require `x-bsv-auth-identity-key` equal to the certifier before the body is read (#269)
 4. **ParseCertificateResponse**: Require the certificate, then nonce, and retain the supplied certificate text
@@ -865,7 +879,7 @@ runs on `storageCert.fields`, `signer/methods/proveCertificate.ts:35`).
 // Request sent to certifier
 pub struct ProtocolIssuanceRequest {
     pub cert_type: String,           // Certificate type (base64)
-    pub client_nonce: String,        // Random nonce (base64)
+    pub client_nonce: String,        // createNonce's 48 bytes (64 base64 chars, no padding)
     pub fields: HashMap<String, String>,      // Encrypted field values
     pub master_keyring: HashMap<String, String>, // Master keyring
 }
@@ -890,7 +904,8 @@ pub struct ProtocolIssuanceResponse {
 | `HEADER_CERTIFIER_IDENTITY_KEY` | "x-bsv-auth-identity-key" | Response header the certifier's key must be sent under (#269) |
 | `CERTIFICATE_ISSUANCE_PROTOCOL` | "certificate issuance" | Protocol for HMAC verification |
 | `NONCE_HMAC_SIZE` | 32 | Expected HMAC/serial number size |
-| `NONCE_SIZE` | 32 | Random nonce size in bytes |
+| `NONCE_SIZE` | 16 | The client nonce's random part in bytes (`createNonce.ts:27`) |
+| `MAX_KEY_ID_BYTES` | 800 | verifyHmac's keyID bound (`validationHelpers.ts:227`) |
 
 ### Main Entry Point
 
@@ -913,7 +928,7 @@ Called by `Wallet::acquire_certificate` when `acquisition_protocol` is `Issuance
 ### HMAC Verification
 
 The serial number is verified via HMAC:
-- **Data**: `clientNonceBytes || serverNonceBytes`
+- **Data**: `clientNonce + serverNonce` decoded as one base64 string
 - **Key ID**: `serverNonce + clientNonce` (concatenated base64 strings)
 - **Protocol**: "certificate issuance" at SecurityLevel::Counterparty
 - **Counterparty**: The certifier's public key
