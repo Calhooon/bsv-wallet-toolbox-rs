@@ -411,9 +411,11 @@ async fn stored_event_state(storage: &StorageSqlx, txid: &str) -> StoredEventSta
     }
 }
 
-async fn measure_status_busy(status: &str, known: bool) -> Duration {
+/// The writer handouts `apply_event` makes on a busy store: each is one
+/// arm that waits `busy_timeout` at its first write, so the count is the
+/// number of busy waits without reading a clock (#244).
+async fn count_status_busy_arms(status: &str, known: bool) -> usize {
     let timeout = Duration::from_millis(200);
-    let ceiling = timeout * 2;
     let scene = Scene::new().await;
     let storage = &scene.storage;
     scene.set_sending().await;
@@ -446,13 +448,15 @@ async fn measure_status_busy(status: &str, known: bool) -> Duration {
         .unwrap();
     let trigger = AtomicBool::new(false);
 
+    let acquires = storage.writer_acquires();
     let started = Instant::now();
     let result = ArcadeEventsTask::apply_event(storage, &ev, &trigger).await;
     let elapsed = started.elapsed();
+    let arms = storage.writer_acquires() - acquires;
 
     sqlx::query("ROLLBACK").execute(&mut *other).await.unwrap();
     eprintln!(
-        "{status} known={known}: elapsed={elapsed:?}, timeout={timeout:?}, ceiling={ceiling:?}, result={result:?}"
+        "{status} known={known}: arms={arms}, elapsed={elapsed:?}, timeout={timeout:?}, result={result:?}"
     );
     assert!(is_inline_proof_busy(&result), "{status}: {result:?}");
     assert!(!trigger.load(Ordering::SeqCst), "no fetch fallback");
@@ -462,20 +466,15 @@ async fn measure_status_busy(status: &str, known: bool) -> Duration {
         before,
         "no writes or status changes"
     );
-    elapsed
+    arms
 }
 
 async fn assert_status_busy_waits_once(status: &str) {
-    let unknown_wait = measure_status_busy(status, false).await;
-    let known_wait = measure_status_busy(status, true).await;
-    // SQLite's busy handler sleeps the full timeout before each refusal, so
-    // two waits cannot fall below 2x. This doubles the overhead budget for a
-    // loaded runner compared with the former 1.5x ceiling.
-    let ceiling = Duration::from_millis(200) * 2;
-    for (known, elapsed) in [(false, unknown_wait), (true, known_wait)] {
-        assert!(
-            elapsed < ceiling,
-            "{status} known={known}: {elapsed:?} must be below {ceiling:?} (one busy wait)"
+    for known in [false, true] {
+        let arms = count_status_busy_arms(status, known).await;
+        assert_eq!(
+            arms, 1,
+            "{status} known={known}: one write arm, one busy wait"
         );
     }
 }
