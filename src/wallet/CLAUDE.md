@@ -666,7 +666,7 @@ same way. The stored certifier is not parsed: the lookup matches it to the
 validated argument byte for byte, and `create_keyring_for_verifier` receives
 that parsed key, as the reference passes the stored certifier unparsed to
 `decrypt` (`MasterCertificate.ts:383-392,592-597`). Tests:
-`wallet.rs::prove_certificate_tests::key_gate`.
+`wallet.rs::prove_certificate_tests::preloop_gate::key_gate`.
 
 ### Protocol Flow
 
