@@ -3313,6 +3313,18 @@ fn create_keyring_for_verifier(
             )));
         }
 
+        // Match the check inside recovery at ts-stack@edf6e03
+        // MasterCertificate.ts:23-29,573-574 and SafeRecord.ts:2-3.
+        if field_name.is_empty()
+            || field_name.len() > 50
+            || matches!(
+                field_name.as_str(),
+                "__proto__" | "constructor" | "prototype"
+            )
+        {
+            return Err(decryption_error());
+        }
+
         // Get the master key for this field (base64 encoded encrypted symmetric key)
         let master_key_base64 = master_keyring
             .get(field_name)
