@@ -287,7 +287,7 @@ impl ServicesOptions {
     /// so `Services` builds with no endpoint named. The reference defaults
     /// its broadcaster to a hosted endpoint too: ts-stack edf6e03,
     /// `DefaultBroadcaster.ts:8-9`, `return new ARC(` with
-    /// `'https://arc.gorillapool.io'` on mainnet (the crate's
+    /// ``ARC_GORILLAPOOL`` on mainnet (the crate's
     /// `ARC_GORILLAPOOL`).
     /// [`ServicesOptions::with_arcade`] names another endpoint.
     pub fn mainnet() -> Self {
