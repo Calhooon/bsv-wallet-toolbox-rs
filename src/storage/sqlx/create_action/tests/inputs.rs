@@ -85,6 +85,25 @@ async fn transaction_count(storage: &StorageSqlx) -> i64 {
         .unwrap()
 }
 
+async fn set_stored_input_spender(
+    storage: &StorageSqlx,
+    txid: &str,
+    spendable: bool,
+    spent_by: i64,
+    description: Option<&str>,
+) {
+    sqlx::query(
+        "UPDATE outputs SET spendable = ?, spent_by = ?, spending_description = ? WHERE txid = ?",
+    )
+    .bind(spendable)
+    .bind(spent_by)
+    .bind(description)
+    .bind(txid)
+    .execute(storage.writer())
+    .await
+    .unwrap();
+}
+
 async fn assert_live_spendability_refusal(no_send: Option<bool>) {
     let (storage, user_id, txid) = unspendable_named_input().await;
     let before = stored_input_state(&storage, &txid).await;
@@ -157,14 +176,7 @@ async fn assert_spender_requires_review(status: &str) {
         .await
         .unwrap();
         let (spender, competing_txid) = seed_spender(&storage, user_id, &txid, status, true).await;
-        sqlx::query(
-            "UPDATE outputs SET spent_by = ?, spending_description = 'prior spend' WHERE txid = ?",
-        )
-        .bind(spender)
-        .bind(&txid)
-        .execute(storage.writer())
-        .await
-        .unwrap();
+        set_stored_input_spender(&storage, &txid, false, spender, Some("prior spend")).await;
         let before = stored_input_state(&storage, &txid).await;
         let count = transaction_count(&storage).await;
         let result =
@@ -218,13 +230,7 @@ async fn caller_named_spender_without_txid_follows_spendable_flag() {
         for spendable in [false, true] {
             let (storage, user_id, txid) = unspendable_named_input().await;
             let (spender, _) = seed_spender(&storage, user_id, &txid, status, false).await;
-            sqlx::query("UPDATE outputs SET spendable = ?, spent_by = ? WHERE txid = ?")
-                .bind(spendable)
-                .bind(spender)
-                .bind(&txid)
-                .execute(storage.writer())
-                .await
-                .unwrap();
+            set_stored_input_spender(&storage, &txid, spendable, spender, None).await;
             let before = stored_input_state(&storage, &txid).await;
             let count = transaction_count(&storage).await;
             let result = create_action_internal(
