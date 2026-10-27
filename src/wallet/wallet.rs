@@ -4693,6 +4693,85 @@ mod tests {
                         assert_wallet_error("stored certifier in another case", result, NOT_FOUND);
                     }
                 }
+
+                async fn assert_normalized_proof(certifier: &str, verifier: &str) {
+                    use bsv_rs::wallet::DecryptArgs;
+
+                    let request = Request::valid();
+                    let result = request
+                        .prove_with(Some(&key(31)), certifier, verifier)
+                        .await
+                        .unwrap();
+                    assert_eq!(result.keyring_for_verifier.len(), 1);
+                    let verifier_wallet = ProtoWallet::new(Some(
+                        PrivateKey::from_hex(&format!("{:064x}", 6)).unwrap(),
+                    ));
+                    let recovered = verifier_wallet
+                        .decrypt(DecryptArgs {
+                            ciphertext: BASE64
+                                .decode(&result.keyring_for_verifier["name"])
+                                .unwrap(),
+                            protocol_id: Protocol::new(
+                                SecurityLevel::Counterparty,
+                                CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+                            ),
+                            key_id: format!("{} name", request.serial),
+                            counterparty: Some(Counterparty::Other(
+                                PublicKey::from_hex(&key(31)).unwrap(),
+                            )),
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    assert_eq!(recovered.plaintext, [34; 32]);
+                }
+
+                #[tokio::test]
+                async fn test_prove_certificate_uppercase_certifier_resolves_lowercase_row() {
+                    assert_normalized_proof(&key(31).to_uppercase(), &key(6)).await;
+                }
+
+                #[tokio::test]
+                async fn test_prove_certificate_space_padded_certifier_resolves_lowercase_row() {
+                    assert_normalized_proof(&format!(" {} ", key(31)), &key(6)).await;
+                }
+
+                #[tokio::test]
+                async fn test_prove_certificate_uppercase_verifier_uses_normalized_key() {
+                    assert_normalized_proof(&key(31), &key(6).to_uppercase()).await;
+                }
+
+                #[tokio::test]
+                async fn test_prove_certificate_space_padded_verifier_uses_normalized_key() {
+                    assert_normalized_proof(&key(31), &format!(" {} ", key(6))).await;
+                }
+
+                #[tokio::test]
+                async fn test_prove_certificate_ecmascript_trim_accepts_feff() {
+                    assert_normalized_proof(&format!("\u{feff}{}\u{feff}", key(31)), &key(6)).await;
+                    assert_normalized_proof(&key(31), &format!("\u{feff}{}\u{feff}", key(6))).await;
+                }
+
+                #[tokio::test]
+                async fn test_prove_certificate_ecmascript_trim_rejects_0085() {
+                    for parameter in ["certificate.certifier", "verifier"] {
+                        let certifier = key(31);
+                        let verifier = key(6);
+                        let (certifier_arg, verifier_arg) = if parameter == "certificate.certifier"
+                        {
+                            (format!("\u{0085}{certifier}\u{0085}"), verifier)
+                        } else {
+                            (certifier.clone(), format!("\u{0085}{verifier}\u{0085}"))
+                        };
+                        let result = Request::valid()
+                            .prove_with(Some(&certifier), &certifier_arg, &verifier_arg)
+                            .await;
+                        assert_wallet_error(
+                            parameter,
+                            result,
+                            &refusal(parameter, "hexadecimal string."),
+                        );
+                    }
+                }
             }
         }
 
