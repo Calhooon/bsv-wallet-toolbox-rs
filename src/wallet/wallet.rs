@@ -3259,7 +3259,8 @@ const CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL: &str = "certificate field encryptio
 ///
 /// This function follows the TypeScript/Go implementation:
 /// 1. For each field to reveal, decrypt the master symmetric key using the master keyring
-/// 2. Re-encrypt the symmetric key for the verifier with a verifiable key ID
+/// 2. Verify that the recovered key decrypts the field ciphertext
+/// 3. Re-encrypt the symmetric key for the verifier with a verifiable key ID
 ///
 /// # Arguments
 /// * `subject_wallet` - The subject's wallet (implements encryption/decryption)
@@ -3285,6 +3286,7 @@ fn create_keyring_for_verifier(
     _originator: &str,
 ) -> bsv_rs::Result<HashMap<String, String>> {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    use bsv_rs::primitives::SymmetricKey;
     use bsv_rs::wallet::{DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs};
 
     // Validate master keyring is not empty
@@ -3299,6 +3301,8 @@ fn create_keyring_for_verifier(
         CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
     );
 
+    let decryption_error =
+        || bsv_rs::Error::WalletError("Failed to decrypt certificate field!".to_string());
     let mut keyring_for_verifier = HashMap::new();
 
     for field_name in fields_to_reveal {
@@ -3328,16 +3332,27 @@ fn create_keyring_for_verifier(
 
         // Decrypt the master symmetric key using the certifier as counterparty
         // Key ID for master is just the field name
-        let decrypted = subject_wallet.decrypt(ProtoDecryptArgs {
-            ciphertext: master_key_ciphertext,
-            protocol_id: protocol.clone(),
-            key_id: field_name.clone(),
-            counterparty: Some(Counterparty::Other(certifier.clone())),
-            ..Default::default()
-        })?;
+        let decrypted = subject_wallet
+            .decrypt(ProtoDecryptArgs {
+                ciphertext: master_key_ciphertext,
+                protocol_id: protocol.clone(),
+                key_id: field_name.clone(),
+                counterparty: Some(Counterparty::Other(certifier.clone())),
+                ..Default::default()
+            })
+            .map_err(|_| decryption_error())?;
 
         // The decrypted plaintext is the symmetric key bytes
         let symmetric_key = decrypted.plaintext;
+
+        // Match MasterCertificate.decryptField before releasing the key to a
+        // verifier (ts-stack@edf6e03 MasterCertificate.ts:382-393,612-622).
+        let field_ciphertext = BASE64
+            .decode(&fields[field_name])
+            .map_err(|_| decryption_error())?;
+        SymmetricKey::from_bytes(&symmetric_key)
+            .and_then(|key| key.decrypt(&field_ciphertext))
+            .map_err(|_| decryption_error())?;
 
         // Re-encrypt the symmetric key for the verifier
         // Key ID for verifiable is: "{serial_number} {field_name}"
