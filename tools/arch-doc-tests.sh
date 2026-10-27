@@ -11,7 +11,8 @@
 #
 # A row's test column is `name` for a lib test, or `name` (`--test file`)
 # for an integration test. The invariants tables are the ones whose header
-# row is `| invariant | charter | test |`.
+# row is `| invariant | charter | test |`. Section 7 must hold the D7 row
+# with its reference citations and filing (#312).
 set -u
 cd "$(dirname "$0")/.."
 dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
@@ -45,6 +46,15 @@ done < <(awk '
   table && /^\|/ { print; next }
   { table = 0 }
 ' $docs)
+
+# Section 7's D7 row (#312): the BRC-177 sync divergences, cited to the
+# reference's quarantine and filed as ours.
+d7=$(awk '/^## 7\. /{s=1; next} /^## /{s=0} s && /^\| D7 \|/' docs/ARCHITECTURE.md)
+for cite in 'EntityOutput.ts:11-26' 'EntityTransaction.ts:125-141,555-561' \
+  'StorageProvider.ts:148-151,1101-1118' 'Filing: ours (0.15 epic #352)'; do
+  if printf '%s' "$d7" | grep -qF -- "$cite"; then echo "ok   section 7 D7 cites $cite"
+  else echo "FAIL section 7 D7 does not cite $cite"; failed=$((failed + 1)); fi
+done
 
 echo "rows: $rows  with a test: $tested  (no test): $untested  failed: $failed"
 [ "$failed" = 0 ]
