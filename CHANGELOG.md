@@ -105,6 +105,30 @@
   `The output remittance parameter must be only insertionRemittance for basket insertion`
   (was accepted, the payment remittance ignored).
 
+- #311: a direct `acquire_certificate` refuses what
+  `validateAcquireDirectCertificateArgs` refuses (`ts-stack@edf6e03`
+  `validationHelpers.ts:1405-1439`, called at `Wallet.ts:697`), with its texts
+  in its order, before any row is written. Input stored before is refused:
+  a type or serial number that is not base64 of 32 bytes, a certifier that is
+  not a compressed public key, a signature that is not canonical DER, a
+  `fields` name outside 1 to 50 bytes or an unsafe key, an absent
+  `keyringRevealer` or `keyringForSubject`, a keyring name outside 1 to 50
+  bytes or a value that is not base64, a `privilegedReason` outside 5 to 50
+  bytes or `privileged` without one. Served texts through `WalletInterface`
+  are `WalletError("Validation error: The <parameter> parameter must be
+  <rule>")`, `<parameter>` one of `privilegedReason`, `serialNumber`,
+  `signature`, `revocationOutpoint`, `keyringRevealer`, `keyringForSubject`,
+  `type`, `certifier`, `fields`, `field name`,
+  `keyringForSubject field name` or `keyringForSubject field value`; an
+  absent serial number or signature answered `serial_number required for
+  direct acquisition` or `signature required for direct acquisition` and now
+  answers `The serialNumber parameter must be valid when acquisitionProtocol
+  is "direct"` (likewise `signature`, `revocationOutpoint`). The stored row
+  and the returned certificate carry the trimmed type and serial number and
+  the lowercased certifier and signature, and `verifier` is the normalized
+  certifier (was the certifier as given) or the revealer's key; a missing
+  revealer stored no verifier and is now refused. Of several bad names in one
+  map, the one that sorts lowest decides the text (docs/ARCHITECTURE.md D12).
 - #351: `list_actions` with `includeInputs` reads the action's raw
   transaction where `ts-stack@edf6e03` does (`getRawTxOfKnownValidTransaction`,
   `StorageKnex.ts:507-508`, through `getProvenOrRawTx` at 189-211): the

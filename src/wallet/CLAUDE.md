@@ -69,6 +69,7 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 | `wallet.rs` | ~3547 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `WalletBalance`, `UtxoInfo`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, balance/sweep helpers, permission checks, and helper functions |
 | `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1090 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
+| `direct_acquire.rs` | ~120 | `validateAcquireDirectCertificateArgs` for the direct `acquire_certificate` (#311) |
 | `lookup.rs` | ~610 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication |
 
 ## Key Exports
@@ -310,7 +311,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 
 | Method | Description |
 |--------|-------------|
-| `acquire_certificate` | Acquire identity certificate (direct or issuance protocol); a direct acquire validates and normalizes `revocationOutpoint` before storing (#291) |
+| `acquire_certificate` | Acquire identity certificate (direct or issuance protocol); a direct acquire validates and normalizes its arguments in the reference's order before storing (#291, #311) |
 | `list_certificates` | List certificates by certifier/type |
 | `prove_certificate` | Prove certificate fields to verifier by creating a verifier-specific keyring |
 | `relinquish_certificate` | Remove certificate from wallet |
@@ -549,7 +550,7 @@ Internal helper functions in `wallet.rs`:
 | `validate_originator(originator: &str)` | Validates originator string (non-empty, max 253 chars) |
 | `compute_txid(raw_tx: &[u8])` | Computes txid (double SHA256, reversed) from raw transaction |
 | `build_unsigned_transaction(result, key_deriver)` | Builds unsigned transaction bytes from storage result; optionally derives P2PKH locking scripts for change outputs via BRC-29 |
-| `build_wallet_certificate_from_args(args)` | Builds WalletCertificate from acquisition args |
+| `direct_acquire::validate_acquire_direct_args(args)` | The direct acquire's argument checks (`validationHelpers.ts:1405-1439`) and the normalized certificate, verifier and keyring (#311) |
 | `create_keyring_for_verifier(...)` | Creates verifier-specific keyring for selective field disclosure (BRC-52/53) |
 | `address_to_p2pkh_script(address: &str)` | Decodes Base58Check BSV address to P2PKH locking script bytes (used by `sweep_to_address`) |
 
@@ -846,9 +847,34 @@ with an uppercase txid now proves; before, it answered
 malformed outpoint is refused with the #270 texts under the bare name:
 `The revocationOutpoint parameter must be a 32-byte txid and canonical numeric output index joined with '.'`,
 `The revocationOutpoint vout parameter must be a safe integer` or
-`... must be no more than 4294967295 length.`, and nothing is stored. The
-reference's earlier direct checks (type, serial and certifier at 1432-1434,
-the presence checks at 1409-1430) are not ported here.
+`... must be no more than 4294967295 length.`, and nothing is stored.
+
+For #311, the direct acquire runs the whole of
+`validateAcquireDirectCertificateArgs` (`validationHelpers.ts:1401-1450`)
+before any write, in `direct_acquire.rs` (`validate_acquire_direct_args`), in
+this order: `validatePrivilege(args, false)` (1405, as `prove_certificate`'s);
+the presence of `serialNumber`, `signature` and `revocationOutpoint` (absent
+or empty), `keyringRevealer` and `keyringForSubject` (absent; an empty
+keyring is present), each `The <name> parameter must be valid when
+acquisitionProtocol is "direct"` (1409-1430); `type` and `serialNumber` as
+base64 of 32 bytes (1432-1433, `valid base64 string`, `at least 32 bytes`,
+`no more than 32 bytes`); `certifier` as a compressed key (1434, the key texts
+above); `revocationOutpoint` (1435); `fields` (1436, the record and name
+texts below); `signature` as hex then canonical DER (1437); then the keyring
+(1439, `validateKeyringForSubject` at 1248-1259): `The keyringForSubject
+parameter must be an object with at most 100000 properties` or `... an object
+with safe string keys`, then per name `The keyringForSubject field name
+parameter must be at least 1 length.` or `... no more than 50 length.` and
+`The keyringForSubject field value parameter must be valid base64 string`
+(structure only, no size bound). The revealer's key (1438) is a parsed
+`PublicKey` in the typed arguments and cannot fail; 1440-1446 repeat 1405.
+The row stores the normalized values (type and serial trimmed, certifier and
+signature lowercased) and `verifier` is the normalized certifier for
+`Certifier`, else the revealer's key (`acquireDirectCertificate.ts:19`).
+A map's names are walked in sorted order where the reference walks
+`Object.keys` (`docs/ARCHITECTURE.md` D12). The toolbox's own checks after the
+validator, the signature verification and the field decryption
+(`Wallet.ts:705-728`), are not ported. Tests: `direct_acquire_tests.rs`.
 
 `prove_certificate` checks the argument's `certificate.fields` after
 `validatePrivilege` and ahead of `certificate.type`
