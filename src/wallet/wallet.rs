@@ -6137,3 +6137,212 @@ mod tests {
 #[cfg(all(test, feature = "sqlite"))]
 #[path = "busy_door_tests.rs"]
 mod busy_door_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
+mod reference_tests {
+    use super::*;
+    use crate::services::mock::MockWalletServices;
+    use crate::storage::WalletStorageWriter;
+    use crate::StorageSqlx;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use bsv_rs::wallet::wire::{WalletWire, WalletWireTransceiver, WireWriter};
+    use bsv_rs::wallet::{CreateActionOptions, CreateActionOutput};
+
+    const ORIGINATOR: &str = "reference.test";
+
+    fn root() -> PrivateKey {
+        PrivateKey::from_bytes(&[7; 32]).unwrap()
+    }
+
+    fn deferred_action() -> CreateActionArgs {
+        let options = CreateActionOptions {
+            no_send: Some(true),
+            sign_and_process: Some(false),
+            randomize_outputs: Some(false),
+            ..Default::default()
+        };
+        CreateActionArgs {
+            description: "reference round trip".into(),
+            input_beef: None,
+            inputs: None,
+            lock_time: None,
+            version: None,
+            labels: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: vec![0x51],
+                satoshis: 1_000,
+                output_description: "reference test payment".into(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            options: Some(options),
+        }
+    }
+
+    fn sign_request(reference: String) -> SignActionArgs {
+        SignActionArgs {
+            reference,
+            spends: HashMap::new(),
+            options: None,
+        }
+    }
+
+    async fn funded_wallet() -> Wallet<StorageSqlx, MockWalletServices> {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("reference-test", "fixture").await.unwrap();
+        storage.make_available().await.unwrap();
+        let wallet = Wallet::new(Some(root()), storage, MockWalletServices::new())
+            .await
+            .unwrap();
+        busy_door_tests::fund_tagged(&wallet, &busy_door_tests::own_lock(&wallet), 0).await;
+        wallet
+    }
+
+    #[tokio::test]
+    async fn reference_round_trip_in_process() {
+        let wallet = funded_wallet().await;
+        let created = wallet
+            .create_action(deferred_action(), ORIGINATOR)
+            .await
+            .unwrap();
+        let reference = STANDARD.encode(created.signable_transaction.unwrap().reference);
+        let signed = wallet
+            .sign_action(sign_request(reference.clone()), ORIGINATOR)
+            .await
+            .expect("the answered reference must identify the pending action");
+        let stored: (String, String) =
+            sqlx::query_as("SELECT reference, status FROM transactions WHERE txid = ?")
+                .bind(hex::encode(signed.txid.unwrap()))
+                .fetch_one(wallet.storage().pool())
+                .await
+                .unwrap();
+        assert_eq!(stored, (reference, "nosend".into()));
+        assert_eq!(wallet.services().call_count("post_beef"), 0);
+    }
+
+    struct ReferenceFrame(Vec<u8>);
+
+    #[async_trait]
+    impl WalletWire for ReferenceFrame {
+        async fn transmit_to_wallet(&self, _message: &[u8]) -> bsv_rs::Result<Vec<u8>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn reference_bytes_match_storage_json_and_binary_decoding() {
+        let wallet = funded_wallet().await;
+        let created = wallet
+            .create_action(deferred_action(), ORIGINATOR)
+            .await
+            .unwrap();
+        let stored: String =
+            sqlx::query_scalar("SELECT reference FROM transactions WHERE status = 'unsigned'")
+                .fetch_one(wallet.storage().pool())
+                .await
+                .unwrap();
+        let expected = STANDARD.decode(&stored).unwrap();
+        assert_eq!(expected.len(), 12);
+
+        // ts-stack@edf6e03 WalletWireProcessor.ts:634-643 writes a
+        // signable transaction followed by the decoded reference bytes.
+        let signable = created.signable_transaction.as_ref().unwrap();
+        let mut frame = WireWriter::new();
+        frame.write_u8(0).write_i8(0).write_i8(0);
+        frame.write_var_int(u64::MAX);
+        frame.write_send_with_result_array(None);
+        frame.write_i8(1);
+        frame.write_var_int(signable.tx.len() as u64);
+        frame.write_bytes(&signable.tx);
+        frame.write_var_int(expected.len() as u64);
+        frame.write_bytes(&expected);
+        let wire = WalletWireTransceiver::new(ReferenceFrame(frame.into_bytes()));
+        let decoded = wire
+            .create_action(deferred_action(), ORIGINATOR)
+            .await
+            .unwrap()
+            .signable_transaction
+            .unwrap();
+        assert_eq!(signable.reference, decoded.reference);
+        assert_eq!(STANDARD.encode(&decoded.reference), stored);
+
+        // beta.1's serde is hex; its decoder must recover the same payload.
+        let json = serde_json::to_value(&created).unwrap();
+        let json_bytes =
+            hex::decode(json["signableTransaction"]["reference"].as_str().unwrap()).unwrap();
+        assert_eq!(json_bytes, expected);
+        let decoded_json: CreateActionResult = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            decoded_json.signable_transaction.unwrap().reference,
+            expected
+        );
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn reference_round_trip_through_storage_wire() {
+        use crate::storage::client::StorageClient;
+        use mockito::Matcher;
+        use serde_json::json;
+
+        let local = funded_wallet().await;
+        let plan = local
+            .storage()
+            .create_action(&local.auth(), deferred_action())
+            .await
+            .unwrap();
+        let (user, _) = local
+            .storage()
+            .find_or_insert_user(local.identity_key())
+            .await
+            .unwrap();
+        let mut result = serde_json::to_value(&plan).unwrap();
+        for input in result["inputs"].as_array_mut().unwrap() {
+            input["type"] = input.as_object_mut().unwrap().remove("inputType").unwrap();
+        }
+        let mut server = mockito::Server::new_async().await;
+        let user_call = server
+            .mock("POST", "/")
+            .match_body(Matcher::PartialJson(json!({"method": "findOrInsertUser"})))
+            .with_body(
+                json!({"jsonrpc": "2.0", "id": 1,
+                "result": {"user": user, "isNew": false}})
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let create_call = server
+            .mock("POST", "/")
+            .match_body(Matcher::PartialJson(json!({"method": "createAction"})))
+            .with_body(json!({"jsonrpc": "2.0", "id": 2, "result": result}).to_string())
+            .create_async()
+            .await;
+        let process_call = server
+            .mock("POST", "/")
+            .match_body(Matcher::PartialJson(json!({"method": "processAction",
+                "params": [{"userId": user.user_id},
+                    {"reference": plan.reference, "isNoSend": true}]})))
+            .with_body(json!({"jsonrpc": "2.0", "id": 3, "result": {}}).to_string())
+            .create_async()
+            .await;
+        let client =
+            StorageClient::new_unauthenticated(ProtoWallet::new(Some(root())), server.url());
+        let wallet = Wallet::new(Some(root()), client, MockWalletServices::new())
+            .await
+            .unwrap();
+        let created = wallet
+            .create_action(deferred_action(), ORIGINATOR)
+            .await
+            .unwrap();
+        let reference = STANDARD.encode(created.signable_transaction.unwrap().reference);
+        wallet
+            .sign_action(sign_request(reference), ORIGINATOR)
+            .await
+            .expect("the reference must survive both directions of the storage wire");
+        user_call.assert_async().await;
+        create_call.assert_async().await;
+        process_call.assert_async().await;
+        assert_eq!(wallet.services().call_count("post_beef"), 0);
+    }
+}
