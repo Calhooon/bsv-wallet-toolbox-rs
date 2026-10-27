@@ -26,7 +26,7 @@ Most integration tests require the `sqlite` feature (default). The `valid_create
 | `concurrent_tests.rs` | 1053 | 10 | `sqlite` | Thread safety and concurrent access to `StorageSqlx` |
 | `reorg_tests.rs` | 765 | 10 | `sqlite` | Chain reorganization handling via `ReorgTask` |
 | `monitor_tests.rs` | 527 | 8 | `sqlite` | Monitor daemon lifecycle, task execution, callbacks |
-| `error_recovery_tests.rs` | 495 | 10 | none | Service layer HTTP errors, adaptive timeouts, EMA |
+| `error_recovery_tests.rs` | 590 | 10 | none (one test under `bench-support`) | Service layer HTTP errors, adaptive timeouts, EMA |
 | `services_tests.rs` | 949 | ~58 | none | Service creation, provider config, result types, nLockTime |
 | `test_vectors.rs` | 2059 | ~40 | none/`remote` | Cross-SDK test vector validation (7 vector files) |
 | `storage_wire.rs` | 617 | 42 | `remote` | Recorded JSON-RPC request witnesses for every remote storage method |
@@ -111,7 +111,7 @@ Tests service layer error handling, adaptive timeouts, and EMA convergence. Uses
 **Key tests:**
 - `test_service_500_error` - ARC provider wraps HTTP 500 as `PostBeefResult` with `service_error: true`
 - `test_service_429_rate_limit` - 429 response wrapped similarly
-- `test_connection_refused_on_closed_loopback_port` - a loopback port with nothing listening produces the transport's connection error, in every build
+- `test_connection_error_on_closed_loopback_port` - a loopback port with nothing listening produces the transport's connection error, in every build
 - `test_non_loopback_host_refused_by_guard_before_transport` - an unreachable host (RFC 5737 TEST-NET) is refused by the #182 guard before transport, under `bench-support`
 - `test_json_error_response` - ARC-specific status 465 (FEE_TOO_LOW)
 - `test_all_providers_fail_collection` - 3 mock providers all fail; verifies `ServiceCollection` failover + call history

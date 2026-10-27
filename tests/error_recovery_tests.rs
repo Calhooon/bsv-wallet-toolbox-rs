@@ -103,7 +103,7 @@ fn closed_loopback_port() -> u16 {
 /// Loopback passes the #182 guard, so this proves a real connection failure
 /// in every build, `bench-support` (the CI integration step) included.
 #[tokio::test]
-async fn test_connection_refused_on_closed_loopback_port() {
+async fn test_connection_error_on_closed_loopback_port() {
     let port = closed_loopback_port();
     let config = ArcConfig {
         timeout_secs: Some(1), // Short timeout to fail fast
