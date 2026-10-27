@@ -130,6 +130,7 @@ it (`UnspendableCoin`).
 | certificate issuance encrypts each field with an independent symmetric key and wraps that key in the master keyring; its fields and verifier keyring decrypt by the reference's procedure | `ts-stack@edf6e03 MasterCertificate.ts:277-293,380-420`; `VerifiableCertificate.ts:180-211`; bsv-rs #261 fixture at `2e4b477` | `toolbox_issued_certificate_decrypts_like_reference` |
 | certificate intake preserves the signed Base64 field text byte for byte | `BRCs@5119a9b peer-to-peer/0052.md:97`; toolbox #197 and #203 | `reference_issued_certificate_survives_intake` |
 | a stored reference-issued or Rust-issued certificate proves to the verifier and decrypts to the fixture's plaintexts | `conformance/upstream/261-certificate-field-value/` (bsv-rs #261); toolbox #203 | `reference_issued_certificate_proves_and_decrypts` |
+| a corrupt master keyring entry is refused at prove time before a verifier keyring is returned | `ts-stack@edf6e03 MasterCertificate.ts:382-393,612-622`; toolbox #222 | `prove_certificate_rejects_corrupt_master_keyring_entry` |
 | equal and empty plaintext fields receive distinct 32-byte keys across fields and issuances | `ts-stack@edf6e03 MasterCertificate.ts:277-293`; toolbox #203 | `issuance_uses_fresh_keys_for_equal_and_empty_plaintexts` |
 
 ## 2. The writer and the pool

@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- #222: `prove_certificate` now decrypts each requested field under its
+  recovered master key before wrapping that key for the verifier. Previously,
+  a corrupt or mismatched master entry produced a verifier keyring and failed
+  only when the verifier decrypted the field. It now fails at prove time with
+  `bsv_rs::Error::WalletError("Failed to decrypt certificate field!")`, mapping
+  the reference's plain JavaScript `Error`. The check follows
+  `ts-stack@edf6e03`, `packages/sdk/src/auth/certificates/MasterCertificate.ts:382-393`
+  and its `decryptField` refusal at `:612-622`. Valid field and keyring bytes
+  keep the #203 scheme.
+
 - #216: `sign_action` previously accepted caller spends longer than the
   `unlockingScriptLength` declared at `create_action`, which could reduce the
   effective fee below the rate used to price the transaction. It now refuses
