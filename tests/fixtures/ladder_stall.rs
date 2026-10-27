@@ -8,7 +8,7 @@
 //! BananaBlocks rung, and the result's error (`last_error`) named only that
 //! rung's 501. So a fault whose call lasted to the deadline where the
 //! fixture scripts no delay, followed by a rung asked a request the fixture
-//! does not script, is the runner's: the message says so first (the test
+//! does not script, is the runner's: the message opens with that (the test
 //! stays red), and the history says which rung faulted.
 //!
 //! The deadline is reqwest's own timer, set from `timeout_secs` inside the
@@ -52,7 +52,7 @@ impl std::fmt::Display for Rung {
     }
 }
 
-/// Every call the services' history holds, oldest first.
+/// Every call the services' history holds, oldest to newest.
 fn all_calls(services: &Services) -> Vec<Rung> {
     let Ok(all) = services.get_services_call_history(false) else {
         return Vec::new();
