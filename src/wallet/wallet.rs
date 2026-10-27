@@ -3712,6 +3712,104 @@ mod tests {
             }
         }
 
+        fn keyring_for_field_name(field_name: &str) -> bsv_rs::Result<HashMap<String, String>> {
+            use bsv_rs::primitives::SymmetricKey;
+            use bsv_rs::wallet::EncryptArgs;
+
+            let subject = PrivateKey::from_hex(&format!("{:064x}", 10)).unwrap();
+            let certifier = PrivateKey::from_hex(&format!("{:064x}", 11)).unwrap();
+            let verifier = PrivateKey::from_hex(&format!("{:064x}", 12)).unwrap();
+            let subject_wallet = ProtoWallet::new(Some(subject));
+            let field_key = SymmetricKey::from_bytes(&[13; 32]).unwrap();
+            let encrypted_value = field_key.encrypt(b"field name witness").unwrap();
+            let master_entry = subject_wallet
+                .encrypt(EncryptArgs {
+                    key_id: field_name.to_string(),
+                    counterparty: Some(Counterparty::Other(certifier.public_key())),
+                    plaintext: field_key.as_bytes().to_vec(),
+                    protocol_id: Protocol::new(
+                        SecurityLevel::Counterparty,
+                        CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+                    ),
+                    ..Default::default()
+                })
+                .unwrap();
+            let fields = HashMap::from([(field_name.to_string(), BASE64.encode(encrypted_value))]);
+            let master_keyring = HashMap::from([(
+                field_name.to_string(),
+                BASE64.encode(master_entry.ciphertext),
+            )]);
+
+            // Both maps contain the requested name and valid encrypted data, so
+            // refusal must come from the field-name rule inside recovery.
+            create_keyring_for_verifier(
+                &subject_wallet,
+                &certifier.public_key(),
+                &verifier.public_key(),
+                &fields,
+                &[field_name.to_string()],
+                &master_keyring,
+                &BASE64.encode([14; 32]),
+                "certificate.test",
+            )
+        }
+
+        #[test]
+        fn test_create_keyring_rejects_overlong_field_names() {
+            // MasterCertificate.ts:25-27 counts UTF-8 bytes, not characters.
+            for field_name in ["n".repeat(51), "é".repeat(26)] {
+                assert_field_recovery_error(&field_name, keyring_for_field_name(&field_name));
+            }
+        }
+
+        #[test]
+        fn test_create_keyring_rejects_unsafe_field_names() {
+            // SafeRecord.ts:2-3 rejects these exact names, without a character allowlist.
+            for field_name in ["__proto__", "constructor", "prototype"] {
+                assert_field_recovery_error(field_name, keyring_for_field_name(field_name));
+            }
+        }
+
+        #[test]
+        fn test_create_keyring_accepts_valid_field_names() {
+            for field_name in [
+                "n".to_string(),
+                "n".repeat(50),
+                "é".repeat(25),
+                "名前 / public.email-✓".to_string(),
+                "__proto__.safe".to_string(),
+                "Constructor".to_string(),
+                "prototype.value".to_string(),
+            ] {
+                let keyring = keyring_for_field_name(&field_name).unwrap();
+                assert_eq!(keyring.len(), 1, "{field_name}");
+                assert!(keyring.contains_key(&field_name), "{field_name}");
+            }
+        }
+
+        #[test]
+        fn test_create_keyring_invalid_missing_field_keeps_subset_error() {
+            let subject_wallet = ProtoWallet::new(Some(PrivateKey::random()));
+            let public_key = PrivateKey::random().public_key();
+            let result = create_keyring_for_verifier(
+                &subject_wallet,
+                &public_key,
+                &public_key,
+                &HashMap::new(),
+                &["__proto__".to_string()],
+                &HashMap::from([("__proto__".to_string(), "unused".to_string())]),
+                &BASE64.encode([14; 32]),
+                "certificate.test",
+            );
+            match result {
+                Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
+                    message,
+                    "Field '__proto__' not found in certificate - fields_to_reveal must be a subset of certificate fields"
+                ),
+                other => panic!("expected the subset WalletError, got {other:?}"),
+            }
+        }
+
         #[test]
         fn test_create_keyring_empty_master_keyring_fails() {
             let subject_key = PrivateKey::random();
