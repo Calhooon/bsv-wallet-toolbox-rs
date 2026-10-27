@@ -7,6 +7,8 @@ pub(crate) use isolated::check_url;
 pub(crate) use isolated::{Client, RequestBuilder, RequestError};
 #[cfg(not(any(test, feature = "bench-support")))]
 pub(crate) use reqwest::{Client, Error as RequestError, RequestBuilder};
+// URL parsing for argument guards outside providers (issuance certifierUrl).
+pub(crate) use reqwest::Url;
 
 #[cfg(all(feature = "remote", any(test, feature = "bench-support")))]
 pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
