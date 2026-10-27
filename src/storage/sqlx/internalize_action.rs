@@ -698,19 +698,24 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
         "outputs",
         MAXIMUM_WALLET_COLLECTION_ITEMS,
     )?;
-    // The earliest insertion whose tags pass the bound is refused only once
-    // every output up to it has passed its customInstructions, as the
-    // reference maps the outputs in order; bsv-rs reads only the outputs.
+    // The earliest output refused by its remittance exclusivity or its tags
+    // bound is refused only once every output reached before it has passed
+    // its customInstructions, as the reference maps the outputs in order;
+    // bsv-rs reads only the outputs. Exclusivity runs ahead of the output's
+    // own customInstructions, the tags bound after them.
     let over = args.outputs.iter().enumerate().find_map(|(index, output)| {
+        if let Err(refusal) = validate_remittance_exclusivity(output) {
+            return Some((index, refusal));
+        }
         let tags = output.insertion_remittance.as_ref()?.tags.as_ref()?;
         validate_array_bound(tags.len(), "tags", MAXIMUM_WALLET_COLLECTION_ITEMS)
             .err()
-            .map(|refusal| (index, refusal))
+            .map(|refusal| (index + 1, refusal))
     });
-    if let Some((index, refusal)) = over {
+    if let Some((reached, refusal)) = over {
         let earlier = InternalizeActionArgs {
             tx: Vec::new(),
-            outputs: args.outputs[..=index].to_vec(),
+            outputs: args.outputs[..reached].to_vec(),
             description: String::new(),
             labels: None,
             seek_permission: None,
@@ -744,6 +749,26 @@ fn has_brc177_no_send_label(labels: Option<&[String]>) -> bool {
         let normalized = label.trim().to_lowercase();
         normalized.starts_with(BRC177_NO_SEND_MODULE_PREFIX)
     })
+}
+
+/// One remittance per output (#337): the reference refuses a wallet payment
+/// carrying an insertionRemittance, and a basket insertion carrying a
+/// paymentRemittance, before either remittance's fields (ts-stack@edf6e03
+/// validationHelpers.ts:971-976). A missing remittance is refused later at
+/// the door in the port's own words.
+fn validate_remittance_exclusivity(output: &bsv_rs::wallet::InternalizeOutput) -> Result<()> {
+    let mustbe = match output.protocol.as_str() {
+        WALLET_PAYMENT_PROTOCOL if output.insertion_remittance.is_some() => {
+            "only paymentRemittance for wallet payment"
+        }
+        BASKET_INSERTION_PROTOCOL if output.payment_remittance.is_some() => {
+            "only insertionRemittance for basket insertion"
+        }
+        _ => return Ok(()),
+    };
+    Err(Error::ValidationError(format!(
+        "The output remittance parameter must be {mustbe}"
+    )))
 }
 
 /// bsv-rs's customInstructions check (#143), its refusal in bsv-rs's words.
