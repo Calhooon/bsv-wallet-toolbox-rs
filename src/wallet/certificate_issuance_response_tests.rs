@@ -448,7 +448,13 @@ async fn noncanonical_serial_passes_hmac_and_is_refused_at_verify() {
         result.unwrap_err().to_string(),
         "Validation error: Certificate verification failed"
     );
-    assert_eq!(observer.calls.lock().unwrap().len(), 2);
+    // The 32-byte fixture nonce fails verifyNonce's shape; the one call is :807.
+    let calls = observer.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].protocol_id.protocol_name,
+        CERTIFICATE_ISSUANCE_PROTOCOL
+    );
 }
 
 // MasterCertificate.ts:522-524 throws outside the decrypt try at Wallet.ts:817.
