@@ -24,8 +24,10 @@ pub(in crate::storage::sqlx) const MANAGED_CHANGE_CLAUSE: &str = "AND o.type = '
      AND COALESCE(o.derivation_prefix, '') <> '' \
      AND COALESCE(o.derivation_suffix, '') <> ''";
 
-// R1 (d): a received unproven coin needs this action's recorded rule.
-const RECEIVED_COIN_CLAUSE: &str =
+// R1 (d): a received unproven coin needs this action's recorded rule. Its
+// one `?` binds the rule; the public allocator, whose signature names no
+// rule, binds it off (#304).
+pub(in crate::storage::sqlx) const RECEIVED_COIN_CLAUSE: &str =
     "AND (t.status = 'completed' OR COALESCE(o.purpose, '') <> 'receive' OR ?)";
 
 /// An allocated change input.
