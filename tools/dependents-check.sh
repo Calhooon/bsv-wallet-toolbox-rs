@@ -17,8 +17,8 @@
 #   4. `cargo build --locked`, falling back to `cargo build` with a note when
 #      the lock still needs a change (or the dependent commits no lock);
 #   5. `cargo test --locked`, every target (`cargo test` when the build was
-#      unlocked); a row's test column may name a narrower command, with the
-#      reason in its reason column.
+#      unlocked), with WIRE_TEXT_DIFF=report in its environment; a row's test
+#      column may name a narrower command, with the reason in its reason column.
 #
 # Usage: tools/dependents-check.sh [--ci] [--only CRATE] [--line L] [--from CRATE=DIR]...
 #   --ci          run only the rows whose ci column is `yes`
@@ -268,7 +268,9 @@ run_one() {
       what="cargo test"
     fi
     echo "   $what"
-    if (cd "$src" && unset RUSTFLAGS && eval "$what"); then
+    # The knob for every row, not the CLI's alone: a dependent whose tests do not
+    # read WIRE_TEXT_DIFF ignores an unknown variable.
+    if (cd "$src" && unset RUSTFLAGS && export WIRE_TEXT_DIFF=report && eval "$what"); then
       test="ok ($what)"
     else
       test="FAIL ($what)"
