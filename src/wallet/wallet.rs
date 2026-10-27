@@ -3488,6 +3488,8 @@ const MAXIMUM_CERTIFICATE_REVEAL_FIELDS: usize = 100;
 // /^([0-9A-Fa-f]{64})\.(0|[1-9]\d*)$/ untrimmed with ASCII digits, the txid
 // lowercased (522-534) and the vout bounded by validateInteger (306-324).
 fn validate_outpoint_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
+    // Number(vout) is a safe integer only up to 2^53 - 1 (16 digits).
+    const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
     let shape = || {
         invalid_certificate_argument(
             name,
@@ -3503,8 +3505,6 @@ fn validate_outpoint_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
     {
         return Err(shape());
     }
-    // Number(vout) is a safe integer only up to 2^53 - 1 (16 digits).
-    const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
     let vout_name = format!("{name} vout");
     let number = match vout.parse::<u64>() {
         Ok(number) if vout.len() <= 16 && number <= MAX_SAFE_INTEGER => number,
