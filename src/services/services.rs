@@ -622,6 +622,12 @@ fn merge_status_results(
 /// counterpart: its default is always a hosted classic ARC URL.
 pub(crate) const NO_ARCADE_URL: &str = "ServicesOptions names no Arcade endpoint: Arcade is the default mode (#317); set one with ServicesOptions::with_arcade(url, config)";
 
+/// The refusal of classic mode (the deprecated `with_classic_arc`) at an
+/// empty `arc_url` (#345): a TAAL rung at "" faults on every post, so a
+/// host that passed an unset endpoint got a dead rung at the top and no error at
+/// startup. The reference has no classic knob: the text is the port's own.
+pub(crate) const NO_CLASSIC_ARC_URL: &str = "ServicesOptions names no classic ARC endpoint: with_classic_arc(url) was given an empty url; name the TAAL ARC endpoint, or use ServicesOptions::with_arcade(url, config)";
+
 impl Services {
     /// Create new services for the given chain with default options: Arcade
     /// at `ARCADE_V2_MAINNET` on main; on test the defaults name no Arcade

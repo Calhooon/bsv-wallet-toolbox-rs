@@ -240,3 +240,39 @@ fn gorillapool_defaults_to_none() {
     assert_eq!(ServicesOptions::mainnet().arc_gorillapool_url, None);
     assert_eq!(ServicesOptions::testnet().arc_gorillapool_url, None);
 }
+
+// Classic mode refuses an empty endpoint as Arcade mode does (#345): before,
+// the deprecated knob at "" built a TAAL rung at "" whose every post faulted,
+// so a host that passed an unset `ARC_URL` got a dead first rung and no
+// error at startup. The reference has no classic knob: the text is the
+// port's own.
+
+#[test]
+#[allow(deprecated)]
+fn the_classic_knob_at_an_empty_endpoint_refuses_construction() {
+    for url in ["", "  "] {
+        let options = ServicesOptions::mainnet()
+            .with_classic_arc(url, None)
+            .with_gorillapool(LOOPBACK, None);
+        assert!(!options.arcade_v2);
+        let err = Services::with_options(Chain::Main, options)
+            .err()
+            .unwrap_or_else(|| panic!("built a TAAL rung at {url:?}"));
+        assert_eq!(
+            err.to_string(),
+            format!("Invalid argument: {NO_CLASSIC_ARC_URL}")
+        );
+        assert!(err.to_string().contains("with_classic_arc(url)"), "{err}");
+    }
+    // A URL still builds the classic ladder; Arcade mode's refusal keeps
+    // its own text.
+    let options = ServicesOptions::mainnet().with_classic_arc(LOOPBACK, None);
+    assert_classic_ladder(
+        &Services::with_options(Chain::Main, options).unwrap(),
+        false,
+    );
+    assert_refuses(
+        Chain::Main,
+        ServicesOptions::mainnet().with_arcade("", None),
+    );
+}
