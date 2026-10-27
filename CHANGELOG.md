@@ -78,6 +78,13 @@
 
 ### Fixed
 
+- #313: sync writes an incoming output's `purpose` as given, on insert and on
+  the newer-row update, as `ts-stack@edf6e03` `EntityOutput.mergeNew` and
+  `mergeExisting` do. A chunk row without `purpose` was stored as `change`;
+  it is stored as `''` now (the reference's default; the column is NOT
+  NULL), so a synced coin without purpose is no longer offered as change by
+  the create door, `StorageSqlx::allocate_change_input` or
+  `count_change_inputs`. Rows already synced keep their stored `change`.
 - #187: `create_action` with `signAndProcess` now writes the
   `processActionPost` note on `proven_tx_reqs.history`, as the door's post
   path does and as every post in `ts-stack@edf6e03` writes its notes through

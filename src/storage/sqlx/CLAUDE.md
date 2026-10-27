@@ -244,7 +244,8 @@ non-empty `derivation_prefix` and `derivation_suffix`, spendable and
 `spent_by` null. The door takes a `completed` or `unproven` parent; the
 public allocator takes those and `sending` unless `exclude_sending`
 (2230-2231, 2256). A caller-provided coin, a non-P2PKH coin, a coin with
-any other purpose or no derivation fields is never picked as change. The
+any other purpose (a synced row without one is stored `''`, #313) or no
+derivation fields is never picked as change. The
 reference's `action_batch_outputs` exclusion (2252-2255) has no port
 equivalent: the port has no action batches.
 
@@ -406,7 +407,11 @@ Output sync preserves all 25 `TableOutput` columns, including
 `output_description`, `spent_by`, `sequence_number`, `spending_description`,
 `purpose`, and `provided_by` (#276). The exporter selects each column explicitly
 and decodes nullable metadata without hiding missing columns. Sequence numbers
-retain the full `u32` range. Inserts write the whole row. Newer-row updates
+retain the full `u32` range. Inserts write the whole row. Both the insert and
+the newer-row update write `purpose` as given: a missing one is `''` (the
+reference's `EntityOutput` default; the column is `TEXT NOT NULL`), never
+`change`, so a synced coin without purpose is never offered as change (#313).
+Newer-row updates
 write the reference `mergeExisting` columns (`output_description`, `spent_by`,
 `spending_description` among them) and no others: `transaction_id` (the match
 key), `satoshis`, `derivation_prefix`, `derivation_suffix` and `sequence_number`

@@ -246,6 +246,14 @@ The SQLx exporter and importer preserve the 25 columns of `T/Output:6-31`:
 These are the existing wire names; E1 and E6 describe the client conversion.
 The public Rust entity and schema do not change.
 
+`purpose` lands as given on insert (`EntityOutput.mergeNew` 320-330 inserts
+the chunk row) and on a newer-row update (`mergeExisting` 347,
+`this.purpose = ei.purpose`). A row without `purpose` is stored `''`, the
+`EntityOutput` constructor default (45); the column is `TEXT NOT NULL` with no
+default here and `string('purpose', 20).notNullable()` in the reference
+(`KnexMigrations.ts:757`). It was `change` until #313, which the allocators'
+managed-change filter offered as change.
+
 At `edf6e03`, WT `storage/methods/getSyncChunk.ts:165-179` pushes the
 `TableOutput` returned by `findOutputs` without selecting a smaller shape;
 `I:704` declares `outputs?: TableOutput[]`. No output column is deliberately
