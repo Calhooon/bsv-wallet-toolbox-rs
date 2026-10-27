@@ -336,8 +336,12 @@ the same gate, so several `Services` in one process spend one budget and a 429
 one of them met closes the rung for all. The gate reads now from its `Clock`:
 the wall clock in production, an instant held still in a test
 (`RateGate::with_clock`), so a replay's calls land at one instant of the gate's
-time. Every ladder records a rate limit in its call history as `RATE_LIMITED`,
-apart from every other fault.
+time. The fixture host returns that controlled clock with its services. The
+status scene's boundary test advances it to 999 ms and then 1000 ms: the
+WhatsOnChain rung stays closed before its one-second default deadline and
+opens at the deadline, without sleeping or changing the recorded fixture.
+Every ladder records a rate limit in its call history as `RATE_LIMITED`, apart
+from every other fault.
 
 **The header ladder.** `get_height` and `get_chain_tip_header` read chaintracks,
 then BHS, never an explorer; with none reachable the answer is an error, never
@@ -412,6 +416,7 @@ proof checked against our headers writes `doubleSpend`.
 | the cadence is one to sixty-four minutes, doubling | `wallet.md section 4` (the age re-ask on the host's clock) | `the_cadence_is_one_to_sixty_four_minutes_doubling` (`--test rule_28_cadence_tests`) |
 | the sticky provider never moves ahead of a configured Arcade | (no charter) | `sticky_never_moves_ahead_of_a_configured_arcade` |
 | every ladder scene under `tests/fixtures/data/ladders/` replays from its fixture | (no charter; #53) | `ladder_fixtures_replay` (a lib test, included from `src/services/ladder_fixtures_tests.rs`; not in the `fixtures` integration binary) |
+| the status scene's 429 without Retry-After closes the rung at 999 ms and reopens it at 1000 ms on a controlled clock | (no charter window; #194, WhatsOnChain's one-second default) | `ladder_status_429_without_retry_after_uses_the_controlled_clock` |
 | a service answer is built only by services | (no charter; #56) | `service_answers_are_only_built_by_services` |
 | provider requests stay in providers | (no charter; #56) | `provider_requests_stay_in_providers` |
 
