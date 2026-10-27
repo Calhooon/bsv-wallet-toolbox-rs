@@ -1,14 +1,16 @@
-//! #248: the unauthenticated storage HTTP path is isolated in both builds.
+//! #248/#263: both storage HTTP paths are isolated in both builds.
 
 use super::{assert_isolated, StorageClient, TableSettings, WalletStorageWriter};
 use bsv_rs::primitives::PrivateKey;
+use bsv_rs::transaction::TransportFault;
 use bsv_rs::wallet::ProtoWallet;
 
+fn wallet() -> ProtoWallet {
+    ProtoWallet::new(Some(PrivateKey::from_bytes(&[7; 32]).unwrap()))
+}
+
 fn client(endpoint: &str) -> StorageClient<ProtoWallet> {
-    StorageClient::new_unauthenticated(
-        ProtoWallet::new(Some(PrivateKey::from_bytes(&[7; 32]).unwrap())),
-        endpoint,
-    )
+    StorageClient::new_unauthenticated(wallet(), endpoint)
 }
 
 #[tokio::test]
@@ -63,4 +65,57 @@ async fn storage_client_refuses_non_loopback_redirects() {
         .unwrap_err();
     assert_isolated(&error);
     redirect.assert_async().await;
+}
+
+#[tokio::test]
+async fn authenticated_storage_client_refuses_non_loopback_before_transport() {
+    for scheme in ["http", "https"] {
+        let client = StorageClient::new(wallet(), format!("{scheme}://provider.invalid"));
+        assert_isolated(&client.make_available().await.unwrap_err());
+    }
+}
+
+#[tokio::test]
+async fn authenticated_storage_client_peer_accessor_refuses_non_loopback() {
+    let client = StorageClient::new(wallet(), "http://provider.invalid");
+    let error = client
+        .peer()
+        .to_peer(b"fixture", None, Some(1_000))
+        .await
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("provider.invalid")
+            && message.contains("#182")
+            && message.contains("rule 28"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn authenticated_storage_client_accepts_loopback_handshake() {
+    let mut server = mockito::Server::new_async().await;
+    let handshake = server
+        .mock("POST", "/.well-known/auth")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "messageType": "initialRequest"
+        })))
+        .with_status(429)
+        .with_header("retry-after", "7")
+        .with_body("loopback handshake refused")
+        .expect(1)
+        .create_async()
+        .await;
+
+    let client =
+        StorageClient::new(wallet(), server.url()).with_timeout(std::time::Duration::from_secs(5));
+    let error = client.make_available().await.unwrap_err();
+    assert!(!error.to_string().contains("#182"), "{error}");
+    assert_eq!(
+        bsv_rs::Error::from(error).transport_fault(),
+        Some(TransportFault::RateLimited {
+            retry_after_ms: Some(7_000)
+        })
+    );
+    handshake.assert_async().await;
 }
