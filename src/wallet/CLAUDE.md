@@ -737,6 +737,25 @@ order. The permission check still receives the raw verifier, just as
 that manager normalizes only the originator before checking permission.
 Tests: `key_gate::arg_gate` under the same `preloop_gate` module.
 
+For #270, `certificate.revocationOutpoint` is checked after subject and before
+signature (`validationHelpers.ts:1498-1501`, its validator at 1083-1116): an
+untrimmed 64-hex txid, `.`, and a canonical ASCII-digit vout, else
+`The certificate.revocationOutpoint parameter must be a 32-byte txid and canonical numeric output index joined with '.'`.
+A vout past 2^53 - 1 reads `The certificate.revocationOutpoint vout parameter must be a safe integer`;
+one past 4294967295 reads `... vout parameter must be no more than 4294967295 length.`
+(`validateInteger` at 306-324). The txid is lowercased and the lookup
+matches that normalized outpoint (`signer/methods/proveCertificate.ts:18`).
+After verifier, a present `privileged_reason` must be 5 to 50 UTF-8 bytes
+(`validationHelpers.ts:247-255,348-355,1511`):
+`The privilegedReason parameter must be at least 5 length.` or
+`... must be no more than 50 length.`. Then, after every vargs check, more
+than 100 requested names read
+`The fieldsToReveal parameter must be at most 100 fields` and a repeated name
+`The fieldsToReveal parameter must be unique field names` (1513-1518, the
+bound at 70). These precede the helper's own entry-limit and duplicate texts,
+which its direct tests still assert. The reference's 100000-item array bound
+at 105-114 is not ported.
+
 ### Protocol Flow
 
 1. **PrepareIssuanceActionData**: Generate a random 32-byte nonce, encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
