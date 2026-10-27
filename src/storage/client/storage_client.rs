@@ -54,7 +54,7 @@ mod isolated_peer_transport {
     use bsv_rs::auth::transports::{Transport, TransportCallback};
     use bsv_rs::auth::{AuthMessage, SimplifiedFetchTransport as SdkTransport};
 
-    use crate::services::providers::http_client::check_url;
+    use crate::services::providers::http_client::check_url_str;
 
     /// A test/bench Peer transport that checks its destination before SDK I/O.
     pub struct SimplifiedFetchTransport(SdkTransport);
@@ -68,11 +68,9 @@ mod isolated_peer_transport {
     #[async_trait]
     impl Transport for SimplifiedFetchTransport {
         async fn send(&self, message: &AuthMessage) -> bsv_rs::Result<()> {
-            let url = reqwest::Url::parse(self.0.base_url())
-                .map_err(|error| bsv_rs::Error::AuthError(format!("Invalid peer URL: {error}")))?;
             // Check every send, including handshakes and calls through peer().
             // The SDK owns redirects and proxy handling inside its transport.
-            check_url(&url)?;
+            check_url_str(self.0.base_url())?;
             self.0.send(message).await
         }
 

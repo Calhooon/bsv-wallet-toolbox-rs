@@ -16,8 +16,8 @@ Redirects pass the same check, proxy configuration is disabled, and
 all providers, the explorer header fallback, Arcade SSE, fiat rates, all three
 lookup resolver constructors, certificate issuance, and the unauthenticated
 storage client's HTTP path. Changing a URL or post mode cannot disable it.
-The module stays in services because wallet and storage already depend on
-services; no new module or public API is needed. The authenticated storage
+The shared HTTP module stays in services because wallet and storage already
+depend on services. The authenticated storage
 path uses a separate wrapper around the SDK's `SimplifiedFetchTransport`
 under the same cfgs (#263). It calls the shared `check_url` on the peer's
 configured base URL before every SDK send, including through `peer()`.
