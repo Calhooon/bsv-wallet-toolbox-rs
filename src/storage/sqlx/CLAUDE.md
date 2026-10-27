@@ -556,15 +556,18 @@ The `find_*` and `list_*` methods build SQL dynamically based on provided filter
 
 `find_outputs_internal` (called by the authenticated `find_outputs`) and
 `find_output_row_by_outpoint` (called by `find_output_by_outpoint` and the
-create-action stored-input path) select every `TableOutput` column. Their
-shared `output_from_row` mapper preserves `provided_by`, `purpose`,
+create-action stored-input path), together with internalization's
+`load_existing_outputs`, select every `TableOutput` column by name. Every
+reader using the shared `output_from_row` decoder must select this full row,
+including `provided_by`, `purpose`,
 `output_description`, `spent_by`, `sequence_number`, and
-`spending_description` from those selected columns. A received output reads
+`spending_description`. The decoder is strict: every column uses
+`try_get(...)?`, so a missing or invalid column returns an error instead of
+a default. SQL NULL remains `None` for nullable fields. A received output reads
 back as `providedBy: "storage"`, `purpose: "receive"` when those are stored.
 The default finder includes the locking script; `no_script: true` suppresses
 only the returned script and retains the origin and spending metadata.
-The internalization merge query remains a partial-row caller of this mapper,
-so the mapper still tolerates omitted columns for that caller.
+The allocation reader also names every column in its full-output SELECT.
 
 `list_outputs` uses a separate `WalletOutput` projection whose existing wire
 fields do not include `providedBy` or `purpose`. The sync export has its own
