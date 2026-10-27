@@ -3384,7 +3384,10 @@ fn validate_certificate_hex_arg(value: &str, name: &str) -> bsv_rs::Result<Strin
 
 /// Normalizes and validates a compressed public key argument with the reference's texts
 /// (ts-stack@edf6e03 validationHelpers.ts:185-191,522-534, WERR_INVALID_PARAMETER.ts:14).
-pub(crate) fn validate_public_key_arg(value: &str, name: &str) -> bsv_rs::Result<(String, PublicKey)> {
+pub(crate) fn validate_public_key_arg(
+    value: &str,
+    name: &str,
+) -> bsv_rs::Result<(String, PublicKey)> {
     let normalized = validate_certificate_hex_arg(value, name)?;
     if normalized.len() < 66 {
         return Err(invalid_certificate_argument(name, "at least 66 length."));
