@@ -674,6 +674,14 @@ pub async fn internalize_action_internal(
 // Helper Functions
 // =============================================================================
 
+/// BRC-177's module prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:5`).
+const BRC177_NO_SEND_MODULE_PREFIX: &str = "p nosend ";
+
+/// The reference's WERR_INVALID_PARAMETER text for a `p nosend ` label on
+/// internalizeAction (`Wallet.ts:1249`, built by `WERR_errors.ts:105`).
+const BRC177_INCOMING_REFUSAL: &str =
+    "The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests";
+
 /// Validates internalize action arguments at the storage door with bsv-rs's
 /// validator (#143): a basket insertion's `customInstructions` is at most
 /// 1000 UTF-8 bytes (BRC-100 wallet/0100.md:867 at BRCs@5119a9b; ts-stack
@@ -715,7 +723,24 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
         args.labels.as_ref().map_or(0, Vec::len),
         "labels",
         MAXIMUM_WALLET_COLLECTION_ITEMS,
-    )
+    )?;
+
+    // BRC-177 (#357): the reference refuses a `p nosend ` label on
+    // internalizeAction once the arguments are valid (ts-stack@edf6e03
+    // Wallet.ts:1248-1250, `startsWith` at brc177NoSendExpiry.ts:119), so it
+    // never lands as metadata on an incoming action. The label is matched
+    // as the SDK's validateLabel leaves it, trimmed and lowercased
+    // (validationHelpers.ts:1054).
+    let labels = args.labels.as_deref().unwrap_or_default();
+    if labels.iter().any(|label| {
+        label
+            .trim()
+            .to_lowercase()
+            .starts_with(BRC177_NO_SEND_MODULE_PREFIX)
+    }) {
+        return Err(Error::ValidationError(BRC177_INCOMING_REFUSAL.to_string()));
+    }
+    Ok(())
 }
 
 /// bsv-rs's customInstructions check (#143), its refusal in bsv-rs's words.
