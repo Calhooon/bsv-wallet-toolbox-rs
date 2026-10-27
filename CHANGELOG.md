@@ -87,6 +87,21 @@
   Permission checks retain the raw verifier, matching
   `packages/wallet/wallet-toolbox/src/WalletPermissionsManager.ts:5424-5434`.
 
+- #270: `prove_certificate` now checks `certificate.revocationOutpoint`
+  between subject and signature, `privilegedReason` after verifier, then the
+  requested-name count and uniqueness, as `ts-stack@edf6e03`
+  `packages/sdk/src/wallet/validationHelpers.ts:1498-1501,1511,1513-1518` do.
+  The outpoint must be a 64-hex txid and a canonical vout up to 4294967295,
+  else `The certificate.revocationOutpoint parameter must be a 32-byte txid and canonical numeric output index joined with '.'`
+  or, for the vout, `a safe integer` or `no more than 4294967295 length.`
+  under `certificate.revocationOutpoint vout`. Its txid is lowercased before
+  lookup. A present `privilegedReason` outside 5 to 50 UTF-8 bytes reads
+  `at least 5 length.` or `no more than 50 length.`. More than 100 requested
+  names now read `The fieldsToReveal parameter must be at most 100 fields`
+  instead of `fieldsToReveal must be an array of at most 100 strings`, and a
+  repeated name `The fieldsToReveal parameter must be unique field names`
+  instead of `fieldsToReveal contains duplicate field: <name>`. All read
+  `Validation error: ` at the wallet boundary and precede the lookup.
 - #261: certificate issuance now shares the `prove_certificate` public-key
   validator for `certifier`, before request preparation or HTTP. Invalid
   certifiers return `Validation error: The certifier parameter must be <rule>`
