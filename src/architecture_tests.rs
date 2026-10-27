@@ -16,13 +16,12 @@ use scan::*;
 // fallback_chain_tracker.rs builds one there too. Neither needs an exception.
 // Legacy adapters outside that boundary stay capped until moved in the structure
 // phase. #63 owns typed transport errors; #61/#62 must not spread HTTP into SQL.
+// #248 routes lookup, issuance and remote storage through the guarded transport;
+// their raw reqwest allowances are retired so those clients cannot bypass it.
 const HTTP_CEILINGS: &[(&str, usize)] = &[
     ("src/error.rs", 2),               // reqwest error conversion, not a request
     ("src/services/services.rs", 1),   // fiat exchange rate client
     ("src/storage/client/auth.rs", 1), // remote response authentication
-    ("src/storage/client/storage_client.rs", 2), // remote storage client
-    ("src/wallet/certificate_issuance.rs", 1), // certificate issuer client
-    ("src/wallet/lookup.rs", 4),       // overlay lookup client
 ];
 
 // The current configuration modules. There are NO production env reads at the
