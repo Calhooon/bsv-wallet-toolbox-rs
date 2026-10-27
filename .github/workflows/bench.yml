@@ -1,0 +1,60 @@
+name: Bench
+
+# The door and local-ladder benches against the stored Linux baseline (#54): the measurement of the scoreboard's latency rows. Advisory; the Linux profile is recorded by the captain.
+# Dispatched by the captain (`gh workflow run "Bench" --ref beta|main`), once
+# before a tag and when a reading asks; never on a push run (the owner's word of
+# 2026-10-27, through the stack keeper: a push runs the required set alone).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DOOR_BENCH_SAMPLES: '10'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set benchmark paths
+        run: |
+          {
+            echo "CARGO_TARGET_DIR=$RUNNER_TEMP/door-target"
+            echo "CRITERION_HOME=$RUNNER_TEMP/door-criterion"
+            echo "TMPDIR=$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Test the comparison gate
+        run: python3 tools/bench-compare-test.py
+
+      - name: Measure the door and local explorer ladders
+        run: cargo bench --bench door --features bench-support
+
+      # Keep the measured candidate in the log so the captain can record the
+      # runner's numbers without borrowing another host's profile or guessing.
+      - name: Record the Linux candidate
+        run: |
+          tools/bench-compare "$CRITERION_HOME" --baseline "$RUNNER_TEMP/baseline-linux.json" --profile linux --machine ubuntu-latest --write
+          cat "$RUNNER_TEMP/baseline-linux.json"
+
+      - name: Compare p99 with the stored Linux baseline
+        run: |
+          baseline_status="$(python3 -c 'import json; print(json.load(open("benches/baseline.json"))["profiles"]["linux"]["status"])')"
+          if [ "$baseline_status" = pending ]; then
+            echo "::notice::Linux baseline pending; review and commit the Linux candidate above to enable regression checks."
+          else
+            tools/bench-compare "$CRITERION_HOME" --profile linux
+          fi
