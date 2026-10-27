@@ -18,8 +18,27 @@
   `services.arc_taal` matches on the option (`if let Some(arc) =
   &services.arc_taal`) and treats `None` as Arcade mode, where
   `services.arcade` holds the broadcaster.
+### Added
+
+- #187: `WalletStorageWriter::update_transaction_status_after_post`, a
+  defaulted method taking the broadcasters' per-instance results
+  (`WalletServices::post_beef`'s `Vec<PostBeefResult>`) or the post's own
+  fault, under the owner's ruling 18.5 (a). `StorageSqlx` and
+  `WalletStorageManager` write the post note and then move the statuses;
+  the default (and `StorageClient`) moves the statuses only.
 
 ### Fixed
+
+- #187: `create_action` with `signAndProcess` now writes the
+  `processActionPost` note on `proven_tx_reqs.history`, as the door's post
+  path does and as every post in `ts-stack@edf6e03` writes its notes through
+  `shareReqsWithWorld` (`processAction.ts:151`). Until now its history stayed
+  `{}`. A host reading the history (the CLI's spend gate) sees a note on
+  this path. On both paths the note now also carries `reqStatus` and
+  `attempts` as the request stands before the status writes, and the
+  reference's `successCount`, `doubleSpendCount`, `statusErrorCount` and
+  `serviceErrorCount` (`attemptToPostReqsToNetwork.ts` 258-271). The note
+  comes ahead of the status write's hint note.
 
 - #295: both change allocators (the create door's and the public
   `StorageSqlx::allocate_change_input`) and both counts take only
