@@ -13,11 +13,13 @@
   own README badge; `nightly-mutants.yml` is `mutants.yml` (`Mutants`). A
   cancelled push run (a newer landing's push supersedes it) is never a red.
   The required contexts and release.yml's tag run are unchanged.
-- CI: the Test Suite job runs `tools/arch-doc-tests.sh` after the unit tests
-  (with the step's `sqlite,remote` features through `ARCH_DOC_TEST_FEATURES`,
-  so the build is reused), so a test named in an invariants table of
-  `docs/ARCHITECTURE.md` that does not exist, or a D7 citation that goes
-  missing, fails the required set; the script ran locally alone before.
+- CI: the Test Suite job runs `tools/arch-doc-tests.sh` after the unit and
+  integration tests, the `--lib` rows with the unit-test step's features and
+  the `--test` rows with the integration step's (`ARCH_DOC_LIB_FEATURES`,
+  `ARCH_DOC_TEST_FEATURES`), so cargo lists from the builds already made; a
+  test named in an invariants table of `docs/ARCHITECTURE.md` that does not
+  exist, or a D7 citation that goes missing, fails the required set. The
+  script ran locally alone before.
 - #317, public defaults: Arcade is the default broadcaster mode, the
   owner's word of 2026-10-27 ("arc is just deprecated, arcade is the
   standard"). The public lines that move:
