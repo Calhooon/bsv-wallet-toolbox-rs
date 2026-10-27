@@ -39,6 +39,12 @@
   without the field name. Both retain the `Validation error: ` prefix and match
   `ts-stack@edf6e03 Wallet.ts:764,744`. The internal identity-key parse is unchanged;
   the reference derives that key and has no corresponding issuance error text.
+- #263: unit-test and `bench-support` authenticated storage Peers now check
+  their configured base URL against the #182 loopback policy before each SDK
+  transport send, including sends through `peer()`. Non-loopback destinations
+  return the existing rule 28 refusal; loopback handshakes reach the SDK.
+  The SDK still owns redirects and proxy handling. Production keeps its
+  transport and public types; wire fields are unchanged.
 
 - #260: `prove_certificate` now validates type, serial, certifier, subject,
   signature, requested name lengths, then verifier before the certificate
