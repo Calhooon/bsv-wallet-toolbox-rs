@@ -647,6 +647,7 @@ mod sync_received {
 /// port spells a received wallet payment's purpose `receive` where the
 /// reference spells it `change` (#169), so a mined receipt stays eligible.
 mod managed_change_filters {
+    use super::public_received_rule::public_count_and_pick;
     use super::*;
 
     const CASES: &[(&str, &str, bool)] = &[
@@ -690,7 +691,7 @@ mod managed_change_filters {
         ),
     ];
 
-    async fn one_coin(case: &str, plant: &str) -> (StorageSqlx, i64, i64, i64) {
+    pub(super) async fn one_coin(case: &str, plant: &str) -> (StorageSqlx, i64, i64, i64) {
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage.migrate(case, "02test_key").await.unwrap();
         storage.make_available().await.unwrap();
@@ -742,16 +743,9 @@ mod managed_change_filters {
         for &(case, plant, eligible) in CASES {
             for exclude_sending in [true, false] {
                 let (storage, user_id, basket_id, spender) = one_coin(case, plant).await;
-                let count = storage
-                    .count_change_inputs(user_id, basket_id, exclude_sending)
-                    .await
-                    .unwrap();
-                let picked = storage
-                    .allocate_change_input(user_id, basket_id, 1000, exclude_sending, spender)
-                    .await
-                    .unwrap();
                 assert_eq!(
-                    (count, picked.is_some()),
+                    public_count_and_pick(&storage, user_id, basket_id, spender, exclude_sending)
+                        .await,
                     (i64::from(eligible), eligible),
                     "public, {case}, exclude_sending={exclude_sending}"
                 );
@@ -776,16 +770,9 @@ mod managed_change_filters {
             for (exclude_sending, eligible) in [(false, with_sending), (true, without_sending)] {
                 let plant = format!("UPDATE transactions SET status = '{status}'");
                 let (storage, user_id, basket_id, spender) = one_coin(status, &plant).await;
-                let count = storage
-                    .count_change_inputs(user_id, basket_id, exclude_sending)
-                    .await
-                    .unwrap();
-                let picked = storage
-                    .allocate_change_input(user_id, basket_id, 1000, exclude_sending, spender)
-                    .await
-                    .unwrap();
                 assert_eq!(
-                    (count, picked.is_some()),
+                    public_count_and_pick(&storage, user_id, basket_id, spender, exclude_sending)
+                        .await,
                     (i64::from(eligible), eligible),
                     "public, parent {status}, exclude_sending={exclude_sending}"
                 );
@@ -793,3 +780,7 @@ mod managed_change_filters {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "public_received_rule.rs"]
+mod public_received_rule;
