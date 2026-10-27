@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, RwLock};
 
 use crate::lock_utils::{lock_read, lock_write};
+#[cfg(test)]
+use crate::services::arcade_test_options;
 use crate::services::broadcast_memory::{
     apply_sticky_provider_order, unproven_ancestors_in_beef, BroadcastMemory, BroadcastStatus,
     BROADCAST_STATUS_ACCEPTED, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2, PROVIDER_BITAILS,
@@ -3203,8 +3205,7 @@ mod tests {
             "../../tests/fixtures/data/services/post_beef_named_instances.json"
         ))
         .unwrap();
-        let services =
-            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
+        let services = Services::with_options(Chain::Main, arcade_test_options()).unwrap();
         let mut providers = ServiceCollection::new("postBeef");
         let mut counts = Vec::new();
         for instance in fixture["instances"].as_array().unwrap() {
@@ -3264,7 +3265,7 @@ mod tests {
 
     #[test]
     fn test_services_creation() {
-        let services = Services::with_options(Chain::Main, crate::services::arcade_test_options());
+        let services = Services::with_options(Chain::Main, arcade_test_options());
         assert!(services.is_ok());
         let services = services.unwrap();
         assert!(services.get_merkle_path_count().unwrap() >= 1);
@@ -3273,7 +3274,7 @@ mod tests {
 
     #[test]
     fn test_services_options() {
-        let options = crate::services::arcade_test_options()
+        let options = arcade_test_options()
             .with_woc_api_key("test-key")
             .with_bitails_api_key("bitails-key");
 
@@ -3283,8 +3284,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_fiat_exchange_rate() {
-        let services =
-            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
+        let services = Services::with_options(Chain::Main, arcade_test_options()).unwrap();
 
         // Test USD to USD (should be 1.0)
         let rate = services
@@ -3347,8 +3347,8 @@ mod tests {
         // Build Services with a chaintracks_url configured. The URL doesn't need
         // to be reachable — we only test that get_chain_tracker() returns Ok
         // (i.e. it finds a ChainTracker) rather than the "not configured" error.
-        let options = crate::services::arcade_test_options()
-            .with_chaintracks_url("https://fake-chaintracks.example.com");
+        let options =
+            arcade_test_options().with_chaintracks_url("https://fake-chaintracks.example.com");
         let services = Services::with_options(Chain::Main, options).unwrap();
 
         let result = services.get_chain_tracker().await;
@@ -3363,8 +3363,7 @@ mod tests {
     async fn test_get_chain_tracker_errors_when_not_configured() {
         // Default mainnet Services has no chaintracks_url, so get_chain_tracker
         // should return an error indicating it is not configured.
-        let services =
-            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
+        let services = Services::with_options(Chain::Main, arcade_test_options()).unwrap();
 
         let result = services.get_chain_tracker().await;
         assert!(
@@ -3393,7 +3392,7 @@ mod tests {
     fn arcade_services() -> Services {
         Services::with_options(
             Chain::Main,
-            crate::services::arcade_test_options().with_arcade(
+            arcade_test_options().with_arcade(
                 crate::services::ARCADE_V2_MAINNET,
                 Some(ArcadeConfig::with_callback_token("tok")),
             ),
@@ -3440,8 +3439,7 @@ mod tests {
     #[test]
     fn bananablocks_is_the_third_explorer_and_can_be_turned_off() {
         for chain in [Chain::Main, Chain::Test] {
-            let services =
-                Services::with_options(chain, crate::services::arcade_test_options()).unwrap();
+            let services = Services::with_options(chain, arcade_test_options()).unwrap();
             assert_eq!(
                 provider_order(&services.get_raw_tx_services),
                 vec!["WhatsOnChain", "BananaBlocks", "Bitails"],
@@ -3454,7 +3452,7 @@ mod tests {
             );
         }
         assert_eq!(
-            Services::with_options(Chain::Test, crate::services::arcade_test_options())
+            Services::with_options(Chain::Test, arcade_test_options())
                 .unwrap()
                 .bananablocks
                 .as_ref()
@@ -3462,11 +3460,8 @@ mod tests {
             Some(crate::services::providers::BANANABLOCKS_TESTNET_URL.to_string())
         );
 
-        let off = Services::with_options(
-            Chain::Main,
-            crate::services::arcade_test_options().without_bananablocks(),
-        )
-        .unwrap();
+        let off = Services::with_options(Chain::Main, arcade_test_options().without_bananablocks())
+            .unwrap();
         assert!(off.bananablocks.is_none());
         for order in [
             provider_order(&off.get_raw_tx_services),
@@ -3478,15 +3473,14 @@ mod tests {
         }
         let empty = Services::with_options(
             Chain::Main,
-            crate::services::arcade_test_options().with_bananablocks_base("  "),
+            arcade_test_options().with_bananablocks_base("  "),
         )
         .unwrap();
         assert!(empty.bananablocks.is_none(), "an empty base is off");
 
         let mirror = Services::with_options(
             Chain::Main,
-            crate::services::arcade_test_options()
-                .with_bananablocks_base("https://mirror.example/api/v1/"),
+            arcade_test_options().with_bananablocks_base("https://mirror.example/api/v1/"),
         )
         .unwrap();
         assert_eq!(
@@ -3777,8 +3771,7 @@ mod tests {
     fn services_with_status_providers(
         providers: Vec<(&str, StdArc<MockStatusProvider>)>,
     ) -> Services {
-        let mut services =
-            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
+        let mut services = Services::with_options(Chain::Main, arcade_test_options()).unwrap();
         let mut collection = ServiceCollection::new("getStatusForTxids");
         for (name, provider) in providers {
             collection.add(name, provider as StatusForTxidsProvider);
@@ -4090,11 +4083,9 @@ mod tests {
                         };
                         for start in 0..4 {
                             for use_next in [false, true] {
-                                let mut services = Services::with_options(
-                                    Chain::Main,
-                                    crate::services::arcade_test_options(),
-                                )
-                                .unwrap();
+                                let mut services =
+                                    Services::with_options(Chain::Main, arcade_test_options())
+                                        .unwrap();
                                 let mut collection = ServiceCollection::new("getStatusForTxids");
                                 collection.add(
                                     "ArcadeV2",
@@ -4200,7 +4191,7 @@ mod tests {
     async fn hash_to_header_asks_no_explorer_when_the_header_service_fails() {
         let services = Services::with_options(
             Chain::Main,
-            crate::services::arcade_test_options().with_chaintracks_url("http://127.0.0.1:9"),
+            arcade_test_options().with_chaintracks_url("http://127.0.0.1:9"),
         )
         .unwrap();
         let err = services
@@ -4221,7 +4212,7 @@ mod tests {
     fn the_tracker_holds_no_explorer_unless_break_glass_is_set() {
         let s = Services::with_options(
             Chain::Main,
-            crate::services::arcade_test_options().with_chaintracks_url("http://127.0.0.1:9"),
+            arcade_test_options().with_chaintracks_url("http://127.0.0.1:9"),
         )
         .unwrap();
         assert!(!ServicesOptions::default().break_glass_explorer_headers);
@@ -4229,7 +4220,7 @@ mod tests {
 
         let s = Services::with_options(
             Chain::Test,
-            crate::services::arcade_test_options()
+            arcade_test_options()
                 .with_chaintracks_url("http://127.0.0.1:9")
                 .with_break_glass_explorer_headers(true),
         )
@@ -4250,8 +4241,7 @@ mod tests {
         providers: Vec<(&str, GetMerklePathResult)>,
         chaintracks_url: Option<&str>,
     ) -> Services {
-        let mut services =
-            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
+        let mut services = Services::with_options(Chain::Main, arcade_test_options()).unwrap();
 
         // Replace merkle path service collection with mocks
         let mut collection = ServiceCollection::new("getMerklePath");
