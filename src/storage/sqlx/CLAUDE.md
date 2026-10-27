@@ -72,6 +72,7 @@ pub struct StorageSqlx {
     broadcast_memory: Arc<SqlxBroadcastMemory>,
     in_flight_picks: Arc<InFlightPicks>,             // createAction's in-flight reservations
     // #[cfg(test)] busy hooks: Arc<AtomicBool> each
+    // #[cfg(test)] writer_acquires: Arc<AtomicUsize>, one per store, shared by clones; counts writer handouts (#244)
 }
 ```
 
