@@ -3,6 +3,9 @@
 //! The schema column is an INTEGER and the sync INSERT binds the u32, so a
 //! stored value runs up to 0xFFFFFFFF (the reference's column is
 //! `integer('sequenceNumber').unsigned()`, KnexMigrations.ts:766).
+//! `list_actions` serves an input's sequence from the action's raw
+//! transaction, not the column (#307, `list_action_inputs_tests.rs`), so it
+//! is not one of these readers.
 
 use super::sync::{entity_names, get_sync_chunk_internal};
 use crate::storage::{
@@ -10,7 +13,6 @@ use crate::storage::{
     WalletStorageWriter,
 };
 use crate::Result;
-use bsv_rs::wallet::ListActionsArgs;
 
 /// The values at and above 2^31 that an i32 decode refuses.
 const WIDE: [u32; 2] = [u32::MAX, 1 << 31];
@@ -75,8 +77,8 @@ impl Stored {
             .unwrap();
     }
 
-    /// `find_outputs`, `find_output_by_outpoint`, the `list_actions` inputs,
-    /// the sync export and the allocator, in that order.
+    /// `find_outputs`, `find_output_by_outpoint`, the sync export and the
+    /// allocator, in that order.
     async fn read_all(&self) -> Vec<Result<Option<u32>>> {
         let mut reads = Vec::new();
         let found = self
@@ -89,40 +91,9 @@ impl Stored {
             .find_output_by_outpoint(self.auth.user_id.unwrap(), &self.txid, 0)
             .await;
         reads.push(by_outpoint.map(|output| output.unwrap().sequence_number));
-        reads.push(self.list_action_input().await);
         reads.push(self.sync_export().await);
         reads.push(self.allocate().await);
         reads
-    }
-
-    async fn list_action_input(&self) -> Result<Option<u32>> {
-        let result = self
-            .storage
-            .list_actions(
-                &self.auth,
-                ListActionsArgs {
-                    labels: vec![],
-                    label_query_mode: None,
-                    include_labels: None,
-                    include_inputs: Some(true),
-                    include_input_source_locking_scripts: None,
-                    include_input_unlocking_scripts: None,
-                    include_outputs: None,
-                    include_output_locking_scripts: None,
-                    limit: Some(10),
-                    offset: Some(0),
-                    seek_permission: None,
-                },
-            )
-            .await?;
-        let inputs: Vec<u32> = result
-            .actions
-            .iter()
-            .flat_map(|action| action.inputs.iter().flatten())
-            .map(|input| input.sequence_number)
-            .collect();
-        assert_eq!(inputs.len(), 1);
-        Ok(Some(inputs[0]))
     }
 
     async fn sync_export(&self) -> Result<Option<u32>> {

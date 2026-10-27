@@ -1,6 +1,6 @@
 use super::{
-    sequence_number_from_row, AbortActionArgs, AuthId, Duration, Error, ListActionsArgs,
-    ListActionsResult, Result, Row, StorageSqlx, Utc, WalletStorageWriter,
+    AbortActionArgs, AuthId, Duration, Error, ListActionsArgs, ListActionsResult, Result, Row,
+    StorageSqlx, Utc, WalletStorageWriter,
 };
 use crate::storage::sqlx::internalize_action::{
     validate_array_bound, MAXIMUM_WALLET_COLLECTION_ITEMS,
@@ -345,14 +345,17 @@ impl StorageSqlx {
                 action.outputs = Some(wallet_outputs);
             }
 
-            // Fetch inputs if requested
+            // Fetch inputs if requested: enrichActionInputs
+            // (ts-stack@edf6e03 listActionsKnex.ts:66-95, #307).
             if include_inputs {
-                // Inputs are outputs from other transactions spent by this transaction
+                // Inputs are outputs from other transactions spent by this
+                // transaction, in the unpaged finder's order (:73-76): no
+                // ORDER BY there, so the rows come by output id.
                 let inputs_sql = r#"
-                    SELECT o.txid, o.vout, o.satoshis, o.locking_script, o.output_description, o.sequence_number
+                    SELECT o.txid, o.vout, o.satoshis, o.locking_script, o.output_description
                     FROM outputs o
                     WHERE o.spent_by = ?
-                    ORDER BY o.sequence_number ASC
+                    ORDER BY o.output_id ASC
                 "#;
                 let input_rows = sqlx::query(inputs_sql)
                     .bind(transaction_id)
@@ -361,16 +364,20 @@ impl StorageSqlx {
 
                 let mut wallet_inputs: Vec<WalletActionInput> = Vec::new();
 
-                // If we need unlocking scripts, we need to parse the raw transaction
-                let _raw_tx: Option<Vec<u8>> = if include_input_unlocking_scripts {
-                    let tx_row =
-                        sqlx::query("SELECT raw_tx FROM transactions WHERE transaction_id = ?")
-                            .bind(transaction_id)
-                            .fetch_optional(&self.reader)
-                            .await?;
-                    tx_row.and_then(|r| r.get("raw_tx"))
-                } else {
-                    None
+                // The action's raw transaction, read and parsed once whatever
+                // includeInputUnlockingScripts says (:78-81): each input's
+                // sequence and unlocking script come from it.
+                let raw_tx = match txid_str.as_deref() {
+                    Some(txid_hex) if !input_rows.is_empty() => {
+                        self.get_proven_or_raw_tx(txid_hex).await?
+                    }
+                    _ => None,
+                };
+                let raw_inputs = match raw_tx {
+                    Some(raw_tx) => std::mem::take(
+                        &mut bsv_rs::transaction::Transaction::from_binary(&raw_tx)?.inputs,
+                    ),
+                    None => Vec::new(),
                 };
 
                 for i_row in input_rows.iter() {
@@ -384,7 +391,11 @@ impl StorageSqlx {
                             None
                         };
                     let input_description: Option<String> = i_row.get("output_description");
-                    let sequence_number = sequence_number_from_row(i_row)?;
+                    // The raw input spending this outpoint (:84).
+                    let raw_input = raw_inputs.iter().find(|input| {
+                        input.source_txid == source_txid
+                            && input.source_output_index == source_vout as u32
+                    });
 
                     // Parse source txid
                     let source_txid_bytes: [u8; 32] = if let Some(ref txid_hex) = source_txid {
@@ -398,9 +409,14 @@ impl StorageSqlx {
                         [0u8; 32]
                     };
 
-                    // Get unlocking script from raw tx if available
-                    // Note: Full implementation would parse the raw transaction
-                    let unlocking_script: Option<Vec<u8>> = None;
+                    // The unlocking script from the same input (:93).
+                    let unlocking_script: Option<Vec<u8>> = if include_input_unlocking_scripts {
+                        raw_input
+                            .and_then(|input| input.unlocking_script.as_ref())
+                            .map(|script| script.to_binary())
+                    } else {
+                        None
+                    };
 
                     wallet_inputs.push(WalletActionInput {
                         source_outpoint: Outpoint {
@@ -411,7 +427,8 @@ impl StorageSqlx {
                         source_locking_script,
                         unlocking_script,
                         input_description: input_description.unwrap_or_default(),
-                        sequence_number: sequence_number.unwrap_or(u32::MAX),
+                        // `input?.sequence || 0` (:89).
+                        sequence_number: raw_input.map_or(0, |input| input.sequence),
                     });
                 }
                 action.inputs = Some(wallet_inputs);
