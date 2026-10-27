@@ -224,7 +224,7 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `find_certificates_internal()` | Internal certificate query |
 | `find_certificate_fields()` | Get fields for a certificate |
 | `find_proven_tx_reqs_internal()` | Internal proven_tx_req query |
-| `get_proven_or_raw_tx()` | Get proven tx or raw tx bytes |
+| `get_proven_or_raw_tx()` | Raw tx bytes from `proven_txs`, else a `proven_tx_reqs` row in the reference's six statuses; never `transactions.raw_tx` (#351) |
 | `find_or_insert_sync_state_internal()` | Internal sync state lookup |
 | `get_labels_for_transaction_id()` | Get labels for a transaction |
 | `get_tags_for_output_id()` | Get tags for an output |
@@ -653,12 +653,15 @@ The allocation reader also names every column in its full-output SELECT.
 `list_actions` with `includeInputs` does not read `sequence_number` (#307):
 as `enrichActionInputs` (ts-stack@edf6e03 `listActionsKnex.ts:66-95`), it
 reads the action's raw transaction once when the action has inputs, whatever
-`includeInputUnlockingScripts` says, through `get_proven_or_raw_tx`
-(`proven_txs`, then `transactions.raw_tx`; the reference's
-`getRawTxOfKnownValidTransaction` reads `proven_txs`, then a `proven_tx_reqs`
-row `unsent`, `unmined`, `unconfirmed`, `sending`, `nosend` or `completed`,
-`StorageKnex.ts:189-211` in `getProvenOrRawTx`, which `getRawTxOfKnownValidTransaction` calls at 471-508), parses it with bsv-rs (a raw transaction that
-does not parse is the call's error, as `fromBinary` throws), matches each
+`includeInputUnlockingScripts` says, through `get_proven_or_raw_tx`, as the
+reference's `getRawTxOfKnownValidTransaction` (`StorageKnex.ts:507-508`)
+through `getProvenOrRawTx` (189-211): the `proven_txs` row, else a
+`proven_tx_reqs` row `unsent`, `unmined`, `unconfirmed`, `sending`, `nosend`
+or `completed` (`RAW_TX_REQ_STATUSES`); `transactions.raw_tx` is not read, so
+an `invalid` or `doubleSpend` request serves 0 though the row keeps its copy
+(#351). It parses the bytes with bsv-rs (a raw transaction that does not
+parse is the call's error, `SdkError(ReaderUnderflow { .. })` for short
+bytes, as `fromBinary` throws), matches each
 input by source txid and vout and serves its `sequence`, 0 when there is no
 raw transaction or no such input (`input?.sequence || 0`, :89), and its
 unlocking script under `includeInputUnlockingScripts` (:93). The inputs come
