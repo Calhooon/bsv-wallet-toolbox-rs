@@ -1,5 +1,9 @@
 # Rust Wallet Toolbox
 
+[![CI](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/ci.yml?query=branch%3Amain) [![Matrix](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/matrix.yml/badge.svg?branch=main)](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/matrix.yml?query=branch%3Amain) [![Coverage](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/coverage.yml?query=branch%3Amain) [![Bench](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/bench.yml/badge.svg?branch=main)](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/bench.yml?query=branch%3Amain) [![Dependents](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/dependents.yml/badge.svg?branch=main)](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/dependents.yml?query=branch%3Amain) [![Mutants](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/mutants.yml/badge.svg?branch=main)](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/mutants.yml?query=branch%3Amain) [![Fuzz](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/fuzz.yml/badge.svg?branch=main)](https://github.com/Calhooon/bsv-wallet-toolbox-rs/actions/workflows/fuzz.yml?query=branch%3Amain)
+
+The CI badge is the required set on `main`, the gate every pull request and push runs; the others are dispatched measurements (run once before a tag, never on a push), each its own workflow.
+
 Storage, signing, services and monitoring for BSV wallets. The release of record
 is the tag **v0.9.0**, published on crates.io as **0.9.0** (the same version);
 the repository's Releases page carries a Release per tag. It declares
@@ -61,8 +65,11 @@ cargo fmt --all -- --check
 ```
 
 [.github/workflows/ci.yml](.github/workflows/ci.yml) runs SQLite unit, integration
-and doc tests, formatting, clippy and named vectors on PR heads and main pushes;
-it also builds documentation and collects coverage. The vector job checks
+and doc tests, formatting, clippy, named vectors and documentation on pull
+requests and pushes, the required set and nothing more (the owner's word of
+2026-10-27); coverage, the door bench, the dependents check, the full OS and
+toolchain matrix, mutants and fuzz are dispatched workflows with their own
+badges above, run once before a tag. The vector job checks
 broadcast-body, status-word and cross-SDK fixtures. [deny.toml](deny.toml) is
 the stack's dependency policy for `cargo deny check`, which the workflow does
 not run. Dependabot moves the stack's crates daily at 18:00Z under

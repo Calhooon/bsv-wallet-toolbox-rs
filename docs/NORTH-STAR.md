@@ -97,8 +97,8 @@ tests pass with recorded evidence; a later phase also requires earlier exits.
 - [#54][i54]: measured numbers reach the scoreboard and a planted performance regression fails a PR.
 - [#55][i55]: two runs on one tree produce identical JSON and an increased count fails.
 - [#56][i56]: a planted architecture violation fails and structure work shrinks the allowlists.
-- [#57][i57]: nightly publishes mutation scores per file, with the issue's floor enforced.
-- [#58][i58]: fuzz targets run nightly without a crash and the corpus grows.
+- [#57][i57]: the dispatched `Mutants` workflow (once before a tag; no schedule, the owner's word of 2026-10-25 and 2026-10-27) publishes mutation scores per file, with the issue's floor enforced.
+- [#58][i58]: fuzz targets run on dispatch (once before a tag) without a crash and the corpus grows.
 - [#59][i59]: a breaking minor change or a dependent build failure fails CI.
 - [#60][i60]: CI writes the measured numbers into this table.
 

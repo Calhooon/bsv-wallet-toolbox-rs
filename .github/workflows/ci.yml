@@ -11,20 +11,22 @@ name: CI
 # the six its older workflow has (those five and `Documentation`) until beta
 # merges into it. Renaming one of those jobs removes its context and blocks
 # every PR into that branch until the protection is updated. Every action is
-# pinned by commit sha. `dependents` runs on a push only and is not required.
+# pinned by commit sha.
 # The required test and clippy steps build `sqlite,remote`, so the storage client's
 # wire witnesses (tests/storage_wire.rs, #202) gate every pull request. The
 # integration step and the doc-test step also enable `bench-support` (the four
 # #182 witnesses; one library build shared, #253).
 #
-# The balance (the owner's word of 2026-10-26, through the stack keeper): a pull
-# request runs the required set on one OS and one toolchain; a push to `main`
-# or `beta`, and a tag through release.yml, runs the full matrix (both OSes,
-# the beta toolchain, coverage, bench; dependents on a push, never on a tag). The
-# `dependents` job builds the CLI's beta on beta and its main on main (#208) and
-# fails the run when a dependent does not build or test against the tree: since
-# the CLI's beta 3268281 (2026-10-26) nothing excuses it.
-# A dependent's TEXT-DIFF line (a fixture's message text alone, #252) is a row, never a failure.
+# The balance (the owner's word of 2026-10-27, through the stack keeper, which
+# replaces the 2026-10-26 reading): a push to `main` or `beta` runs exactly the
+# required set, the same as a pull request, nothing more. The measurements that
+# used to ride the push run (the full matrix of both OSes and the beta toolchain,
+# coverage, the door bench, the dependents check) run on `workflow_dispatch` and
+# once before a tag, each in its own workflow with its own badge (`matrix.yml`,
+# `coverage.yml`, `bench.yml`, `dependents.yml`; `mutants.yml` and `fuzz.yml`
+# likewise), never on the push run. A newer push cancels the previous run; a
+# cancelled run is never a red. release.yml calls this file on a tag, so a tag
+# runs the required set too; the captain dispatches the measurements before it.
 on:
   pull_request:
     branches: [main, beta]
@@ -49,68 +51,16 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
-  # Advisory context, not required by branch protection. This baseline belongs
-  # to the Linux runner; other hosts' numbers are never compared with it. Until the
-  # captain records a Linux baseline, the job logs a candidate and defers comparison.
-  # At DOOR_BENCH_SAMPLES=10 a p99 is close to the maximum of ten batches, and a
-  # 5 percent gate on a shared runner will flap. The job stays advisory until a
-  # Linux profile is recorded and a week of runs shows the spread; the samples
-  # rise within the 25 minute timeout once a cache step exists, and the captain
-  # decides when the context becomes required.
-  bench:
-    name: bench
-    if: ${{ github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      DOOR_BENCH_SAMPLES: '10'
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Set benchmark paths
-        run: |
-          {
-            echo "CARGO_TARGET_DIR=$RUNNER_TEMP/door-target"
-            echo "CRITERION_HOME=$RUNNER_TEMP/door-criterion"
-            echo "TMPDIR=$RUNNER_TEMP"
-          } >> "$GITHUB_ENV"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-
-      - name: Test the comparison gate
-        run: python3 tools/bench-compare-test.py
-
-      - name: Measure the door and local explorer ladders
-        run: cargo bench --bench door --features bench-support
-
-      # Keep the measured candidate in the log so the captain can record the
-      # runner's numbers without borrowing another host's profile or guessing.
-      - name: Record the Linux candidate
-        run: |
-          tools/bench-compare "$CRITERION_HOME" --baseline "$RUNNER_TEMP/baseline-linux.json" --profile linux --machine ubuntu-latest --write
-          cat "$RUNNER_TEMP/baseline-linux.json"
-
-      - name: Compare p99 with the stored Linux baseline
-        run: |
-          baseline_status="$(python3 -c 'import json; print(json.load(open("benches/baseline.json"))["profiles"]["linux"]["status"])')"
-          if [ "$baseline_status" = pending ]; then
-            echo "::notice::Linux baseline pending; review and commit the Linux candidate above to enable regression checks."
-          else
-            tools/bench-compare "$CRITERION_HOME" --profile linux
-          fi
-
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # A pull request runs the required cell only; a push or a tag runs every cell.
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
-        rust: ${{ github.event_name == 'pull_request' && fromJSON('["stable"]') || fromJSON('["stable", "beta"]') }}
+        # The required cell only, on a pull request, a push and a tag alike (the
+        # owner's word of 2026-10-27); matrix.yml runs every cell on dispatch.
+        os: [ubuntu-latest]
+        rust: [stable]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -280,44 +230,6 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
-  coverage:
-    name: Code Coverage
-    if: ${{ github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-          components: llvm-tools-preview
-
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ubuntu-coverage-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            ubuntu-coverage-
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
-        with:
-          tool: cargo-llvm-cov
-
-      - name: Generate coverage
-        run: cargo llvm-cov --lib --features sqlite --lcov --output-path lcov.info
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
-
   # The public API against the last release tag before this commit. The release
   # type is the one the version names: a Cargo.toml minor (0.x) or major above
   # the baseline's is the breaking release itself (the bump PR is the owner's
@@ -394,34 +306,6 @@ jobs:
   # its branch named after the line under test (the CLI's beta on beta, #208;
   # its default branch when it has none), built and tested against this tree as
   # a path dependency. The clones are reads of public repositories; no token.
-  dependents:
-    name: dependents
-    if: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ${{ runner.temp }}/dependents-target
-          key: ubuntu-dependents-${{ hashFiles('Cargo.toml', 'docs/DEPENDENTS.md') }}
-          restore-keys: |
-            ubuntu-dependents-
-
-      - name: Build and test the dependents against this tree
-        run: tools/dependents-check.sh --ci
-        env:
-          DEPENDENTS_TARGET_DIR: ${{ runner.temp }}/dependents-target
-
   # One bsv-rs per lock (bsv-stack-lean #182): a committed Cargo.lock holding
   # two bsv-rs entries fails, the gate a self-merging stack PR stands behind.
   locks:

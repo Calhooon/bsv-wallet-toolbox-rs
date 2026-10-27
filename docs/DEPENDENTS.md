@@ -24,8 +24,10 @@ to a path dependency on the tree under test, and runs `cargo build --locked`
 (falling back to `cargo build` with a note) and `cargo test --locked --no-fail-fast`
 on every target (`cargo test --no-fail-fast` when the build fell back). A row whose test column is not
 `default` runs that narrower command instead, and its reason column says why;
-a narrowed row is noted in the summary. The CI job `dependents` runs the rows
-marked `yes`; a private repository needs a token the job does not hold, so its
+a narrowed row is noted in the summary. The dispatched workflow `dependents.yml`
+(`gh workflow run Dependents --ref beta|main`) runs the rows marked `yes`, once
+before a tag and when the pin lane asks, never on a push run (the owner's word of
+2026-10-27); a private repository needs a token the job does not hold, so its
 row runs on a laptop with `--from`.
 Every probe or clone fault appears as a summary row, and the job fails for the named reason.
 

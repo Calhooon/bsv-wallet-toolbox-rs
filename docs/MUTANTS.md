@@ -1,6 +1,6 @@
 # Mutation evidence (#57)
 
-The independent `Nightly mutants` workflow runs on manual dispatch only. Its
+The independent `Mutants` workflow (`mutants.yml`, named `Nightly mutants` until 2026-10-27) runs on manual dispatch only. Its
 04:41 UTC schedule is off since 2026-10-25 (#153). Two dispatches against beta
 (runs 40126339129 and 40136138380) showed sixteen round-robin shards over 1994
 mutants at about 2.8 minutes a mutant, nearly all of it the per-mutant
@@ -29,7 +29,7 @@ with the schedule off, the `main` copy is what makes the dispatch available.
 The floors in `tools/mutants-floor.json` were measured on `beta`; `main` is the
 stable line. A dispatch measures the commit it was given (the sha, so every
 shard and the scores job read one tree however long they run), so
-`gh workflow run "Nightly mutants" --ref beta` measures beta by hand. Dispatch
+`gh workflow run Mutants --ref beta` measures beta by hand. Dispatch
 only when nothing is landing: the shards take every runner slot the account
 has. A dispatch
 against `main` compares main's tree against the floors beta measured, since the

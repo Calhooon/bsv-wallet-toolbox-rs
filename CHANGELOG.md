@@ -4,6 +4,15 @@
 
 ### Changed
 
+- CI: a push to `main` or `beta` runs exactly the required set, the same as a
+  pull request (the owner's word of 2026-10-27, through the stack keeper:
+  "sick of seeing all these CI failures"). The door bench, coverage, the
+  dependents check and the full OS and toolchain matrix left `ci.yml` for their
+  own dispatched workflows (`bench.yml`, `coverage.yml`, `dependents.yml`,
+  `matrix.yml`), run once before a tag and when a reading asks, each with its
+  own README badge; `nightly-mutants.yml` is `mutants.yml` (`Mutants`). A
+  cancelled push run (a newer landing's push supersedes it) is never a red.
+  The required contexts and release.yml's tag run are unchanged.
 - #317, public defaults: Arcade is the default broadcaster mode, the
   owner's word of 2026-10-27 ("arc is just deprecated, arcade is the
   standard"). The public lines that move:
