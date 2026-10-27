@@ -5,7 +5,7 @@
 //! row, as `0177.md:53` asks. The prefix is exact (`brc177NoSendExpiry.ts:5`,
 //! matched by `startsWith` at `:119`): anything else is ordinary metadata.
 //! A label the BRC-177 grammar refuses answers with the grammar's own text
-//! first (#359, `validation_nosend_grammar.rs`).
+//! ahead of it (#359, `validation_nosend_grammar.rs`).
 
 use super::super::create_action_internal;
 use super::super::test_support::seed_change_output;
