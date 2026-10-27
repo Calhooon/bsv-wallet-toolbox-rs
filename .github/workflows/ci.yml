@@ -23,6 +23,7 @@ name: CI
 # `dependents` job builds the CLI's beta on beta and its main on main (#208) and
 # fails the run when a dependent does not build or test against the tree: since
 # the CLI's beta 3268281 (2026-10-26) nothing excuses it.
+# A dependent's TEXT-DIFF line (a fixture's message text alone, #252) is a row, never a failure.
 on:
   pull_request:
     branches: [main, beta]
