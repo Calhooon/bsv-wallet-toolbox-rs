@@ -9,6 +9,20 @@
   transport. Remote requests and redirects are refused before transport with
   the host and rule 28 in the error. Loopback fixtures retain the existing
   headers and request bodies. Production clients and the public API are unchanged.
+- #249: `prove_certificate` now validates `certificate.certifier` and then
+  `verifier` before the certificate lookup, as `ts-stack@edf6e03`
+  `packages/sdk/src/wallet/validationHelpers.ts:1490-1493,1509` does ahead of
+  `packages/wallet/wallet-toolbox/src/signer/methods/proveCertificate.ts:28`.
+  A bad key refuses with `Validation error: The <name> parameter must be <rule>`
+  (`validationHelpers.ts:185-191,522-534`), where the rule is
+  `even length, not N.`, `hexadecimal string.`, `at least 66 length.`,
+  `no more than 66 length.`, or `a valid compressed secp256k1 public key`.
+  Previously, a bad key in a request matching no certificate read
+  `Certificate not found with the provided arguments`, and one matching a
+  stored certificate read `Invalid verifier public key: <detail>` or
+  `Invalid certifier public key: <detail>` after the lookup, including for an
+  empty `fields_to_reveal`. The stored certifier is no longer parsed: the
+  lookup matches it to the validated argument.
 
 - #240: `prove_certificate` now refuses certificate serial numbers that do not
   canonically encode exactly 32 bytes, after map-value validation and before

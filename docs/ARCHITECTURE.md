@@ -165,6 +165,12 @@ it (`UnspendableCoin`).
 | an empty disclosure request for a populated certificate returns an empty verifier keyring | `ts-stack@edf6e03 validationHelpers.ts:1506-1508`; `signer/methods/proveCertificate.ts:31-43`; `MasterCertificate.ts:348,370-415`; toolbox #240 | `test_prove_certificate_empty_request_reveals_nothing` |
 | an empty disclosure request performs no field recovery | `ts-stack@edf6e03 MasterCertificate.ts:370-415`; toolbox #240 | `test_prove_certificate_empty_request_skips_recovery` |
 | an empty disclosure request still validates the maps and serial number | `ts-stack@edf6e03 MasterCertificate.ts:348-365`; toolbox #240 | `test_prove_certificate_empty_request_validates_inputs` |
+| a verifier that is not a compressed public key refuses with the reference's argument text before the certificate lookup | `ts-stack@edf6e03 validationHelpers.ts:185-191,522-534,1509`; `signer/methods/proveCertificate.ts:28`; toolbox #249 | `test_prove_certificate_bad_verifier_refuses_before_lookup` |
+| a certifier that is not a compressed public key refuses with the reference's argument text before the certificate lookup | `ts-stack@edf6e03 validationHelpers.ts:185-191,522-534,1490-1493`; `signer/methods/proveCertificate.ts:28`; toolbox #249 | `test_prove_certificate_bad_certifier_refuses_before_lookup` |
+| an empty disclosure request with a bad verifier refuses by the same text, though its certificate is stored | `ts-stack@edf6e03 validationHelpers.ts:1506-1509`; toolbox #249 | `test_prove_certificate_empty_request_bad_verifier` |
+| an empty disclosure request with a bad certifier refuses by the same text, though a certificate is stored under it | `ts-stack@edf6e03 validationHelpers.ts:1490-1493,1506-1508`; toolbox #249 | `test_prove_certificate_empty_request_bad_certifier` |
+| the certifier is checked before the verifier | `ts-stack@edf6e03 validationHelpers.ts:1490-1493,1509`; toolbox #249 | `test_prove_certificate_certifier_before_verifier` |
+| the stored certifier is never parsed: the lookup returns only a row whose certifier equals the validated argument byte for byte | `ts-stack@edf6e03 signer/methods/proveCertificate.ts:12-33`; `MasterCertificate.ts:383-392,592-597`; toolbox #249 | `test_prove_certificate_stored_certifier_matches_args` |
 | equal and empty plaintext fields receive distinct 32-byte keys across fields and issuances | `ts-stack@edf6e03 MasterCertificate.ts:277-293`; toolbox #203 | `issuance_uses_fresh_keys_for_equal_and_empty_plaintexts` |
 
 ## 2. The writer and the pool

@@ -650,6 +650,24 @@ gate. The reference preserves the empty array at
 empty-request tests in `wallet.rs::prove_certificate_tests::preloop_gate`
 cover both the helper and the storage-backed prove call.
 
+For #249, `prove_certificate` checks `certificate.certifier` and then
+`verifier` as arguments, after the permission check and before the
+certificate lookup and the helper's gate, as the reference's argument gate
+does (`ts-stack@edf6e03`, `validationHelpers.ts:1490-1493,1509`, ahead of
+`signer/methods/proveCertificate.ts:28`). Each must be 66 hex characters
+encoding a compressed secp256k1 key; the refusals are the reference's
+`WERR_INVALID_PARAMETER` texts (`validationHelpers.ts:185-191,522-534`),
+`The <name> parameter must be <rule>` with `<name>` one of
+`certificate.certifier` or `verifier` and `<rule>` one of `even length, not N.`,
+`hexadecimal string.`, `at least 66 length.`, `no more than 66 length.` or
+`a valid compressed secp256k1 public key`, as `Error::ValidationError`, so the
+WalletInterface reads `Validation error: ...`. An empty request refuses the
+same way. The stored certifier is not parsed: the lookup matches it to the
+validated argument byte for byte, and `create_keyring_for_verifier` receives
+that parsed key, as the reference passes the stored certifier unparsed to
+`decrypt` (`MasterCertificate.ts:383-392,592-597`). Tests:
+`wallet.rs::prove_certificate_tests::key_gate`.
+
 ### Protocol Flow
 
 1. **PrepareIssuanceActionData**: Generate a random 32-byte nonce, encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
