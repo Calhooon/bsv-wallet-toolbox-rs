@@ -90,18 +90,27 @@ async fn test_service_429_rate_limit() {
 }
 
 // =============================================================================
-// Test 3: Connection failure (unreachable host)
+// Test 3: Connection failure (loopback port with nothing listening)
 // =============================================================================
 
+/// A loopback port nothing listens on: bind an ephemeral port, read it, drop
+/// the listener.
+fn closed_loopback_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+/// Loopback passes the #182 guard, so this proves a real connection failure
+/// in every build, `bench-support` (the CI integration step) included.
 #[tokio::test]
-async fn test_connection_failure() {
-    // Use a non-routable address that will fail to connect
+async fn test_connection_refused_on_closed_loopback_port() {
+    let port = closed_loopback_port();
     let config = ArcConfig {
         timeout_secs: Some(1), // Short timeout to fail fast
         ..Default::default()
     };
     let arc = ArcProvider::new(
-        "http://192.0.2.1:1", // TEST-NET-1 (RFC 5737), unreachable
+        format!("http://127.0.0.1:{port}"),
         Some(config),
         Some("testArc"),
     )
@@ -116,12 +125,50 @@ async fn test_connection_failure() {
     assert_eq!(result.status, "error");
     assert!(!result.txid_results.is_empty());
     assert!(result.txid_results[0].service_error);
-    // The data should contain some form of connection/request failure message
+    let data = result.txid_results[0].data.as_ref().unwrap();
+    let expected =
+        format!("Request failed: error sending request for url (http://127.0.0.1:{port}/");
+    assert!(
+        data.starts_with(&expected),
+        "Expected a connection failure to port {port}, got: {data}"
+    );
+    assert!(
+        !data.contains("#182 rule 28"),
+        "Loopback must pass the guard, got: {data}"
+    );
+}
+
+/// Under `bench-support` a non-loopback URL is refused before any transport,
+/// with the guard's text naming the host. Without the feature there is no
+/// guard and the URL would leave the machine, so the test is gated.
+#[cfg(feature = "bench-support")]
+#[tokio::test]
+async fn test_non_loopback_host_refused_by_guard_before_transport() {
+    let arc = ArcProvider::new(
+        "http://192.0.2.1:1", // TEST-NET-1 (RFC 5737)
+        Some(ArcConfig::default()),
+        Some("testArc"),
+    )
+    .unwrap();
+
+    let beef = vec![0x01, 0x00, 0x00, 0x00];
+    let txids = vec!["c".repeat(64)];
+
+    let result = arc.post_beef(&beef, &txids).await.unwrap();
+
+    assert_eq!(result.status, "error");
+    assert!(!result.txid_results.is_empty());
+    assert!(result.txid_results[0].service_error);
     let data = result.txid_results[0].data.as_ref().unwrap();
     assert!(
-        data.contains("Request failed") || data.contains("error") || data.contains("timed out"),
-        "Expected connection failure message, got: {}",
-        data
+        data.contains(
+            "#182 rule 28: test/bench transport refuses non-loopback host 192.0.2.1; use a loopback fixture URL"
+        ),
+        "Expected the #182 guard refusal naming 192.0.2.1, got: {data}"
+    );
+    assert!(
+        !data.contains("error sending request"),
+        "The guard must refuse before transport, got: {data}"
     );
 }
 
