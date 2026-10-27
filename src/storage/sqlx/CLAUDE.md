@@ -373,6 +373,7 @@ pub async fn internalize_action_internal(
 - Label and tag support for transaction/output organization
 - Received wallet payments carry `outputs.purpose = "receive"`, including converted custom outputs; `create_action` offers unproven receipts only under its exact `underReceivedRule` label, recorded on that action, while completed receipts and own change keep their eligibility (#169).
 - ProvenTxReq creation for unproven transactions
+- Remittance exclusivity (#337): one remittance per output. At step 0, per output in order and ahead of the remittance's fields (its customInstructions, its tags bound), a `wallet payment` carrying an `insertionRemittance` refuses `Error::ValidationError("The output remittance parameter must be only paymentRemittance for wallet payment")` and a `basket insertion` carrying a `paymentRemittance` refuses `Error::ValidationError("The output remittance parameter must be only insertionRemittance for basket insertion")`, the reference's `WERR_INVALID_PARAMETER` (ts-stack@edf6e03 `validationHelpers.ts:971-976`, before `validateBasketInsertion` at 981-982). An earlier output's refusal answers first. A missing remittance is still refused later at step 4 in the port's own words. Witnesses: `internalize_remittance_tests.rs`
 - BRC-177 (#357): after the labels bound, ahead of any write, a label starting `p nosend ` (trimmed and lowercased, as the SDK's validateLabel leaves it at `validationHelpers.ts:1054`; `startsWith`, ts-stack@edf6e03 `brc177NoSendExpiry.ts:5,119`) refuses `Error::ValidationError("The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests")`, the reference's `WERR_INVALID_PARAMETER` on internalizeAction (`Wallet.ts:1248-1250`). The create door's refusal is #312 (Create Action, Features). `p nosendx` and `p nosend` alone are ordinary labels. Witnesses: `internalize_nosend_tests.rs`, `src/wallet/nosend_label_tests.rs`
 
 ### Merge Behavior
@@ -528,7 +529,7 @@ items is refused by the bound, a bad item under it by the item's text.
 | Door | Array (reference line) | Place in the port |
 |------|------------------------|-------------------|
 | create (`create_action/validation.rs`) | `inputs` (758), `outputs` (759), an output's `tags` (639), `labels` (762), `knownTxids` (662), `noSendChange` (667), `sendWith` (137, 1000) | after description, in that order |
-| internalize (`internalize_action.rs`) | `outputs` (1052), an insertion's `tags` (948), `labels` (1054) | step 0; tags after the same and every earlier output's `customInstructions` |
+| internalize (`internalize_action.rs`) | `outputs` (1052), an insertion's `tags` (948), `labels` (1054) | step 0; tags after the same output's remittance exclusivity and `customInstructions` and every earlier output's |
 | listCertificates (`storage_sqlx/certificates.rs`) | `certifiers` (1195), `types` (1198) | after the auth check, ahead of any query |
 | listOutputs (`storage_sqlx/list_outputs.rs`) | `tags` (1637) | after the auth check, ahead of the basket lookup |
 | listActions (`storage_sqlx/transactions.rs`) | `labels` (1691) | after the auth check, ahead of the label lookup |

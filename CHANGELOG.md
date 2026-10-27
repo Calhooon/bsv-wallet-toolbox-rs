@@ -94,6 +94,17 @@
 
 ### Fixed
 
+- #337: `internalize_action` refuses an output carrying the other protocol's
+  remittance ahead of the remittance's fields, as the reference does
+  (ts-stack@edf6e03 `validationHelpers.ts:971-976`, one remittance per
+  output). A `wallet payment` with an `insertionRemittance` answers
+  `The output remittance parameter must be only paymentRemittance for wallet payment`
+  (was accepted when the insertion was well formed, else its
+  customInstructions or tags text); a `basket insertion` with a
+  `paymentRemittance` answers
+  `The output remittance parameter must be only insertionRemittance for basket insertion`
+  (was accepted, the payment remittance ignored).
+
 - #351: `list_actions` with `includeInputs` reads the action's raw
   transaction where `ts-stack@edf6e03` does (`getRawTxOfKnownValidTransaction`,
   `StorageKnex.ts:507-508`, through `getProvenOrRawTx` at 189-211): the
