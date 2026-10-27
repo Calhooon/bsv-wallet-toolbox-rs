@@ -1,7 +1,7 @@
 //! Shared HTTP transport. Production uses reqwest directly; test and bench
 //! builds reject non-loopback destinations before executing any request.
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "remote", feature = "bench-support")))]
 pub(crate) use isolated::check_url;
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) use isolated::{Client, RequestBuilder, RequestError};

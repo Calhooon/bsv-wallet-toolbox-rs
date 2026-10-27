@@ -27,7 +27,9 @@ use serde_json::Value;
 use tokio::sync::{oneshot, RwLock};
 
 use bsv_rs::auth::transports::HttpRequest;
-use bsv_rs::auth::{Peer, PeerOptions, SimplifiedFetchTransport};
+#[cfg(not(any(test, feature = "bench-support")))]
+use bsv_rs::auth::SimplifiedFetchTransport;
+use bsv_rs::auth::{Peer, PeerOptions};
 use bsv_rs::primitives::{to_base64, PublicKey};
 use bsv_rs::wallet::{
     AbortActionArgs, AbortActionResult, CreateActionArgs, InternalizeActionArgs, ListActionsArgs,
@@ -42,6 +44,47 @@ use crate::storage::entities::*;
 use crate::storage::traits::*;
 
 use super::json_rpc::{JsonRpcRequest, JsonRpcResponse};
+
+#[cfg(any(test, feature = "bench-support"))]
+use isolated_peer_transport::SimplifiedFetchTransport;
+
+#[cfg(any(test, feature = "bench-support"))]
+mod isolated_peer_transport {
+    use async_trait::async_trait;
+    use bsv_rs::auth::transports::{Transport, TransportCallback};
+    use bsv_rs::auth::{AuthMessage, SimplifiedFetchTransport as SdkTransport};
+
+    use crate::services::providers::http_client::check_url;
+
+    /// A test/bench Peer transport that checks its destination before SDK I/O.
+    pub struct SimplifiedFetchTransport(SdkTransport);
+
+    impl SimplifiedFetchTransport {
+        pub fn new(url: &str) -> Self {
+            Self(SdkTransport::new(url))
+        }
+    }
+
+    #[async_trait]
+    impl Transport for SimplifiedFetchTransport {
+        async fn send(&self, message: &AuthMessage) -> bsv_rs::Result<()> {
+            let url = reqwest::Url::parse(self.0.base_url())
+                .map_err(|error| bsv_rs::Error::AuthError(format!("Invalid peer URL: {error}")))?;
+            // Check every send, including handshakes and calls through peer().
+            // The SDK owns redirects and proxy handling inside its transport.
+            check_url(&url)?;
+            self.0.send(message).await
+        }
+
+        fn set_callback(&self, callback: Box<TransportCallback>) {
+            self.0.set_callback(callback);
+        }
+
+        fn clear_callback(&self) {
+            self.0.clear_callback();
+        }
+    }
+}
 
 // =============================================================================
 // ValidCreateActionArgs
