@@ -379,17 +379,10 @@ impl Door<'_> {
             Err(e) => return Err(e.into()),
         };
 
-        // Step 9: Mark extended inputs as spent
+        // Step 9: Re-read each known input under the write lock, refuse an
+        // existing spend, then reserve it (ts-stack@edf6e03 createAction.ts:399-436).
         for input in &extended_inputs {
-            if let Some(ref output) = input.output {
-                update_output_spent(
-                    &mut tx,
-                    output.output_id,
-                    transaction_id,
-                    input.input_description.as_deref(),
-                )
-                .await?;
-            }
+            update_output_spent(&mut tx, input, transaction_id).await?;
         }
 
         // Step 10: Calculate net satoshis (change received - change spent)
