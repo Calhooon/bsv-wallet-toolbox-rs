@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- #248: unit-test and `bench-support` clients for overlay lookup, certificate
+  issuance, and unauthenticated remote storage now use the #182 loopback-only
+  transport. Remote requests and redirects are refused before transport with
+  the host and rule 28 in the error. Loopback fixtures retain the existing
+  headers and request bodies. Production clients and the public API are unchanged.
+
 - #240: `prove_certificate` now refuses certificate serial numbers that do not
   canonically encode exactly 32 bytes, after map-value validation and before
   the subset loop or verifier key derivation. This follows `ts-stack@edf6e03`
