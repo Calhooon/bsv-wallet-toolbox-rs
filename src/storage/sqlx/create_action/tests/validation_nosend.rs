@@ -123,3 +123,18 @@ async fn labels_outside_the_exact_prefix_are_accepted() {
     assert_accepted(&["nosend expiry seconds 300"]).await;
     assert_accepted(&["p other"]).await;
 }
+
+/// The reference matches the label as the SDK normalizes it, trimmed and
+/// lowercased (ts-stack@edf6e03 `sdk/src/wallet/validationHelpers.ts:411`,
+/// validateLabel), ahead of the prefix check.
+#[tokio::test]
+async fn nosend_label_is_matched_trimmed_and_lowercased() {
+    assert_refused(&["P NoSend expiry seconds 300"]).await;
+    assert_refused(&["  p nosend batch"]).await;
+}
+
+/// `p nosend ` trims to `p nosend`, outside the prefix, as in the reference.
+#[tokio::test]
+async fn bare_module_word_is_accepted() {
+    assert_accepted(&["p nosend "]).await;
+}
