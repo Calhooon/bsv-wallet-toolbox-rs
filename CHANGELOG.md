@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- #228: `prove_certificate` now restores omitted leading zero bytes in legacy
+  field keys before wrapping them for the verifier. A 31-byte master key
+  previously produced a 31-byte verifier key; it now produces the same
+  32-byte key used to decrypt the field, as returned by `ts-stack@edf6e03`
+  `packages/sdk/src/auth/certificates/MasterCertificate.ts:393,606-619` and
+  required by `VerifiableCertificate.ts:54-60,203`.
+
+- #229: certificate field recovery now consistently refuses with
+  `bsv_rs::Error::WalletError("Failed to decrypt certificate field!")`, including
+  empty or missing master entries, invalid Base64, wallet or field decryption
+  failures, and decrypted plaintext that is not UTF-8. Previously, empty,
+  missing or non-Base64 master entries used the port's own messages, and
+  non-UTF-8 plaintext was accepted. This follows `ts-stack@edf6e03`
+  `packages/sdk/src/auth/certificates/MasterCertificate.ts:573-622`, including
+  strict UTF-8 decoding at `:619`. The plaintext size bound at `:614-615`
+  remains with #223; this change adds no size bound.
+
 - #222: `prove_certificate` now decrypts each requested field under its
   recovered master key before wrapping that key for the verifier. Previously,
   a corrupt or mismatched master entry produced a verifier keyring and failed
