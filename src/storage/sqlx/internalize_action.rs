@@ -695,9 +695,11 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
     // reference maps the outputs in order; bsv-rs reads only the outputs.
     let over = args.outputs.iter().enumerate().find_map(|(index, output)| {
         let tags = output.insertion_remittance.as_ref()?.tags.as_ref()?;
-        (tags.len() > MAXIMUM_WALLET_COLLECTION_ITEMS).then_some((index, tags.len()))
+        validate_array_bound(tags.len(), "tags", MAXIMUM_WALLET_COLLECTION_ITEMS)
+            .err()
+            .map(|refusal| (index, refusal))
     });
-    if let Some((index, tags)) = over {
+    if let Some((index, refusal)) = over {
         let earlier = InternalizeActionArgs {
             tx: Vec::new(),
             outputs: args.outputs[..=index].to_vec(),
@@ -706,7 +708,7 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
             seek_permission: None,
         };
         validate_insertion_instructions(&earlier)?;
-        return validate_array_bound(tags, "tags", MAXIMUM_WALLET_COLLECTION_ITEMS);
+        return Err(refusal);
     }
     validate_insertion_instructions(args)?;
     validate_array_bound(
