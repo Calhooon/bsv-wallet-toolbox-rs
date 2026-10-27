@@ -21,6 +21,13 @@ const MAX_DESCRIPTION_LENGTH: usize = 2000;
 /// Maximum label length.
 const MAX_LABEL_LENGTH: usize = 300;
 
+/// BRC-177's module prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:5`).
+const BRC177_NO_SEND_MODULE_PREFIX: &str = "p nosend ";
+
+/// The reference's refusal on a store without the BRC-177 capability
+/// (`createNoSendExpiryAction.ts:202`); the port has none.
+const BRC177_UNSUPPORTED: &str = "Active storage does not support BRC-177 noSend expiry";
+
 // =============================================================================
 // Validation
 // =============================================================================
@@ -193,6 +200,23 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
         if let Some(ref send_with) = options.send_with {
             validate_array_bound(send_with.len(), "sendWith", MAXIMUM_SEND_WITH_TRANSACTIONS)?;
         }
+    }
+
+    // BRC-177 (0177.md:53): a wallet without module `nosend` rejects the
+    // request rather than storing the label as metadata. The reference
+    // routes any label starting with the prefix (`startsWith`,
+    // brc177NoSendExpiry.ts:119) to createNoSendExpiryAction once the
+    // arguments are valid (Wallet.ts:1155-1165), which refuses without the
+    // capability. The label is matched as the SDK's validateLabel leaves it,
+    // trimmed and lowercased (validationHelpers.ts:411).
+    let labels = args.labels.as_deref().unwrap_or_default();
+    if labels.iter().any(|label| {
+        label
+            .trim()
+            .to_lowercase()
+            .starts_with(BRC177_NO_SEND_MODULE_PREFIX)
+    }) {
+        return Err(Error::InvalidOperation(BRC177_UNSUPPORTED.to_string()));
     }
 
     Ok(())
