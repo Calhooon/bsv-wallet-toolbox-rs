@@ -392,9 +392,11 @@ Output sync preserves all 25 `TableOutput` columns, including
 `output_description`, `spent_by`, `sequence_number`, `spending_description`,
 `purpose`, and `provided_by` (#276). The exporter selects each column explicitly
 and decodes nullable metadata without hiding missing columns. Sequence numbers
-retain the full `u32` range. Both inserts and newer-row updates write the four
-nullable metadata fields; an incoming null clears the stored value. Equal or
-older rows keep the existing values. `spent_by`, like the parent transaction,
+retain the full `u32` range. Inserts write the whole row. Newer-row updates
+write the reference `mergeExisting` columns (`output_description`, `spent_by`,
+`spending_description` among them) and leave `sequence_number` as stored; an
+incoming null clears a written value. Equal or older rows keep the existing
+values. `spent_by`, like the parent transaction,
 uses the session's transaction ID map, including transactions from earlier
 chunks; an unmapped spender becomes null, matching the reference merge.
 The witness module is `sync_output_tests.rs`; the complete wire column list and

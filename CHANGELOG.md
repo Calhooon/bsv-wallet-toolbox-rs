@@ -8,7 +8,8 @@
   in `TableOutput.output_type` and its serialized `outputType` field instead
   of silently returning an empty string for the missing `output_type` column.
 - #276: synced stores retain output descriptions, spending descriptions,
-  sequence numbers, and spender references, including metadata updates.
+  sequence numbers, and spender references. A newer row updates the reference
+  merge's columns and leaves the stored sequence number, as the reference does.
   Spender references are translated to the receiving store's transaction IDs.
 
 - #187: a noSend-only `process_action` on stored actions (`is_new_tx`,
