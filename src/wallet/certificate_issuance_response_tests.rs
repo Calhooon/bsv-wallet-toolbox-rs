@@ -100,6 +100,20 @@ async fn response_run(
     nonce: Vec<u8>,
     mutate: impl Fn(&mut Value) + Send + Sync + 'static,
 ) -> (Result<WalletCertificate>, Value) {
+    let fields = HashMap::from([("city".to_string(), "Paris".to_string())]);
+    let outpoint = Outpoint::new([0; 32], 0);
+    response_run_with(observer, cert_type, nonce, fields, outpoint, mutate).await
+}
+
+// The certifier signs `signed_outpoint`; the answered text is the mutation's.
+async fn response_run_with(
+    observer: &ObservedWallet,
+    cert_type: String,
+    nonce: Vec<u8>,
+    fields: HashMap<String, String>,
+    signed_outpoint: Outpoint,
+    mutate: impl Fn(&mut Value) + Send + Sync + 'static,
+) -> (Result<WalletCertificate>, Value) {
     let wallet = wallet().await;
     let mut server = mockito::Server::new_async().await;
     let issued_response = Arc::new(Mutex::new(Value::Null));
@@ -123,7 +137,7 @@ async fn response_run(
             }).unwrap().hmac;
             let type_bytes = if request.cert_type.ends_with("B=") { [0; 32] } else { [7; 32] };
             let mut certificate = Certificate::new(type_bytes, serial, subject.clone(), private.public_key());
-            certificate.revocation_outpoint = Some(Outpoint::new([0; 32], 0));
+            certificate.revocation_outpoint = Some(signed_outpoint.clone());
             for (name, value) in &request.fields { certificate.set_field(name.clone(), value.as_bytes().to_vec()); }
             certificate.sign(&private).unwrap();
             let mut response = json!({
@@ -141,7 +155,7 @@ async fn response_run(
         }).expect(1).create_async().await;
     let mut acquisition = args(certifier(), format!("{}/issue", server.url()));
     acquisition.certificate_type = cert_type;
-    acquisition.fields.insert("city".into(), "Paris".into());
+    acquisition.fields = fields;
     let fixture_url = acquisition.certifier_url.take().unwrap();
     acquisition.certifier_url = Some("https://issuer.example/issue".to_string());
     let result = ISSUANCE_TEST_URL
@@ -403,17 +417,70 @@ async fn decrypt_all_fields_uses_reference_text() {
     );
 }
 
+// Certificate.ts:233 and :237 decode strictly inside verify (425-441); the
+// caught throw answers Wallet.ts:816's text. The serial's HMAC at :808 is lenient.
 #[tokio::test]
-async fn noncanonical_type_survives_round_trip() {
+async fn noncanonical_type_is_refused_at_verify() {
     let cert_type = format!("{}B=", "A".repeat(42));
-    let (result, _) = response_run(
+    let (result, _) =
+        response_run(&ObservedWallet::default(), cert_type, vec![5; 32], |_| {}).await;
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Validation error: Certificate verification failed"
+    );
+}
+
+#[tokio::test]
+async fn noncanonical_serial_passes_hmac_and_is_refused_at_verify() {
+    let observer = ObservedWallet::default();
+    let (result, _) = response_run(&observer, BASE64.encode([7; 32]), vec![5; 32], |r| {
+        let serial = r["certificate"]["serialNumber"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let index = alphabet.find(&serial[42..43]).unwrap() | 1;
+        r["certificate"]["serialNumber"] =
+            json!(format!("{}{}=", &serial[..42], &alphabet[index..=index]));
+    })
+    .await;
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Validation error: Certificate verification failed"
+    );
+    assert_eq!(observer.calls.lock().unwrap().len(), 2);
+}
+
+// MasterCertificate.ts:522-524 throws outside the decrypt try at Wallet.ts:817.
+#[tokio::test]
+async fn empty_master_keyring_is_refused_before_storage() {
+    let (result, _) = response_run_with(
         &ObservedWallet::default(),
-        cert_type.clone(),
+        BASE64.encode([7; 32]),
         vec![5; 32],
+        HashMap::new(),
+        Outpoint::new([0; 32], 0),
         |_| {},
     )
     .await;
-    assert_eq!(result.unwrap().certificate_type, cert_type);
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Validation error: A MasterCertificate must have a valid masterKeyring!"
+    );
+}
+
+// Wallet.ts:809 decodes the nonces before verifyHmac's
+// validateByteArray(hmac, 32) at validationHelpers.ts:1774.
+#[tokio::test]
+async fn nonce_decode_precedes_hmac_length() {
+    response_error(
+        |r| {
+            r["serverNonce"] = json!("AA=A");
+            r["certificate"]["serialNumber"] = json!(BASE64.encode([1; 16]));
+        },
+        "Invalid base64 padding",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -465,59 +532,48 @@ async fn false_server_nonce_result_is_ignored_as_in_reference() {
     );
 }
 
+// Certificate.ts:260-270: a txid-only outpoint is vout 0 over the real txid;
+// an unparsable text and a `.07` index throw, and verify answers false.
 #[tokio::test]
-async fn truthy_outpoint_text_is_retained_in_storage() {
-    use crate::storage::{FindCertificatesArgs, WalletStorageReader};
-
-    let wallet = wallet().await;
-    let auth = AuthId::with_user_id(wallet.identity_key(), 1);
-    for (index, outpoint) in ["unparsable".to_string(), format!("{}.07", "AB".repeat(32))]
-        .into_iter()
-        .enumerate()
-    {
-        let certificate = CertificateResponse {
-            cert_type: BASE64.encode([7; 32]),
-            serial_number: BASE64.encode([u8::try_from(index).unwrap(); 32]),
-            subject: wallet.identity_key().to_string(),
-            certifier: certifier(),
-            revocation_outpoint: outpoint.clone(),
-            fields: HashMap::new(),
-            signature: String::new(),
-        };
-        let parsed = parse_certificate_response(&ProtocolIssuanceResponse {
-            certificate: Some(certificate),
-            server_nonce: "fixture".into(),
-            protocol: String::new(),
-            timestamp: String::new(),
-            version: String::new(),
-        })
-        .unwrap();
-        let stored = store_certificate(
-            wallet.storage(),
-            &auth,
-            &parsed,
-            &HashMap::new(),
-            &PublicKey::from_hex(&certifier()).unwrap(),
-            wallet.identity_key(),
-            &BASE64.encode([7; 32]),
+async fn outpoint_grammar_is_to_binary_grammar() {
+    let txid = [0xab; 32];
+    for (signed, text) in [
+        (Outpoint::new([0; 32], 0), "unparsable".to_string()),
+        (Outpoint::new(txid, 7), format!("{}.07", "AB".repeat(32))),
+        (Outpoint::new(txid, 0), format!("{}.", "ab".repeat(32))),
+        (Outpoint::new(txid, 0), format!("{}.0.0", "ab".repeat(32))),
+    ] {
+        let (result, _) = response_run_with(
+            &ObservedWallet::default(),
+            BASE64.encode([7; 32]),
+            vec![5; 32],
+            HashMap::from([("city".to_string(), "Paris".to_string())]),
+            signed,
+            move |r| r["certificate"]["revocationOutpoint"] = json!(text),
         )
-        .await
-        .unwrap();
-        assert_eq!(stored.revocation_outpoint, outpoint);
+        .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Validation error: Certificate verification failed"
+        );
     }
-    let rows = wallet
-        .storage()
-        .find_certificates(&auth, FindCertificatesArgs::default())
-        .await
-        .unwrap();
-    let mut actual: Vec<_> = rows
-        .into_iter()
-        .map(|row| row.revocation_outpoint)
-        .collect();
-    actual.sort();
-    let mut expected = vec!["unparsable".to_string(), format!("{}.07", "AB".repeat(32))];
-    expected.sort();
-    assert_eq!(actual, expected);
+    for text in ["AB".repeat(32), format!("{}.7", "AB".repeat(32))] {
+        let vout = if text.contains('.') { 7 } else { 0 };
+        let (result, _) = response_run_with(
+            &ObservedWallet::default(),
+            BASE64.encode([7; 32]),
+            vec![5; 32],
+            HashMap::from([("city".to_string(), "Paris".to_string())]),
+            Outpoint::new(txid, vout),
+            {
+                let text = text.clone();
+                move |r| r["certificate"]["revocationOutpoint"] = json!(text)
+            },
+        )
+        .await;
+        // response_run_with also checks the stored row keeps the answered text.
+        assert_eq!(result.unwrap().revocation_outpoint, text);
+    }
 }
 
 #[tokio::test]
