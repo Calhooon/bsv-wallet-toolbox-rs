@@ -39,6 +39,10 @@
 //! two clean answers, a closed rung costs no request), never take it as
 //! the rule.
 //!
+//! A difference prints the ladder's call history (each rung asked, per
+//! call, in order, with its answer or fault and how long it took) and the
+//! requests per provider (`ladder_stall.rs`, #194).
+//!
 //! The host gives two names: `toolbox` (the crate) and `services_at`.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -52,6 +56,9 @@ use serde_json::{json, Value};
 use super::services_at;
 use super::toolbox::services::traits::{GetUtxoStatusOutputFormat, WalletServices};
 use super::toolbox::services::{Services, ServicesOptions};
+
+#[path = "ladder_stall.rs"]
+mod stall;
 
 /// The explorers' client timeout in a replay: a `delay_ms` past it is a
 /// timeout.
@@ -643,8 +650,12 @@ async fn call_ladder(services: &Services, ladder: &str, call: &Value) -> Result<
     })
 }
 
-/// Replay one fixture on a worker's servers.
-async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, String> {
+/// Replay one fixture on a worker's servers: what it recorded and the
+/// ladder's call history.
+async fn replay(
+    fixture: &Fixture,
+    servers: &mut Servers,
+) -> Result<(Expected, Vec<stall::Rung>), String> {
     let counts: Counts = Arc::default();
     let _mocks = script(fixture, servers, &counts).await?;
     let named = |name: &str| fixture.providers.iter().any(|p| p.name == name);
@@ -665,8 +676,10 @@ async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, St
     );
 
     let mut results = Vec::new();
-    for call in &fixture.calls {
+    let mut history = Vec::new();
+    for (index, call) in fixture.calls.iter().enumerate() {
         results.push(call_ladder(&services, &fixture.ladder, call).await?);
+        stall::record_history(&services, index + 1, &mut history);
     }
     mask_retry_after_remainders(&mut results);
     let (requests, request_bodies) = {
@@ -687,11 +700,13 @@ async fn replay(fixture: &Fixture, servers: &mut Servers) -> Result<Expected, St
     if text.contains("127.0.0.1") || text.contains("localhost") {
         return Err(format!("a local address survived normalizing: {text}"));
     }
-    Ok(Expected {
+    stall::normalize(&mut history, servers);
+    let actual = Expected {
         results: serde_json::from_str(&text).unwrap(),
         requests,
         request_bodies,
-    })
+    };
+    Ok((actual, history))
 }
 
 /// Replay the recorded status scene before the default deadline, then ask
@@ -811,22 +826,12 @@ async fn ladder_fixtures_replay() {
             .to_string();
         match outcome {
             Err(e) => failures.push(format!("{name}: {e}")),
-            Ok((mut fixture, actual)) => {
+            Ok((mut fixture, (actual, history))) => {
                 if bless {
                     fixture.expected = Some(actual);
                     std::fs::write(&path, fixture_text(&fixture)).unwrap();
-                } else if fixture.expected.as_ref() != Some(&actual) {
-                    let body_difference = fixture
-                        .expected
-                        .as_ref()
-                        .and_then(|expected| request_body_difference(expected, &actual))
-                        .unwrap_or_default();
-                    failures.push(format!(
-                        "{name}: {}\n{body_difference}\n--- expected\n{}\n+++ replayed\n{}",
-                        fixture.about,
-                        serde_json::to_string_pretty(&fixture.expected).unwrap(),
-                        serde_json::to_string_pretty(&actual).unwrap()
-                    ));
+                } else if let Some(difference) = stall::difference(&fixture, &actual, &history) {
+                    failures.push(format!("{name}: {difference}"));
                 }
             }
         }
