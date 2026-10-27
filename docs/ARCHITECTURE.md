@@ -56,9 +56,10 @@ directory is the truth).
  |  the header service:          |   |  reorg, review_proven_txs -> demote     |
  |   chaintracks, then BHS,      |   |  send_waiting     -> post_beef (hints)  |
  |   never a courier             |   |  fail_abandoned   -> abort_action       |
- |  the broadcasters: Arcade,    |   +-----------------------------------------+
- |   Bitails, WoC (classic: TAAL |
- |   ARC, GorillaPool ARC ahead) |
+ |  the broadcasters: Arcade     |   +-----------------------------------------+
+ |   (the default), Bitails, WoC |
+ |   (deprecated classic knob:   |
+ |   TAAL, GorillaPool ARC ahead)|
  +---------------+---------------+
                  ^
                  | headers: the one source of a chain word (fail closed)
@@ -445,11 +446,15 @@ that height: a definite false is `NOTE_REFUTED` (a refutation, retained for the
 re-prove) and the next rung is asked; a tracker error is a fault. Every
 per-provider verdict rides in the answer's notes.
 
-**The broadcast ladder.** In Arcade mode (`ServicesOptions::arcade_v2`) the
-named broadcasters are Arcade, then the Bitails and WhatsOnChain fallbacks;
-no classic ARC provider is built (the owner's word of 2026-10-27, #317). In
-classic mode they are TAAL ARC, GorillaPool ARC when configured, Bitails and
-WhatsOnChain. `post_beef` submits to every named broadcaster in
+**The broadcast ladder.** Arcade mode (`ServicesOptions::arcade_v2`) is the
+default: the named broadcasters are Arcade, then the Bitails and WhatsOnChain
+fallbacks, and no classic ARC provider is built (the owner's word of
+2026-10-27, "arc is just deprecated, arcade is the standard", #317). The
+defaults name no Arcade endpoint, so options without one refuse at
+construction with a text naming `ServicesOptions::with_arcade`. Classic mode,
+set only by the deprecated `ServicesOptions::with_classic_arc` for the CLI's
+hermetic stub until it speaks Arcade, names TAAL ARC, GorillaPool ARC when
+configured, Bitails and WhatsOnChain. `post_beef` submits to every named broadcaster in
 parallel by default (`PostBeefMode::PromiseAll`, B3), retaining named transport
 faults alongside answers. Explicit `UntilSuccess` keeps the ordered path and
 its broadcast memory (`broadcast_seen`); the public post door records every
@@ -469,6 +474,7 @@ proof checked against our headers writes `doubleSpend`.
 | the lookup resolver's requests cannot leave loopback under test and `bench-support` (#248) | Rule 28; lane rule 10 | `lookup_clients_refuse_non_loopback_before_transport` |
 | certificate issuance and unauthenticated storage requests stay on loopback (#248); authenticated storage checks its configured peer URL before every SDK send (#263), under test and `bench-support` | Rule 28; lane rule 10 | `issuance_client_refuses_non_loopback_before_transport`; `storage_client_refuses_non_loopback_before_transport`; `authenticated_storage_client_refuses_non_loopback_before_transport`; `authenticated_storage_client_peer_accessor_refuses_non_loopback`; `authenticated_storage_client_accepts_loopback_handshake` (storage requires `--features remote`; integration requires `sqlite,remote,bench-support`) |
 | Arcade mode names Arcade, Bitails and WhatsOnChain and no classic ARC; classic mode keeps TAAL, GorillaPool, Bitails, WhatsOnChain (#317) | the owner's word of 2026-10-27 (#317: Arcade is the standard, ARC deprecated), which supersedes `broadcaster.md` B3's default ladder in Arcade mode; classic mode keeps B3 | `arcade_mode_post_ladder_is_arcade_bitails_whatsonchain`, `arcade_mode_broadcaster_statuses_carry_no_classic_row`, `classic_mode_post_ladder_is_unchanged` |
+| Arcade is the default mode: default options name no Arcade endpoint and refuse at construction naming `with_arcade`; GorillaPool defaults to none; classic ARC only behind the deprecated `with_classic_arc` (#317) | the owner's word of 2026-10-27 (#317: "arc is just deprecated, arcade is the standard"); the refusal is the port's own, the reference's default being a classic ARC URL | `default_options_with_no_arcade_url_refuse_construction`, `the_deprecated_classic_knob_builds_the_classic_ladder`, `gorillapool_defaults_to_none` |
 | a negative needs two of the three explorers | `wallet.md section 2` (from an explorer: a hint); Rule 28 | `a_negative_needs_two_of_the_three` |
 | a lone unspent is never the answer | `wallet.md section 2` | `a_lone_unspent_is_never_the_answer` |
 | one negative and two faults is could not look | `tracker.md section 2` (fail closed) | `one_negative_and_two_faults_is_could_not_look` |

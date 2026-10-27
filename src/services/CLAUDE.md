@@ -105,10 +105,10 @@ pub struct Services {
 ```
 
 **Factory Methods (all return `Result<Self>`):**
-- `Services::new(chain)` - Create with chain-appropriate defaults
-- `Services::mainnet()` - Create with mainnet defaults
-- `Services::testnet()` - Create with testnet configuration
-- `Services::with_options(chain, options)` - Create with custom options
+- `Services::new(chain)` - Create with chain-appropriate defaults: refuses, the defaults name no Arcade endpoint (#317)
+- `Services::mainnet()` - Create with mainnet defaults (refuses, as `new`)
+- `Services::testnet()` - Create with testnet configuration (refuses, as `new`)
+- `Services::with_options(chain, options)` - Create with custom options; refuses Arcade mode with an empty `arc_url`
 
 **Key Methods:**
 - `get_raw_tx(txid, use_next)` - Retrieve raw transaction bytes
@@ -264,10 +264,12 @@ pub struct ServicesOptions {
     pub whatsonchain_api_key: Option<String>,
     pub bitails_api_key: Option<String>,
     pub bananablocks_base: Option<String>, // None = the chain's default, "" = off
-    pub arc_url: String,
-    pub arc_config: Option<ArcConfig>,
-    pub arc_gorillapool_url: Option<String>,
+    pub arc_url: String,                // the Arcade endpoint; "" by default
+    pub arc_config: Option<ArcConfig>,  // classic mode only
+    pub arc_gorillapool_url: Option<String>, // classic mode only; None by default
     pub arc_gorillapool_config: Option<ArcConfig>,
+    pub arcade_v2: bool,                // true by default (#317)
+    pub arcade_config: Option<ArcadeConfig>,
     pub bhs_url: Option<String>,
     pub bhs_api_key: Option<String>,
     pub bsv_update_msecs: u64,       // 15 min default
@@ -278,14 +280,15 @@ pub struct ServicesOptions {
 ```
 
 **Builder Methods:**
-- `ServicesOptions::mainnet()` / `testnet()` - Create with defaults
+- `ServicesOptions::mainnet()` / `testnet()` - Create with defaults: Arcade mode, no Arcade endpoint, no GorillaPool (#317); name the endpoint with `with_arcade` before construction
 - `with_woc_api_key(key)` - Set WhatsOnChain API key
 - `with_bitails_api_key(key)` - Set Bitails API key
 - `with_bananablocks_base(url)` - BananaBlocks API base (default per chain; empty = off)
 - `without_bananablocks()` - Leave BananaBlocks out of every ladder
-- `with_arc(url, config)` - Set TAAL ARC configuration
-- `with_gorillapool(url, config)` - Set GorillaPool ARC configuration (classic mode only)
 - `with_arcade(url, config)` - Arcade mode: `arc_url` is the Arcade endpoint; no classic ARC provider is built
+- `with_classic_arc(url, config)` - **Deprecated** (0.14.0): classic mode (`arcade_v2 = false`), TAAL ARC from `url`; serves the CLI's hermetic stub until it speaks Arcade
+- `with_arc(url, config)` - **Deprecated** (0.14.0): the same as `with_classic_arc`
+- `with_gorillapool(url, config)` - Set GorillaPool ARC configuration (classic mode only)
 - `with_bhs_url(url)` - Set Block Header Service URL
 - `with_bhs_api_key(key)` - Set Block Header Service API key
 - `with_bhs(url, api_key)` - Set BHS URL and API key together
@@ -435,12 +438,19 @@ per txid serves both the batch triage and the proof, and the third-party
 indexers are only reached for what Arcade cannot answer. Ordering is unchanged
 when Arcade is not configured.
 
-Note: Arcade mode has no classic ARC provider (the owner's word of
-2026-10-27, "we use arcade now", #317): `arc_taal` and `arc_gorillapool` are
-`None` whatever `arc_gorillapool_url` says, the post ladder is ArcadeV2,
-Bitails, WhatsOnChain, and `get_broadcaster_statuses` asks Arcade alone. The
-classic ladder stays behind classic mode for the CLI's hermetic stub until it
-speaks Arcade. Pinned by `arcade_ladder_tests.rs`.
+Note: Arcade mode is the default and has no classic ARC provider (the
+owner's word of 2026-10-27, "arc is just deprecated, arcade is the
+standard", #317): `arc_taal` and `arc_gorillapool` are `None` whatever
+`arc_gorillapool_url` says, the post ladder is ArcadeV2, Bitails,
+WhatsOnChain, and `get_broadcaster_statuses` asks Arcade alone. The defaults
+name no Arcade endpoint, so `Services::with_options` refuses them with
+`Invalid argument: ServicesOptions names no Arcade endpoint: Arcade is the
+default mode (#317); set one with ServicesOptions::with_arcade(url, config)`
+(`NO_ARCADE_URL`; the reference has no counterpart). The classic ladder
+stays behind the deprecated `with_classic_arc` for the CLI's hermetic stub
+until it speaks Arcade. Pinned by `arcade_ladder_tests.rs`. Unit tests build
+read-side `Services` from `arcade_test_options()` (Arcade at a loopback port
+nothing listens on).
 
 ## Providers
 
