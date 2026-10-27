@@ -2676,19 +2676,20 @@ where
         )
         .await?;
 
-        // Argument checks before the lookup, certifier then verifier, as at
-        // ts-stack@edf6e03 validationHelpers.ts:1490-1493,1509. The lookup
-        // matches the stored certifier to this one byte for byte.
-        let certifier =
+        // Argument checks and normalization before the lookup, certifier then
+        // verifier, as at ts-stack@edf6e03 validationHelpers.ts:1490-1493,1509.
+        // SQLite matches the normalized certifier byte for byte; the remote
+        // storage server decides its own collation.
+        let (normalized_certifier, certifier) =
             validate_public_key_arg(&args.certificate.certifier, "certificate.certifier")?;
-        let verifier = validate_public_key_arg(&args.verifier, "verifier")?;
+        let (_, verifier) = validate_public_key_arg(&args.verifier, "verifier")?;
 
         let auth = self.auth();
 
         // Build list_certificates args to find the certificate matching the provided certificate
         // We query by all identifying fields to ensure a unique match
         let list_args = ListCertificatesArgs {
-            certifiers: vec![args.certificate.certifier.clone()],
+            certifiers: vec![normalized_certifier],
             types: vec![args.certificate.certificate_type.clone()],
             limit: Some(2), // Request 2 to detect multiple matches
             offset: Some(0),
@@ -3313,12 +3314,36 @@ fn validate_certificate_base64_values(
     Ok(())
 }
 
-/// Validates a compressed public key argument with the reference's texts
+/// Trims ECMAScript whitespace as in ts-stack@edf6e03 validationHelpers.ts:524.
+fn trim_ecmascript_whitespace(value: &str) -> &str {
+    // WhiteSpace: TAB U+0009, VT U+000B, FF U+000C, SP U+0020, NBSP U+00A0,
+    // ZWNBSP U+FEFF, and the other Zs category code points listed below.
+    // LineTerminator: LF U+000A, CR U+000D, LS U+2028, PS U+2029.
+    value.trim_matches(|c| {
+        matches!(
+            c,
+            '\u{0009}'..='\u{000d}'
+                | '\u{0020}'
+                | '\u{00a0}'
+                | '\u{1680}'
+                | '\u{2000}'..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
+        )
+    })
+}
+
+/// Normalizes and validates a compressed public key argument with the reference's texts
 /// (ts-stack@edf6e03 validationHelpers.ts:185-191,522-534, WERR_INVALID_PARAMETER.ts:14).
-fn validate_public_key_arg(value: &str, name: &str) -> bsv_rs::Result<PublicKey> {
+fn validate_public_key_arg(value: &str, name: &str) -> bsv_rs::Result<(String, PublicKey)> {
     let invalid = |must_be: String| -> bsv_rs::Error {
         Error::ValidationError(format!("The {name} parameter must be {must_be}")).into()
     };
+    let value = trim_ecmascript_whitespace(value);
     // JavaScript counts UTF-16 code units.
     let length = value.encode_utf16().count();
     if length % 2 == 1 {
@@ -3333,11 +3358,13 @@ fn validate_public_key_arg(value: &str, name: &str) -> bsv_rs::Result<PublicKey>
     if length > 66 {
         return Err(invalid("no more than 66 length.".to_string()));
     }
-    match value.get(..2) {
-        Some("02" | "03") => PublicKey::from_hex(value).ok(),
+    let normalized = value.to_ascii_lowercase();
+    let key = match normalized.get(..2) {
+        Some("02" | "03") => PublicKey::from_hex(&normalized).ok(),
         _ => None,
     }
-    .ok_or_else(|| invalid("a valid compressed secp256k1 public key".to_string()))
+    .ok_or_else(|| invalid("a valid compressed secp256k1 public key".to_string()))?;
+    Ok((normalized, key))
 }
 
 /// Creates a keyring for a verifier, enabling them to decrypt specific certificate fields.
@@ -4683,7 +4710,7 @@ mod tests {
                 async fn test_prove_certificate_stored_certifier_matches_args() {
                     // The reference never parses the stored certifier: it passes it
                     // to decrypt as stored (MasterCertificate.ts:383-392,592-597).
-                    // The lookup matches it byte for byte against the validated
+                    // SQLite matches it byte for byte against the normalized
                     // argument, so a corrupt stored certifier is never returned.
                     for reveal in [&["name"][..], &[]] {
                         let result = prove(Some(&"zz".repeat(33)), &key(5), &key(6), reveal).await;
