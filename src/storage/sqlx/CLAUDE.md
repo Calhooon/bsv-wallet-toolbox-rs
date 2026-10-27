@@ -234,6 +234,19 @@ returns the claimed row's `type` column as `TableOutput.output_type`.
 The create door uses the separate allocator in `create_action/allocation.rs`,
 whose inputs are returned with the `P2PKH` type.
 
+Both allocators and both counts take only wallet-managed change, the
+reference's filters (`StorageKnex.allocateChangeInput` 2241-2250 at
+ts-stack edf6e03; `MANAGED_CHANGE_CLAUSE`, #295): `change = 1`,
+`type = 'P2PKH'`, `provided_by = 'storage'`, `purpose` `change` or
+`receive` (the port's spelling of a received wallet payment, #169), a
+non-empty `derivation_prefix` and `derivation_suffix`, spendable and
+`spent_by` null. The door takes a `completed` or `unproven` parent; the
+public allocator takes those and `sending` unless `exclude_sending`
+(2230-2231, 2256). A caller-provided coin, a non-P2PKH coin, a coin with
+any other purpose or no derivation fields is never picked as change. The
+reference's `action_batch_outputs` exclusion (2252-2255) has no port
+equivalent: the port has no action batches.
+
 Bench seam: `benchmark_allocate_change_input()` (create_action/allocation.rs) wraps the test-only allocator for the door bench; it and `benchmark_support::allocate_change_input` compile only under the non-default `bench-support` feature.
 
 ## Commission Tracking

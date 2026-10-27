@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- #295: both change allocators (the create door's and the public
+  `StorageSqlx::allocate_change_input`) and both counts take only
+  wallet-managed change, as `ts-stack@edf6e03`
+  `StorageKnex.allocateChangeInput` 2241-2250 does: they no longer pick a
+  caller-provided coin (`provided_by` other than `storage`), a non-P2PKH
+  coin, a coin whose purpose is neither `change` nor `receive`, or a coin
+  with a null or empty derivation prefix or suffix. The public allocator
+  and its count also no longer pick a coin whose parent is not
+  `completed`, `unproven`, or (unless `exclude_sending`) `sending`.
 - #287: `StorageSqlx::allocate_change_input` returns the stored `outputs.type`
   in `TableOutput.output_type` and its serialized `outputType` field instead
   of silently returning an empty string for the missing `output_type` column.
