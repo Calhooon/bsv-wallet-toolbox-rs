@@ -1939,8 +1939,8 @@ async fn upsert_output(
                     script_length = ?, script_offset = ?, type = ?, spendable = ?, change = ?,
                     derivation_prefix = ?, derivation_suffix = ?, sender_identity_key = ?,
                     custom_instructions = ?, provided_by = ?, purpose = ?,
-                    output_description = ?, spent_by = ?, sequence_number = ?,
-                    spending_description = ?, updated_at = ?
+                    output_description = ?, spent_by = ?, spending_description = ?,
+                    updated_at = ?
                 WHERE output_id = ?
                 "#,
             )
@@ -1961,7 +1961,6 @@ async fn upsert_output(
             .bind(output.purpose.as_deref().unwrap_or("change"))
             .bind(&output.output_description)
             .bind(local_spent_by)
-            .bind(output.sequence_number)
             .bind(&output.spending_description)
             .bind(output.updated_at)
             .bind(local_id)
