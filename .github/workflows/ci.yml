@@ -13,7 +13,8 @@ name: CI
 # every PR into that branch until the protection is updated. Every action is
 # pinned by commit sha. `dependents` runs on a push only and is not required.
 # The required test and clippy steps build `sqlite,remote`, so the storage client's
-# wire witnesses (tests/storage_wire.rs, #202) gate every pull request.
+# wire witnesses (tests/storage_wire.rs, #202) gate every pull request. The
+# integration step also enables `bench-support` for the four #182 witnesses.
 #
 # The balance (the owner's word of 2026-10-26, through the stack keeper): a pull
 # request runs the required set on one OS and one toolchain; a push to `main`
@@ -133,8 +134,9 @@ jobs:
 
       # Every target under tests/, not services_tests alone: the witnesses of
       # the 0.4.x fixes live in the other files.
+      # `bench-support` also runs the four network-isolation witnesses of #182.
       - name: Run integration tests
-        run: cargo test --test '*' --features sqlite,remote --verbose
+        run: cargo test --test '*' --features sqlite,remote,bench-support --verbose
 
       - name: Run doc tests
         run: cargo test --doc --features sqlite,remote
