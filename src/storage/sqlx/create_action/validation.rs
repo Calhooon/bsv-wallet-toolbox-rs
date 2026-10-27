@@ -1,4 +1,7 @@
 use crate::error::{Error, Result};
+use crate::storage::sqlx::internalize_action::{
+    validate_array_bound, MAXIMUM_SEND_WITH_TRANSACTIONS, MAXIMUM_WALLET_COLLECTION_ITEMS,
+};
 // =============================================================================
 // Constants
 // =============================================================================
@@ -42,74 +45,14 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
         )));
     }
 
-    // Validate labels
-    if let Some(ref labels) = args.labels {
-        for label in labels {
-            if label.is_empty() {
-                return Err(Error::ValidationError("label cannot be empty".to_string()));
-            }
-            if label.len() > MAX_LABEL_LENGTH {
-                return Err(Error::ValidationError(format!(
-                    "label exceeds maximum length of {} characters",
-                    MAX_LABEL_LENGTH
-                )));
-            }
-        }
-    }
-
-    // Validate outputs
-    if let Some(ref outputs) = args.outputs {
-        for (i, output) in outputs.iter().enumerate() {
-            // Validate locking script is not empty
-            if output.locking_script.is_empty() {
-                return Err(Error::ValidationError(format!(
-                    "outputs[{}]: locking script cannot be empty",
-                    i
-                )));
-            }
-
-            // Validate satoshis
-            if output.satoshis > MAX_SATOSHIS && output.satoshis != MAX_POSSIBLE_SATOSHIS {
-                return Err(Error::ValidationError(format!(
-                    "outputs[{}]: satoshis exceeds maximum value of {}",
-                    i, MAX_SATOSHIS
-                )));
-            }
-
-            // Validate output description
-            if output.output_description.len() < MIN_DESCRIPTION_LENGTH {
-                return Err(Error::ValidationError(format!(
-                    "outputs[{}]: output description length must be between {} and {}",
-                    i, MIN_DESCRIPTION_LENGTH, MAX_DESCRIPTION_LENGTH
-                )));
-            }
-
-            // Validate basket if specified
-            if let Some(ref basket) = output.basket {
-                if basket.is_empty() {
-                    return Err(Error::ValidationError(format!(
-                        "outputs[{}]: basket cannot be empty when specified",
-                        i
-                    )));
-                }
-            }
-
-            // Validate tags
-            if let Some(ref tags) = output.tags {
-                for (j, tag) in tags.iter().enumerate() {
-                    if tag.is_empty() {
-                        return Err(Error::ValidationError(format!(
-                            "outputs[{}].tags[{}]: tag cannot be empty",
-                            i, j
-                        )));
-                    }
-                }
-            }
-        }
-    }
+    // ts-stack@edf6e03 validationHelpers.ts validateCreateActionArgs order
+    // (749-808): description (755), inputs (758), outputs (759, each
+    // output's tags last at 639), labels (762), options (763). Each array's
+    // validateArray bound (105-114) runs ahead of its items.
 
     // Validate inputs
     if let Some(ref inputs) = args.inputs {
+        validate_array_bound(inputs.len(), "inputs", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
         let mut seen_outpoints = std::collections::HashSet::new();
 
         for (i, input) in inputs.iter().enumerate() {
@@ -150,9 +93,92 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
         }
     }
 
-    // Validate noSendChange for duplicates
+    // Validate outputs
+    if let Some(ref outputs) = args.outputs {
+        validate_array_bound(outputs.len(), "outputs", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
+        for (i, output) in outputs.iter().enumerate() {
+            // Validate locking script is not empty
+            if output.locking_script.is_empty() {
+                return Err(Error::ValidationError(format!(
+                    "outputs[{}]: locking script cannot be empty",
+                    i
+                )));
+            }
+
+            // Validate satoshis
+            if output.satoshis > MAX_SATOSHIS && output.satoshis != MAX_POSSIBLE_SATOSHIS {
+                return Err(Error::ValidationError(format!(
+                    "outputs[{}]: satoshis exceeds maximum value of {}",
+                    i, MAX_SATOSHIS
+                )));
+            }
+
+            // Validate output description
+            if output.output_description.len() < MIN_DESCRIPTION_LENGTH {
+                return Err(Error::ValidationError(format!(
+                    "outputs[{}]: output description length must be between {} and {}",
+                    i, MIN_DESCRIPTION_LENGTH, MAX_DESCRIPTION_LENGTH
+                )));
+            }
+
+            // Validate basket if specified
+            if let Some(ref basket) = output.basket {
+                if basket.is_empty() {
+                    return Err(Error::ValidationError(format!(
+                        "outputs[{}]: basket cannot be empty when specified",
+                        i
+                    )));
+                }
+            }
+
+            // Validate tags
+            if let Some(ref tags) = output.tags {
+                validate_array_bound(tags.len(), "tags", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
+                for (j, tag) in tags.iter().enumerate() {
+                    if tag.is_empty() {
+                        return Err(Error::ValidationError(format!(
+                            "outputs[{}].tags[{}]: tag cannot be empty",
+                            i, j
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate labels
+    if let Some(ref labels) = args.labels {
+        validate_array_bound(labels.len(), "labels", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
+        for label in labels {
+            if label.is_empty() {
+                return Err(Error::ValidationError("label cannot be empty".to_string()));
+            }
+            if label.len() > MAX_LABEL_LENGTH {
+                return Err(Error::ValidationError(format!(
+                    "label exceeds maximum length of {} characters",
+                    MAX_LABEL_LENGTH
+                )));
+            }
+        }
+    }
+
+    // Options (763, validateCreateActionOptions at 650-674): knownTxids'
+    // bound at 662, noSendChange's at 667 ahead of its duplicates, sendWith's
+    // own bound at 137 (validateSendWith, called at 670).
     if let Some(ref options) = args.options {
+        if let Some(ref known_txids) = options.known_txids {
+            validate_array_bound(
+                known_txids.len(),
+                "knownTxids",
+                MAXIMUM_WALLET_COLLECTION_ITEMS,
+            )?;
+        }
         if let Some(ref no_send_change) = options.no_send_change {
+            validate_array_bound(
+                no_send_change.len(),
+                "noSendChange",
+                MAXIMUM_WALLET_COLLECTION_ITEMS,
+            )?;
             let mut seen_outpoints = std::collections::HashSet::new();
             for outpoint in no_send_change {
                 let key = format!("{}.{}", hex::encode(outpoint.txid), outpoint.vout);
@@ -163,6 +189,9 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
                     )));
                 }
             }
+        }
+        if let Some(ref send_with) = options.send_with {
+            validate_array_bound(send_with.len(), "sendWith", MAXIMUM_SEND_WITH_TRANSACTIONS)?;
         }
     }
 
