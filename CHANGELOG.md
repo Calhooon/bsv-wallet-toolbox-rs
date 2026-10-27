@@ -4,6 +4,25 @@
 
 ### Fixed
 
+- #240: `prove_certificate` now refuses certificate serial numbers that do not
+  canonically encode exactly 32 bytes, after map-value validation and before
+  the subset loop or verifier key derivation. This follows `ts-stack@edf6e03`
+  `packages/sdk/src/auth/certificates/MasterCertificate.ts:365,63-78`.
+  Invalid Base64 uses `Certificate serial number must use canonical base64 encoding`;
+  empty or oversized values use
+  `Certificate serial number is empty, oversized, or non-canonical`;
+  shorter nonempty values use `Certificate serial number must encode exactly 32 bytes`.
+  These refusals use `bsv_rs::Error::WalletError`, as the existing gate does
+  for the reference's plain `Error`.
+
+- #240: an empty `fields_to_reveal` now returns an empty verifier keyring,
+  retaining the input validation but performing no field recovery. Previously,
+  the request disclosed every stored field. The reference passes the empty
+  request through unchanged at `ts-stack@edf6e03`
+  `packages/sdk/src/wallet/validationHelpers.ts:1506-1508` and
+  `packages/wallet/wallet-toolbox/src/signer/methods/proveCertificate.ts:31-43`;
+  `MasterCertificate.ts:348,370-415` then returns an empty keyring.
+
 - #236: `prove_certificate` now validates requested names, both field maps,
   and every map value before the subset check and field recovery, following
   `ts-stack@edf6e03`

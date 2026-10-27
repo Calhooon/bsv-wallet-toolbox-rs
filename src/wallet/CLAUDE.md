@@ -629,9 +629,26 @@ values read `<label> <name> is empty, oversized, or non-canonical`, with
 uses `Fields to reveal must be a subset of the certificate fields. Missing the "<name>" field.`
 (`:370-379`); empty values are refused by the earlier value check.
 The gate's plain JavaScript `Error` maps to `WalletError`, as does the
-requested-array limit's `TypeError`. Empty requests and maps return an empty
+requested-array limit's `TypeError`. Empty requests with empty maps return an empty
 keyring. Failures reached inside recovery keep its one sentence; the value
 size caps beyond canonical Base64 remain with #223.
+
+For #240, the serial number is validated after the map values and before the
+subset loop (`ts-stack@edf6e03`, `MasterCertificate.ts:365,63-78`). It must be
+canonical Base64 encoding exactly 32 bytes. Invalid encoding reads
+`Certificate serial number must use canonical base64 encoding`; empty or
+oversized values read `Certificate serial number is empty, oversized, or non-canonical`;
+shorter nonempty values read `Certificate serial number must encode exactly 32 bytes`.
+Each is a `WalletError`, following the gate's mapping of the reference's `Error`.
+
+An empty `fields_to_reveal` is passed unchanged to the helper: it returns an
+empty verifier keyring even for a populated certificate, without recovering
+any field. Requested names, both maps, and the serial still pass through the
+gate. The reference preserves the empty array at
+`validationHelpers.ts:1506-1508` and `signer/methods/proveCertificate.ts:31-43`;
+`MasterCertificate.ts:348,370-415` runs no field iterations. The serial and
+empty-request tests in `wallet.rs::prove_certificate_tests::preloop_gate`
+cover both the helper and the storage-backed prove call.
 
 ### Protocol Flow
 
