@@ -7,7 +7,7 @@
 - #284: an empty originator is accepted as absence at the in-process door.
   This is an interim because the pinned bsv-rs `WalletInterface` takes `&str`
   and cannot distinguish absence from `""`. The reference's explicit-empty
-  refusal returns when `bsv-rs #<pending>` carries `Option<&str>`.
+  refusal returns when `bsv-rs #329` carries `Option<&str>`.
   Non-empty supplied strings follow the pinned reference's trimmed, lowercase
   hostname validation, including the 250-byte limit, 63-byte label limit,
   optional numeric port and exact refusal texts. Non-empty whitespace still

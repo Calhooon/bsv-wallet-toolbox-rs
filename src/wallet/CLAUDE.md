@@ -511,7 +511,7 @@ All `WalletInterface` methods take the `&str` originator required by the pinned
 the in-process door and is accepted, matching the reference's `undefined`
 branch at `validationHelpers.ts:1003-1004`. This interface cannot distinguish
 absence from an explicit empty string. The reference's explicit-empty refusal
-at `:1006` returns when `bsv-rs #<pending>` changes `WalletInterface` to
+at `:1006` returns when `bsv-rs #329` changes `WalletInterface` to
 `Option<&str>`; the captain fills in that issue number at landing.
 
 Non-empty supplied strings are checked after ECMAScript trimming and

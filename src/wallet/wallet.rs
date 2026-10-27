@@ -2975,7 +2975,7 @@ where
 fn validate_originator(originator: &str) -> Result<()> {
     // #284 interim: the pinned WalletInterface carries &str, so "" means absence.
     // The reference refuses "" by its length rule; restore that verdict when
-    // bsv-rs #<pending> carries Option<&str> in WalletInterface.
+    // bsv-rs #329 carries Option<&str> in WalletInterface.
     if originator.is_empty() {
         return Ok(());
     }
