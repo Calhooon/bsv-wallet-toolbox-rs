@@ -16,11 +16,19 @@
   issuer URL and field records in the pinned reference's order before protocol
   work. Response checks require certificate before server nonce, retain both
   presence errors' `!`, and use the reference's field-count, missing-field,
-  serial false-result, signature-error and master-decryption texts. Accepted
-  type text is decoded leniently; response outpoint, serial and signature text
-  are retained through storage. The server nonce verifier now runs before the serial HMAC, using the
+  serial false-result, signature-error and master-decryption texts. The
+  signature step decodes type and serial as the reference's `toBinary` does:
+  a non-canonical type or serial answers `Certificate verification failed`
+  (the serial's HMAC still decodes leniently). The revocation outpoint follows
+  `toBinary`'s grammar: an unparsable text or a `.07` index answers
+  `Certificate verification failed`, and a txid-only outpoint is verified as
+  vout 0 over its txid; the answered outpoint, serial and signature text are
+  stored as received. The nonces are decoded before the serial's hmac length
+  is checked. The server nonce verifier now runs before the serial HMAC, using the
   reference's derivation inputs and ignoring its false result as Wallet.ts does.
-  Returned fields must decrypt with the request's master keyring before storage.
+  An empty master keyring answers `A MasterCertificate must have a valid
+  masterKeyring!` before storage; otherwise returned fields must decrypt with
+  the request's master keyring before storage.
   The identity header (#269), client nonce generation and signature `Ok(false)`
   policy (#188/#199) retain their existing behavior. CLI error snapshots need
   review when this lands.

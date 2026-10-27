@@ -179,9 +179,12 @@ it (`UnspendableCoin`).
 | issuance response missing field uses the reference text | `ts-stack@edf6e03 Wallet.ts:741`; toolbox #283 | `missing_field_uses_reference_text` |
 | issuance signature errors use the reference text without changing the false-result policy | `ts-stack@edf6e03 Wallet.ts:816; toolbox #188/#199`; toolbox #283 | `verification_error_uses_reference_text` |
 | master fields must decrypt before an issued certificate is stored | `ts-stack@edf6e03 Wallet.ts:817; MasterCertificate.ts:559-560`; toolbox #283 | `decrypt_all_fields_uses_reference_text` |
-| the issuance gate admitted type text survives lenient decoding and storage | `ts-stack@edf6e03 validationHelpers.ts:1338; primitives/utils.ts:143-192; toolbox #188 remains`; toolbox #283 | `noncanonical_type_survives_round_trip` |
+| a non-canonical response type is refused at the signature step | `ts-stack@edf6e03 Wallet.ts:816; Certificate.ts:30-43,233,425-441; WalletByteEncoding.ts:39-52`; toolbox #283 | `noncanonical_type_is_refused_at_verify` |
+| a non-canonical serial passes the lenient HMAC decode and is refused at the signature step | `ts-stack@edf6e03 Wallet.ts:808,816; Certificate.ts:237`; toolbox #283 | `noncanonical_serial_passes_hmac_and_is_refused_at_verify` |
+| an empty master keyring is refused before storage | `ts-stack@edf6e03 Wallet.ts:817; MasterCertificate.ts:522-524`; toolbox #283 | `empty_master_keyring_is_refused_before_storage` |
+| the nonce decode precedes the serial's hmac length | `ts-stack@edf6e03 Wallet.ts:808-809; validationHelpers.ts:1774; primitives/utils.ts:150-155`; toolbox #283 | `nonce_decode_precedes_hmac_length` |
 | a truthy unparsable outpoint passes the revocation-presence guard | `ts-stack@edf6e03 Wallet.ts:763-766`; toolbox #283 | `unparsable_truthy_outpoint_reaches_field_checks` |
-| issuance storage retains outpoint text verbatim | `ts-stack@edf6e03 Wallet.ts:818-822`; toolbox #283 | `truthy_outpoint_text_is_retained_in_storage` |
+| the revocation outpoint follows toBinary's grammar (unparsable and `.07` refused at verify, txid-only is vout 0) and its text is stored as answered | `ts-stack@edf6e03 Certificate.ts:260-276,425-441; Wallet.ts:816-822`; toolbox #283 | `outpoint_grammar_is_to_binary_grammar` |
 | the server nonce helper runs before the serial HMAC with the reference derivation inputs | `ts-stack@edf6e03 Wallet.ts:806; verifyNonce.ts:42-55`; toolbox #283 | `server_nonce_verification_precedes_serial_and_uses_reference_derivation` |
 | the issuance caller ignores a false server nonce result | `ts-stack@edf6e03 Wallet.ts:806; verifyNonce.ts:57`; toolbox #283 | `false_server_nonce_result_is_ignored_as_in_reference` |
 | the nonce key ID matches TextDecoder's leading-BOM removal | `ts-stack@edf6e03 primitives/utils.ts:211-212; verifyNonce.ts:51`; toolbox #283 | `server_nonce_key_id_matches_textdecoder_bom_handling` |
