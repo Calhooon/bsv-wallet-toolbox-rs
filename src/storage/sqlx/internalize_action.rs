@@ -4087,3 +4087,7 @@ mod tests {
         no_height.assert_async().await;
     }
 }
+
+#[cfg(test)]
+#[path = "internalize_bounds_tests.rs"]
+mod bounds_tests;
