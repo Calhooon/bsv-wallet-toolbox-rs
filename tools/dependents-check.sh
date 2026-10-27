@@ -18,16 +18,23 @@
 #      the lock still needs a change (or the dependent commits no lock);
 #   5. `cargo test --locked`, every target (`cargo test` when the build was
 #      unlocked), with WIRE_TEXT_DIFF=report in its environment; a row's test
-#      column may name a narrower command, with the reason in its reason column.
+#      column may name a narrower command, with the reason in its reason column;
+#   6. read the test output: every `TEXT-DIFF: <fixture file> ...` line is a row
+#      `text differs` (a re-record pending at the pin, never a failure), and a
+#      failing row names its failed tests, eight at most (#252).
 #
 # Usage: tools/dependents-check.sh [--ci] [--only CRATE] [--line L] [--from CRATE=DIR]...
+#        tools/dependents-check.sh --parse FILE [--only CRATE]
 #   --ci          run only the rows whose ci column is `yes`
 #   --only CRATE  run one row
 #   --line L      clone each dependent at its branch L when it has one (default: the
 #                 line CI runs on, GITHUB_BASE_REF or GITHUB_REF_NAME; else the default branch)
 #   --from C=DIR  take crate C's repository from the local DIR (a copy is built; DIR is never written)
+#   --parse FILE  read FILE as a dependent's captured test output and print its rows
+#                 only (nothing is cloned or built); exits 1 when it names a failed test
 # Environment: DEPENDENTS_WORK (scratch, default $RUNNER_TEMP or $TMPDIR),
-#   DEPENDENTS_TARGET_DIR (cargo target root, default inside the scratch).
+#   DEPENDENTS_TARGET_DIR (cargo target root, default inside the scratch),
+#   GITHUB_STEP_SUMMARY (when set, the rows are appended to it as a table).
 # Exits non-zero when any dependent fails to build or test, and when a branch probe
 # or a clone faults (a fault is a summary row, never a verdict).
 
@@ -36,15 +43,10 @@ set -euo pipefail
 PKG=bsv-wallet-toolbox-rs
 TREE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIST="$TREE/docs/DEPENDENTS.md"
-WORK="${DEPENDENTS_WORK:-${RUNNER_TEMP:-${TMPDIR:-}}}"
-if [ -z "$WORK" ]; then
-  echo "set DEPENDENTS_WORK or TMPDIR" >&2
-  exit 2
-fi
-WORK="$WORK/dependents-check"
 
 ci=0
 only=""
+parse=""
 line="${GITHUB_BASE_REF:-${GITHUB_REF_NAME:-}}"
 declare -a froms=()
 while [ $# -gt 0 ]; do
@@ -53,11 +55,69 @@ while [ $# -gt 0 ]; do
     --only) only="$2"; shift ;;
     --line) line="$2"; shift ;;
     --from) froms+=("$2"); shift ;;
+    --parse) parse="$2"; shift ;;
     -h|--help) sed -n '2,/^set -euo/{ /^#/p; }' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+declare -a summary=()
+status=0
+
+# The rows a dependent's test output carries. A `TEXT-DIFF: <fixture file>
+# <expected message> <actual message>` line is a fixture whose replayed refusal
+# differs from it in the message text alone (bsv-wallet-cli #290): one row each,
+# pending re-record at the pin, never a failure.
+text_rows() {
+  sed -n 's/^TEXT-DIFF: \([^ ]*\).*/\1/p' "$2" |
+    while IFS= read -r fixture; do
+      echo "$1|text differs: $fixture (pending re-record at the pin)|-"
+    done
+}
+
+# The libtest `test NAME ... FAILED` lines, eight named, then how many more.
+failed_tests() {
+  awk '/^test [^ ]+ \.\.\. FAILED$/ { n++; if (n <= 8) names = names (n > 1 ? ", " : "") $2 }
+    END { if (n > 8) names = names " and " (n - 8) " more"; print names }' "$1"
+}
+
+# The rows, on the terminal and, in CI, in the job summary.
+report() {
+  local s c b t
+  [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '| dependent | build | test |\n|---|---|---|\n' >>"$GITHUB_STEP_SUMMARY"
+  for s in ${summary[@]+"${summary[@]}"}; do
+    IFS='|' read -r c b t <<<"$s"
+    if [ "${b#text differs}" != "$b" ]; then
+      printf '  %-16s %s\n' "$c" "$b"
+    else
+      printf '  %-16s build: %-28s test: %s\n' "$c" "$b" "$t"
+    fi
+    [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '| %s | %s | %s |\n' "$c" "$b" "$t" >>"$GITHUB_STEP_SUMMARY"
+  done
+}
+
+# A captured output read alone: the parsing's own proof (tools/dependents-check-test.sh).
+if [ -n "$parse" ]; then
+  crate="${only:-dependent}"
+  failed="$(failed_tests "$parse")"
+  if [ -n "$failed" ]; then
+    summary+=("$crate|parsed|FAIL: $failed")
+    status=1
+  else
+    summary+=("$crate|parsed|ok")
+  fi
+  while IFS= read -r r; do summary+=("$r"); done < <(text_rows "$crate" "$parse")
+  report
+  exit "$status"
+fi
+
+WORK="${DEPENDENTS_WORK:-${RUNNER_TEMP:-${TMPDIR:-}}}"
+if [ -z "$WORK" ]; then
+  echo "set DEPENDENTS_WORK or TMPDIR" >&2
+  exit 2
+fi
+WORK="$WORK/dependents-check"
 
 # A check with nothing to check is a failure, never a pass.
 if [ ! -f "$LIST" ]; then
@@ -120,9 +180,6 @@ rewrite_manifest() {
 lock_packages() {
   awk '/^name = /{ n = $3 } /^version = /{ v = $3; gsub(/"/, "", n); gsub(/"/, "", v); print n " " v }' "$1" | sort
 }
-
-declare -a summary=()
-status=0
 
 run_one() {
   local crate="$1" clone="$2" dir="$3" testcmd="$4"
@@ -189,7 +246,7 @@ run_one() {
   done
 
   export CARGO_TARGET_DIR="${DEPENDENTS_TARGET_DIR:-$WORK/target}/$crate"
-  local note="" build="fail" test="not run" lock
+  local note="" build="fail" test="not run" lock log="" failed r
   lock="$(dirname "$(cd "$src" && cargo locate-project --workspace --message-format plain)")/Cargo.lock"
   if [ -f "$lock" ]; then
     (
@@ -270,15 +327,19 @@ run_one() {
     echo "   $what"
     # The knob for every row, not the CLI's alone: a dependent whose tests do not
     # read WIRE_TEXT_DIFF ignores an unknown variable.
-    if (cd "$src" && unset RUSTFLAGS && export WIRE_TEXT_DIFF=report && eval "$what"); then
+    log="$WORK/$crate.test.log"
+    if (cd "$src" && unset RUSTFLAGS && export WIRE_TEXT_DIFF=report && eval "$what") 2>&1 | tee "$log"; then
       test="ok ($what)"
     else
       test="FAIL ($what)"
+      failed="$(failed_tests "$log")"
+      [ -z "$failed" ] || test="$test: $failed"
     fi
   fi
 
   [ "${build#ok}" != "$build" ] && [ "${test#ok}" != "$test" ] || status=1
   summary+=("$crate|$build|$test${note:+ [$note]}")
+  [ -z "$log" ] || while IFS= read -r r; do summary+=("$r"); done < <(text_rows "$crate" "$log")
 }
 
 any=0
@@ -306,8 +367,5 @@ fi
 
 echo
 echo "dependents of $PKG v$tree_version ($TREE):"
-for s in ${summary[@]+"${summary[@]}"}; do
-  IFS='|' read -r c b t <<<"$s"
-  printf '  %-16s build: %-28s test: %s\n' "$c" "$b" "$t"
-done
+report
 exit "$status"
