@@ -20,6 +20,9 @@
   sequence numbers, and spender references. A newer row updates the reference
   merge's columns and leaves the stored sequence number, as the reference does.
   Spender references are translated to the receiving store's transaction IDs.
+- #298: a newer synced output row no longer overwrites the stored `satoshis`,
+  `derivation_prefix` or `derivation_suffix`; the update writes the reference
+  merge's columns and no others, as `EntityOutput.mergeExisting` does.
 
 - #283: certificate issuance now checks privilege, direct-only arguments,
   issuer URL and field records in the pinned reference's order before protocol

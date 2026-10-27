@@ -261,8 +261,11 @@ The related `basket` and `tags` objects belong to `TableOutputX`
 translates its user, basket, parent transaction, and spender IDs.
 `:340-357` updates only when the incoming timestamp is newer, translating
 `spentBy` again and writing both descriptions. Its update assignment list
-does not include `sequenceNumber`; #276 preserves that received metadata on newer SQLx
-rows, `sequenceNumber` excepted, which the reference's `mergeExisting` leaves as stored. Null metadata clears the stored value; equal or older rows
+does not include `transactionId`, `satoshis`, `derivationPrefix`, `derivationSuffix`
+or `sequenceNumber`; #276 preserves the received metadata on newer SQLx rows, and
+since #298 the SQLx update writes the reference's columns and no others, leaving
+those five as stored. `transactionId` is the match key (`EntityOutput.ts:306-311`),
+so an incoming row on another transaction is another output. Null metadata clears the stored value; equal or older rows
 leave it alone. This adds no validation guard. The existing timestamp check
 runs in `upsert_output`, called by `process_sync_chunk_internal`; no earlier
 helper compares incoming and local output timestamps.

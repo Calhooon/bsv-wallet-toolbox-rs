@@ -407,8 +407,9 @@ Output sync preserves all 25 `TableOutput` columns, including
 and decodes nullable metadata without hiding missing columns. Sequence numbers
 retain the full `u32` range. Inserts write the whole row. Newer-row updates
 write the reference `mergeExisting` columns (`output_description`, `spent_by`,
-`spending_description` among them) and leave `sequence_number` as stored; an
-incoming null clears a written value. Equal or older rows keep the existing
+`spending_description` among them) and no others: `transaction_id` (the match
+key), `satoshis`, `derivation_prefix`, `derivation_suffix` and `sequence_number`
+stay as stored (#276, #298); an incoming null clears a written value. Equal or older rows keep the existing
 values. `spent_by`, like the parent transaction,
 uses the session's transaction ID map, including transactions from earlier
 chunks; an unmapped spender becomes null, matching the reference merge.
