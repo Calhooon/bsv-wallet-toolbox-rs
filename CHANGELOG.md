@@ -48,7 +48,9 @@
 - #192: output finders now return the stored `purpose` and `providedBy`,
   including received outputs marked `receive` and `storage`. These reads
   also preserve output descriptions, spender IDs, sequence numbers,
-  and spending descriptions. The `list_outputs` wire fields are unchanged.
+  and spending descriptions. Internalization merge reads select the same
+  columns, and row decoding reports missing columns instead of supplying defaults.
+  The `list_outputs` wire fields are unchanged.
 
 - #260: `prove_certificate` now validates type, serial, certifier, subject,
   signature, requested name lengths, then verifier before the certificate
