@@ -105,9 +105,9 @@ pub struct Services {
 ```
 
 **Factory Methods (all return `Result<Self>`):**
-- `Services::new(chain)` - Create with chain-appropriate defaults: refuses, the defaults name no Arcade endpoint (#317)
-- `Services::mainnet()` - Create with mainnet defaults (refuses, as `new`)
-- `Services::testnet()` - Create with testnet configuration (refuses, as `new`)
+- `Services::new(chain)` - Create with chain-appropriate defaults: Arcade at `ARCADE_V2_MAINNET` on main; refuses on test, which names no Arcade endpoint (#317)
+- `Services::mainnet()` - Create with mainnet defaults (Arcade at `ARCADE_V2_MAINNET`)
+- `Services::testnet()` - Create with testnet configuration (refuses: the crate has no Arcade testnet constant)
 - `Services::with_options(chain, options)` - Create with custom options; refuses Arcade mode with an empty `arc_url`
 
 **Key Methods:**
@@ -280,12 +280,13 @@ pub struct ServicesOptions {
 ```
 
 **Builder Methods:**
-- `ServicesOptions::mainnet()` / `testnet()` - Create with defaults: Arcade mode, no Arcade endpoint, no GorillaPool (#317); name the endpoint with `with_arcade` before construction
+- `ServicesOptions::mainnet()` / `default()` - Create with defaults: Arcade mode at the crate's public `ARCADE_V2_MAINNET`, no GorillaPool (#317, the keeper's reading on PR #342)
+- `ServicesOptions::testnet()` - The same with no Arcade endpoint (the crate has no Arcade testnet constant): name one with `with_arcade` before construction
 - `with_woc_api_key(key)` - Set WhatsOnChain API key
 - `with_bitails_api_key(key)` - Set Bitails API key
 - `with_bananablocks_base(url)` - BananaBlocks API base (default per chain; empty = off)
 - `without_bananablocks()` - Leave BananaBlocks out of every ladder
-- `with_arcade(url, config)` - Arcade mode: `arc_url` is the Arcade endpoint; no classic ARC provider is built
+- `with_arcade(url, config)` - Arcade mode: `arc_url` is the Arcade endpoint (another than the default `ARCADE_V2_MAINNET`, or on testnet); no classic ARC provider is built
 - `with_classic_arc(url, config)` - **Deprecated** (0.14.0): classic mode (`arcade_v2 = false`), TAAL ARC from `url`; serves the CLI's hermetic stub until it speaks Arcade
 - `with_arc(url, config)` - **Deprecated** (0.14.0): the same as `with_classic_arc`
 - `with_gorillapool(url, config)` - Set GorillaPool ARC configuration (classic mode only)
@@ -442,8 +443,10 @@ Note: Arcade mode is the default and has no classic ARC provider (the
 owner's word of 2026-10-27, "arc is just deprecated, arcade is the
 standard", #317): `arc_taal` and `arc_gorillapool` are `None` whatever
 `arc_gorillapool_url` says, the post ladder is ArcadeV2, Bitails,
-WhatsOnChain, and `get_broadcaster_statuses` asks Arcade alone. The defaults
-name no Arcade endpoint, so `Services::with_options` refuses them with
+WhatsOnChain, and `get_broadcaster_statuses` asks Arcade alone. `default()`
+and `mainnet()` name the crate's public `ARCADE_V2_MAINNET`; options whose
+`arc_url` is empty (a caller emptied it, or `testnet()`: the crate has no
+Arcade testnet constant) name no Arcade endpoint, and `Services::with_options` refuses them with
 `Invalid argument: ServicesOptions names no Arcade endpoint: Arcade is the
 default mode (#317); set one with ServicesOptions::with_arcade(url, config)`
 (`NO_ARCADE_URL`; the reference has no counterpart). The classic ladder

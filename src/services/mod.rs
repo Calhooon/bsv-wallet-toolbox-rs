@@ -22,8 +22,9 @@
 //! ```rust,ignore
 //! use bsv_wallet_toolbox_rs::services::{Services, ServicesOptions, Chain};
 //!
-//! // Arcade is the default mode; name the Arcade endpoint (#317)
-//! let options = ServicesOptions::mainnet().with_arcade(arcade_url, None);
+//! // Arcade is the default mode, at the crate's public ARCADE_V2_MAINNET
+//! // (#317); `with_arcade(url, config)` names another endpoint
+//! let options = ServicesOptions::mainnet();
 //! let services = Services::with_options(Chain::Main, options)?;
 //!
 //! // Get raw transaction
@@ -173,10 +174,11 @@ pub struct ServicesOptions {
 
     /// The Arcade endpoint in Arcade mode (the default); the classic TAAL
     /// ARC URL only when the deprecated [`ServicesOptions::with_classic_arc`]
-    /// set classic mode. Empty by default: no Arcade endpoint is this
-    /// crate's to name, so options that leave it empty in Arcade mode
-    /// refuse at construction until [`ServicesOptions::with_arcade`] sets
-    /// one (#317).
+    /// set classic mode. [`ARCADE_V2_MAINNET`] by default and in
+    /// [`ServicesOptions::mainnet`]; empty in [`ServicesOptions::testnet`]
+    /// (the crate has no Arcade testnet constant). Options that leave it
+    /// empty in Arcade mode refuse at construction until
+    /// [`ServicesOptions::with_arcade`] sets one (#317).
     pub arc_url: String,
 
     /// Classic ARC configuration for TAAL. Read in classic mode only.
@@ -207,8 +209,10 @@ pub struct ServicesOptions {
     /// - [`Services::arcade`] is populated so callers (e.g. the Monitor's
     ///   `ArcadeEventsTask`) can reach the SSE stream / callback token.
     ///
-    /// - An empty `arc_url` refuses at construction with a text naming
-    ///   [`ServicesOptions::with_arcade`].
+    /// - `arc_url` is [`ARCADE_V2_MAINNET`] unless the caller names another
+    ///   with [`ServicesOptions::with_arcade`]; an empty `arc_url` (a caller
+    ///   emptied it, or [`ServicesOptions::testnet`]) refuses at
+    ///   construction with a text naming `with_arcade`.
     ///
     /// When `false` (classic mode, deprecated, set only by
     /// [`ServicesOptions::with_classic_arc`]): TAAL ARC from `arc_url`,
@@ -259,7 +263,7 @@ impl Default for ServicesOptions {
             whatsonchain_api_key: None,
             bitails_api_key: None,
             bananablocks_base: None,
-            arc_url: String::new(),
+            arc_url: ARCADE_V2_MAINNET.to_string(),
             arc_config: None,
             arc_gorillapool_url: None,
             arc_gorillapool_config: None,
@@ -278,17 +282,27 @@ impl Default for ServicesOptions {
 }
 
 impl ServicesOptions {
-    /// Create options for mainnet with defaults: Arcade mode with no Arcade
-    /// endpoint, so set one with [`ServicesOptions::with_arcade`] before
-    /// construction (#317).
+    /// Create options for mainnet with defaults: Arcade mode at the crate's
+    /// public [`ARCADE_V2_MAINNET`] (#317, the keeper's reading on PR #342),
+    /// so `Services` builds with no endpoint named. The reference defaults
+    /// its broadcaster to a hosted endpoint too: ts-stack edf6e03,
+    /// `DefaultBroadcaster.ts:8-9`, `return new ARC(` with
+    /// `'https://arc.gorillapool.io'` on mainnet (the crate's
+    /// `ARC_GORILLAPOOL`).
+    /// [`ServicesOptions::with_arcade`] names another endpoint.
     pub fn mainnet() -> Self {
         Self::default()
     }
 
-    /// Create options for testnet: the same defaults as
-    /// [`ServicesOptions::mainnet`] (#317).
+    /// Create options for testnet: the mainnet defaults with no Arcade
+    /// endpoint, since the crate has no Arcade testnet constant, so these
+    /// refuse at construction until [`ServicesOptions::with_arcade`] names
+    /// one (#317).
     pub fn testnet() -> Self {
-        Self::default()
+        Self {
+            arc_url: String::new(),
+            ..Self::default()
+        }
     }
 
     /// Set WhatsOnChain API key.
@@ -360,7 +374,9 @@ impl ServicesOptions {
     /// Use an **Arcade V2** endpoint as the primary broadcaster.
     ///
     /// Sets `arc_url` to the Arcade endpoint and flips `arcade_v2 = true`
-    /// (explicit opt-in, never inferred from the URL). The post ladder is
+    /// (explicit opt-in, never inferred from the URL): for an endpoint other
+    /// than the default [`ARCADE_V2_MAINNET`], or on testnet, which names
+    /// none. The post ladder is
     /// then Arcade, Bitails and WhatsOnChain; no classic ARC provider is
     /// built (#317). See [`ServicesOptions::arcade_v2`] for the wiring.
     ///

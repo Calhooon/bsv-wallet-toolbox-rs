@@ -131,7 +131,7 @@ Broad integration tests for service creation, provider configuration, collection
 - **Provider config:** `WhatsOnChain`, `Arc` (Taal/GorillaPool), `Bitails` construction and API key setup
 - **Collection ops:** `ServiceCollection` add/next/reset/remove/move_to_last, call tracking
 - **Result types:** Serialization of `GetRawTxResult`, `GetMerklePathResult`, `PostBeefResult`, `GetUtxoStatusResult`, `GetStatusForTxidsResult`, `GetScriptHashHistoryResult`, `GetBeefResult`
-- **Services options:** `ServicesOptions::default()`, `mainnet()`, `testnet()`, builder pattern with `with_woc_api_key`, `with_arc`, `with_gorillapool`
+- **Services options:** `ServicesOptions::default()`, `mainnet()`, `testnet()`, builder pattern with `with_woc_api_key`, `with_classic_arc`, `with_gorillapool`
 - **nLockTime:** Block height vs timestamp threshold (500,000,000), sequence finality, `NLockTimeInput::from_hex_tx` parsing real BSV transactions, `NLockTimeInput::from_lock_time`, `n_lock_time_is_final_for_tx` with final/non-final sequences
 - **Network tests (ignored):** `test_whatsonchain_get_exchange_rate`, `test_services_get_beef_*`
 

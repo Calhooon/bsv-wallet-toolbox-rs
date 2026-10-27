@@ -149,9 +149,9 @@ fn post_beef_fault(provider: &str, error: &Error) -> PostBeefResult {
 ///
 /// | Method | Description |
 /// |--------|-------------|
-/// | [`Services::new`] | Create with chain-appropriate defaults (refuses: no Arcade endpoint, #317) |
-/// | [`Services::mainnet`] | Shorthand for mainnet defaults (refuses, as `new`) |
-/// | [`Services::testnet`] | Shorthand for testnet defaults (refuses, as `new`) |
+/// | [`Services::new`] | Create with chain-appropriate defaults (Arcade at `ARCADE_V2_MAINNET` on main; refuses on test: no Arcade endpoint, #317) |
+/// | [`Services::mainnet`] | Shorthand for mainnet defaults (Arcade at `ARCADE_V2_MAINNET`) |
+/// | [`Services::testnet`] | Shorthand for testnet defaults (refuses: no Arcade testnet endpoint) |
 /// | [`Services::with_options`] | Create with custom [`ServicesOptions`] |
 ///
 /// # Example
@@ -159,9 +159,8 @@ fn post_beef_fault(provider: &str, error: &Error) -> PostBeefResult {
 /// ```rust,ignore
 /// use bsv_wallet_toolbox_rs::{Services, ServicesOptions, Chain};
 ///
-/// // Arcade is the default mode: name the Arcade endpoint (#317)
+/// // Arcade is the default mode, at ARCADE_V2_MAINNET (#317)
 /// let options = ServicesOptions::mainnet()
-///     .with_arcade(arcade_url, None)
 ///     .with_woc_api_key("my-key")
 ///     .with_bhs("https://bhs.babbage.systems", None);
 /// let services = Services::with_options(Chain::Main, options)?;
@@ -618,15 +617,16 @@ fn merge_status_results(
 }
 
 /// The refusal of options in Arcade mode (the default) that name no Arcade
-/// endpoint (#317). The reference has no counterpart: its default is a
-/// classic ARC URL, and this port names no Arcade deployment of its own.
+/// endpoint (#317): an `arc_url` a caller emptied, or `testnet()`, since
+/// the crate has no Arcade testnet constant. The reference has no
+/// counterpart: its default is always a hosted classic ARC URL.
 pub(crate) const NO_ARCADE_URL: &str = "ServicesOptions names no Arcade endpoint: Arcade is the default mode (#317); set one with ServicesOptions::with_arcade(url, config)";
 
 impl Services {
-    /// Create new services for the given chain with default options. The
-    /// defaults name no Arcade endpoint, so this refuses with the
-    /// `with_arcade` text (#317): use [`Services::with_options`] with
-    /// [`ServicesOptions::with_arcade`].
+    /// Create new services for the given chain with default options: Arcade
+    /// at `ARCADE_V2_MAINNET` on main; on test the defaults name no Arcade
+    /// endpoint, so this refuses with the `with_arcade` text (#317): use
+    /// [`Services::with_options`] with [`ServicesOptions::with_arcade`].
     pub fn new(chain: Chain) -> Result<Self> {
         let options = match chain {
             Chain::Main => ServicesOptions::mainnet(),
@@ -1070,14 +1070,15 @@ impl Services {
         seen
     }
 
-    /// Create mainnet services from the defaults: refuses, as
-    /// [`Services::new`] (#317).
+    /// Create mainnet services from the defaults: Arcade at
+    /// `ARCADE_V2_MAINNET` (#317).
     pub fn mainnet() -> Result<Self> {
         Self::new(Chain::Main)
     }
 
     /// Create testnet services from the defaults: refuses, as
-    /// [`Services::new`] (#317).
+    /// [`Services::new`] on test, since no Arcade testnet endpoint is named
+    /// (#317).
     pub fn testnet() -> Result<Self> {
         Self::new(Chain::Test)
     }
