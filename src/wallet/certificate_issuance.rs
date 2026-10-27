@@ -853,6 +853,10 @@ where
 #[path = "certificate_issuance_tests.rs"]
 mod field_scheme_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "certificate_issuance_key_tests.rs"]
+mod key_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
