@@ -1609,7 +1609,10 @@ where
         )
         .map_err(|e| bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e)))?;
         let reference = storage_result.reference.clone();
-        let reference_bytes = reference.clone().into_bytes();
+        // Storage and signAction use base64 text; the SDK result carries the
+        // decoded bytes, as does the reference's binary wallet wire.
+        let reference_bytes = bsv_rs::primitives::from_base64(&reference)
+            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid storage reference: {e}")))?;
 
         // Convert storage inputs to signer inputs for caching
         let signer_inputs: Vec<SignerInput> = storage_result
@@ -1972,7 +1975,8 @@ where
         // Serialize spending operations (signs and broadcasts pending transactions).
         let _spend_guard = self.spend_lock.lock().await;
 
-        // Get the reference from args (it's already a String)
+        // Callers base64-encode SignableTransaction.reference's raw bytes.
+        // The cache and storage use that original base64 text unchanged.
         let reference = args.reference;
 
         if reference.is_empty() {
