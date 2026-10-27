@@ -1959,7 +1959,7 @@ async fn upsert_output(
             .bind(&output.sender_identity_key)
             .bind(&output.custom_instructions)
             .bind(&output.provided_by)
-            .bind(output.purpose.as_deref().unwrap_or("change"))
+            .bind(output.purpose.as_deref().unwrap_or(""))
             .bind(&output.output_description)
             .bind(local_spent_by)
             .bind(&output.spending_description)
@@ -1974,7 +1974,10 @@ async fn upsert_output(
             is_new: false,
         })
     } else {
-        // Insert new - provided_by and purpose are required columns
+        // Insert new - provided_by and purpose are required columns. A missing
+        // purpose is written as '' (EntityOutput's default, ts-stack edf6e03
+        // :45; `purpose TEXT NOT NULL` with no default), never 'change',
+        // which MANAGED_CHANGE_CLAUSE would offer as change (#313).
         let result = sqlx::query(
             r#"
             INSERT INTO outputs (user_id, transaction_id, basket_id, txid, vout, satoshis, locking_script,
@@ -2001,7 +2004,7 @@ async fn upsert_output(
         .bind(&output.sender_identity_key)
         .bind(&output.custom_instructions)
         .bind(&output.provided_by)
-        .bind(output.purpose.as_deref().unwrap_or("change"))
+        .bind(output.purpose.as_deref().unwrap_or(""))
         .bind(&output.output_description)
         .bind(local_spent_by)
         .bind(output.sequence_number)
