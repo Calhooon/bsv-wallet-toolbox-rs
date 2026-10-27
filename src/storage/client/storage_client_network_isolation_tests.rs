@@ -15,7 +15,7 @@ fn client(endpoint: &str) -> StorageClient<ProtoWallet> {
 async fn storage_client_refuses_non_loopback_before_transport() {
     for scheme in ["http", "https"] {
         let client = client(&format!("{scheme}://provider.invalid/rpc"));
-        assert_isolated(client.make_available().await.unwrap_err());
+        assert_isolated(&client.make_available().await.unwrap_err());
     }
 }
 
@@ -61,6 +61,6 @@ async fn storage_client_refuses_non_loopback_redirects() {
         .make_available()
         .await
         .unwrap_err();
-    assert_isolated(error);
+    assert_isolated(&error);
     redirect.assert_async().await;
 }

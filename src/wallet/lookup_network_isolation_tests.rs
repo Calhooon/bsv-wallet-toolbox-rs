@@ -26,7 +26,7 @@ async fn lookup_clients_refuse_non_loopback_before_transport() {
                 .send()
                 .await
                 .unwrap_err();
-            assert_isolated(error.into());
+            assert_isolated(&error.into());
         }
     }
 }
@@ -73,7 +73,7 @@ async fn lookup_clients_refuse_non_loopback_redirects() {
             .send()
             .await
             .unwrap_err();
-        assert_isolated(error.into());
+        assert_isolated(&error.into());
     }
     redirect.assert_async().await;
 }
