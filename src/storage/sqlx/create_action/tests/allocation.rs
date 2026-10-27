@@ -3,6 +3,65 @@ use super::*;
 use crate::storage::traits::WalletStorageWriter;
 
 #[tokio::test]
+async fn public_allocation_preserves_the_create_door_input_type() {
+    for exclude_sending in [true, false] {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("allocation-type", "fixture").await.unwrap();
+        storage.make_available().await.unwrap();
+        let (user, _) = storage.find_or_insert_user("fixture-user").await.unwrap();
+        seed_change_output(&storage, user.user_id, 100_000).await;
+        let auth = crate::storage::AuthId::with_user_id("fixture-user", user.user_id);
+        let created = storage
+            .create_action(&auth, super::super::seed_tests::action_args())
+            .await
+            .unwrap();
+        assert_eq!(created.inputs.len(), 1);
+        let input = &created.inputs[0];
+        assert_eq!(input.input_type, "P2PKH");
+
+        let (output_id, transaction_id, basket_id, stored_type): (i64, i64, i64, String) =
+            sqlx::query_as(
+                "SELECT output_id, spent_by, basket_id, type FROM outputs \
+                 WHERE user_id = ? AND txid = ? AND vout = ?",
+            )
+            .bind(user.user_id)
+            .bind(&input.source_txid)
+            .bind(input.source_vout)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored_type, input.input_type);
+
+        // The door has its own allocator. Release its fixture coin so the
+        // public allocator can claim the same row for the same transaction.
+        let mut conn = storage.writer().acquire().await.unwrap();
+        release_change_input(&mut conn, output_id, &mut ChangePick::Allocate)
+            .await
+            .unwrap();
+        drop(conn);
+        let allocated = storage
+            .allocate_change_input(
+                user.user_id,
+                basket_id,
+                i64::try_from(input.source_satoshis).unwrap(),
+                exclude_sending,
+                transaction_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(allocated.output_id, output_id);
+        assert_eq!(allocated.spent_by, Some(transaction_id));
+        assert!(!allocated.spendable);
+        assert_eq!(allocated.output_type, input.input_type);
+        assert_eq!(
+            serde_json::to_value(&allocated).unwrap()["outputType"],
+            "P2PKH"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_nosend_outputs_not_selected_for_spending() {
     // A change output whose parent tx has status 'nosend' must NOT appear
     // in UTXO selection (count_change_inputs should return 0,

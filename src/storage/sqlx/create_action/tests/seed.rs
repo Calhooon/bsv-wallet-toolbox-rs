@@ -15,7 +15,7 @@ async fn setup(seed: Option<[u8; 32]>) -> (StorageSqlx, AuthId) {
     (storage, AuthId::with_user_id(identity, user.user_id))
 }
 
-fn action_args() -> CreateActionArgs {
+pub(super) fn action_args() -> CreateActionArgs {
     CreateActionArgs {
         description: "Seeded payment".into(),
         input_beef: None,
