@@ -408,9 +408,10 @@ Output sync preserves all 25 `TableOutput` columns, including
 `purpose`, and `provided_by` (#276). The exporter selects each column explicitly
 and decodes nullable metadata without hiding missing columns. Sequence numbers
 retain the full `u32` range. Inserts write the whole row. Both the insert and
-the newer-row update write `purpose` as given: a missing one is `''` (the
-reference's `EntityOutput` default; the column is `TEXT NOT NULL`), never
-`change`, so a synced coin without purpose is never offered as change (#313).
+the newer-row update write `purpose` as given: a missing one is `''` (Go's
+zero value; the TS reference refuses the row, #350 holds the pick; the column
+is `TEXT NOT NULL`), never `change`, so a synced coin without purpose is never
+offered as change (#313).
 Newer-row updates
 write the reference `mergeExisting` columns (`output_description`, `spent_by`,
 `spending_description` among them) and no others: `transaction_id` (the match

@@ -1975,9 +1975,12 @@ async fn upsert_output(
         })
     } else {
         // Insert new - provided_by and purpose are required columns. A missing
-        // purpose is written as '' (EntityOutput's default, ts-stack edf6e03
-        // :45; `purpose TEXT NOT NULL` with no default), never 'change',
-        // which MANAGED_CHANGE_CLAUSE would offer as change (#313).
+        // purpose is written as '' (Go's zero value, go-wallet-toolbox e824899
+        // wdk/table_output.go:23 and chunk_processor.go:389; the TS reference
+        // refuses the row instead: undefined to null against the NOT NULL
+        // column, StorageKnex.ts:1795-1796, KnexMigrations.ts:757; #350 holds
+        // the pick), never 'change', which MANAGED_CHANGE_CLAUSE would offer
+        // as change (#313).
         let result = sqlx::query(
             r#"
             INSERT INTO outputs (user_id, transaction_id, basket_id, txid, vout, satoshis, locking_script,
