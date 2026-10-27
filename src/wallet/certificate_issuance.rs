@@ -759,6 +759,38 @@ fn validate_issued_certificate(
     Ok(())
 }
 
+// verifyNonce.ts:26-57. Wallet.ts:806 ignores false, but propagates a wallet
+// error. The SDK helper uses another protocol/key ID and a legacy size.
+async fn verify_server_nonce<W: WalletInterface + Send + Sync>(
+    wallet: &W,
+    nonce: &str,
+    certifier: &PublicKey,
+    originator: &str,
+) -> Result<bool> {
+    let Ok(bytes) = BASE64.decode(nonce) else {
+        return Ok(false);
+    };
+    if bytes.len() != 16 + NONCE_HMAC_SIZE || BASE64.encode(&bytes) != nonce {
+        return Ok(false);
+    }
+    let mut hmac = [0; NONCE_HMAC_SIZE];
+    hmac.copy_from_slice(&bytes[16..]);
+    let result = wallet
+        .verify_hmac(
+            VerifyHmacArgs {
+                hmac,
+                data: bytes[..16].to_vec(),
+                protocol_id: Protocol::new(SecurityLevel::Counterparty, "server hmac"),
+                key_id: String::from_utf8_lossy(&bytes[..16]).into_owned(),
+                counterparty: Some(Counterparty::Other(certifier.clone())),
+                ..Default::default()
+            },
+            originator,
+        )
+        .await?;
+    Ok(result.valid)
+}
+
 /// Runs the response guards in Wallet.ts:806-817 order.
 #[allow(clippy::too_many_arguments)]
 async fn verify_certificate_issuance<W>(
@@ -775,6 +807,8 @@ async fn verify_certificate_issuance<W>(
 where
     W: WalletInterface + Send + Sync,
 {
+    // Wallet.ts:806 awaits the helper but does not branch on its boolean.
+    verify_server_nonce(wallet, &parsed.server_nonce, certifier, originator).await?;
     verify_issuance_serial(
         wallet,
         &parsed.certificate,
