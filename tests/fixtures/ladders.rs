@@ -64,6 +64,9 @@ mod stall;
 #[path = "ladder_pool.rs"]
 mod pool;
 
+#[path = "ladder_lock.rs"]
+mod lock;
+
 /// The explorers' client timeout in a replay: a `delay_ms` past it is a
 /// timeout.
 const CLIENT_TIMEOUT_SECS: u64 = 2;
