@@ -4,6 +4,10 @@
 
 ### CI
 
+- `bench.yml`, `dependents.yml` and `fuzz.yml` are registered on main as copies of
+  beta's (GitHub lists a dispatchable workflow from the default branch alone,
+  the lesson of #153), so `gh workflow run Bench|Dependents|Fuzz --ref beta`
+  dispatches them against beta; they measure the programme's line, not main.
 - A push to `main` runs exactly the required set, the same as a pull request
   (the owner's word of 2026-10-27, through the stack keeper). Coverage and the
   full OS and toolchain matrix left `ci.yml` for the dispatched `coverage.yml`
