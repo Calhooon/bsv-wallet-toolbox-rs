@@ -669,6 +669,24 @@ fn decode_canonical_base64_32(value: &str) -> Option<[u8; 32]> {
     bytes.try_into().ok()
 }
 
+// Certificate.ts:260-270: `txid` or `txid.vout`, 64 hex digits, a decimal index
+// without leading zeros up to u32::MAX; a txid-only text is vout 0.
+fn parse_revocation_outpoint(text: &str) -> Option<bsv_rs::wallet::Outpoint> {
+    let mut parts = text.split('.');
+    let txid = parts.next()?;
+    let vout = parts.next().unwrap_or("0");
+    if parts.next().is_some()
+        || txid.len() != 64
+        || vout.is_empty()
+        || !vout.bytes().all(|b| b.is_ascii_digit())
+        || (vout.len() > 1 && vout.starts_with('0'))
+    {
+        return None;
+    }
+    let txid = hex::decode(txid).ok()?.try_into().ok()?;
+    Some(bsv_rs::wallet::Outpoint::new(txid, vout.parse().ok()?))
+}
+
 // Certificate.verify (Certificate.ts:425-441) answers false on any toBinary
 // throw; Wallet.ts:816 turns that into one text.
 fn decode_issued_certificate(raw: &CertificateResponse) -> Result<Certificate> {
@@ -679,15 +697,9 @@ fn decode_issued_certificate(raw: &CertificateResponse) -> Result<Certificate> {
     let subject = PublicKey::from_hex(&raw.subject).map_err(|_| invalid())?;
     let certifier = PublicKey::from_hex(&raw.certifier).map_err(|_| invalid())?;
     let mut certificate = Certificate::new(cert_type, serial, subject, certifier);
-    // Preserve the wire outpoint for validation/storage. The SDK needs a parsed
-    // outpoint only for its binary representation, after the truthiness guard.
+    // The wire text is stored as answered; this parse is only for verify.
     certificate.revocation_outpoint =
-        raw.revocation_outpoint
-            .split_once('.')
-            .and_then(|(txid, vout)| {
-                let txid = hex::decode(txid).ok()?.try_into().ok()?;
-                Some(bsv_rs::wallet::Outpoint::new(txid, vout.parse().ok()?))
-            });
+        Some(parse_revocation_outpoint(&raw.revocation_outpoint).ok_or_else(invalid)?);
     for (name, value) in &raw.fields {
         certificate.set_field(name.clone(), value.as_bytes().to_vec());
     }
