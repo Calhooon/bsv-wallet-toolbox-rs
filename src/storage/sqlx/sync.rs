@@ -14,6 +14,10 @@ use crate::storage::traits::*;
 
 use super::StorageSqlx;
 
+#[cfg(test)]
+#[path = "sync_output_tests.rs"]
+mod output_tests;
+
 // =============================================================================
 // Entity Names (for offsets)
 // =============================================================================
