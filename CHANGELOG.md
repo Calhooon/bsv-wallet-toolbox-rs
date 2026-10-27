@@ -40,6 +40,17 @@
   `serviceErrorCount` (`attemptToPostReqsToNetwork.ts` 258-271). The note
   comes ahead of the status write's hint note.
 
+- #309: the storage doors refuse an array past the reference's bound
+  (ts-stack@edf6e03 `validateArray`) before its items, with
+  `Validation error: The <name> parameter must be an array of at most 100000 items`
+  for createAction's `inputs`, `outputs`, an output's `tags`, `labels`,
+  `knownTxids` and `noSendChange`; internalizeAction's `outputs`, an
+  insertion's `tags` and `labels`; listCertificates' `certifiers` and
+  `types`; listOutputs' `tags`; listActions' `labels`; and
+  `Validation error: The sendWith parameter must be an array of at most 1000 items`
+  for createAction's `sendWith`. The create door now checks outputs ahead of
+  labels, as the reference does: a bad output and a bad label are refused
+  by the output's text.
 - #295: both change allocators (the create door's and the public
   `StorageSqlx::allocate_change_input`) and both counts take only
   wallet-managed change, as `ts-stack@edf6e03`
