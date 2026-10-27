@@ -61,6 +61,9 @@ use super::toolbox::services::{Services, ServicesOptions};
 #[path = "ladder_stall.rs"]
 mod stall;
 
+#[path = "ladder_pool.rs"]
+mod pool;
+
 /// The explorers' client timeout in a replay: a `delay_ms` past it is a
 /// timeout.
 const CLIENT_TIMEOUT_SECS: u64 = 2;
@@ -784,38 +787,8 @@ async fn ladder_fixtures_replay() {
         "no ladder fixtures under {:?}",
         fixture_root()
     );
-    let queue = Arc::new(Mutex::new(files.into_iter().collect::<VecDeque<_>>()));
-
-    let mut workers = Vec::new();
-    for _ in 0..WORKERS {
-        let queue = Arc::clone(&queue);
-        workers.push(tokio::spawn(async move {
-            let mut servers = Servers::new().await;
-            let mut done = Vec::new();
-            loop {
-                let Some(path) = queue.lock().unwrap().pop_front() else {
-                    break;
-                };
-                let text = std::fs::read_to_string(&path).unwrap();
-                let outcome = match serde_json::from_str::<Fixture>(&text) {
-                    Err(e) => Err(format!("does not parse: {e}")),
-                    Ok(fixture) => match check_shape(&path, &fixture) {
-                        Err(e) => Err(e),
-                        Ok(()) => replay(&fixture, &mut servers)
-                            .await
-                            .map(|actual| (fixture, actual)),
-                    },
-                };
-                done.push((path, outcome));
-            }
-            done
-        }));
-    }
-    let mut replayed = Vec::new();
-    for worker in workers {
-        replayed.extend(worker.await.unwrap());
-    }
-    replayed.sort_by(|a, b| a.0.cmp(&b.0));
+    let scenes = files.into_iter().map(pool::load).collect();
+    let replayed = pool::replay_queue(scenes, WORKERS).await;
 
     let mut failures = Vec::new();
     let total = replayed.len();

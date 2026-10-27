@@ -270,6 +270,23 @@ fn recorded_scene() -> Fixture {
     fixture
 }
 
+/// What the loaded runner of run 40310320187 did: the recorded script,
+/// the second Bitails answer held back past the deadline.
+pub(super) fn late_second_answer() -> Fixture {
+    let mut stalled = recorded_scene();
+    let bitails = stalled
+        .providers
+        .iter_mut()
+        .find(|p| p.name == "Bitails")
+        .unwrap();
+    let answers = &mut bitails.routes[0].answers;
+    answers[0].times = Some(1);
+    let mut late = answers[0].clone();
+    late.delay_ms = Some(CLIENT_TIMEOUT_SECS * 1000 + LATE_SLACK_MS);
+    answers.push(late);
+    stalled
+}
+
 /// A planted mismatch: the message names each rung asked, in order, with
 /// its answer or fault, and the requests per provider, and reads no stall.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -319,20 +336,7 @@ async fn ladder_fixtures_a_mismatch_prints_the_call_history() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ladder_fixtures_a_late_second_answer_reads_as_a_runner_stall() {
     let recorded = recorded_scene();
-    // What the loaded runner did: the same script, the second Bitails
-    // answer held back past the deadline.
-    let mut stalled = recorded_scene();
-    let bitails = stalled
-        .providers
-        .iter_mut()
-        .find(|p| p.name == "Bitails")
-        .unwrap();
-    let answers = &mut bitails.routes[0].answers;
-    answers[0].times = Some(1);
-    let mut late = answers[0].clone();
-    late.delay_ms = Some(CLIENT_TIMEOUT_SECS * 1000 + LATE_SLACK_MS);
-    answers.push(late);
-
+    let stalled = late_second_answer();
     let mut servers = Servers::new().await;
     let (actual, history) = replay(&stalled, &mut servers).await.unwrap();
     let expected = recorded.expected.as_ref().unwrap();
