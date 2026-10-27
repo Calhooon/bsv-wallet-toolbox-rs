@@ -124,6 +124,16 @@ fn outputs_at_the_bound_pass_it() {
 }
 
 #[test]
+fn outputs_bound_runs_ahead_of_an_output() {
+    // The bound at 759 ahead of each validateCreateActionOutput.
+    let mut args = args();
+    let mut outputs = vec![output(); LIMIT + 1];
+    outputs[0].locking_script = vec![];
+    args.outputs = Some(outputs);
+    assert_eq!(refusal(&args), bound_text("outputs", LIMIT));
+}
+
+#[test]
 fn an_input_item_runs_ahead_of_the_outputs_bound() {
     // Each input (758) is checked before the outputs bound (759).
     let mut args = args();
