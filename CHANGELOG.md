@@ -13,6 +13,12 @@
   `verifier` before the certificate lookup, as `ts-stack@edf6e03`
   `packages/sdk/src/wallet/validationHelpers.ts:1490-1493,1509` does ahead of
   `packages/wallet/wallet-toolbox/src/signer/methods/proveCertificate.ts:28`.
+  Both arguments are trimmed and lowercased as the reference's
+  `validateHexString` does (`validationHelpers.ts:524,533`), with ECMAScript
+  whitespace semantics: U+FEFF padding is accepted and U+0085 is refused.
+  The normalized certifier is bound in the lookup, so uppercase and
+  space-padded arguments resolve lowercase stored certifiers; verifier keys
+  are derived from the normalized argument.
   A bad key refuses with `Validation error: The <name> parameter must be <rule>`
   (`validationHelpers.ts:185-191,522-534`), where the rule is
   `even length, not N.`, `hexadecimal string.`, `at least 66 length.`,
@@ -21,8 +27,10 @@
   `Certificate not found with the provided arguments`, and one matching a
   stored certificate read `Invalid verifier public key: <detail>` or
   `Invalid certifier public key: <detail>` after the lookup, including for an
-  empty `fields_to_reveal`. The stored certifier is no longer parsed: the
-  lookup matches it to the validated argument.
+  empty `fields_to_reveal`. The stored certifier is no longer parsed: with
+  SQLite, `certifier IN (?)` on an uncollated TEXT column matches it to the
+  normalized argument byte for byte. The remote storage server decides its
+  own collation.
 
 - #240: `prove_certificate` now refuses certificate serial numbers that do not
   canonically encode exactly 32 bytes, after map-value validation and before
