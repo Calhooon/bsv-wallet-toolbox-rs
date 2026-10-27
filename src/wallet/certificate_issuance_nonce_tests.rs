@@ -7,7 +7,7 @@ use super::*;
 // verifyNonce.ts:28: ^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
 fn matches_verify_nonce_regex(nonce: &str) -> bool {
     let body = nonce.trim_end_matches('=');
-    nonce.len() % 4 == 0
+    nonce.len().is_multiple_of(4)
         && nonce.len() - body.len() <= 2
         && body
             .bytes()
