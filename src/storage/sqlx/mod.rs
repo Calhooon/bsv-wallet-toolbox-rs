@@ -54,6 +54,8 @@ mod reorg_below_the_user_tests;
 #[cfg(test)]
 mod reorg_tests;
 #[cfg(test)]
+mod sequence_number_tests;
+#[cfg(test)]
 mod sibling_bump_tests;
 mod storage_sqlx;
 mod sync;
