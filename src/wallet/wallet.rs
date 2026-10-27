@@ -3439,7 +3439,8 @@ fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs::Result<St
 }
 
 // Secp256k1Validation.ts:33-50 accepts minimal DER with 0 < r,s < n,
-// including high S. The SDK's to_der normalizes S, so cannot test this rule.
+// including high S. The SDK's to_der normalizes S, so the rule is proved by
+// test_prove_certificate_valid_arg_boundaries, which builds an s = n-1 DER by hand.
 fn is_canonical_certificate_signature(bytes: &[u8]) -> bool {
     const ORDER: [u8; 32] = [
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
