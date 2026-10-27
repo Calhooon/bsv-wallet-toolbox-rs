@@ -215,9 +215,7 @@ pub(crate) fn output_from_row(
         purpose: row.try_get("purpose")?,
         output_description: row.try_get("output_description")?,
         spent_by: row.try_get("spent_by")?,
-        sequence_number: row
-            .try_get::<Option<i32>, _>("sequence_number")?
-            .map(|v| v as u32),
+        sequence_number: sequence_number_from_row(row)?,
         spending_description: row.try_get("spending_description")?,
         spendable: row.try_get("spendable")?,
         change: row.try_get("change")?,
@@ -228,6 +226,25 @@ pub(crate) fn output_from_row(
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
+}
+
+/// The `sequence_number` column as the u32 it holds, NULL as `None`. Writers
+/// store the full u32 (the sync INSERT binds it), so the column is decoded as
+/// an i64; a negative i32 that an earlier i32 writer left reads as the same
+/// bits (-1 is 0xFFFFFFFF). A value outside both ranges is a decode error.
+pub(crate) fn sequence_number_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> std::result::Result<Option<u32>, sqlx::Error> {
+    let Some(stored) = row.try_get::<Option<i64>, _>("sequence_number")? else {
+        return Ok(None);
+    };
+    u32::try_from(stored)
+        .or_else(|_| i32::try_from(stored).map(|legacy| legacy as u32))
+        .map(Some)
+        .map_err(|source| sqlx::Error::ColumnDecode {
+            index: "\"sequence_number\"".into(),
+            source: Box::new(source),
+        })
 }
 
 #[cfg(test)]

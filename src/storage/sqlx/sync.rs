@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
+use super::storage_sqlx::sequence_number_from_row;
 use super::StorageSqlx;
 
 #[cfg(test)]
@@ -1116,34 +1117,36 @@ async fn fetch_outputs_for_sync(
 
     let outputs = rows
         .iter()
-        .map(|row| TableOutput {
-            output_id: row.get("output_id"),
-            user_id: row.get("user_id"),
-            transaction_id: row.get("transaction_id"),
-            basket_id: row.get("basket_id"),
-            txid: row.get("txid"),
-            vout: row.get("vout"),
-            satoshis: row.get("satoshis"),
-            locking_script: row.get("locking_script"),
-            script_length: row.get("script_length"),
-            script_offset: row.get("script_offset"),
-            output_type: row.get("type"),
-            provided_by: row.get("provided_by"),
-            purpose: row.get("purpose"),
-            output_description: row.get("output_description"),
-            spent_by: row.get("spent_by"),
-            sequence_number: row.get("sequence_number"),
-            spending_description: row.get("spending_description"),
-            spendable: row.get("spendable"),
-            change: row.get("change"),
-            derivation_prefix: row.get("derivation_prefix"),
-            derivation_suffix: row.get("derivation_suffix"),
-            sender_identity_key: row.get("sender_identity_key"),
-            custom_instructions: row.get("custom_instructions"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
+        .map(|row| {
+            Ok(TableOutput {
+                output_id: row.get("output_id"),
+                user_id: row.get("user_id"),
+                transaction_id: row.get("transaction_id"),
+                basket_id: row.get("basket_id"),
+                txid: row.get("txid"),
+                vout: row.get("vout"),
+                satoshis: row.get("satoshis"),
+                locking_script: row.get("locking_script"),
+                script_length: row.get("script_length"),
+                script_offset: row.get("script_offset"),
+                output_type: row.get("type"),
+                provided_by: row.get("provided_by"),
+                purpose: row.get("purpose"),
+                output_description: row.get("output_description"),
+                spent_by: row.get("spent_by"),
+                sequence_number: sequence_number_from_row(row)?,
+                spending_description: row.get("spending_description"),
+                spendable: row.get("spendable"),
+                change: row.get("change"),
+                derivation_prefix: row.get("derivation_prefix"),
+                derivation_suffix: row.get("derivation_suffix"),
+                sender_identity_key: row.get("sender_identity_key"),
+                custom_instructions: row.get("custom_instructions"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
         })
-        .collect();
+        .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
 
     Ok(outputs)
 }

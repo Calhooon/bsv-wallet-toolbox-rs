@@ -1,4 +1,4 @@
-use super::{Result, Row, StorageSqlx, TableOutput};
+use super::{sequence_number_from_row, Result, Row, StorageSqlx, TableOutput};
 use crate::storage::sqlx::create_action::MANAGED_CHANGE_CLAUSE;
 
 impl StorageSqlx {
@@ -121,7 +121,7 @@ impl StorageSqlx {
                 purpose: full_row.try_get("purpose").ok(),
                 output_description: full_row.try_get("output_description").ok(),
                 spent_by: full_row.try_get("spent_by").ok().flatten(),
-                sequence_number: full_row.try_get("sequence_number").ok().flatten(),
+                sequence_number: sequence_number_from_row(&full_row).ok().flatten(),
                 spending_description: full_row.try_get("spending_description").ok(),
                 spendable: full_row.try_get::<bool, _>("spendable").unwrap_or(false),
                 change: full_row.try_get::<bool, _>("change").unwrap_or(false),
