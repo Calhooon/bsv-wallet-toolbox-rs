@@ -308,8 +308,10 @@ Previously the hint write and status write waited separately, risking a
 reply after the Arcade webhook sender's 10 s timeout at the default 5 s
 store timeout. The real-store `seen_status_busy_waits_once_without_writes`,
 `in_block_status_busy_waits_once_without_writes` and
-`mined_status_busy_waits_once_without_writes` tests check both known and
-unknown txids below 2 times a 200 ms timeout.
+`mined_status_busy_waits_once_without_writes` tests count, for both known
+and unknown txids, exactly one writer acquisition (one `BEGIN IMMEDIATE`,
+so one busy wait) by a test-only counter on the store's writer pool, not by
+a clock (#244).
 
 On MINED and IMMUTABLE, inline proof ingestion follows the committed status
 transaction. The tracker check holds no writer, and the later ingest has its
