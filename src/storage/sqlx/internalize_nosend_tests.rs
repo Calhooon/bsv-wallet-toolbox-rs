@@ -33,7 +33,7 @@ async fn internalize(labels: &[&str]) -> (StorageSqlx, Vec<i64>, Result<()>) {
     let before = rows(&storage).await;
     let (bytes, _txid, _satoshis) = create_test_atomic_beef();
     let mut args = wallet_payment_args(bytes, "a BRC-177 label test");
-    args.labels = Some(labels.iter().map(|l| l.to_string()).collect());
+    args.labels = Some(labels.iter().map(ToString::to_string).collect());
     let result = internalize_action_internal(&storage, user_id, args)
         .await
         .map(|_| ());

@@ -88,7 +88,7 @@ fn spend_to_drop_one(outpoint: String, satoshis: u64) -> bsv_rs::transaction::Tr
     tx
 }
 
-/// A basket insertion of an AtomicBEEF whose parent is proven by a
+/// A basket insertion of an `AtomicBEEF` whose parent is proven by a
 /// coinbase-shaped BUMP, carrying `label`.
 fn insertion(label: &str) -> InternalizeActionArgs {
     use bsv_rs::transaction::{Beef, MerklePath};
