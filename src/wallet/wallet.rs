@@ -3704,24 +3704,28 @@ mod tests {
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use bsv_rs::primitives::PrivateKey;
 
+        const FIELD_NAME_ERROR: &str =
+            "Certificate field name must be a safe UTF-8 string of 1–50 bytes";
+
+        // The reference throws plain Error; the wallet boundary uses WalletError.
+        fn assert_wallet_error<T: std::fmt::Debug>(
+            scenario: &str,
+            result: bsv_rs::Result<T>,
+            expected: &str,
+        ) {
+            match result {
+                Err(bsv_rs::Error::WalletError(message)) => {
+                    assert_eq!(message, expected, "{scenario}");
+                }
+                other => panic!("{scenario}: expected WalletError({expected:?}), got {other:?}"),
+            }
+        }
+
         fn assert_field_recovery_error(
             scenario: &str,
             result: bsv_rs::Result<HashMap<String, String>>,
         ) {
-            match result {
-                Err(bsv_rs::Error::WalletError(message)) => {
-                    assert_eq!(
-                        message, "Failed to decrypt certificate field!",
-                        "{scenario}"
-                    );
-                }
-                Err(error) => {
-                    panic!("{scenario}: expected a field recovery WalletError, got {error:?}")
-                }
-                Ok(_) => {
-                    panic!("{scenario}: field recovery must refuse before sharing the field key")
-                }
-            }
+            assert_wallet_error(scenario, result, "Failed to decrypt certificate field!");
         }
 
         fn keyring_for_field_name(field_name: &str) -> bsv_rs::Result<HashMap<String, String>> {
@@ -3753,7 +3757,7 @@ mod tests {
             )]);
 
             // Both maps contain the requested name and valid encrypted data, so
-            // refusal must come from the field-name rule inside recovery.
+            // refusal must come from the field-name rule.
             create_keyring_for_verifier(
                 &subject_wallet,
                 &certifier.public_key(),
@@ -3770,7 +3774,11 @@ mod tests {
         fn test_create_keyring_rejects_overlong_field_names() {
             // MasterCertificate.ts:25-27 counts UTF-8 bytes, not characters.
             for field_name in ["n".repeat(51), "é".repeat(26)] {
-                assert_field_recovery_error(&field_name, keyring_for_field_name(&field_name));
+                assert_wallet_error(
+                    &field_name,
+                    keyring_for_field_name(&field_name),
+                    FIELD_NAME_ERROR,
+                );
             }
         }
 
@@ -3778,7 +3786,11 @@ mod tests {
         fn test_create_keyring_rejects_unsafe_field_names() {
             // SafeRecord.ts:2-3 rejects these exact names, without a character allowlist.
             for field_name in ["__proto__", "constructor", "prototype"] {
-                assert_field_recovery_error(field_name, keyring_for_field_name(field_name));
+                assert_wallet_error(
+                    field_name,
+                    keyring_for_field_name(field_name),
+                    FIELD_NAME_ERROR,
+                );
             }
         }
 
@@ -3800,7 +3812,7 @@ mod tests {
         }
 
         #[test]
-        fn test_create_keyring_invalid_missing_field_keeps_subset_error() {
+        fn test_create_keyring_invalid_missing_field_uses_name_gate() {
             let subject_wallet = ProtoWallet::new(Some(PrivateKey::random()));
             let public_key = PrivateKey::random().public_key();
             let result = create_keyring_for_verifier(
@@ -3813,13 +3825,7 @@ mod tests {
                 &BASE64.encode([14; 32]),
                 "certificate.test",
             );
-            match result {
-                Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
-                    message,
-                    "Field '__proto__' not found in certificate - fields_to_reveal must be a subset of certificate fields"
-                ),
-                other => panic!("expected the subset WalletError, got {other:?}"),
-            }
+            assert_wallet_error("invalid absent name", result, FIELD_NAME_ERROR);
         }
 
         #[test]
@@ -3875,9 +3881,11 @@ mod tests {
                 "test.app.com",
             );
 
-            assert!(result.is_err());
-            let err_msg = result.unwrap_err().to_string();
-            assert!(err_msg.contains("not found in certificate"));
+            assert_wallet_error(
+                "missing certificate field",
+                result,
+                "Fields to reveal must be a subset of the certificate fields. Missing the \"nonexistent\" field.",
+            );
         }
 
         #[test]
@@ -3935,7 +3943,338 @@ mod tests {
                 "test.app.com",
             );
 
-            assert_field_recovery_error("non-base64 master entry", result);
+            assert_wallet_error(
+                "non-base64 master entry",
+                result,
+                "Master certificate keyring field name must use canonical base64 encoding",
+            );
+        }
+
+        mod preloop_gate {
+            use super::*;
+
+            struct Request {
+                fields: HashMap<String, String>,
+                reveal: Vec<String>,
+                master: HashMap<String, String>,
+            }
+
+            impl Request {
+                fn new() -> Self {
+                    Self {
+                        // Canonical but not ciphertext: the gate must precede recovery.
+                        fields: HashMap::from([("name".to_string(), "YQ==".to_string())]),
+                        reveal: vec!["name".to_string()],
+                        master: HashMap::from([("name".to_string(), "Yg==".to_string())]),
+                    }
+                }
+
+                fn create(&self) -> bsv_rs::Result<HashMap<String, String>> {
+                    let key = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
+                    let public_key = key.public_key();
+                    create_keyring_for_verifier(
+                        &ProtoWallet::new(Some(key)),
+                        &public_key,
+                        &public_key,
+                        &self.fields,
+                        &self.reveal,
+                        &self.master,
+                        &BASE64.encode([32; 32]),
+                        "certificate.test",
+                    )
+                }
+
+                #[cfg(feature = "sqlite")]
+                async fn prove(&self) -> bsv_rs::Result<ProveCertificateResult> {
+                    use crate::services::mock::MockWalletServices;
+                    use crate::storage::WalletStorageWriter;
+
+                    let key = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
+                    let public_key = key.public_key().to_hex();
+                    let storage = crate::StorageSqlx::in_memory().await.unwrap();
+                    storage.migrate("preloop-gate", &public_key).await.unwrap();
+                    storage.make_available().await.unwrap();
+                    let wallet = Wallet::new(Some(key), storage, MockWalletServices::new())
+                        .await
+                        .unwrap();
+                    let certificate = WalletCertificate {
+                        certificate_type: BASE64.encode([33; 32]),
+                        serial_number: BASE64.encode([32; 32]),
+                        subject: public_key.clone(),
+                        certifier: public_key.clone(),
+                        revocation_outpoint: format!("{}.0", "00".repeat(32)),
+                        signature: "00".to_string(),
+                        fields: self.fields.clone(),
+                    };
+                    let auth = wallet.auth();
+                    let now = Utc::now();
+                    let stored = TableCertificate {
+                        certificate_id: 0,
+                        user_id: auth.user_id.unwrap(),
+                        cert_type: certificate.certificate_type.clone(),
+                        serial_number: certificate.serial_number.clone(),
+                        subject: certificate.subject.clone(),
+                        certifier: certificate.certifier.clone(),
+                        verifier: None,
+                        revocation_outpoint: certificate.revocation_outpoint.clone(),
+                        signature: certificate.signature.clone(),
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    let fields = self
+                        .fields
+                        .iter()
+                        .map(|(name, value)| TableCertificateField {
+                            certificate_field_id: 0,
+                            certificate_id: 0,
+                            user_id: stored.user_id,
+                            field_name: name.clone(),
+                            field_value: value.clone(),
+                            master_key: self.master.get(name).cloned().unwrap_or_default(),
+                            created_at: now,
+                            updated_at: now,
+                        })
+                        .collect();
+                    wallet
+                        .storage()
+                        .insert_certificate_with_fields(&auth, stored, fields)
+                        .await
+                        .unwrap();
+                    wallet
+                        .prove_certificate(
+                            ProveCertificateArgs {
+                                certificate,
+                                fields_to_reveal: self.reveal.clone(),
+                                verifier: public_key,
+                                privileged: None,
+                                privileged_reason: None,
+                            },
+                            "certificate.test",
+                        )
+                        .await
+                }
+
+                #[cfg(feature = "sqlite")]
+                async fn assert_gate_error(&self, expected: &str) {
+                    let direct = self.create();
+                    let door = self.prove().await;
+                    assert_wallet_error("create_keyring_for_verifier", direct, expected);
+                    assert_wallet_error("prove_certificate", door, expected);
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_overlong_requested_name() {
+                for name in ["n".repeat(51), "é".repeat(26)] {
+                    let mut request = Request::new();
+                    request.reveal = vec![name];
+                    request.assert_gate_error(FIELD_NAME_ERROR).await;
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_reserved_requested_name() {
+                for name in ["__proto__", "constructor", "prototype"] {
+                    let mut request = Request::new();
+                    request.reveal = vec![name.to_string()];
+                    request.assert_gate_error(FIELD_NAME_ERROR).await;
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_empty_requested_name() {
+                let mut request = Request::new();
+                request.reveal = vec![String::new()];
+                request.assert_gate_error(FIELD_NAME_ERROR).await;
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_duplicate_requested_name() {
+                let mut request = Request::new();
+                request.reveal.push("name".to_string());
+                request
+                    .assert_gate_error("fieldsToReveal contains duplicate field: name")
+                    .await;
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_invalid_field_key() {
+                for name in [
+                    "".to_string(),
+                    "n".repeat(51),
+                    "é".repeat(26),
+                    "__proto__".to_string(),
+                    "constructor".to_string(),
+                    "prototype".to_string(),
+                ] {
+                    let mut request = Request::new();
+                    request.fields.insert(name, "YQ==".to_string());
+                    request.assert_gate_error(FIELD_NAME_ERROR).await;
+                }
+            }
+
+            #[test]
+            fn test_create_keyring_preloop_invalid_master_key() {
+                // SQL has no master-only rows; exercise the helper's separate map.
+                for name in [
+                    "".to_string(),
+                    "n".repeat(51),
+                    "é".repeat(26),
+                    "__proto__".to_string(),
+                    "constructor".to_string(),
+                    "prototype".to_string(),
+                ] {
+                    let mut request = Request::new();
+                    request.reveal.clear();
+                    request.master.insert(name, "YQ==".to_string());
+                    assert_wallet_error("master key name", request.create(), FIELD_NAME_ERROR);
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_requested_entry_limit() {
+                let mut request = Request::new();
+                request.reveal = (0..101).map(|i| format!("field{i}")).collect();
+                request
+                    .assert_gate_error("fieldsToReveal must be an array of at most 100 strings")
+                    .await;
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_field_entry_limit() {
+                let mut request = Request::new();
+                request
+                    .fields
+                    .extend((0..100).map(|i| (format!("field{i}"), "YQ==".to_string())));
+                request
+                    .assert_gate_error("Certificate fields cannot contain more than 100 entries")
+                    .await;
+            }
+
+            #[test]
+            fn test_create_keyring_preloop_master_entry_limit() {
+                let mut request = Request::new();
+                request.reveal.clear();
+                request
+                    .master
+                    .extend((0..100).map(|i| (format!("field{i}"), "YQ==".to_string())));
+                assert_wallet_error(
+                    "master entry count",
+                    request.create(),
+                    "Master certificate keyring cannot contain more than 100 entries",
+                );
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_noncanonical_field_value() {
+                for value in ["YQ", "YR==", "YQ===", "YQ==\n", "-_8="] {
+                    let mut request = Request::new();
+                    request
+                        .fields
+                        .insert("extra".to_string(), value.to_string());
+                    request
+                        .assert_gate_error(
+                            "Certificate field extra must use canonical base64 encoding",
+                        )
+                        .await;
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_noncanonical_master_value() {
+                for value in ["YQ", "YR==", "YQ===", "YQ==\n", "-_8="] {
+                    let mut request = Request::new();
+                    request
+                        .fields
+                        .insert("extra".to_string(), "YQ==".to_string());
+                    request
+                        .master
+                        .insert("extra".to_string(), value.to_string());
+                    request
+                        .assert_gate_error("Master certificate keyring field extra must use canonical base64 encoding")
+                        .await;
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_preloop_empty_field_value() {
+                // :351-356/:70-71 reject empty values before the :375 subset arm.
+                for name in ["name", "extra"] {
+                    let mut request = Request::new();
+                    request.fields.insert(name.to_string(), String::new());
+                    request
+                        .assert_gate_error(&format!(
+                            "Certificate field {name} is empty, oversized, or non-canonical"
+                        ))
+                        .await;
+                }
+            }
+
+            #[test]
+            fn test_create_keyring_preloop_empty_master_value() {
+                // SQL drops empty master entries; this helper takes the raw map.
+                let mut request = Request::new();
+                request.master.insert("name".to_string(), String::new());
+                assert_wallet_error(
+                    "empty master value",
+                    request.create(),
+                    "Master certificate keyring field name is empty, oversized, or non-canonical",
+                );
+            }
+
+            #[test]
+            fn test_create_keyring_preloop_order() {
+                let mut request = Request::new();
+                request.fields.insert("name".to_string(), "!".to_string());
+                request
+                    .master
+                    .insert("prototype".to_string(), "!".to_string());
+                assert_wallet_error(
+                    "map keys precede values",
+                    request.create(),
+                    FIELD_NAME_ERROR,
+                );
+                request.reveal.push("name".to_string());
+                assert_wallet_error(
+                    "requests precede maps",
+                    request.create(),
+                    "fieldsToReveal contains duplicate field: name",
+                );
+                request.reveal = vec![String::new()];
+                request.master.clear();
+                assert_wallet_error(
+                    "names precede empty master recovery",
+                    request.create(),
+                    FIELD_NAME_ERROR,
+                );
+            }
+
+            #[test]
+            fn test_create_keyring_preloop_accepts_limits_and_empty_request() {
+                let mut request = Request::new();
+                request.fields = (0..100)
+                    .map(|i| (format!("field{i}"), "YQ==".to_string()))
+                    .collect();
+                request.master = request.fields.clone();
+                request.reveal.clear();
+                assert!(request.create().unwrap().is_empty());
+                request.reveal = request.fields.keys().cloned().collect();
+                assert_field_recovery_error("100 requested names pass the gate", request.create());
+                request.reveal.clear();
+                request.fields.clear();
+                request.master.clear();
+                assert!(request.create().unwrap().is_empty());
+            }
         }
 
         #[test]
