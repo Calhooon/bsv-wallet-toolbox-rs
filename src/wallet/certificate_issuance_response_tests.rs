@@ -621,7 +621,7 @@ async fn outpoint_grammar_is_to_binary_grammar() {
         assert_eq!(result.unwrap().revocation_outpoint, text);
     }
     // #300: the accept branch's txid and vout, asserted where they are parsed.
-    let hex: String = (0u8..32).map(|b| format!("{b:02x}")).collect();
+    let hex: String = hex::encode((0u8..32).collect::<Vec<u8>>());
     for (text, vout) in [(hex.clone(), 0), (format!("{hex}.7"), 7)] {
         let outpoint = parse_revocation_outpoint(&text).unwrap();
         assert_eq!(hex::encode(outpoint.txid), hex);
