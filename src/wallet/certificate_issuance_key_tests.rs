@@ -57,30 +57,12 @@ fn assert_wallet_error(result: bsv_rs::Result<WalletCertificate>, expected: &str
     }
 }
 
-#[tokio::test]
-async fn test_issuance_bad_type_refuses_before_protocol() {
+async fn assert_type_refusals(certifier: &str, cases: Vec<(String, &str)>) {
     let wallet = wallet().await;
     let mut server = mockito::Server::new_async().await;
     let request = server.mock("POST", "/issue").expect(0).create_async().await;
-    // validationHelpers.ts:439-497,1338: structure before the 32-byte bounds.
-    for (value, rule) in [
-        (String::new(), "valid base64 string"),
-        ("!".to_string(), "valid base64 string"),
-        ("A".to_string(), "valid base64 string"),
-        ("A=AA".to_string(), "valid base64 string"),
-        ("AA=A".to_string(), "at least 32 bytes"),
-        ("A===".to_string(), "valid base64 string"),
-        ("=AAA".to_string(), "valid base64 string"),
-        ("A".repeat(43), "valid base64 string"),
-        (format!("{}==", "A".repeat(42)), "at least 32 bytes"),
-        (BASE64.encode([7; 31]), "at least 32 bytes"),
-        (BASE64.encode([7; 33]), "no more than 32 bytes"),
-        (
-            format!("\u{0085}{}\u{0085}", BASE64.encode([7; 32])),
-            "valid base64 string",
-        ),
-    ] {
-        let mut invalid = args(certifier(), format!("{}/issue", server.url()));
+    for (value, rule) in cases {
+        let mut invalid = args(certifier.to_string(), format!("{}/issue", server.url()));
         invalid.certificate_type = value;
         assert_wallet_error(
             wallet.acquire_certificate(invalid, ORIGINATOR).await,
@@ -91,24 +73,43 @@ async fn test_issuance_bad_type_refuses_before_protocol() {
 }
 
 #[tokio::test]
+async fn test_issuance_bad_type_refuses_before_protocol() {
+    // validationHelpers.ts:439-497,1338: structure before the 32-byte bounds.
+    assert_type_refusals(
+        &certifier(),
+        vec![
+            (String::new(), "valid base64 string"),
+            ("!".to_string(), "valid base64 string"),
+            ("A".to_string(), "valid base64 string"),
+            ("A=AA".to_string(), "valid base64 string"),
+            ("AA=A".to_string(), "at least 32 bytes"),
+            ("A===".to_string(), "valid base64 string"),
+            ("=AAA".to_string(), "valid base64 string"),
+            ("A".repeat(43), "valid base64 string"),
+            (format!("{}==", "A".repeat(42)), "at least 32 bytes"),
+            (BASE64.encode([7; 31]), "at least 32 bytes"),
+            (BASE64.encode([7; 33]), "no more than 32 bytes"),
+            (
+                format!("\u{0085}{}\u{0085}", BASE64.encode([7; 32])),
+                "valid base64 string",
+            ),
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn test_issuance_bad_type_precedes_certifier() {
-    let wallet = wallet().await;
-    let mut server = mockito::Server::new_async().await;
-    let request = server.mock("POST", "/issue").expect(0).create_async().await;
-    for (value, rule) in [
-        ("!".to_string(), "valid base64 string"),
-        (BASE64.encode([7; 31]), "at least 32 bytes"),
-        (BASE64.encode([7; 33]), "no more than 32 bytes"),
-    ] {
-        let mut invalid = args("gg".to_string(), format!("{}/issue", server.url()));
-        invalid.certificate_type = value;
-        // Both arguments are bad; validationHelpers.ts:1338 must win over :1339.
-        assert_wallet_error(
-            wallet.acquire_certificate(invalid, ORIGINATOR).await,
-            &format!("Validation error: The type parameter must be {rule}"),
-        );
-    }
-    request.assert_async().await;
+    // Both arguments are bad; validationHelpers.ts:1338 must win over :1339.
+    assert_type_refusals(
+        "gg",
+        vec![
+            ("!".to_string(), "valid base64 string"),
+            (BASE64.encode([7; 31]), "at least 32 bytes"),
+            (BASE64.encode([7; 33]), "no more than 32 bytes"),
+        ],
+    )
+    .await;
 }
 
 #[tokio::test]
