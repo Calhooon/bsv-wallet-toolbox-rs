@@ -145,8 +145,47 @@ it (`UnspendableCoin`).
 | an uppercase issuance certifier matches canonical certifier keys in the response header and body | `ts-stack@edf6e03 validationHelpers.ts:533,1339`; `Wallet.ts:789-791,815`; toolbox #261 | `test_issuance_uppercase_certifier_reaches_response_checks` |
 | space and ECMAScript U+FEFF padding around an issuance certifier are normalized through the response checks | `ts-stack@edf6e03 validationHelpers.ts:524,1339`; toolbox #261 | `test_issuance_padded_certifier_reaches_response_checks` |
 | a differing issuance response identity header uses the reference's certifier mismatch text | `ts-stack@edf6e03 Wallet.ts:789-791`; toolbox #261 | `test_issuance_header_certifier_mismatch_uses_reference_text` |
-| after a valid serial HMAC, a missing or unparsable issuance response revocation outpoint uses `Invalid revocationOutpoint!` | `ts-stack@edf6e03 Wallet.ts:763-764,807-815`; toolbox #271 | `test_issuance_revocation_outpoint_uses_reference_text` |
+| after a valid serial HMAC, a missing issuance response revocation outpoint uses `Invalid revocationOutpoint!` | `ts-stack@edf6e03 Wallet.ts:763-764,807-815`; toolbox #271 | `test_issuance_revocation_outpoint_uses_reference_text` |
 | after a valid serial HMAC, a differing issuance response field value uses `Invalid field! Expected: <sent>, Received: <received>` without the field name | `ts-stack@edf6e03 Wallet.ts:744,766,807-815`; toolbox #271 | `test_issuance_field_mismatch_uses_reference_text` |
+| issuance privilege requires a reason before direct-only fields | `ts-stack@edf6e03 validationHelpers.ts:1308,207-219`; toolbox #283 | `privilege_reason_required_before_direct_fields` |
+| issuance reason minimum precedes protocol validation | `ts-stack@edf6e03 validationHelpers.ts:1308-1311,348-355`; toolbox #283 | `privilege_reason_minimum_before_protocol` |
+| issuance reason maximum counts UTF-8 bytes | `ts-stack@edf6e03 validationHelpers.ts:1308,348-355`; toolbox #283 | `privilege_reason_maximum_before_direct_fields` |
+| the issuance helper refuses a direct protocol before serial validation | `ts-stack@edf6e03 validationHelpers.ts:1309-1313`; toolbox #283 | `issuance_protocol_before_serial_number` |
+| issuance refuses a serial before a signature | `ts-stack@edf6e03 validationHelpers.ts:1312-1315`; toolbox #283 | `serial_number_before_signature` |
+| issuance refuses a signature before a revocation outpoint | `ts-stack@edf6e03 validationHelpers.ts:1314-1316`; toolbox #283 | `signature_before_revocation_outpoint` |
+| issuance refuses a revocation outpoint before a revealer | `ts-stack@edf6e03 validationHelpers.ts:1316-1322`; toolbox #283 | `revocation_outpoint_before_keyring_revealer` |
+| issuance refuses a revealer before a subject keyring | `ts-stack@edf6e03 validationHelpers.ts:1322-1328`; toolbox #283 | `keyring_revealer_before_subject_keyring` |
+| even an empty subject keyring refuses before URL presence | `ts-stack@edf6e03 validationHelpers.ts:1328-1335`; toolbox #283 | `empty_subject_keyring_before_missing_url` |
+| missing or empty issuer URL refuses before type | `ts-stack@edf6e03 validationHelpers.ts:1334-1338`; toolbox #283 | `missing_or_empty_url_before_type` |
+| issuer URL byte length precedes whitespace | `ts-stack@edf6e03 validationHelpers.ts:1355-1357`; toolbox #283 | `url_byte_limit_before_whitespace` |
+| issuer URL whitespace precedes parsing | `ts-stack@edf6e03 validationHelpers.ts:1356-1363`; toolbox #283 | `url_exact_whitespace_before_parse` |
+| issuer URL must be absolute | `ts-stack@edf6e03 validationHelpers.ts:1359-1363`; toolbox #283 | `url_absolute_before_scheme` |
+| issuer URL HTTPS precedes credentials | `ts-stack@edf6e03 validationHelpers.ts:1365-1369`; toolbox #283 | `url_https_before_credentials` |
+| issuer URL credentials precede query checks | `ts-stack@edf6e03 validationHelpers.ts:1368-1372`; toolbox #283 | `url_credentials_before_query` |
+| issuer URL query and fragment precede hostname checks | `ts-stack@edf6e03 validationHelpers.ts:1371-1382`; toolbox #283 | `url_query_or_fragment_before_hostname` |
+| issuer URL needs a public DNS hostname before fields are checked | `ts-stack@edf6e03 validationHelpers.ts:1374-1391,1340-1341`; toolbox #283 | `url_public_dns_before_fields` |
+| issuance field count precedes unsafe keys | `ts-stack@edf6e03 validationHelpers.ts:89-95,1235`; toolbox #283 | `fields_count_before_unsafe_key` |
+| issuance field key safety precedes name length | `ts-stack@edf6e03 validationHelpers.ts:93-99,1235-1237`; toolbox #283 | `fields_safe_keys_before_field_length` |
+| issuance field names must be nonempty | `ts-stack@edf6e03 validationHelpers.ts:1237,348-355`; toolbox #283 | `field_name_minimum_bytes` |
+| issuance field names are limited by UTF-8 bytes | `ts-stack@edf6e03 validationHelpers.ts:1237,348-355`; toolbox #283 | `field_name_maximum_bytes` |
+| issuance requires the certificate before server nonce and retains the exclamation mark | `ts-stack@edf6e03 Wallet.ts:794-795`; toolbox #283 | `certificate_presence_precedes_nonce_presence` |
+| omitted server nonce reaches the reference presence refusal | `ts-stack@edf6e03 Wallet.ts:795`; toolbox #283 | `omitted_nonce_uses_presence_text` |
+| the serial false-result refusal precedes type equality | `ts-stack@edf6e03 Wallet.ts:807-815`; toolbox #283 | `serial_hmac_precedes_certificate_type` |
+| serial decoding and width use the earlier helper texts | `ts-stack@edf6e03 Wallet.ts:808; validationHelpers.ts:1774; primitives/utils.ts:150-165`; toolbox #283 | `invalid_serial_encoding_and_length_use_reference_text` |
+| issuance response type precedes subject and certifier | `ts-stack@edf6e03 Wallet.ts:754-761`; toolbox #283 | `type_precedes_subject_and_certifier` |
+| issuance response subject precedes certifier | `ts-stack@edf6e03 Wallet.ts:757-761`; toolbox #283 | `subject_precedes_certifier` |
+| issuance response certifier precedes revocation presence | `ts-stack@edf6e03 Wallet.ts:760-764`; toolbox #283 | `certifier_precedes_revocation` |
+| issuance response field count uses the reference text | `ts-stack@edf6e03 Wallet.ts:737`; toolbox #283 | `field_count_uses_reference_text` |
+| issuance response missing field uses the reference text | `ts-stack@edf6e03 Wallet.ts:741`; toolbox #283 | `missing_field_uses_reference_text` |
+| issuance signature errors use the reference text without changing the false-result policy | `ts-stack@edf6e03 Wallet.ts:816; toolbox #188/#199`; toolbox #283 | `verification_error_uses_reference_text` |
+| master fields must decrypt before an issued certificate is stored | `ts-stack@edf6e03 Wallet.ts:817; MasterCertificate.ts:559-560`; toolbox #283 | `decrypt_all_fields_uses_reference_text` |
+| the issuance gate admitted type text survives lenient decoding and storage | `ts-stack@edf6e03 validationHelpers.ts:1338; primitives/utils.ts:143-192; toolbox #188 remains`; toolbox #283 | `noncanonical_type_survives_round_trip` |
+| a truthy unparsable outpoint passes the revocation-presence guard | `ts-stack@edf6e03 Wallet.ts:763-766`; toolbox #283 | `unparsable_truthy_outpoint_reaches_field_checks` |
+| issuance storage retains outpoint text verbatim | `ts-stack@edf6e03 Wallet.ts:818-822`; toolbox #283 | `truthy_outpoint_text_is_retained_in_storage` |
+| the server nonce helper runs before the serial HMAC with the reference derivation inputs | `ts-stack@edf6e03 Wallet.ts:806; verifyNonce.ts:42-55`; toolbox #283 | `server_nonce_verification_precedes_serial_and_uses_reference_derivation` |
+| the issuance caller ignores a false server nonce result | `ts-stack@edf6e03 Wallet.ts:806; verifyNonce.ts:57`; toolbox #283 | `false_server_nonce_result_is_ignored_as_in_reference` |
+| the nonce key ID matches TextDecoder's leading-BOM removal | `ts-stack@edf6e03 primitives/utils.ts:211-212; verifyNonce.ts:51`; toolbox #283 | `server_nonce_key_id_matches_textdecoder_bom_handling` |
+| the server nonce HMAC is checked against the requested certifier | `ts-stack@edf6e03 Wallet.ts:806; verifyNonce.ts:46-55`; toolbox #283 | `server_nonce_uses_the_requested_certifier_key` |
 | certificate intake preserves the signed Base64 field text byte for byte | `BRCs@5119a9b peer-to-peer/0052.md:97`; toolbox #197 and #203 | `reference_issued_certificate_survives_intake` |
 | a stored reference-issued or Rust-issued certificate proves to the verifier and decrypts to the fixture's plaintexts | `conformance/upstream/261-certificate-field-value/` (bsv-rs #261); toolbox #203 | `reference_issued_certificate_proves_and_decrypts` |
 | a corrupt master keyring entry is refused at prove time before a verifier keyring is returned | `ts-stack@edf6e03 MasterCertificate.ts:382-393,612-622`; toolbox #222 | `prove_certificate_rejects_corrupt_master_keyring_entry` |
