@@ -27,6 +27,18 @@
   `review_status_heals_failed_beside_spendable_left_by_an_earlier_release`
   (the sweep, the reconcile guard, a repeat pass writes nothing) and the moved
   pin in `review_status_voids_created_outputs_of_newly_failed_transactions`.
+- #271: certificate issuance validates `type` before `certifier`, sharing the
+  reference's structural Base64 and 32-byte length rules with `prove_certificate`.
+  Invalid types now return `Validation error: The type parameter must be <rule>`,
+  where the rule is `valid base64 string`, `at least 32 bytes`, or
+  `no more than 32 bytes`, replacing the late `Invalid certificate_type ...`
+  and `certificate_type must be 32 bytes when decoded ...` refusals.
+  ECMAScript whitespace is trimmed and accepted type text is preserved in the request.
+  The response's missing revocation outpoint now reads `Invalid revocationOutpoint!`;
+  a differing field value reads `Invalid field! Expected: <sent>, Received: <received>`
+  without the field name. Both retain the `Validation error: ` prefix and match
+  `ts-stack@edf6e03 Wallet.ts:764,744`. The internal identity-key parse is unchanged;
+  the reference derives that key and has no corresponding issuance error text.
 
 - #260: `prove_certificate` now validates type, serial, certifier, subject,
   signature, requested name lengths, then verifier before the certificate

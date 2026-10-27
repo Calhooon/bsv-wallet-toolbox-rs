@@ -596,22 +596,34 @@ that text's bytes for the signed representation (BRC-52 `0052.md:97`, #197);
 the pinned bsv-rs 0.9.0-beta.1 setter takes `value.as_bytes().to_vec()`.
 Decode a field's Base64 only when decrypting it.
 
-For #261, issuance checks `certifier` with the same `validate_public_key_arg`
-as `prove_certificate`, after requiring a certifier URL and before identity
-parsing, nonce generation, field encryption or HTTP. This follows the
-acquisition door at `ts-stack@edf6e03 Wallet.ts:770-778` and
-`validationHelpers.ts:1337-1340,185-191,522-534`. The wallet returns
-`Validation error: The certifier parameter must be <rule>`, where the rule is
+For #261 and #271, issuance requires a certifier URL, then validates `type`
+and `certifier` with `validate_certificate_base64_arg` and `validate_public_key_arg`,
+shared with `prove_certificate`. Both run before identity parsing, nonce
+generation, encryption or HTTP. In `ts-stack@edf6e03`, `Wallet.ts:770` calls
+`validateAuthAndArgs` in both the default telemetry-disabled branch (`:606-609`)
+and the enabled branch (`:617`); `validationHelpers.ts:1338-1339` orders type before certifier.
+Type uses ECMAScript trimming and structural Base64 with calculated decoded
+size 32 (`:439-497`), preserving trimmed text without canonical padding checks.
+Its refusal is `Validation error: The type parameter must be <rule>`, using
+`valid base64 string`, `at least 32 bytes`, or `no more than 32 bytes`.
+An invalid type wins over an invalid certifier. Certifier uses
+`Validation error: The certifier parameter must be <rule>`, with
 `even length, not N.`, `hexadecimal string.`, `at least 66 length.`,
 `no more than 66 length.`, or `a valid compressed secp256k1 public key`.
-ECMAScript trimming and lowercasing apply to the parsed key and the expected
-certifier in both response checks: uppercase, space padding and U+FEFF are
-accepted; U+0085 is retained and refused. A differing response identity
-header uses `Invalid certifier! Expected: <expected>, Received: <received>`
-inside `Validation error:`, as the reference does at `Wallet.ts:789-791`.
-`certificate_issuance_key_tests.rs` witnesses the refusal before preparation,
-normalization through the response checks, and that header text using
-loopback fixtures.
+ECMAScript trimming and lowercasing normalize the certifier for both response
+checks: uppercase, space and U+FEFF padding pass; U+0085 fails.
+A differing header uses `Invalid certifier! Expected: <expected>, Received: <received>`
+with `Validation error: ` (`Wallet.ts:789-791`). The internal
+`Invalid identity key: <SDK detail>` parse remains: the reference derives
+that key at `KeyDeriver.ts:149`, copies it at `Wallet.ts:418`, and has no
+matching issuance guard or error text.
+
+After the serial HMAC check, a missing revocation outpoint uses
+`Invalid revocationOutpoint!` (`Wallet.ts:763-764`). A differing field value uses
+`Invalid field! Expected: <sent>, Received: <received>` without a field name
+(`:744`, called through `:766,815`). Both retain `Validation error: `.
+`certificate_issuance_key_tests.rs` covers order, normalization and response texts
+through the public wallet method with loopback fixtures and valid HMACs.
 
 The bsv-rs #261 fixture is pinned byte for byte under
 `conformance/upstream/261-certificate-field-value/`. The four tests in
