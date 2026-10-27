@@ -260,8 +260,171 @@ pub(crate) fn output_from_row(row: &sqlx::sqlite::SqliteRow) -> TableOutput {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        AuthId, FindOutputsArgs, StorageSqlx, WalletStorageReader, WalletStorageWriter,
+        AuthId, FindOutputsArgs, ListOutputsArgs, StorageSqlx, TableOutput, WalletStorageReader,
+        WalletStorageWriter,
     };
+    use bsv_rs::wallet::OutputInclude;
+
+    async fn stored_received_output() -> (StorageSqlx, AuthId, String, i64) {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("output-origin", &"0".repeat(64))
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+        let identity = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity).await.unwrap();
+        let auth = AuthId::with_user_id(identity, user.user_id);
+        let txid = "1".repeat(64);
+        let transaction_id = sqlx::query(
+            "INSERT INTO transactions (user_id, status, reference, is_outgoing, description, txid)
+             VALUES (?, 'completed', 'output-origin', 0, 'Received payment', ?)",
+        )
+        .bind(user.user_id)
+        .bind(&txid)
+        .execute(storage.writer())
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        sqlx::query(
+            "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, provided_by, purpose,
+                                  type, spendable, txid, script_length, script_offset,
+                                  locking_script, custom_instructions)
+             VALUES (?, ?, 0, 42, 'storage', 'receive', 'P2PKH', 1, ?, 1, 0, X'51', 'Keep origin')",
+        )
+        .bind(user.user_id)
+        .bind(transaction_id)
+        .bind(&txid)
+        .execute(storage.writer())
+        .await
+        .unwrap();
+        (storage, auth, txid, transaction_id)
+    }
+
+    fn assert_received_origin(output: &TableOutput) {
+        assert_eq!(
+            (output.purpose.as_deref(), output.provided_by.as_str()),
+            (Some("receive"), "storage")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_outputs_preserves_output_origin() {
+        let (storage, auth, _, _) = stored_received_output().await;
+        for no_script in [None, Some(false), Some(true)] {
+            let args = FindOutputsArgs {
+                no_script,
+                ..Default::default()
+            };
+            let direct = storage
+                .find_outputs_internal(auth.user_id.unwrap(), &args)
+                .await
+                .unwrap();
+            let authenticated = storage.find_outputs(&auth, args).await.unwrap();
+            for outputs in [direct, authenticated] {
+                assert_eq!(outputs.len(), 1);
+                let output = &outputs[0];
+                assert_received_origin(output);
+                assert_eq!(output.output_description, None);
+                assert_eq!(output.spent_by, None);
+                assert_eq!(output.sequence_number, None);
+                assert_eq!(output.spending_description, None);
+                assert_eq!(
+                    output.locking_script,
+                    (no_script != Some(true)).then(|| vec![0x51])
+                );
+                let wire = serde_json::to_value(output).unwrap();
+                assert_eq!(wire["purpose"], "receive");
+                assert_eq!(wire["providedBy"], "storage");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_find_output_by_outpoint_preserves_output_origin() {
+        let (storage, auth, txid, _) = stored_received_output().await;
+        let output = storage
+            .find_output_by_outpoint(auth.user_id.unwrap(), &txid, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_received_origin(&output);
+        assert_eq!(output.locking_script, Some(vec![0x51]));
+    }
+
+    #[tokio::test]
+    async fn test_output_finders_preserve_optional_metadata() {
+        let (storage, auth, txid, transaction_id) = stored_received_output().await;
+        sqlx::query(
+            "UPDATE outputs SET output_description = 'Received payment', spent_by = ?,
+             sequence_number = -1, spending_description = 'Spent payment', spendable = 0",
+        )
+        .bind(transaction_id)
+        .execute(storage.writer())
+        .await
+        .unwrap();
+        let mut outputs = storage
+            .find_outputs(&auth, FindOutputsArgs::default())
+            .await
+            .unwrap();
+        outputs.push(
+            storage
+                .find_output_by_outpoint(auth.user_id.unwrap(), &txid, 0)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(outputs.len(), 2);
+        for output in outputs {
+            assert_eq!(
+                output.output_description.as_deref(),
+                Some("Received payment")
+            );
+            assert_eq!(output.spent_by, Some(transaction_id));
+            assert_eq!(output.sequence_number, Some(u32::MAX));
+            assert_eq!(
+                output.spending_description.as_deref(),
+                Some("Spent payment")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_outputs_preserves_wallet_output_shape() {
+        let (storage, auth, txid, _) = stored_received_output().await;
+        let result = storage
+            .list_outputs(
+                &auth,
+                ListOutputsArgs {
+                    basket: String::new(),
+                    tags: None,
+                    tag_query_mode: None,
+                    include: Some(OutputInclude::LockingScripts),
+                    include_custom_instructions: Some(true),
+                    include_tags: None,
+                    include_labels: None,
+                    limit: None,
+                    offset: None,
+                    seek_permission: None,
+                },
+            )
+            .await
+            .unwrap();
+        let wire = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "totalOutputs": 1,
+                "outputs": [{
+                    "satoshis": 42,
+                    "lockingScript": "51",
+                    "spendable": true,
+                    "customInstructions": "Keep origin",
+                    "outpoint": format!("{txid}.0")
+                }]
+            })
+        );
+    }
 
     #[tokio::test]
     async fn test_find_outputs() {
