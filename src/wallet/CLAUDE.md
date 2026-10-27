@@ -611,6 +611,7 @@ master key before wrapping it for the verifier, refusing a mismatched pair with
 `bsv_rs::Error::WalletError("Failed to decrypt certificate field!")` as the
 reference's plain `Error` does (`ts-stack@edf6e03`,
 `MasterCertificate.ts:382-393,612-622`).
+For #228 and #229, this recovery restores legacy keys to 32 bytes before wrapping them for the verifier and uses the same `WalletError` for every recovery failure, including non-UTF-8 plaintext (`ts-stack@edf6e03`, `MasterCertificate.ts:573-622`, `VerifiableCertificate.ts:54-60,203`); the plaintext size bound remains with #223.
 
 ### Protocol Flow
 

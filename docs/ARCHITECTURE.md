@@ -131,6 +131,11 @@ it (`UnspendableCoin`).
 | certificate intake preserves the signed Base64 field text byte for byte | `BRCs@5119a9b peer-to-peer/0052.md:97`; toolbox #197 and #203 | `reference_issued_certificate_survives_intake` |
 | a stored reference-issued or Rust-issued certificate proves to the verifier and decrypts to the fixture's plaintexts | `conformance/upstream/261-certificate-field-value/` (bsv-rs #261); toolbox #203 | `reference_issued_certificate_proves_and_decrypts` |
 | a corrupt master keyring entry is refused at prove time before a verifier keyring is returned | `ts-stack@edf6e03 MasterCertificate.ts:382-393,612-622`; toolbox #222 | `prove_certificate_rejects_corrupt_master_keyring_entry` |
+| a legacy 31-byte field key is restored to the exact 32-byte key required by the verifier | `ts-stack@edf6e03 MasterCertificate.ts:393,606-619`; `VerifiableCertificate.ts:54-60,203`; toolbox #228 | `test_create_keyring_pads_legacy_field_key_for_verifier` |
+| an empty master keyring refuses with the field recovery WalletError and the reference's exact text | `ts-stack@edf6e03 MasterCertificate.ts:573-622`; toolbox #229 | `test_create_keyring_empty_master_keyring_fails` |
+| a missing master entry refuses with the field recovery WalletError and the reference's exact text | `ts-stack@edf6e03 MasterCertificate.ts:573-622`; toolbox #229 | `test_create_keyring_field_not_in_master_keyring_fails` |
+| a non-Base64 master entry refuses with the field recovery WalletError and the reference's exact text | `ts-stack@edf6e03 MasterCertificate.ts:573-622`; toolbox #229 | `test_create_keyring_invalid_base64_master_key_fails` |
+| non-UTF-8 field plaintext is refused before returning a verifier keyring | `ts-stack@edf6e03 MasterCertificate.ts:619-622`; toolbox #229 | `test_create_keyring_rejects_non_utf8_field` |
 | equal and empty plaintext fields receive distinct 32-byte keys across fields and issuances | `ts-stack@edf6e03 MasterCertificate.ts:277-293`; toolbox #203 | `issuance_uses_fresh_keys_for_equal_and_empty_plaintexts` |
 
 ## 2. The writer and the pool
