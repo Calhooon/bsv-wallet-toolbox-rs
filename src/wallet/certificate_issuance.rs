@@ -33,6 +33,7 @@ use bsv_rs::wallet::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::wallet::validate_public_key_arg;
 use crate::error::{Error, Result};
 use crate::services::providers::http_client::Client;
 use crate::storage::entities::{TableCertificate, TableCertificateField};
@@ -194,9 +195,9 @@ where
         Error::ValidationError("certifier_url is required for issuance protocol".to_string())
     })?;
 
-    // Parse certifier public key
-    let certifier = PublicKey::from_hex(&args.certifier)
-        .map_err(|e| Error::ValidationError(format!("Invalid certifier public key: {}", e)))?;
+    // The acquisition gate uses the same normalization and texts as prove:
+    // ts-stack@edf6e03 validationHelpers.ts:1339,185-191,522-534.
+    let (certifier_hex, certifier) = validate_public_key_arg(&args.certifier, "certifier")?;
 
     // Parse identity key to PublicKey
     let identity_pub_key = PublicKey::from_hex(identity_key)
@@ -212,21 +213,18 @@ where
 
     // Step 2.5: Validate response header matches expected certifier (per Go implementation)
     if let Some(response_identity_key) = &http_response.identity_key_header {
-        if response_identity_key != &args.certifier {
+        if response_identity_key != &certifier_hex {
             return Err(Error::ValidationError(format!(
-                "Invalid certifier in response header! Expected: {}, Received: {}",
-                args.certifier, response_identity_key
+                "Invalid certifier! Expected: {}, Received: {}",
+                certifier_hex, response_identity_key
             )));
         }
     }
     // Note: Unlike Go, we don't require the header to be present, as some certifiers may not include it
 
     // Step 3: Parse and validate response
-    let parsed = parse_certificate_response(
-        &http_response.body,
-        &args.certifier,
-        &prepared.cert_type_b64,
-    )?;
+    let parsed =
+        parse_certificate_response(&http_response.body, &certifier_hex, &prepared.cert_type_b64)?;
 
     // Step 4: Verify certificate issuance
     verify_certificate_issuance(
@@ -236,7 +234,7 @@ where
         &prepared.fields,
         &prepared.cert_type_b64,
         identity_key,
-        &args.certifier,
+        &certifier_hex,
         &certifier,
         originator,
     )
