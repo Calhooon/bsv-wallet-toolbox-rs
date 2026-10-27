@@ -3912,6 +3912,169 @@ mod tests {
         assert!(validate_originator(&long_originator).is_err());
     }
 
+    // #284: bsv-rs@0.9.0-beta.1 and identity #322 erase None to "" before
+    // calling WalletInterface. The absent and explicit-empty expectations
+    // cannot both pass until that boundary preserves the distinction.
+    #[cfg(feature = "sqlite")]
+    mod originator_284 {
+        use super::super::busy_door_tests::{fund_tagged, wallet};
+        use super::*;
+
+        async fn create(originator: &str) -> bsv_rs::Result<CreateActionResult> {
+            let (_dir, wallet) = wallet().await;
+            fund_tagged(&wallet, &[0x51], 284).await;
+            wallet
+                .create_action(
+                    CreateActionArgs {
+                        description: "originator boundary witness".to_string(),
+                        input_beef: None,
+                        inputs: None,
+                        outputs: Some(vec![bsv_rs::wallet::CreateActionOutput {
+                            locking_script: vec![0x51],
+                            satoshis: 1_000,
+                            output_description: "local unsigned output".to_string(),
+                            basket: None,
+                            custom_instructions: None,
+                            tags: None,
+                        }]),
+                        lock_time: None,
+                        version: None,
+                        labels: None,
+                        options: Some(bsv_rs::wallet::CreateActionOptions {
+                            no_send: Some(true),
+                            sign_and_process: Some(false),
+                            ..Default::default()
+                        }),
+                    },
+                    originator,
+                )
+                .await
+        }
+
+        async fn list(originator: &str) -> bsv_rs::Result<ListOutputsResult> {
+            let (_dir, wallet) = wallet().await;
+            wallet
+                .list_outputs(
+                    ListOutputsArgs {
+                        basket: "default".to_string(),
+                        tags: None,
+                        tag_query_mode: None,
+                        include: None,
+                        include_custom_instructions: None,
+                        include_tags: None,
+                        include_labels: None,
+                        limit: None,
+                        offset: None,
+                        seek_permission: None,
+                    },
+                    originator,
+                )
+                .await
+        }
+
+        fn assert_empty_error(error: bsv_rs::Error) {
+            let bsv_rs::Error::WalletError(words) = error else {
+                panic!("expected originator validation, got {error:?}");
+            };
+            // validationHelpers.ts:1006 -> :351-352; WERR_INVALID_PARAMETER:14.
+            assert_eq!(
+                words,
+                "Validation error: The originator parameter must be at least 1 length."
+            );
+        }
+
+        #[tokio::test]
+        async fn named_originator_reaches_both_doors() {
+            let created = create("app.example.com").await.unwrap();
+            assert!(created.signable_transaction.is_some());
+            assert_eq!(list("app.example.com").await.unwrap().total_outputs, 0);
+        }
+
+        #[tokio::test]
+        async fn create_action_accepts_absent_originator() {
+            let originator: Option<&str> = None;
+            let result = create(originator.unwrap_or("")).await;
+            assert!(result.is_ok(), "absent originator refused: {result:?}");
+        }
+
+        #[tokio::test]
+        async fn list_outputs_accepts_absent_originator() {
+            let originator: Option<&str> = None;
+            let result = list(originator.unwrap_or("")).await;
+            assert!(result.is_ok(), "absent originator refused: {result:?}");
+        }
+
+        #[tokio::test]
+        async fn create_action_refuses_explicit_empty_originator() {
+            assert_empty_error(create("").await.unwrap_err());
+        }
+
+        #[tokio::test]
+        async fn list_outputs_refuses_explicit_empty_originator() {
+            assert_empty_error(list("").await.unwrap_err());
+        }
+
+        #[test]
+        fn supplied_originator_rules() {
+            // Pinned validationHelpers.ts:1005-1036, including UTF-8 limits,
+            // ECMAScript trimming, single-label hosts and optional ports.
+            let maximum_host = [
+                "a".repeat(63),
+                "b".repeat(63),
+                "c".repeat(63),
+                "d".repeat(58),
+            ]
+            .join(".");
+            for originator in [
+                "localhost",
+                "A-B.Example:65535",
+                "localhost:00000",
+                " \u{feff}APP.EXAMPLE.COM:80\u{2029}",
+                &maximum_host,
+            ] {
+                assert!(validate_originator(originator).is_ok(), "{originator:?}");
+            }
+
+            let overlong_host = format!("{maximum_host}x");
+            let overlong_part = "a".repeat(64);
+            for (originator, name, rule) in [
+                ("", "originator", "at least 1 length."),
+                (" \u{feff} ", "originator", "at least 1 length."),
+                (&overlong_host, "originator", "no more than 250 length."),
+                (":80", "originator hostname", "at least 1 length."),
+                (&overlong_part, "originator part", "no more than 63 length."),
+                (".example", "originator part", "at least 1 length."),
+                ("example.", "originator part", "at least 1 length."),
+            ] {
+                let error = validate_originator(originator).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    format!("Validation error: The {name} parameter must be {rule}"),
+                    "{originator:?}"
+                );
+            }
+
+            for originator in [
+                "example:65536",
+                "example:123456",
+                "example:",
+                "example:abc",
+                "example:80:90",
+                "-example",
+                "example-",
+                "bad_name.example",
+                "\u{0085}example",
+                "éxample",
+            ] {
+                assert_eq!(
+                    validate_originator(originator).unwrap_err().to_string(),
+                    "Validation error: The originator parameter must be a canonical DNS hostname with an optional port",
+                    "{originator:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_wallet_options_default() {
         let options = WalletOptions::default();
