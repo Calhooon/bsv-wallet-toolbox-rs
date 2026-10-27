@@ -1,12 +1,8 @@
 //! #248: the unauthenticated storage HTTP path is isolated in both builds.
 
-use super::{Error, StorageClient, TableSettings, WalletStorageWriter};
+use super::{assert_isolated, StorageClient, TableSettings, WalletStorageWriter};
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::wallet::ProtoWallet;
-
-#[path = "../../../tests/common/transport_isolation.rs"]
-mod transport_isolation;
-use transport_isolation::assert_isolated;
 
 fn client(endpoint: &str) -> StorageClient<ProtoWallet> {
     StorageClient::new_unauthenticated(

@@ -1,8 +1,8 @@
 //! Shared refusal assertion for the unit and external-library witnesses.
 
-use super::Error;
+use crate::Error;
 
-pub(super) fn assert_isolated(error: Error) {
+pub(crate) fn assert_isolated(error: Error) {
     assert!(matches!(error, Error::NetworkError(_)), "{error:?}");
     let message = error.to_string();
     assert!(
