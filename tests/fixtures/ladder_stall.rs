@@ -279,17 +279,17 @@ pub(super) fn difference(fixture: &Fixture, actual: &Expected, history: &[Rung])
     ))
 }
 
-/// A scene replayed on a worker's servers, `first` stood up for its first
+/// A scene replayed on a worker's servers, `opening` stood up for its opening
 /// attempt (the scene itself; in a test, the scene as a loaded runner
 /// serves it): what it recorded, the ladder's call history, and the runner
 /// stall it was replayed once more for.
 pub(super) async fn replay_scene(
     fixture: &Fixture,
-    first: &Fixture,
+    opening: &Fixture,
     servers: &mut Servers,
 ) -> Result<(Expected, Vec<Rung>, Option<String>), String> {
-    assert_eq!(fixture.calls, first.calls, "one scene's calls");
-    let (actual, history) = replay(first, servers).await?;
+    assert_eq!(fixture.calls, opening.calls, "one scene's calls");
+    let (actual, history) = replay(opening, servers).await?;
     let stall = stalled(fixture, &actual, &history);
     let Some(stall) = stall else {
         return Ok((actual, history, None));
@@ -461,9 +461,9 @@ async fn ladder_fixtures_a_late_second_answer_reads_as_a_runner_stall() {
 }
 
 /// `fixture` as a loaded runner serves it: `provider`'s answer to its
-/// request `nth` (from 1, on its first route) held back past the client's
+/// request `nth` (from 1, on route 0) held back past the client's
 /// deadline by less than [`LATE_SLACK_MS`], where the fixture scripts it
-/// immediate. The route's first answer must serve that request.
+/// immediate. The route's opening answer must serve that request.
 fn held_past_the_deadline(fixture: &Fixture, provider: &str, nth: usize) -> Fixture {
     let mut loaded = Fixture {
         about: fixture.about.clone(),
@@ -502,7 +502,7 @@ fn held_past_the_deadline(fixture: &Fixture, provider: &str, nth: usize) -> Fixt
 /// rung faulted at 2.2 to 3.0 s beside ordinary answers of 1.2 to 1.5 s on
 /// a loaded hosted runner). Two recorded scenes, each with one Bitails
 /// answer held past the deadline by less than [`LATE_SLACK_MS`] on its
-/// first attempt: the merkle path scene asks nothing unscripted after the
+/// opening attempt: the merkle path scene asks nothing unscripted after the
 /// fault, the status scene falls to an unscripted rung. Each is replayed
 /// once more, agrees with its fixture, and names the stall.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
