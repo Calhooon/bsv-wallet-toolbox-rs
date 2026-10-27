@@ -296,8 +296,10 @@ async fn remove_stored_field(storage: &StorageSqlx, txid: &str, field: MissingSt
                 .unwrap();
         }
         MissingStoredField::Satoshis => {
-            // Only this in-memory fixture permits NULL: the production schema
-            // and public TableOutput keep their required integer satoshis.
+            // Only this in-memory fixture permits NULL. The production schema
+            // has satoshis INTEGER NOT NULL (migrations/001_initial.sql:157),
+            // so the schema already supplies this half of the guard;
+            // TableOutput also requires an integer.
             sqlx::raw_sql(
                 "ALTER TABLE outputs ADD COLUMN nullable_satoshis INTEGER;
                  UPDATE outputs SET nullable_satoshis = satoshis;
