@@ -154,6 +154,20 @@ impl StorageSqlx {
         txid: &str,
         vout: u32,
     ) -> Result<Option<TableOutput>> {
+        Ok(self
+            .find_output_row_by_outpoint(user_id, txid, vout)
+            .await?
+            .as_ref()
+            .map(output_from_row))
+    }
+
+    /// Keep nullable columns intact for stored-input validation before mapping.
+    pub(crate) async fn find_output_row_by_outpoint(
+        &self,
+        user_id: i64,
+        txid: &str,
+        vout: u32,
+    ) -> Result<Option<sqlx::sqlite::SqliteRow>> {
         let row = sqlx::query(
             r#"
             SELECT output_id, user_id, transaction_id, basket_id, txid, vout,
@@ -170,10 +184,7 @@ impl StorageSqlx {
         .fetch_optional(&self.reader)
         .await?;
 
-        match row {
-            Some(row) => Ok(Some(output_from_row(&row))),
-            None => Ok(None),
-        }
+        Ok(row)
     }
 }
 

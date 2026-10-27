@@ -49,18 +49,9 @@ pub(super) async fn validate_and_extend_inputs(
 
             // Keep nullable fields until the stored-input guards have run;
             // TableOutput represents satoshis as a required integer.
-            let output_row = sqlx::query(
-                "SELECT output_id, user_id, transaction_id, basket_id, txid, vout,
-                        satoshis, locking_script, script_length, script_offset,
-                        type, spendable, change, derivation_prefix, derivation_suffix,
-                        sender_identity_key, custom_instructions, created_at, updated_at
-                 FROM outputs WHERE user_id = ? AND txid = ? AND vout = ?",
-            )
-            .bind(user_id)
-            .bind(&txid)
-            .bind(vout as i32)
-            .fetch_optional(storage.pool())
-            .await?;
+            let output_row = storage
+                .find_output_row_by_outpoint(user_id, &txid, vout)
+                .await?;
 
             let (satoshis, locking_script, output) = if let Some(ref row) = output_row {
                 let (out, script) = apply_stored_input_script(conn, row, i, &txid, vout).await?;
