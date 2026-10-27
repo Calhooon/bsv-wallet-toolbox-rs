@@ -5345,6 +5345,133 @@ mod tests {
                         assert_wallet_error("largest vout reaches lookup", result, NOT_FOUND);
                     }
 
+                    // #291: a direct acquire normalizes the outpoint as
+                    // validationHelpers.ts:1435 does (1099-1116, the txid
+                    // lowercased at 533), so the row it stores is the one a
+                    // normalized prove argument (proveCertificate.ts:18) finds.
+                    #[tokio::test]
+                    async fn test_direct_acquire_uppercase_outpoint_proves() {
+                        use crate::services::mock::MockWalletServices;
+                        use crate::storage::WalletStorageWriter;
+                        use bsv_rs::wallet::AcquisitionProtocol;
+
+                        let key31 = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
+                        let storage = crate::StorageSqlx::in_memory().await.unwrap();
+                        storage.migrate("acquire-outpoint", &key(31)).await.unwrap();
+                        storage.make_available().await.unwrap();
+                        let wallet = Wallet::new(Some(key31), storage, MockWalletServices::new())
+                            .await
+                            .unwrap();
+                        let txid = "AB".repeat(32);
+                        let acquired = wallet
+                            .acquire_certificate(
+                                AcquireCertificateArgs {
+                                    certificate_type: BASE64.encode([33; 32]),
+                                    certifier: key(31),
+                                    acquisition_protocol: AcquisitionProtocol::Direct,
+                                    // A field with a master key, so the row has a keyring.
+                                    fields: HashMap::from([(
+                                        "name".to_string(),
+                                        "YQ==".to_string(),
+                                    )]),
+                                    serial_number: Some(BASE64.encode([32; 32])),
+                                    revocation_outpoint: Some(format!("{txid}.0")),
+                                    signature: Some("300602010a02010b".to_string()),
+                                    certifier_url: None,
+                                    keyring_revealer: None,
+                                    keyring_for_subject: Some(HashMap::from([(
+                                        "name".to_string(),
+                                        "Yg==".to_string(),
+                                    )])),
+                                    privileged: None,
+                                    privileged_reason: None,
+                                },
+                                "certificate.test",
+                            )
+                            .await
+                            .unwrap();
+                        let lowercase = format!("{}.0", txid.to_lowercase());
+                        for outpoint in [lowercase.clone(), format!("{txid}.0")] {
+                            let mut certificate = acquired.clone();
+                            certificate.revocation_outpoint = outpoint.clone();
+                            let result = wallet
+                                .prove_certificate(
+                                    ProveCertificateArgs {
+                                        certificate,
+                                        fields_to_reveal: Vec::new(),
+                                        verifier: key(5),
+                                        privileged: None,
+                                        privileged_reason: None,
+                                    },
+                                    "certificate.test",
+                                )
+                                .await;
+                            assert!(
+                                result.is_ok(),
+                                "prove with {outpoint} after an uppercase acquire: {result:?}"
+                            );
+                        }
+                        // The returned certificate carries the stored value, as
+                        // acquireDirectCertificate.ts:47 returns vargs'.
+                        assert_eq!(acquired.revocation_outpoint, lowercase);
+                    }
+
+                    // #291: certificate.fields at validationHelpers.ts:1478-1480
+                    // (validateCertificateFields at 1232-1241, validateRecord at
+                    // 81-103) runs after validatePrivilege (1477) and ahead of
+                    // certificate.type (1483), on the argument's map, stored row or not.
+                    #[tokio::test]
+                    async fn test_prove_certificate_fields_before_type() {
+                        for stored in [false, true] {
+                            for (name, parameter, rule) in [
+                                (String::new(), "field name", "at least 1 length."),
+                                ("n".repeat(51), "field name", "no more than 50 length."),
+                                ("é".repeat(26), "field name", "no more than 50 length."),
+                                (
+                                    "__proto__".to_string(),
+                                    "fields",
+                                    "an object with safe string keys",
+                                ),
+                                (
+                                    "constructor".to_string(),
+                                    "fields",
+                                    "an object with safe string keys",
+                                ),
+                                (
+                                    "prototype".to_string(),
+                                    "fields",
+                                    "an object with safe string keys",
+                                ),
+                            ] {
+                                let result = prove_args(stored, |args| {
+                                    args.certificate
+                                        .fields
+                                        .insert(name.clone(), "YQ==".to_string());
+                                    args.certificate.certificate_type = "!".to_string();
+                                })
+                                .await;
+                                assert_wallet_error(
+                                    &format!("field {name:?} before type, stored {stored}"),
+                                    result,
+                                    &refusal(parameter, rule),
+                                );
+                            }
+                        }
+                        // validatePrivilege at 1477 precedes the fields at 1478.
+                        let result = prove_args(false, |args| {
+                            args.privileged = Some(true);
+                            args.certificate
+                                .fields
+                                .insert(String::new(), "YQ==".to_string());
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "privilege before fields",
+                            result,
+                            &refusal("privilegedReason", "a value when 'privileged' is true"),
+                        );
+                    }
+
                     #[tokio::test]
                     async fn test_prove_certificate_privileged_reason_length() {
                         for stored in [false, true] {
