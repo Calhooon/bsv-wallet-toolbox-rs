@@ -156,7 +156,7 @@ StorageClient<W: WalletInterface>
 ├── endpoint_url: String              # Server URL
 ├── peer: Arc<Peer<W, SimplifiedFetchTransport>>  # BRC-104 authenticated peer
 ├── wallet: W                          # Wallet for auth and signing
-├── http_client: reqwest::Client       # HTTP client (unauthenticated fallback)
+├── http_client: http_client::Client  # shared transport: reqwest in production, loopback-only under test and bench-support (#248)
 ├── next_id: AtomicU64                # Request ID counter
 ├── settings: Arc<RwLock<...>>        # Cached TableSettings
 ├── use_auth: bool                     # Enable/disable BRC-104 auth
@@ -351,7 +351,7 @@ HTTP + BRC-31 header approach with proper session management.
 
 ### Unauthenticated Fallback
 
-When `use_auth` is false, `rpc_call_unauthenticated()` sends plain HTTP POST via `reqwest::Client`
+When `use_auth` is false, `rpc_call_unauthenticated()` sends plain HTTP POST via the shared transport `services::providers::http_client::Client` (reqwest in production; loopback-only under test and `bench-support`, #248)
 without any BRC-104 headers. Used for testing.
 
 ### Settings Caching
