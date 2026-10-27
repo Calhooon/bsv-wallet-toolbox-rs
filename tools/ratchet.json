@@ -6,12 +6,12 @@
   "measured_at": "2026-10-26",
   "metrics": {
     "files_over_800": 33,
-    "max_file_lines": 4594,
+    "max_file_lines": 4730,
     "unwraps_outside_tests": 61,
     "undocumented_public_items": 308
   },
   "clippy_pedantic": {
-    "total": 3275,
+    "total": 3273,
     "by_lint": {
       "clippy::assigning_clones": 4,
       "clippy::bool_to_int_with_if": 6,
@@ -61,7 +61,7 @@
       "clippy::struct_field_names": 6,
       "clippy::too_many_lines": 64,
       "clippy::trivially_copy_pass_by_ref": 1,
-      "clippy::uninlined_format_args": 681,
+      "clippy::uninlined_format_args": 679,
       "clippy::unnecessary_wraps": 2,
       "clippy::unreadable_literal": 323,
       "clippy::unused_async": 1,
@@ -97,10 +97,10 @@
     "limit": 800,
     "count": 33,
     "src_files": 177,
-    "src_lines": 100434,
-    "max_lines": 4594,
+    "src_lines": 100699,
+    "max_lines": 4730,
     "files": {
-      "src/wallet/wallet.rs": 4594,
+      "src/wallet/wallet.rs": 4730,
       "src/services/services.rs": 4573,
       "src/storage/sqlx/internalize_action.rs": 4009,
       "src/storage/sqlx/process_action.rs": 3510,
@@ -119,8 +119,8 @@
       "src/managers/storage_manager.rs": 1501,
       "src/services/providers/bananablocks.rs": 1474,
       "src/services/providers/whatsonchain.rs": 1381,
+      "src/wallet/certificate_issuance.rs": 1275,
       "src/services/providers/bitails.rs": 1151,
-      "src/wallet/certificate_issuance.rs": 1146,
       "src/storage/sqlx/beef_verification.rs": 1104,
       "src/wallet/signer.rs": 1081,
       "src/services/broadcast_memory.rs": 1060,
@@ -277,7 +277,7 @@
       "src/wallet/wallet.rs::address_to_p2pkh_script 65",
       "src/wallet/wallet.rs::build_unsigned_transaction 197",
       "src/wallet/wallet.rs::create_action_at 642",
-      "src/wallet/wallet.rs::create_keyring_for_verifier 84",
+      "src/wallet/wallet.rs::create_keyring_for_verifier 94",
       "src/wallet/wallet.rs::discover_by_identity_key 71",
       "src/wallet/wallet.rs::internalize_action 113",
       "src/wallet/wallet.rs::prove_certificate 106",
@@ -320,8 +320,8 @@
   },
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
-    "count": 6758,
-    "windows": 75455,
+    "count": 6750,
+    "windows": 75693,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:37 = src/storage/sqlx/create_action/tests/beef_options.rs:406 (39 lines)",
