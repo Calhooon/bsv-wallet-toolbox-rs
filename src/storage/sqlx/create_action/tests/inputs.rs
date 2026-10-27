@@ -1,5 +1,222 @@
 use super::super::*;
-use bsv_rs::wallet::CreateActionOutput;
+use bsv_rs::wallet::{CreateActionOptions, CreateActionOutput};
+
+fn named_input_args(txid: &str, no_send: Option<bool>) -> bsv_rs::wallet::CreateActionArgs {
+    bsv_rs::wallet::CreateActionArgs {
+        description: "Stored input guard regression".to_string(),
+        input_beef: None,
+        inputs: Some(vec![covenant_input(txid, vec![0x51])]),
+        outputs: Some(vec![p2pkh_output(1_000, "stored input payment")]),
+        lock_time: None,
+        version: None,
+        labels: None,
+        options: Some(CreateActionOptions {
+            no_send,
+            sign_and_process: Some(false),
+            ..CreateActionOptions::default()
+        }),
+    }
+}
+
+async fn guard_named_input(
+    storage: &StorageSqlx,
+    user_id: i64,
+    txid: &str,
+    no_send: Option<bool>,
+) -> Result<Vec<ExtendedInput>> {
+    let mut conn = storage.writer().acquire().await.unwrap();
+    validate_and_extend_inputs(
+        storage,
+        &mut conn,
+        user_id,
+        &named_input_args(txid, no_send),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn caller_named_no_send_unspendable_builds_unsigned() {
+    let (storage, user_id) = caller_complete_storage().await;
+    let txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "245").await;
+    sqlx::query("UPDATE outputs SET spendable = 0 WHERE txid = ?")
+        .bind(&txid)
+        .execute(storage.writer())
+        .await
+        .unwrap();
+
+    let result =
+        create_action_internal(&storage, None, user_id, named_input_args(&txid, Some(true)))
+            .await
+            .expect("noSend permits an unspendable stored input");
+    assert_eq!(result.inputs.len(), 1);
+    assert_eq!(result.inputs[0].source_txid, txid);
+    assert!(result.no_send_change_output_vouts.is_some());
+    let (status, raw_tx): (String, Option<Vec<u8>>) =
+        sqlx::query_as("SELECT status, raw_tx FROM transactions WHERE reference = ?")
+            .bind(&result.reference)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "unsigned");
+    assert!(raw_tx.is_none(), "no transaction was signed or sent");
+}
+
+#[tokio::test]
+async fn caller_named_unspendable_requires_no_send() {
+    for no_send in [None, Some(false)] {
+        let (storage, user_id) = caller_complete_storage().await;
+        let txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "245").await;
+        sqlx::query("UPDATE outputs SET spendable = 0 WHERE txid = ?")
+            .bind(&txid)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        let error = guard_named_input(&storage, user_id, &txid, no_send)
+            .await
+            .unwrap_err();
+        let Error::ValidationError(message) = error else {
+            panic!("expected ValidationError, got {error:?}");
+        };
+        assert_eq!(
+            message,
+            format!("inputs[0]: output {txid}:0 is not spendable")
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MissingStoredField {
+    LockingScript,
+    Satoshis,
+}
+
+async fn remove_stored_field(storage: &StorageSqlx, txid: &str, field: MissingStoredField) {
+    match field {
+        MissingStoredField::LockingScript => {
+            sqlx::query("UPDATE outputs SET locking_script = NULL WHERE txid = ?")
+                .bind(txid)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+        }
+        MissingStoredField::Satoshis => {
+            // Only this in-memory fixture permits NULL: the production schema
+            // and public TableOutput keep their required integer satoshis.
+            sqlx::raw_sql(
+                "ALTER TABLE outputs ADD COLUMN nullable_satoshis INTEGER;
+                 UPDATE outputs SET nullable_satoshis = satoshis;
+                 ALTER TABLE outputs DROP COLUMN satoshis;
+                 ALTER TABLE outputs RENAME COLUMN nullable_satoshis TO satoshis;",
+            )
+            .execute(storage.writer())
+            .await
+            .unwrap();
+            sqlx::query("UPDATE outputs SET satoshis = NULL WHERE txid = ?")
+                .bind(txid)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+        }
+    }
+}
+
+async fn assert_missing_field_uses_reference_refusal(field: MissingStoredField) {
+    // ts-stack@edf6e03 createAction.ts:979-980, WERR_errors.ts:105.
+    // Missing data must win over spendability, including under noSend.
+    for no_send in [None, Some(false), Some(true)] {
+        for spendable in [false, true] {
+            let (storage, user_id) = caller_complete_storage().await;
+            let txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "245").await;
+            remove_stored_field(&storage, &txid, field).await;
+            sqlx::query("UPDATE outputs SET spendable = ? WHERE txid = ?")
+                .bind(spendable)
+                .bind(&txid)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            let error = guard_named_input(&storage, user_id, &txid, no_send)
+                .await
+                .expect_err("missing stored input data must be refused");
+            let Error::ValidationError(message) = error else {
+                panic!("expected ValidationError, got {error:?}");
+            };
+            assert_eq!(
+                message,
+                format!(
+                    "The {txid}.0 parameter must be output with valid lockingScript and satoshis"
+                ),
+                "field={field:?}, spendable={spendable}, no_send={no_send:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn caller_named_missing_locking_script_uses_reference_refusal() {
+    assert_missing_field_uses_reference_refusal(MissingStoredField::LockingScript).await;
+}
+
+#[tokio::test]
+async fn caller_named_missing_satoshis_uses_reference_refusal() {
+    assert_missing_field_uses_reference_refusal(MissingStoredField::Satoshis).await;
+}
+
+#[tokio::test]
+async fn caller_named_change_precedes_missing_fields() {
+    for field in [
+        MissingStoredField::LockingScript,
+        MissingStoredField::Satoshis,
+    ] {
+        for no_send in [None, Some(false), Some(true)] {
+            let (storage, user_id) = caller_complete_storage().await;
+            let txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "245").await;
+            remove_stored_field(&storage, &txid, field).await;
+            sqlx::query("UPDATE outputs SET change = 1, spendable = 0 WHERE txid = ?")
+                .bind(&txid)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            let error = guard_named_input(&storage, user_id, &txid, no_send)
+                .await
+                .unwrap_err();
+            let Error::ValidationError(message) = error else {
+                panic!("expected ValidationError, got {error:?}");
+            };
+            assert_eq!(message, "The inputs[0] parameter must be an unmanaged input. Change outputs are managed by your wallet.");
+        }
+    }
+}
+
+#[tokio::test]
+async fn caller_named_zero_satoshis_and_empty_script_are_present() {
+    let (storage, user_id) = caller_complete_storage().await;
+    let txid = seed_custom_output(&storage, user_id, 0, &[], "245").await;
+    let inputs = guard_named_input(&storage, user_id, &txid, None)
+        .await
+        .expect("zero satoshis and an empty stored script are present");
+    assert_eq!(inputs[0].satoshis, 0);
+    assert!(inputs[0].locking_script.is_empty());
+}
+
+#[tokio::test]
+async fn caller_named_pruned_script_is_recovered() {
+    let (storage, user_id) = caller_complete_storage().await;
+    let txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "245").await;
+    sqlx::query(
+        "UPDATE outputs SET locking_script = NULL, script_length = 1,
+         script_offset = (SELECT length(raw_tx) - 5 FROM transactions WHERE txid = ?)
+         WHERE txid = ?",
+    )
+    .bind(&txid)
+    .bind(&txid)
+    .execute(storage.writer())
+    .await
+    .unwrap();
+    let inputs = guard_named_input(&storage, user_id, &txid, None)
+        .await
+        .expect("the stored raw transaction supplies the pruned script");
+    assert_eq!(inputs[0].locking_script, vec![0x51]);
+}
 
 async fn assert_named_change_uses_reference_refusal(spendable: bool) {
     // ts-stack@edf6e03 createAction.ts:972-983 checks change before
