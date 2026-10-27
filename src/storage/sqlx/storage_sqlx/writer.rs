@@ -151,6 +151,26 @@ impl WalletStorageWriter for StorageSqlx {
         .await
     }
 
+    async fn update_transaction_status_after_post(
+        &self,
+        txid: &str,
+        outcome: &super::BroadcastOutcome,
+        words: &[crate::services::PostBeefResult],
+        service_error: Option<&str>,
+    ) -> Result<()> {
+        // The note first, as the door's post path writes it: a fault writing
+        // it is logged and the statuses still move.
+        let txids = [txid.to_string()];
+        if let Err(error) =
+            super::process_action::record_stored_post_words(self, &txids, words, service_error)
+                .await
+        {
+            crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
+        }
+        self.update_transaction_status_after_broadcast(txid, outcome)
+            .await
+    }
+
     async fn review_status(
         &self,
         auth: &AuthId,

@@ -783,6 +783,27 @@ pub trait WalletStorageWriter: WalletStorageReader {
         outcome: &crate::storage::broadcast::BroadcastOutcome,
     ) -> Result<()>;
 
+    /// Update the statuses after the one-call composition's post (createAction
+    /// with signAndProcess), with the broadcasters' per-instance results
+    /// (`WalletServices::post_beef`'s answer) or the post's own fault when no
+    /// broadcaster answered (#187, the owner's ruling 18.5 (a)). A storage
+    /// keeping request histories writes the `processActionPost` note the
+    /// door's post path writes, as every post in the reference writes its
+    /// notes through `shareReqsWithWorld`; then the statuses move as
+    /// [`update_transaction_status_after_broadcast`](Self::update_transaction_status_after_broadcast).
+    /// The default writes no note and only moves the statuses.
+    async fn update_transaction_status_after_post(
+        &self,
+        txid: &str,
+        outcome: &crate::storage::broadcast::BroadcastOutcome,
+        words: &[crate::services::PostBeefResult],
+        service_error: Option<&str>,
+    ) -> Result<()> {
+        let _ = (words, service_error);
+        self.update_transaction_status_after_broadcast(txid, outcome)
+            .await
+    }
+
     /// Review storage status and clean up aged items.
     ///
     /// Checks for proven_tx_reqs and transactions that may need attention,

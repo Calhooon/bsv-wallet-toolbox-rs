@@ -1415,6 +1415,7 @@ where
             // Broadcast the transaction if not no_send and not delayed
             // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
             if !no_send && !accept_delayed_broadcast {
+                let (mut post_words, mut post_fault) = (Vec::new(), None);
                 let broadcast_outcome = if let Some(ref beef_bytes) = full_beef_bytes {
                     let txid_strings = vec![txid.clone()];
                     // Validate BEEF structure and dump to file for diagnostics
@@ -1463,6 +1464,7 @@ where
                     match self.services.post_beef(beef_bytes, &txid_strings).await {
                         Ok(results) => {
                             let outcome = classify_broadcast_results(&results);
+                            post_words = results;
                             match &outcome {
                                 BroadcastOutcome::Success => {
                                     tracing::info!(txid = %txid, "Transaction broadcast successfully");
@@ -1501,6 +1503,7 @@ where
                         Err(e) => {
                             // Network/service error is transient — will retry
                             tracing::warn!(txid = %txid, error = %e, "Broadcast service error — will retry");
+                            post_fault = Some(e.to_string());
                             BroadcastOutcome::ServiceError {
                                 details: vec![e.to_string()],
                             }
@@ -1534,7 +1537,12 @@ where
                 // error: the transaction is on the network (bsv-wallet-cli #44).
                 if let Err(e) = self
                     .storage
-                    .update_transaction_status_after_broadcast(&txid, &broadcast_outcome)
+                    .update_transaction_status_after_post(
+                        &txid,
+                        &broadcast_outcome,
+                        &post_words,
+                        post_fault.as_deref(),
+                    )
                     .await
                 {
                     crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
