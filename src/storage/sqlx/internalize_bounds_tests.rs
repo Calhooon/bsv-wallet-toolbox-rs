@@ -24,7 +24,7 @@ fn insertion_output(i: usize) -> InternalizeOutput {
     }
 }
 
-fn args(outputs: Vec<InternalizeOutput>) -> InternalizeActionArgs {
+pub(super) fn args(outputs: Vec<InternalizeOutput>) -> InternalizeActionArgs {
     InternalizeActionArgs {
         tx: vec![],
         outputs,
@@ -34,7 +34,7 @@ fn args(outputs: Vec<InternalizeOutput>) -> InternalizeActionArgs {
     }
 }
 
-fn refusal(args: &InternalizeActionArgs) -> String {
+pub(super) fn refusal(args: &InternalizeActionArgs) -> String {
     match validate_internalize_action_args(args) {
         Err(Error::ValidationError(text)) => text,
         other => panic!("expected a ValidationError, got {other:?}"),
