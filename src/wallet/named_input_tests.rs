@@ -370,7 +370,7 @@ async fn length_limited_action(scene: &NamedInputScene) -> SignableTransaction {
 async fn sign_action_refuses_caller_spend_over_declared_length() {
     let scene = named_input_scene().await;
     let signable = length_limited_action(&scene).await;
-    let reference = String::from_utf8(signable.reference.clone()).unwrap();
+    let reference = bsv_rs::primitives::to_base64(&signable.reference);
     let stored = stored_action(&scene, &reference).await;
     assert_eq!(stored.0, "unsigned");
     let writes = write_count(&scene).await;
@@ -418,7 +418,7 @@ async fn sign_action_accepts_caller_spend_at_or_below_declared_length() {
     for length in [DECLARED_SCRIPT_LENGTH, DECLARED_SCRIPT_LENGTH - 1] {
         let scene = named_input_scene().await;
         let signable = length_limited_action(&scene).await;
-        let reference = String::from_utf8(signable.reference.clone()).unwrap();
+        let reference = bsv_rs::primitives::to_base64(&signable.reference);
         let mut script = caller_script(&scene, &signable);
         script.resize(length as usize, 0x61);
         let signed = complete(&scene, signable, Some(script.clone())).await;
@@ -440,7 +440,7 @@ async fn complete(
         .unwrap_or_default();
     let result = sign_named(
         scene,
-        String::from_utf8(signable.reference).unwrap(),
+        bsv_rs::primitives::to_base64(&signable.reference),
         spends,
     )
     .await
@@ -452,7 +452,7 @@ async fn complete(
 async fn assert_named_input_script_refused(spends: HashMap<u32, SignActionSpend>) {
     let scene = named_input_scene().await;
     let signable = defer_named(&scene, 1_000, None).await;
-    let reference = String::from_utf8(signable.reference.clone()).unwrap();
+    let reference = bsv_rs::primitives::to_base64(&signable.reference);
     let before = store_snapshot(&scene.wallet).await;
     let result = sign_named(&scene, reference.clone(), spends).await;
     assert_refused(
@@ -557,7 +557,7 @@ async fn assert_spend_without_deferred_named_input_refused(vin: u32, replacement
     fund_wallet_change(&scene.wallet, 1).await;
     let script = script_for_create_action(&scene);
     let signable = defer_named(&scene, 100_000, Some(script.clone())).await;
-    let reference = String::from_utf8(signable.reference.clone()).unwrap();
+    let reference = bsv_rs::primitives::to_base64(&signable.reference);
     let unsigned = subject(&signable.tx);
     assert_eq!(unsigned.inputs.len(), 2);
     {

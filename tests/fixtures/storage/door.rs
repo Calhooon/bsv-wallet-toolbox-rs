@@ -91,8 +91,9 @@ async fn post_handles_templates_unknown_references_and_repeats_without_writes() 
     let template = wallet
         .create_action_offering(args, "fixture.local", &[1])
         .await?;
-    let reference =
-        String::from_utf8(template.signable_transaction.context("template")?.reference)?;
+    let reference = bsv_rs::primitives::to_base64(
+        &template.signable_transaction.context("template")?.reference,
+    );
     let before = rows(wallet.storage()).await?;
     let refused = wallet
         .process_action(post(reference), "fixture.local")

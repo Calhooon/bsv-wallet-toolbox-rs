@@ -509,7 +509,7 @@ async fn sign_action_answered_465_is_a_hint_not_an_error() {
         .sign_action(
             SignActionArgs {
                 spends: Default::default(),
-                reference: String::from_utf8(reference).expect("the reference"),
+                reference: bsv_rs::primitives::to_base64(&reference),
                 options: None,
             },
             "test.local",

@@ -736,7 +736,7 @@ async fn a_busy_status_write_after_a_sign_action_broadcast_is_its_success() {
         ..Default::default()
     });
     let created = wallet.create_action(args, ORIGINATOR).await.unwrap();
-    let reference = String::from_utf8(created.signable_transaction.unwrap().reference).unwrap();
+    let reference = bsv_rs::primitives::to_base64(&created.signable_transaction.unwrap().reference);
 
     let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let _capture = tracing::subscriber::set_default(LogCapture(logs.clone()));
