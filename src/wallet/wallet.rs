@@ -2680,10 +2680,29 @@ where
         )
         .await?;
 
-        // Argument checks in ts-stack@edf6e03 validationHelpers.ts:1483-1518
-        // order. The helper retains its own name, map and serial checks.
-        // SQLite matches the normalized certifier byte for byte; the remote
-        // storage server decides its own collation.
+        // Argument checks in ts-stack@edf6e03 validationHelpers.ts order:
+        // validatePrivilege(args, false) at 1477 (its body at 207-222) ahead
+        // of 1483-1518; the privilegedReason check at 1511 repeats 1477 on the
+        // same value and never fires. The helper retains its own name, map and
+        // serial checks. SQLite matches the normalized certifier byte for
+        // byte; the remote storage server decides its own collation.
+        if let Some(reason) = &args.privileged_reason {
+            let rule = if reason.len() < 5 {
+                Some("at least 5 length.")
+            } else if reason.len() > 50 {
+                Some("no more than 50 length.")
+            } else {
+                None
+            };
+            if let Some(rule) = rule {
+                return Err(invalid_certificate_argument("privilegedReason", rule));
+            }
+        } else if args.privileged == Some(true) {
+            return Err(invalid_certificate_argument(
+                "privilegedReason",
+                "a value when 'privileged' is true",
+            ));
+        }
         let certificate_type = validate_certificate_base64_arg(
             &args.certificate.certificate_type,
             "certificate.type",
@@ -2715,18 +2734,6 @@ where
             ));
         }
         let (_, verifier) = validate_public_key_arg(&args.verifier, "verifier")?;
-        if let Some(reason) = &args.privileged_reason {
-            let rule = if reason.len() < 5 {
-                Some("at least 5 length.")
-            } else if reason.len() > 50 {
-                Some("no more than 50 length.")
-            } else {
-                None
-            };
-            if let Some(rule) = rule {
-                return Err(invalid_certificate_argument("privilegedReason", rule));
-            }
-        }
         if args.fields_to_reveal.len() > MAXIMUM_CERTIFICATE_REVEAL_FIELDS {
             return Err(invalid_certificate_argument(
                 "fieldsToReveal",
@@ -5221,8 +5228,9 @@ mod tests {
                     }
 
                     // #270: validateOptionalOutpointString at 1498-1501 (its
-                    // validator at 1083-1116), privilegedReason at 1511 and the
-                    // post-vargs fieldsToReveal count and uniqueness at 1513-1518.
+                    // validator at 1083-1116), privilegedReason at 1477 (207-222)
+                    // and the post-vargs fieldsToReveal count and uniqueness at
+                    // 1513-1518.
                     const OUTPOINT: &str = "certificate.revocationOutpoint";
                     const OUTPOINT_SHAPE: &str =
                         "a 32-byte txid and canonical numeric output index joined with '.'";
