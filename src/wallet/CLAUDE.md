@@ -122,6 +122,10 @@ pub struct PendingTransaction {
 
 Cached transaction awaiting signature via `sign_action`. Created when `create_action` is called with `sign_and_process = false`. Expires after 24 hours (configurable via `PENDING_TRANSACTION_TTL_SECS`).
 
+`SignableTransaction.reference` holds the storage reference's decoded bytes: 12 random bytes, not the UTF-8 bytes of its base64 text (#285). Base64-encode that field for `SignActionArgs.reference`; the pending cache and storage RPC use the original base64 string. A malformed base64 storage reference fails the deferred create result before caching with `WalletError("Invalid storage reference: ...")`.
+
+The binary wallet wire carries the raw bytes after their varint length. At the pinned `bsv-rs =0.9.0-beta.1`, direct JSON serde still hex-encodes this field; that SDK-owned codec differs from the reference's base64 JSON string and needs a coordinated SDK correction.
+
 ### WalletBalance & UtxoInfo
 
 ```rust

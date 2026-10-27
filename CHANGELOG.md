@@ -51,6 +51,11 @@
   and spending descriptions. Internalization merge reads select the same
   columns, and row decoding reports missing columns instead of supplying defaults.
   The `list_outputs` wire fields are unchanged.
+- #285: Deferred `create_action` results now hold the decoded storage reference
+  bytes in `SignableTransaction.reference`, replacing the UTF-8 bytes of its
+  base64 text. Base64-encode this field for `SignActionArgs.reference` so the
+  create/sign round trip uses the original storage handle. Storage RPC
+  reference strings stay base64; the SDK byte field's type is unchanged.
 
 - #260: `prove_certificate` now validates type, serial, certifier, subject,
   signature, requested name lengths, then verifier before the certificate

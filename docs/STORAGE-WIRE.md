@@ -162,7 +162,7 @@ hold, or a validation/encoding decision beyond renaming this storage wire.
 | WalletOutput fields | `satoshis:N,lockingScript:H?,spendable:F,customInstructions:S?,tags:S[]?,outpoint:S,labels:S[]?` | same W526-538 | same | same |
 | Certificate result fields | `subject:H,serialNumber:B,certifier:H,revocationOutpoint:S,signature:H,fields:{fieldName:S},keyring:{fieldName:B}?,verifier:S?` under the certificate wrapper except keyring/verifier | same names, flat W851-868,900-908; wrapper/type difference is D6 | same | same |
 | R1 | `CreateResult.inputs[].inputType:S` | `type:S` I295 | `type:S` | differs and fixed, accept reference alias |
-| CreateResult common | `inputBeef:A?,inputs:[],outputs:[],noSendChangeOutputVouts:N[]?,derivationPrefix:B,version:N,lockTime:N,reference:B` | same I309-318; result really is `inputBeef` | same | same |
+| CreateResult common | `inputBeef:A?,inputs:[],outputs:[],noSendChangeOutputVouts:N[]?,derivationPrefix:B,version:N,lockTime:N,reference:B` | same I309-318; result really is `inputBeef` | same | same; `reference` stays base64 text across storage RPC, decoded to SDK result bytes at the wallet door (#285) |
 | CreateResult input | `vin:N,sourceTxid:H,sourceVout:N,sourceSatoshis:N,sourceLockingScript:H,sourceTransaction:A?,unlockingScriptLength:N,providedBy:S,spendingDescription:S?,derivationPrefix:B?,derivationSuffix:B?,senderIdentityKey:H?` | same I283-300 | same | same |
 | CreateResult output | `vout:N,satoshis:N,lockingScript:H,providedBy:S,purpose:S?,derivationSuffix:B?,basket:S?,tags:S[],outputDescription:S?,customInstructions:S?` | same I302-307,V615-622 | same | same |
 | Y1 | `fromStorageIdentityKey:H,toStorageIdentityKey:H,identityKey:H,since:D?,maxRoughSize:N,maxItems:N,offsets:{name:S,offset:N}[]` | same I606-660 | same | same |
@@ -176,6 +176,21 @@ hold, or a validation/encoding decision beyond renaming this storage wire.
 | M1 | `migrate` expects S | void from ignored migration | S1040-1043 | owner's word; lifecycle behavior, not field name |
 | M2 | `{provenTxReqId:N,provenTx:ProvenTx}` | `{provenTxReqId:N,txid:H,attempts:N,status:S,history:S,height:N,index:N,blockHash:H,merkleRoot:H,merklePath:A}` I552-563 | same | owner's word; missing attempts/status/history, no inferred values |
 | M3 | `{txsUpdated:N,reqsUpdated:N,provenTxId:N}` | `{status:S,history:S,provenTxId:N,notified:F?,notify:S?,log:S?}` I565-576 | same | owner's word; counts are not status/history aliases |
+
+The storage `reference` is base64 text of 12 random bytes, created by WT
+`storage/methods/createAction.ts:721` and returned unchanged at `:303`.
+WT `signer/methods/createAction.ts:250,267` returns it and keys the pending
+action by it; `signer/methods/signAction.ts:57` looks up that same text.
+The storage adapter preserves it on create, process, and abort. The wallet
+decodes it into `SignableTransaction.reference: Vec<u8>`; callers base64-encode
+those bytes for `SignActionArgs.reference`. SDK
+`substrates/WalletWireProcessor.ts:638-643` writes the decoded bytes after
+their varint length, and `WalletWireTransceiver.ts:263-266` reconstructs the
+base64 text. The reference's JSON uses that same text. At the pinned
+`bsv-rs =0.9.0-beta.1`, `wallet/types.rs:678-684` instead uses `hex_bytes`
+serde, including through `HttpWalletJson`; its binary reader returns raw
+bytes. That JSON codec discrepancy belongs to the SDK and remains separate
+from this correction to the wallet result (#285).
 
 ## Entity fields (requests and results)
 
