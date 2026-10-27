@@ -34,8 +34,7 @@ async fn guard_named_input(
     .await
 }
 
-#[tokio::test]
-async fn caller_named_no_send_unspendable_builds_unsigned() {
+async fn unspendable_named_input() -> (StorageSqlx, i64, String) {
     let (storage, user_id) = caller_complete_storage().await;
     let txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "245").await;
     sqlx::query("UPDATE outputs SET spendable = 0 WHERE txid = ?")
@@ -43,6 +42,27 @@ async fn caller_named_no_send_unspendable_builds_unsigned() {
         .execute(storage.writer())
         .await
         .unwrap();
+    (storage, user_id, txid)
+}
+
+async fn named_input_refusal(
+    storage: &StorageSqlx,
+    user_id: i64,
+    txid: &str,
+    no_send: Option<bool>,
+) -> String {
+    match guard_named_input(storage, user_id, txid, no_send)
+        .await
+        .expect_err("named input must be refused")
+    {
+        Error::ValidationError(message) => message,
+        error => panic!("expected ValidationError, got {error:?}"),
+    }
+}
+
+#[tokio::test]
+async fn caller_named_no_send_unspendable_builds_unsigned() {
+    let (storage, user_id, txid) = unspendable_named_input().await;
 
     let result =
         create_action_internal(&storage, None, user_id, named_input_args(&txid, Some(true)))
@@ -64,19 +84,8 @@ async fn caller_named_no_send_unspendable_builds_unsigned() {
 #[tokio::test]
 async fn caller_named_unspendable_requires_no_send() {
     for no_send in [None, Some(false)] {
-        let (storage, user_id) = caller_complete_storage().await;
-        let txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "245").await;
-        sqlx::query("UPDATE outputs SET spendable = 0 WHERE txid = ?")
-            .bind(&txid)
-            .execute(storage.writer())
-            .await
-            .unwrap();
-        let error = guard_named_input(&storage, user_id, &txid, no_send)
-            .await
-            .unwrap_err();
-        let Error::ValidationError(message) = error else {
-            panic!("expected ValidationError, got {error:?}");
-        };
+        let (storage, user_id, txid) = unspendable_named_input().await;
+        let message = named_input_refusal(&storage, user_id, &txid, no_send).await;
         assert_eq!(
             message,
             format!("inputs[0]: output {txid}:0 is not spendable")
@@ -134,12 +143,7 @@ async fn assert_missing_field_uses_reference_refusal(field: MissingStoredField) 
                 .execute(storage.writer())
                 .await
                 .unwrap();
-            let error = guard_named_input(&storage, user_id, &txid, no_send)
-                .await
-                .expect_err("missing stored input data must be refused");
-            let Error::ValidationError(message) = error else {
-                panic!("expected ValidationError, got {error:?}");
-            };
+            let message = named_input_refusal(&storage, user_id, &txid, no_send).await;
             assert_eq!(
                 message,
                 format!(
@@ -176,12 +180,7 @@ async fn caller_named_change_precedes_missing_fields() {
                 .execute(storage.writer())
                 .await
                 .unwrap();
-            let error = guard_named_input(&storage, user_id, &txid, no_send)
-                .await
-                .unwrap_err();
-            let Error::ValidationError(message) = error else {
-                panic!("expected ValidationError, got {error:?}");
-            };
+            let message = named_input_refusal(&storage, user_id, &txid, no_send).await;
             assert_eq!(message, "The inputs[0] parameter must be an unmanaged input. Change outputs are managed by your wallet.");
         }
     }
