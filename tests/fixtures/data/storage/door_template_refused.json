@@ -18,7 +18,7 @@
         "ok": {
           "noSendChange": ["<txid:1>.1"],
           "signableTransaction": {
-            "reference": "<reference:3>",
+            "reference": "<reference:2>",
             "tx": {
               "atomicTxid": "<txid:2>",
               "bumps": [{"blockHeight":100000,"path":[[{"duplicate":false,"hash":"<txid:3>","offset":0,"txid":true}]]}],

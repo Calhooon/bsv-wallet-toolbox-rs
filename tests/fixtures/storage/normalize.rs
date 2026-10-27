@@ -228,9 +228,11 @@ impl Normalizer {
             }
         }
         if key == "reference" {
+            // The result's reference is the storage's twelve bytes (#285): the
+            // token is their base64 text, the same value the stored row carries.
             let decoded = hex::decode(&value)
                 .ok()
-                .and_then(|raw| String::from_utf8(raw).ok());
+                .map(|raw| bsv_rs::primitives::to_base64(&raw));
             return Ok(json!(
                 self.token("reference", decoded.as_deref().unwrap_or(&value))
             ));
