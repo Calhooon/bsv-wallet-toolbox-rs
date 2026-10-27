@@ -4530,6 +4530,201 @@ mod tests {
             }
         }
 
+        // #249: the verifier and the certifier are argument checks at
+        // ts-stack@edf6e03 validationHelpers.ts:1490-1493,1509, before the
+        // lookup at proveCertificate.ts:28, so no stored row changes the text.
+        #[cfg(feature = "sqlite")]
+        mod key_gate {
+            use super::*;
+
+            const NOT_FOUND: &str = "Certificate not found with the provided arguments";
+
+            fn key(scalar: u64) -> String {
+                PrivateKey::from_hex(&format!("{scalar:064x}"))
+                    .unwrap()
+                    .public_key()
+                    .to_hex()
+            }
+
+            // Each bad key with the end of its text (validationHelpers.ts:185-191,522-534).
+            fn bad_keys() -> Vec<(String, &'static str)> {
+                let uncompressed = PrivateKey::from_hex(&format!("{:064x}", 7))
+                    .unwrap()
+                    .public_key()
+                    .to_uncompressed();
+                vec![
+                    ("abc".to_string(), "even length, not 3."),
+                    (String::new(), "hexadecimal string."),
+                    ("zz".repeat(33), "hexadecimal string."),
+                    ("02ab".to_string(), "at least 66 length."),
+                    (hex::encode(uncompressed), "no more than 66 length."),
+                    (
+                        format!("04{}", "11".repeat(32)),
+                        "a valid compressed secp256k1 public key",
+                    ),
+                    (
+                        format!("02{}", "ff".repeat(32)),
+                        "a valid compressed secp256k1 public key",
+                    ),
+                ]
+            }
+
+            fn refusal(parameter: &str, must_be: &str) -> String {
+                format!("Validation error: The {parameter} parameter must be {must_be}")
+            }
+
+            /// Proves against a store holding one certificate under
+            /// `stored_certifier`, or none.
+            async fn prove(
+                stored_certifier: Option<&str>,
+                certifier: &str,
+                verifier: &str,
+                reveal: &[&str],
+            ) -> bsv_rs::Result<ProveCertificateResult> {
+                use crate::services::mock::MockWalletServices;
+                use crate::storage::WalletStorageWriter;
+
+                let subject = PrivateKey::from_hex(&format!("{:064x}", 41)).unwrap();
+                let subject_hex = subject.public_key().to_hex();
+                let storage = crate::StorageSqlx::in_memory().await.unwrap();
+                storage.migrate("key-gate", &subject_hex).await.unwrap();
+                storage.make_available().await.unwrap();
+                let wallet = Wallet::new(Some(subject), storage, MockWalletServices::new())
+                    .await
+                    .unwrap();
+                let certificate = WalletCertificate {
+                    certificate_type: BASE64.encode([33; 32]),
+                    serial_number: BASE64.encode([32; 32]),
+                    subject: subject_hex,
+                    certifier: certifier.to_string(),
+                    revocation_outpoint: format!("{}.0", "00".repeat(32)),
+                    signature: "00".to_string(),
+                    fields: HashMap::from([("name".to_string(), "YQ==".to_string())]),
+                };
+                if let Some(stored_certifier) = stored_certifier {
+                    let auth = wallet.auth();
+                    let now = Utc::now();
+                    let stored = TableCertificate {
+                        certificate_id: 0,
+                        user_id: auth.user_id.unwrap(),
+                        cert_type: certificate.certificate_type.clone(),
+                        serial_number: certificate.serial_number.clone(),
+                        subject: certificate.subject.clone(),
+                        certifier: stored_certifier.to_string(),
+                        verifier: None,
+                        revocation_outpoint: certificate.revocation_outpoint.clone(),
+                        signature: certificate.signature.clone(),
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    let field = TableCertificateField {
+                        certificate_field_id: 0,
+                        certificate_id: 0,
+                        user_id: stored.user_id,
+                        field_name: "name".to_string(),
+                        field_value: "YQ==".to_string(),
+                        master_key: "Yg==".to_string(),
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    wallet
+                        .storage()
+                        .insert_certificate_with_fields(&auth, stored, vec![field])
+                        .await
+                        .unwrap();
+                }
+                wallet
+                    .prove_certificate(
+                        ProveCertificateArgs {
+                            certificate,
+                            fields_to_reveal: reveal.iter().map(|name| name.to_string()).collect(),
+                            verifier: verifier.to_string(),
+                            privileged: None,
+                            privileged_reason: None,
+                        },
+                        "certificate.test",
+                    )
+                    .await
+            }
+
+            #[tokio::test]
+            async fn test_prove_certificate_bad_verifier_refuses_before_lookup() {
+                // An empty store: the lookup would refuse as not found.
+                for (verifier, must_be) in bad_keys() {
+                    let result = prove(None, &key(5), &verifier, &["name"]).await;
+                    assert_wallet_error(
+                        &format!("verifier {verifier:?}"),
+                        result,
+                        &refusal("verifier", must_be),
+                    );
+                }
+            }
+
+            #[tokio::test]
+            async fn test_prove_certificate_bad_certifier_refuses_before_lookup() {
+                for (certifier, must_be) in bad_keys() {
+                    let result = prove(None, &certifier, &key(6), &["name"]).await;
+                    assert_wallet_error(
+                        &format!("certifier {certifier:?}"),
+                        result,
+                        &refusal("certificate.certifier", must_be),
+                    );
+                }
+            }
+
+            #[tokio::test]
+            async fn test_prove_certificate_empty_request_bad_verifier() {
+                // A matching row: the empty request reaches no field loop.
+                for (verifier, must_be) in bad_keys() {
+                    let result = prove(Some(&key(5)), &key(5), &verifier, &[]).await;
+                    assert_wallet_error(
+                        &format!("empty request, verifier {verifier:?}"),
+                        result,
+                        &refusal("verifier", must_be),
+                    );
+                }
+            }
+
+            #[tokio::test]
+            async fn test_prove_certificate_empty_request_bad_certifier() {
+                // The row is stored under the same bad certifier, so it matches.
+                for (certifier, must_be) in bad_keys() {
+                    let result = prove(Some(&certifier), &certifier, &key(6), &[]).await;
+                    assert_wallet_error(
+                        &format!("empty request, certifier {certifier:?}"),
+                        result,
+                        &refusal("certificate.certifier", must_be),
+                    );
+                }
+            }
+
+            #[tokio::test]
+            async fn test_prove_certificate_certifier_before_verifier() {
+                // certificate.certifier at 1490-1493 precedes verifier at 1509.
+                let result = prove(None, "abc", "zz", &["name"]).await;
+                assert_wallet_error(
+                    "both bad",
+                    result,
+                    &refusal("certificate.certifier", "even length, not 3."),
+                );
+            }
+
+            #[tokio::test]
+            async fn test_prove_certificate_stored_certifier_matches_args() {
+                // The reference never parses the stored certifier: it passes it
+                // to decrypt as stored (MasterCertificate.ts:383-392,592-597).
+                // The lookup matches it byte for byte against the validated
+                // argument, so a corrupt stored certifier is never returned.
+                for reveal in [&["name"][..], &[]] {
+                    let result = prove(Some(&"zz".repeat(33)), &key(5), &key(6), reveal).await;
+                    assert_wallet_error("corrupt stored certifier", result, NOT_FOUND);
+                    let upper = key(5).to_uppercase();
+                    let result = prove(Some(&upper), &key(5), &key(6), reveal).await;
+                    assert_wallet_error("stored certifier in another case", result, NOT_FOUND);
+                }
+            }
+        }
+
         #[test]
         fn test_create_keyring_rejects_non_utf8_field() {
             use bsv_rs::primitives::SymmetricKey;
