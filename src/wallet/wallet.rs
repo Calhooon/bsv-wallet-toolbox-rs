@@ -4338,7 +4338,8 @@ mod tests {
                         serial_number: self.serial.clone(),
                         subject: public_key.clone(),
                         certifier: certifier.to_string(),
-                        revocation_outpoint: format!("{}.0", "00".repeat(32)),
+                        // Hex letters, so a case-normalized argument is observable.
+                        revocation_outpoint: format!("{}.0", "ab".repeat(32)),
                         // Canonical DER with in-range scalars; this door does not
                         // verify the certificate's signature cryptographically.
                         signature: "300602010a02010b".to_string(),
@@ -5142,6 +5143,228 @@ mod tests {
                             result,
                             &refusal("verifier", "even length, not 3."),
                         );
+                    }
+
+                    // #270: validateOptionalOutpointString at 1498-1501 (its
+                    // validator at 1083-1116), privilegedReason at 1511 and the
+                    // post-vargs fieldsToReveal count and uniqueness at 1513-1518.
+                    const OUTPOINT: &str = "certificate.revocationOutpoint";
+                    const OUTPOINT_SHAPE: &str =
+                        "a 32-byte txid and canonical numeric output index joined with '.'";
+
+                    fn names(count: usize) -> Vec<String> {
+                        (0..count).map(|index| format!("f{index}")).collect()
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_bad_revocation_outpoint_before_lookup() {
+                        let txid = "ab".repeat(32);
+                        let vout = format!("{OUTPOINT} vout");
+                        let cases = [
+                            (String::new(), OUTPOINT, OUTPOINT_SHAPE),
+                            ("abc.0".to_string(), OUTPOINT, OUTPOINT_SHAPE),
+                            (txid.clone(), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!("{txid}."), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!("{txid}.01"), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!("{txid}.-1"), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!("{txid}.0.0"), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!("{txid}.0\n"), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!(" {txid}.0"), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!("{txid}.\u{0663}"), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!("{}.0", "zz".repeat(32)), OUTPOINT, OUTPOINT_SHAPE),
+                            (format!("{}.0", "ab".repeat(33)), OUTPOINT, OUTPOINT_SHAPE),
+                            (
+                                format!("{txid}.4294967296"),
+                                vout.as_str(),
+                                "no more than 4294967295 length.",
+                            ),
+                            (
+                                format!("{txid}.9007199254740991"),
+                                vout.as_str(),
+                                "no more than 4294967295 length.",
+                            ),
+                            (
+                                format!("{txid}.9007199254740992"),
+                                vout.as_str(),
+                                "a safe integer",
+                            ),
+                            (
+                                format!("{txid}.{}", "9".repeat(400)),
+                                vout.as_str(),
+                                "a safe integer",
+                            ),
+                        ];
+                        for stored in [false, true] {
+                            for (outpoint, parameter, rule) in &cases {
+                                let result = prove_args(stored, |args| {
+                                    args.certificate.revocation_outpoint = outpoint.clone();
+                                })
+                                .await;
+                                assert_wallet_error(outpoint, result, &refusal(parameter, rule));
+                            }
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_outpoint_between_subject_and_signature() {
+                        // certificate.subject at 1494-1497 precedes the outpoint.
+                        let result = prove_args(false, |args| {
+                            args.certificate.subject = "abc".to_string();
+                            args.certificate.revocation_outpoint = "abc.0".to_string();
+                            args.certificate.signature = "zz".to_string();
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "subject before outpoint",
+                            result,
+                            &refusal("certificate.subject", "even length, not 3."),
+                        );
+                        // The outpoint at 1498-1501 precedes certificate.signature at 1502-1505.
+                        let result = prove_args(false, |args| {
+                            args.certificate.revocation_outpoint = "abc.0".to_string();
+                            args.certificate.signature = "zz".to_string();
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "outpoint before signature",
+                            result,
+                            &refusal(OUTPOINT, OUTPOINT_SHAPE),
+                        );
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_valid_outpoint_args() {
+                        // The normalized outpoint (a lowercase txid) is the one
+                        // the lookup matches, as vargs feed proveCertificate.ts:18.
+                        let result = prove_args(true, |args| {
+                            args.certificate.revocation_outpoint =
+                                args.certificate.revocation_outpoint.to_uppercase();
+                        })
+                        .await
+                        .unwrap();
+                        assert!(result.keyring_for_verifier.is_empty());
+                        let result = prove_args(false, |args| {
+                            args.certificate.revocation_outpoint =
+                                format!("{}.4294967295", "AB".repeat(32));
+                        })
+                        .await;
+                        assert_wallet_error("largest vout reaches lookup", result, NOT_FOUND);
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_privileged_reason_length() {
+                        for stored in [false, true] {
+                            for (reason, rule) in [
+                                (String::new(), "at least 5 length."),
+                                ("abcd".to_string(), "at least 5 length."),
+                                ("n".repeat(51), "no more than 50 length."),
+                                ("é".repeat(26), "no more than 50 length."),
+                            ] {
+                                let result = prove_args(stored, |args| {
+                                    args.privileged_reason = Some(reason.clone());
+                                })
+                                .await;
+                                assert_wallet_error(
+                                    &reason,
+                                    result,
+                                    &refusal("privilegedReason", rule),
+                                );
+                            }
+                        }
+                        for reason in ["n".repeat(5), "n".repeat(50), "é".repeat(25)] {
+                            let result = prove_args(false, |args| {
+                                args.privileged_reason = Some(reason);
+                            })
+                            .await;
+                            assert_wallet_error("valid reason reaches lookup", result, NOT_FOUND);
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_privileged_reason_order() {
+                        // verifier at 1509 precedes privilegedReason at 1511.
+                        let result = prove_args(false, |args| {
+                            args.verifier = "abc".to_string();
+                            args.privileged_reason = Some("abcd".to_string());
+                        })
+                        .await;
+                        assert_wallet_error(
+                            "verifier before reason",
+                            result,
+                            &refusal("verifier", "even length, not 3."),
+                        );
+                        // privilegedReason at 1511 precedes the count and uniqueness at 1513-1518.
+                        for reveal in [names(101), vec!["a".to_string(), "a".to_string()]] {
+                            let result = prove_args(false, |args| {
+                                args.fields_to_reveal = reveal;
+                                args.privileged_reason = Some("abcd".to_string());
+                            })
+                            .await;
+                            assert_wallet_error(
+                                "reason before count and uniqueness",
+                                result,
+                                &refusal("privilegedReason", "at least 5 length."),
+                            );
+                        }
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_fields_to_reveal_count_and_uniqueness() {
+                        let count = refusal("fieldsToReveal", "at most 100 fields");
+                        let unique = refusal("fieldsToReveal", "unique field names");
+                        let mut duplicated = names(100);
+                        duplicated.push("f0".to_string());
+                        for stored in [false, true] {
+                            for (reveal, expected) in [
+                                (names(101), &count),
+                                // The count at 1513 precedes uniqueness at 1516.
+                                (duplicated.clone(), &count),
+                                (vec!["a".to_string(), "a".to_string()], &unique),
+                                (
+                                    vec!["a".to_string(), "b".to_string(), "a".to_string()],
+                                    &unique,
+                                ),
+                            ] {
+                                let result = prove_args(stored, |args| {
+                                    args.fields_to_reveal = reveal;
+                                })
+                                .await;
+                                assert_wallet_error("count and uniqueness", result, expected);
+                            }
+                        }
+                        let result = prove_args(false, |args| {
+                            args.fields_to_reveal = names(100);
+                        })
+                        .await;
+                        assert_wallet_error("100 fields reach lookup", result, NOT_FOUND);
+                    }
+
+                    #[tokio::test]
+                    async fn test_prove_certificate_count_and_uniqueness_after_vargs() {
+                        // Every vargs check at 1483-1511 precedes 1513-1518.
+                        for reveal in [names(101), vec!["a".to_string(), "a".to_string()]] {
+                            let result = prove_args(false, |args| {
+                                args.fields_to_reveal = reveal.clone();
+                                args.verifier = "abc".to_string();
+                            })
+                            .await;
+                            assert_wallet_error(
+                                "verifier before count and uniqueness",
+                                result,
+                                &refusal("verifier", "even length, not 3."),
+                            );
+                            let mut with_bad_name = reveal;
+                            with_bad_name.push(String::new());
+                            let result = prove_args(false, |args| {
+                                args.fields_to_reveal = with_bad_name;
+                            })
+                            .await;
+                            assert_wallet_error(
+                                "field name before count and uniqueness",
+                                result,
+                                &refusal("fieldsToReveal ", "at least 1 length."),
+                            );
+                        }
                     }
                 }
 
