@@ -1136,6 +1136,30 @@ impl WalletStorageWriter for WalletStorageManager {
         .await
     }
 
+    async fn update_transaction_status_after_post(
+        &self,
+        txid: &str,
+        outcome: &crate::storage::broadcast::BroadcastOutcome,
+        words: &[crate::services::PostBeefResult],
+        service_error: Option<&str>,
+    ) -> Result<()> {
+        let txid_owned = txid.to_string();
+        let outcome_owned = outcome.clone();
+        let words_owned = words.to_vec();
+        let fault_owned = service_error.map(str::to_string);
+        self.run_as_writer(|active| async move {
+            active
+                .update_transaction_status_after_post(
+                    &txid_owned,
+                    &outcome_owned,
+                    &words_owned,
+                    fault_owned.as_deref(),
+                )
+                .await
+        })
+        .await
+    }
+
     async fn review_status(
         &self,
         auth: &AuthId,

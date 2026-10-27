@@ -846,6 +846,11 @@ async fn finish_stored_posts(
         Ok(words) => (words, None),
         Err(error) => (Vec::new(), Some(error.to_string())),
     };
+    if let Err(error) = record_stored_post_words(storage, txids, &words, fault.as_deref()).await {
+        for txid in txids {
+            crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
+        }
+    }
     for txid in txids {
         let outcome = fault.as_ref().map_or_else(
             || stored_post_outcome(&words, txid),
@@ -866,14 +871,53 @@ async fn finish_stored_posts(
             }
         }
     }
-    if let Err(error) = record_stored_post_words(storage, txids, &words, fault.as_deref()).await {
-        for txid in txids {
-            crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
-        }
-    }
 }
 
-async fn record_stored_post_words(
+/// The reference's tally of one txid's per-instance results
+/// (attemptToPostReqsToNetwork.ts 113-128). A word carrying no per-txid
+/// result is its own word for the txid, as `classify_broadcast_results`
+/// reads it: an acceptance, or else a service fault.
+fn post_note_counts(words: &[PostBeefResult], txid: &str) -> [(&'static str, u32); 4] {
+    let (mut success, mut double_spend, mut status_error, mut service_error) = (0, 0, 0, 0);
+    for word in words {
+        if word.txid_results.is_empty() {
+            if word.is_success() {
+                success += 1;
+            } else {
+                service_error += 1;
+            }
+            continue;
+        }
+        let Some(result) = word.txid_results.iter().find(|r| r.txid == txid) else {
+            continue;
+        };
+        if result.is_success() {
+            success += 1;
+        } else if result.double_spend {
+            double_spend += 1;
+        } else if result.service_error {
+            service_error += 1;
+        } else {
+            status_error += 1;
+        }
+    }
+    [
+        ("successCount", success),
+        ("doubleSpendCount", double_spend),
+        ("statusErrorCount", status_error),
+        ("serviceErrorCount", service_error),
+    ]
+}
+
+/// The post note on each request's history, written before the post's
+/// status writes as the reference's `aggregateResults` note is
+/// (attemptToPostReqsToNetwork.ts 258-271): `reqStatus` and `attempts` as
+/// the request stands, the four counts over the per-instance `words` (each
+/// broadcaster's own result, whose notes the reference transfers at 90-111),
+/// and `serviceError` when no broadcaster answered. Both posts write it: the
+/// door's post path and the one-call composition
+/// (`update_transaction_status_after_post`).
+pub(crate) async fn record_stored_post_words(
     storage: &StorageSqlx,
     txids: &[String],
     words: &[PostBeefResult],
@@ -881,8 +925,8 @@ async fn record_stored_post_words(
 ) -> Result<()> {
     let mut tx = storage.write_tx().await?;
     for txid in txids {
-        let history: String =
-            sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+        let (history, req_status, attempts): (String, String, i64) =
+            sqlx::query_as("SELECT history, status, attempts FROM proven_tx_reqs WHERE txid = ?")
                 .bind(txid)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -891,7 +935,11 @@ async fn record_stored_post_words(
         if !history.is_object() {
             history = serde_json::json!({"previous": history});
         }
-        let mut note = serde_json::json!({"what": "processActionPost", "when": Utc::now().to_rfc3339(), "words": words});
+        let mut note = serde_json::json!({"what": "processActionPost", "when": Utc::now().to_rfc3339(),
+            "reqStatus": req_status, "attempts": attempts, "words": words});
+        for (count, value) in post_note_counts(words, txid) {
+            note[count] = value.into();
+        }
         if let Some(fault) = fault {
             note["serviceError"] = fault.into();
         }
