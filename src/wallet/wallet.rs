@@ -2971,19 +2971,49 @@ where
 // Helper Functions
 // =============================================================================
 
-/// Validates the originator string.
+/// Validates a supplied originator (`ts-stack@edf6e03`, `validationHelpers.ts:1005-1036`).
+/// The pinned `WalletInterface` cannot distinguish an absent originator from `""`.
 fn validate_originator(originator: &str) -> Result<()> {
-    if originator.is_empty() {
-        return Err(Error::ValidationError(
-            "originator cannot be empty".to_string(),
-        ));
-    }
-    // The originator should be a valid domain or identifier
-    // For now, just check it's not empty and doesn't contain invalid characters
-    if originator.len() > 253 {
-        return Err(Error::ValidationError(
-            "originator exceeds maximum length".to_string(),
-        ));
+    let originator = trim_ecmascript_whitespace(originator).to_lowercase();
+    let invalid = |name: &str, rule: &str| {
+        Error::ValidationError(format!("The {name} parameter must be {rule}"))
+    };
+    let check_length = |value: &str, name: &str, max: usize| -> Result<()> {
+        if value.is_empty() {
+            return Err(invalid(name, "at least 1 length."));
+        }
+        if value.len() > max {
+            return Err(invalid(name, &format!("no more than {max} length.")));
+        }
+        Ok(())
+    };
+    check_length(&originator, "originator", 250)?;
+
+    let hostname_rule = "a canonical DNS hostname with an optional port";
+    let hostname = if let Some((hostname, port)) = originator.rsplit_once(':') {
+        if hostname.contains(':')
+            || port.is_empty()
+            || port.len() > 5
+            || !port.bytes().all(|byte| byte.is_ascii_digit())
+            || port.parse::<u16>().is_err()
+        {
+            return Err(invalid("originator", hostname_rule));
+        }
+        hostname
+    } else {
+        &originator
+    };
+    check_length(hostname, "originator hostname", 250)?;
+    for part in hostname.split('.') {
+        check_length(part, "originator part", 63)?;
+        if part.starts_with('-')
+            || part.ends_with('-')
+            || !part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(invalid("originator", hostname_rule));
+        }
     }
     Ok(())
 }
@@ -3923,53 +3953,23 @@ mod tests {
         async fn create(originator: &str) -> bsv_rs::Result<CreateActionResult> {
             let (_dir, wallet) = wallet().await;
             fund_tagged(&wallet, &[0x51], 284).await;
-            wallet
-                .create_action(
-                    CreateActionArgs {
-                        description: "originator boundary witness".to_string(),
-                        input_beef: None,
-                        inputs: None,
-                        outputs: Some(vec![bsv_rs::wallet::CreateActionOutput {
-                            locking_script: vec![0x51],
-                            satoshis: 1_000,
-                            output_description: "local unsigned output".to_string(),
-                            basket: None,
-                            custom_instructions: None,
-                            tags: None,
-                        }]),
-                        lock_time: None,
-                        version: None,
-                        labels: None,
-                        options: Some(bsv_rs::wallet::CreateActionOptions {
-                            no_send: Some(true),
-                            sign_and_process: Some(false),
-                            ..Default::default()
-                        }),
-                    },
-                    originator,
-                )
-                .await
+            let args = serde_json::from_value(serde_json::json!({
+                "description": "originator boundary witness",
+                "outputs": [{
+                    "lockingScript": "51",
+                    "satoshis": 1_000,
+                    "outputDescription": "local unsigned output"
+                }],
+                "options": {"noSend": true, "signAndProcess": false}
+            }))
+            .unwrap();
+            wallet.create_action(args, originator).await
         }
 
         async fn list(originator: &str) -> bsv_rs::Result<ListOutputsResult> {
             let (_dir, wallet) = wallet().await;
-            wallet
-                .list_outputs(
-                    ListOutputsArgs {
-                        basket: "default".to_string(),
-                        tags: None,
-                        tag_query_mode: None,
-                        include: None,
-                        include_custom_instructions: None,
-                        include_tags: None,
-                        include_labels: None,
-                        limit: None,
-                        offset: None,
-                        seek_permission: None,
-                    },
-                    originator,
-                )
-                .await
+            let args = serde_json::from_value(serde_json::json!({"basket": "default"})).unwrap();
+            wallet.list_outputs(args, originator).await
         }
 
         fn assert_empty_error(error: bsv_rs::Error) {
@@ -3992,15 +3992,17 @@ mod tests {
 
         #[tokio::test]
         async fn create_action_accepts_absent_originator() {
-            let originator: Option<&str> = None;
-            let result = create(originator.unwrap_or("")).await;
+            let config = bsv_rs::identity::IdentityClientConfig::default();
+            assert!(config.originator.is_none());
+            let result = create(config.originator.as_deref().unwrap_or("")).await;
             assert!(result.is_ok(), "absent originator refused: {result:?}");
         }
 
         #[tokio::test]
         async fn list_outputs_accepts_absent_originator() {
-            let originator: Option<&str> = None;
-            let result = list(originator.unwrap_or("")).await;
+            let config = bsv_rs::identity::IdentityClientConfig::default();
+            assert!(config.originator.is_none());
+            let result = list(config.originator.as_deref().unwrap_or("")).await;
             assert!(result.is_ok(), "absent originator refused: {result:?}");
         }
 

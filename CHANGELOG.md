@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- #284 (partial): supplied originators now follow the pinned reference's
+  trimmed, lowercase hostname validation, including the 250-byte limit,
+  63-byte label limit, optional numeric port and exact refusal texts.
+  An explicit empty string now returns
+  `Validation error: The originator parameter must be at least 1 length.`
+  Absent-originator acceptance remains blocked: the pinned bsv-rs interface
+  takes `&str`, and its identity client and binary wire collapse absence to
+  `""`. The SDK boundary must preserve presence to accept absence while
+  retaining the reference's refusal of an explicit empty string.
+  The CLI also needs to extract a hostname from the SDK HTTP JSON client's
+  URL-valued `Originator` header before passing it to this validator.
+
 - #260: `prove_certificate` now validates type, serial, certifier, subject,
   signature, requested name lengths, then verifier before the certificate
   lookup, in the ported checks' order at `ts-stack@edf6e03`

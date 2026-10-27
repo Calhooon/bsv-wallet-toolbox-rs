@@ -506,10 +506,44 @@ Initialization flow: Creates `ProtoWallet` -> gets identity key -> creates `Wall
 
 ## Originator Validation
 
-All `WalletInterface` methods require an `originator` string parameter:
-- Must not be empty
-- Must not exceed 253 characters
-- Typically a domain name (e.g., "app.example.com")
+All `WalletInterface` methods take the `&str` originator required by the pinned
+`bsv-rs =0.9.0-beta.1` interface. Supplied strings are checked after ECMAScript
+trimming and lowercasing, using `ts-stack@edf6e03`
+`packages/sdk/src/wallet/validationHelpers.ts:1005-1036`:
+
+- The normalized string has 1 to 250 UTF-8 bytes.
+- An optional port has 1 to 5 ASCII digits and is at most 65535.
+- The hostname has 1 to 250 bytes; each dot-separated label has 1 to 63 bytes
+  and contains lowercase ASCII letters, digits or internal hyphens.
+- Single-label hostnames are accepted. Validation leaves the caller's original
+  string for downstream permission checks, as the reference wallet doors do.
+
+An explicit empty string is refused with
+`The originator parameter must be at least 1 length.` inside `Validation error:`.
+Other length errors name `originator`, `originator hostname` or `originator part`.
+Malformed hostnames and ports use
+`The originator parameter must be a canonical DNS hostname with an optional port`.
+
+The absent-originator part of #284 remains blocked: the reference accepts
+`undefined` at `validationHelpers.ts:1003-1004`, but this SDK interface cannot
+carry `None`. The identity client at bsv-rs #322 maps `None` to `""`, and the
+pinned binary wire processor also maps a zero-length originator to `""`.
+Accepting that string would also accept the explicit empty value that the
+reference rejects. The SDK boundary must preserve presence before both rules
+can be implemented. The #284 tests deliberately expose this unresolved case.
+The SDK's binary `createAction` and `listOutputs` handlers are stubs at this
+pin, so they do not provide wallet entry points for these two doors.
+
+The storage client's JSON-RPC requests carry authentication and method arguments,
+not a caller-originator field; its BRC-31 peer uses a fixed internal originator.
+The CLI server is a separate entry point: at
+`bsv-wallet-cli@2f8e6cf2e74b482afe3b77d99158d7007dbc9c7d`,
+`src/server/handlers.rs:104-115` reads the `Origin` or `Originator` header and
+refuses missing headers before calling this wallet.
+The SDK's HTTP JSON transport puts a URL in `Originator`
+(`src/wallet/substrates/http_json.rs:132-143,915-920`), while that CLI handler
+forwards `Originator` verbatim and only extracts a hostname from `Origin`.
+The CLI must normalize this URL before calling the canonical hostname check.
 
 ## Implementation Notes
 
@@ -542,7 +576,7 @@ Internal helper functions in `wallet.rs`:
 
 | Function | Purpose |
 |----------|---------|
-| `validate_originator(originator: &str)` | Validates originator string (non-empty, max 253 chars) |
+| `validate_originator(originator: &str)` | Checks supplied hostnames and optional ports against the pinned reference; absence needs an SDK boundary that preserves presence |
 | `compute_txid(raw_tx: &[u8])` | Computes txid (double SHA256, reversed) from raw transaction |
 | `build_unsigned_transaction(result, key_deriver)` | Builds unsigned transaction bytes from storage result; optionally derives P2PKH locking scripts for change outputs via BRC-29 |
 | `build_wallet_certificate_from_args(args)` | Builds WalletCertificate from acquisition args |
