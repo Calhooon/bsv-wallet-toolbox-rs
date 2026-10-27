@@ -35,12 +35,6 @@ pub(super) async fn validate_and_extend_inputs(
     use bsv_rs::transaction::Beef;
 
     let mut extended = Vec::new();
-    let is_no_send = args
-        .options
-        .as_ref()
-        .and_then(|o| o.no_send)
-        .unwrap_or(false);
-
     // Parse input_beef if provided (needed for external inputs)
     let input_beef = if let Some(ref beef_bytes) = args.input_beef {
         Beef::from_binary(beef_bytes).ok()
@@ -69,8 +63,7 @@ pub(super) async fn validate_and_extend_inputs(
             .await?;
 
             let (satoshis, locking_script, output) = if let Some(ref row) = output_row {
-                let (out, script) =
-                    apply_stored_input_script(conn, row, i, &txid, vout, is_no_send).await?;
+                let (out, script) = apply_stored_input_script(conn, row, i, &txid, vout).await?;
                 (out.satoshis as u64, script, Some(out))
             } else if let Some(ref beef) = input_beef {
                 // Output not in storage - look it up in the input_beef
@@ -145,15 +138,15 @@ pub(super) async fn validate_and_extend_inputs(
     Ok(extended)
 }
 
-// ts-stack@edf6e03 createAction.ts:972-983: change, stored data, then
-// spendability unless noSend. Convert to TableOutput after checking presence.
+// ts-stack@edf6e03 createAction.ts:972-980: change, then stored data.
+// Spendability is checked when marking inputs spent (:399-436, called at :503).
+// Convert to TableOutput after checking presence.
 async fn apply_stored_input_script(
     conn: &mut SqliteConnection,
     row: &SqliteRow,
     vin: usize,
     txid: &str,
     vout: u32,
-    is_no_send: bool,
 ) -> Result<(TableOutput, Vec<u8>)> {
     if row.get::<bool, _>("change") {
         return Err(Error::ValidationError(format!(
@@ -179,12 +172,6 @@ async fn apply_stored_input_script(
             "The {txid}.{vout} parameter must be output with valid lockingScript and satoshis"
         )));
     };
-    if !row.get::<bool, _>("spendable") && !is_no_send {
-        return Err(Error::ValidationError(format!(
-            "inputs[{}]: output {}:{} is not spendable",
-            vin, txid, vout
-        )));
-    }
     Ok((output_from_row(row), script))
 }
 
@@ -244,13 +231,55 @@ async fn get_locking_script_from_raw_tx(
     )))
 }
 
-/// Marks an output as spent.
+// ts-stack@edf6e03 createAction.ts:399-436 re-reads known inputs before
+// marking them spent. The :982 gate is disabled by default at :61, so this
+// live check has no noSend exemption. A txid names a competing spend even
+// when its transaction is failed; a reservation without a txid falls through.
+async fn check_stored_input_spendable(
+    conn: &mut SqliteConnection,
+    input: &ExtendedInput,
+    output_id: i64,
+) -> Result<()> {
+    let (spendable, spent_by): (bool, Option<i64>) =
+        sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE output_id = ?")
+            .bind(output_id)
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("missing outputId {output_id}")))?;
+    if let Some(spender) = spent_by {
+        let competing_txid: Option<String> =
+            sqlx::query_scalar("SELECT txid FROM transactions WHERE transaction_id = ?")
+                .bind(spender)
+                .fetch_optional(&mut *conn)
+                .await?
+                .flatten();
+        if let Some(txid) = competing_txid.filter(|txid| !txid.is_empty()) {
+            // :503-509 requires double-spend review. Keep the existing error
+            // shape, with the reference's review text and the competing txid.
+            return Err(Error::InvalidOperation(format!(
+                "Undelayed createAction or signAction results require review. doubleSpend: {txid}"
+            )));
+        }
+    }
+    if !spendable {
+        return Err(Error::ValidationError(format!(
+            "The inputs[{}] parameter must be spendable output. output {}:{} appears to have been spent (spendable=false).",
+            input.vin, input.txid, input.vout
+        )));
+    }
+    Ok(())
+}
+
+/// Checks a known input's current reservation, then marks it spent.
 pub(super) async fn update_output_spent(
     conn: &mut SqliteConnection,
-    output_id: i64,
+    input: &ExtendedInput,
     spent_by: i64,
-    spending_description: Option<&str>,
 ) -> Result<()> {
+    let Some(output) = input.output.as_ref() else {
+        return Ok(());
+    };
+    check_stored_input_spendable(conn, input, output.output_id).await?;
     let now = Utc::now();
 
     sqlx::query(
@@ -261,9 +290,9 @@ pub(super) async fn update_output_spent(
         "#,
     )
     .bind(spent_by)
-    .bind(spending_description)
+    .bind(input.input_description.as_deref())
     .bind(now)
-    .bind(output_id)
+    .bind(output.output_id)
     .execute(&mut *conn)
     .await?;
 
