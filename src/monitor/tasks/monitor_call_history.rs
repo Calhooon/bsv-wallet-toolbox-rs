@@ -141,7 +141,9 @@ mod tests {
     fn test_monitor_call_history_task_name() {
         use crate::services::Services;
 
-        let services = Services::mainnet().unwrap();
+        let services =
+            Services::with_options(crate::Chain::Main, crate::services::arcade_test_options())
+                .unwrap();
         let task = MonitorCallHistoryTask::new(Arc::new(services));
         assert_eq!(task.name(), "monitor_call_history");
     }
@@ -150,7 +152,9 @@ mod tests {
     fn test_monitor_call_history_task_interval() {
         use crate::services::Services;
 
-        let services = Services::mainnet().unwrap();
+        let services =
+            Services::with_options(crate::Chain::Main, crate::services::arcade_test_options())
+                .unwrap();
         let task = MonitorCallHistoryTask::new(Arc::new(services));
         assert_eq!(task.default_interval(), Duration::from_secs(12 * 60));
     }
@@ -159,7 +163,10 @@ mod tests {
     async fn test_monitor_call_history_task_run_returns_empty_on_fresh_services() {
         use crate::services::Services;
 
-        let services = Arc::new(Services::mainnet().unwrap());
+        let services = Arc::new(
+            Services::with_options(crate::Chain::Main, crate::services::arcade_test_options())
+                .unwrap(),
+        );
         let task = MonitorCallHistoryTask::new(services);
         let result = task.run().await.unwrap();
         // Fresh services should have zero calls logged

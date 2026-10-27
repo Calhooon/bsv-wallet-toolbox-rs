@@ -193,7 +193,11 @@ impl Fixture {
         }
         let base = server.url();
         let services = local_explorer_services(
-            ServicesOptions::mainnet().with_chaintracks_url(format!("{base}/headers")),
+            // Arcade, the default mode (#317), at a loopback port nothing
+            // listens on: `is_utxo` asks no broadcaster.
+            ServicesOptions::mainnet()
+                .with_arcade("http://127.0.0.1:9", None)
+                .with_chaintracks_url(format!("{base}/headers")),
             &format!("{base}/woc"),
             &format!("{base}/bb"),
             &format!("{base}/bitails"),

@@ -99,7 +99,7 @@ async fn get_height_is_the_header_services_tip_and_asks_no_explorer() {
     let (w, b) = explorer_tips_never_asked(&mut woc, &mut bitails).await;
 
     let services = services_with_explorers(
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
         &woc.url(),
         &bitails.url(),
     );
@@ -117,7 +117,11 @@ async fn get_height_without_a_header_service_is_an_error_not_an_explorers_word()
     let mut bitails = crate::services::mock_server().await;
     let (w, b) = explorer_tips_never_asked(&mut woc, &mut bitails).await;
 
-    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+    let services = services_with_explorers(
+        crate::services::arcade_test_options(),
+        &woc.url(),
+        &bitails.url(),
+    );
     let err = services
         .get_height()
         .await
@@ -141,7 +145,8 @@ async fn get_height_without_a_header_service_is_an_error_not_an_explorers_word()
 #[cfg(not(feature = "break-glass-script-history"))]
 #[test]
 fn a_default_build_wires_no_script_hash_history_scan() {
-    let services = Services::mainnet().unwrap();
+    let services =
+        Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
     let history = services.get_services_call_history(false).unwrap();
     assert!(
         history.get_script_hash_history.is_none(),
@@ -179,7 +184,11 @@ async fn the_break_glass_scan_answers_when_built_in() {
         .create_async()
         .await;
 
-    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+    let services = services_with_explorers(
+        crate::services::arcade_test_options(),
+        &woc.url(),
+        &bitails.url(),
+    );
     let result = services
         .get_script_hash_history(&hash_le, false)
         .await
@@ -372,7 +381,7 @@ pub(super) async fn utxo_services(
     let b = bananablocks_spend(&mut bb, bb_says).await;
     let t = bitails_unspent(&mut bitails, bitails_says).await;
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -553,8 +562,12 @@ async fn the_utxo_verdict_is_the_rule_from_every_start() {
         let verdicts = futures::future::join_all(rows.iter().map(|(answers, txid, script)| {
             let urls = &urls;
             async move {
-                let services =
-                    services_with_three(ServicesOptions::mainnet(), &urls[0], &urls[1], &urls[2]);
+                let services = services_with_three(
+                    crate::services::arcade_test_options(),
+                    &urls[0],
+                    &urls[1],
+                    &urls[2],
+                );
                 {
                     let mut collection = lock_write(&services.get_utxo_status_services).unwrap();
                     for _ in 0..start {
@@ -905,7 +918,7 @@ fn bitails_block_json(header: &BlockHeader, bytes_hex: &str) -> String {
 /// `Services` under break-glass with an unreachable header service.
 fn break_glass_services(woc_url: &str, bitails_url: &str) -> Services {
     services_with_explorers(
-        ServicesOptions::mainnet()
+        crate::services::arcade_test_options()
             .with_chaintracks_url("http://127.0.0.1:9")
             .with_break_glass_explorer_headers(true),
         woc_url,
@@ -1071,7 +1084,11 @@ async fn no_proof_is_fetched_from_an_explorer_without_a_header_service() {
         .create_async()
         .await;
 
-    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+    let services = services_with_explorers(
+        crate::services::arcade_test_options(),
+        &woc.url(),
+        &bitails.url(),
+    );
     let result = services.get_merkle_path(&txid, false).await.unwrap();
     assert_eq!(result.merkle_path, None);
     assert!(
@@ -1113,8 +1130,11 @@ async fn a_raw_tx_fault_is_not_erased_by_the_other_explorers_not_found() {
         let mut bitails = crate::services::mock_server().await;
         let _w = raw_tx_fixture(&mut woc, &txid, woc_status).await;
         let _b = raw_tx_fixture(&mut bitails, &txid, bitails_status).await;
-        let services =
-            services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+        let services = services_with_explorers(
+            crate::services::arcade_test_options(),
+            &woc.url(),
+            &bitails.url(),
+        );
         let result = services.get_raw_tx(&txid, false).await.unwrap();
         assert!(result.raw_tx.is_none());
         assert!(
@@ -1135,7 +1155,11 @@ async fn a_raw_tx_both_explorers_lack_is_not_found() {
     let mut bitails = crate::services::mock_server().await;
     let _w = raw_tx_fixture(&mut woc, &txid, 404).await;
     let _b = raw_tx_fixture(&mut bitails, &txid, 404).await;
-    let services = services_with_explorers(ServicesOptions::mainnet(), &woc.url(), &bitails.url());
+    let services = services_with_explorers(
+        crate::services::arcade_test_options(),
+        &woc.url(),
+        &bitails.url(),
+    );
     let result = services.get_raw_tx(&txid, false).await.unwrap();
     assert!(result.raw_tx.is_none());
     assert!(result.error.is_none(), "{result:?}");
@@ -1284,9 +1308,9 @@ async fn spend_scene(scene: SpendScene) -> SpendFixtures {
     let spent_route = spent_route.expect(1).create_async().await;
 
     let options = if scene.header_service {
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url())
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url())
     } else {
-        ServicesOptions::mainnet()
+        crate::services::arcade_test_options()
     };
     let mut services = services_with_explorers(options, &woc.url(), &bitails.url());
     let mut couriers = ServiceCollection::new("getMerklePath");
@@ -1443,7 +1467,7 @@ async fn two_unspent_answers_still_ask_for_a_spender() {
         .create_async()
         .await;
     let services = services_with_explorers(
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
         &woc.url(),
         &bitails.url(),
     );
@@ -1604,7 +1628,7 @@ async fn one_pass(with_spender: bool) -> (UtxoVerdict, Option<BoundSpender>) {
             .await,
     ];
     let mut services = services_with_three(
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -1749,9 +1773,9 @@ async fn named_spender_pass(
     );
     let header_service = !matches!(scene, NamedSpender::BoundNoHeaderService);
     let options = if header_service {
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url())
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url())
     } else {
-        ServicesOptions::mainnet()
+        crate::services::arcade_test_options()
     };
     let mut services = services_with_explorers(options, &woc.url(), &bitails.url());
     let asked = StdArc::new(AtomicUsize::new(0));

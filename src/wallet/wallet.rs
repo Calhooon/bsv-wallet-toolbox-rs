@@ -313,11 +313,13 @@ impl Default for WalletOptions {
 /// # Example
 ///
 /// ```rust,ignore
-/// use bsv_wallet_toolbox_rs::{Wallet, StorageSqlx, Services};
+/// use bsv_wallet_toolbox_rs::{Chain, Wallet, StorageSqlx, Services, ServicesOptions};
 /// use bsv_rs::primitives::PrivateKey;
 ///
 /// let storage = StorageSqlx::open("wallet.db").await?;
-/// let services = Services::mainnet();
+/// // Arcade is the default mode; name its endpoint (#317)
+/// let options = ServicesOptions::mainnet().with_arcade(arcade_url, None);
+/// let services = Services::with_options(Chain::Main, options)?;
 /// let wallet = Wallet::new(Some(PrivateKey::random()), storage, services).await?;
 /// ```
 pub struct Wallet<S, V>

@@ -3,7 +3,8 @@
 //! classic ARC provider exists: the post ladder is Arcade, then Bitails and
 //! WhatsOnChain, and the broadcaster-status read asks Arcade alone. In
 //! classic mode (`arcade_v2` false) TAAL from `arc_url`, GorillaPool when
-//! configured, then Bitails and WhatsOnChain, as before. Constructing
+//! configured, then Bitails and WhatsOnChain, as before, now only behind
+//! the deprecated `with_classic_arc`. Constructing
 //! `Services` makes no request; the status reads go to a loopback mock.
 
 use super::*;
@@ -43,8 +44,10 @@ async fn holds_nothing(server: &mut crate::services::MockServer) -> (mockito::Mo
 
 #[test]
 fn arcade_mode_post_ladder_is_arcade_bitails_whatsonchain() {
-    // The mainnet default `arc_gorillapool_url` is `Some`, left as it is.
-    let options = ServicesOptions::mainnet().with_arcade(crate::services::ARCADE_V2_MAINNET, None);
+    // A GorillaPool URL set: in Arcade mode it builds nothing.
+    let options = ServicesOptions::mainnet()
+        .with_arcade(crate::services::ARCADE_V2_MAINNET, None)
+        .with_gorillapool(LOOPBACK, None);
     assert!(options.arc_gorillapool_url.is_some());
     let services = Services::with_options(Chain::Main, options).unwrap();
 
@@ -100,8 +103,12 @@ async fn arcade_mode_broadcaster_statuses_carry_no_classic_row() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn classic_mode_post_ladder_is_unchanged() {
-    let services = Services::with_options(Chain::Main, ServicesOptions::mainnet()).unwrap();
+    let options = ServicesOptions::mainnet()
+        .with_classic_arc(LOOPBACK, None)
+        .with_gorillapool(LOOPBACK, None);
+    let services = Services::with_options(Chain::Main, options).unwrap();
 
     assert_eq!(
         post_names(&services),
@@ -118,9 +125,10 @@ fn classic_mode_post_ladder_is_unchanged() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn classic_mode_without_gorillapool_is_taal_bitails_whatsonchain() {
-    let mut options = ServicesOptions::mainnet();
-    options.arc_gorillapool_url = None;
+    let options = ServicesOptions::mainnet().with_classic_arc(LOOPBACK, None);
+    assert!(options.arc_gorillapool_url.is_none());
     let services = Services::with_options(Chain::Main, options).unwrap();
 
     assert_eq!(
@@ -131,11 +139,12 @@ fn classic_mode_without_gorillapool_is_taal_bitails_whatsonchain() {
 }
 
 #[tokio::test]
+#[allow(deprecated)]
 async fn classic_mode_broadcaster_statuses_ask_both_arcs() {
     let mut server = crate::services::mock_server().await;
     let _mocks = holds_nothing(&mut server).await;
     let options = ServicesOptions::mainnet()
-        .with_arc(server.url(), None)
+        .with_classic_arc(server.url(), None)
         .with_gorillapool(server.url(), None);
     let services = Services::with_options(Chain::Main, options).unwrap();
 
@@ -165,7 +174,10 @@ fn default_options_with_no_arcade_url_refuse_construction() {
         let err = Services::with_options(chain, options)
             .err()
             .unwrap_or_else(|| panic!("{chain:?}: built with no Arcade URL"));
-        assert_eq!(err.to_string(), format!("Invalid argument: {NO_ARCADE_URL}"));
+        assert_eq!(
+            err.to_string(),
+            format!("Invalid argument: {NO_ARCADE_URL}")
+        );
         assert!(err.to_string().contains("with_arcade"), "{err}");
     }
     for chain in [Chain::Main, Chain::Test] {

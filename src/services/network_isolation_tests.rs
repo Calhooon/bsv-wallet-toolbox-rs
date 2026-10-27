@@ -105,7 +105,10 @@ async fn a_loopback_redirect_cannot_leave_loopback() {
 #[test]
 fn default_provider_request_is_refused_before_transport() {
     for chain in [Chain::Main, Chain::Test] {
-        let services = Services::new(chain).unwrap();
+        // The defaults name no broadcaster (#317): a placeholder host
+        // off loopback stands for the deployment.
+        let options = super::ServicesOptions::mainnet().with_arcade("https://arcade.invalid", None);
+        let services = Services::with_options(chain, options).unwrap();
         assert_eq!(
             services.post_beef_mode,
             super::services::PostBeefMode::default()

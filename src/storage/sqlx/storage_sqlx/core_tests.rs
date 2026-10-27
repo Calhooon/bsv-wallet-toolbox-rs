@@ -262,7 +262,9 @@ mod tests {
         storage.make_available().await.unwrap();
 
         // Create a services instance
-        let services = Arc::new(Services::new(Chain::Main).unwrap());
+        let services = Arc::new(
+            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap(),
+        );
 
         // Set services
         storage.set_services(services.clone());
@@ -289,7 +291,9 @@ mod tests {
         storage.make_available().await.unwrap();
 
         // Set first services instance
-        let services1 = Arc::new(Services::new(Chain::Main).unwrap());
+        let services1 = Arc::new(
+            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap(),
+        );
         storage.set_services(services1);
 
         // Verify first services
@@ -297,7 +301,9 @@ mod tests {
         let hash1 = retrieved1.hash_output_script(&[0x76]);
 
         // Set second services instance (replaces first)
-        let services2 = Arc::new(Services::new(Chain::Test).unwrap());
+        let services2 = Arc::new(
+            Services::with_options(Chain::Test, crate::services::arcade_test_options()).unwrap(),
+        );
         storage.set_services(services2);
 
         // Get services again - should still work (services were replaced)

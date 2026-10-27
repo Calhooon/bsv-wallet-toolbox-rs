@@ -147,9 +147,9 @@ fn post_beef_fault(provider: &str, error: &Error) -> PostBeefResult {
 ///
 /// | Method | Description |
 /// |--------|-------------|
-/// | [`Services::new`] | Create with chain-appropriate defaults |
-/// | [`Services::mainnet`] | Shorthand for mainnet defaults |
-/// | [`Services::testnet`] | Shorthand for testnet defaults |
+/// | [`Services::new`] | Create with chain-appropriate defaults (refuses: no Arcade endpoint, #317) |
+/// | [`Services::mainnet`] | Shorthand for mainnet defaults (refuses, as `new`) |
+/// | [`Services::testnet`] | Shorthand for testnet defaults (refuses, as `new`) |
 /// | [`Services::with_options`] | Create with custom [`ServicesOptions`] |
 ///
 /// # Example
@@ -157,11 +157,9 @@ fn post_beef_fault(provider: &str, error: &Error) -> PostBeefResult {
 /// ```rust,ignore
 /// use bsv_wallet_toolbox_rs::{Services, ServicesOptions, Chain};
 ///
-/// // Quick mainnet setup
-/// let services = Services::mainnet()?;
-///
-/// // Custom configuration with API keys
+/// // Arcade is the default mode: name the Arcade endpoint (#317)
 /// let options = ServicesOptions::mainnet()
+///     .with_arcade(arcade_url, None)
 ///     .with_woc_api_key("my-key")
 ///     .with_bhs("https://bhs.babbage.systems", None);
 /// let services = Services::with_options(Chain::Main, options)?;
@@ -617,8 +615,16 @@ fn merge_status_results(
     }
 }
 
+/// The refusal of options in Arcade mode (the default) that name no Arcade
+/// endpoint (#317). The reference has no counterpart: its default is a
+/// classic ARC URL, and this port names no Arcade deployment of its own.
+pub(crate) const NO_ARCADE_URL: &str = "ServicesOptions names no Arcade endpoint: Arcade is the default mode (#317); set one with ServicesOptions::with_arcade(url, config)";
+
 impl Services {
-    /// Create new services for the given chain with default options.
+    /// Create new services for the given chain with default options. The
+    /// defaults name no Arcade endpoint, so this refuses with the
+    /// `with_arcade` text (#317): use [`Services::with_options`] with
+    /// [`ServicesOptions::with_arcade`].
     pub fn new(chain: Chain) -> Result<Self> {
         let options = match chain {
             Chain::Main => ServicesOptions::mainnet(),
@@ -627,7 +633,8 @@ impl Services {
         Self::with_options(chain, options)
     }
 
-    /// Create new services with custom options.
+    /// Create new services with custom options. Refuses options in Arcade
+    /// mode (the default) whose `arc_url` is empty (#317).
     pub fn with_options(chain: Chain, options: ServicesOptions) -> Result<Self> {
         // Create providers
         let woc_config = WhatsOnChainConfig {
@@ -657,14 +664,18 @@ impl Services {
         bitails: StdArc<Bitails>,
         bananablocks: Option<StdArc<BananaBlocks>>,
     ) -> Result<Self> {
+        if options.arcade_v2 && options.arc_url.trim().is_empty() {
+            return Err(Error::InvalidArgument(NO_ARCADE_URL.to_string()));
+        }
         // Arcade V2 mode (explicit flag, never inferred from the URL): the
         // configured arc_url IS the Arcade endpoint and the Arcade
         // broadcaster is built from it. No classic ARC provider exists in
         // this mode, whatever arc_gorillapool_url says: the owner's word of
         // 2026-10-27 ("arc is old af... we use arcade now for everyting",
         // #317). The classic TAAL and GorillaPool providers are built only
-        // in classic mode (arcade_v2 false), kept for the CLI's hermetic
-        // stub until it speaks Arcade.
+        // in classic mode (arcade_v2 false, set by the deprecated
+        // with_classic_arc), kept for the CLI's hermetic stub until it
+        // speaks Arcade.
         let arcade = if options.arcade_v2 {
             Some(StdArc::new(Arcade::new(
                 options.arc_url.clone(),
@@ -1057,12 +1068,14 @@ impl Services {
         seen
     }
 
-    /// Create mainnet services.
+    /// Create mainnet services from the defaults: refuses, as
+    /// [`Services::new`] (#317).
     pub fn mainnet() -> Result<Self> {
         Self::new(Chain::Main)
     }
 
-    /// Create testnet services.
+    /// Create testnet services from the defaults: refuses, as
+    /// [`Services::new`] (#317).
     pub fn testnet() -> Result<Self> {
         Self::new(Chain::Test)
     }
@@ -3190,7 +3203,8 @@ mod tests {
             "../../tests/fixtures/data/services/post_beef_named_instances.json"
         ))
         .unwrap();
-        let services = Services::mainnet().unwrap();
+        let services =
+            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
         let mut providers = ServiceCollection::new("postBeef");
         let mut counts = Vec::new();
         for instance in fixture["instances"].as_array().unwrap() {
@@ -3250,7 +3264,7 @@ mod tests {
 
     #[test]
     fn test_services_creation() {
-        let services = Services::mainnet();
+        let services = Services::with_options(Chain::Main, crate::services::arcade_test_options());
         assert!(services.is_ok());
         let services = services.unwrap();
         assert!(services.get_merkle_path_count().unwrap() >= 1);
@@ -3259,7 +3273,7 @@ mod tests {
 
     #[test]
     fn test_services_options() {
-        let options = ServicesOptions::mainnet()
+        let options = crate::services::arcade_test_options()
             .with_woc_api_key("test-key")
             .with_bitails_api_key("bitails-key");
 
@@ -3269,7 +3283,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_fiat_exchange_rate() {
-        let services = Services::mainnet().unwrap();
+        let services =
+            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
 
         // Test USD to USD (should be 1.0)
         let rate = services
@@ -3332,8 +3347,8 @@ mod tests {
         // Build Services with a chaintracks_url configured. The URL doesn't need
         // to be reachable — we only test that get_chain_tracker() returns Ok
         // (i.e. it finds a ChainTracker) rather than the "not configured" error.
-        let options =
-            ServicesOptions::mainnet().with_chaintracks_url("https://fake-chaintracks.example.com");
+        let options = crate::services::arcade_test_options()
+            .with_chaintracks_url("https://fake-chaintracks.example.com");
         let services = Services::with_options(Chain::Main, options).unwrap();
 
         let result = services.get_chain_tracker().await;
@@ -3348,7 +3363,8 @@ mod tests {
     async fn test_get_chain_tracker_errors_when_not_configured() {
         // Default mainnet Services has no chaintracks_url, so get_chain_tracker
         // should return an error indicating it is not configured.
-        let services = Services::mainnet().unwrap();
+        let services =
+            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
 
         let result = services.get_chain_tracker().await;
         assert!(
@@ -3377,7 +3393,7 @@ mod tests {
     fn arcade_services() -> Services {
         Services::with_options(
             Chain::Main,
-            ServicesOptions::mainnet().with_arcade(
+            crate::services::arcade_test_options().with_arcade(
                 crate::services::ARCADE_V2_MAINNET,
                 Some(ArcadeConfig::with_callback_token("tok")),
             ),
@@ -3400,9 +3416,12 @@ mod tests {
         );
     }
 
+    /// Classic mode, behind the deprecated knob (#317).
     #[test]
+    #[allow(deprecated)]
     fn test_read_collection_order_unchanged_without_arcade() {
-        let services = Services::mainnet().unwrap();
+        let options = ServicesOptions::mainnet().with_classic_arc("http://127.0.0.1:9", None);
+        let services = Services::with_options(Chain::Main, options).unwrap();
 
         assert!(services.arcade.is_none());
         assert_eq!(
@@ -3421,7 +3440,8 @@ mod tests {
     #[test]
     fn bananablocks_is_the_third_explorer_and_can_be_turned_off() {
         for chain in [Chain::Main, Chain::Test] {
-            let services = Services::new(chain).unwrap();
+            let services =
+                Services::with_options(chain, crate::services::arcade_test_options()).unwrap();
             assert_eq!(
                 provider_order(&services.get_raw_tx_services),
                 vec!["WhatsOnChain", "BananaBlocks", "Bitails"],
@@ -3434,7 +3454,7 @@ mod tests {
             );
         }
         assert_eq!(
-            Services::testnet()
+            Services::with_options(Chain::Test, crate::services::arcade_test_options())
                 .unwrap()
                 .bananablocks
                 .as_ref()
@@ -3444,7 +3464,7 @@ mod tests {
 
         let off = Services::with_options(
             Chain::Main,
-            ServicesOptions::mainnet().without_bananablocks(),
+            crate::services::arcade_test_options().without_bananablocks(),
         )
         .unwrap();
         assert!(off.bananablocks.is_none());
@@ -3458,14 +3478,15 @@ mod tests {
         }
         let empty = Services::with_options(
             Chain::Main,
-            ServicesOptions::mainnet().with_bananablocks_base("  "),
+            crate::services::arcade_test_options().with_bananablocks_base("  "),
         )
         .unwrap();
         assert!(empty.bananablocks.is_none(), "an empty base is off");
 
         let mirror = Services::with_options(
             Chain::Main,
-            ServicesOptions::mainnet().with_bananablocks_base("https://mirror.example/api/v1/"),
+            crate::services::arcade_test_options()
+                .with_bananablocks_base("https://mirror.example/api/v1/"),
         )
         .unwrap();
         assert_eq!(
@@ -3756,7 +3777,8 @@ mod tests {
     fn services_with_status_providers(
         providers: Vec<(&str, StdArc<MockStatusProvider>)>,
     ) -> Services {
-        let mut services = Services::mainnet().unwrap();
+        let mut services =
+            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
         let mut collection = ServiceCollection::new("getStatusForTxids");
         for (name, provider) in providers {
             collection.add(name, provider as StatusForTxidsProvider);
@@ -4068,7 +4090,11 @@ mod tests {
                         };
                         for start in 0..4 {
                             for use_next in [false, true] {
-                                let mut services = Services::mainnet().unwrap();
+                                let mut services = Services::with_options(
+                                    Chain::Main,
+                                    crate::services::arcade_test_options(),
+                                )
+                                .unwrap();
                                 let mut collection = ServiceCollection::new("getStatusForTxids");
                                 collection.add(
                                     "ArcadeV2",
@@ -4174,7 +4200,7 @@ mod tests {
     async fn hash_to_header_asks_no_explorer_when_the_header_service_fails() {
         let services = Services::with_options(
             Chain::Main,
-            ServicesOptions::mainnet().with_chaintracks_url("http://127.0.0.1:9"),
+            crate::services::arcade_test_options().with_chaintracks_url("http://127.0.0.1:9"),
         )
         .unwrap();
         let err = services
@@ -4195,7 +4221,7 @@ mod tests {
     fn the_tracker_holds_no_explorer_unless_break_glass_is_set() {
         let s = Services::with_options(
             Chain::Main,
-            ServicesOptions::mainnet().with_chaintracks_url("http://127.0.0.1:9"),
+            crate::services::arcade_test_options().with_chaintracks_url("http://127.0.0.1:9"),
         )
         .unwrap();
         assert!(!ServicesOptions::default().break_glass_explorer_headers);
@@ -4203,7 +4229,7 @@ mod tests {
 
         let s = Services::with_options(
             Chain::Test,
-            ServicesOptions::testnet()
+            crate::services::arcade_test_options()
                 .with_chaintracks_url("http://127.0.0.1:9")
                 .with_break_glass_explorer_headers(true),
         )
@@ -4224,7 +4250,8 @@ mod tests {
         providers: Vec<(&str, GetMerklePathResult)>,
         chaintracks_url: Option<&str>,
     ) -> Services {
-        let mut services = Services::mainnet().unwrap();
+        let mut services =
+            Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
 
         // Replace merkle path service collection with mocks
         let mut collection = ServiceCollection::new("getMerklePath");

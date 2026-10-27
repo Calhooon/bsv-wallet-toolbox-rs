@@ -25,6 +25,19 @@ fn sample() -> (Vec<u8>, Vec<String>) {
     (beef.to_binary(), vec![txid])
 }
 
+/// Options whose broadcaster is a non-loopback placeholder host: Arcade, the
+/// default mode, or classic ARC behind the deprecated knob (#317). The
+/// defaults name no broadcaster, so they no longer construct.
+#[allow(deprecated)]
+fn off_loopback(chain: Chain, classic: bool) -> Services {
+    let options = if classic {
+        ServicesOptions::mainnet().with_classic_arc("https://arc.invalid", None)
+    } else {
+        ServicesOptions::mainnet().with_arcade("https://arcade.invalid", None)
+    };
+    Services::with_options(chain, options).unwrap()
+}
+
 async fn assert_posts_refused(mut services: Services, mode: PostBeefMode) {
     services.set_post_beef_mode(mode);
     let (beef, txids) = sample();
@@ -46,7 +59,9 @@ async fn assert_posts_refused(mut services: Services, mode: PostBeefMode) {
 async fn default_post_modes_never_leave_loopback() {
     for chain in [Chain::Main, Chain::Test] {
         for mode in [PostBeefMode::PromiseAll, PostBeefMode::UntilSuccess] {
-            assert_posts_refused(Services::new(chain).unwrap(), mode).await;
+            for classic in [false, true] {
+                assert_posts_refused(off_loopback(chain, classic), mode).await;
+            }
         }
     }
 }
@@ -164,7 +179,7 @@ async fn isolated_environment_worker() {
         return;
     }
     for mode in [PostBeefMode::PromiseAll, PostBeefMode::UntilSuccess] {
-        assert_posts_refused(Services::mainnet().unwrap(), mode).await;
+        assert_posts_refused(off_loopback(Chain::Main, false), mode).await;
     }
     let local =
         super::Arc::new(std::env::var("BSV_TEST_LOOPBACK_URL").unwrap(), None, None).unwrap();

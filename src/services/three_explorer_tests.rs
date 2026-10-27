@@ -143,7 +143,7 @@ async fn raw_scene(
         servers.push(server);
     }
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &servers[0].url(),
         &servers[1].url(),
         &servers[2].url(),
@@ -277,7 +277,7 @@ async fn bananablocks_serves_a_proof_the_header_service_accepts() {
         .await;
 
     let services = services_with_three(
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -322,7 +322,7 @@ async fn bananablocks_answers_the_status_when_the_others_could_not_look() {
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -362,7 +362,7 @@ async fn bananablocks_unknown_never_replaces_a_chain_indexs_known() {
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -417,7 +417,7 @@ async fn bananablocks_names_the_spender_when_whatsonchain_does_not() {
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -446,7 +446,7 @@ async fn an_unspent_verdict_costs_one_bananablocks_request() {
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
         &woc.url(),
         &f.bananablocks.0.url(),
         &f.bitails.0.url(),
@@ -490,7 +490,7 @@ async fn a_deterministic_fault_is_not_asked_again() {
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -665,7 +665,7 @@ async fn a_bananablocks_spender_its_bytes_do_not_bear_out_is_dropped() {
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+        crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -825,7 +825,7 @@ async fn whatsonchain_names_a_spender_bananablocks_says_unspent_the_spender_stan
             .create_async()
             .await;
         let services = services_with_three(
-            ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+            crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
             &woc.url(),
             &f.bananablocks.0.url(),
             &f.bitails.0.url(),
@@ -866,7 +866,7 @@ async fn the_empty_script_never_comes_back_unspent() {
     let (mut bitails, _) = f.bitails;
     let _sets = empty_unspent_set(&mut woc, &mut bitails, &[]).await;
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &woc.url(),
         &f.bananablocks.0.url(),
         &bitails.url(),
@@ -901,7 +901,7 @@ async fn the_status_ladder_with_both_chain_indexes_down_and_a_bananablocks_404_c
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -949,7 +949,7 @@ async fn bananablocks_known_beats_a_lone_whatsonchain_unknown() {
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -1079,7 +1079,7 @@ async fn a_whatsonchain_spent_fault_leads_spend_evidence_to_bananablocks() {
             .create_async()
             .await;
         let services = services_with_three(
-            ServicesOptions::mainnet().with_chaintracks_url(ct.url()),
+            crate::services::arcade_test_options().with_chaintracks_url(ct.url()),
             &woc.url(),
             &bb.url(),
             &bitails.url(),
@@ -1170,7 +1170,7 @@ async fn a_whatsonchain_status_429_on_a_later_chunk_keeps_the_earlier_answers() 
         .create_async()
         .await;
     let services = services_with_three(
-        ServicesOptions::mainnet(),
+        crate::services::arcade_test_options(),
         &woc.url(),
         &bb.url(),
         &bitails.url(),
@@ -1217,7 +1217,7 @@ async fn a_bitails_429_is_not_asked_again_in_the_retry_round() {
 async fn two_services_share_one_gate_per_host() {
     // Never reached: the gate stops the call before a request.
     let base = "http://127.0.0.1:9/two-services-share-one-gate";
-    let options = || ServicesOptions::mainnet().with_bananablocks_base(base);
+    let options = || crate::services::arcade_test_options().with_bananablocks_base(base);
     let a = Services::with_options(Chain::Main, options()).unwrap();
     let b = Services::with_options(Chain::Main, options()).unwrap();
     let (a_bb, b_bb) = (
@@ -1443,7 +1443,12 @@ async fn lead_scene_for(
     let woc = woc_lists_for(&mut w, &route_hash, woc).await;
     let bitails = bitails_lists_for(&mut t, &route_hash, bitails).await;
     let bananablocks = bananablocks_lists(&mut b, bananablocks).await;
-    let services = services_with_three(ServicesOptions::mainnet(), &w.url(), &b.url(), &t.url());
+    let services = services_with_three(
+        crate::services::arcade_test_options(),
+        &w.url(),
+        &b.url(),
+        &t.url(),
+    );
     LeadScene {
         services,
         servers: [w, t, b],
@@ -1691,7 +1696,8 @@ async fn a_script_with_no_address_is_not_asked_of_bananablocks() {
         any_request.assert_async().await;
     }
 
-    let services = Services::mainnet().unwrap();
+    let services =
+        Services::with_options(Chain::Main, crate::services::arcade_test_options()).unwrap();
     assert_eq!(
         services.p2pkh_address(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script)),
         Some(LEAD_ADDRESS.to_string())
@@ -1709,7 +1715,8 @@ async fn a_script_with_no_address_is_not_asked_of_bananablocks() {
     );
     assert_eq!(services.p2pkh_address(&lead_hash_le(&services), None), None);
     // Testnet's version byte (0x6f): the same hash is an `m`/`n` address.
-    let testnet = Services::testnet().unwrap();
+    let testnet =
+        Services::with_options(Chain::Test, crate::services::arcade_test_options()).unwrap();
     assert_eq!(
         testnet.p2pkh_address(LEAD_SCRIPT_HEX, Some(GetUtxoStatusOutputFormat::Script)),
         Some("n21x4NRm6PjPzsPjgA76EQDHtkvZE1khzd".to_string())

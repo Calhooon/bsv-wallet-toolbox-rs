@@ -758,9 +758,12 @@ mod arc_reduced {
 mod services_memory {
     use super::*;
 
+    // Classic ARC behind the deprecated knob (#317): these fixtures pin
+    // the two-ARC memory order.
+    #[allow(deprecated)]
     fn two_arc_services(taal_url: &str, gp_url: &str) -> Services {
         let options = ServicesOptions::mainnet()
-            .with_arc(taal_url, None)
+            .with_classic_arc(taal_url, None)
             .with_gorillapool(gp_url, None);
         let mut services = Services::with_options(Chain::Main, options).unwrap();
         // These fixtures exercise the explicit short-circuit policy. D3 makes
@@ -1327,11 +1330,18 @@ mod storage_wiring {
         storage
     }
 
+    /// Arcade, the default mode (#317), at a loopback port nothing listens
+    /// on: the defaults name no Arcade endpoint.
+    fn loopback_arcade() -> Services {
+        let options = ServicesOptions::mainnet().with_arcade("http://127.0.0.1:9", None);
+        Services::with_options(Chain::Main, options).unwrap()
+    }
+
     #[tokio::test]
     async fn the_wallet_hands_the_storage_memory_to_the_services() {
         let storage = setup_storage().await;
         assert!(WalletStorageProvider::broadcast_memory(&storage).is_some());
-        let services = Services::mainnet().unwrap();
+        let services = loopback_arcade();
         assert!(services.broadcast_memory().is_none());
 
         let wallet = Wallet::new(None, storage, services).await.unwrap();
@@ -1344,7 +1354,7 @@ mod storage_wiring {
     #[tokio::test]
     async fn set_services_on_the_storage_attaches_the_memory_too() {
         let storage = setup_storage().await;
-        let services: StdArc<dyn WalletServices> = StdArc::new(Services::mainnet().unwrap());
+        let services: StdArc<dyn WalletServices> = StdArc::new(loopback_arcade());
         assert!(services.broadcast_memory().is_none());
         storage.set_services(services.clone());
         assert!(services.broadcast_memory().is_some());
