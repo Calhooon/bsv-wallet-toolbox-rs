@@ -4038,6 +4038,7 @@ mod tests {
                 fields: HashMap<String, String>,
                 reveal: Vec<String>,
                 master: HashMap<String, String>,
+                serial: String,
             }
 
             impl Request {
@@ -4047,7 +4048,40 @@ mod tests {
                         fields: HashMap::from([("name".to_string(), "YQ==".to_string())]),
                         reveal: vec!["name".to_string()],
                         master: HashMap::from([("name".to_string(), "Yg==".to_string())]),
+                        serial: BASE64.encode([32; 32]),
                     }
+                }
+
+                fn valid() -> Self {
+                    use bsv_rs::primitives::SymmetricKey;
+                    use bsv_rs::wallet::EncryptArgs;
+
+                    let key = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
+                    let public_key = key.public_key();
+                    let wallet = ProtoWallet::new(Some(key));
+                    let field_key = SymmetricKey::from_bytes(&[34; 32]).unwrap();
+                    let protocol = Protocol::new(
+                        SecurityLevel::Counterparty,
+                        CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+                    );
+                    let wrapped = wallet
+                        .encrypt(EncryptArgs {
+                            plaintext: field_key.as_bytes().to_vec(),
+                            protocol_id: protocol,
+                            key_id: "name".to_string(),
+                            counterparty: Some(Counterparty::Other(public_key)),
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    let mut request = Self::new();
+                    request.fields.insert(
+                        "name".to_string(),
+                        BASE64.encode(field_key.encrypt(b"serial witness").unwrap()),
+                    );
+                    request
+                        .master
+                        .insert("name".to_string(), BASE64.encode(wrapped.ciphertext));
+                    request
                 }
 
                 fn create(&self) -> bsv_rs::Result<HashMap<String, String>> {
@@ -4060,7 +4094,7 @@ mod tests {
                         &self.fields,
                         &self.reveal,
                         &self.master,
-                        &BASE64.encode([32; 32]),
+                        &self.serial,
                         "certificate.test",
                     )
                 }
@@ -4080,7 +4114,7 @@ mod tests {
                         .unwrap();
                     let certificate = WalletCertificate {
                         certificate_type: BASE64.encode([33; 32]),
-                        serial_number: BASE64.encode([32; 32]),
+                        serial_number: self.serial.clone(),
                         subject: public_key.clone(),
                         certifier: public_key.clone(),
                         revocation_outpoint: format!("{}.0", "00".repeat(32)),
@@ -4141,6 +4175,104 @@ mod tests {
                     let door = self.prove().await;
                     assert_wallet_error("create_keyring_for_verifier", direct, expected);
                     assert_wallet_error("prove_certificate", door, expected);
+                }
+            }
+
+            fn noncanonical_serials() -> Vec<String> {
+                let canonical = BASE64.encode([0; 32]);
+                vec![
+                    "!".to_string(),
+                    canonical.trim_end_matches('=').to_string(),
+                    format!("{canonical}="),
+                    format!("{canonical}\n"),
+                    format!(" {canonical}"),
+                    format!("{}B=", "A".repeat(42)), // Nonzero unused padding bits.
+                    BASE64.encode([255; 32]).replace('/', "_"),
+                ]
+            }
+
+            #[test]
+            fn test_create_keyring_serial_noncanonical() {
+                for serial in noncanonical_serials() {
+                    let mut request = Request::valid();
+                    request.serial = serial;
+                    assert_wallet_error(
+                        &request.serial,
+                        request.create(),
+                        "Certificate serial number must use canonical base64 encoding",
+                    );
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_prove_certificate_serial_noncanonical() {
+                let expected = "Certificate serial number must use canonical base64 encoding";
+                for serial in noncanonical_serials() {
+                    let mut request = Request::valid();
+                    request.serial = serial;
+                    assert_wallet_error(&request.serial, request.prove().await, expected);
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_serial_length() {
+                for length in [0, 1, 31, 33] {
+                    let mut request = Request::valid();
+                    request.serial = BASE64.encode(vec![32; length]);
+                    let expected = if length == 0 || length > 32 {
+                        "Certificate serial number is empty, oversized, or non-canonical"
+                    } else {
+                        "Certificate serial number must encode exactly 32 bytes"
+                    };
+                    request.assert_gate_error(expected).await;
+                }
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_serial_before_subset_and_recovery() {
+                let mut request = Request::new();
+                request.serial = "!".to_string();
+                let expected = "Certificate serial number must use canonical base64 encoding";
+                request.assert_gate_error(expected).await;
+                request.reveal = vec!["missing".to_string()];
+                request.assert_gate_error(expected).await;
+                request.reveal.clear();
+                request.fields.clear();
+                request.master.clear();
+                assert_wallet_error("empty maps", request.create(), expected);
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_serial_after_map_values() {
+                let mut request = Request::new();
+                request.serial = "!".to_string();
+                request.fields.insert("name".to_string(), "!".to_string());
+                request
+                    .assert_gate_error("Certificate field name must use canonical base64 encoding")
+                    .await;
+                request
+                    .fields
+                    .insert("name".to_string(), "YQ==".to_string());
+                request.master.insert("name".to_string(), "!".to_string());
+                request
+                    .assert_gate_error(
+                        "Master certificate keyring field name must use canonical base64 encoding",
+                    )
+                    .await;
+            }
+
+            #[cfg(feature = "sqlite")]
+            #[tokio::test]
+            async fn test_create_keyring_serial_accepts_32_bytes() {
+                for byte in [0, 32, 255] {
+                    let mut request = Request::valid();
+                    request.serial = BASE64.encode([byte; 32]);
+                    assert_eq!(request.create().unwrap().len(), 1);
+                    assert_eq!(request.prove().await.unwrap().keyring_for_verifier.len(), 1);
                 }
             }
 
