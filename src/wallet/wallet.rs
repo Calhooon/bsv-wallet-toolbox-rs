@@ -3408,7 +3408,7 @@ pub(crate) fn validate_public_key_arg(
 
 // validateBase64String at validationHelpers.ts:439-497 checks structure and
 // decoded size, without enforcing the helper's canonical padding bits.
-fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
+pub(crate) fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
     let value = trim_ecmascript_whitespace(value);
     let invalid = || invalid_certificate_argument(name, "valid base64 string");
     if value.is_empty() {
