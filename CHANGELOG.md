@@ -50,6 +50,16 @@
   `... no more than 50 length.`, all with `Validation error: `, replacing the
   helper's `Certificate field name must be a safe UTF-8 string of 1–50 bytes`
   for a bad argument name and preceding a bad type.
+- #269: certificate issuance reads the certifier's identity from the
+  response header `x-bsv-auth-identity-key`, as the pinned reference does,
+  and requires it: a response without it refuses with `Invalid certifier!
+  Expected: <certifier>, Received: null` before the body is read, where it
+  passed before. The old `x-bsv-identity-key` response header is no longer
+  read, so a certifier answering only under it is now refused; a non-ASCII
+  or repeated header value is compared and refused as a mismatch instead of
+  skipped. Certifier operators must send `x-bsv-auth-identity-key` with the
+  certifier's public key; the request's headers are unchanged.
+
 - #287: `StorageSqlx::allocate_change_input` returns the stored `outputs.type`
   in `TableOutput.output_type` and its serialized `outputType` field instead
   of silently returning an empty string for the missing `output_type` column.
