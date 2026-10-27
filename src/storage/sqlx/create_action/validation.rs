@@ -24,6 +24,12 @@ const MAX_LABEL_LENGTH: usize = 300;
 /// BRC-177's module prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:5`).
 const BRC177_NO_SEND_MODULE_PREFIX: &str = "p nosend ";
 
+/// BRC-177's expiry prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:4`).
+const BRC177_NO_SEND_EXPIRY_PREFIX: &str = "p nosend expiry ";
+
+/// `Number.MAX_SAFE_INTEGER`, the bound of `Number.isSafeInteger`.
+const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+
 /// The reference's refusal on a store without the BRC-177 capability
 /// (`createNoSendExpiryAction.ts:202`); the port has none.
 const BRC177_UNSUPPORTED: &str = "Active storage does not support BRC-177 noSend expiry";
@@ -208,18 +214,80 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
     // brc177NoSendExpiry.ts:119) to createNoSendExpiryAction once the
     // arguments are valid (Wallet.ts:1155-1165), which refuses without the
     // capability. The label is matched as the SDK's validateLabel leaves it,
-    // trimmed and lowercased (validationHelpers.ts:411).
-    let labels = args.labels.as_deref().unwrap_or_default();
-    if labels.iter().any(|label| {
-        label
-            .trim()
-            .to_lowercase()
-            .starts_with(BRC177_NO_SEND_MODULE_PREFIX)
-    }) {
+    // trimmed and lowercased (validationHelpers.ts:411), and the label
+    // grammar answers ahead of the capability (Wallet.ts:1163, #359).
+    let labels: Vec<String> = args
+        .labels
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|label| label.trim().to_lowercase())
+        .collect();
+    if parse_brc177_no_send_expiry_labels(&labels)? {
         return Err(Error::InvalidOperation(BRC177_UNSUPPORTED.to_string()));
     }
 
     Ok(())
+}
+
+/// The reference's `WERR_INVALID_PARAMETER('labels', mustBe)`
+/// (`WERR_errors.ts:105`).
+fn invalid_labels(must_be: &str) -> Error {
+    Error::ValidationError(format!("The labels parameter must be {must_be}"))
+}
+
+/// `parseCanonicalUnsignedInteger` (brc177NoSendExpiry.ts:81-90).
+fn parse_canonical_unsigned_integer(value: &str) -> Result<u64> {
+    let canonical = value == "0"
+        || (value.starts_with(|c: char| ('1'..='9').contains(&c))
+            && value.bytes().all(|b| b.is_ascii_digit()));
+    if !canonical {
+        return Err(invalid_labels("a canonical unsigned BRC-177 expiry value"));
+    }
+    match value.parse::<u64>() {
+        Ok(parsed) if parsed <= MAX_SAFE_INTEGER => Ok(parsed),
+        _ => Err(invalid_labels("a safely supported BRC-177 expiry value")),
+    }
+}
+
+/// `parseBrc177NoSendExpiryLabels` (brc177NoSendExpiry.ts:92-116), step for
+/// step, on the labels as validateLabel leaves them. Returns whether a
+/// module label is present; the port keeps no parsed expiry, having no
+/// capability to use it.
+fn parse_brc177_no_send_expiry_labels(labels: &[String]) -> Result<bool> {
+    let module_labels = labels
+        .iter()
+        .filter(|label| label.starts_with(BRC177_NO_SEND_MODULE_PREFIX))
+        .count();
+    if module_labels == 0 {
+        return Ok(false);
+    }
+    let matching: Vec<&String> = labels
+        .iter()
+        .filter(|label| label.starts_with(BRC177_NO_SEND_EXPIRY_PREFIX))
+        .collect();
+    if matching.len() != 1 || module_labels != 1 {
+        return Err(invalid_labels("exactly one BRC-177 noSend expiry label"));
+    }
+
+    let remainder = &matching[0][BRC177_NO_SEND_EXPIRY_PREFIX.len()..];
+    let (mode, value) = match remainder.split_once(' ') {
+        Some((mode, value)) if !mode.is_empty() && !value.is_empty() && !value.contains(' ') => {
+            (mode, value)
+        }
+        _ => return Err(invalid_labels("a valid BRC-177 noSend expiry label")),
+    };
+
+    if mode != "seconds" && mode != "timestamp" && mode != "blockheight" {
+        return Err(invalid_labels("a supported BRC-177 expiry mode"));
+    }
+    let value = parse_canonical_unsigned_integer(value)?;
+    if mode == "seconds" && value == 0 {
+        return Err(invalid_labels(
+            "a BRC-177 seconds duration greater than zero",
+        ));
+    }
+    Ok(true)
 }
 #[cfg(test)]
 #[path = "tests/validation_bounds.rs"]

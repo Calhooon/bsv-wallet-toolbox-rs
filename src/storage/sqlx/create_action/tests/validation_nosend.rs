@@ -4,6 +4,8 @@
 //! (ts-stack@edf6e03 `createNoSendExpiryAction.ts:201-203`) and writes no
 //! row, as `0177.md:53` asks. The prefix is exact (`brc177NoSendExpiry.ts:5`,
 //! matched by `startsWith` at `:119`): anything else is ordinary metadata.
+//! A label the BRC-177 grammar refuses answers with the grammar's own text
+//! first (#359, `validation_nosend_grammar.rs`).
 
 use super::super::create_action_internal;
 use super::super::test_support::seed_change_output;
@@ -94,25 +96,6 @@ async fn nosend_expiry_seconds_label_is_refused_and_writes_no_row() {
 }
 
 #[tokio::test]
-async fn nosend_expiry_never_label_is_refused() {
-    assert_refused(&["p nosend expiry never"]).await;
-}
-
-#[tokio::test]
-async fn nosend_batch_label_is_refused() {
-    assert_refused(&["p nosend batch"]).await;
-}
-
-#[tokio::test]
-async fn two_nosend_expiry_labels_are_refused() {
-    assert_refused(&[
-        "p nosend expiry seconds 300",
-        "p nosend expiry blockheight 900000",
-    ])
-    .await;
-}
-
-#[tokio::test]
 async fn nosend_label_beside_ordinary_labels_is_refused() {
     assert_refused(&["invoice", "p nosend expiry timestamp 1900000000"]).await;
 }
@@ -130,7 +113,7 @@ async fn labels_outside_the_exact_prefix_are_accepted() {
 #[tokio::test]
 async fn nosend_label_is_matched_trimmed_and_lowercased() {
     assert_refused(&["P NoSend expiry seconds 300"]).await;
-    assert_refused(&["  p nosend batch"]).await;
+    assert_refused(&["  p nosend expiry blockheight 900000  "]).await;
 }
 
 /// `p nosend ` trims to `p nosend`, outside the prefix, as in the reference.
