@@ -100,6 +100,18 @@
   by the sequence column. The cost is one raw-transaction read and parse per
   listed action that has inputs, where it was none. The column is still
   written, synced and read by the other readers as #306 left it.
+- #304: `StorageSqlx::allocate_change_input` and `count_change_inputs` no
+  longer take a received coin (`purpose = 'receive'`) whose parent is not
+  `completed`: an unproven or sending receipt they picked before is now
+  held, as the create door holds it for an action that does not name the
+  rule (the wallet charter's R1 (d), #169). The two allocators share the
+  door's `RECEIVED_COIN_CLAUSE`; the public signature names no rule, so it
+  is off there. The same receipt under a `completed` parent and the
+  wallet's own unproven change are taken as before. No signature moves.
+  Nothing in the crate calls these two in production (the door and the
+  door bench use the door's allocator); a dependent that calls them sees
+  fewer coins while a receipt is unmined. bsv-wallet-cli's spend gate holds
+  the same coin from outside.
 - #187: `create_action` with `signAndProcess` now writes the
   `processActionPost` note on `proven_tx_reqs.history`, as the door's post
   path does and as every post in `ts-stack@edf6e03` writes its notes through
