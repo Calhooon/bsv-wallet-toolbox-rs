@@ -2676,6 +2676,13 @@ where
         )
         .await?;
 
+        // Argument checks before the lookup, certifier then verifier, as at
+        // ts-stack@edf6e03 validationHelpers.ts:1490-1493,1509. The lookup
+        // matches the stored certifier to this one byte for byte.
+        let certifier =
+            validate_public_key_arg(&args.certificate.certifier, "certificate.certifier")?;
+        let verifier = validate_public_key_arg(&args.verifier, "verifier")?;
+
         let auth = self.auth();
 
         // Build list_certificates args to find the certificate matching the provided certificate
@@ -2723,16 +2730,6 @@ where
             bsv_rs::Error::WalletError(
                 "Certificate does not have a master keyring stored".to_string(),
             )
-        })?;
-
-        // Parse the verifier public key
-        let verifier = PublicKey::from_hex(&args.verifier).map_err(|e| {
-            bsv_rs::Error::WalletError(format!("Invalid verifier public key: {}", e))
-        })?;
-
-        // Parse the certifier public key
-        let certifier = PublicKey::from_hex(&storage_cert.certificate.certifier).map_err(|e| {
-            bsv_rs::Error::WalletError(format!("Invalid certifier public key: {}", e))
         })?;
 
         // Create keyring for verifier
@@ -3316,6 +3313,33 @@ fn validate_certificate_base64_values(
     Ok(())
 }
 
+/// Validates a compressed public key argument with the reference's texts
+/// (ts-stack@edf6e03 validationHelpers.ts:185-191,522-534, WERR_INVALID_PARAMETER.ts:14).
+fn validate_public_key_arg(value: &str, name: &str) -> bsv_rs::Result<PublicKey> {
+    let invalid = |must_be: String| -> bsv_rs::Error {
+        Error::ValidationError(format!("The {name} parameter must be {must_be}")).into()
+    };
+    // JavaScript counts UTF-16 code units.
+    let length = value.encode_utf16().count();
+    if length % 2 == 1 {
+        return Err(invalid(format!("even length, not {length}.")));
+    }
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid("hexadecimal string.".to_string()));
+    }
+    if length < 66 {
+        return Err(invalid("at least 66 length.".to_string()));
+    }
+    if length > 66 {
+        return Err(invalid("no more than 66 length.".to_string()));
+    }
+    match value.get(..2) {
+        Some("02" | "03") => PublicKey::from_hex(value).ok(),
+        _ => None,
+    }
+    .ok_or_else(|| invalid("a valid compressed secp256k1 public key".to_string()))
+}
+
 /// Creates a keyring for a verifier, enabling them to decrypt specific certificate fields.
 ///
 /// This function follows the TypeScript/Go implementation:
@@ -3325,8 +3349,8 @@ fn validate_certificate_base64_values(
 ///
 /// # Arguments
 /// * `subject_wallet` - The subject's wallet (implements encryption/decryption)
-/// * `certifier` - The certifier's public key
-/// * `verifier` - The verifier's public key who will receive the keyring
+/// * `certifier` - The certifier's public key, validated as an argument before the lookup
+/// * `verifier` - The verifier's public key who will receive the keyring, validated likewise
 /// * `fields` - All encrypted field values from the certificate (base64 encoded)
 /// * `fields_to_reveal` - Field names to include in the verifier keyring
 /// * `master_keyring` - The master keyring containing encrypted symmetric keys (base64 encoded)
