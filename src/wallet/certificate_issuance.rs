@@ -784,13 +784,19 @@ async fn verify_server_nonce<W: WalletInterface + Send + Sync>(
     }
     let mut hmac = [0; NONCE_HMAC_SIZE];
     hmac.copy_from_slice(&bytes[16..]);
+    // TextDecoder strips one leading BOM before returning the decoded text.
+    let data_text = String::from_utf8_lossy(&bytes[..16]);
+    let key_id = data_text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&data_text)
+        .to_string();
     let result = wallet
         .verify_hmac(
             VerifyHmacArgs {
                 hmac,
                 data: bytes[..16].to_vec(),
                 protocol_id: Protocol::new(SecurityLevel::Counterparty, "server hmac"),
-                key_id: String::from_utf8_lossy(&bytes[..16]).into_owned(),
+                key_id,
                 counterparty: Some(Counterparty::Other(certifier.clone())),
                 ..Default::default()
             },
@@ -800,7 +806,7 @@ async fn verify_server_nonce<W: WalletInterface + Send + Sync>(
     Ok(result.valid)
 }
 
-/// Runs the response guards in Wallet.ts:806-817 order.
+/// Runs the response guards in Wallet.ts:806-816 order.
 #[allow(clippy::too_many_arguments)]
 async fn verify_certificate_issuance<W>(
     wallet: &W,
