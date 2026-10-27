@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::{
     commit, AuthId, Error, PurgeParams, PurgeResults, Result, ReviewStatusResult, StorageSqlx,
     WalletStorageReader,
@@ -236,7 +238,7 @@ impl StorageSqlx {
         // still reconcile (any status but `invalid` / `doubleSpend`) is left;
         // `spent_by` stays for check 4. `spendable = 1` keeps it idempotent.
         let swept = sqlx::query(
-            r#"
+            r"
             UPDATE outputs SET spendable = 0, updated_at = ?
             WHERE spendable = 1
               AND transaction_id IN (
@@ -248,7 +250,7 @@ impl StorageSqlx {
                       AND r.status NOT IN ('invalid', 'doubleSpend')
                   )
               )
-            "#,
+            ",
         )
         .bind(now)
         .execute(&mut *tx)
@@ -258,10 +260,7 @@ impl StorageSqlx {
         let failed_count = failed_ids.len();
 
         if swept > 0 {
-            log.push_str(&format!(
-                "Voided {} outputs created by failed transactions\n",
-                swept
-            ));
+            let _ = writeln!(log, "Voided {swept} outputs created by failed transactions");
         }
 
         if failed_count > 0 {
