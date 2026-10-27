@@ -660,16 +660,22 @@ fn decode_issuance_base64(value: &str) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
+// WalletByteEncoding.base64ToBytes: canonical padding and zero padding bits only.
+fn decode_canonical_base64_32(value: &str) -> Option<[u8; 32]> {
+    let bytes = BASE64.decode(value).ok()?;
+    if BASE64.encode(&bytes) != value {
+        return None;
+    }
+    bytes.try_into().ok()
+}
+
+// Certificate.verify (Certificate.ts:425-441) answers false on any toBinary
+// throw; Wallet.ts:816 turns that into one text.
 fn decode_issued_certificate(raw: &CertificateResponse) -> Result<Certificate> {
     let invalid = || Error::ValidationError("Certificate verification failed".into());
-    let cert_type = decode_issuance_base64(&raw.cert_type)
-        .map_err(|_| invalid())?
-        .try_into()
-        .map_err(|_| invalid())?;
-    let serial = decode_issuance_base64(&raw.serial_number)
-        .map_err(|_| invalid())?
-        .try_into()
-        .map_err(|_| invalid())?;
+    // toBinary's assertCanonicalBase64Length (Certificate.ts:233, :237).
+    let cert_type = decode_canonical_base64_32(&raw.cert_type).ok_or_else(invalid)?;
+    let serial = decode_canonical_base64_32(&raw.serial_number).ok_or_else(invalid)?;
     let subject = PublicKey::from_hex(&raw.subject).map_err(|_| invalid())?;
     let certifier = PublicKey::from_hex(&raw.certifier).map_err(|_| invalid())?;
     let mut certificate = Certificate::new(cert_type, serial, subject, certifier);
