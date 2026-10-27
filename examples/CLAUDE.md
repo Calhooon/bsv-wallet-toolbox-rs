@@ -17,16 +17,16 @@ cargo run --example monitor_demo       # Monitor daemon task scheduling
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `basic_wallet.rs` | 47 | Services creation for mainnet/testnet, `ServicesOptions` builder pattern |
+| `basic_wallet.rs` | 62 | Services creation for mainnet/testnet, `ServicesOptions` builder pattern |
 | `monitor_demo.rs` | 95 | `MonitorOptions` defaults, all 11 `TaskConfig` intervals, custom/disabled tasks |
 
 ## basic_wallet.rs
 
 Demonstrates the `Services` orchestrator and `ServicesOptions` builder:
 
-- `Services::mainnet()` / `Services::testnet()` - Create default provider sets
-- `Services::with_options(Chain, ServicesOptions)` - Custom configuration
-- `ServicesOptions::default().with_bhs_url().with_bhs_api_key()` - Builder methods
+- `Services::mainnet()` / `Services::testnet()` - Refuse: the defaults name no Arcade endpoint (#317)
+- `Services::with_options(Chain, ServicesOptions::mainnet().with_arcade(url, None))` - Arcade, the default mode, at `ARCADE_URL` (a loopback placeholder when unset)
+- `ServicesOptions::default().with_arcade().with_bhs_url().with_bhs_api_key()` - Builder methods
 - `ServicesOptions::mainnet().with_woc_api_key().with_bitails_api_key().with_bhs()` - Full builder chain
 
 **Key imports:** `bsv_wallet_toolbox::{Chain, Services, ServicesOptions}`

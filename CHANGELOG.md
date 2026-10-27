@@ -4,15 +4,55 @@
 
 ### Changed
 
+- #317, public defaults: Arcade is the default broadcaster mode, the
+  owner's word of 2026-10-27 ("arc is just deprecated, arcade is the
+  standard"). The public lines that move:
+  - `ServicesOptions::default()`, `mainnet()` and `testnet()`: `arcade_v2`
+    is `true` (was `false`), `arc_url` is empty (was the TAAL classic ARC
+    URL of each chain), `arc_gorillapool_url` is `None` (was GorillaPool's
+    classic ARC URL on mainnet). Every field keeps its name and type.
+  - `Services::with_options` refuses options in Arcade mode whose `arc_url`
+    is empty, with `Invalid argument: ServicesOptions names no Arcade
+    endpoint: Arcade is the default mode (#317); set one with
+    ServicesOptions::with_arcade(url, config)`. No Arcade endpoint is this
+    crate's to name as a default, and the reference has no counterpart.
+    `Services::new`, `Services::mainnet()` and `Services::testnet()` build
+    from the defaults, so they now refuse with that text.
+  - New `ServicesOptions::with_classic_arc(url, config)`, deprecated since
+    0.14.0: sets `arc_url` and `arc_config` and `arcade_v2 = false`, the
+    classic ladder (TAAL ARC, GorillaPool ARC when `with_gorillapool` set
+    it, Bitails, WhatsOnChain). It serves the CLI's hermetic stub until it
+    speaks Arcade.
+  - `ServicesOptions::with_arc(url, config)` is deprecated since 0.14.0 and
+    is now the same as `with_classic_arc`: it also sets `arcade_v2 = false`
+    (it left the mode alone before).
+
+  What a dependent does: name the Arcade endpoint with
+  `ServicesOptions::mainnet().with_arcade(url, config)` (or `testnet()`)
+  before `Services::with_options`, in place of `Services::mainnet()` or
+  bare default options; a classic ARC stub moves onto `with_classic_arc`
+  under `#[allow(deprecated)]`. A struct literal over `..mainnet()` that
+  means classic ARC sets `arcade_v2: false` itself. For the CLI's captain
+  (its beta at the time of writing): `services_env::services_options` calls
+  `with_arcade` in Arcade mode, unchanged; its classic branch calls
+  `with_arc(settings.arc_url or opts.arc_url)`, which now warns as
+  deprecated and, with `ARC_URL` unset, gets an empty `arc_url` where it
+  had the TAAL URL, so the CLI names its classic URL itself or moves to
+  Arcade; `test_support::mock_services` and the tests building
+  `Services::with_options(Chain::Main, ServicesOptions::mainnet())` now
+  build Arcade mode (the stub speaks classic ARC) or refuse;
+  `config/knobs.rs` shows an empty `ARC_URL` default in classic mode;
+  `services_env`'s GorillaPool default reads `None` on mainnet. CLI #300
+  pins this version.
 - #317: in Arcade mode (`ServicesOptions::arcade_v2`, set by `with_arcade`)
   no classic ARC provider is built, whatever `arc_gorillapool_url` says. The
   post ladder is `ArcadeV2`, then `Bitails`, then `WhatsOnChain`; TAAL's and
   GorillaPool's classic ARC are no longer failovers, and the
   broadcaster-status read (`get_broadcaster_statuses`) asks Arcade alone.
   The owner's word of 2026-10-27: "we use arcade now". Classic mode
-  (`arcade_v2` false, the default) is unchanged: TAAL from `arc_url`,
-  GorillaPool when configured, then Bitails and WhatsOnChain. Every
-  `ServicesOptions` field and default stays.
+  (`arcade_v2` false) is unchanged: TAAL from `arc_url`, GorillaPool when
+  configured, then Bitails and WhatsOnChain; the entry above makes Arcade
+  the default and classic mode the deprecated `with_classic_arc`.
 - #317, public field: `Services::arc_taal` is `Option<StdArc<Arc>>` (was
   `StdArc<Arc>`), `None` in Arcade mode. A dependent that read
   `services.arc_taal` matches on the option (`if let Some(arc) =
