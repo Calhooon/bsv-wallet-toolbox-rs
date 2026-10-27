@@ -245,8 +245,9 @@ mod tests {
             sqlx::query(
                 "INSERT INTO outputs (user_id, transaction_id, basket_id, vout, satoshis, \
                  locking_script, txid, type, spendable, change, provided_by, purpose, \
-                 output_description, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, 1000, X'51', ?, 'P2PKH', 1, 1, 'storage', 'change', 'f7', ?, ?)",
+                 derivation_prefix, derivation_suffix, output_description, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, 1000, X'51', ?, 'P2PKH', 1, 1, 'storage', 'change', \
+                 'prefix', 'suffix', 'f7', ?, ?)",
             )
             .bind(user.user_id)
             .bind(funding)
