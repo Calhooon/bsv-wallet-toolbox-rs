@@ -563,7 +563,7 @@ Used by: `NewHeaderTask`, `MonitorCallHistoryTask`
 - `clock.rs`: 3 tests (2 async) — first-run, same-minute, and default behavior
 - `fail_abandoned.rs`: 2 unit tests — name and interval
 - `monitor_call_history.rs`: 4 tests (1 async) — name, interval, run on fresh services, `ServicesCallHistory` default
-- `new_header.rs`: 2 tests (1 async) — interval and task initialization with `Services::mainnet()`
+- `new_header.rs`: 7 async tests, interval, task initialization and runs over `MockWalletServices`
 - `purge.rs`: 2 unit tests — `PurgeConfig` defaults and interval
 - `reorg.rs`: 4 unit tests — interval, `MAX_RETRY_COUNT`, delay constant, `DeactivatedHeader` struct
 - `review_status.rs`: 1 unit test — interval
