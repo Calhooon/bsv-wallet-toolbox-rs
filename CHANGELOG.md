@@ -17,7 +17,7 @@
   `failed` with no request that could still reconcile (no request, or one that
   is `invalid` or `doubleSpend`): `spendable = 0`, `spent_by` kept for check 4,
   `updated_at` advanced. A store from 0.13.0, which holds `failed` beside
-  `spendable = 1`, heals on the first pass after upgrade; #164 voided only the
+  `spendable = 1`, heals on the pass after upgrade; #164 voided only the
   outputs of the pass's own failures. This follows `ts-stack@edf6e03`
   `packages/wallet/wallet-toolbox/src/storage/methods/reviewStatus.ts:93-119`
   (unbounded, every pass), except that the reference also clears `spentBy`.

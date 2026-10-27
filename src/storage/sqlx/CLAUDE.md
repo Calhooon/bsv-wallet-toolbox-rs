@@ -200,7 +200,7 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `send_waiting_transactions()` | Query unsent/sending proven_tx_reqs older than min age, build BEEF from raw_tx + input_beef, broadcast via `services.post_beef()`; every word short of an acceptance is a hint recorded on the request and re-asked on the cadence, a named competitor queued for a proof ask (bsv-stack-lean #65, #66) |
 | `abort_abandoned()` | Query unsigned/unprocessed outgoing transactions older than timeout, abort each via `abort_action` |
 | `un_fail()` | Query unfail proven_tx_reqs, check chain for merkle path via services, restore to unmined/unproven if found, mark invalid if not |
-| `review_status()` | Monitor-level status review across all users (no AuthId required); an invalid request fails its transaction and voids its created outputs atomically, leaving consumed inputs unchanged |
+| `review_status()` | Monitor-level status review across all users (no AuthId required); an invalid request fails its transaction and voids its created outputs atomically, leaving consumed inputs unchanged; every terminal failed creator's outputs still `spendable = 1` are voided each pass, so a store from 0.13.0 heals on the pass after upgrade (#175) |
 | `purge_data()` | Monitor-level purge (no AuthId required) |
 | `try_acquire_task_lock()` | Acquire in-memory task lock for multi-instance monitor support (lock TTL = 2x task interval) |
 | `release_task_lock()` | Release a previously acquired task lock |
