@@ -4166,3 +4166,7 @@ mod bounds_tests;
 #[cfg(test)]
 #[path = "internalize_nosend_tests.rs"]
 mod nosend_tests;
+
+#[cfg(test)]
+#[path = "internalize_remittance_tests.rs"]
+mod remittance_tests;
