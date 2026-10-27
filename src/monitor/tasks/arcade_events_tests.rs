@@ -412,8 +412,8 @@ async fn stored_event_state(storage: &StorageSqlx, txid: &str) -> StoredEventSta
 }
 
 /// The writer handouts `apply_event` makes on a busy store: each is one
-/// arm that waits `busy_timeout` at its first write, so the count is the
-/// number of busy waits without reading a clock (#244).
+/// arm that waits `busy_timeout` at the write that takes the lock, so the
+/// count is the number of busy waits without reading a clock (#244).
 async fn count_status_busy_arms(status: &str, known: bool) -> usize {
     let timeout = Duration::from_millis(200);
     let scene = Scene::new().await;
