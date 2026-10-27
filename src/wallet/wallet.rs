@@ -2971,9 +2971,15 @@ where
 // Helper Functions
 // =============================================================================
 
-/// Validates a supplied originator (`ts-stack@edf6e03`, `validationHelpers.ts:1005-1036`).
-/// The pinned `WalletInterface` cannot distinguish an absent originator from `""`.
+/// Validates an in-process originator (`ts-stack@edf6e03`, `validationHelpers.ts:1003-1036`).
 fn validate_originator(originator: &str) -> Result<()> {
+    // #284 interim: the pinned WalletInterface carries &str, so "" means absence.
+    // The reference refuses "" by its length rule; restore that verdict when
+    // bsv-rs #<pending> carries Option<&str> in WalletInterface.
+    if originator.is_empty() {
+        return Ok(());
+    }
+
     let originator = trim_ecmascript_whitespace(originator).to_lowercase();
     let invalid = |name: &str, rule: &str| {
         Error::ValidationError(format!("The {name} parameter must be {rule}"))
@@ -3934,8 +3940,8 @@ mod tests {
         // Valid originator
         assert!(validate_originator("app.example.com").is_ok());
 
-        // Empty originator
-        assert!(validate_originator("").is_err());
+        // Empty originator is absence until the SDK carries Option (#284).
+        assert!(validate_originator("").is_ok());
 
         // Too long originator
         let long_originator = "a".repeat(254);
@@ -3943,8 +3949,8 @@ mod tests {
     }
 
     // #284: bsv-rs@0.9.0-beta.1 and identity #322 erase None to "" before
-    // calling WalletInterface. The absent and explicit-empty expectations
-    // cannot both pass until that boundary preserves the distinction.
+    // calling WalletInterface. The interim accepts both as absence until
+    // that boundary can preserve the distinction.
     #[cfg(feature = "sqlite")]
     mod originator_284 {
         use super::super::busy_door_tests::{fund_tagged, wallet};
@@ -3972,17 +3978,6 @@ mod tests {
             wallet.list_outputs(args, originator).await
         }
 
-        fn assert_empty_error(error: bsv_rs::Error) {
-            let bsv_rs::Error::WalletError(words) = error else {
-                panic!("expected originator validation, got {error:?}");
-            };
-            // validationHelpers.ts:1006 -> :351-352; WERR_INVALID_PARAMETER:14.
-            assert_eq!(
-                words,
-                "Validation error: The originator parameter must be at least 1 length."
-            );
-        }
-
         #[tokio::test]
         async fn named_originator_reaches_both_doors() {
             let created = create("app.example.com").await.unwrap();
@@ -4007,13 +4002,14 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn create_action_refuses_explicit_empty_originator() {
-            assert_empty_error(create("").await.unwrap_err());
+        async fn create_action_accepts_empty_originator_as_absence_until_sdk_option() {
+            let created = create("").await.unwrap();
+            assert!(created.signable_transaction.is_some());
         }
 
         #[tokio::test]
-        async fn list_outputs_refuses_explicit_empty_originator() {
-            assert_empty_error(list("").await.unwrap_err());
+        async fn list_outputs_accepts_empty_originator_as_absence_until_sdk_option() {
+            assert_eq!(list("").await.unwrap().total_outputs, 0);
         }
 
         #[test]
@@ -4040,7 +4036,6 @@ mod tests {
             let overlong_host = format!("{maximum_host}x");
             let overlong_part = "a".repeat(64);
             for (originator, name, rule) in [
-                ("", "originator", "at least 1 length."),
                 (" \u{feff} ", "originator", "at least 1 length."),
                 (&overlong_host, "originator", "no more than 250 length."),
                 (":80", "originator hostname", "at least 1 length."),
