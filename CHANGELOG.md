@@ -108,6 +108,16 @@
   sequence where it answered 0. Raw bytes that do not parse stay the call's
   error (`SdkError(ReaderUnderflow { .. })` for short bytes), now witnessed.
 
+- #345: classic mode refuses an empty ARC endpoint at construction, as
+  Arcade mode does. Before, the deprecated `with_classic_arc` given an empty
+  (or blank) url built a TAAL ARC rung at "" whose every post faulted: a
+  host that passed an unset endpoint got a dead first rung ahead of Bitails
+  and WhatsOnChain and no error at startup. `Services::with_options` now
+  answers `Invalid argument: ServicesOptions names no classic ARC endpoint:
+  with_classic_arc(url) was given an empty url; name the TAAL ARC endpoint,
+  or use ServicesOptions::with_arcade(url, config)` (the port's own text:
+  the reference has no classic knob). A host on classic mode names its URL
+  or moves to Arcade.
 - #357: internalizeAction refuses a request carrying a BRC-177 `p nosend `
   label (matched trimmed and lowercased, as the SDK's validateLabel leaves
   it) with `The labels parameter must be BRC-177 noSend expiry labels only on
