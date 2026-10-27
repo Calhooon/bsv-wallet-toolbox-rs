@@ -708,7 +708,7 @@ host's retire are `failed` with `invalid`. The transitions, with who writes each
 
 Where the code and a charter at `36d2d6b` disagree, both cited; nothing judged. D7, D10 and D11 are against the reference, not a charter, and say so in their third cell.
 
-The `filing` column (#343) says where each row is logged: `<repo> #<n>` for the other SDK's issue on its repository; `ours: ` with one sentence of the reading and the charter line that rules it, when the divergence is the port's or the stack's own and asks nothing of another SDK; or `to file: <repo>` with the finding in one sentence, while the filing waits (the keeper files under the owner's name; the captain asks). Every open `divergence` issue has a row; `tools/arch-doc-tests.sh` refuses an empty cell.
+The `filing` column (#343) says where each row is logged: `<repo> #<n>` for the other SDK's issue on its repository; `ours: ` (or `ours (#<n>): `, naming the toolbox's issue) with one sentence of the reading and the charter line that rules it, when the divergence is the port's or the stack's own and asks nothing of another SDK; or `to file: <repo>` with the finding in one sentence, while the filing waits (the keeper files under the owner's name; the captain asks). Every open `divergence` issue has a row; `tools/arch-doc-tests.sh` refuses an empty cell.
 
 | # | the code | the charter | filing |
 |---|---|---|---|
