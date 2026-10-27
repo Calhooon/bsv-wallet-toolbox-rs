@@ -24,6 +24,12 @@
   error (the allocator still reads it as `None`). The reference's column is
   `integer('sequenceNumber').unsigned()` (`ts-stack@edf6e03`
   `KnexMigrations.ts:766`). No schema or public shape change.
+- #280: `prove_certificate` refuses more than 100000 `fields_to_reveal`
+  entries with `Validation error: The fieldsToReveal parameter must be an
+  array of at most 100000 items` after the signature check and ahead of the
+  name checks, as `ts-stack@edf6e03` `validationHelpers.ts:1506` does through
+  `validateArray` (105-114, bound at 67). Such a request previously read
+  `... must be at most 100 fields`, or a name or verifier text.
 - #287: `StorageSqlx::allocate_change_input` returns the stored `outputs.type`
   in `TableOutput.output_type` and its serialized `outputType` field instead
   of silently returning an empty string for the missing `output_type` column.

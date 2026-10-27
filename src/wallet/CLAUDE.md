@@ -564,7 +564,7 @@ The verifier unwraps that key under `"{serial_number_base64} {field_name}"`,
 Base64-decodes the field ciphertext, decrypts it with the recovered key, and
 reads the plaintext as UTF-8. The keyring does not carry the field plaintext.
 
-1. **Validate arguments** - After permission, check type, serial, certifier, subject, signature, requested name lengths, then verifier before the lookup (`ts-stack@edf6e03 validationHelpers.ts:1483-1509`)
+1. **Validate arguments** - After permission, check privilegedReason, type, serial, certifier, subject, revocation outpoint, signature, the 100000-item array bound, requested name lengths, verifier, then the 100-name count and uniqueness before the lookup (`ts-stack@edf6e03 validationHelpers.ts:1477-1518`)
 2. **Query certificate** - Finds unique certificate matching normalized args via `list_certificates`
 3. **Validate keyring** - Ensures storage has master keyring for decryption
 4. **Create verifier keyring** - For each field to reveal:
@@ -793,8 +793,18 @@ than 100 requested names read
 `The fieldsToReveal parameter must be at most 100 fields` and a repeated name
 `The fieldsToReveal parameter must be unique field names` (1513-1518, the
 bound at 70). These precede the helper's own entry-limit and duplicate texts,
-which its direct tests still assert. The reference's 100000-item array bound
-at 105-114 is not ported.
+which its direct tests still assert.
+
+For #280, after signature and ahead of the requested names, more than 100000
+requested names read
+`The fieldsToReveal parameter must be an array of at most 100000 items`
+(`validateArray` at 105-114, its default bound at 67, called at 1506); 100000
+pass it and meet the count above. No earlier helper bounds the array.
+The reference's other `validateArray` callers (createAction's inputs, outputs,
+labels, output tags, knownTxids and noSendChange; internalizeAction's outputs
+and labels; basket insertion tags; listCertificates' certifiers and types;
+listOutputs' tags; listActions' labels) validate outside `wallet.rs` in this
+port and are not bounded here.
 
 ### Protocol Flow
 
