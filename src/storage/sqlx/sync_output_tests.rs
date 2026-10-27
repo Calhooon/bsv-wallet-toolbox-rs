@@ -350,3 +350,100 @@ async fn output_spent_by_uses_transaction_map_from_an_earlier_chunk() {
     .await;
     sync.assert_stored().await;
 }
+
+#[tokio::test]
+async fn output_newer_row_update_writes_only_the_reference_columns() {
+    // EntityOutput.mergeExisting (ts-stack edf6e03, :340-357) assigns basketId,
+    // spentBy, spendable, change, type, providedBy, purpose, outputDescription,
+    // spendingDescription, senderIdentityKey, customInstructions, scriptLength,
+    // scriptOffset, lockingScript and updated_at. It leaves satoshis,
+    // derivationPrefix and derivationSuffix as stored. transactionId is the
+    // match key (mergeFind, :306-311): a remote ID that resolves to the stored
+    // transaction updates this row and leaves its transaction_id.
+    let mut sync = OutputSync::new().await;
+    let original = sync.export().await;
+    sync.apply(original).await;
+    sync.assert_stored().await;
+
+    let mut newer = sync.export().await;
+    let incoming = &mut newer.outputs.as_mut().unwrap()[0];
+    // Unmapped remote ID with the stored txid: resolves to the stored transaction.
+    incoming.transaction_id = 999;
+    incoming.satoshis = 777;
+    incoming.derivation_prefix = Some("b3RoZXI=".into());
+    incoming.derivation_suffix = None;
+    incoming.spent_by = Some(203);
+    incoming.spendable = true;
+    incoming.change = false;
+    incoming.output_type = "P2PKH".into();
+    incoming.provided_by = "you".into();
+    incoming.purpose = Some("custom".into());
+    incoming.output_description = Some("updated output".into());
+    incoming.spending_description = None;
+    incoming.sender_identity_key = None;
+    incoming.custom_instructions = Some("new instructions".into());
+    incoming.locking_script = Some(vec![0x76, 0xa9, 0x88]);
+    incoming.script_length = 3;
+    incoming.script_offset = 7;
+    incoming.updated_at += Duration::seconds(1);
+    let incoming = incoming.clone();
+    sync.apply(newer).await;
+
+    let e = &mut sync.expected;
+    e.spent_by = incoming.spent_by;
+    e.spendable = incoming.spendable;
+    e.change = incoming.change;
+    e.output_type = incoming.output_type;
+    e.provided_by = incoming.provided_by;
+    e.purpose = incoming.purpose;
+    e.output_description = incoming.output_description;
+    e.spending_description = incoming.spending_description;
+    e.sender_identity_key = incoming.sender_identity_key;
+    e.custom_instructions = incoming.custom_instructions;
+    e.locking_script = incoming.locking_script;
+    e.script_length = incoming.script_length;
+    e.script_offset = incoming.script_offset;
+    e.updated_at = incoming.updated_at;
+    // assert_stored also holds transaction_id, satoshis, derivation_prefix,
+    // derivation_suffix and sequence_number at their stored values.
+    sync.assert_stored().await;
+}
+
+#[tokio::test]
+async fn output_incoming_row_on_another_transaction_is_another_output() {
+    // mergeFind keys on (userId, mapped transactionId, vout) (ts-stack edf6e03,
+    // EntityOutput.ts:306-311; MergeEntity.ts:55-62): a row whose transaction
+    // maps elsewhere is not found and goes to mergeNew, never over the stored row.
+    let mut sync = OutputSync::new().await;
+    let original = sync.export().await;
+    sync.apply(original).await;
+    sync.assert_stored().await;
+    let stored_id = sync.map.output[&303];
+
+    let mut other = sync.export().await;
+    let incoming = &mut other.outputs.as_mut().unwrap()[0];
+    incoming.output_id = 304;
+    incoming.transaction_id = 202;
+    incoming.satoshis = 777;
+    incoming.updated_at += Duration::seconds(1);
+    sync.apply(other).await;
+
+    let rows = sqlx::query("SELECT output_id, transaction_id, satoshis FROM outputs")
+        .fetch_all(sync.target.pool())
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    let new_id = sync.map.output[&304];
+    assert_ne!(new_id, stored_id);
+    for row in &rows {
+        let id: i64 = row.get("output_id");
+        let (tx, sats) = if id == stored_id {
+            (sync.map.transaction[&101], sync.expected.satoshis)
+        } else {
+            assert_eq!(id, new_id);
+            (sync.map.transaction[&202], 777)
+        };
+        assert_column::<i64>(row, "transaction_id", &tx);
+        assert_column::<i64>(row, "satoshis", &sats);
+    }
+}
