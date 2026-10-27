@@ -229,8 +229,40 @@ impl StorageSqlx {
             }
             query.execute(&mut *tx).await?;
         }
+
+        // Sweep every terminal failed creator, not only this pass's (#175):
+        // a store from 0.13.0 holds `failed` beside `spendable = 1`. As the
+        // reference's reviewStatus does, a failed transaction whose req could
+        // still reconcile (any status but `invalid` / `doubleSpend`) is left;
+        // `spent_by` stays for check 4. `spendable = 1` keeps it idempotent.
+        let swept = sqlx::query(
+            r#"
+            UPDATE outputs SET spendable = 0, updated_at = ?
+            WHERE spendable = 1
+              AND transaction_id IN (
+                SELECT t.transaction_id FROM transactions t
+                WHERE t.status = 'failed'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM proven_tx_reqs r
+                    WHERE r.txid = t.txid
+                      AND r.status NOT IN ('invalid', 'doubleSpend')
+                  )
+              )
+            "#,
+        )
+        .bind(now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         commit(tx).await?;
         let failed_count = failed_ids.len();
+
+        if swept > 0 {
+            log.push_str(&format!(
+                "Voided {} outputs created by failed transactions\n",
+                swept
+            ));
+        }
 
         if failed_count > 0 {
             log.push_str(&format!(
