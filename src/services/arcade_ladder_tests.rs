@@ -243,7 +243,7 @@ fn gorillapool_defaults_to_none() {
 
 // Classic mode refuses an empty endpoint as Arcade mode does (#345): before,
 // the deprecated knob at "" built a TAAL rung at "" whose every post faulted,
-// so a host that passed an unset `ARC_URL` got a dead first rung and no
+// so a host that passed an unset `ARC_URL` got a dead rung at the top and no
 // error at startup. The reference has no classic knob: the text is the
 // port's own.
 
