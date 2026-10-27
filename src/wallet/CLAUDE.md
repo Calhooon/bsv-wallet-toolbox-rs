@@ -606,6 +606,11 @@ Hosts must re-issue every certificate produced by the toolbox's own issuance
 before #203: those fields and keyrings do not decrypt with the reference, Go
 or bsv-rs's corrected scheme. Stored certificates from the reference now
 prove and decrypt through the toolbox.
+For #222, `prove_certificate` decrypts each requested field under its recovered
+master key before wrapping it for the verifier, refusing a mismatched pair with
+`bsv_rs::Error::WalletError("Failed to decrypt certificate field!")` as the
+reference's plain `Error` does (`ts-stack@edf6e03`,
+`MasterCertificate.ts:382-393,612-622`).
 
 ### Protocol Flow
 
