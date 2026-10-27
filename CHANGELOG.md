@@ -37,12 +37,25 @@
   locking script and integer satoshis, then spendability only without
   `noSend`, following `ts-stack@edf6e03`
   `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts:972-983`.
+- #245: `create_action` refuses a caller-named unspendable stored output
+  under `noSend` too, preserving its previous spender if a later action is
+  aborted. The stored-input guards check change, then locking script and
+  integer satoshis, then `markKnownInputsSpent` in `ts-stack@edf6e03`
+  `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts:399-436`,
+  called at `:503`. The `:982` gate is disabled by default at `:61`.
+  Without a competing txid, an unspendable row uses `Error::ValidationError`
+  with the live `:420-423` text:
+  `The inputs[N] parameter must be spendable output. output <txid>:<vout> appears to have been spent (spendable=false).`
+  A stored spender with a txid requires double-spend review, even when its
+  status is failed; the existing `Error::InvalidOperation` carries
+  `Undelayed createAction or signAction results require review. doubleSpend: <txid>`.
+  A spender without a txid falls through to the output's spendability flag.
   Missing script or satoshis now uses `Error::ValidationError` with
   `The <txid>.<vout> parameter must be output with valid lockingScript and satoshis`,
   without a trailing period (`:979-980` and
   `packages/wallet/wallet-toolbox/src/sdk/WERR_errors.ts:105`). Stored
-  transaction bytes can still supply a pruned script. The existing change
-  and spendability refusal texts are retained.
+  transaction bytes can still supply a pruned script. The change guard and
+  its refusal text at `:972-976` are retained.
 
 - #240: `prove_certificate` now refuses certificate serial numbers that do not
   canonically encode exactly 32 bytes, after map-value validation and before
