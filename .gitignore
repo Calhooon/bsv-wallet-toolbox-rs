@@ -28,3 +28,4 @@ coverage/
 
 # /graphify skill scratch output (never publish)
 graphify-out/
+__pycache__/

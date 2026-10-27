@@ -483,7 +483,7 @@ Synchronizes transaction status with ProvenTxReq status.
 | State | `check_now: AtomicBool` flag |
 
 **Workflow** (`MonitorStorage::review_status`, `storage_sqlx/maintenance.rs`):
-1. Check 1, one `write_tx()`: a transaction whose request is `invalid` is marked `failed` and its created outputs voided; then every output still `spendable = 1` whose creator is `failed` with no request that could still reconcile (none, or `invalid` / `doubleSpend`) is voided (`spendable = 0`, `spent_by` kept, `updated_at` advanced), so a store from 0.13.0 heals its failed-beside-spendable rows on the first pass after upgrade (#175; the reference's `reviewStatus.ts:93-119` at ts-stack edf6e03). Unbounded, as the reference's; a repeat pass writes nothing. Consumed inputs are never released here (check 2 was removed).
+1. Check 1, one `write_tx()`: a transaction whose request is `invalid` is marked `failed` and its created outputs voided; then every output still `spendable = 1` whose creator is `failed` with no request that could still reconcile (none, or `invalid` / `doubleSpend`) is voided (`spendable = 0`, `spent_by` kept, `updated_at` advanced), so a store from 0.13.0 heals its failed-beside-spendable rows on the pass after upgrade (#175; the reference's `reviewStatus.ts:93-119` at ts-stack edf6e03). Unbounded, as the reference's; a repeat pass writes nothing. Consumed inputs are never released here (check 2 was removed).
 2. Check 3: a transaction whose request is `completed` with a proof is marked `completed`
 3. Check 4: the unproven descendants of a failed root (request `invalid` / `doubleSpend`, no chain evidence) are retired
 
