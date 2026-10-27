@@ -681,7 +681,7 @@ pub async fn internalize_action_internal(
 /// bsv-rs's words, so the door's text and bsv-rs's cannot drift.
 ///
 /// The array bounds (#309) sit where ts-stack@edf6e03 validationHelpers.ts
-/// validateInternalizeActionArgs (1046-1076) calls validateArray: `outputs`
+/// validateInternalizeActionArgs (1046-1074) calls validateArray: `outputs`
 /// (1052) ahead of every output, an insertion's `tags` (948) after its
 /// `customInstructions` (942-946), `labels` (1054) after the outputs.
 fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> {

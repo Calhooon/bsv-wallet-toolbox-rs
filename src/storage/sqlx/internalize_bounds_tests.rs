@@ -1,6 +1,6 @@
 //! The reference's array bounds at the internalize door (#309):
 //! ts-stack@edf6e03 validationHelpers.ts validateInternalizeActionArgs
-//! (1046-1076) calls validateArray (105-114, 100000 at 67) for `outputs`
+//! (1046-1074) calls validateArray (105-114, 100000 at 67) for `outputs`
 //! (1052) and `labels` (1054), and validateBasketInsertion (937-951) for an
 //! insertion's `tags` (948), each ahead of its items.
 
