@@ -447,3 +447,118 @@ async fn output_incoming_row_on_another_transaction_is_another_output() {
         assert_column::<i64>(row, "satoshis", &sats);
     }
 }
+
+// #313: a chunk output's purpose is written as given. The reference's
+// mergeNew inserts the chunk row (EntityOutput.ts:320-330) and mergeExisting
+// assigns `this.purpose = ei.purpose` (:347); neither defaults a missing one
+// to `change`, which the allocators' managed-change filter would offer.
+impl OutputSync {
+    /// Shape the exported row as managed change on a completed parent.
+    fn managed_change(chunk: &mut SyncChunk, purpose: Option<&str>) {
+        let output = &mut chunk.outputs.as_mut().unwrap()[0];
+        output.output_type = "P2PKH".into();
+        output.provided_by = "storage".into();
+        output.purpose = purpose.map(Into::into);
+        output.change = true;
+        output.spendable = true;
+        output.spent_by = None;
+    }
+
+    async fn stored_purpose(&self) -> String {
+        sqlx::query_scalar("SELECT purpose FROM outputs")
+            .fetch_one(self.target.pool())
+            .await
+            .unwrap()
+    }
+
+    /// The managed-change count and both allocators on the target.
+    async fn change_offered(&self) -> (i64, bool, bool) {
+        let user = self
+            .target
+            .find_user(&self.args.identity_key)
+            .await
+            .unwrap()
+            .unwrap();
+        let basket = self.map.basket[&self.expected.basket_id.unwrap()];
+        let spender = self.map.transaction[&202];
+        let count = self
+            .target
+            .count_change_inputs(user.user_id, basket, false)
+            .await
+            .unwrap();
+        let mut conn = self.target.writer().acquire().await.unwrap();
+        let door = super::super::create_action::allocate_change_input(
+            &mut conn,
+            user.user_id,
+            basket,
+            spender,
+            1,
+            true,
+        )
+        .await
+        .unwrap()
+        .is_some();
+        // Free the coin the door claimed so the public allocator sees it too.
+        sqlx::query("UPDATE outputs SET spendable = 1, spent_by = NULL")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+        let public = self
+            .target
+            .allocate_change_input(user.user_id, basket, 1, false, spender)
+            .await
+            .unwrap()
+            .is_some();
+        (count, door, public)
+    }
+}
+
+#[tokio::test]
+async fn output_without_purpose_is_not_offered_as_change() {
+    let mut sync = OutputSync::new().await;
+    let mut chunk = sync.export().await;
+    OutputSync::managed_change(&mut chunk, None);
+    sync.apply(chunk).await;
+    assert_eq!(sync.change_offered().await, (0, false, false));
+    assert_eq!(sync.stored_purpose().await, "");
+}
+
+#[tokio::test]
+async fn output_newer_row_without_purpose_is_not_offered_as_change() {
+    let mut sync = OutputSync::new().await;
+    let mut chunk = sync.export().await;
+    OutputSync::managed_change(&mut chunk, Some("change"));
+    sync.apply(chunk.clone()).await;
+    assert_eq!(sync.stored_purpose().await, "change");
+
+    OutputSync::managed_change(&mut chunk, None);
+    chunk.outputs.as_mut().unwrap()[0].updated_at += Duration::seconds(1);
+    sync.apply(chunk).await;
+    assert_eq!(sync.change_offered().await, (0, false, false));
+    assert_eq!(sync.stored_purpose().await, "");
+}
+
+#[tokio::test]
+async fn output_change_and_receive_purposes_land_as_given() {
+    for purpose in ["change", "receive"] {
+        // Inserted as given.
+        let mut sync = OutputSync::new().await;
+        let mut chunk = sync.export().await;
+        OutputSync::managed_change(&mut chunk, Some(purpose));
+        sync.apply(chunk).await;
+        assert_eq!(sync.stored_purpose().await, purpose);
+        assert_eq!(sync.change_offered().await, (1, true, true), "{purpose}");
+
+        // Updated as given by a newer row.
+        let mut sync = OutputSync::new().await;
+        let mut chunk = sync.export().await;
+        OutputSync::managed_change(&mut chunk, Some("savings"));
+        sync.apply(chunk.clone()).await;
+        OutputSync::managed_change(&mut chunk, Some(purpose));
+        chunk.outputs.as_mut().unwrap()[0].updated_at += Duration::seconds(1);
+        sync.apply(chunk).await;
+        assert_eq!(sync.stored_purpose().await, purpose);
+        assert_eq!(sync.change_offered().await, (1, true, true), "{purpose}");
+    }
+}
