@@ -94,14 +94,15 @@ async fn test_issuance_bad_certifier_refuses_before_protocol() {
 }
 
 #[tokio::test]
-async fn test_issuance_bad_certifier_precedes_identity_and_preparation() {
+async fn test_issuance_bad_certifier_precedes_identity() {
     let wallet = wallet().await;
     let mut server = mockito::Server::new_async().await;
     let request = server.mock("POST", "/issue").expect(0).create_async().await;
     let mut invalid = args("gg".to_string(), format!("{}/issue", server.url()));
-    // Poison the later identity parse and preparation so either running
-    // before the certifier check changes the observed refusal.
-    invalid.certificate_type = "not base64".to_string();
+    // Poison the later identity parse so running it before the certifier
+    // check changes the observed refusal. The type is left valid: the
+    // reference validates type (validationHelpers.ts:1338) before certifier
+    // (:1339), which #271 ports.
     let result = acquire_certificate_issuance(
         &wallet,
         wallet.storage(),
