@@ -491,11 +491,36 @@ With `sign_and_process` the template is signed and processed inside the create s
 | `MAX_LABEL_LENGTH` | 300 | Maximum label chars |
 
 ### Features
-- Validation: description, labels, inputs, outputs, noSendChange
+- Validation in ts-stack@edf6e03 validateCreateActionArgs order (749-808): description, inputs, outputs (each output's tags last), labels, options (knownTxids, noSendChange and its duplicates, sendWith)
 - Fee calculation with accurate transaction size estimation
 - Change generation with automatic UTXO management
 - Full input/output database state management
 - Labels and tags for transaction/output organization
+
+### Array bounds (#309)
+
+`validate_array_bound` (`internalize_action.rs`, shared by the storage doors)
+is validateArray's bound (ts-stack@edf6e03 validationHelpers.ts:105-114):
+past it the door refuses `Error::ValidationError` with
+`The <name> parameter must be an array of at most <maximum> items`
+(WERR_INVALID_PARAMETER.ts:14). The maximum is 100000
+(`MAXIMUM_WALLET_COLLECTION_ITEMS`, 67) except sendWith's 1000
+(`MAXIMUM_SEND_WITH_TRANSACTIONS`, 69). Each bound runs where the reference
+calls validateArray, ahead of the array's items: an over-long array of valid
+items is refused by the bound, a bad item under it by the item's text.
+
+| Door | Array (reference line) | Place in the port |
+|------|------------------------|-------------------|
+| create (`create_action/validation.rs`) | `inputs` (758), `outputs` (759), an output's `tags` (639), `labels` (762), `knownTxids` (662), `noSendChange` (667), `sendWith` (137, 1000) | after description, in that order |
+| internalize (`internalize_action.rs`) | `outputs` (1052), an insertion's `tags` (948), `labels` (1054) | step 0; tags after the same and every earlier output's `customInstructions` |
+| listCertificates (`storage_sqlx/certificates.rs`) | `certifiers` (1195), `types` (1198) | after the auth check, ahead of any query |
+| listOutputs (`storage_sqlx/list_outputs.rs`) | `tags` (1637) | after the auth check, ahead of the basket lookup |
+| listActions (`storage_sqlx/transactions.rs`) | `labels` (1691) | after the auth check, ahead of the label lookup |
+
+`Wallet::list_*` delegates to the finders unchanged, so a default call
+through `WalletInterface` and one through the storage trait meet the same
+bound. Under the bound the finders bind one SQL placeholder per item: past
+SQLite's 32766 they answer `too many SQL variables` (a finding of #309).
 
 ### BEEF Building (1:1 Parity with Go/TypeScript)
 - User inputBEEF merging, recursive ancestor lookup until proven transactions
