@@ -34,6 +34,27 @@ const WALLET_PAYMENT_PROTOCOL: &str = "wallet payment";
 /// Protocol identifier for basket insertions.
 const BASKET_INSERTION_PROTOCOL: &str = "basket insertion";
 
+/// `MAXIMUM_WALLET_COLLECTION_ITEMS` at ts-stack@edf6e03
+/// validationHelpers.ts:67, validateArray's default bound (105-114).
+pub(super) const MAXIMUM_WALLET_COLLECTION_ITEMS: usize = 100_000;
+
+/// `MAXIMUM_SEND_WITH_TRANSACTIONS` at validationHelpers.ts:69, sendWith's
+/// own bound in validateSendWith (137).
+pub(super) const MAXIMUM_SEND_WITH_TRANSACTIONS: usize = 1000;
+
+/// validateArray's bound (validationHelpers.ts:112-114) in
+/// WERR_INVALID_PARAMETER's words (WERR_INVALID_PARAMETER.ts:14). Shared by
+/// the storage doors (create, internalize, the three list finders), each
+/// calling it where the reference calls validateArray, ahead of the items.
+pub(super) fn validate_array_bound(len: usize, name: &str, maximum: usize) -> Result<()> {
+    if len > maximum {
+        return Err(Error::ValidationError(format!(
+            "The {name} parameter must be an array of at most {maximum} items"
+        )));
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Internal Types
 // =============================================================================
