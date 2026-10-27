@@ -5,7 +5,7 @@
 //! Run 40310320187 differed on `429_without_retry_after_closes_the_rung`:
 //! Bitails's second mock answer came past the fixture client's deadline on
 //! a loaded runner, the ladder took it as a fault and asked the unscripted
-//! BananaBlocks rung, and the result's error (`last_error`) named only that
+//! `BananaBlocks` rung, and the result's error (`last_error`) named only that
 //! rung's 501. So a fault whose call lasted to the deadline where the
 //! fixture scripts no delay, followed by a rung asked a request the fixture
 //! does not script, is the runner's: the message opens with that (the test
@@ -166,7 +166,7 @@ pub(super) fn reading(
                 .map(move |route| (provider.as_str(), route.as_str()))
         })
         .collect();
-    let deadline_ms = deadline.as_millis() as u64;
+    let deadline_ms = u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX);
     let late = |rung: &Rung| rung.fault && rung.msecs + LATE_SLACK_MS >= deadline_ms;
     for (at, rung) in history.iter().enumerate().filter(|(_, rung)| late(rung)) {
         let late_so_far = history[..=at]
@@ -201,11 +201,11 @@ pub(super) fn history_text(history: &[Rung]) -> String {
     if history.is_empty() {
         return "call history: none recorded (the header ladders keep none)".to_string();
     }
-    let mut text = "call history (each rung asked, in order):".to_string();
-    for rung in history {
-        text.push_str(&format!("\n  {rung}"));
-    }
-    text
+    let lines: Vec<String> = history.iter().map(|rung| format!("\n  {rung}")).collect();
+    format!(
+        "call history (each rung asked, in order):{}",
+        lines.concat()
+    )
 }
 
 /// The replay's requests per provider, with how many no route scripts.
@@ -260,7 +260,7 @@ pub(super) fn difference(fixture: &Fixture, actual: &Expected, history: &[Rung])
     ))
 }
 
-/// The recorded scene of run 40310320187: WhatsOnChain's 429 with no
+/// The recorded scene of run 40310320187: `WhatsOnChain`'s 429 with no
 /// Retry-After closes its rung, Bitails answers both calls.
 fn recorded_scene() -> Fixture {
     let path =
@@ -314,7 +314,7 @@ async fn ladder_fixtures_a_mismatch_prints_the_call_history() {
 /// The late-second-answer scene (#194): the recorded fixture, replayed on
 /// a runner that serves Bitails's second answer past the client's
 /// deadline. The ladder takes it as a fault and falls to the unscripted
-/// BananaBlocks rung; the result's error names only that rung; the replay
+/// `BananaBlocks` rung; the result's error names only that rung; the replay
 /// reads a runner stall and the history names the Bitails fault.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ladder_fixtures_a_late_second_answer_reads_as_a_runner_stall() {
