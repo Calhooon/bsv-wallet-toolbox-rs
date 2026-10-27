@@ -26,6 +26,19 @@
   request with empty maps now returns an empty keyring. Recovery failures
   still use `Failed to decrypt certificate field!`; value size caps beyond
   canonical Base64 remain with #223.
+- #193: `create_action` now refuses caller-named change with the reference's
+  exact text, `The inputs[N] parameter must be an unmanaged input. Change outputs are managed by your wallet.`,
+  replacing `inputs[N]: cannot spend change output <txid>:<vout> directly. Change is managed by the wallet.`
+  The change guard runs before the spendability guard, so unspendable change
+  receives the same change refusal instead of
+  `inputs[N]: output <txid>:<vout> is not spendable`. Both guards still refuse
+  the same inputs. The class remains `Error::ValidationError`, mapping the
+  reference's `WERR_INVALID_PARAMETER` as in #200 and #211. Reference:
+  `ts-stack@edf6e03`, `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts:868-874,972-983`
+  (zero-based input index and guard order) and
+  `packages/wallet/wallet-toolbox/src/sdk/WERR_errors.ts:105` (message template).
+  Hosts matching the old text should match the class instead; the CLI's
+  fixture for #234 must re-pin to the new text.
 
 - #233: `prove_certificate` now refuses requested field names outside 1 to 50
   UTF-8 bytes or equal to `__proto__`, `constructor`, or `prototype`, using
