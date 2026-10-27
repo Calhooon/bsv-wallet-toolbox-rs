@@ -804,7 +804,8 @@ The reference's other `validateArray` callers (createAction's inputs, outputs,
 labels, output tags, knownTxids and noSendChange; internalizeAction's outputs
 and labels; basket insertion tags; listCertificates' certifiers and types;
 listOutputs' tags; listActions' labels) validate outside `wallet.rs` in this
-port and are not bounded here.
+port and are not bounded here. `sendWith` (137) carries its own bound,
+`MAXIMUM_SEND_WITH_TRANSACTIONS` (1000), and is #309's.
 
 ### Protocol Flow
 
