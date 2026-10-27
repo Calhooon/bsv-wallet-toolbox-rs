@@ -38,6 +38,10 @@ use crate::error::{Error, Result};
 use crate::storage::entities::{TableCertificate, TableCertificateField};
 use crate::storage::{not_busy, AuthId, WalletStorageProvider};
 
+#[cfg(test)]
+#[path = "certificate_issuance_network_isolation_tests.rs"]
+mod network_isolation_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
