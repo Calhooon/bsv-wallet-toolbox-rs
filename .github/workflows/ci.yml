@@ -139,8 +139,10 @@ jobs:
       - name: Run integration tests
         run: cargo test --test '*' --features sqlite,remote,bench-support --verbose
 
+      # The integration step's feature set, so the library it built is reused
+      # here and the job compiles it once less (#253).
       - name: Run doc tests
-        run: cargo test --doc --features sqlite,remote
+        run: cargo test --doc --features sqlite,remote,bench-support
 
   clippy:
     name: Clippy
