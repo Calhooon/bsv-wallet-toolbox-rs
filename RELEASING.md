@@ -17,11 +17,11 @@
 - `beta` is the programme's line (epic #80); its tags are `vX.Y.Z-beta.N`, published as prereleases on crates.io (semver) and on GitHub.
 - Both are protected with the same rules and the same five required checks; `ci.yml` runs on pull requests and pushes into either.
 - `main` merges into `beta` after every stable patch, so beta never lacks a fix main shipped.
-- `beta` merges into `main` at a phase exit as the next minor, after the CLI's gate passes on a `vX.Y.0-beta.N` prerelease and a day of canary.
+- `beta` merges into `main` only when every scoreboard row in `docs/NORTH-STAR.md` reads at its target with recorded evidence and all six phases have exited (the owner's word of 2026-10-27: not at a phase boundary), as the next minor, after the CLI's gate passes on a `vX.Y.0-beta.N` prerelease and a day of canary. Until then `beta` ships prereleases and `main` takes its own quick fixes.
 - The release check refuses a plain tag on a commit beta holds but main does not, a beta tag on a commit beta does not hold, a tag that differs from `Cargo.toml`, and any other prerelease shape (`-rc.N` and the like).
 - A tag of any kind is the owner's word.
 
-The canary order at a phase exit:
+The canary order at that merge:
 
 1. The toolbox tags `vX.Y.0-beta.N` on `beta`; the prerelease publishes.
 2. The CLI's beta builds against that prerelease and runs its gate; a day of canary follows.
