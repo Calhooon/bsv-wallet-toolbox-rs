@@ -44,7 +44,11 @@ text-only difference closes when the dependent re-records at its next pin of
 this crate. A difference in anything else fails the dependent's test, and its
 row reads `FAIL (<command>): <test>, <test>, ...`, the libtest `test NAME ...
 FAILED` lines, eight named and then `and N more`, so a reader tells a
-row-level red from a text one without the log. The marker reaches the gate
+row-level red from a text one without the log. Every libtest shape is named
+(#257): a unit or integration test by its path, a doctest by its file, item and
+line (`src/lib.rs - module::item (line 3)`), and a `should_panic` or
+`compile_fail` test without the mode libtest appends, as its `failures:` list
+names it. The marker reaches the gate
 only where libtest shows it (a passing test's `println!` and `eprintln!` are
 captured). The rows go to the terminal and, in CI, to the job summary;
 `tools/dependents-check.sh --parse FILE` reads a captured output alone, and

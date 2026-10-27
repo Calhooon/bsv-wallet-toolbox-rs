@@ -76,9 +76,16 @@ text_rows() {
     done
 }
 
-# The libtest `test NAME ... FAILED` lines, eight named, then how many more.
+# The libtest `test NAME ... FAILED` lines, eight named, then how many more
+# (#257). NAME is every shape: a unit or integration test's path, a doctest's
+# `src/lib.rs - module::item (line 3)`, and a mode libtest appends (`tests::boom
+# - should panic`, `... (line 9) - compile fail`) is dropped, so each name reads
+# as the `failures:` list names it. The per-test line is read rather than that
+# list: one line per failed test, in every target, whatever its shape.
 failed_tests() {
-  awk '/^test [^ ]+ \.\.\. FAILED$/ { n++; if (n <= 8) names = names (n > 1 ? ", " : "") $2 }
+  awk '/^test .+ \.\.\. FAILED$/ {
+      name = substr($0, 6, length($0) - 5 - 11); sub(/ - [a-z_ ]+$/, "", name)
+      n++; if (n <= 8) names = names (n > 1 ? ", " : "") name }
     END { if (n > 8) names = names " and " (n - 8) " more"; print names }' "$1"
 }
 
