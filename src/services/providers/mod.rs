@@ -14,6 +14,7 @@ pub mod bhs;
 pub mod bitails;
 pub mod chaintracks_client;
 pub mod fallback_chain_tracker;
+pub(crate) mod http_client;
 pub mod pace;
 pub mod whatsonchain;
 

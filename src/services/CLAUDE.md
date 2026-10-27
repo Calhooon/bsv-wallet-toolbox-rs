@@ -7,7 +7,7 @@ The services module provides a unified interface for interacting with BSV blockc
 
 ## Test and bench isolation (#182)
 
-Every service HTTP client is imported from private `http_client.rs`. Under
+Every service HTTP client is imported from private `providers/http_client.rs`. Under
 `cfg(test)` or `feature = "bench-support"`, it checks the built request URL
 before execution and permits only `127.0.0.1`, `localhost`, and `::1`.
 Other hosts return `Error::NetworkError` naming the host, #182, and rule 28.

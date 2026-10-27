@@ -1156,14 +1156,14 @@ impl Services {
     /// cached defaults if the fetch fails.
     async fn fetch_fiat_exchange_rates(&self) -> Result<FiatExchangeRates> {
         // Use a free/open exchange rate API
-        let client = crate::services::http_client::Client::builder()
+        let client = crate::services::providers::http_client::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| Error::NetworkError(format!("HTTP client error: {}", e)))?;
 
         // Not a chain question (fiat rates), so Rule 28's test does not apply.
         let url = "https://open.er-api.com/v6/latest/USD";
-        let response = client
+        let response: reqwest::Response = client
             .get(url)
             .send()
             .await
