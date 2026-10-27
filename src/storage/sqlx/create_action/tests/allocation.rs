@@ -636,3 +636,158 @@ mod sync_received {
         );
     }
 }
+
+/// #295: both allocators take only what the reference's managed-change
+/// filters take (`StorageKnex.allocateChangeInput`, 2238-2251 and 2256 at
+/// ts-stack edf6e03): type `P2PKH`, `change`, `providedBy = 'storage'`,
+/// a managed purpose, a non-empty derivation prefix and suffix, and a
+/// parent `completed` or `unproven` (or `sending` unless excluded). The
+/// port spells a received wallet payment's purpose `receive` where the
+/// reference spells it `change` (#169), so a mined receipt stays eligible.
+mod managed_change_filters {
+    use super::*;
+
+    const CASES: &[(&str, &str, bool)] = &[
+        ("eligible", "", true),
+        (
+            "received, mined",
+            "UPDATE outputs SET purpose = 'receive'",
+            true,
+        ),
+        (
+            "caller-provided",
+            "UPDATE outputs SET provided_by = 'you'",
+            false,
+        ),
+        ("not P2PKH", "UPDATE outputs SET type = 'custom'", false),
+        ("empty purpose", "UPDATE outputs SET purpose = ''", false),
+        (
+            "other purpose",
+            "UPDATE outputs SET purpose = 'service-charge'",
+            false,
+        ),
+        (
+            "null prefix",
+            "UPDATE outputs SET derivation_prefix = NULL",
+            false,
+        ),
+        (
+            "empty prefix",
+            "UPDATE outputs SET derivation_prefix = ''",
+            false,
+        ),
+        (
+            "null suffix",
+            "UPDATE outputs SET derivation_suffix = NULL",
+            false,
+        ),
+        (
+            "empty suffix",
+            "UPDATE outputs SET derivation_suffix = ''",
+            false,
+        ),
+    ];
+
+    async fn one_coin(case: &str, plant: &str) -> (StorageSqlx, i64, i64, i64) {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate(case, "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+        let (user, _) = storage.find_or_insert_user("02user_key").await.unwrap();
+        let basket = storage
+            .find_or_create_default_basket(user.user_id)
+            .await
+            .unwrap();
+        seed_change_output_with_status(&storage, user.user_id, 10_000, "completed", "f295").await;
+        if !plant.is_empty() {
+            sqlx::query(plant).execute(storage.writer()).await.unwrap();
+        }
+        let spender: i64 = sqlx::query_scalar(
+            "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, \
+             version, lock_time, description, created_at, updated_at) \
+             VALUES (?, 'unsigned', 'spender', 1, 0, 1, 0, 'spender', ?, ?) \
+             RETURNING transaction_id",
+        )
+        .bind(user.user_id)
+        .bind(Utc::now())
+        .bind(Utc::now())
+        .fetch_one(storage.writer())
+        .await
+        .unwrap();
+        (storage, user.user_id, basket.basket_id, spender)
+    }
+
+    #[tokio::test]
+    async fn the_door_allocator_applies_the_reference_filters() {
+        for &(case, plant, eligible) in CASES {
+            let (storage, user_id, basket_id, spender) = one_coin(case, plant).await;
+            let mut conn = storage.writer().acquire().await.unwrap();
+            let count = count_change_inputs(&mut conn, user_id, basket_id, true)
+                .await
+                .unwrap();
+            let picked = allocate_change_input(&mut conn, user_id, basket_id, spender, 1000, true)
+                .await
+                .unwrap();
+            assert_eq!(
+                (count, picked.is_some()),
+                (usize::from(eligible), eligible),
+                "door, {case}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_public_allocator_applies_the_reference_filters() {
+        for &(case, plant, eligible) in CASES {
+            for exclude_sending in [true, false] {
+                let (storage, user_id, basket_id, spender) = one_coin(case, plant).await;
+                let count = storage
+                    .count_change_inputs(user_id, basket_id, exclude_sending)
+                    .await
+                    .unwrap();
+                let picked = storage
+                    .allocate_change_input(user_id, basket_id, 1000, exclude_sending, spender)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (count, picked.is_some()),
+                    (i64::from(eligible), eligible),
+                    "public, {case}, exclude_sending={exclude_sending}"
+                );
+            }
+        }
+    }
+
+    /// The reference joins the parent and takes `completed`, `unproven`, and
+    /// `sending` unless excluded (2230-2231, 2256); the public allocator read
+    /// no status before #295.
+    #[tokio::test]
+    async fn the_public_allocator_takes_only_the_reference_parent_statuses() {
+        for (status, with_sending, without_sending) in [
+            ("completed", true, true),
+            ("unproven", true, true),
+            ("sending", true, false),
+            ("nosend", false, false),
+            ("unsigned", false, false),
+            ("unprocessed", false, false),
+            ("failed", false, false),
+        ] {
+            for (exclude_sending, eligible) in [(false, with_sending), (true, without_sending)] {
+                let plant = format!("UPDATE transactions SET status = '{status}'");
+                let (storage, user_id, basket_id, spender) = one_coin(status, &plant).await;
+                let count = storage
+                    .count_change_inputs(user_id, basket_id, exclude_sending)
+                    .await
+                    .unwrap();
+                let picked = storage
+                    .allocate_change_input(user_id, basket_id, 1000, exclude_sending, spender)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (count, picked.is_some()),
+                    (i64::from(eligible), eligible),
+                    "public, parent {status}, exclude_sending={exclude_sending}"
+                );
+            }
+        }
+    }
+}

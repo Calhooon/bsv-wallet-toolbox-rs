@@ -82,8 +82,8 @@ async fn insert_change(
 ) -> i64 {
     let old = Utc::now() - Duration::days(2);
     sqlx::query_scalar(
-        "INSERT INTO outputs (user_id, transaction_id, basket_id, spendable, change, vout, satoshis, provided_by, purpose, type, txid, spent_by, locking_script, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, 1, 0, 1000, 'storage', 'change', 'P2PKH', ?, ?, x'51', ?, ?) RETURNING output_id",
+        "INSERT INTO outputs (user_id, transaction_id, basket_id, spendable, change, vout, satoshis, provided_by, purpose, type, derivation_prefix, derivation_suffix, txid, spent_by, locking_script, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 1, 0, 1000, 'storage', 'change', 'P2PKH', 'prefix', 'suffix', ?, ?, x'51', ?, ?) RETURNING output_id",
     )
     .bind(user_id)
     .bind(owner)
