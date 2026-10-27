@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- #233: `prove_certificate` now refuses requested field names outside 1 to 50
+  UTF-8 bytes or equal to `__proto__`, `constructor`, or `prototype`, using
+  `bsv_rs::Error::WalletError("Failed to decrypt certificate field!")` after
+  the subset check. Previously, present overlong or reserved names could
+  produce a verifier keyring. The rule and recovery error follow
+  `ts-stack@edf6e03`
+  `packages/sdk/src/auth/certificates/MasterCertificate.ts:23-29,573-574,621-622`
+  and `packages/sdk/src/primitives/SafeRecord.ts:2-3`.
+
 - #228: `prove_certificate` now restores omitted leading zero bytes in legacy
   field keys before wrapping them for the verifier. A 31-byte master key
   previously produced a 31-byte verifier key; it now produces the same

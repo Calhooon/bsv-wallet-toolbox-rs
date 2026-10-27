@@ -136,6 +136,10 @@ it (`UnspendableCoin`).
 | a missing master entry refuses with the field recovery WalletError and the reference's exact text | `ts-stack@edf6e03 MasterCertificate.ts:573-622`; toolbox #229 | `test_create_keyring_field_not_in_master_keyring_fails` |
 | a non-Base64 master entry refuses with the field recovery WalletError and the reference's exact text | `ts-stack@edf6e03 MasterCertificate.ts:573-622`; toolbox #229 | `test_create_keyring_invalid_base64_master_key_fails` |
 | non-UTF-8 field plaintext is refused before returning a verifier keyring | `ts-stack@edf6e03 MasterCertificate.ts:619-622`; toolbox #229 | `test_create_keyring_rejects_non_utf8_field` |
+| a requested field name over 50 UTF-8 bytes refuses with the field recovery WalletError and its exact text | `ts-stack@edf6e03 MasterCertificate.ts:23-29,573-574,621-622`; toolbox #233 | `test_create_keyring_rejects_overlong_field_names` |
+| the requested field names `__proto__`, `constructor`, and `prototype` refuse with the same field recovery error | `ts-stack@edf6e03 MasterCertificate.ts:23-29,573-574,621-622`; `SafeRecord.ts:2-3`; toolbox #233 | `test_create_keyring_rejects_unsafe_field_names` |
+| valid names at 50 UTF-8 bytes, Unicode names, and safe lookalikes of reserved names still produce a verifier keyring | `ts-stack@edf6e03 MasterCertificate.ts:23-29`; `SafeRecord.ts:2-3`; toolbox #233 | `test_create_keyring_accepts_valid_field_names` |
+| an invalid requested name absent from the certificate keeps the subset refusal ahead of field recovery | `ts-stack@edf6e03 MasterCertificate.ts:371-384`; toolbox #233 | `test_create_keyring_invalid_missing_field_keeps_subset_error` |
 | equal and empty plaintext fields receive distinct 32-byte keys across fields and issuances | `ts-stack@edf6e03 MasterCertificate.ts:277-293`; toolbox #203 | `issuance_uses_fresh_keys_for_equal_and_empty_plaintexts` |
 
 ## 2. The writer and the pool
