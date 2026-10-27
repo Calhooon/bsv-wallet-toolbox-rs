@@ -39,6 +39,11 @@
   `packages/wallet/wallet-toolbox/src/sdk/WERR_errors.ts:105` (message template).
   Hosts matching the old text should match the class instead; the CLI's
   fixture for #234 must re-pin to the new text.
+- #182: unit-test and `bench-support` service clients now refuse non-loopback
+  requests before transport, including redirects and default-provider posts
+  in every post mode. The private HTTP client ignores proxy environment
+  variables and pins `localhost` to loopback; refusals name the host and
+  rule 28. Production clients and the public API are unchanged.
 
 - #233: `prove_certificate` now refuses requested field names outside 1 to 50
   UTF-8 bytes or equal to `__proto__`, `constructor`, or `prototype`, using
