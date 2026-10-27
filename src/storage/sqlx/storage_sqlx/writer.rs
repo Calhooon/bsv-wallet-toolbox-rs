@@ -158,7 +158,7 @@ impl WalletStorageWriter for StorageSqlx {
         words: &[crate::services::PostBeefResult],
         service_error: Option<&str>,
     ) -> Result<()> {
-        // The note first, as the door's post path writes it: a fault writing
+        // The note goes ahead of the statuses, as on the door's post path: a fault writing
         // it is logged and the statuses still move.
         let txids = [txid.to_string()];
         if let Err(error) =
