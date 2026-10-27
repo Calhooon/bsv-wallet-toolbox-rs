@@ -13,6 +13,7 @@ use bsv_rs::script::templates::PushDrop;
 use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{IdentityCertificate, WalletCertificate};
 
+use crate::services::providers::http_client::Client;
 use crate::Result;
 
 #[cfg(test)]
@@ -145,7 +146,7 @@ pub struct HttpLookupResolver {
     /// SLAP tracker URLs used to discover competent hosts.
     slap_trackers: Vec<String>,
     /// HTTP client for making requests.
-    client: reqwest::Client,
+    client: Client,
 }
 
 impl HttpLookupResolver {
@@ -153,7 +154,7 @@ impl HttpLookupResolver {
     pub fn new(slap_tracker: &str) -> Self {
         Self {
             slap_trackers: vec![slap_tracker.to_string()],
-            client: reqwest::Client::new(),
+            client: Client::new(),
         }
     }
 
@@ -161,7 +162,7 @@ impl HttpLookupResolver {
     pub fn with_endpoints(slap_trackers: Vec<String>) -> Self {
         Self {
             slap_trackers,
-            client: reqwest::Client::new(),
+            client: Client::new(),
         }
     }
 
@@ -180,7 +181,7 @@ impl HttpLookupResolver {
         };
         Self {
             slap_trackers,
-            client: reqwest::Client::new(),
+            client: Client::new(),
         }
     }
 

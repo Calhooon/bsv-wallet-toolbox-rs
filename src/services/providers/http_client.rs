@@ -1,4 +1,4 @@
-//! Services transport. Production uses reqwest directly; test and bench
+//! Shared HTTP transport. Production uses reqwest directly; test and bench
 //! builds reject non-loopback destinations before executing any request.
 
 #[cfg(test)]
@@ -46,6 +46,10 @@ mod isolated {
     pub(crate) struct Client(reqwest::Client);
 
     impl Client {
+        pub(crate) fn new() -> Self {
+            Self::default()
+        }
+
         pub(crate) fn builder() -> ClientBuilder {
             // Ignore environment/system proxies, and pin localhost instead
             // of trusting DNS or the machine's hosts file. The policy checks

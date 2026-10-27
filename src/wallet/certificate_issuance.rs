@@ -31,10 +31,10 @@ use bsv_rs::wallet::{
     AcquireCertificateArgs, Counterparty, Protocol, SecurityLevel, VerifyHmacArgs,
     WalletCertificate, WalletInterface,
 };
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::services::providers::http_client::Client;
 use crate::storage::entities::{TableCertificate, TableCertificateField};
 use crate::storage::{not_busy, AuthId, WalletStorageProvider};
 
