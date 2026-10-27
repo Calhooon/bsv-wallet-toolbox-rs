@@ -647,7 +647,7 @@ reads the action's raw transaction once when the action has inputs, whatever
 (`proven_txs`, then `transactions.raw_tx`; the reference's
 `getRawTxOfKnownValidTransaction` reads `proven_txs`, then a `proven_tx_reqs`
 row `unsent`, `unmined`, `unconfirmed`, `sending`, `nosend` or `completed`,
-`StorageKnex.ts:189-211`), parses it with bsv-rs (a raw transaction that
+`StorageKnex.ts:189-211` in `getProvenOrRawTx`, which `getRawTxOfKnownValidTransaction` calls at 471-508), parses it with bsv-rs (a raw transaction that
 does not parse is the call's error, as `fromBinary` throws), matches each
 input by source txid and vout and serves its `sequence`, 0 when there is no
 raw transaction or no such input (`input?.sequence || 0`, :89), and its
