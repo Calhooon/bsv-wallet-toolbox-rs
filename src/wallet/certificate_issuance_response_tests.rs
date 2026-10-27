@@ -430,17 +430,8 @@ async fn unparsable_truthy_outpoint_reaches_field_checks() {
 
 #[tokio::test]
 async fn server_nonce_verification_precedes_serial_and_uses_reference_derivation() {
-    let observer = ObservedWallet {
-        nonce_error: true,
-        ..Default::default()
-    };
     let nonce = [vec![b'a'; 16], vec![3; 32]].concat();
-    let (result, _) = response_run(&observer, BASE64.encode([7; 32]), nonce, |_| {}).await;
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .ends_with("nonce verifier refused"));
-    let calls = observer.calls.lock().unwrap();
+    let calls = refused_nonce(nonce).await;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].data, vec![b'a'; 16]);
     assert_eq!(calls[0].hmac, [3; 32]);
@@ -561,4 +552,28 @@ async fn server_nonce_uses_the_requested_certifier_key() {
         matches!(result, Err(Error::SdkError(bsv_rs::Error::WalletError(message))) if message == "HMAC is not valid")
     );
     assert_eq!(observer.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn server_nonce_key_id_matches_textdecoder_bom_handling() {
+    let mut nonce = vec![0xef, 0xbb, 0xbf];
+    nonce.extend([b'a'; 13]);
+    nonce.extend([3; 32]);
+    let calls = refused_nonce(nonce).await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].data.len(), 16);
+    assert_eq!(calls[0].key_id, "a".repeat(13));
+}
+
+async fn refused_nonce(nonce: Vec<u8>) -> Vec<VerifyHmacArgs> {
+    let observer = ObservedWallet {
+        nonce_error: true,
+        ..Default::default()
+    };
+    let (result, _) = response_run(&observer, BASE64.encode([7; 32]), nonce, |_| {}).await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .ends_with("nonce verifier refused"));
+    observer.calls.into_inner().unwrap()
 }
