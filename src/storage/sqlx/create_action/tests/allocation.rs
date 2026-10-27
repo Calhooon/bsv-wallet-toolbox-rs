@@ -623,8 +623,8 @@ mod sync_received {
 
     #[tokio::test]
     async fn sync_received_missing_purpose_is_stored_empty() {
-        // #313: a missing purpose lands as the reference's EntityOutput
-        // default '' (ts-stack edf6e03 :45), never 'change'.
+        // #313: a missing purpose lands as '' (Go's zero value; the TS
+        // reference refuses the row, #350), never 'change'.
         let storage = empty_storage().await;
         let args = sync_args();
         let mut chunk = received_chunk(&args);

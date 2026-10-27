@@ -248,10 +248,13 @@ The public Rust entity and schema do not change.
 
 `purpose` lands as given on insert (`EntityOutput.mergeNew` 320-330 inserts
 the chunk row) and on a newer-row update (`mergeExisting` 347,
-`this.purpose = ei.purpose`). A row without `purpose` is stored `''`, the
-`EntityOutput` constructor default (45); the column is `TEXT NOT NULL` with no
-default here and `string('purpose', 20).notNullable()` in the reference
-(`KnexMigrations.ts:757`). It was `change` until #313, which the allocators'
+`this.purpose = ei.purpose`). A row without `purpose` is stored `''`, Go's
+zero value (`go-wallet-toolbox@e824899` `wdk/table_output.go:23`,
+`chunk_processor.go:389`); the TS reference refuses such a row (a missing
+field stays `undefined`, `serialiseForKnex` writes `null`, `StorageKnex.ts:1795-1796`,
+against `string('purpose', 20).notNullable()`, `KnexMigrations.ts:757`), so the
+two references disagree and #350 holds the owner's pick. The column is `TEXT NOT
+NULL` with no default here. It was `change` until #313, which the allocators'
 managed-change filter offered as change.
 
 At `edf6e03`, WT `storage/methods/getSyncChunk.ts:165-179` pushes the

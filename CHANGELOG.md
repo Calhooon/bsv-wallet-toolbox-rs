@@ -81,8 +81,10 @@
 - #313: sync writes an incoming output's `purpose` as given, on insert and on
   the newer-row update, as `ts-stack@edf6e03` `EntityOutput.mergeNew` and
   `mergeExisting` do. A chunk row without `purpose` was stored as `change`;
-  it is stored as `''` now (the reference's default; the column is NOT
-  NULL), so a synced coin without purpose is no longer offered as change by
+  it is stored as `''` now (Go's zero value, `go-wallet-toolbox@e824899`
+  `wdk/table_output.go:23`; the TS reference refuses such a row against its
+  NOT NULL column, a cross-SDK disagreement held by #350; the column is NOT
+  NULL here), so a synced coin without purpose is no longer offered as change by
   the create door, `StorageSqlx::allocate_change_input` or
   `count_change_inputs`. Rows already synced keep their stored `change`.
 - #187: `create_action` with `signAndProcess` now writes the
