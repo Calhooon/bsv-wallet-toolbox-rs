@@ -338,7 +338,7 @@ proof checked against our headers writes `doubleSpend`.
 
 | invariant | charter | test |
 |---|---|---|
-| unit-test and `bench-support` service requests cannot reach non-loopback providers in either post mode (#182); the private transport checks destinations before execution | Rule 28; lane rule 10 | `default_post_modes_never_leave_loopback` |
+| unit-test and `bench-support` HTTP requests from services, lookup, certificate issuance and the unauthenticated storage client cannot leave loopback (#182, #248); destinations and redirect hops are checked before execution | Rule 28; lane rule 10 | `default_post_modes_never_leave_loopback`; `lookup_clients_refuse_non_loopback_before_transport`; `issuance_client_refuses_non_loopback_before_transport`; `storage_client_refuses_non_loopback_before_transport` (storage requires `--features remote`) |
 | a negative needs two of the three explorers | `wallet.md section 2` (from an explorer: a hint); Rule 28 | `a_negative_needs_two_of_the_three` |
 | a lone unspent is never the answer | `wallet.md section 2` | `a_lone_unspent_is_never_the_answer` |
 | one negative and two faults is could not look | `tracker.md section 2` (fail closed) | `one_negative_and_two_faults_is_could_not_look` |
