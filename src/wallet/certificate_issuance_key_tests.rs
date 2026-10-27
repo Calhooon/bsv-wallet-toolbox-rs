@@ -65,7 +65,7 @@ async fn assert_type_refusals(certifier: &str, cases: Vec<(String, &str)>) {
         let mut invalid = args(certifier.to_string(), format!("{}/issue", server.url()));
         invalid.certificate_type = value;
         assert_wallet_error(
-            wallet.acquire_certificate(invalid, ORIGINATOR).await,
+            acquire_from_fixture(&wallet, invalid).await,
             &format!("Validation error: The type parameter must be {rule}"),
         );
     }
@@ -138,9 +138,8 @@ async fn test_issuance_bad_certifier_refuses_before_protocol() {
             "hexadecimal string.",
         ),
     ] {
-        let result = wallet
-            .acquire_certificate(args(value, format!("{}/issue", server.url())), ORIGINATOR)
-            .await;
+        let result =
+            acquire_from_fixture(&wallet, args(value, format!("{}/issue", server.url()))).await;
         assert_wallet_error(
             result,
             &format!("Validation error: The certifier parameter must be {rule}"),
@@ -218,7 +217,7 @@ async fn normalized_args_reach_response_checks(
     // A deliberately different type witnesses acceptance through preparation,
     // transport, and both canonical certifier comparisons, before verification.
     acquisition.certifier_url = Some(format!("{}/issue", server.url()));
-    let result = wallet.acquire_certificate(acquisition, ORIGINATOR).await;
+    let result = acquire_from_fixture(&wallet, acquisition).await;
     assert_wallet_error(
         result,
         &format!(
@@ -319,7 +318,7 @@ async fn mismatched_response(field: Option<&str>) -> (bsv_rs::Result<WalletCerti
         .expect(1)
         .create_async()
         .await;
-    let result = wallet.acquire_certificate(acquisition, ORIGINATOR).await;
+    let result = acquire_from_fixture(&wallet, acquisition).await;
     request.assert_async().await;
     let expected = expected.lock().unwrap().clone();
     (result, expected)
@@ -364,12 +363,11 @@ async fn test_issuance_header_certifier_mismatch_uses_reference_text() {
         .expect(1)
         .create_async()
         .await;
-    let result = wallet
-        .acquire_certificate(
-            args(certifier(), format!("{}/issue", server.url())),
-            ORIGINATOR,
-        )
-        .await;
+    let result = acquire_from_fixture(
+        &wallet,
+        args(certifier(), format!("{}/issue", server.url())),
+    )
+    .await;
     // ts-stack@edf6e03 Wallet.ts:789-791 uses this text for a differing header.
     assert_wallet_error(
         result,
@@ -386,3 +384,17 @@ mod guard_tests;
 
 #[path = "certificate_issuance_response_tests.rs"]
 mod response_tests;
+
+async fn acquire_from_fixture(
+    wallet: &TestWallet,
+    mut acquisition: AcquireCertificateArgs,
+) -> bsv_rs::Result<WalletCertificate> {
+    let fixture_url = acquisition.certifier_url.take().unwrap();
+    acquisition.certifier_url = Some("https://issuer.example/issue".to_string());
+    ISSUANCE_TEST_URL
+        .scope(
+            fixture_url,
+            wallet.acquire_certificate(acquisition, ORIGINATOR),
+        )
+        .await
+}

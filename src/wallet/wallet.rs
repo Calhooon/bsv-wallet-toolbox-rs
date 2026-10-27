@@ -3379,7 +3379,7 @@ fn validate_certificate_base64_values(
 }
 
 /// Trims ECMAScript whitespace as in ts-stack@edf6e03 validationHelpers.ts:524.
-fn trim_ecmascript_whitespace(value: &str) -> &str {
+pub(super) fn trim_ecmascript_whitespace(value: &str) -> &str {
     // WhiteSpace: TAB U+0009, VT U+000B, FF U+000C, SP U+0020, NBSP U+00A0,
     // ZWNBSP U+FEFF, and the other Zs category code points listed below.
     // LineTerminator: LF U+000A, CR U+000D, LS U+2028, PS U+2029.
@@ -3401,7 +3401,7 @@ fn trim_ecmascript_whitespace(value: &str) -> &str {
     })
 }
 
-fn invalid_certificate_argument(name: &str, rule: &str) -> bsv_rs::Error {
+pub(super) fn invalid_certificate_argument(name: &str, rule: &str) -> bsv_rs::Error {
     Error::ValidationError(format!("The {name} parameter must be {rule}")).into()
 }
 

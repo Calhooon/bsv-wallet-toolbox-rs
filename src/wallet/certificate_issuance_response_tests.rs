@@ -266,15 +266,21 @@ async fn response_run(
     let mut acquisition = args(certifier(), format!("{}/issue", server.url()));
     acquisition.certificate_type = cert_type;
     acquisition.fields.insert("city".into(), "Paris".into());
-    let result = acquire_certificate_issuance(
-        observer,
-        wallet.storage(),
-        &AuthId::with_user_id(wallet.identity_key(), 1),
-        acquisition,
-        wallet.identity_key(),
-        ORIGINATOR,
-    )
-    .await;
+    let fixture_url = acquisition.certifier_url.take().unwrap();
+    acquisition.certifier_url = Some("https://issuer.example/issue".to_string());
+    let result = ISSUANCE_TEST_URL
+        .scope(
+            fixture_url,
+            acquire_certificate_issuance(
+                observer,
+                wallet.storage(),
+                &AuthId::with_user_id(wallet.identity_key(), 1),
+                acquisition,
+                wallet.identity_key(),
+                ORIGINATOR,
+            ),
+        )
+        .await;
     request.assert_async().await;
     let response = issued_response.lock().unwrap().clone();
     (result, response)
