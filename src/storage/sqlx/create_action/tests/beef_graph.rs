@@ -146,6 +146,52 @@ fn test_describe_invalid_beef_names_the_missing_parent_and_dumps_the_bytes() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// Dumps back to back, many in one millisecond, name distinct files and each
+/// holds its own bytes (#336: a millisecond name let another dump overwrite
+/// the file between the write and the read). Two rejected BEEFs alternate
+/// over 32 calls, so on a millisecond name some pair always shares a file.
+#[test]
+fn test_describe_invalid_beef_two_dumps_name_distinct_files() {
+    let chain = synth_chain(3); // a <- b <- c
+    let mut first = Beef::new();
+    first.merge_raw_tx(chain[2].0.clone(), None); // c without b
+    let mut second = Beef::new();
+    second.merge_raw_tx(chain[1].0.clone(), None); // b without a
+    let first_bytes = hex::encode(first.to_binary());
+    let second_bytes = hex::encode(second.to_binary());
+    assert_ne!(first_bytes, second_bytes, "the two rejected BEEFs differ");
+
+    let dumps: Vec<(String, String)> = (0..32)
+        .map(|i| {
+            let (beef, root, bytes) = if i % 2 == 0 {
+                (&mut first, &chain[2].1, &first_bytes)
+            } else {
+                (&mut second, &chain[1].1, &second_bytes)
+            };
+            let text = describe_invalid_beef(beef, std::slice::from_ref(root));
+            let path = text.rsplit("dump ").next().unwrap().to_string();
+            (path, bytes.clone())
+        })
+        .collect();
+    let read: Vec<std::io::Result<String>> = dumps
+        .iter()
+        .map(|(path, _)| std::fs::read_to_string(path))
+        .collect();
+    for (path, _) in &dumps {
+        let _ = std::fs::remove_file(path);
+    }
+
+    let paths: HashSet<&String> = dumps.iter().map(|(path, _)| path).collect();
+    assert_eq!(paths.len(), dumps.len(), "each dump names its own file");
+    for ((path, bytes), dumped) in dumps.iter().zip(read) {
+        assert_eq!(
+            &dumped.expect("the dump exists"),
+            bytes,
+            "the dump at {path} is its own rejected bytes"
+        );
+    }
+}
+
 #[test]
 fn test_prune_stops_at_a_proven_ancestor() {
     let chain = synth_chain(3); // a <- b <- c
