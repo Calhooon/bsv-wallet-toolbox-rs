@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Changed
+
+- #317: in Arcade mode (`ServicesOptions::arcade_v2`, set by `with_arcade`)
+  no classic ARC provider is built, whatever `arc_gorillapool_url` says. The
+  post ladder is `ArcadeV2`, then `Bitails`, then `WhatsOnChain`; TAAL's and
+  GorillaPool's classic ARC are no longer failovers, and the
+  broadcaster-status read (`get_broadcaster_statuses`) asks Arcade alone.
+  The owner's word of 2026-10-27: "we use arcade now". Classic mode
+  (`arcade_v2` false, the default) is unchanged: TAAL from `arc_url`,
+  GorillaPool when configured, then Bitails and WhatsOnChain. Every
+  `ServicesOptions` field and default stays.
+- #317, public field: `Services::arc_taal` is `Option<StdArc<Arc>>` (was
+  `StdArc<Arc>`), `None` in Arcade mode. A dependent that read
+  `services.arc_taal` matches on the option (`if let Some(arc) =
+  &services.arc_taal`) and treats `None` as Arcade mode, where
+  `services.arcade` holds the broadcaster.
+
 ### Fixed
 
 - #295: both change allocators (the create door's and the public

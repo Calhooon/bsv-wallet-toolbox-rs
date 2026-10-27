@@ -93,8 +93,9 @@ pub struct Services {
     pub chain: Chain,
     pub options: ServicesOptions,
     pub whatsonchain: StdArc<WhatsOnChain>,
-    pub arc_taal: StdArc<Arc>,
-    pub arc_gorillapool: Option<StdArc<Arc>>,
+    pub arc_taal: Option<StdArc<Arc>>,        // classic mode only; None in Arcade mode (#317)
+    pub arc_gorillapool: Option<StdArc<Arc>>, // classic mode with a URL only; None in Arcade mode
+    pub arcade: Option<StdArc<Arcade>>,       // Arcade mode only
     pub bitails: StdArc<Bitails>,
     pub bhs: Option<StdArc<BlockHeaderService>>,
     pub post_beef_mode: PostBeefMode,
@@ -283,7 +284,8 @@ pub struct ServicesOptions {
 - `with_bananablocks_base(url)` - BananaBlocks API base (default per chain; empty = off)
 - `without_bananablocks()` - Leave BananaBlocks out of every ladder
 - `with_arc(url, config)` - Set TAAL ARC configuration
-- `with_gorillapool(url, config)` - Set GorillaPool ARC configuration
+- `with_gorillapool(url, config)` - Set GorillaPool ARC configuration (classic mode only)
+- `with_arcade(url, config)` - Arcade mode: `arc_url` is the Arcade endpoint; no classic ARC provider is built
 - `with_bhs_url(url)` - Set Block Header Service URL
 - `with_bhs_api_key(key)` - Set Block Header Service API key
 - `with_bhs(url, api_key)` - Set BHS URL and API key together
@@ -405,7 +407,7 @@ The `Services` constructor sets up provider priority for each operation:
 |-----------|----------------|
 | `get_merkle_path` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> BananaBlocks -> Bitails |
 | `get_raw_tx` | WhatsOnChain -> BananaBlocks -> Bitails |
-| `post_beef` | ArcadeV2 (opt-in, first) -> TAAL ARC -> GorillaPool ARC -> Bitails -> WhatsOnChain; with a `BroadcastMemory` attached, the last accepting provider is tried first (never ahead of Arcade unless it is Arcade) |
+| `post_beef` | Arcade mode (`arcade_v2`): ArcadeV2 -> Bitails -> WhatsOnChain, no classic ARC (#317). Classic mode: TAAL ARC -> GorillaPool ARC (when configured) -> Bitails -> WhatsOnChain. With a `BroadcastMemory` attached, the last accepting provider is tried first (never ahead of Arcade unless it is Arcade) |
 | `get_utxo_status` | WhatsOnChain -> BananaBlocks -> Bitails, a rotating start, asked until two agree or none is left; an unspent only from two, a not-listed only from two, anything else `status: "error"` (could not look); BananaBlocks answers an outpoint only (not asked a script's question), and its `spent: false` counts only for an output whose script is the asked one |
 | `get_status_for_txids` | ArcadeV2 (opt-in, first) -> WhatsOnChain -> Bitails -> BananaBlocks (not a chain index: its index lags the mempool); each provider after the first is asked about every txid no earlier provider placed as `mined` (`unknown` is a gap, not a verdict, and a broadcaster's `known` is its word, not the chain's: a chain index's `mined` or `known` replaces it); absence stands only when two chain indexes (WhatsOnChain and Bitails) both answer `unknown`, and then it stands even against a broadcaster's `known` (an Arcade-held phantom, which the reconciler's alive check acts on; the respend gate's own broadcaster check refuses while Arcade still answers SEEN); one chain index's `unknown` never stands alone, as a clean answer or against any provider's `known`, in either order; every other `unknown` (BananaBlocks' 404 included) is left out and the answer's `error` says `could not look: no chain index answered <txids>` |
 | `get_script_hash_history` | WhatsOnChain -> Bitails (feature `break-glass-script-history`, off by default: a chain scan) |
@@ -433,6 +435,13 @@ per txid serves both the batch triage and the proof, and the third-party
 indexers are only reached for what Arcade cannot answer. Ordering is unchanged
 when Arcade is not configured.
 
+Note: Arcade mode has no classic ARC provider (the owner's word of
+2026-10-27, "we use arcade now", #317): `arc_taal` and `arc_gorillapool` are
+`None` whatever `arc_gorillapool_url` says, the post ladder is ArcadeV2,
+Bitails, WhatsOnChain, and `get_broadcaster_statuses` asks Arcade alone. The
+classic ladder stays behind classic mode for the CLI's hermetic stub until it
+speaks Arcade. Pinned by `arcade_ladder_tests.rs`.
+
 ## Providers
 
 ### WhatsOnChain (providers/whatsonchain.rs)
@@ -447,7 +456,7 @@ Primary data provider for most operations:
 
 ### ARC (providers/arc.rs)
 
-Transaction broadcast service (mAPI):
+Transaction broadcast service (mAPI), classic mode only (#317):
 - **TAAL Mainnet:** `https://arc.taal.com`
 - **TAAL Testnet:** `https://arc-test.taal.com`
 - **GorillaPool:** `https://arc.gorillapool.io`
