@@ -176,10 +176,12 @@ pub struct Services {
     /// WhatsOnChain provider.
     pub whatsonchain: StdArc<WhatsOnChain>,
 
-    /// TAAL ARC provider.
-    pub arc_taal: StdArc<Arc>,
+    /// TAAL ARC provider: classic mode only (`ServicesOptions::arcade_v2`
+    /// false), built from `arc_url`; `None` in Arcade mode (#317).
+    pub arc_taal: Option<StdArc<Arc>>,
 
-    /// GorillaPool ARC provider (optional).
+    /// GorillaPool ARC provider: classic mode only, when
+    /// `arc_gorillapool_url` is set; `None` in Arcade mode (#317).
     pub arc_gorillapool: Option<StdArc<Arc>>,
 
     /// Arcade V2 provider (populated when `ServicesOptions::arcade_v2` is set).
@@ -655,10 +657,14 @@ impl Services {
         bitails: StdArc<Bitails>,
         bananablocks: Option<StdArc<BananaBlocks>>,
     ) -> Result<Self> {
-        // Arcade V2 mode (explicit flag — never inferred from the URL): the
-        // configured arc_url IS the Arcade endpoint. Build the Arcade
-        // broadcaster from it and point the classic TAAL ARC provider at its
-        // chain default so it remains a meaningful BEEF-capable failover.
+        // Arcade V2 mode (explicit flag, never inferred from the URL): the
+        // configured arc_url IS the Arcade endpoint and the Arcade
+        // broadcaster is built from it. No classic ARC provider exists in
+        // this mode, whatever arc_gorillapool_url says: the owner's word of
+        // 2026-10-27 ("arc is old af... we use arcade now for everyting",
+        // #317). The classic TAAL and GorillaPool providers are built only
+        // in classic mode (arcade_v2 false), kept for the CLI's hermetic
+        // stub until it speaks Arcade.
         let arcade = if options.arcade_v2 {
             Some(StdArc::new(Arcade::new(
                 options.arc_url.clone(),
@@ -669,29 +675,23 @@ impl Services {
             None
         };
 
-        let arc_taal_url = if options.arcade_v2 {
-            match chain {
-                Chain::Main => crate::services::providers::arc::ARC_TAAL_MAINNET.to_string(),
-                Chain::Test => crate::services::providers::arc::ARC_TAAL_TESTNET.to_string(),
-            }
+        let arc_taal = if options.arcade_v2 {
+            None
         } else {
-            options.arc_url.clone()
+            Some(StdArc::new(Arc::new(
+                options.arc_url.clone(),
+                options.arc_config.clone(),
+                Some("arcTaal"),
+            )?))
         };
 
-        let arc_taal = StdArc::new(Arc::new(
-            arc_taal_url,
-            options.arc_config.clone(),
-            Some("arcTaal"),
-        )?);
-
-        let arc_gorillapool = if let Some(ref url) = options.arc_gorillapool_url {
-            Some(StdArc::new(Arc::new(
+        let arc_gorillapool = match options.arc_gorillapool_url {
+            Some(ref url) if !options.arcade_v2 => Some(StdArc::new(Arc::new(
                 url.clone(),
                 options.arc_gorillapool_config.clone(),
                 Some("arcGorillaPool"),
-            )?))
-        } else {
-            None
+            )?)),
+            _ => None,
         };
 
         // Create BHS provider if URL is configured
@@ -774,21 +774,22 @@ impl Services {
         }
         raw_tx_services.add("Bitails", StdArc::clone(&bitails) as RawTxProvider);
 
-        // postBeef names TAAL, GorillaPool, Bitails and WoC. The default asks
-        // each instance once per pass (B3); order matters only to UntilSuccess.
+        // postBeef. Arcade mode: Arcade, then the Bitails and WoC broadcast
+        // fallbacks, and nothing else; GorillaPool's and TAAL's classic ARC
+        // are rungs of nothing here (the owner's word of 2026-10-27, #317).
+        // Classic mode: TAAL, GorillaPool (when configured), Bitails, WoC.
+        // The default asks each instance once per pass (B3); order matters
+        // only to UntilSuccess.
         let mut post_beef_services = ServiceCollection::new("postBeef");
-        // A configured Arcade V2 is also named. It precedes the classic ARC
-        // providers when the caller explicitly chooses UntilSuccess.
         if let Some(ref arcade_provider) = arcade {
             post_beef_services.add(
                 PROVIDER_ARCADE_V2,
                 StdArc::clone(arcade_provider) as PostBeefProvider,
             );
         }
-        post_beef_services.add(
-            PROVIDER_TAAL_ARC,
-            StdArc::clone(&arc_taal) as PostBeefProvider,
-        );
+        if let Some(ref taal) = arc_taal {
+            post_beef_services.add(PROVIDER_TAAL_ARC, StdArc::clone(taal) as PostBeefProvider);
+        }
         if let Some(ref gp) = arc_gorillapool {
             post_beef_services.add(
                 PROVIDER_GORILLAPOOL_ARC,
@@ -3088,7 +3089,8 @@ impl WalletServices for Services {
 
     async fn get_broadcaster_statuses(&self, txid: &str) -> Vec<(String, BroadcastStatus)> {
         // Arcade's status document and each classic ARC's `GET /v1/tx`, all
-        // at once. A broadcaster that errors says nothing; a 404 is
+        // at once. In Arcade mode no classic ARC exists, so Arcade alone
+        // answers (#317). A broadcaster that errors says nothing; a 404 is
         // `Unknown` (it does not hold the transaction).
         let arcade = async {
             match &self.arcade {
@@ -3122,7 +3124,7 @@ impl WalletServices for Services {
         };
         let (arcade, taal, gorillapool) = tokio::join!(
             arcade,
-            arc_status(PROVIDER_TAAL_ARC, Some(StdArc::clone(&self.arc_taal))),
+            arc_status(PROVIDER_TAAL_ARC, self.arc_taal.clone()),
             arc_status(PROVIDER_GORILLAPOOL_ARC, self.arc_gorillapool.clone()),
         );
         [arcade, taal, gorillapool].into_iter().flatten().collect()

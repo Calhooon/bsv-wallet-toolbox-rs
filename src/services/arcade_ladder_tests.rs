@@ -53,6 +53,7 @@ fn arcade_mode_post_ladder_is_arcade_bitails_whatsonchain() {
         [PROVIDER_ARCADE_V2, PROVIDER_BITAILS, PROVIDER_WHATSONCHAIN]
     );
     assert!(services.arcade.is_some());
+    assert!(services.arc_taal.is_none());
     assert!(services.arc_gorillapool.is_none());
 }
 
@@ -112,6 +113,7 @@ fn classic_mode_post_ladder_is_unchanged() {
         ]
     );
     assert!(services.arcade.is_none());
+    assert!(services.arc_taal.is_some());
     assert!(services.arc_gorillapool.is_some());
 }
 
