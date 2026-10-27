@@ -34,6 +34,7 @@ Most integration tests require the `sqlite` feature (default). The `valid_create
 | `double_spend_tests.rs` | 309 | 5 | none | Double-spend detection data structures and status enums |
 | `error_path_tests.rs` | 250 | 5 | none | Error variant construction, Display, conversions |
 | `arcade_status_vector_tests.rs` | 424 | 5 | none/`sqlite` | Arcade's status words through every toolbox surface (`tests/vectors/arcade_status_verdicts.json`: 59 recorded bodies and the latch sequence) |
+| `fixtures/` (`main.rs`) | 2853 | 16 | `sqlite` | Recorded storage fixtures (`fixtures/data/storage/*.json`, `fixtures/README.md`); `fixtures/storage/door.rs` holds the ten post-door tests (#66) and the four door fixtures `door_build_then_post.json`, `door_composition.json`, `door_post_twice.json`, `door_template_refused.json` |
 
 ## Test Categories
 
