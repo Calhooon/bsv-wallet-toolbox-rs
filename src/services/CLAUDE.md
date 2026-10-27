@@ -5,7 +5,7 @@
 
 The services module provides a unified interface for interacting with BSV blockchain services. It coordinates multiple service providers (WhatsOnChain, ARC, Bitails, BHS) with automatic failover and call tracking. The system uses a collection-based pattern where each operation type maintains an ordered list of providers that are tried sequentially until one succeeds.
 
-## Test and bench isolation (#182, #248)
+## Test and bench isolation (#182, #248, #263)
 
 Every toolbox-owned HTTP client is imported from private `providers/http_client.rs`. Under
 `cfg(test)` or `feature = "bench-support"`, it checks the built request URL
@@ -18,7 +18,13 @@ lookup resolver constructors, certificate issuance, and the unauthenticated
 storage client's HTTP path. Changing a URL or post mode cannot disable it.
 The module stays in services because wallet and storage already depend on
 services; no new module or public API is needed. The authenticated storage
-path delegates to the SDK's `Peer` transport and is outside this wrapper.
+path uses a separate wrapper around the SDK's `SimplifiedFetchTransport`
+under the same cfgs (#263). It calls the shared `check_url` on the peer's
+configured base URL before every SDK send, including through `peer()`.
+This covers the default authenticated branch without an opt-in flag.
+The SDK's redirects, proxy handling, and `localhost` resolution stay outside
+the toolbox HTTP wrapper; the Peer guard checks the configured destination,
+not redirect hops. Keep the test proxy prefix in place for this SDK boundary.
 
 Constructors can still describe production defaults in these builds, so
 configuration and ordering tests keep their existing assertions. A request
@@ -40,8 +46,9 @@ The `*_network_isolation_tests.rs` files beside lookup, certificate issuance,
 and the storage client check remote refusals and redirects plus successful
 loopback requests with the existing request headers and bodies. Lookup keeps
 its graceful failover behavior, so its refusal witness inspects the client's
-typed error directly. Storage's witnesses also run in the integration target
-with `sqlite,remote,bench-support`. Production still uses `reqwest::Client::new()`;
+typed error directly. Storage's witnesses also check authenticated remote
+refusals and a loopback handshake, and run in the integration target with
+`sqlite,remote,bench-support`. Production still uses `reqwest::Client::new()`;
 lookup's per-request timeouts, issuance headers, and storage settings are unchanged.
 
 ## Architecture

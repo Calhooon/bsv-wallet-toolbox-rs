@@ -154,7 +154,7 @@ if let Some(wallet_err) = WalletError::from_rpc_error(&rpc_error) {
 ```
 StorageClient<W: WalletInterface>
 ├── endpoint_url: String              # Server URL
-├── peer: Arc<Peer<W, SimplifiedFetchTransport>>  # BRC-104 authenticated peer
+├── peer: Arc<Peer<W, SimplifiedFetchTransport>>  # SDK transport in production; guarded wrapper under test and bench-support (#263)
 ├── wallet: W                          # Wallet for auth and signing
 ├── http_client: http_client::Client  # shared transport: reqwest in production, loopback-only under test and bench-support (#248)
 ├── next_id: AtomicU64                # Request ID counter
@@ -335,6 +335,22 @@ match client.make_available().await {
 When `use_auth` is enabled (the default), all requests are sent through a `Peer<W, SimplifiedFetchTransport>`
 which handles BRC-104 mutual authentication automatically. This replaces the older direct
 HTTP + BRC-31 header approach with proper session management.
+
+Under `cfg(test)` or `feature = "bench-support"`, the Peer instead holds a
+wrapper around the SDK's `SimplifiedFetchTransport`. Every `Transport::send`
+checks the configured base URL with the shared #182 `check_url` before
+delegating to the SDK, including sends through the public `peer()` accessor.
+Non-loopback destinations return the existing rule 28 refusal. Construction
+stays infallible and `use_auth` remains enabled by default. Production keeps
+the SDK transport and the existing public types.
+
+This checks the configured destination only. The SDK owns its reqwest client,
+redirects, proxy handling, and `localhost` resolution; those do not pass through
+the toolbox's shared HTTP client. Keep the test proxy prefix in place.
+The shared isolation witnesses cover both ordinary authenticated calls and
+the `peer()` accessor, and a mockito handshake proves delegation to the SDK.
+They run as unit tests with `remote` and as integration tests with
+`sqlite,remote,bench-support`.
 
 ### Authenticated Request Flow
 
