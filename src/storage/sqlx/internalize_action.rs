@@ -679,7 +679,45 @@ pub async fn internalize_action_internal(
 /// 1000 UTF-8 bytes (BRC-100 wallet/0100.md:867 at BRCs@5119a9b; ts-stack
 /// `validateBasketInsertion`). Its refusal is `Error::ValidationError` in
 /// bsv-rs's words, so the door's text and bsv-rs's cannot drift.
+///
+/// The array bounds (#309) sit where ts-stack@edf6e03 validationHelpers.ts
+/// validateInternalizeActionArgs (1046-1076) calls validateArray: `outputs`
+/// (1052) ahead of every output, an insertion's `tags` (948) after its
+/// `customInstructions` (942-946), `labels` (1054) after the outputs.
 fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> {
+    validate_array_bound(
+        args.outputs.len(),
+        "outputs",
+        MAXIMUM_WALLET_COLLECTION_ITEMS,
+    )?;
+    // The first insertion whose tags pass the bound is refused only once
+    // every output up to it has passed its customInstructions, as the
+    // reference maps the outputs in order; bsv-rs reads only the outputs.
+    let over = args.outputs.iter().enumerate().find_map(|(index, output)| {
+        let tags = output.insertion_remittance.as_ref()?.tags.as_ref()?;
+        (tags.len() > MAXIMUM_WALLET_COLLECTION_ITEMS).then_some((index, tags.len()))
+    });
+    if let Some((index, tags)) = over {
+        let earlier = InternalizeActionArgs {
+            tx: Vec::new(),
+            outputs: args.outputs[..=index].to_vec(),
+            description: String::new(),
+            labels: None,
+            seek_permission: None,
+        };
+        validate_insertion_instructions(&earlier)?;
+        return validate_array_bound(tags, "tags", MAXIMUM_WALLET_COLLECTION_ITEMS);
+    }
+    validate_insertion_instructions(args)?;
+    validate_array_bound(
+        args.labels.as_ref().map_or(0, Vec::len),
+        "labels",
+        MAXIMUM_WALLET_COLLECTION_ITEMS,
+    )
+}
+
+/// bsv-rs's customInstructions check (#143), its refusal in bsv-rs's words.
+fn validate_insertion_instructions(args: &InternalizeActionArgs) -> Result<()> {
     bsv_rs::wallet::validation::validate_internalize_action_args(args).map_err(|e| match e {
         bsv_rs::Error::WalletError(text) => Error::ValidationError(text),
         other => Error::ValidationError(other.to_string()),
