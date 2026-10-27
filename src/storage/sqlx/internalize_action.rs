@@ -2028,6 +2028,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_load_existing_outputs_preserves_origin_and_metadata() {
+        let storage = create_test_storage().await;
+        let user_id = create_test_user(&storage).await;
+        let txid = "93".repeat(32);
+        let (transaction_id, output_id) = seed_change_coin(&storage, user_id, &txid, 0, 42).await;
+        let mut conn = storage.writer().acquire().await.unwrap();
+        sqlx::query(
+            "UPDATE outputs SET provided_by = 'storage', purpose = 'receive',
+             output_description = 'Received payment', spent_by = ?, sequence_number = -1,
+             spending_description = 'Spent payment' WHERE output_id = ?",
+        )
+        .bind(transaction_id)
+        .bind(output_id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+        let outputs = load_existing_outputs(&mut conn, user_id, &txid)
+            .await
+            .unwrap();
+        assert_eq!(outputs.len(), 1);
+        let output = &outputs[0];
+        assert_eq!(output.output_id, output_id);
+        assert_eq!(output.provided_by, "storage");
+        assert_eq!(output.purpose.as_deref(), Some("receive"));
+        assert_eq!(
+            output.output_description.as_deref(),
+            Some("Received payment")
+        );
+        assert_eq!(output.spent_by, Some(transaction_id));
+        assert_eq!(output.sequence_number, Some(u32::MAX));
+        assert_eq!(
+            output.spending_description.as_deref(),
+            Some("Spent payment")
+        );
+
+        sqlx::query(
+            "UPDATE outputs SET output_description = NULL, spent_by = NULL,
+             sequence_number = NULL, spending_description = NULL WHERE output_id = ?",
+        )
+        .bind(output_id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        let outputs = load_existing_outputs(&mut conn, user_id, &txid)
+            .await
+            .unwrap();
+        assert_eq!(outputs.len(), 1);
+        let output = &outputs[0];
+        assert_eq!(output.provided_by, "storage");
+        assert_eq!(output.purpose.as_deref(), Some("receive"));
+        assert_eq!(output.output_description, None);
+        assert_eq!(output.spent_by, None);
+        assert_eq!(output.sequence_number, None);
+        assert_eq!(output.spending_description, None);
+    }
+
+    #[tokio::test]
     async fn test_internalize_existing_transaction_merge() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
