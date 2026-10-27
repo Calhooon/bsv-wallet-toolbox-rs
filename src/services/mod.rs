@@ -2,7 +2,7 @@
 //!
 //! This module provides service providers for interacting with blockchain APIs:
 //! - WhatsOnChain - UTXO status, raw transactions, merkle proofs
-//! - ARC (TAAL, GorillaPool) - classic broadcasting with BEEF, deprecated:
+//! - ARC (TAAL, `GorillaPool`) - classic broadcasting with BEEF, deprecated:
 //!   built only behind `ServicesOptions::with_classic_arc` (#317)
 //! - Arcade V2 - Teranode broadcaster; when configured it is also the FIRST
 //!   merkle path and batch status provider, so a wallet reads its own proofs
@@ -184,12 +184,12 @@ pub struct ServicesOptions {
     /// Classic ARC configuration for TAAL. Read in classic mode only.
     pub arc_config: Option<ArcConfig>,
 
-    /// Classic ARC URL for GorillaPool, `None` by default (#317). Read in
-    /// classic mode only: in Arcade mode no GorillaPool provider is built
+    /// Classic ARC URL for `GorillaPool`, `None` by default (#317). Read in
+    /// classic mode only: in Arcade mode no `GorillaPool` provider is built
     /// whatever this says.
     pub arc_gorillapool_url: Option<String>,
 
-    /// Classic ARC configuration for GorillaPool. Read in classic mode only.
+    /// Classic ARC configuration for `GorillaPool`. Read in classic mode only.
     pub arc_gorillapool_config: Option<ArcConfig>,
 
     /// Treat `arc_url` as an **Arcade V2** endpoint (EF-only, always-async).
@@ -350,20 +350,22 @@ impl ServicesOptions {
         since = "0.14.0",
         note = "Arcade is the standard broadcaster (#317): use `with_arcade`; `with_classic_arc` serves the hermetic stub until it speaks Arcade"
     )]
+    #[must_use]
     pub fn with_arc(self, url: impl Into<String>, config: Option<ArcConfig>) -> Self {
         #[allow(deprecated)]
         self.with_classic_arc(url, config)
     }
 
     /// Classic ARC mode: `arc_url` is a classic TAAL ARC endpoint and
-    /// `arcade_v2 = false`, so the post ladder is TAAL ARC, GorillaPool ARC
+    /// `arcade_v2 = false`, so the post ladder is TAAL ARC, `GorillaPool` ARC
     /// when [`ServicesOptions::with_gorillapool`] set it, then Bitails and
-    /// WhatsOnChain. Deprecated: Arcade is the standard (#317); the knob
+    /// `WhatsOnChain`. Deprecated: Arcade is the standard (#317); the knob
     /// serves the CLI's hermetic stub until it speaks Arcade.
     #[deprecated(
         since = "0.14.0",
         note = "Arcade is the standard broadcaster (#317): use `with_arcade`; this knob serves the hermetic stub until it speaks Arcade"
     )]
+    #[must_use]
     pub fn with_classic_arc(mut self, url: impl Into<String>, config: Option<ArcConfig>) -> Self {
         self.arc_url = url.into();
         self.arc_config = config;
@@ -393,8 +395,8 @@ impl ServicesOptions {
         self
     }
 
-    /// Set GorillaPool ARC URL and config. Classic mode only (see
-    /// [`ServicesOptions::with_classic_arc`]): in Arcade mode no GorillaPool
+    /// Set `GorillaPool` ARC URL and config. Classic mode only (see
+    /// [`ServicesOptions::with_classic_arc`]): in Arcade mode no `GorillaPool`
     /// provider is built.
     pub fn with_gorillapool(mut self, url: impl Into<String>, config: Option<ArcConfig>) -> Self {
         self.arc_gorillapool_url = Some(url.into());
