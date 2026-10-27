@@ -417,6 +417,10 @@ mod response_tests;
 #[path = "certificate_issuance_header_tests.rs"]
 mod header_tests;
 
+#[cfg(test)]
+#[path = "certificate_issuance_nonce_tests.rs"]
+mod nonce_tests;
+
 async fn acquire_from_fixture(
     wallet: &TestWallet,
     mut acquisition: AcquireCertificateArgs,
