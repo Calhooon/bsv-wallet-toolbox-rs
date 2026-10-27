@@ -18,7 +18,9 @@ impl StorageSqlx {
             r#"
             SELECT o.output_id, o.user_id, o.transaction_id, o.basket_id, o.txid, o.vout,
                    o.satoshis, o.locking_script, o.script_length, o.script_offset,
-                   o.type, o.spendable, o.change, o.derivation_prefix, o.derivation_suffix,
+                   o.type, o.provided_by, o.purpose, o.output_description, o.spent_by,
+                   o.sequence_number, o.spending_description, o.spendable, o.change,
+                   o.derivation_prefix, o.derivation_suffix,
                    o.sender_identity_key, o.custom_instructions, o.created_at, o.updated_at
             FROM outputs o
             JOIN transactions t ON o.transaction_id = t.transaction_id
@@ -105,43 +107,11 @@ impl StorageSqlx {
 
         let mut outputs = Vec::new();
         for row in rows {
-            let locking_script: Option<Vec<u8>> = if args.no_script.unwrap_or(false) {
-                None
-            } else {
-                row.get("locking_script")
-            };
-
-            outputs.push(TableOutput {
-                output_id: row.get("output_id"),
-                user_id: row.get("user_id"),
-                transaction_id: row.get("transaction_id"),
-                basket_id: row.get("basket_id"),
-                txid: row.get("txid"),
-                vout: row.get("vout"),
-                satoshis: row.get("satoshis"),
-                locking_script,
-                script_length: row.get("script_length"),
-                script_offset: row.get("script_offset"),
-                output_type: row.get("type"),
-                provided_by: row.try_get("provided_by").unwrap_or("you".to_string()),
-                purpose: row.try_get("purpose").ok(),
-                output_description: row.try_get("output_description").ok(),
-                spent_by: row.try_get("spent_by").ok().flatten(),
-                sequence_number: row
-                    .try_get::<Option<i32>, _>("sequence_number")
-                    .ok()
-                    .flatten()
-                    .map(|v| v as u32),
-                spending_description: row.try_get("spending_description").ok(),
-                spendable: row.get("spendable"),
-                change: row.get("change"),
-                derivation_prefix: row.get("derivation_prefix"),
-                derivation_suffix: row.get("derivation_suffix"),
-                sender_identity_key: row.get("sender_identity_key"),
-                custom_instructions: row.get("custom_instructions"),
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
-            });
+            let mut output = output_from_row(&row);
+            if args.no_script.unwrap_or(false) {
+                output.locking_script = None;
+            }
+            outputs.push(output);
         }
 
         Ok(outputs)
@@ -172,7 +142,8 @@ impl StorageSqlx {
             r#"
             SELECT output_id, user_id, transaction_id, basket_id, txid, vout,
                    satoshis, locking_script, script_length, script_offset,
-                   type, spendable, change, derivation_prefix, derivation_suffix,
+                   type, provided_by, purpose, output_description, spent_by, sequence_number,
+                   spending_description, spendable, change, derivation_prefix, derivation_suffix,
                    sender_identity_key, custom_instructions, created_at, updated_at
             FROM outputs
             WHERE user_id = ? AND txid = ? AND vout = ?
