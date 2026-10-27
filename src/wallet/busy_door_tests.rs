@@ -1214,17 +1214,19 @@ fn direct_certificate_args() -> bsv_rs::wallet::AcquireCertificateArgs {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), "v".to_string());
     bsv_rs::wallet::AcquireCertificateArgs {
-        certificate_type: "dGVzdC1jZXJ0LXR5cGU=".to_string(),
+        // Arguments the direct acquire's checks accept (#291, #311): a
+        // 32-byte type and serial, a well-formed outpoint, a canonical DER
+        // signature, a revealer and a keyring.
+        certificate_type: "ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE=".to_string(),
         certifier: "02".to_string() + &"ab".repeat(32),
         acquisition_protocol: bsv_rs::wallet::AcquisitionProtocol::Direct,
         fields,
-        serial_number: Some("c2VyaWFsLW51bWJlcg==".to_string()),
-        // A well-formed outpoint: the direct acquire validates it (#291).
+        serial_number: Some("ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA=".to_string()),
         revocation_outpoint: Some(format!("{}.0", "ab".repeat(32))),
-        signature: Some("deadbeef".to_string()),
+        signature: Some("300602010a02010b".to_string()),
         certifier_url: None,
-        keyring_revealer: None,
-        keyring_for_subject: None,
+        keyring_revealer: Some(bsv_rs::wallet::KeyringRevealer::Certifier),
+        keyring_for_subject: Some(HashMap::new()),
         privileged: None,
         privileged_reason: None,
     }
