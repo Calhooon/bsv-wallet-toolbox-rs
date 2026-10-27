@@ -217,11 +217,11 @@ where
             .await?;
 
     // Step 2: Send HTTP POST to certifier; the identity header is checked before the body
-    let http_response =
+    let response =
         send_issuance_request(certifier_url, &prepared.body, identity_key, &certifier_hex).await?;
 
     // Step 3: Parse and validate response
-    let parsed = parse_certificate_response(&http_response.body)?;
+    let parsed = parse_certificate_response(&response)?;
 
     // Step 4: Verify certificate issuance
     verify_certificate_issuance(
@@ -522,15 +522,6 @@ where
 // Step 2: Send HTTP Request
 // =============================================================================
 
-/// Response from HTTP request including headers for validation
-#[derive(Debug)]
-struct HttpIssuanceResponse {
-    /// The parsed JSON body
-    body: ProtocolIssuanceResponse,
-    /// The x-bsv-auth-identity-key response header, already equal to the certifier
-    identity_key_header: Option<String>,
-}
-
 /// Sends the issuance request to the certifier URL.
 ///
 /// The response's identity header must equal `certifier_hex` before the body is
@@ -540,7 +531,7 @@ async fn send_issuance_request(
     body: &[u8],
     identity_key: &str,
     certifier_hex: &str,
-) -> Result<HttpIssuanceResponse> {
+) -> Result<ProtocolIssuanceResponse> {
     #[cfg(test)]
     let fixture_url = ISSUANCE_TEST_URL.try_with(Clone::clone).ok();
     #[cfg(test)]
@@ -589,10 +580,7 @@ async fn send_issuance_request(
         ))
     })?;
 
-    Ok(HttpIssuanceResponse {
-        body: parsed,
-        identity_key_header,
-    })
+    Ok(parsed)
 }
 
 /// Reads a header as fetch's `Headers.get` does: `None` when absent, each byte
@@ -1398,42 +1386,5 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Failed to send"));
-    }
-}
-
-// =============================================================================
-// Integration Tests with Mock Server
-// =============================================================================
-
-#[cfg(test)]
-mod integration_tests {
-    use super::*;
-
-    // Note: Full integration tests with mock HTTP server would require
-    // a mock wallet implementation. The tests above cover the core logic.
-    // Full end-to-end testing should be done in integration test files
-    // with proper mock infrastructure.
-
-    #[test]
-    fn test_http_issuance_response_fields() {
-        // Verify HttpIssuanceResponse struct has all needed fields
-        let body = ProtocolIssuanceResponse {
-            protocol: "test".to_string(),
-            certificate: None,
-            server_nonce: "nonce".to_string(),
-            timestamp: String::new(),
-            version: String::new(),
-        };
-
-        let http_response = HttpIssuanceResponse {
-            body,
-            identity_key_header: Some("identity".to_string()),
-        };
-
-        assert_eq!(
-            http_response.identity_key_header,
-            Some("identity".to_string())
-        );
-        assert_eq!(http_response.body.protocol, "test");
     }
 }
