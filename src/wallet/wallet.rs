@@ -3289,11 +3289,12 @@ fn create_keyring_for_verifier(
     use bsv_rs::primitives::SymmetricKey;
     use bsv_rs::wallet::{DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs};
 
+    let decryption_error =
+        || bsv_rs::Error::WalletError("Failed to decrypt certificate field!".to_string());
+
     // Validate master keyring is not empty
     if master_keyring.is_empty() {
-        return Err(bsv_rs::Error::WalletError(
-            "Master keyring is empty - cannot create keyring for verifier".to_string(),
-        ));
+        return Err(decryption_error());
     }
 
     let protocol = Protocol::new(
@@ -3301,8 +3302,6 @@ fn create_keyring_for_verifier(
         CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
     );
 
-    let decryption_error =
-        || bsv_rs::Error::WalletError("Failed to decrypt certificate field!".to_string());
     let mut keyring_for_verifier = HashMap::new();
 
     for field_name in fields_to_reveal {
@@ -3315,20 +3314,14 @@ fn create_keyring_for_verifier(
         }
 
         // Get the master key for this field (base64 encoded encrypted symmetric key)
-        let master_key_base64 = master_keyring.get(field_name).ok_or_else(|| {
-            bsv_rs::Error::WalletError(format!(
-                "Field '{}' not found in master keyring",
-                field_name
-            ))
-        })?;
+        let master_key_base64 = master_keyring
+            .get(field_name)
+            .ok_or_else(decryption_error)?;
 
         // Decode master key from base64
-        let master_key_ciphertext = BASE64.decode(master_key_base64).map_err(|e| {
-            bsv_rs::Error::WalletError(format!(
-                "Failed to decode master key for field '{}': {}",
-                field_name, e
-            ))
-        })?;
+        let master_key_ciphertext = BASE64
+            .decode(master_key_base64)
+            .map_err(|_| decryption_error())?;
 
         // Decrypt the master symmetric key using the certifier as counterparty
         // Key ID for master is just the field name
@@ -3351,9 +3344,11 @@ fn create_keyring_for_verifier(
         // them (ts-stack@edf6e03 MasterCertificate.ts:606-619).
         let symmetric_key =
             SymmetricKey::from_bytes(&decrypted.plaintext).map_err(|_| decryption_error())?;
-        symmetric_key
+        let field_plaintext = symmetric_key
             .decrypt(&field_ciphertext)
             .map_err(|_| decryption_error())?;
+        // Match the strict UTF-8 recovery at MasterCertificate.ts:619-622.
+        std::str::from_utf8(&field_plaintext).map_err(|_| decryption_error())?;
 
         // Re-encrypt the symmetric key for the verifier
         // Key ID for verifiable is: "{serial_number} {field_name}"
@@ -3697,6 +3692,26 @@ mod tests {
         use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
         use bsv_rs::primitives::PrivateKey;
 
+        fn assert_field_recovery_error(
+            scenario: &str,
+            result: bsv_rs::Result<HashMap<String, String>>,
+        ) {
+            match result {
+                Err(bsv_rs::Error::WalletError(message)) => {
+                    assert_eq!(
+                        message, "Failed to decrypt certificate field!",
+                        "{scenario}"
+                    );
+                }
+                Err(error) => {
+                    panic!("{scenario}: expected a field recovery WalletError, got {error:?}")
+                }
+                Ok(_) => {
+                    panic!("{scenario}: field recovery must refuse before sharing the field key")
+                }
+            }
+        }
+
         #[test]
         fn test_create_keyring_empty_master_keyring_fails() {
             let subject_key = PrivateKey::random();
@@ -3720,9 +3735,7 @@ mod tests {
                 "test.app.com",
             );
 
-            assert!(result.is_err());
-            let err_msg = result.unwrap_err().to_string();
-            assert!(err_msg.contains("Master keyring is empty"));
+            assert_field_recovery_error("empty master keyring", result);
         }
 
         #[test]
@@ -3784,9 +3797,7 @@ mod tests {
                 "test.app.com",
             );
 
-            assert!(result.is_err());
-            let err_msg = result.unwrap_err().to_string();
-            assert!(err_msg.contains("not found in master keyring"));
+            assert_field_recovery_error("missing master entry", result);
         }
 
         #[test]
@@ -3814,9 +3825,47 @@ mod tests {
                 "test.app.com",
             );
 
-            assert!(result.is_err());
-            let err_msg = result.unwrap_err().to_string();
-            assert!(err_msg.contains("Failed to decode master key"));
+            assert_field_recovery_error("non-base64 master entry", result);
+        }
+
+        #[test]
+        fn test_create_keyring_rejects_non_utf8_field() {
+            use bsv_rs::primitives::SymmetricKey;
+            use bsv_rs::wallet::EncryptArgs;
+
+            let subject = PrivateKey::from_hex(&format!("{:064x}", 4)).unwrap();
+            let certifier = PrivateKey::from_hex(&format!("{:064x}", 5)).unwrap();
+            let verifier = PrivateKey::from_hex(&format!("{:064x}", 6)).unwrap();
+            let wallet = ProtoWallet::new(Some(subject));
+            let field_key = SymmetricKey::from_bytes(&[7; 32]).unwrap();
+            let field_ciphertext = field_key.encrypt(&[0xff, 0xfe]).unwrap();
+            let wrapped_key = wallet
+                .encrypt(EncryptArgs {
+                    plaintext: field_key.as_bytes().to_vec(),
+                    protocol_id: Protocol::new(
+                        SecurityLevel::Counterparty,
+                        CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
+                    ),
+                    key_id: "name".to_string(),
+                    counterparty: Some(Counterparty::Other(certifier.public_key())),
+                    ..Default::default()
+                })
+                .unwrap();
+
+            // AES authentication succeeds, but MasterCertificate.ts:619-622
+            // also requires the recovered plaintext to be valid UTF-8.
+            assert_eq!(field_key.decrypt(&field_ciphertext).unwrap(), [0xff, 0xfe]);
+            let result = create_keyring_for_verifier(
+                &wallet,
+                &certifier.public_key(),
+                &verifier.public_key(),
+                &HashMap::from([("name".to_string(), BASE64.encode(field_ciphertext))]),
+                &["name".to_string()],
+                &HashMap::from([("name".to_string(), BASE64.encode(wrapped_key.ciphertext))]),
+                &BASE64.encode([8; 32]),
+                "certificate.test",
+            );
+            assert_field_recovery_error("non-UTF-8 field plaintext", result);
         }
 
         #[test]
