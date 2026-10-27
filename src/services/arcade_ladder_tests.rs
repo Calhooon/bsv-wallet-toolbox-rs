@@ -157,33 +157,59 @@ async fn classic_mode_broadcaster_statuses_ask_both_arcs() {
 }
 
 // The default mode is Arcade (#317, the owner's word of 2026-10-27: "arc is
-// just deprecated, arcade is the standard"). No Arcade endpoint is the
-// crate's to name, so options that set none refuse at construction; classic
-// ARC is built only behind the deprecated knob. The URLs here are loopback:
-// constructing `Services` makes no request.
+// just deprecated, arcade is the standard"). `default()` and `mainnet()`
+// name the crate's public `ARCADE_V2_MAINNET` (the keeper's reading on PR
+// #342); the crate has no Arcade testnet constant, so `testnet()` names
+// none, and options whose `arc_url` is empty in Arcade mode refuse at
+// construction. Classic ARC is built only behind the deprecated knob.
+// Constructing `Services` makes no request.
 
 const LOOPBACK: &str = "http://127.0.0.1:9";
 
 #[test]
-fn default_options_with_no_arcade_url_refuse_construction() {
-    for (chain, options) in [
-        (Chain::Main, ServicesOptions::default()),
-        (Chain::Main, ServicesOptions::mainnet()),
-        (Chain::Test, ServicesOptions::testnet()),
-    ] {
-        assert!(options.arcade_v2, "{chain:?}: Arcade is the default mode");
-        let err = Services::with_options(chain, options)
-            .err()
-            .unwrap_or_else(|| panic!("{chain:?}: built with no Arcade URL"));
+fn mainnet_alone_builds_the_arcade_ladder_at_the_public_endpoint() {
+    for options in [ServicesOptions::default(), ServicesOptions::mainnet()] {
+        assert!(options.arcade_v2, "Arcade is the default mode");
+        assert_eq!(options.arc_url, crate::services::ARCADE_V2_MAINNET);
+        let services = Services::with_options(Chain::Main, options).unwrap();
+        assert_arcade_ladder(&services);
         assert_eq!(
-            err.to_string(),
-            format!("Invalid argument: {NO_ARCADE_URL}")
+            services.arcade.as_ref().unwrap().url(),
+            crate::services::ARCADE_V2_MAINNET
         );
-        assert!(err.to_string().contains("with_arcade"), "{err}");
     }
-    for chain in [Chain::Main, Chain::Test] {
-        assert!(Services::new(chain).is_err(), "{chain:?}");
+    for services in [Services::new(Chain::Main), Services::mainnet()] {
+        assert_arcade_ladder(&services.unwrap());
     }
+}
+
+fn assert_refuses(chain: Chain, options: ServicesOptions) {
+    assert!(options.arcade_v2, "{chain:?}: Arcade is the default mode");
+    let err = Services::with_options(chain, options)
+        .err()
+        .unwrap_or_else(|| panic!("{chain:?}: built with no Arcade URL"));
+    assert_eq!(
+        err.to_string(),
+        format!("Invalid argument: {NO_ARCADE_URL}")
+    );
+    assert!(err.to_string().contains("with_arcade"), "{err}");
+}
+
+#[test]
+fn an_arc_url_emptied_by_the_caller_refuses_construction() {
+    let mut options = ServicesOptions::mainnet();
+    options.arc_url = String::new();
+    assert_refuses(Chain::Main, options);
+    let options = ServicesOptions::mainnet().with_arcade("  ", None);
+    assert_refuses(Chain::Main, options);
+}
+
+#[test]
+fn testnet_names_no_arcade_endpoint_and_refuses() {
+    assert!(ServicesOptions::testnet().arc_url.is_empty());
+    assert_refuses(Chain::Test, ServicesOptions::testnet());
+    assert!(Services::new(Chain::Test).is_err());
+    assert!(Services::testnet().is_err());
 }
 
 #[test]
