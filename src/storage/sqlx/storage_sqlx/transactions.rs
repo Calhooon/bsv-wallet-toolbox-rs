@@ -2,6 +2,9 @@ use super::{
     sequence_number_from_row, AbortActionArgs, AuthId, Duration, Error, ListActionsArgs,
     ListActionsResult, Result, Row, StorageSqlx, Utc, WalletStorageWriter,
 };
+use crate::storage::sqlx::internalize_action::{
+    validate_array_bound, MAXIMUM_WALLET_COLLECTION_ITEMS,
+};
 
 impl StorageSqlx {
     /// Get a raw transaction, preferring proven_tx but falling back to transactions table.
@@ -39,6 +42,10 @@ impl StorageSqlx {
         };
 
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+
+        // validateListActionsArgs (ts-stack@edf6e03 validationHelpers.ts
+        // 1683-1714): validateArray's bound (105-114) on labels at 1691 (#309).
+        validate_array_bound(args.labels.len(), "labels", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
