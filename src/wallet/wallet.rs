@@ -2680,7 +2680,7 @@ where
         )
         .await?;
 
-        // Argument checks in ts-stack@edf6e03 validationHelpers.ts:1483-1509
+        // Argument checks in ts-stack@edf6e03 validationHelpers.ts:1483-1518
         // order. The helper retains its own name, map and serial checks.
         // SQLite matches the normalized certifier byte for byte; the remote
         // storage server decides its own collation.
@@ -2696,6 +2696,10 @@ where
             validate_public_key_arg(&args.certificate.certifier, "certificate.certifier")?;
         let (subject, _) =
             validate_public_key_arg(&args.certificate.subject, "certificate.subject")?;
+        let revocation_outpoint = validate_outpoint_arg(
+            &args.certificate.revocation_outpoint,
+            "certificate.revocationOutpoint",
+        )?;
         let signature = validate_certificate_signature_arg(&args.certificate.signature)?;
         for name in &args.fields_to_reveal {
             let rule = if name.is_empty() {
@@ -2711,6 +2715,31 @@ where
             ));
         }
         let (_, verifier) = validate_public_key_arg(&args.verifier, "verifier")?;
+        if let Some(reason) = &args.privileged_reason {
+            let rule = if reason.len() < 5 {
+                Some("at least 5 length.")
+            } else if reason.len() > 50 {
+                Some("no more than 50 length.")
+            } else {
+                None
+            };
+            if let Some(rule) = rule {
+                return Err(invalid_certificate_argument("privilegedReason", rule));
+            }
+        }
+        if args.fields_to_reveal.len() > MAXIMUM_CERTIFICATE_REVEAL_FIELDS {
+            return Err(invalid_certificate_argument(
+                "fieldsToReveal",
+                &format!("at most {MAXIMUM_CERTIFICATE_REVEAL_FIELDS} fields"),
+            ));
+        }
+        let mut seen = HashSet::new();
+        if !args.fields_to_reveal.iter().all(|name| seen.insert(name)) {
+            return Err(invalid_certificate_argument(
+                "fieldsToReveal",
+                "unique field names",
+            ));
+        }
 
         let auth = self.auth();
 
@@ -2734,7 +2763,7 @@ where
             .filter(|cert| {
                 cert.certificate.serial_number == serial_number
                     && cert.certificate.subject == subject
-                    && cert.certificate.revocation_outpoint == args.certificate.revocation_outpoint
+                    && cert.certificate.revocation_outpoint == revocation_outpoint
                     && cert.certificate.signature == signature
             })
             .collect();
@@ -3443,6 +3472,44 @@ pub(crate) fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs
         return Err(invalid_certificate_argument(name, "no more than 32 bytes"));
     }
     Ok(value.to_string())
+}
+
+/// `MAXIMUM_CERTIFICATE_REVEAL_FIELDS` at ts-stack@edf6e03 validationHelpers.ts:70.
+const MAXIMUM_CERTIFICATE_REVEAL_FIELDS: usize = 100;
+
+// validateOutpointString at validationHelpers.ts:1099-1116: the shape
+// /^([0-9A-Fa-f]{64})\.(0|[1-9]\d*)$/ untrimmed with ASCII digits, the txid
+// lowercased (522-534) and the vout bounded by validateInteger (306-324).
+fn validate_outpoint_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
+    let shape = || {
+        invalid_certificate_argument(
+            name,
+            "a 32-byte txid and canonical numeric output index joined with '.'",
+        )
+    };
+    let (txid, vout) = value.split_once('.').ok_or_else(shape)?;
+    if txid.len() != 64
+        || !txid.bytes().all(|b| b.is_ascii_hexdigit())
+        || vout.is_empty()
+        || !vout.bytes().all(|b| b.is_ascii_digit())
+        || (vout.len() > 1 && vout.starts_with('0'))
+    {
+        return Err(shape());
+    }
+    // Number(vout) is a safe integer only up to 2^53 - 1 (16 digits).
+    const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+    let vout_name = format!("{name} vout");
+    let number = match vout.parse::<u64>() {
+        Ok(number) if vout.len() <= 16 && number <= MAX_SAFE_INTEGER => number,
+        _ => return Err(invalid_certificate_argument(&vout_name, "a safe integer")),
+    };
+    if number > u64::from(u32::MAX) {
+        return Err(invalid_certificate_argument(
+            &vout_name,
+            "no more than 4294967295 length.",
+        ));
+    }
+    Ok(format!("{}.{number}", txid.to_ascii_lowercase()))
 }
 
 // Secp256k1Validation.ts:33-50 accepts minimal DER with 0 < r,s < n,
@@ -4618,8 +4685,12 @@ mod tests {
             async fn test_create_keyring_preloop_duplicate_requested_name() {
                 let mut request = Request::new();
                 request.reveal.push("name".to_string());
+                // #270: the door refuses at validationHelpers.ts:1516-1518 first.
                 request
-                    .assert_gate_error("fieldsToReveal contains duplicate field: name")
+                    .assert_gate_errors(
+                        "fieldsToReveal contains duplicate field: name",
+                        "Validation error: The fieldsToReveal parameter must be unique field names",
+                    )
                     .await;
             }
 
@@ -4649,8 +4720,12 @@ mod tests {
             async fn test_create_keyring_preloop_requested_entry_limit() {
                 let mut request = Request::new();
                 request.reveal = (0..101).map(|i| format!("field{i}")).collect();
+                // #270: the door refuses at validationHelpers.ts:1513-1515 first.
                 request
-                    .assert_gate_error("fieldsToReveal must be an array of at most 100 strings")
+                    .assert_gate_errors(
+                        "fieldsToReveal must be an array of at most 100 strings",
+                        "Validation error: The fieldsToReveal parameter must be at most 100 fields",
+                    )
                     .await;
             }
 
