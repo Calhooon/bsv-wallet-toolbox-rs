@@ -626,17 +626,27 @@ truthy revocation outpoint, field count, missing field, field value, signature,
 then master-field decryption. Certificate and nonce presence errors end in `!`.
 The parser retains the supplied strings; decoding for the SDK occurs only
 after metadata checks, and the stored outpoint keeps its supplied text.
-Type decoding accepts nonzero Base64 padding bits rather than rejecting a
-value admitted by the argument gate. This does not claim that the pin's later
-`Certificate.toBinary:232-237` accepts noncanonical types: it requires canonical
-encoding. Signature `Ok(false)` handling remains with #188/#199.
+The signature step decodes as `Certificate.verify` does (`Certificate.ts:425-441`
+over `toBinary`): type and serial through the strict decoder
+(`:233,237`; `WalletByteEncoding.ts:39-52`), so a non-canonical type, admitted
+by the argument gate, or a non-canonical serial, admitted by the lenient HMAC
+decode at `Wallet.ts:808`, answers `Certificate verification failed`. The
+outpoint follows `toBinary`'s grammar (`:260-270`): `txid` or `txid.vout`,
+64 hex digits, a decimal index without leading zeros up to `0xffffffff`; a
+txid-only text is vout 0 over its txid, and `unparsable` or `<txid>.07`
+answers `Certificate verification failed`. Signature `Ok(false)` handling
+remains with #188/#199. An empty master keyring answers `A MasterCertificate
+must have a valid masterKeyring!` before decryption and storage
+(`MasterCertificate.ts:522-524`, outside the decrypt try).
 
 The server nonce helper matches `verifyNonce.ts:26-57`, using the requested
 certifier, `[2, 'server hmac']`, and the UTF-8-decoded random part as key ID, including TextDecoder's leading-BOM removal.
 As at `Wallet.ts:806`, its false return is ignored; an error propagates before
 the serial HMAC. This differs from the pinned SDK nonce helper, so that helper
 cannot be substituted. The existing client nonce generation remains separate.
-Serial decoding and length errors follow the earlier Base64/HMAC validators;
+Serial decoding and length errors follow the earlier Base64/HMAC validators,
+the serial and nonce decodes (`Wallet.ts:808-809`) before the hmac length
+(`validationHelpers.ts:1774`);
 the ordinary verifier throws `HMAC is not valid` on a bad tag. A verifier's
 false return uses exactly `Invalid serialNumber` at `:814`.
 
@@ -650,7 +660,7 @@ belongs to #269; the internal identity-key parse is also unchanged.
 
 `certificate_issuance_guard_tests.rs` checks the representable argument guards
 and their precedence. `certificate_issuance_response_tests.rs` exercises the
-response order, texts, nonce calls, raw storage and lenient intake through
+response order, texts, nonce calls, raw storage and the verify-time decode through
 loopback HTTP. A task-scoped test transport override routes an already
 validated public URL to the local fixture; production has no override.
 
