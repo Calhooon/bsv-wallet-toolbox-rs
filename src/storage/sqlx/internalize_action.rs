@@ -1648,7 +1648,7 @@ mod tests {
     use bsv_rs::wallet::{BasketInsertion, InternalizeOutput, WalletPayment};
 
     /// Helper to create test storage.
-    async fn create_test_storage() -> StorageSqlx {
+    pub(super) async fn create_test_storage() -> StorageSqlx {
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage
             .migrate(
@@ -1675,7 +1675,7 @@ mod tests {
     }
 
     /// Helper to create a test user.
-    async fn create_test_user(storage: &StorageSqlx) -> i64 {
+    pub(super) async fn create_test_user(storage: &StorageSqlx) -> i64 {
         let (user, _) = storage
             .find_or_insert_user(
                 "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -1686,7 +1686,7 @@ mod tests {
     }
 
     /// Helper to create a simple test transaction and AtomicBEEF.
-    fn create_test_atomic_beef() -> (Vec<u8>, String, u64) {
+    pub(super) fn create_test_atomic_beef() -> (Vec<u8>, String, u64) {
         create_test_atomic_beef_spending(&test_parent().1, 0)
     }
 
@@ -2439,7 +2439,10 @@ mod tests {
     use crate::storage::traits::WalletStorageProvider;
     use std::sync::Arc;
 
-    fn wallet_payment_args(beef_bytes: Vec<u8>, description: &str) -> InternalizeActionArgs {
+    pub(super) fn wallet_payment_args(
+        beef_bytes: Vec<u8>,
+        description: &str,
+    ) -> InternalizeActionArgs {
         InternalizeActionArgs {
             tx: beef_bytes,
             outputs: vec![InternalizeOutput {
@@ -4131,3 +4134,7 @@ mod tests {
 #[cfg(test)]
 #[path = "internalize_bounds_tests.rs"]
 mod bounds_tests;
+
+#[cfg(test)]
+#[path = "internalize_nosend_tests.rs"]
+mod nosend_tests;

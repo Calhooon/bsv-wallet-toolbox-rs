@@ -67,3 +67,78 @@ async fn label_outside_the_prefix_still_creates_through_wallet_interface() {
         .await
         .unwrap();
 }
+
+/// An AtomicBEEF paying `OP_DROP OP_1` (`7551`) to a basket insertion, its
+/// parent proven by a coinbase-shaped BUMP.
+fn insertion(label: &str) -> InternalizeActionArgs {
+    use bsv_rs::script::{LockingScript, UnlockingScript};
+    use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
+    use bsv_rs::wallet::{BasketInsertion, InternalizeOutput};
+
+    let mut parent = Transaction::new();
+    let mut parent_input = TransactionInput::new("11".repeat(32), 0);
+    parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    parent.inputs.push(parent_input);
+    parent.outputs.push(TransactionOutput {
+        satoshis: Some(20_000),
+        locking_script: LockingScript::from_hex("7551").unwrap(),
+        change: false,
+    });
+    let parent_txid = parent.id();
+    let mut tx = Transaction::new();
+    let mut input = TransactionInput::new(parent_txid.clone(), 0);
+    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    tx.inputs.push(input);
+    tx.outputs.push(TransactionOutput {
+        satoshis: Some(10_000),
+        locking_script: LockingScript::from_hex("7551").unwrap(),
+        change: false,
+    });
+    let txid = tx.id();
+    let mut beef = Beef::new();
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    beef.merge_transaction(tx);
+    InternalizeActionArgs {
+        tx: beef.to_binary_atomic(&txid).unwrap(),
+        outputs: vec![InternalizeOutput {
+            output_index: 0,
+            protocol: "basket insertion".to_string(),
+            payment_remittance: None,
+            insertion_remittance: Some(BasketInsertion {
+                basket: "nosend".to_string(),
+                custom_instructions: None,
+                tags: None,
+            }),
+        }],
+        description: "a BRC-177 label test".to_string(),
+        labels: Some(vec![label.to_string()]),
+        seek_permission: None,
+    }
+}
+
+/// The internalize door (#357): the reference refuses the label on
+/// internalizeAction (ts-stack@edf6e03 `Wallet.ts:1248-1250`); the port's
+/// storage door refuses it ahead of any write, and the wallet hands the
+/// reference's text to the caller as `WalletError`.
+#[tokio::test]
+async fn nosend_label_is_refused_on_internalize_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    let before = store_snapshot(&wallet).await;
+
+    let result = wallet
+        .internalize_action(
+            insertion("p nosend expiry seconds 300"),
+            "nosend.example.com",
+        )
+        .await;
+    match result {
+        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
+            message,
+            "Validation error: The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests"
+        ),
+        Err(other) => panic!("refused with another error: {other:?}"),
+        Ok(_) => panic!("the action was internalized"),
+    }
+    assert_eq!(store_snapshot(&wallet).await, before);
+}
