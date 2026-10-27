@@ -560,12 +560,13 @@ The verifier unwraps that key under `"{serial_number_base64} {field_name}"`,
 Base64-decodes the field ciphertext, decrypts it with the recovered key, and
 reads the plaintext as UTF-8. The keyring does not carry the field plaintext.
 
-1. **Query certificate** - Finds unique certificate matching args via `list_certificates`
-2. **Validate keyring** - Ensures storage has master keyring for decryption
-3. **Create verifier keyring** - For each field to reveal:
+1. **Validate arguments** - After permission, check type, serial, certifier, subject, signature, requested name lengths, then verifier before the lookup (`ts-stack@edf6e03 validationHelpers.ts:1483-1509`)
+2. **Query certificate** - Finds unique certificate matching normalized args via `list_certificates`
+3. **Validate keyring** - Ensures storage has master keyring for decryption
+4. **Create verifier keyring** - For each field to reveal:
    - Decrypts master symmetric key using certifier as counterparty with key_id = field_name
    - Re-encrypts for verifier using key_id = "{serial_number} {field_name}"
-4. **Return keyring** - Field names mapped to base64-encoded encrypted symmetric keys
+5. **Return keyring** - Field names mapped to base64-encoded encrypted symmetric keys
 
 **Encryption Protocol:**
 - Security Level: Counterparty (level 2)
@@ -620,7 +621,7 @@ For #233, the requested name must contain 1 to 50 UTF-8 bytes and differ from
 `SafeRecord.ts:2-3`). For #236, the gate is here too: before the subset loop,
 `create_keyring_for_verifier` checks the requested names, then the keys of
 `fields` and the master keyring, then every value in `fields` and the master
-keyring, in that order (`MasterCertificate.ts:348-364`). Invalid names now
+keyring, in that order (`MasterCertificate.ts:348-364`). The helper's invalid names
 read `Certificate field name must be a safe UTF-8 string of 1–50 bytes`;
 duplicate requests read `fieldsToReveal contains duplicate field: <name>`.
 Requests and maps are limited to 100 entries (`:43-45,125-142`). Non-canonical
@@ -635,7 +636,7 @@ requested-array limit's `TypeError`. Empty requests with empty maps return an em
 keyring. Failures reached inside recovery keep its one sentence; the value
 size caps beyond canonical Base64 remain with #223.
 
-For #240, the serial number is validated after the map values and before the
+For #240, the helper validates the stored serial number after the map values and before the
 subset loop (`ts-stack@edf6e03`, `MasterCertificate.ts:365,63-78`). It must be
 canonical Base64 encoding exactly 32 bytes. Invalid encoding reads
 `Certificate serial number must use canonical base64 encoding`; empty or
@@ -652,11 +653,14 @@ gate. The reference preserves the empty array at
 empty-request tests in `wallet.rs::prove_certificate_tests::preloop_gate`
 cover both the helper and the storage-backed prove call.
 
-For #249, `prove_certificate` checks `certificate.certifier` and then
-`verifier` as arguments, after the permission check and before the
-certificate lookup and the helper's gate, as the reference's argument gate
-does (`ts-stack@edf6e03`, `validationHelpers.ts:1490-1493,1509`, ahead of
-`signer/methods/proveCertificate.ts:28`). Each is trimmed with the ECMAScript
+For #249 and #260, `prove_certificate` checks type, serial, certifier,
+subject, signature, each requested name's UTF-8 length, then verifier after
+permission and before lookup. This is the ported checks' order in
+`ts-stack@edf6e03 validationHelpers.ts:1483-1509`, called by
+`Wallet.ts:852-858` before `signer/methods/proveCertificate.ts:28`. The
+validator runs in both telemetry branches (`Wallet.ts:601-617`); default
+telemetry is disabled (`sdk/src/telemetry/Telemetry.ts:601-609`). All Rust
+argument checks run without a feature flag. Each key is trimmed with the ECMAScript
 WhiteSpace and LineTerminator set and lowercased, as `validateHexString`
 does at `validationHelpers.ts:524,533`. This accepts U+FEFF padding but
 retains U+0085, which fails the hexadecimal string check. The normalized
@@ -664,7 +668,7 @@ value must be 66 hex characters encoding a compressed secp256k1 key; the
 refusals are the reference's
 `WERR_INVALID_PARAMETER` texts (`validationHelpers.ts:185-191,522-534`),
 `The <name> parameter must be <rule>` with `<name>` one of
-`certificate.certifier` or `verifier` and `<rule>` one of `even length, not N.`,
+`certificate.certifier`, `certificate.subject`, or `verifier` and `<rule>` one of `even length, not N.`,
 `hexadecimal string.`, `at least 66 length.`, `no more than 66 length.` or
 `a valid compressed secp256k1 public key`, as `Error::ValidationError`, so the
 WalletInterface reads `Validation error: ...`. An empty request refuses the
@@ -676,6 +680,29 @@ certifier is not parsed, and `create_keyring_for_verifier` receives the keys
 parsed from the normalized arguments, as the reference passes the stored
 certifier unparsed to `decrypt` (`MasterCertificate.ts:383-392,592-597`). Tests:
 `wallet.rs::prove_certificate_tests::preloop_gate::key_gate`.
+
+For #260, type and serial use the reference's structural Base64 check and
+32-byte bound (`validationHelpers.ts:439-497,1483-1489`), with rules
+`valid base64 string`, `at least 32 bytes`, or `no more than 32 bytes`.
+They are trimmed before lookup; the helper still checks the stored serial's
+canonical encoding at `MasterCertificate.ts:365`. Subject uses the same
+compressed-key check as certifier. Signature uses the hex rules above,
+without the key length bounds, then requires canonical DER with in-range
+nonzero scalars (`validationHelpers.ts:536-541,1502-1505`,
+`Secp256k1Validation.ts:33-50`); high S remains accepted. Its DER refusal is
+`The certificate.signature parameter must be a canonical DER-encoded ECDSA signature`.
+Subject and signature are normalized before matching stored rows.
+The argument name gate (`validationHelpers.ts:348-355,1506-1508`) uses
+`The fieldsToReveal <name> parameter must be at least 1 length.` or
+`The fieldsToReveal <name> parameter must be no more than 50 length.`.
+All these argument refusals use `Validation error: ` at the wallet boundary;
+invalid subject or signature previously fell through to the lookup, and
+empty or overlong requested names previously reached the helper's safe-name
+text. The helper's own name, map and serial gates remain in their existing
+order. The permission check still receives the raw verifier, just as
+`wallet-toolbox/src/WalletPermissionsManager.ts:5424-5434,1659-1686` does;
+that manager normalizes only the originator before checking permission.
+Tests: `key_gate::arg_gate` under the same `preloop_gate` module.
 
 ### Protocol Flow
 

@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- #260: `prove_certificate` now validates type, serial, certifier, subject,
+  signature, requested name lengths, then verifier before the certificate
+  lookup, in the ported checks' order at `ts-stack@edf6e03`
+  `packages/sdk/src/wallet/validationHelpers.ts:1483-1509`. Type and serial
+  require structurally valid Base64 encoding 32 bytes; subject requires a
+  compressed secp256k1 key, and signature requires hexadecimal canonical DER
+  with nonzero in-range scalars. Hex arguments are trimmed and lowercased;
+  Base64 arguments are trimmed before lookup.
+  Argument refusals use `Validation error: The <name> parameter must be <rule>`.
+  Subject uses the existing public-key rules; signature uses `even length, not N.`,
+  `hexadecimal string.`, or `a canonical DER-encoded ECDSA signature`.
+  Type and serial use `valid base64 string`, `at least 32 bytes`, or
+  `no more than 32 bytes`. These now precede a missing-certificate refusal.
+  Empty and overlong UTF-8 requested names now use
+  `The fieldsToReveal <name> parameter must be at least 1 length.` or
+  `The fieldsToReveal <name> parameter must be no more than 50 length.`,
+  ahead of verifier validation and lookup, instead of the helper's
+  `Certificate field name must be a safe UTF-8 string of 1–50 bytes`.
+  The helper retains its own name, map, and canonical stored-serial gates.
+  Permission checks retain the raw verifier, matching
+  `packages/wallet/wallet-toolbox/src/WalletPermissionsManager.ts:5424-5434`.
+
 - #248: unit-test and `bench-support` clients for overlay lookup, certificate
   issuance, and unauthenticated remote storage now use the #182 loopback-only
   transport. Remote requests and redirects are refused before transport with
