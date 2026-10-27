@@ -36,6 +36,7 @@ use bsv_rs::wallet::{
 };
 
 use crate::error::{Error, Result};
+use crate::services::providers::http_client::Client;
 use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
@@ -250,7 +251,7 @@ pub struct StorageClient<W: WalletInterface> {
     wallet: W,
 
     /// HTTP client for requests.
-    http_client: reqwest::Client,
+    http_client: Client,
 
     /// Request ID counter for JSON-RPC.
     next_id: AtomicU64,
@@ -310,7 +311,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             endpoint_url: url,
             peer: Arc::new(peer),
             wallet,
-            http_client: reqwest::Client::new(),
+            http_client: Client::new(),
             next_id: AtomicU64::new(1),
             settings: Arc::new(RwLock::new(None)),
             use_auth: true,
