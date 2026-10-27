@@ -111,7 +111,7 @@
 - #345: classic mode refuses an empty ARC endpoint at construction, as
   Arcade mode does. Before, the deprecated `with_classic_arc` given an empty
   (or blank) url built a TAAL ARC rung at "" whose every post faulted: a
-  host that passed an unset endpoint got a dead first rung ahead of Bitails
+  host that passed an unset endpoint got a dead rung ahead of Bitails
   and WhatsOnChain and no error at startup. `Services::with_options` now
   answers `Invalid argument: ServicesOptions names no classic ARC endpoint:
   with_classic_arc(url) was given an empty url; name the TAAL ARC endpoint,
