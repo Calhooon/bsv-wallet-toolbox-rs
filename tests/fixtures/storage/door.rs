@@ -356,3 +356,57 @@ async fn post_service_fault_is_recorded_without_fabricating_an_instance() -> Res
         .contains("recorded outage"));
     Ok(())
 }
+
+async fn post_note(wallet: &TestWallet, txid: &str) -> Result<Value> {
+    let history: String = sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+        .bind(txid)
+        .fetch_one(wallet.storage().pool())
+        .await?;
+    let history: Value = serde_json::from_str(&history)?;
+    let mut note = history["notes"]
+        .as_array()
+        .and_then(|notes| {
+            notes
+                .iter()
+                .rev()
+                .find(|note| note["what"] == "processActionPost")
+        })
+        .cloned()
+        .with_context(|| format!("no post note on {txid}: {history}"))?;
+    assert!(note["when"].is_string(), "the note says when: {note}");
+    note.as_object_mut().context("note")?.remove("when");
+    Ok(note)
+}
+
+fn recorded_history(source: &str, step: usize) -> Result<Value> {
+    let fixture: Value = serde_json::from_str(source)?;
+    Ok(fixture["expected"][step]["rows"]["proven_tx_reqs"][0]["history"].clone())
+}
+
+/// #187 item 1, the owner's ruling 18.5 (a): the one-call composition's post
+/// writes the post note the door's post path writes, as every post in the
+/// reference goes through `shareReqsWithWorld` (processAction.ts:151).
+#[tokio::test]
+async fn composition_writes_the_post_note_the_door_post_writes() -> Result<()> {
+    let wallet = wallet().await?;
+    let built = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
+    wallet
+        .process_action(post(built.clone()), "fixture.local")
+        .await?;
+    let composed = hex::encode(
+        wallet
+            .create_action_offering(payment(false), "fixture.local", &[2])
+            .await?
+            .txid
+            .context("signed txid")?,
+    );
+    let door = post_note(&wallet, &built).await?;
+    assert_eq!(door["what"], "processActionPost");
+    assert_eq!(post_note(&wallet, &composed).await?, door);
+    assert_eq!(
+        recorded_history(include_str!("../data/storage/door_composition.json"), 0)?,
+        recorded_history(include_str!("../data/storage/door_build_then_post.json"), 1)?,
+        "the recorded composition's request history is the recorded post's"
+    );
+    Ok(())
+}
