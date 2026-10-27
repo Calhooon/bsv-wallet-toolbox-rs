@@ -1,8 +1,9 @@
 use super::StorageSqlx;
 use crate::error::{Error, Result};
 use crate::storage::entities::TableOutput;
+use crate::storage::sqlx::storage_sqlx::output_from_row;
 use chrono::Utc;
-use sqlx::sqlite::SqliteConnection;
+use sqlx::sqlite::{SqliteConnection, SqliteRow};
 use sqlx::Row;
 
 // =============================================================================
@@ -34,6 +35,11 @@ pub(super) async fn validate_and_extend_inputs(
     use bsv_rs::transaction::Beef;
 
     let mut extended = Vec::new();
+    let is_no_send = args
+        .options
+        .as_ref()
+        .and_then(|o| o.no_send)
+        .unwrap_or(false);
 
     // Parse input_beef if provided (needed for external inputs)
     let input_beef = if let Some(ref beef_bytes) = args.input_beef {
@@ -47,28 +53,25 @@ pub(super) async fn validate_and_extend_inputs(
             let txid = hex::encode(input.outpoint.txid);
             let vout = input.outpoint.vout;
 
-            // Try to find the output being spent in storage first
-            let output = storage
-                .find_output_by_outpoint(user_id, &txid, vout)
-                .await?;
+            // Keep nullable fields until the stored-input guards have run;
+            // TableOutput represents satoshis as a required integer.
+            let output_row = sqlx::query(
+                "SELECT output_id, user_id, transaction_id, basket_id, txid, vout,
+                        satoshis, locking_script, script_length, script_offset,
+                        type, spendable, change, derivation_prefix, derivation_suffix,
+                        sender_identity_key, custom_instructions, created_at, updated_at
+                 FROM outputs WHERE user_id = ? AND txid = ? AND vout = ?",
+            )
+            .bind(user_id)
+            .bind(&txid)
+            .bind(vout as i32)
+            .fetch_optional(storage.pool())
+            .await?;
 
-            let (satoshis, locking_script) = if let Some(ref out) = output {
-                let script = if let Some(ref s) = out.locking_script {
-                    s.clone()
-                } else if out.script_offset > 0 && out.script_length > 0 && !out.txid.is_empty() {
-                    // Script was cleared from output (too long), read from rawTx
-                    get_locking_script_from_raw_tx(
-                        &mut *conn,
-                        &out.txid,
-                        out.script_offset as usize,
-                        out.script_length as usize,
-                    )
-                    .await
-                    .unwrap_or_default()
-                } else {
-                    vec![]
-                };
-                (out.satoshis as u64, script)
+            let (satoshis, locking_script, output) = if let Some(ref row) = output_row {
+                let (out, script) =
+                    apply_stored_input_script(conn, row, i, &txid, vout, is_no_send).await?;
+                (out.satoshis as u64, script, Some(out))
             } else if let Some(ref beef) = input_beef {
                 // Output not in storage - look it up in the input_beef
                 if let Some(beef_tx) = beef.find_txid(&txid) {
@@ -76,7 +79,7 @@ pub(super) async fn validate_and_extend_inputs(
                         if let Some(out) = tx.outputs.get(vout as usize) {
                             let sats = out.satoshis.unwrap_or(0);
                             let script = out.locking_script.to_binary();
-                            (sats, script)
+                            (sats, script, None)
                         } else {
                             return Err(Error::ValidationError(format!(
                                 "inputs[{}]: output {}:{} not found in BEEF transaction",
@@ -103,21 +106,7 @@ pub(super) async fn validate_and_extend_inputs(
                 )));
             };
 
-            // Reject caller-named change before checking spendability, as in
-            // ts-stack@edf6e03 createAction.ts:972-983.
             if let Some(ref out) = output {
-                if out.change {
-                    return Err(Error::ValidationError(format!(
-                        "The inputs[{}] parameter must be an unmanaged input. Change outputs are managed by your wallet.",
-                        i
-                    )));
-                }
-                if !out.spendable {
-                    return Err(Error::ValidationError(format!(
-                        "inputs[{}]: output {}:{} is not spendable",
-                        i, txid, vout
-                    )));
-                }
                 // A failed creator's output is a phantom, whatever its flag
                 // says (bsv-wallet-toolbox-rs #42 point 4).
                 let creator: Option<String> =
@@ -154,6 +143,49 @@ pub(super) async fn validate_and_extend_inputs(
     }
 
     Ok(extended)
+}
+
+// ts-stack@edf6e03 createAction.ts:972-983: change, stored data, then
+// spendability unless noSend. Convert to TableOutput after checking presence.
+async fn apply_stored_input_script(
+    conn: &mut SqliteConnection,
+    row: &SqliteRow,
+    vin: usize,
+    txid: &str,
+    vout: u32,
+    is_no_send: bool,
+) -> Result<(TableOutput, Vec<u8>)> {
+    if row.get::<bool, _>("change") {
+        return Err(Error::ValidationError(format!(
+            "The inputs[{}] parameter must be an unmanaged input. Change outputs are managed by your wallet.",
+            vin
+        )));
+    }
+    let script: Option<Vec<u8>> = row.get("locking_script");
+    let offset: i32 = row.get("script_offset");
+    let length: i32 = row.get("script_length");
+    let script = if script.is_some() {
+        script
+    } else if offset > 0 && length > 0 && !txid.is_empty() {
+        get_locking_script_from_raw_tx(conn, txid, offset as usize, length as usize)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let satoshis = row.try_get::<Option<i64>, _>("satoshis").ok().flatten();
+    let Some(script) = script.filter(|_| satoshis.is_some()) else {
+        return Err(Error::ValidationError(format!(
+            "The {txid}.{vout} parameter must be output with valid lockingScript and satoshis"
+        )));
+    };
+    if !row.get::<bool, _>("spendable") && !is_no_send {
+        return Err(Error::ValidationError(format!(
+            "inputs[{}]: output {}:{} is not spendable",
+            vin, txid, vout
+        )));
+    }
+    Ok((output_from_row(row), script))
 }
 
 /// Reads locking script from rawTx in proven_tx_reqs table.
