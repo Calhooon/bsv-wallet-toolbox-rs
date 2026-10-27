@@ -6,10 +6,23 @@
 //! Bitails's second mock answer came past the fixture client's deadline on
 //! a loaded runner, the ladder took it as a fault and asked the unscripted
 //! `BananaBlocks` rung, and the result's error (`last_error`) named only that
-//! rung's 501. So a fault whose call lasted to the deadline where the
-//! fixture scripts no delay, followed by a rung asked a request the fixture
-//! does not script, is the runner's: the message opens with that (the test
-//! stays red), and the history says which rung faulted.
+//! rung's 501. Runs 40515505707 (`Code Coverage`) and 40522857063 differed
+//! with nothing unscripted after the fault: one rung faulted at 2.2 to
+//! 3.0 s beside ordinary answers of 1.2 to 1.5 s, on loaded hosted runners
+//! (an ordinary answer costs at most 138 ms where it was measured, 19 ms
+//! instrumented, against the 2000 ms deadline). So a fault whose call
+//! lasted to the deadline where the fixture scripts no delay is the
+//! runner's, whatever the ladder did after: the message opens with that
+//! and names any request the fixture does not script, and the history says
+//! which rung faulted.
+//!
+//! A scene that differs and reads a runner stall is replayed once more
+//! ([`replay_scene`]) and judged on that replay; the stall and the stalled
+//! attempt's history go to the run's log past the test harness's capture
+//! ([`name_the_retry`]), so a run that passes on the retry still names it.
+//! A second stall fails the scene with the reading at its head. A scene
+//! that scripts a timeout (`delay_ms` to the deadline) reads no stall:
+//! its fault is the fixture's, never retried.
 //!
 //! The deadline is reqwest's own timer, set from `timeout_secs` inside the
 //! providers' constructors; the held `Clock` (`pace.rs`) reads only the rate
@@ -147,9 +160,9 @@ fn scripted_late(fixture: &Fixture, provider: &str, deadline_ms: u64) -> usize {
 }
 
 /// A runner stall: a rung's fault came at the fixture client's deadline
-/// where the fixture scripts no late answer, and a later rung was asked a
-/// request the fixture does not script. `None` when the difference is the
-/// ladder's to explain.
+/// where the fixture scripts no late answer, whatever the ladder did after
+/// (a later rung asked a request the fixture does not script is named
+/// too). `None` when the difference is the ladder's to explain.
 pub(super) fn reading(
     fixture: &Fixture,
     actual: &Expected,
@@ -176,22 +189,28 @@ pub(super) fn reading(
         if late_so_far <= scripted_late(fixture, &rung.provider, deadline_ms) {
             continue;
         }
-        let asked = history[at + 1..].iter().find_map(|next| {
-            unscripted
-                .iter()
-                .find(|(provider, _)| *provider == next.provider)
-                .map(|(provider, route)| (next.call, *provider, *route))
-        });
-        if let Some((call, provider, route)) = asked {
-            return Some(format!(
-                "RUNNER STALL, not a ladder verdict: {}'s answer in call {} faulted after {} ms, \
-                 at the fixture client's {} ms deadline, where the fixture scripts no late \
-                 answer; the ladder moved on and asked {provider} `{route}` in call {call}, \
-                 which the fixture does not script. The runner was too slow to serve the mock \
-                 in time: re-run before reading the ladder.",
-                rung.provider, rung.call, rung.msecs, deadline_ms
-            ));
-        }
+        let asked = history[at + 1..]
+            .iter()
+            .find_map(|next| {
+                unscripted
+                    .iter()
+                    .find(|(provider, _)| *provider == next.provider)
+                    .map(|(provider, route)| (next.call, *provider, *route))
+            })
+            .map(|(call, provider, route)| {
+                format!(
+                    "; the ladder moved on and asked {provider} `{route}` in call {call}, \
+                     which the fixture does not script"
+                )
+            })
+            .unwrap_or_default();
+        return Some(format!(
+            "RUNNER STALL, not a ladder verdict: {}'s answer in call {} faulted after {} ms, \
+             at the fixture client's {} ms deadline, where the fixture scripts no late \
+             answer{asked}. The runner was too slow to serve the mock in time: re-run before \
+             reading the ladder.",
+            rung.provider, rung.call, rung.msecs, deadline_ms
+        ));
     }
     None
 }
@@ -271,7 +290,25 @@ pub(super) async fn replay_scene(
 ) -> Result<(Expected, Vec<Rung>, Option<String>), String> {
     assert_eq!(fixture.calls, first.calls, "one scene's calls");
     let (actual, history) = replay(first, servers).await?;
-    Ok((actual, history, None))
+    let stall = stalled(fixture, &actual, &history);
+    let Some(stall) = stall else {
+        return Ok((actual, history, None));
+    };
+    let note = format!(
+        "replayed once more for a {stall}\nthe stalled attempt's {}",
+        history_text(&history)
+    );
+    let (actual, history) = replay(fixture, servers).await?;
+    Ok((actual, history, Some(note)))
+}
+
+/// The runner stall a replay that differs from its fixture reads, if any.
+fn stalled(fixture: &Fixture, actual: &Expected, history: &[Rung]) -> Option<String> {
+    if fixture.expected.as_ref() == Some(actual) {
+        return None;
+    }
+    let deadline = Duration::from_secs(CLIENT_TIMEOUT_SECS);
+    reading(fixture, actual, history, deadline)
 }
 
 /// A scene replayed once more for a runner stall, named in the run's log
