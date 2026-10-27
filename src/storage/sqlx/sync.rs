@@ -596,8 +596,20 @@ pub async fn process_sync_chunk_internal(
             let local_basket_id = output
                 .basket_id
                 .and_then(|bid| basket_id_map.get(&bid).copied());
-            let upsert_result =
-                upsert_output(storage, user_id, output, tx_id, local_basket_id).await?;
+            // Like EntityOutput.mergeNew/mergeExisting, a spend references the
+            // receiving store's transaction ID, including earlier chunks.
+            let local_spent_by = output
+                .spent_by
+                .and_then(|id| transaction_id_map.get(&id).copied());
+            let upsert_result = upsert_output(
+                storage,
+                user_id,
+                output,
+                tx_id,
+                local_basket_id,
+                local_spent_by,
+            )
+            .await?;
             output_id_map.insert(output.output_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -1081,6 +1093,7 @@ async fn fetch_outputs_for_sync(
         SELECT output_id, user_id, transaction_id, basket_id, txid, vout, satoshis,
                locking_script, script_length, script_offset, type, provided_by, purpose, spendable, change,
                derivation_prefix, derivation_suffix, sender_identity_key, custom_instructions,
+               output_description, spent_by, sequence_number, spending_description,
                created_at, updated_at
         FROM outputs
         WHERE user_id = ?
@@ -1117,14 +1130,10 @@ async fn fetch_outputs_for_sync(
             output_type: row.get("type"),
             provided_by: row.get("provided_by"),
             purpose: row.get("purpose"),
-            output_description: row.try_get("output_description").ok(),
-            spent_by: row.try_get("spent_by").ok().flatten(),
-            sequence_number: row
-                .try_get::<Option<i32>, _>("sequence_number")
-                .ok()
-                .flatten()
-                .map(|v| v as u32),
-            spending_description: row.try_get("spending_description").ok(),
+            output_description: row.get("output_description"),
+            spent_by: row.get("spent_by"),
+            sequence_number: row.get("sequence_number"),
+            spending_description: row.get("spending_description"),
             spendable: row.get("spendable"),
             change: row.get("change"),
             derivation_prefix: row.get("derivation_prefix"),
@@ -1880,6 +1889,7 @@ async fn upsert_output(
     output: &TableOutput,
     tx_id: i64,
     local_basket_id: Option<i64>,
+    local_spent_by: Option<i64>,
 ) -> Result<UpsertResult> {
     // The SELECT key must match the schema's UNIQUE constraint exactly.
     // `outputs` is declared `UNIQUE(transaction_id, vout, user_id)`.
@@ -1928,7 +1938,9 @@ async fn upsert_output(
                 SET transaction_id = ?, basket_id = ?, satoshis = ?, locking_script = ?,
                     script_length = ?, script_offset = ?, type = ?, spendable = ?, change = ?,
                     derivation_prefix = ?, derivation_suffix = ?, sender_identity_key = ?,
-                    custom_instructions = ?, provided_by = ?, purpose = ?, updated_at = ?
+                    custom_instructions = ?, provided_by = ?, purpose = ?,
+                    output_description = ?, spent_by = ?, sequence_number = ?,
+                    spending_description = ?, updated_at = ?
                 WHERE output_id = ?
                 "#,
             )
@@ -1947,6 +1959,10 @@ async fn upsert_output(
             .bind(&output.custom_instructions)
             .bind(&output.provided_by)
             .bind(output.purpose.as_deref().unwrap_or("change"))
+            .bind(&output.output_description)
+            .bind(local_spent_by)
+            .bind(output.sequence_number)
+            .bind(&output.spending_description)
             .bind(output.updated_at)
             .bind(local_id)
             .execute(&mut *storage.writer_conn().await?)
@@ -1963,8 +1979,9 @@ async fn upsert_output(
             r#"
             INSERT INTO outputs (user_id, transaction_id, basket_id, txid, vout, satoshis, locking_script,
                 script_length, script_offset, type, spendable, change, derivation_prefix, derivation_suffix,
-                sender_identity_key, custom_instructions, provided_by, purpose, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sender_identity_key, custom_instructions, provided_by, purpose,
+                output_description, spent_by, sequence_number, spending_description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(user_id)
@@ -1985,6 +2002,10 @@ async fn upsert_output(
         .bind(&output.custom_instructions)
         .bind(&output.provided_by)
         .bind(output.purpose.as_deref().unwrap_or("change"))
+        .bind(&output.output_description)
+        .bind(local_spent_by)
+        .bind(output.sequence_number)
+        .bind(&output.spending_description)
         .bind(output.created_at)
         .bind(output.updated_at)
         .execute(&mut *storage.writer_conn().await?)
