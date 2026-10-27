@@ -169,13 +169,15 @@ pub struct ServicesOptions {
     /// [`ServicesOptions::without_bananablocks`].
     pub bananablocks_base: Option<String>,
 
-    /// ARC URL for TAAL
+    /// ARC URL for TAAL in classic mode; the Arcade endpoint when
+    /// [`ServicesOptions::arcade_v2`] is set.
     pub arc_url: String,
 
     /// ARC configuration for TAAL
     pub arc_config: Option<ArcConfig>,
 
-    /// ARC URL for GorillaPool (optional)
+    /// ARC URL for GorillaPool (optional). Read in classic mode only: in
+    /// Arcade mode no GorillaPool provider is built whatever this says.
     pub arc_gorillapool_url: Option<String>,
 
     /// ARC configuration for GorillaPool
@@ -183,14 +185,21 @@ pub struct ServicesOptions {
 
     /// Treat `arc_url` as an **Arcade V2** endpoint (EF-only, always-async).
     ///
-    /// This is an EXPLICIT flag — the toolbox never guesses Arcade mode from
+    /// This is an EXPLICIT flag: the toolbox never guesses Arcade mode from
     /// URL substrings. When `true`:
     /// - An [`Arcade`] broadcaster is registered as the FIRST postBeef
     ///   provider (name `ArcadeV2`), converting BEEF ancestry to EF batches.
-    /// - The classic TAAL ARC provider falls back to its chain default URL
-    ///   (since `arc_url` now points at Arcade) and remains as failover.
+    /// - No classic ARC provider is built: [`Services::arc_taal`] and
+    ///   [`Services::arc_gorillapool`] are `None` whatever
+    ///   `arc_gorillapool_url` says, so the post ladder is `ArcadeV2`, then
+    ///   `Bitails`, then `WhatsOnChain` (the owner's word of 2026-10-27,
+    ///   #317).
     /// - [`Services::arcade`] is populated so callers (e.g. the Monitor's
     ///   `ArcadeEventsTask`) can reach the SSE stream / callback token.
+    ///
+    /// When `false` (classic mode, the default): TAAL ARC from `arc_url`,
+    /// GorillaPool ARC when `arc_gorillapool_url` is set, then `Bitails` and
+    /// `WhatsOnChain`.
     ///
     /// Set via [`ServicesOptions::with_arcade`].
     pub arcade_v2: bool,
@@ -319,8 +328,9 @@ impl ServicesOptions {
     /// Use an **Arcade V2** endpoint as the primary broadcaster.
     ///
     /// Sets `arc_url` to the Arcade endpoint and flips `arcade_v2 = true`
-    /// (explicit opt-in — never inferred from the URL). See
-    /// [`ServicesOptions::arcade_v2`] for the resulting provider wiring.
+    /// (explicit opt-in, never inferred from the URL). The post ladder is
+    /// then Arcade, Bitails and WhatsOnChain; no classic ARC provider is
+    /// built (#317). See [`ServicesOptions::arcade_v2`] for the wiring.
     ///
     /// ```rust,ignore
     /// let opts = ServicesOptions::mainnet().with_arcade(
