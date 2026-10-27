@@ -4692,7 +4692,7 @@ mod tests {
             async fn test_create_keyring_preloop_duplicate_requested_name() {
                 let mut request = Request::new();
                 request.reveal.push("name".to_string());
-                // #270: the door refuses at validationHelpers.ts:1516-1518 first.
+                // #270: the door refuses at validationHelpers.ts:1516-1518, ahead of the helper.
                 request
                     .assert_gate_errors(
                         "fieldsToReveal contains duplicate field: name",
@@ -4727,7 +4727,7 @@ mod tests {
             async fn test_create_keyring_preloop_requested_entry_limit() {
                 let mut request = Request::new();
                 request.reveal = (0..101).map(|i| format!("field{i}")).collect();
-                // #270: the door refuses at validationHelpers.ts:1513-1515 first.
+                // #270: the door refuses at validationHelpers.ts:1513-1515, ahead of the helper.
                 request
                     .assert_gate_errors(
                         "fieldsToReveal must be an array of at most 100 strings",
