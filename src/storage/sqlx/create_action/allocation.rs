@@ -11,6 +11,19 @@ use sqlx::sqlite::SqliteConnection;
 use sqlx::Row;
 use std::collections::HashSet;
 
+// #295: the reference's managed-change filters, its WHERE at ts-stack edf6e03
+// `StorageKnex.allocateChangeInput` 2241-2250 (`o.type`, `o.change`,
+// `o.providedBy`, `o.purpose` from `managedChangeOutputFields`, then
+// `whereNotNull`/`whereNot ''` on `o.derivationPrefix` and
+// `o.derivationSuffix`). `change = 1` is each query's own line. The port
+// spells a received wallet payment's purpose `receive` where the reference
+// spells it `change` (#169); R1 (d) below still holds an unproven one.
+pub(in crate::storage::sqlx) const MANAGED_CHANGE_CLAUSE: &str = "AND o.type = 'P2PKH' \
+     AND o.provided_by = 'storage' \
+     AND o.purpose IN ('change', 'receive') \
+     AND COALESCE(o.derivation_prefix, '') <> '' \
+     AND COALESCE(o.derivation_suffix, '') <> ''";
+
 // R1 (d): a received unproven coin needs this action's recorded rule.
 const RECEIVED_COIN_CLAUSE: &str =
     "AND (t.status = 'completed' OR COALESCE(o.purpose, '') <> 'receive' OR ?)";
@@ -63,6 +76,7 @@ pub(super) async fn count_change_inputs_under_rule(
           AND o.basket_id = ?
           AND o.change = 1
           AND t.status IN ('completed', 'unproven')
+          {MANAGED_CHANGE_CLAUSE}
           {RECEIVED_COIN_CLAUSE}
           {}
         "#,
@@ -374,6 +388,7 @@ pub(super) async fn allocate_change_input_by(
               AND o.change = 1
               AND o.spent_by IS NULL
               AND t.status IN ('completed', 'unproven')
+              {MANAGED_CHANGE_CLAUSE}
               {RECEIVED_COIN_CLAUSE}
               {}
               {}
@@ -680,7 +695,7 @@ mod received_rule_tests {
             ("completed", "receive", false, 1),
             ("completed", "receive", true, 1),
             ("unproven", "change", false, 1),
-            ("unproven", "", false, 1),
+            ("unproven", "", false, 0),
             ("completed", "change", false, 1),
             ("nosend", "receive", true, 0),
             ("failed", "receive", true, 0),
