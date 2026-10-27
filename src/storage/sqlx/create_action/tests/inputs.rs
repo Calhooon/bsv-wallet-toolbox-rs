@@ -60,37 +60,224 @@ async fn named_input_refusal(
     }
 }
 
-#[tokio::test]
-async fn caller_named_no_send_unspendable_builds_unsigned() {
-    let (storage, user_id, txid) = unspendable_named_input().await;
+fn live_spendability_refusal(vin: usize, txid: &str) -> String {
+    format!("The inputs[{vin}] parameter must be spendable output. output {txid}:0 appears to have been spent (spendable=false).")
+}
 
-    let result =
-        create_action_internal(&storage, None, user_id, named_input_args(&txid, Some(true)))
-            .await
-            .expect("noSend permits an unspendable stored input");
-    assert_eq!(result.inputs.len(), 1);
-    assert_eq!(result.inputs[0].source_txid, txid);
-    assert!(result.no_send_change_output_vouts.is_some());
-    let (status, raw_tx): (String, Option<Vec<u8>>) =
-        sqlx::query_as("SELECT status, raw_tx FROM transactions WHERE reference = ?")
-            .bind(&result.reference)
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
-    assert_eq!(status, "unsigned");
-    assert!(raw_tx.is_none(), "no transaction was signed or sent");
+async fn stored_input_state(
+    storage: &StorageSqlx,
+    txid: &str,
+) -> (bool, Option<i64>, Option<String>, String) {
+    sqlx::query_as(
+        "SELECT spendable, spent_by, spending_description, CAST(updated_at AS TEXT)
+         FROM outputs WHERE txid = ? AND vout = 0",
+    )
+    .bind(txid)
+    .fetch_one(storage.pool())
+    .await
+    .unwrap()
+}
+
+async fn transaction_count(storage: &StorageSqlx) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
+        .fetch_one(storage.pool())
+        .await
+        .unwrap()
+}
+
+async fn assert_live_spendability_refusal(no_send: Option<bool>) {
+    let (storage, user_id, txid) = unspendable_named_input().await;
+    let before = stored_input_state(&storage, &txid).await;
+    let count = transaction_count(&storage).await;
+    let error = create_action_internal(&storage, None, user_id, named_input_args(&txid, no_send))
+        .await
+        .expect_err("markKnownInputsSpent refuses under noSend too");
+    match error {
+        Error::ValidationError(message) => assert_eq!(message, live_spendability_refusal(0, &txid)),
+        error => panic!("expected live spendability refusal, got {error:?}"),
+    }
+    assert_eq!(stored_input_state(&storage, &txid).await, before);
+    assert_eq!(transaction_count(&storage).await, count);
 }
 
 #[tokio::test]
-async fn caller_named_unspendable_requires_no_send() {
+async fn caller_named_no_send_unspendable_is_refused_without_writes() {
+    // ts-stack@edf6e03 createAction.ts:61 disables the :982 gate;
+    // :419-423 is live under noSend, called at :503.
+    assert_live_spendability_refusal(Some(true)).await;
+}
+
+#[tokio::test]
+async fn caller_named_unspendable_uses_live_refusal() {
     for no_send in [None, Some(false)] {
-        let (storage, user_id, txid) = unspendable_named_input().await;
-        let message = named_input_refusal(&storage, user_id, &txid, no_send).await;
-        assert_eq!(
-            message,
-            format!("inputs[0]: output {txid}:0 is not spendable")
-        );
+        assert_live_spendability_refusal(no_send).await;
     }
+}
+
+async fn seed_spender(
+    storage: &StorageSqlx,
+    user_id: i64,
+    source_txid: &str,
+    status: &str,
+    has_txid: bool,
+) -> (i64, String) {
+    let (raw_tx, txid) = test_support::synth_tx(source_txid, 0, 99_000);
+    let now = Utc::now();
+    let id = sqlx::query(
+        "INSERT INTO transactions
+         (user_id, status, reference, is_outgoing, satoshis, version, lock_time,
+          description, txid, raw_tx, created_at, updated_at)
+         VALUES (?, ?, 'stored-spender', 1, 0, 1, 0, 'Stored spender', ?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(status)
+    .bind(has_txid.then_some(&txid))
+    .bind(has_txid.then_some(raw_tx))
+    .bind(now)
+    .bind(now)
+    .execute(storage.writer())
+    .await
+    .unwrap()
+    .last_insert_rowid();
+    (id, txid)
+}
+
+async fn assert_spender_requires_review(status: &str) {
+    // :412-417 returns a competing txid without testing the spender's status;
+    // :503-509 throws WERR_REVIEW_ACTIONS, also for failed/aborted spenders.
+    for no_send in [Some(true), None, Some(false)] {
+        let (storage, user_id, txid) = unspendable_named_input().await;
+        let other_txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "246").await;
+        let other = create_action_internal(
+            &storage,
+            None,
+            user_id,
+            named_input_args(&other_txid, Some(true)),
+        )
+        .await
+        .unwrap();
+        let (spender, competing_txid) = seed_spender(&storage, user_id, &txid, status, true).await;
+        sqlx::query(
+            "UPDATE outputs SET spent_by = ?, spending_description = 'prior spend' WHERE txid = ?",
+        )
+        .bind(spender)
+        .bind(&txid)
+        .execute(storage.writer())
+        .await
+        .unwrap();
+        let before = stored_input_state(&storage, &txid).await;
+        let count = transaction_count(&storage).await;
+        let result =
+            create_action_internal(&storage, None, user_id, named_input_args(&txid, no_send)).await;
+        // On the regression, abort the accepted template to expose the lost
+        // lock. On refusal, abort an independent action: the old lock stays.
+        let reference = result
+            .as_ref()
+            .map(|created| &created.reference)
+            .unwrap_or(&other.reference);
+        crate::storage::sqlx::abort_action::abort_action_internal(
+            &storage,
+            user_id,
+            bsv_rs::wallet::AbortActionArgs {
+                reference: reference.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_input_state(&storage, &txid).await,
+            before,
+            "refusal and a later abort must preserve the completed/failed spender"
+        );
+        assert_eq!(transaction_count(&storage).await, count);
+        match result.expect_err("an existing spender requires review, even under noSend") {
+            Error::InvalidOperation(message) => assert_eq!(
+                message,
+                format!("Undelayed createAction or signAction results require review. doubleSpend: {competing_txid}")
+            ),
+            error => panic!("expected double-spend review, got {error:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn caller_named_completed_spender_is_preserved_after_refusal_and_abort() {
+    assert_spender_requires_review("completed").await;
+}
+
+#[tokio::test]
+async fn caller_named_failed_spender_with_txid_requires_review() {
+    assert_spender_requires_review("failed").await;
+}
+
+#[tokio::test]
+async fn caller_named_spender_without_txid_follows_spendable_flag() {
+    // :412-419: a reservation with no txid falls through to spendability.
+    // An abort stores status 'failed'; that word alone never releases a coin.
+    for status in ["unsigned", "failed"] {
+        for spendable in [false, true] {
+            let (storage, user_id, txid) = unspendable_named_input().await;
+            let (spender, _) = seed_spender(&storage, user_id, &txid, status, false).await;
+            sqlx::query("UPDATE outputs SET spendable = ?, spent_by = ? WHERE txid = ?")
+                .bind(spendable)
+                .bind(spender)
+                .bind(&txid)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            let before = stored_input_state(&storage, &txid).await;
+            let count = transaction_count(&storage).await;
+            let result = create_action_internal(
+                &storage,
+                None,
+                user_id,
+                named_input_args(&txid, Some(true)),
+            )
+            .await;
+            if spendable {
+                let created = result.expect("a txid-less reservation is not a competing spend");
+                let new_spender: i64 = sqlx::query_scalar(
+                    "SELECT transaction_id FROM transactions WHERE reference = ?",
+                )
+                .bind(&created.reference)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+                let after = stored_input_state(&storage, &txid).await;
+                assert!(!after.0);
+                assert_eq!(after.1, Some(new_spender));
+            } else {
+                match result.expect_err("a txid-less reservation is still unspendable") {
+                    Error::ValidationError(message) => {
+                        assert_eq!(message, live_spendability_refusal(0, &txid));
+                    }
+                    error => panic!("expected live spendability refusal, got {error:?}"),
+                }
+                assert_eq!(stored_input_state(&storage, &txid).await, before);
+                assert_eq!(transaction_count(&storage).await, count);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn caller_named_later_unspendable_rolls_back_earlier_input() {
+    let (storage, user_id, txid) = unspendable_named_input().await;
+    let spendable_txid = seed_custom_output(&storage, user_id, 100_000, &[0x51], "246").await;
+    let before = stored_input_state(&storage, &spendable_txid).await;
+    let mut args = named_input_args(&txid, Some(true));
+    args.inputs
+        .as_mut()
+        .unwrap()
+        .insert(0, covenant_input(&spendable_txid, vec![0x51]));
+    let error = create_action_internal(&storage, None, user_id, args)
+        .await
+        .expect_err("the later input must refuse the entire action");
+    match error {
+        Error::ValidationError(message) => assert_eq!(message, live_spendability_refusal(1, &txid)),
+        error => panic!("expected live spendability refusal, got {error:?}"),
+    }
+    assert_eq!(stored_input_state(&storage, &spendable_txid).await, before);
 }
 
 #[derive(Clone, Copy, Debug)]
