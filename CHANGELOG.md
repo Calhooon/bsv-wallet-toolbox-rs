@@ -96,7 +96,9 @@
   ran after every other argument check and writes nothing. Such a request
   was accepted as an ordinary action, the label stored as metadata. This is
   a new refusal of input that succeeded before; BRC-177 itself is the 0.15
-  epic #352.
+  epic #352. Every `p nosend ` label gets that one text; the reference's
+  label grammar answers `p nosend batch`, two expiry labels and
+  `p nosend expiry never` with its own texts ahead of it (#359).
 - #313: sync writes an incoming output's `purpose` as given, on insert and on
   the newer-row update, as `ts-stack@edf6e03` `EntityOutput.mergeNew` and
   `mergeExisting` do. A chunk row without `purpose` was stored as `change`;
