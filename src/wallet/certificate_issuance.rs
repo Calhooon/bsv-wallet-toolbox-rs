@@ -1,8 +1,8 @@
 //! Certificate Issuance Protocol Implementation
 //!
 //! This module implements the certificate issuance protocol for acquiring identity
-//! certificates from a certifier service. It provides 1:1 parity with the Go and
-//! TypeScript implementations.
+//! certificates from a certifier service. It ports the request guards and response checks from the pinned TypeScript
+//! implementation while retaining the SDK and transport boundaries of this crate.
 //!
 //! ## Protocol Flow
 //!
@@ -16,8 +16,8 @@
 //! 3. **ParseCertificateResponse**: Parse JSON response, validate headers,
 //!    extract certificate components
 //!
-//! 4. **VerifyCertificateIssuance**: Verify serial number via HMAC, validate
-//!    certificate type/subject/certifier/fields, verify signature
+//! 4. **VerifyCertificateIssuance**: Check the server nonce, verify the serial
+//!    HMAC, validate metadata and fields, verify the signature, decrypt fields
 //!
 //! 5. **StoreCertificate**: Save certificate to storage with encrypted fields
 //!    and master keyring
@@ -236,6 +236,15 @@ where
         &prepared.cert_type_b64,
         identity_key,
         &certifier_hex,
+        &certifier,
+        originator,
+    )
+    .await?;
+
+    decrypt_issued_fields(
+        wallet,
+        &parsed.certificate.fields,
+        &prepared.master_keyring,
         &certifier,
         originator,
     )
@@ -829,6 +838,54 @@ where
         .verify()
         .map_err(|_| Error::ValidationError("Certificate verification failed".into()))?;
     Ok(())
+}
+
+// MasterCertificate.decryptFields at Wallet.ts:817 verifies that every returned
+// field decrypts with the master keyring produced for this request.
+async fn decrypt_issued_fields<W: WalletInterface + Send + Sync>(
+    wallet: &W,
+    fields: &HashMap<String, String>,
+    keyring: &HashMap<String, String>,
+    certifier: &PublicKey,
+    originator: &str,
+) -> Result<()> {
+    let decrypt_all = async {
+        for (name, field) in fields {
+            let key = keyring.get(name).ok_or(())?;
+            let result = wallet
+                .decrypt(
+                    bsv_rs::wallet::DecryptArgs {
+                        ciphertext: BASE64.decode(key).map_err(|_| ())?,
+                        protocol_id: Protocol::new(
+                            SecurityLevel::Counterparty,
+                            "certificate field encryption",
+                        ),
+                        key_id: name.clone(),
+                        counterparty: Some(Counterparty::Other(certifier.clone())),
+                        ..Default::default()
+                    },
+                    originator,
+                )
+                .await
+                .map_err(|_| ())?;
+            // Restore legacy minimal big-endian keys as MasterCertificate does.
+            if result.plaintext.len() > 32 {
+                return Err(());
+            }
+            let mut key_bytes = [0; 32];
+            key_bytes[32 - result.plaintext.len()..].copy_from_slice(&result.plaintext);
+            let ciphertext = BASE64.decode(field).map_err(|_| ())?;
+            let plaintext = SymmetricKey::from_bytes(&key_bytes)
+                .map_err(|_| ())?
+                .decrypt(&ciphertext)
+                .map_err(|_| ())?;
+            std::str::from_utf8(&plaintext).map_err(|_| ())?;
+        }
+        Ok::<(), ()>(())
+    };
+    decrypt_all.await.map_err(|()| {
+        Error::ValidationError("Failed to decrypt all master certificate fields.".into())
+    })
 }
 
 // =============================================================================
