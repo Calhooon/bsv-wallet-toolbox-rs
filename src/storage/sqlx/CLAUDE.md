@@ -506,6 +506,7 @@ With `sign_and_process` the template is signed and processed inside the create s
 
 ### Features
 - Validation in ts-stack@edf6e03 validateCreateActionArgs order (749-808): description, inputs, outputs (each output's tags last), labels, options (knownTxids, noSendChange and its duplicates, sendWith); before #309 it ran labels, outputs, inputs, so a request with several bad arguments now answers the inputs' texts ahead of the outputs' and the labels'
+- BRC-177 (#312): after every other check, a label starting `p nosend ` (trimmed and lowercased, as the SDK's validateLabel leaves it; `startsWith`, ts-stack@edf6e03 `brc177NoSendExpiry.ts:5,119`) refuses `Error::InvalidOperation("Active storage does not support BRC-177 noSend expiry")`, the reference's text on a store without the capability (`createNoSendExpiryAction.ts:201-203`; the reference routes the label there at `Wallet.ts:1162-1165`). The port has no capability, so every such label is refused, ahead of any write; `p nosendx` and `p nosend` alone are ordinary labels. Witnesses: `create_action/tests/validation_nosend.rs`, `src/wallet/nosend_label_tests.rs`; the sync divergences are ARCHITECTURE D7
 - Fee calculation with accurate transaction size estimation
 - Change generation with automatic UTXO management
 - Full input/output database state management
