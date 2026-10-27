@@ -12,6 +12,22 @@
   (empty for such a call, `:55`) and `shareReqsWithWorld` returns
   `{ swr: [] }` at `:313`. Nothing is written or posted, as before.
   Test: `test_no_send_only_call_naming_a_template_answers_unchanged`.
+- #175: `MonitorStorage::review_status` now voids, each pass and in check 1's
+  `write_tx()`, every `spendable = 1` output whose creator transaction is
+  `failed` with no request that could still reconcile (no request, or one that
+  is `invalid` or `doubleSpend`): `spendable = 0`, `spent_by` kept for check 4,
+  `updated_at` advanced. A store from 0.13.0, which holds `failed` beside
+  `spendable = 1`, heals on the first pass after upgrade; #164 voided only the
+  outputs of the pass's own failures. This follows `ts-stack@edf6e03`
+  `packages/wallet/wallet-toolbox/src/storage/methods/reviewStatus.ts:93-119`
+  (unbounded, every pass), except that the reference also clears `spentBy`.
+  The pass's log gains `Voided N outputs created by failed transactions`.
+  A false failure stays safe: `un_fail` re-validates `spendable = 0` outputs
+  through `is_utxo` on recovery. Tests:
+  `review_status_heals_failed_beside_spendable_left_by_an_earlier_release`
+  (the sweep, the reconcile guard, a repeat pass writes nothing) and the moved
+  pin in `review_status_voids_created_outputs_of_newly_failed_transactions`.
+
 - #260: `prove_certificate` now validates type, serial, certifier, subject,
   signature, requested name lengths, then verifier before the certificate
   lookup, in the ported checks' order at `ts-stack@edf6e03`
