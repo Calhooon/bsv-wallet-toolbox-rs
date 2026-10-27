@@ -10,16 +10,7 @@ fn acquisition() -> AcquireCertificateArgs {
 async fn refuses(acquisition: AcquireCertificateArgs, name: &str, rule: &str) {
     let wallet = wallet().await;
     assert_wallet_error(
-        acquire_certificate_issuance(
-            &wallet,
-            wallet.storage(),
-            &AuthId::with_user_id(wallet.identity_key(), 1),
-            acquisition,
-            "invalid identity",
-            ORIGINATOR,
-        )
-        .await
-        .map_err(Into::into),
+        acquire_as_test_wallet(&wallet, acquisition, "invalid identity").await,
         &format!("Validation error: The {name} parameter must be {rule}"),
     );
 }
@@ -38,16 +29,7 @@ async fn privilege_reason_minimum_before_protocol() {
     let mut a = acquisition();
     a.privileged_reason = Some("éé".into());
     a.acquisition_protocol = AcquisitionProtocol::Direct;
-    let result = acquire_certificate_issuance(
-        &wallet,
-        wallet.storage(),
-        &AuthId::with_user_id(wallet.identity_key(), 1),
-        a,
-        wallet.identity_key(),
-        ORIGINATOR,
-    )
-    .await
-    .map_err(Into::into);
+    let result = acquire_as_test_wallet(&wallet, a, wallet.identity_key()).await;
     assert_wallet_error(
         result,
         "Validation error: The privilegedReason parameter must be at least 5 length.",
@@ -68,16 +50,7 @@ async fn issuance_protocol_before_serial_number() {
     let mut a = acquisition();
     a.acquisition_protocol = AcquisitionProtocol::Direct;
     a.serial_number = Some("bad later argument".into());
-    let result = acquire_certificate_issuance(
-        &wallet,
-        wallet.storage(),
-        &AuthId::with_user_id(wallet.identity_key(), 1),
-        a,
-        wallet.identity_key(),
-        ORIGINATOR,
-    )
-    .await
-    .map_err(Into::into);
+    let result = acquire_as_test_wallet(&wallet, a, wallet.identity_key()).await;
     assert_wallet_error(
         result,
         "Validation error: Only acquire certificate via issuance requests allowed here.",
@@ -276,4 +249,21 @@ async fn field_name_maximum_bytes() {
     let mut a = acquisition();
     a.fields.insert("é".repeat(26), String::new());
     refuses(a, "field name", "no more than 50 length.").await;
+}
+
+async fn acquire_as_test_wallet(
+    wallet: &TestWallet,
+    acquisition: AcquireCertificateArgs,
+    identity: &str,
+) -> bsv_rs::Result<WalletCertificate> {
+    acquire_certificate_issuance(
+        wallet,
+        wallet.storage(),
+        &AuthId::with_user_id(wallet.identity_key(), 1),
+        acquisition,
+        identity,
+        ORIGINATOR,
+    )
+    .await
+    .map_err(Into::into)
 }

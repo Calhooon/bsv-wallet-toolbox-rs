@@ -1253,67 +1253,30 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_certificate_response_defers_certifier_mismatch() {
-        use bsv_rs::primitives::PrivateKey;
-
-        // Use real key pairs for valid public keys
-        let certifier_key = PrivateKey::random();
-
-        let subject_key = PrivateKey::random();
-
+    fn test_parse_certificate_response_defers_metadata_validation() {
         let response = ProtocolIssuanceResponse {
             protocol: "certificate issuance".to_string(),
             certificate: Some(CertificateResponse {
-                cert_type: BASE64.encode([0u8; 32]),
-                serial_number: BASE64.encode([1u8; 32]),
-                subject: subject_key.public_key().to_hex(),
-                certifier: certifier_key.public_key().to_hex(),
-                revocation_outpoint: "0000000000000000000000000000000000000000000000000000000000000001.0".to_string(),
+                cert_type: "unparsed type".to_string(),
+                serial_number: "unparsed serial".to_string(),
+                subject: "unparsed subject".to_string(),
+                certifier: "unparsed certifier".to_string(),
+                revocation_outpoint: "unparsed outpoint".to_string(),
                 fields: HashMap::new(),
-                signature: "304402200000000000000000000000000000000000000000000000000000000000000000022000000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                signature: "unparsed signature".to_string(),
             }),
-            server_nonce: BASE64.encode([2u8; 32]),
+            server_nonce: "fixture".to_string(),
             timestamp: String::new(),
             version: String::new(),
         };
-
-        // Expect different certifier
-        let result = parse_certificate_response(&response);
-        assert_eq!(
-            result.unwrap().certificate.certifier,
-            certifier_key.public_key().to_hex()
-        );
-    }
-
-    #[test]
-    fn test_parse_certificate_response_defers_type_mismatch() {
-        use bsv_rs::primitives::PrivateKey;
-
-        let certifier_key = PrivateKey::random();
-        let subject_key = PrivateKey::random();
-
-        let response = ProtocolIssuanceResponse {
-            protocol: "certificate issuance".to_string(),
-            certificate: Some(CertificateResponse {
-                cert_type: BASE64.encode([0u8; 32]),
-                serial_number: BASE64.encode([1u8; 32]),
-                subject: subject_key.public_key().to_hex(),
-                certifier: certifier_key.public_key().to_hex(),
-                revocation_outpoint: "0000000000000000000000000000000000000000000000000000000000000001.0".to_string(),
-                fields: HashMap::new(),
-                signature: "304402200000000000000000000000000000000000000000000000000000000000000000022000000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            }),
-            server_nonce: BASE64.encode([2u8; 32]),
-            timestamp: String::new(),
-            version: String::new(),
-        };
-
-        // Expect different type
-        let result = parse_certificate_response(&response);
-        assert_eq!(
-            result.unwrap().certificate.cert_type,
-            BASE64.encode([0u8; 32])
-        );
+        let parsed = parse_certificate_response(&response).unwrap();
+        let retained = parsed.certificate;
+        assert_eq!(retained.cert_type, "unparsed type");
+        assert_eq!(retained.serial_number, "unparsed serial");
+        assert_eq!(retained.subject, "unparsed subject");
+        assert_eq!(retained.certifier, "unparsed certifier");
+        assert_eq!(retained.revocation_outpoint, "unparsed outpoint");
+        assert_eq!(retained.signature, "unparsed signature");
     }
 
     #[test]

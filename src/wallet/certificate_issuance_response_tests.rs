@@ -27,8 +27,11 @@ impl Default for ObservedWallet {
     }
 }
 
-#[async_trait::async_trait]
-impl WalletInterface for ObservedWallet {
+// Expand the delegation before async_trait transforms the implementation.
+macro_rules! observed_wallet_methods {
+    ($(fn $name:ident(&self $(, $arg:ident: $arg_type:ty)*) -> $result:ty;)*) => {
+        #[async_trait::async_trait]
+        impl WalletInterface for ObservedWallet {
     async fn verify_hmac(
         &self,
         args: VerifyHmacArgs,
@@ -55,167 +58,40 @@ impl WalletInterface for ObservedWallet {
         }
         self.inner.decrypt(args)
     }
-    async fn get_public_key(
-        &self,
-        args: GetPublicKeyArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<GetPublicKeyResult> {
-        WalletInterface::get_public_key(&self.inner, args, originator).await
-    }
-    async fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_rs::Result<EncryptResult> {
-        WalletInterface::encrypt(&self.inner, args, originator).await
-    }
-    async fn create_hmac(
-        &self,
-        args: CreateHmacArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<CreateHmacResult> {
-        WalletInterface::create_hmac(&self.inner, args, originator).await
-    }
-    async fn create_signature(
-        &self,
-        args: CreateSignatureArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<CreateSignatureResult> {
-        WalletInterface::create_signature(&self.inner, args, originator).await
-    }
-    async fn verify_signature(
-        &self,
-        args: VerifySignatureArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<VerifySignatureResult> {
-        WalletInterface::verify_signature(&self.inner, args, originator).await
-    }
-    async fn reveal_counterparty_key_linkage(
-        &self,
-        args: WalletRevealCounterpartyArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
-        WalletInterface::reveal_counterparty_key_linkage(&self.inner, args, originator).await
-    }
-    async fn reveal_specific_key_linkage(
-        &self,
-        args: WalletRevealSpecificArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
-        WalletInterface::reveal_specific_key_linkage(&self.inner, args, originator).await
-    }
-    async fn create_action(
-        &self,
-        args: CreateActionArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<CreateActionResult> {
-        WalletInterface::create_action(&self.inner, args, originator).await
-    }
-    async fn sign_action(
-        &self,
-        args: SignActionArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<SignActionResult> {
-        WalletInterface::sign_action(&self.inner, args, originator).await
-    }
-    async fn abort_action(
-        &self,
-        args: AbortActionArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<AbortActionResult> {
-        WalletInterface::abort_action(&self.inner, args, originator).await
-    }
-    async fn list_actions(
-        &self,
-        args: ListActionsArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<ListActionsResult> {
-        WalletInterface::list_actions(&self.inner, args, originator).await
-    }
-    async fn internalize_action(
-        &self,
-        args: InternalizeActionArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<InternalizeActionResult> {
-        WalletInterface::internalize_action(&self.inner, args, originator).await
-    }
-    async fn list_outputs(
-        &self,
-        args: ListOutputsArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<ListOutputsResult> {
-        WalletInterface::list_outputs(&self.inner, args, originator).await
-    }
-    async fn relinquish_output(
-        &self,
-        args: RelinquishOutputArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<RelinquishOutputResult> {
-        WalletInterface::relinquish_output(&self.inner, args, originator).await
-    }
-    async fn acquire_certificate(
-        &self,
-        args: AcquireCertificateArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<WalletCertificate> {
-        WalletInterface::acquire_certificate(&self.inner, args, originator).await
-    }
-    async fn list_certificates(
-        &self,
-        args: ListCertificatesArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<ListCertificatesResult> {
-        WalletInterface::list_certificates(&self.inner, args, originator).await
-    }
-    async fn prove_certificate(
-        &self,
-        args: ProveCertificateArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<ProveCertificateResult> {
-        WalletInterface::prove_certificate(&self.inner, args, originator).await
-    }
-    async fn relinquish_certificate(
-        &self,
-        args: RelinquishCertificateArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<RelinquishCertificateResult> {
-        WalletInterface::relinquish_certificate(&self.inner, args, originator).await
-    }
-    async fn discover_by_identity_key(
-        &self,
-        args: DiscoverByIdentityKeyArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<DiscoverCertificatesResult> {
-        WalletInterface::discover_by_identity_key(&self.inner, args, originator).await
-    }
-    async fn discover_by_attributes(
-        &self,
-        args: DiscoverByAttributesArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<DiscoverCertificatesResult> {
-        WalletInterface::discover_by_attributes(&self.inner, args, originator).await
-    }
-    async fn is_authenticated(&self, originator: &str) -> bsv_rs::Result<AuthenticatedResult> {
-        WalletInterface::is_authenticated(&self.inner, originator).await
-    }
-    async fn wait_for_authentication(
-        &self,
-        originator: &str,
-    ) -> bsv_rs::Result<AuthenticatedResult> {
-        WalletInterface::wait_for_authentication(&self.inner, originator).await
-    }
-    async fn get_height(&self, originator: &str) -> bsv_rs::Result<GetHeightResult> {
-        WalletInterface::get_height(&self.inner, originator).await
-    }
-    async fn get_header_for_height(
-        &self,
-        args: GetHeaderArgs,
-        originator: &str,
-    ) -> bsv_rs::Result<GetHeaderResult> {
-        WalletInterface::get_header_for_height(&self.inner, args, originator).await
-    }
-    async fn get_network(&self, originator: &str) -> bsv_rs::Result<GetNetworkResult> {
-        WalletInterface::get_network(&self.inner, originator).await
-    }
-    async fn get_version(&self, originator: &str) -> bsv_rs::Result<GetVersionResult> {
-        WalletInterface::get_version(&self.inner, originator).await
-    }
+            $(async fn $name(&self $(, $arg: $arg_type)*) -> $result {
+                WalletInterface::$name(&self.inner $(, $arg)*).await
+            })*
+        }
+    };
+}
+
+observed_wallet_methods! {
+    fn get_public_key(&self, args: GetPublicKeyArgs, originator: &str) -> bsv_rs::Result<GetPublicKeyResult>;
+    fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_rs::Result<EncryptResult>;
+    fn create_hmac(&self, args: CreateHmacArgs, originator: &str) -> bsv_rs::Result<CreateHmacResult>;
+    fn create_signature(&self, args: CreateSignatureArgs, originator: &str) -> bsv_rs::Result<CreateSignatureResult>;
+    fn verify_signature(&self, args: VerifySignatureArgs, originator: &str) -> bsv_rs::Result<VerifySignatureResult>;
+    fn reveal_counterparty_key_linkage(&self, args: WalletRevealCounterpartyArgs, originator: &str) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult>;
+    fn reveal_specific_key_linkage(&self, args: WalletRevealSpecificArgs, originator: &str) -> bsv_rs::Result<RevealSpecificKeyLinkageResult>;
+    fn create_action(&self, args: CreateActionArgs, originator: &str) -> bsv_rs::Result<CreateActionResult>;
+    fn sign_action(&self, args: SignActionArgs, originator: &str) -> bsv_rs::Result<SignActionResult>;
+    fn abort_action(&self, args: AbortActionArgs, originator: &str) -> bsv_rs::Result<AbortActionResult>;
+    fn list_actions(&self, args: ListActionsArgs, originator: &str) -> bsv_rs::Result<ListActionsResult>;
+    fn internalize_action(&self, args: InternalizeActionArgs, originator: &str) -> bsv_rs::Result<InternalizeActionResult>;
+    fn list_outputs(&self, args: ListOutputsArgs, originator: &str) -> bsv_rs::Result<ListOutputsResult>;
+    fn relinquish_output(&self, args: RelinquishOutputArgs, originator: &str) -> bsv_rs::Result<RelinquishOutputResult>;
+    fn acquire_certificate(&self, args: AcquireCertificateArgs, originator: &str) -> bsv_rs::Result<WalletCertificate>;
+    fn list_certificates(&self, args: ListCertificatesArgs, originator: &str) -> bsv_rs::Result<ListCertificatesResult>;
+    fn prove_certificate(&self, args: ProveCertificateArgs, originator: &str) -> bsv_rs::Result<ProveCertificateResult>;
+    fn relinquish_certificate(&self, args: RelinquishCertificateArgs, originator: &str) -> bsv_rs::Result<RelinquishCertificateResult>;
+    fn discover_by_identity_key(&self, args: DiscoverByIdentityKeyArgs, originator: &str) -> bsv_rs::Result<DiscoverCertificatesResult>;
+    fn discover_by_attributes(&self, args: DiscoverByAttributesArgs, originator: &str) -> bsv_rs::Result<DiscoverCertificatesResult>;
+    fn is_authenticated(&self, originator: &str) -> bsv_rs::Result<AuthenticatedResult>;
+    fn wait_for_authentication(&self, originator: &str) -> bsv_rs::Result<AuthenticatedResult>;
+    fn get_height(&self, originator: &str) -> bsv_rs::Result<GetHeightResult>;
+    fn get_header_for_height(&self, args: GetHeaderArgs, originator: &str) -> bsv_rs::Result<GetHeaderResult>;
+    fn get_network(&self, originator: &str) -> bsv_rs::Result<GetNetworkResult>;
+    fn get_version(&self, originator: &str) -> bsv_rs::Result<GetVersionResult>;
 }
 
 async fn response_run(
