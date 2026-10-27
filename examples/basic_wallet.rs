@@ -11,11 +11,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("BSV Wallet Toolbox - Basic Example");
     println!("===================================\n");
 
-    // Arcade is the default broadcaster mode and the defaults name no
-    // Arcade endpoint, so they refuse at construction (#317). Name yours
-    // with `with_arcade`; ARCADE_URL here, a loopback placeholder otherwise
-    // (constructing `Services` makes no request).
-    assert!(Services::mainnet().is_err());
+    // Arcade is the default broadcaster mode: mainnet's defaults name the
+    // crate's public ARCADE_V2_MAINNET; testnet's name none and refuse at
+    // construction (#317). Name another with `with_arcade`; ARCADE_URL
+    // here, a loopback placeholder otherwise (constructing `Services` makes
+    // no request).
+    assert!(Services::mainnet().is_ok());
+    assert!(Services::testnet().is_err());
     let arcade_url =
         std::env::var("ARCADE_URL").unwrap_or_else(|_| "http://127.0.0.1:9".to_string());
 
