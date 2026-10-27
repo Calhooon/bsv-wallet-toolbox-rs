@@ -10,12 +10,20 @@ use crate::storage::sqlx::internalize_action::{
 #[path = "list_action_inputs_tests.rs"]
 mod list_action_inputs_tests;
 
+/// The proof-request statuses whose raw bytes `get_proven_or_raw_tx` serves,
+/// as `getProvenOrRawTx` (ts-stack@edf6e03 `StorageKnex.ts:202`).
+const RAW_TX_REQ_STATUSES: &str =
+    "'unsent', 'unmined', 'unconfirmed', 'sending', 'nosend', 'completed'";
+
 impl StorageSqlx {
-    /// Get a raw transaction, preferring proven_tx but falling back to transactions table.
+    /// The raw transaction of a known valid transaction, as
+    /// `getRawTxOfKnownValidTransaction` reads it without a slice
+    /// (ts-stack@edf6e03 `StorageKnex.ts:507-508`, through `getProvenOrRawTx`
+    /// at 189-211): the `proven_txs` row, else a `proven_tx_reqs` row in one
+    /// of the six served statuses. `transactions.raw_tx` is not read.
     pub async fn get_proven_or_raw_tx(&self, txid: &str) -> Result<Option<Vec<u8>>> {
-        // First try proven_txs
         let proven: Option<(Vec<u8>,)> =
-            sqlx::query_as("SELECT raw_tx FROM proven_txs WHERE txid = ? AND raw_tx IS NOT NULL")
+            sqlx::query_as("SELECT raw_tx FROM proven_txs WHERE txid = ?")
                 .bind(txid)
                 .fetch_optional(self.pool())
                 .await?;
@@ -24,14 +32,14 @@ impl StorageSqlx {
             return Ok(Some(raw_tx));
         }
 
-        // Fall back to transactions table
-        let tx: Option<(Vec<u8>,)> =
-            sqlx::query_as("SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL")
-                .bind(txid)
-                .fetch_optional(self.pool())
-                .await?;
+        let req: Option<(Vec<u8>,)> = sqlx::query_as(&format!(
+            "SELECT raw_tx FROM proven_tx_reqs WHERE txid = ? AND status IN ({RAW_TX_REQ_STATUSES})"
+        ))
+        .bind(txid)
+        .fetch_optional(self.pool())
+        .await?;
 
-        Ok(tx.map(|(raw_tx,)| raw_tx))
+        Ok(req.map(|(raw_tx,)| raw_tx))
     }
 }
 
