@@ -2676,12 +2676,36 @@ where
         )
         .await?;
 
-        // Argument checks and normalization before the lookup, certifier then
-        // verifier, as at ts-stack@edf6e03 validationHelpers.ts:1490-1493,1509.
+        // Argument checks in ts-stack@edf6e03 validationHelpers.ts:1483-1509
+        // order. The helper retains its own name, map and serial checks.
         // SQLite matches the normalized certifier byte for byte; the remote
         // storage server decides its own collation.
+        let certificate_type = validate_certificate_base64_arg(
+            &args.certificate.certificate_type,
+            "certificate.type",
+        )?;
+        let serial_number = validate_certificate_base64_arg(
+            &args.certificate.serial_number,
+            "certificate.serialNumber",
+        )?;
         let (normalized_certifier, certifier) =
             validate_public_key_arg(&args.certificate.certifier, "certificate.certifier")?;
+        let (subject, _) =
+            validate_public_key_arg(&args.certificate.subject, "certificate.subject")?;
+        let signature = validate_certificate_signature_arg(&args.certificate.signature)?;
+        for name in &args.fields_to_reveal {
+            let rule = if name.is_empty() {
+                "at least 1 length."
+            } else if name.len() > 50 {
+                "no more than 50 length."
+            } else {
+                continue;
+            };
+            return Err(invalid_certificate_argument(
+                &format!("fieldsToReveal {name}"),
+                rule,
+            ));
+        }
         let (_, verifier) = validate_public_key_arg(&args.verifier, "verifier")?;
 
         let auth = self.auth();
@@ -2690,7 +2714,7 @@ where
         // We query by all identifying fields to ensure a unique match
         let list_args = ListCertificatesArgs {
             certifiers: vec![normalized_certifier],
-            types: vec![args.certificate.certificate_type.clone()],
+            types: vec![certificate_type],
             limit: Some(2), // Request 2 to detect multiple matches
             offset: Some(0),
             privileged: args.privileged,
@@ -2704,10 +2728,10 @@ where
             .certificates
             .into_iter()
             .filter(|cert| {
-                cert.certificate.serial_number == args.certificate.serial_number
-                    && cert.certificate.subject == args.certificate.subject
+                cert.certificate.serial_number == serial_number
+                    && cert.certificate.subject == subject
                     && cert.certificate.revocation_outpoint == args.certificate.revocation_outpoint
-                    && cert.certificate.signature == args.certificate.signature
+                    && cert.certificate.signature == signature
             })
             .collect();
 
@@ -3337,34 +3361,135 @@ fn trim_ecmascript_whitespace(value: &str) -> &str {
     })
 }
 
+fn invalid_certificate_argument(name: &str, rule: &str) -> bsv_rs::Error {
+    Error::ValidationError(format!("The {name} parameter must be {rule}")).into()
+}
+
+// validateHexString at validationHelpers.ts:522-534, including UTF-16 length
+// in its odd-length refusal and ECMAScript trimming before normalization.
+fn validate_certificate_hex_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
+    let value = trim_ecmascript_whitespace(value);
+    let length = value.encode_utf16().count();
+    if length % 2 == 1 {
+        return Err(invalid_certificate_argument(
+            name,
+            &format!("even length, not {length}."),
+        ));
+    }
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid_certificate_argument(name, "hexadecimal string."));
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
 /// Normalizes and validates a compressed public key argument with the reference's texts
 /// (ts-stack@edf6e03 validationHelpers.ts:185-191,522-534, WERR_INVALID_PARAMETER.ts:14).
 fn validate_public_key_arg(value: &str, name: &str) -> bsv_rs::Result<(String, PublicKey)> {
-    let invalid = |must_be: String| -> bsv_rs::Error {
-        Error::ValidationError(format!("The {name} parameter must be {must_be}")).into()
-    };
-    let value = trim_ecmascript_whitespace(value);
-    // JavaScript counts UTF-16 code units.
-    let length = value.encode_utf16().count();
-    if length % 2 == 1 {
-        return Err(invalid(format!("even length, not {length}.")));
+    let normalized = validate_certificate_hex_arg(value, name)?;
+    if normalized.len() < 66 {
+        return Err(invalid_certificate_argument(name, "at least 66 length."));
     }
-    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(invalid("hexadecimal string.".to_string()));
+    if normalized.len() > 66 {
+        return Err(invalid_certificate_argument(
+            name,
+            "no more than 66 length.",
+        ));
     }
-    if length < 66 {
-        return Err(invalid("at least 66 length.".to_string()));
-    }
-    if length > 66 {
-        return Err(invalid("no more than 66 length.".to_string()));
-    }
-    let normalized = value.to_ascii_lowercase();
     let key = match normalized.get(..2) {
         Some("02" | "03") => PublicKey::from_hex(&normalized).ok(),
         _ => None,
     }
-    .ok_or_else(|| invalid("a valid compressed secp256k1 public key".to_string()))?;
+    .ok_or_else(|| invalid_certificate_argument(name, "a valid compressed secp256k1 public key"))?;
     Ok((normalized, key))
+}
+
+// validateBase64String at validationHelpers.ts:439-497 checks structure and
+// decoded size, without enforcing the helper's canonical padding bits.
+fn validate_certificate_base64_arg(value: &str, name: &str) -> bsv_rs::Result<String> {
+    let value = trim_ecmascript_whitespace(value);
+    let invalid = || invalid_certificate_argument(name, "valid base64 string");
+    if value.is_empty() {
+        return Err(invalid());
+    }
+    let mut padding = 0;
+    for (index, byte) in value.bytes().enumerate() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/') {
+            continue;
+        }
+        if byte != b'=' || index < value.len().saturating_sub(2) {
+            return Err(invalid());
+        }
+        padding += 1;
+    }
+    let remainder = value.len() % 4;
+    if padding > 2
+        || (padding > 0 && remainder != 0)
+        || (remainder != 0 && remainder != 4 - padding)
+    {
+        return Err(invalid());
+    }
+    let bytes = (value.len() - padding) * 3 / 4;
+    if bytes < 32 {
+        return Err(invalid_certificate_argument(name, "at least 32 bytes"));
+    }
+    if bytes > 32 {
+        return Err(invalid_certificate_argument(name, "no more than 32 bytes"));
+    }
+    Ok(value.to_string())
+}
+
+// Secp256k1Validation.ts:33-50 accepts minimal DER with 0 < r,s < n,
+// including high S. The SDK's to_der normalizes S, so cannot test this rule.
+fn is_canonical_certificate_signature(bytes: &[u8]) -> bool {
+    const ORDER: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36,
+        0x41, 0x41,
+    ];
+    if !(8..=72).contains(&bytes.len())
+        || bytes[0] != 0x30
+        || usize::from(bytes[1]) != bytes.len() - 2
+    {
+        return false;
+    }
+    let mut offset = 2;
+    for _ in 0..2 {
+        if offset + 2 > bytes.len() || bytes[offset] != 0x02 {
+            return false;
+        }
+        let length = usize::from(bytes[offset + 1]);
+        offset += 2;
+        if !(1..=33).contains(&length) || offset + length > bytes.len() {
+            return false;
+        }
+        let integer = &bytes[offset..offset + length];
+        if integer[0] & 0x80 != 0 || (length > 1 && integer[0] == 0 && integer[1] & 0x80 == 0) {
+            return false;
+        }
+        let magnitude = integer.strip_prefix(&[0]).unwrap_or(integer);
+        if magnitude.len() > 32
+            || magnitude.iter().all(|&byte| byte == 0)
+            || (magnitude.len() == 32 && magnitude >= ORDER.as_slice())
+        {
+            return false;
+        }
+        offset += length;
+    }
+    offset == bytes.len()
+}
+
+fn validate_certificate_signature_arg(value: &str) -> bsv_rs::Result<String> {
+    let name = "certificate.signature";
+    let normalized = validate_certificate_hex_arg(value, name)?;
+    let bytes = hex::decode(&normalized)
+        .map_err(|_| invalid_certificate_argument(name, "hexadecimal string."))?;
+    if !is_canonical_certificate_signature(&bytes) {
+        return Err(invalid_certificate_argument(
+            name,
+            "a canonical DER-encoded ECDSA signature",
+        ));
+    }
+    Ok(normalized)
 }
 
 /// Creates a keyring for a verifier, enabling them to decrypt specific certificate fields.
@@ -4261,10 +4386,15 @@ mod tests {
 
                 #[cfg(feature = "sqlite")]
                 async fn assert_gate_error(&self, expected: &str) {
+                    self.assert_gate_errors(expected, expected).await;
+                }
+
+                #[cfg(feature = "sqlite")]
+                async fn assert_gate_errors(&self, helper_error: &str, argument_error: &str) {
                     let direct = self.create();
                     let door = self.prove().await;
-                    assert_wallet_error("create_keyring_for_verifier", direct, expected);
-                    assert_wallet_error("prove_certificate", door, expected);
+                    assert_wallet_error("create_keyring_for_verifier", direct, helper_error);
+                    assert_wallet_error("prove_certificate", door, argument_error);
                 }
             }
 
@@ -4297,8 +4427,19 @@ mod tests {
             #[cfg(feature = "sqlite")]
             #[tokio::test]
             async fn test_prove_certificate_serial_noncanonical() {
-                let expected = "Certificate serial number must use canonical base64 encoding";
-                for serial in noncanonical_serials() {
+                let encoding_error = "Validation error: The certificate.serialNumber parameter must be valid base64 string";
+                // Trimming changes the lookup argument. Nonzero pad bits still
+                // pass the argument validator and reach the helper's gate.
+                let errors = [
+                    encoding_error,
+                    encoding_error,
+                    encoding_error,
+                    "Certificate not found with the provided arguments",
+                    "Certificate not found with the provided arguments",
+                    "Certificate serial number must use canonical base64 encoding",
+                    encoding_error,
+                ];
+                for (serial, expected) in noncanonical_serials().into_iter().zip(errors) {
                     let mut request = Request::valid();
                     request.serial = serial;
                     assert_wallet_error(&request.serial, request.prove().await, expected);
@@ -4316,7 +4457,16 @@ mod tests {
                     } else {
                         "Certificate serial number must encode exactly 32 bytes"
                     };
-                    request.assert_gate_error(expected).await;
+                    let rule = match length {
+                        0 => "valid base64 string",
+                        1 | 31 => "at least 32 bytes",
+                        _ => "no more than 32 bytes",
+                    };
+                    request
+                        .assert_gate_errors(expected, &format!(
+                            "Validation error: The certificate.serialNumber parameter must be {rule}"
+                        ))
+                        .await;
                 }
             }
 
@@ -4326,9 +4476,10 @@ mod tests {
                 let mut request = Request::new();
                 request.serial = "!".to_string();
                 let expected = "Certificate serial number must use canonical base64 encoding";
-                request.assert_gate_error(expected).await;
+                let argument_error = "Validation error: The certificate.serialNumber parameter must be valid base64 string";
+                request.assert_gate_errors(expected, argument_error).await;
                 request.reveal = vec!["missing".to_string()];
-                request.assert_gate_error(expected).await;
+                request.assert_gate_errors(expected, argument_error).await;
                 request.reveal.clear();
                 request.fields.clear();
                 request.master.clear();
@@ -4342,15 +4493,19 @@ mod tests {
                 request.serial = "!".to_string();
                 request.fields.insert("name".to_string(), "!".to_string());
                 request
-                    .assert_gate_error("Certificate field name must use canonical base64 encoding")
+                    .assert_gate_errors(
+                        "Certificate field name must use canonical base64 encoding",
+                        "Validation error: The certificate.serialNumber parameter must be valid base64 string",
+                    )
                     .await;
                 request
                     .fields
                     .insert("name".to_string(), "YQ==".to_string());
                 request.master.insert("name".to_string(), "!".to_string());
                 request
-                    .assert_gate_error(
+                    .assert_gate_errors(
                         "Master certificate keyring field name must use canonical base64 encoding",
+                        "Validation error: The certificate.serialNumber parameter must be valid base64 string",
                     )
                     .await;
             }
@@ -4399,8 +4554,9 @@ mod tests {
                 request.reveal.clear();
                 request.serial = "!".to_string();
                 request
-                    .assert_gate_error(
+                    .assert_gate_errors(
                         "Certificate serial number must use canonical base64 encoding",
+                        "Validation error: The certificate.serialNumber parameter must be valid base64 string",
                     )
                     .await;
                 request.serial = BASE64.encode([32; 32]);
@@ -4415,8 +4571,13 @@ mod tests {
             async fn test_create_keyring_preloop_overlong_requested_name() {
                 for name in ["n".repeat(51), "é".repeat(26)] {
                     let mut request = Request::new();
-                    request.reveal = vec![name];
-                    request.assert_gate_error(FIELD_NAME_ERROR).await;
+                    request.reveal = vec![name.clone()];
+                    assert_wallet_error("helper name", request.create(), FIELD_NAME_ERROR);
+                    assert_wallet_error(
+                        "argument name",
+                        request.prove().await,
+                        &format!("Validation error: The fieldsToReveal {name} parameter must be no more than 50 length."),
+                    );
                 }
             }
 
@@ -4435,7 +4596,12 @@ mod tests {
             async fn test_create_keyring_preloop_empty_requested_name() {
                 let mut request = Request::new();
                 request.reveal = vec![String::new()];
-                request.assert_gate_error(FIELD_NAME_ERROR).await;
+                request
+                    .assert_gate_errors(
+                        FIELD_NAME_ERROR,
+                        "Validation error: The fieldsToReveal  parameter must be at least 1 length.",
+                    )
+                    .await;
             }
 
             #[cfg(feature = "sqlite")]
