@@ -310,7 +310,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 
 | Method | Description |
 |--------|-------------|
-| `acquire_certificate` | Acquire identity certificate (direct or issuance protocol) |
+| `acquire_certificate` | Acquire identity certificate (direct or issuance protocol); a direct acquire validates and normalizes `revocationOutpoint` before storing (#291) |
 | `list_certificates` | List certificates by certifier/type |
 | `prove_certificate` | Prove certificate fields to verifier by creating a verifier-specific keyring |
 | `relinquish_certificate` | Remove certificate from wallet |
@@ -564,7 +564,7 @@ The verifier unwraps that key under `"{serial_number_base64} {field_name}"`,
 Base64-decodes the field ciphertext, decrypts it with the recovered key, and
 reads the plaintext as UTF-8. The keyring does not carry the field plaintext.
 
-1. **Validate arguments** - After permission, check privilegedReason, type, serial, certifier, subject, revocation outpoint, signature, the 100000-item array bound, requested name lengths, verifier, then the 100-name count and uniqueness before the lookup (`ts-stack@edf6e03 validationHelpers.ts:1477-1518`)
+1. **Validate arguments** - After permission, check privilegedReason, the `certificate.fields` names (1478-1480), type, serial, certifier, subject, revocation outpoint, signature, the 100000-item array bound, requested name lengths, verifier, then the 100-name count and uniqueness before the lookup (`ts-stack@edf6e03 validationHelpers.ts:1477-1518`)
 2. **Query certificate** - Finds unique certificate matching normalized args via `list_certificates`
 3. **Validate keyring** - Ensures storage has master keyring for decryption
 4. **Create verifier keyring** - For each field to reveal:
@@ -806,6 +806,35 @@ and labels; basket insertion tags; listCertificates' certifiers and types;
 listOutputs' tags; listActions' labels) validate outside `wallet.rs` in this
 port and are not bounded here. `sendWith` (137) carries its own bound,
 `MAXIMUM_SEND_WITH_TRANSACTIONS` (1000), and is #309's.
+
+For #291, a direct `acquire_certificate` passes `revocationOutpoint` through
+the same outpoint validator before storing, as `validateAcquireDirectCertificateArgs`
+does at `validationHelpers.ts:1435` (called by `Wallet.ts:697` through
+`validateAuthAndArgs` in both telemetry branches, 601-617): the txid is
+lowercased (533) and the stored row and the returned certificate carry that
+value (`signer/methods/acquireDirectCertificate.ts:23,47`). A row acquired
+with an uppercase txid now proves; before, it answered
+`Certificate not found with the provided arguments` under any argument. A
+malformed outpoint is refused with the #270 texts under the bare name:
+`The revocationOutpoint parameter must be a 32-byte txid and canonical numeric output index joined with '.'`,
+`The revocationOutpoint vout parameter must be a safe integer` or
+`... must be no more than 4294967295 length.`, and nothing is stored. The
+reference's earlier direct checks (type, serial and certifier at 1432-1434,
+the presence checks at 1409-1430) are not ported here.
+
+`prove_certificate` checks the argument's `certificate.fields` after
+`validatePrivilege` and ahead of `certificate.type`
+(`validationHelpers.ts:1478-1480`, `validateCertificateFields` at 1232-1241):
+more than 100000 keys reads
+`The fields parameter must be an object with at most 100000 properties` and a
+`__proto__`, `constructor` or `prototype` key
+`The fields parameter must be an object with safe string keys`
+(`validateRecord` at 81-103), then each name must be 1 to 50 UTF-8 bytes,
+`The field name parameter must be at least 1 length.` or
+`... must be no more than 50 length.` (348-355); names are checked in sorted
+order since a map keeps no insertion order. The helper's own map check on
+the stored row stays (`MasterCertificate.ts:349-350`, which the reference
+runs on `storageCert.fields`, `signer/methods/proveCertificate.ts:35`).
 
 ### Protocol Flow
 
