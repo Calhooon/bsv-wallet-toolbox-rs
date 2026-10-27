@@ -31,6 +31,18 @@
   SQLite, `certifier IN (?)` on an uncollated TEXT column matches it to the
   normalized argument byte for byte. The remote storage server decides its
   own collation.
+- #245: `create_action` now accepts a caller-named unspendable stored output
+  when `options.no_send` is true, allowing an unsigned, unsent action with
+  `sign_and_process = false`. The stored-input guards check change, then
+  locking script and integer satoshis, then spendability only without
+  `noSend`, following `ts-stack@edf6e03`
+  `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts:972-983`.
+  Missing script or satoshis now uses `Error::ValidationError` with
+  `The <txid>.<vout> parameter must be output with valid lockingScript and satoshis`,
+  without a trailing period (`:979-980` and
+  `packages/wallet/wallet-toolbox/src/sdk/WERR_errors.ts:105`). Stored
+  transaction bytes can still supply a pruned script. The existing change
+  and spendability refusal texts are retained.
 
 - #240: `prove_certificate` now refuses certificate serial numbers that do not
   canonically encode exactly 32 bytes, after map-value validation and before
