@@ -1,6 +1,62 @@
 use super::super::*;
 use bsv_rs::wallet::CreateActionOutput;
 
+async fn assert_named_change_uses_reference_refusal(spendable: bool) {
+    // ts-stack@edf6e03 createAction.ts:972-983 checks change before
+    // spendability; WERR_errors.ts:105 renders WERR_INVALID_PARAMETER.
+    let messages = [
+        "The inputs[0] parameter must be an unmanaged input. Change outputs are managed by your wallet.",
+        "The inputs[1] parameter must be an unmanaged input. Change outputs are managed by your wallet.",
+    ];
+    for (index, expected) in messages.into_iter().enumerate() {
+        let (storage, user_id) = caller_complete_storage().await;
+        seed_change_output(&storage, user_id, 100_000).await;
+        let change_txid = txid_of(&seed_raw_tx());
+        sqlx::query("UPDATE outputs SET spendable = ? WHERE user_id = ? AND txid = ?")
+            .bind(spendable)
+            .bind(user_id)
+            .bind(&change_txid)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+
+        let mut inputs = Vec::new();
+        if index == 1 {
+            let custom_txid = seed_custom_output(&storage, user_id, 1, &[0x51], "193").await;
+            inputs.push(covenant_input(&custom_txid, vec![0x51]));
+        }
+        inputs.push(covenant_input(&change_txid, vec![0x51]));
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "Refuse caller-named change".to_string(),
+            input_beef: None,
+            inputs: Some(inputs),
+            outputs: Some(vec![p2pkh_output(1_000, "refused payment")]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: None,
+        };
+
+        let error = create_action_internal(&storage, None, user_id, args)
+            .await
+            .expect_err("caller-named change must be refused");
+        let Error::ValidationError(message) = error else {
+            panic!("expected ValidationError, got {error:?}");
+        };
+        assert_eq!(message, expected, "spendable={spendable}, input={index}");
+    }
+}
+
+#[tokio::test]
+async fn caller_named_spendable_change_uses_reference_refusal() {
+    assert_named_change_uses_reference_refusal(true).await;
+}
+
+#[tokio::test]
+async fn caller_named_unspendable_change_uses_reference_refusal() {
+    assert_named_change_uses_reference_refusal(false).await;
+}
+
 /// Calgooon/zanaadu-v2#357: a pf head spend names its head output (a row
 /// in the `pf-name-head` basket) and the wallet funds the rest. Both
 /// inputs, the caller's and the wallet's change, are marked `spent_by` at
