@@ -270,6 +270,10 @@ pub struct StorageSqlx {
     /// write and its status write.
     #[cfg(test)]
     cut_next_retirement: Arc<std::sync::atomic::AtomicBool>,
+    /// Tests only: every handout of the writer connection, counted by the
+    /// writer pool's hooks (a fresh connection and an idle one both).
+    #[cfg(test)]
+    writer_acquires: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// A second handle over the same store: every field is shared, none copied
@@ -302,6 +306,8 @@ impl Clone for StorageSqlx {
             busy_next_certificate_field: Arc::clone(&self.busy_next_certificate_field),
             #[cfg(test)]
             cut_next_retirement: Arc::clone(&self.cut_next_retirement),
+            #[cfg(test)]
+            writer_acquires: Arc::clone(&self.writer_acquires),
         }
     }
 }
@@ -367,9 +373,23 @@ impl StorageSqlx {
         // caller that cannot get the writer within it answers StoreBusy.
         let writer = SqlitePoolOptions::new()
             .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_millis(STORE_BUSY_CEILING_MS))
-            .connect_with(options.clone())
-            .await?;
+            .acquire_timeout(std::time::Duration::from_millis(STORE_BUSY_CEILING_MS));
+        #[cfg(test)]
+        let writer_acquires = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        #[cfg(test)]
+        let writer = {
+            let (fresh, idle) = (Arc::clone(&writer_acquires), Arc::clone(&writer_acquires));
+            writer
+                .after_connect(move |_, _| {
+                    fresh.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Box::pin(async { Ok(()) })
+                })
+                .before_acquire(move |_, _| {
+                    idle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Box::pin(async { Ok(true) })
+                })
+        };
+        let writer = writer.connect_with(options.clone()).await?;
         let mut reader = SqlitePoolOptions::new().max_connections(reader_size);
         if let Some(timeout) = reader_acquire_timeout {
             reader = reader.acquire_timeout(timeout);
@@ -413,6 +433,8 @@ impl StorageSqlx {
             busy_next_certificate_field: Default::default(),
             #[cfg(test)]
             cut_next_retirement: Default::default(),
+            #[cfg(test)]
+            writer_acquires,
         })
     }
 
@@ -607,6 +629,15 @@ impl StorageSqlx {
     /// writer connection. The only way this crate opens a transaction.
     pub async fn write_tx(&self) -> Result<sqlx::Transaction<'static, Sqlite>> {
         begin_immediate(&self.writer).await
+    }
+
+    /// Tests only: how many times the writer connection has been handed out
+    /// through any handle of this store (a `write_tx`, a `writer_conn`, a
+    /// statement on `writer()`, the broadcast memory's writes).
+    #[cfg(test)]
+    pub(crate) fn writer_acquires(&self) -> usize {
+        self.writer_acquires
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// `create_action` with the host's offer (bsv-wallet-cli #44): the change
