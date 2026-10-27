@@ -87,6 +87,19 @@
   NULL here), so a synced coin without purpose is no longer offered as change by
   the create door, `StorageSqlx::allocate_change_input` or
   `count_change_inputs`. Rows already synced keep their stored `change`.
+- #307: `list_actions` with `includeInputs` serves each input's
+  `sequenceNumber` from the action's raw transaction, parsed and matched by
+  source txid and vout, as `ts-stack@edf6e03` does (`listActionsKnex.ts`
+  79-89), no longer from `outputs.sequence_number`. A served value moves: an
+  input whose column was NULL answered 4294967295 and now answers its raw
+  nSequence; an action with no stored raw transaction (an unsigned
+  template), or an input its raw transaction lacks, answers 0 where it
+  answered the column. With `includeInputUnlockingScripts` each input now
+  carries its unlocking script from the same parsed input (it carried none).
+  The inputs come by output id (the reference's unpaged finder), no longer
+  by the sequence column. The cost is one raw-transaction read and parse per
+  listed action that has inputs, where it was none. The column is still
+  written, synced and read by the other readers as #306 left it.
 - #187: `create_action` with `signAndProcess` now writes the
   `processActionPost` note on `proven_tx_reqs.history`, as the door's post
   path does and as every post in `ts-stack@edf6e03` writes its notes through

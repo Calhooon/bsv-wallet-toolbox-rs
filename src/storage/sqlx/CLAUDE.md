@@ -152,7 +152,7 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `find_output_baskets()` | Query output baskets by name |
 | `find_outputs()` | Query outputs with filters |
 | `find_proven_tx_reqs()` | Query proof requests by status |
-| `list_actions()` | List transactions with labels, inputs, outputs (label ANY/ALL filtering via CTE) |
+| `list_actions()` | List transactions with labels, inputs, outputs (label ANY/ALL filtering via CTE); inputs by output id, each `sequenceNumber` and `unlockingScript` from the action's parsed raw transaction (#307) |
 | `list_certificates()` | List certificates with field values and keyring |
 | `list_outputs()` | List spendable outputs with tags and labels (tag ANY/ALL filtering via CTE) |
 
@@ -631,15 +631,29 @@ including `provided_by`, `purpose`,
 `try_get(...)?`, so a missing or invalid column returns an error instead of
 a default. SQL NULL remains `None` for nullable fields. `sequence_number` is read
 only through `sequence_number_from_row` (`storage_sqlx/outputs.rs`), shared by
-`output_from_row`, the `list_actions` input read, the sync export and the
-allocator: the INTEGER column decodes as i64 and converts to the full u32 the
-writers store; a negative i32 an earlier writer left keeps its bits (-1 is
-0xFFFFFFFF), anything outside both ranges is a `ColumnDecode` error (#301,
+`output_from_row`, the sync export and the allocator: the INTEGER column
+decodes as i64 and converts to the full u32 the writers store; a negative
+i32 an earlier writer left keeps its bits (-1 is 0xFFFFFFFF), anything outside both ranges is a `ColumnDecode` error (#301,
 witnesses in `sequence_number_tests.rs`). A received output reads
 back as `providedBy: "storage"`, `purpose: "receive"` when those are stored.
 The default finder includes the locking script; `no_script: true` suppresses
 only the returned script and retains the origin and spending metadata.
 The allocation reader also names every column in its full-output SELECT.
+
+`list_actions` with `includeInputs` does not read `sequence_number` (#307):
+as `enrichActionInputs` (ts-stack@edf6e03 `listActionsKnex.ts:66-95`), it
+reads the action's raw transaction once when the action has inputs, whatever
+`includeInputUnlockingScripts` says, through `get_proven_or_raw_tx`
+(`proven_txs`, then `transactions.raw_tx`; the reference's
+`getRawTxOfKnownValidTransaction` reads `proven_txs`, then a `proven_tx_reqs`
+row `unsent`, `unmined`, `unconfirmed`, `sending`, `nosend` or `completed`,
+`StorageKnex.ts:189-211`), parses it with bsv-rs (a raw transaction that
+does not parse is the call's error, as `fromBinary` throws), matches each
+input by source txid and vout and serves its `sequence`, 0 when there is no
+raw transaction or no such input (`input?.sequence || 0`, :89), and its
+unlocking script under `includeInputUnlockingScripts` (:93). The inputs come
+by `output_id`, the unpaged finder's order (:73, no ORDER BY). Witnesses in
+`storage_sqlx/list_action_inputs_tests.rs`.
 
 `list_outputs` uses a separate `WalletOutput` projection whose existing wire
 fields do not include `providedBy` or `purpose`. The sync export has its own
