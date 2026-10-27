@@ -28,7 +28,8 @@
 #   --from C=DIR  take crate C's repository from the local DIR (a copy is built; DIR is never written)
 # Environment: DEPENDENTS_WORK (scratch, default $RUNNER_TEMP or $TMPDIR),
 #   DEPENDENTS_TARGET_DIR (cargo target root, default inside the scratch).
-# Exits non-zero when any dependent fails to build or test.
+# Exits non-zero when any dependent fails to build or test, and when a branch probe
+# or a clone faults (a fault is a summary row, never a verdict).
 
 set -euo pipefail
 
