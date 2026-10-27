@@ -405,9 +405,11 @@ async fn test_issuance_header_certifier_mismatch_uses_reference_text() {
     request.assert_async().await;
 }
 
+#[cfg(test)]
 #[path = "certificate_issuance_guard_tests.rs"]
 mod guard_tests;
 
+#[cfg(test)]
 #[path = "certificate_issuance_response_tests.rs"]
 mod response_tests;
 
