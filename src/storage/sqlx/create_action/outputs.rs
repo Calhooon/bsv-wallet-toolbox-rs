@@ -115,6 +115,8 @@ pub(super) async fn find_or_insert_tx_label(
     user_id: i64,
     label: &str,
 ) -> Result<TableTxLabel> {
+    let normalized = crate::storage::sqlx::label::normalize_label(label);
+    let label = normalized.as_str();
     let row = sqlx::query(
         "SELECT tx_label_id, user_id, label, created_at, updated_at FROM tx_labels WHERE user_id = ? AND label = ?",
     )

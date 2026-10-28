@@ -59,7 +59,7 @@ async fn received_rule_is_exact_and_belongs_to_the_spending_action() -> Result<(
             )
             .fetch_all(replay.storage.pool())
             .await?;
-            assert_eq!(labels, ["underReceivedRule"]);
+            assert_eq!(labels, ["underreceivedrule"]);
         } else {
             assert!(
                 result["error"]

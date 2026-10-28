@@ -45,7 +45,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | `process_action.rs` | Signed transaction processing (1884 lines) |
 | `abort_action.rs` | Transaction abort/cancellation (#165): refuses `unproven` and every stored accepting word; `sending` with no acceptance stays abortable (inputs released, own outputs dead, memory `rejected`, descendants retired); the abort makes no header-service or explorer call (`wallet.md:98`, `tracker.md:25`, broadcaster B4 (d)) |
 | `internalize_action.rs` | External transaction internalization (1343 lines) |
-| `label.rs` | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors (#379) |
+| `label.rs` | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392) |
 | `sync.rs` | Multi-storage synchronization (2713 lines) |
 | `beef_verification.rs` | BEEF merkle proof verification (989 lines) |
 | `migrations/001_initial.sql` | Initial schema with 16 tables (284 lines) |
@@ -532,8 +532,8 @@ With `sign_and_process` the template is signed and processed inside the create s
   `The label parameter must be at least 1 length.`; oversized ones answer
   `The label parameter must be no more than 300 length.`. At `WalletInterface`
   both carry class `InvalidParameter` and the `Validation error: ` prefix.
-  Validation uses a normalized copy; storage and `listActions` retain the supplied
-  label, including case and surrounding whitespace (#392). Witnesses:
+  Both action doors store the normalized value; `listActions` uses normalized
+  filters against those stored values (#392). Witnesses:
   `create_action/tests/validation_labels.rs` (exact refusals, byte boundaries,
   normalization, stored and listed form, and BRC-177 precedence).
 - BRC-177 (#312): after every other check, a label starting `p nosend ` (trimmed with ECMAScript's whitespace and lowercased by `label.rs`, as the SDK's validateLabel leaves it, #379: `\u{FEFF}p nosend batch` meets the grammar and `\u{0085}p nosend ...` is an ordinary label; `startsWith`, ts-stack@edf6e03 `brc177NoSendExpiry.ts:5,119`) refuses `Error::InvalidOperation("Active storage does not support BRC-177 noSend expiry")`, the reference's text on a store without the capability (`createNoSendExpiryAction.ts:201-203`; the reference routes the label there at `Wallet.ts:1162-1165`). The port has no capability, so every such label is refused, ahead of any write; the label grammar's checks run ahead of it, as `parseBrc177NoSendExpiryLabels` does at `Wallet.ts:1163` (`brc177NoSendExpiry.ts:81-116`, in its order), each refusing `Error::ValidationError("The labels parameter must be <mustBe>")` with the reference's `WERR_INVALID_PARAMETER` text (`WERR_errors.ts:105`, no full stop): exactly one expiry label and one module label, one space between mode and value, the mode `seconds`/`timestamp`/`blockheight`, a canonical unsigned value within 2^53 - 1, `seconds` above zero (#359). A label the grammar accepts meets the capability text. `p nosendx` and `p nosend` alone are ordinary labels. Witnesses: `create_action/tests/validation_nosend.rs`, `create_action/tests/validation_nosend_grammar.rs`, `src/wallet/nosend_label_tests.rs`; the sync divergences are ARCHITECTURE D7 A `Wallet` over `StorageClient` (`remote`) passes the label to the remote store, where the reference parses in `Wallet` ahead of storage (#359's placement note; the lanes for #357 and #359 would put both refusals in the Wallet, keeping the door checks for direct storage callers).
@@ -541,6 +541,21 @@ With `sign_and_process` the template is signed and processed inside the create s
 - Change generation with automatic UTXO management
 - Full input/output database state management
 - Labels and tags for transaction/output organization
+
+### Stored labels (#392)
+
+The create and internalize label writers use `normalize_label` before lookup
+and insertion, so equivalent spellings share a label row and a transaction map.
+This follows ts-stack@edf6e03 `validationHelpers.ts:762,1054`,
+`createAction.ts:741-745`, `internalizeAction.ts:742-744` and
+`StorageReaderWriter.ts:267-281`. `listActions` validates and normalizes each
+filter as `validationHelpers.ts:1691` does, then compares it to the stored string
+as `listActionsKnex.ts:127-140` does. Existing rows retain their spelling and
+match only if equal to the normalized filter; an unfiltered listing returns them
+unchanged. The wire fixtures carry `  LaBeL ` to pin the client request spelling.
+The SQL behavior is covered by `create_stored_labels_are_normalized_and_reused`,
+`internalize_label_tests.rs` and the storage fixture replays. The two label-error
+vectors use the reference's current texts and are executed by `test_vectors`.
 
 ### Array bounds (#309)
 

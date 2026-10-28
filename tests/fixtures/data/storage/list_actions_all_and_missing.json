@@ -7,7 +7,7 @@
         "includeOutputLockingScripts": true,
         "includeOutputs": true,
         "labelQueryMode": "all",
-        "labels": ["shared","beta"],
+        "labels": [" SHARED "," BeTa "],
         "limit": 10,
         "offset": 0
       },
@@ -20,7 +20,7 @@
         "includeOutputLockingScripts": true,
         "includeOutputs": true,
         "labelQueryMode": "any",
-        "labels": ["missing"],
+        "labels": [" MISSING "],
         "limit": 10,
         "offset": 0
       },

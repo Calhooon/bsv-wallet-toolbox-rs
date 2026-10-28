@@ -3,7 +3,7 @@
     {
       "args": {
         "description": "Recorded basket insertion",
-        "labels": ["asset","fixture"],
+        "labels": ["  AsSeT ","\uFEFF FIXTURE \u3000"],
         "outputs": [
           {
             "insertionRemittance": {"basket":"assets","customInstructions":"retain me","tags":["red","rare"]},
@@ -18,7 +18,7 @@
     {
       "args": {
         "description": "Recorded basket insertion",
-        "labels": ["asset","fixture"],
+        "labels": ["ASSET"," fixture "],
         "outputs": [
           {
             "insertionRemittance": {"basket":"assets","customInstructions":"retain me","tags":["red","rare"]},
