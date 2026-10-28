@@ -5,6 +5,8 @@
 //! foreign-key linking). These are native (non-wasm) tests using in-memory sqlx stores.
 
 #![cfg(not(target_arch = "wasm32"))]
+// Every test opens in-memory SQLite stores (#429).
+#![cfg(feature = "sqlite")]
 
 use bsv_wallet_toolbox_rs::managers::WalletStorageManager;
 use bsv_wallet_toolbox_rs::storage::*;
