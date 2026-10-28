@@ -207,7 +207,8 @@ The divergences, each with both sides:
    unspendable (`noSendExpiryLifecycle.ts:343-345`), is never released.
 4. **The label is accepted as metadata.** Independently of sync, the port's
    door checks a label only for emptiness and length
-   (`src/storage/sqlx/create_action/validation.rs:45-56`), so a
+   (the label checks, since #416 in `src/wallet/create_args.rs` ahead of
+   storage), so a
    `p nosend expiry seconds 300` request becomes an ordinary `noSend` action
    with ordinary change and no deadline: the case `0177.md:53` forbids. The
    reference on a store without the capability refuses
