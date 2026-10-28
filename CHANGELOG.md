@@ -29,6 +29,11 @@
   `Validation error: The label parameter must be at least 1 length.`;
   `Validation error: label exceeds maximum length of 300 characters` becomes
   `Validation error: The label parameter must be no more than 300 length.`.
+- #435: `StorageSqlx::migrate` keeps an existing settings row's `chain`
+  instead of rewriting it to `mainnet`, as the reference writes `chain` once,
+  in the migration that inserts the row. A new row is still `mainnet`: no
+  storage constructor takes a `Chain` yet, so a testnet or regtest host does
+  not yet see its configured chain in settings (the shape is the owner's word).
 
 ### CI
 
