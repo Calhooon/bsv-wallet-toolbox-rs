@@ -443,32 +443,6 @@ the pinned reference's merge details are in `docs/STORAGE-WIRE.md`.
 
 The `beef_verification.rs` module provides BEEF (Background Evaluation Extended Format) merkle proof verification:
 
-The live `internalize_action` door passes `get_settings().chain` to
-`verify_beef_spends`. Each input of each unique unproven raw transaction,
-including parents, runs through `Spend::set_flags(ScriptFlags::standard(era))`.
-Proven raw entries supply outputs; txid-only entries supply proof identity.
-Neither has its own scripts rejudged, and duplicate raw entries are not rejudged.
-
-This is an interim second evaluation until bsv-rs #440 supplies its per-input
-hook. The SDK's `verify_stream_two_pass` retains the structural/proof verdict;
-only `SpendRefusal::Script` is set aside. A default script refusal can stop
-that scan early, so `verify_stream_structure` must then finish cleanly before
-the word pass. The word pass preserves the later mining, outpoint, resource
-and value checks that such a refusal can mask. It retains only referenced
-outputs, shares one sighash cache per transaction, and releases transactions
-waiting for parents in wire order.
-
-The `pub(crate)` `input_era` helper uses a mainnet coin's proven BUMP height,
-or the tracker tip for an unproven coin, against bsv-rs's Genesis and Chronicle
-constants. Pre-Genesis mainnet refuses with
-`The mainnet coin height is before Genesis.`. Testnet and regtest use the tip
-against those constants until #440 supplies their activation heights; regtest
-fixtures name the era they model. An unsupported network or tip also refuses.
-The network comes from settings, never from guessing what a Genesis height
-means. The `script_pin_tests` witnesses pin the fork-ID refusal, post-Chronicle
-version-1 `0x61` acceptance and pre-Chronicle era refusal. D15 is closed by
-#422; create/process script verification stays with #426.
-
 ### Core Functions
 ```rust
 pub async fn verify_beef_merkle_proofs(
@@ -497,6 +471,43 @@ pub async fn verify_txid_merkle_proof(
 - Called by `create_action` to verify user-provided inputBEEF
 - Requires `ChainTracker` to be set via `storage.set_chain_tracker()`
 - Returns `Ok(true)` if valid, `Ok(false)` if no proofs to verify, `Err` if invalid
+
+### Live script word (#422)
+
+The live `internalize_action` door passes `get_settings().chain` to
+`verify_beef_spends`. Each input of each unique unproven raw transaction,
+including parents, runs through `Spend::set_flags(word)`, where the word is
+two words joined by `ScriptFlags::from_bits` (`input_word`): the
+transaction-level bits of `ScriptFlags::standard(spend)` (`GENESIS`,
+`CHRONICLE`, the mandatory and standard-only bits, `SIGPUSHONLY`) and the
+`UTXO_AFTER_GENESIS` and `UTXO_AFTER_CHRONICLE` bits of
+`ScriptFlags::standard(coin)`. The 0x61 hash-type gate reads `CHRONICLE`; the
+Chronicle opcodes and the number bound read `UTXO_AFTER_CHRONICLE`.
+Proven raw entries supply outputs; txid-only entries supply proof identity.
+Neither has its own scripts rejudged, and duplicate raw entries are not rejudged.
+
+This is an interim second evaluation until bsv-rs #440 supplies its per-input
+hook. The SDK's `verify_stream_two_pass` retains the structural/proof verdict;
+only `SpendRefusal::Script` is set aside. A default script refusal can stop
+that scan early, so `verify_stream_structure` must then finish cleanly before
+the word pass. The word pass preserves the later mining, outpoint, resource
+and value checks that such a refusal can mask. It retains only referenced
+outputs, shares one sighash cache per transaction, and releases transactions
+waiting for parents in wire order.
+
+The `pub(crate)` `input_eras` helper returns both eras against bsv-rs's
+Genesis and Chronicle constants. On mainnet a mined parent's spender takes
+the tracker tip's era and the coin its proven BUMP height's; an unproven
+parent and its spender take tip+1's, the block the mempool judges for.
+Pre-Genesis mainnet refuses with `The mainnet coin height is before Genesis.`.
+Testnet and regtest use the spend's era for the coin until #440 supplies their
+activation heights; regtest fixtures name the era they model. An unsupported
+network or tip also refuses. The network comes from settings, never from
+guessing what a Genesis height means. The `script_pin_tests` witnesses pin the
+fork-ID refusal, version-1 `0x61` acceptance after Chronicle on post- and
+pre-Chronicle coins, the coin era's `OP_2MUL` and `OP_SUBSTR` refusals, and
+the era refusal on a regtest tip between Genesis and Chronicle. D15 is closed
+by #422; create/process script verification stays with #426.
 
 ## Create Action Implementation
 

@@ -4,23 +4,29 @@
 
 ### Fixed
 
-- #422: The live `internalizeAction` door uses `ScriptFlags::standard(era)`
-  for each input of every unproven raw transaction, including parents.
+- #422: The live `internalizeAction` door judges each input of every
+  unproven raw transaction, including parents, under the node's word: the
+  transaction-level bits of `ScriptFlags::standard` for the spend's era with
+  the `UTXO_AFTER_GENESIS` and `UTXO_AFTER_CHRONICLE` bits of the coin's era.
   A fork-ID-less original-digest signature now refuses with
   `The signature must use SIGHASH_FORKID.`. A valid version-1 `0x61` signature
-  on a post-Chronicle coin now passes instead of refusing with
-  `The signature format is invalid.`; on a pre-Chronicle post-Genesis coin
-  it refuses with `The signature must not use SIGHASH_CHRONICLE before Chronicle.`.
+  spent after Chronicle now passes instead of refusing with
+  `The signature format is invalid.`, on a pre-Chronicle coin too; a spend
+  before Chronicle refuses it with
+  `The signature must not use SIGHASH_CHRONICLE before Chronicle.`. A coin
+  proven before Chronicle keeps `OP_2MUL` disabled and `OP_SUBSTR` as
+  `OP_NOP4` (`OP_NOP4 is discouraged by verification flags.`).
   Nonminimal numbers now say
   `Invalid script number: script execution error: Non-minimally encoded script number`
   instead of `non-minimally encoded script number`.
-  Mainnet uses the coin's proven BUMP height, or the tracker tip for an
-  unproven coin, against bsv-rs's activation constants. Pre-Genesis mainnet
-  refuses with `The mainnet coin height is before Genesis.`. Testnet and
-  regtest use the tip against those constants until bsv-rs #440 supplies
-  their activation heights. The interim second evaluation preserves the
-  stream verifier's structural, proof and non-script refusals; #440's
-  per-input hook will replace it. The captain must inform CLI #338 at landing.
+  On mainnet a mined parent's spender takes the tracker tip's era and the
+  coin its proven BUMP height's; an unproven parent and its spender take the
+  era of the block after the tip, against bsv-rs's activation constants.
+  Pre-Genesis mainnet refuses with `The mainnet coin height is before Genesis.`.
+  Testnet and regtest use the spend's era for the coin until bsv-rs #440
+  supplies their activation heights. The interim second evaluation preserves
+  the stream verifier's structural, proof and non-script refusals; #440's
+  per-input hook will replace it.
 
 - #430: `relinquishCertificate` now refuses an unknown or non-unique certificate
   before changing storage. Host TEXT-DIFF for CLI #344: success with
