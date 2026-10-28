@@ -9,6 +9,7 @@
 use super::busy_door_tests::certificate_rows;
 use super::*;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use bsv_rs::auth::certificates::MasterCertificate;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::wallet::{AcquisitionProtocol, KeyringRevealer};
 
@@ -59,6 +60,167 @@ fn direct_args() -> AcquireCertificateArgs {
     }
 }
 
+// The SDK equivalent of issueCertificateForSubject encrypts to this wallet
+// and signs with the certifier's BRC-52 child key. Re-sign after setting the
+// outpoint, since the issuance helper uses the absent-outpoint sentinel.
+async fn signed_master(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> MasterCertificate {
+    let certifier = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
+    let mut master = MasterCertificate::issue_for_subject(
+        &ProtoWallet::new(Some(certifier.clone())),
+        &certifier,
+        PublicKey::from_hex(wallet.identity_key()).unwrap(),
+        HashMap::from([
+            ("name".to_string(), "Alice".to_string()),
+            ("role".to_string(), "reader".to_string()),
+        ]),
+        [33; 32],
+        Some([32; 32]),
+        Some("certificate.test"),
+    )
+    .await
+    .unwrap();
+    master.set_revocation_outpoint(Some(Outpoint::new([0xab; 32], 0)));
+    master.set_signature(None);
+    master.sign(&certifier).unwrap();
+    assert!(master.verify().unwrap());
+    master
+}
+
+fn master_args(master: MasterCertificate) -> AcquireCertificateArgs {
+    let mut args = direct_args();
+    args.fields = master.certificate.fields;
+    args.signature = master.certificate.signature.map(hex::encode);
+    args.keyring_for_subject = Some(master.master_keyring);
+    args
+}
+
+pub(super) async fn signed_args(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+) -> AcquireCertificateArgs {
+    master_args(signed_master(wallet).await)
+}
+
+fn verification_refusal(tail: &str) -> String {
+    refusal(
+        "args",
+        &format!("valid encrypted and signed certificate and keyring from revealer. {tail}"),
+    )
+}
+
+#[tokio::test]
+async fn direct_acquire_verify_refuses_forged_signature() {
+    let wallet = wallet().await;
+    let mut master = signed_master(&wallet).await;
+    // Valid DER from this certifier, over a different certificate body.
+    let mut other = master.certificate.clone();
+    other.set_field("name".to_string(), BASE64.encode(b"different ciphertext"));
+    other.set_signature(None);
+    other
+        .sign(&PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap())
+        .unwrap();
+    master.set_signature(other.signature);
+    assert!(!master.verify().unwrap());
+    assert_refused(
+        "forged signature",
+        master_args(master),
+        &verification_refusal("WERR_UNKNOWN: Certificate verification failed"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn direct_acquire_verify_refuses_undecryptable_keyring() {
+    let wallet = wallet().await;
+    let mut master = signed_master(&wallet).await;
+    // The signature still verifies. The other field opens, but this entry
+    // cannot decrypt to the role field's revelation key for this wallet.
+    master
+        .master_keyring
+        .insert("role".to_string(), BASE64.encode([0; 64]));
+    assert!(master.verify().unwrap());
+    assert_refused(
+        "undecryptable keyring entry",
+        master_args(master),
+        &verification_refusal(
+            "CertificateValidationError: Failed to decrypt all master certificate fields.",
+        ),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn direct_acquire_verify_refuses_field_over_one_mib() {
+    let wallet = wallet().await;
+    for (length, tail) in [
+        (
+            1_048_577,
+            "CertificateValidationError: Certificate field name must use canonical base64 encoding",
+        ),
+        (1_048_580, "WERR_UNKNOWN: Certificate verification failed"),
+    ] {
+        let mut master = signed_master(&wallet).await;
+        // The exact reported size cannot be canonical base64; the next
+        // multiple of four also exercises verify's serialized-text bound.
+        master.set_field("name".to_string(), "A".repeat(length));
+        assert_eq!(master.fields["name"].len(), length);
+        assert_eq!(
+            master.to_binary(false).unwrap_err().to_string(),
+            "certificate validation failed: Certificate field name exceeds the maximum of 1048576 bytes"
+        );
+        assert_refused(
+            "oversized field",
+            master_args(master),
+            &verification_refusal(tail),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn direct_acquire_verify_stores_ciphertext_and_keyring_unchanged() {
+    for revealer in [
+        KeyringRevealer::Certifier,
+        KeyringRevealer::PublicKey(PublicKey::from_hex(&key(9)).unwrap()),
+    ] {
+        let wallet = wallet().await;
+        let mut args = signed_args(&wallet).await;
+        args.keyring_revealer = Some(revealer.clone());
+        args.privileged = Some(true);
+        args.privileged_reason = Some("certificate import".to_string());
+        let expected_fields = args.fields.clone();
+        let expected_keyring = args.keyring_for_subject.clone().unwrap();
+        let acquired = wallet
+            .acquire_certificate(args.clone(), Some("certificate.test"))
+            .await
+            .unwrap();
+        assert_eq!(acquired.fields, expected_fields);
+        assert_eq!(acquired.signature, args.signature.unwrap());
+        assert_eq!(acquired.subject, wallet.identity_key());
+        let stored: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT field_name, field_value, master_key FROM certificate_fields ORDER BY field_name",
+        )
+        .fetch_all(wallet.storage().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored.len(), expected_fields.len());
+        for (name, ciphertext, keyring_entry) in stored {
+            assert_eq!(ciphertext, expected_fields[&name]);
+            assert_eq!(keyring_entry, expected_keyring[&name]);
+        }
+        let verifier: String = sqlx::query_scalar("SELECT verifier FROM certificates")
+            .fetch_one(wallet.storage().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            verifier,
+            match revealer {
+                KeyringRevealer::Certifier => key(7),
+                KeyringRevealer::PublicKey(key) => key.to_hex(),
+            }
+        );
+    }
+}
+
 /// The direct acquire of `args` is refused with exactly `expected` and
 /// leaves the store without a certificate or a field.
 async fn assert_refused(scenario: &str, args: AcquireCertificateArgs, expected: &str) {
@@ -90,11 +252,11 @@ async fn refused_with(scenario: &str, edit: impl FnOnce(&mut AcquireCertificateA
 async fn accepts_the_valid_arguments_and_stores_one_row() {
     let wallet = wallet().await;
     let acquired = wallet
-        .acquire_certificate(direct_args(), Some("certificate.test"))
+        .acquire_certificate(signed_args(&wallet).await, Some("certificate.test"))
         .await
         .unwrap();
     assert_eq!(acquired.certifier, key(7));
-    assert_eq!(certificate_rows(&wallet).await, (1, 1));
+    assert_eq!(certificate_rows(&wallet).await, (1, 2));
 }
 
 // 1432: validateBase64String(args.type, 'type', 32, 32), its texts at 439-441
@@ -204,11 +366,9 @@ async fn refuses_an_absent_keyring_or_revealer() {
     let wallet = wallet().await;
     let mut args = direct_args();
     args.keyring_for_subject = Some(HashMap::new());
-    wallet
-        .acquire_certificate(args, Some("certificate.test"))
-        .await
-        .unwrap();
-    assert_eq!(certificate_rows(&wallet).await, (1, 1), "an empty keyring");
+    // Presence is a validator rule; the later proof has separate requirements.
+    assert!(direct_acquire::validate_acquire_direct_args(&args).is_ok());
+    assert_eq!(certificate_rows(&wallet).await, (0, 0));
 }
 
 // 1439: validateKeyringForSubject at 1248-1259: validateRecord (81-103) on
@@ -420,9 +580,10 @@ async fn several_bad_names_refuse_by_the_lowest_name() {
 #[tokio::test]
 async fn stores_the_normalized_arguments() {
     let wallet = wallet().await;
-    let mut args = direct_args();
+    let mut args = signed_args(&wallet).await;
+    let signature = args.signature.clone().unwrap();
     args.certifier = key(7).to_uppercase();
-    args.signature = Some("300602010A02010B".to_string());
+    args.signature = Some(signature.to_uppercase());
     args.certificate_type = format!(" {} ", BASE64.encode([33; 32]));
     args.serial_number = Some(format!("\t{}\n", BASE64.encode([32; 32])));
     let acquired = wallet
@@ -430,7 +591,7 @@ async fn stores_the_normalized_arguments() {
         .await
         .unwrap();
     assert_eq!(acquired.certifier, key(7));
-    assert_eq!(acquired.signature, "300602010a02010b");
+    assert_eq!(acquired.signature, signature);
     assert_eq!(acquired.certificate_type, BASE64.encode([33; 32]));
     assert_eq!(acquired.serial_number, BASE64.encode([32; 32]));
     let row: (String, String, String, String, Option<String>) = sqlx::query_as(
@@ -445,50 +606,44 @@ async fn stores_the_normalized_arguments() {
             BASE64.encode([33; 32]),
             BASE64.encode([32; 32]),
             key(7),
-            "300602010a02010b".to_string(),
+            signature,
             Some(key(7)),
         )
     );
 }
 
-// #188, the owner's word: one read of every stored certificate under the
-// derived key, counted, nothing deleted. A direct acquire stores what it is
-// given, so one row signed by the certifier and one with a signature that
-// does not verify make the count.
+// #188: legacy rows remain readable after the acquire door closes. Seed
+// the old invalid row at storage, then acquire a newly signed certificate.
 #[tokio::test]
 async fn reverify_counts_stored_certificates_that_do_not_verify() {
-    use bsv_rs::auth::certificates::Certificate;
-
     let wallet = wallet().await;
     assert_eq!(
         wallet.reverify_stored_certificates().await.unwrap(),
         StoredCertificateReverification::default()
     );
-
-    // direct_args' signature (r = 10, s = 11) is DER that verifies nowhere.
+    let now = chrono::Utc::now();
+    let legacy = TableCertificate {
+        certificate_id: 0,
+        user_id: wallet.user_id,
+        cert_type: BASE64.encode([34; 32]),
+        serial_number: BASE64.encode([32; 32]),
+        certifier: key(7),
+        subject: wallet.identity_key().to_string(),
+        verifier: Some(key(7)),
+        revocation_outpoint: format!("{}.0", "ab".repeat(32)),
+        signature: "300602010a02010b".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
     wallet
-        .acquire_certificate(direct_args(), Some("certificate.test"))
+        .storage()
+        .insert_certificate(&wallet.auth(), legacy)
         .await
         .unwrap();
-
-    let certifier = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
-    let mut certificate = Certificate::new(
-        [34; 32],
-        [32; 32],
-        PublicKey::from_hex(wallet.identity_key()).unwrap(),
-        certifier.public_key(),
-    );
-    certificate.revocation_outpoint = Some(bsv_rs::wallet::Outpoint::new([0xab; 32], 0));
-    certificate.set_field("name".to_string(), "YQ==".to_string());
-    certificate.sign(&certifier).unwrap();
-    let mut signed = direct_args();
-    signed.certificate_type = BASE64.encode([34; 32]);
-    signed.signature = Some(hex::encode(certificate.signature.unwrap()));
     wallet
-        .acquire_certificate(signed, Some("certificate.test"))
+        .acquire_certificate(signed_args(&wallet).await, Some("certificate.test"))
         .await
         .unwrap();
-
     assert_eq!(
         wallet.reverify_stored_certificates().await.unwrap(),
         StoredCertificateReverification {
