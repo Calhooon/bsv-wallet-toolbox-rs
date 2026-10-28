@@ -943,17 +943,19 @@ What the wallet's caller sees (through `WalletInterface`, each inside
 |---|---|---|
 | a reference certifier | `Network error: Certifier returned HTTP 400 Bad Request: {...ERR_AUTH_MALFORMED...}` | the certificate, expected: shown against this crate's fixture, not yet run against the reference middleware (the interop lane, the design's section 5, steps 1 to 4) |
 | a certifier signing with another key | (no handshake; its header compared) | `Validation error: Invalid certifier! Expected: <certifier>, Received: <its key>` |
-| a plain server answering the handshake with its body | the header compared, `Received: null` or the body's | `Network error: Failed to send request: authentication error: Failed to parse auth response: ...`, bsv-rs's text; the reference answers V8's `JSON.parse` words (`SimplifiedFetchTransport.ts:160`; bsv-rs #410, their PR #414 at beta.3) |
-| a server answering the handshake `404` | (no handshake) | `Network error: Failed to send request: authentication error: Auth endpoint returned 404 Not Found: <body>`, bsv-rs's text (`transport_fault.rs:220`); the reference's is `Received HTTP 404 ... from <url> without valid BSV authentication (...)` (`SimplifiedFetchTransport.ts:146,479`; bsv-rs #410) |
+| a plain server answering the handshake with malformed JSON | the header compared, `Received: null` or the body's | `Network error: Failed to send request: authentication error: Unexpected token 'o', "not auth" is not valid JSON` for `not auth`, the reference's syntax words (bsv-rs #410) |
+| a server answering the handshake `404` | (no handshake) | `Network error: Failed to send request: authentication error: Received HTTP 404 Not Found from <url>/.well-known/auth without valid BSV authentication (response lacked required BSV auth headers) - body preview: <body>` (bsv-rs #410) |
 | an unsigned answer to the signed request | n/a | `Network error: Failed to send request: authentication error: Received HTTP <status> from <url> without valid BSV authentication (missing headers: ...)` |
-| a bad answer signature | n/a | `Network error: Failed to send request: wallet error: Signature is not valid`, the verifier's text, and the reference's own answer for a peer backed by a `ProtoWallet` (its `ProtoWallet.verifySignature` throws `Signature is not valid` and `Peer` does not catch it on the general-message path; `Invalid signature in generalMessage from <key>` at `Peer.ts:1304` is reached only by a wallet answering `valid: false`; bsv-rs #407, read against both references under Node 22) |
-| a redirect | refused by the policy client under test, followed by reqwest in production | `Network error: Failed to send request: authentication error: Network error while sending authenticated request to <url>: redirect refused: <status>`, bsv-rs's text; the reference surfaces fetch's error as `Network error while sending authenticated request to <url>/.well-known/auth: fetch failed` (`SimplifiedFetchTransport.ts:128,132`, `redirect: 'error'`; bsv-rs #410) |
+| a bad answer signature | n/a | `Network error: Failed to send request: wallet error: Signature is not valid`; unchanged for a canonical signature from another key (bsv-rs #407) |
+| a redirect | refused by the policy client under test, followed by reqwest in production | `Network error: Failed to send request: authentication error: Network error while sending authenticated request to <url>: fetch failed` (bsv-rs #410) |
+| malformed requested-certificates header | previously discarded | `Network error: Failed to send request: authentication error: Failed to parse x-bsv-auth-requested-certificates returned by <url>: not auth. Unexpected token 'o', "not auth" is not valid JSON` for `not auth` (bsv-rs #410) |
 | a non-2xx signed answer | `Network error: Certifier returned HTTP <status>: <body>` | the body read: its envelope checks name it |
 | no answer within 30 s | reqwest's timeout text | `Network error: Timed out waiting for authenticated response.` |
 
-The witnesses of the three texts bsv-rs #410 names pin the refusal's class,
-the status where there is one and the general request unsent, not the
-sentence, so the text's move to the reference's does not break them.
+The bsv-rs #410 witnesses pin the complete new messages, including the
+existing toolbox envelope, and show that redirects and a failed handshake
+send no later request. The malformed-header witness uses the signed
+issuance path and refuses before the envelope is read.
 
 Tests: `certificate_issuance_auth_tests.rs` (the design's witnesses),
 `certificate_issuance_auth.rs` (the deadline), the fixture certifier
