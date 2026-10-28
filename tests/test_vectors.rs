@@ -1691,20 +1691,13 @@ mod merkle_path {
         let expected_height = expected["blockHeight"].as_u64().unwrap() as u32;
         let expected_levels = expected["path_levels"].as_u64().unwrap() as usize;
 
-        // The vector is Go's (`proof_for_merkle_path_test.go`, accepted
-        // unchecked there): index 1 with "*" makes offset 0 a duplicate,
-        // which no tree has (a duplicate is the last node of an odd level,
-        // at an odd offset). bsv-rs 0.9.0 refuses it (#144); the same
-        // nodes at index 0 are the proof the vector means.
+        // The vector is Go's (`proof_for_merkle_path_test.go`): index 1 with
+        // "*" makes offset 0 a duplicate. bsv-rs 0.9.0-beta.1 refused it
+        // (#144); since beta.2 it reads a duplicate at an even offset as the
+        // reference's MerklePath.ts:60 does (bsv-rs #167), so the vector's
+        // own index converts, as Go and the reference accept it.
         assert_eq!(index, 1);
-        let refused = tsc_proof_to_merkle_path(txid, index, &nodes, block_height)
-            .expect_err("a duplicate at an even offset is no tree");
-        assert!(
-            refused.contains("Duplicate at an even offset: 0, at height: 0"),
-            "{refused}"
-        );
-
-        let result = tsc_proof_to_merkle_path(txid, 0, &nodes, block_height);
+        let result = tsc_proof_to_merkle_path(txid, index, &nodes, block_height);
         assert!(
             result.is_ok(),
             "Duplicate marker proof should succeed: {:?}",

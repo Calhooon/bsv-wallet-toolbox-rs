@@ -7,7 +7,7 @@
 
 `create_action` refuses an empty caller `unlocking_script` or a zero `unlocking_script_length` with `Error::ValidationError` before BEEF parsing or storage (#212). The texts name the parameters bare: `The unlockingScript parameter must be hexadecimal string.` is the reference's byte for byte (`ts-stack@edf6e03` `validationHelpers.ts:522-530,595,758` and `WERR_INVALID_PARAMETER.ts:14`); `The unlockingScriptLength parameter must be a positive integer.` is the port's own in the reference's sentence shape. Hosts reserving a caller input must omit its script and supply a positive length.
 
-For a caller-named stored input, the create door checks change, then the presence of a locking script and integer satoshis, then the live spendability check, including under `options.no_send = true` (#245). In `ts-stack@edf6e03` `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts`, the `:982` gate is disabled by default at `:61`; `markKnownInputsSpent` (`:399-436`, called at `:503`) decides. The port re-reads the stored output under the write lock before marking it spent. A spender with a txid requires double-spend review regardless of its status, including failed; the existing `Error::InvalidOperation` carries `Undelayed createAction or signAction results require review. doubleSpend: <txid>`. A spender without a txid falls through to the output's `spendable` flag. Without a competing txid, an unspendable row uses `Error::ValidationError` with the live `:420-423` text: `The inputs[N] parameter must be spendable output. output <txid>:<vout> appears to have been spent (spendable=false).` Refusal preserves the original spender through a later abort. A pruned script can still be recovered from stored transaction bytes; zero satoshis and an empty stored script count as present. Missing data uses `Error::ValidationError` with `The <txid>.<vout> parameter must be output with valid lockingScript and satoshis`, without a trailing period (`:979-980`, `sdk/WERR_errors.ts:105`). The change guard and its `:972-976` text remain, and the failed-creator guard still applies.
+For a caller-named stored input, the create door checks change, then the presence of a locking script and integer satoshis, then the live spendability check, including under `options.no_send = true` (#245). In `ts-stack@edf6e03` `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts`, the `:982` gate is disabled by default at `:61`; `markKnownInputsSpent` (`:399-436`, called at `:503`) decides. The port re-reads the stored output under the write lock before marking it spent. A spender with a txid requires double-spend review regardless of its status, including failed; it answers `Error::ReviewActions` (#264, the owner's ruling 18.4), the reference's `WERR_REVIEW_ACTIONS` text `Undelayed createAction or signAction results require review.` with one `doubleSpend` `ReviewActionResult` whose `competing_txs` names the spender (`:503-509`); its `txid` is all zeros for the reference's `''`, and `competing_beef` is absent. Through `WalletInterface` it is bsv-rs's `Error::WalletReviewActions`. A spender without a txid falls through to the output's `spendable` flag. Without a competing txid, an unspendable row uses `Error::ValidationError` with the live `:420-423` text: `The inputs[N] parameter must be spendable output. output <txid>:<vout> appears to have been spent (spendable=false).` Refusal preserves the original spender through a later abort. A pruned script can still be recovered from stored transaction bytes; zero satoshis and an empty stored script count as present. Missing data uses `Error::ValidationError` with `The <txid>.<vout> parameter must be output with valid lockingScript and satoshis`, without a trailing period (`:979-980`, `sdk/WERR_errors.ts:105`). The change guard and its `:972-976` text remain, and the failed-creator guard still applies.
 
 This module provides the main `Wallet<S, V>` struct that implements the complete `WalletInterface` trait from `bsv_sdk::wallet`. The Wallet orchestrates three components: `ProtoWallet` for cryptographic operations (key derivation, signing, encryption), a storage backend for persistent state (UTXOs, transactions, certificates), and a services backend for blockchain interaction (broadcasting, merkle proofs, chain height).
 
@@ -125,7 +125,7 @@ Cached transaction awaiting signature via `sign_action`. Created when `create_ac
 
 `SignableTransaction.reference` holds the storage reference's decoded bytes: 12 random bytes, not the UTF-8 bytes of its base64 text (#285). Base64-encode that field for `SignActionArgs.reference`; the pending cache and storage RPC use the original base64 string. A malformed base64 storage reference fails the deferred create result before caching with `WalletError("Invalid storage reference: ...")`.
 
-The binary wallet wire carries the raw bytes after their varint length. At the pinned `bsv-rs =0.9.0-beta.1`, direct JSON serde still hex-encodes this field; that SDK-owned codec differs from the reference's base64 JSON string and needs a coordinated SDK correction.
+The binary wallet wire carries the raw bytes after their varint length. Since the `bsv-rs =0.9.0-beta.2` pin (bsv-rs edfc535) direct JSON serde writes this field as base64, the reference's JSON string, which is the stored reference text byte for byte; at beta.1 it was hex.
 
 ### WalletBalance & UtxoInfo
 
@@ -511,10 +511,31 @@ Initialization flow: Creates `ProtoWallet` -> gets identity key -> creates `Wall
 
 ## Originator Validation
 
-All `WalletInterface` methods require an `originator` string parameter:
-- Must not be empty
-- Must not exceed 253 characters
-- Typically a domain name (e.g., "app.example.com")
+All `WalletInterface` methods take `originator: Option<&str>` (bsv-rs #329,
+from the `=0.9.0-beta.2` pin), as do `Wallet::process_action` and
+`Wallet::create_action_offering`. `None` is the reference's `undefined` and is
+accepted (`validationHelpers.ts:1003-1004`); `Some("")` is a supplied string
+and is refused by the length rule at `:1006` (#284). The permission checks
+receive an absent originator as `""`.
+
+Supplied strings are checked after ECMAScript trimming and lowercasing, using
+`ts-stack@edf6e03` `packages/sdk/src/wallet/validationHelpers.ts:1005-1036`:
+
+- The normalized string has 1 to 250 UTF-8 bytes.
+- An optional port has 1 to 5 ASCII digits and is at most 65535.
+- The hostname has 1 to 250 bytes; each dot-separated label has 1 to 63 bytes
+  and contains lowercase ASCII letters, digits or internal hyphens.
+- Single-label hostnames are accepted. Validation leaves the caller's original
+  string for downstream permission checks, as the reference wallet doors do.
+
+An empty or whitespace-only string is refused with
+`The originator parameter must be at least 1 length.` inside `Validation error:`.
+Other length errors name `originator`, `originator hostname` or `originator part`.
+Malformed hostnames and ports use
+`The originator parameter must be a canonical DNS hostname with an optional port`.
+
+The storage client's BRC-31 peer passes a fixed internal originator,
+`Some("bsv-wallet-toolbox")`.
 
 ## Implementation Notes
 
@@ -547,7 +568,7 @@ Internal helper functions in `wallet.rs`:
 
 | Function | Purpose |
 |----------|---------|
-| `validate_originator(originator: &str)` | Validates originator string (non-empty, max 253 chars) |
+| `validate_originator(originator: Option<&str>)` | `None` passes; a supplied string follows the pinned reference's hostname-and-port rules |
 | `compute_txid(raw_tx: &[u8])` | Computes txid (double SHA256, reversed) from raw transaction |
 | `build_unsigned_transaction(result, key_deriver)` | Builds unsigned transaction bytes from storage result; optionally derives P2PKH locking scripts for change outputs via BRC-29 |
 | `direct_acquire::validate_acquire_direct_args(args)` | The direct acquire's argument checks (`validationHelpers.ts:1405-1439`) and the normalized certificate, verifier and keyring (#311) |
@@ -598,7 +619,7 @@ field scheme follows `ts-stack@edf6e03`,
 encrypt the plaintext with it, and wallet-encrypt the key to the certifier.
 Both ciphertexts are Base64 text in the request and storage. Intake preserves
 that text's bytes for the signed representation (BRC-52 `0052.md:97`, #197);
-the pinned bsv-rs 0.9.0-beta.1 setter takes `value.as_bytes().to_vec()`.
+bsv-rs 0.9.0-beta.2's `set_field` takes the Base64 string as received (#261).
 Decode a field's Base64 only when decrypting it.
 
 For #283, `Wallet::acquire_certificate` selects the issuance helper and its
@@ -635,8 +656,13 @@ decode at `Wallet.ts:808`, answers `Certificate verification failed`. The
 outpoint follows `toBinary`'s grammar (`:260-270`): `txid` or `txid.vout`,
 64 hex digits, a decimal index without leading zeros up to `0xffffffff`; a
 txid-only text is vout 0 over its txid, and `unparsable` or `<txid>.07`
-answers `Certificate verification failed`. Signature `Ok(false)` handling
-remains with #188/#199. An empty master keyring answers `A MasterCertificate
+answers `Certificate verification failed`. So does a signature bsv-rs's
+`Certificate::verify` answers `Ok(false)` to (absent, non-DER, wrong signer;
+bsv-rs #299, BRC-52's derived key from #251), as `Wallet.ts:816` (#188).
+`Wallet::reverify_stored_certificates` re-reads every stored certificate
+through the same check once, logs each failure and answers
+`StoredCertificateReverification { checked, failed }`; it deletes nothing
+(the owner's word on #188). An empty master keyring answers `A MasterCertificate
 must have a valid masterKeyring!` before decryption and storage
 (`MasterCertificate.ts:522-524`, outside the decrypt try).
 

@@ -9,9 +9,11 @@ They exercise the real client against loopback mockito without authentication,
 signing, payment, broadcasting, or explorer calls. A null mock response is only
 a terminator for request capture; it makes no claim about result compatibility.
 
-The table records the beta.1 dependency (`bsv-rs =0.9.0-beta.1`). Fields owned by
-bsv-rs are not rewritten here. Its #105 / PR #271 is the coordinated beta.2
-change. The ordinary storage fixtures under `tests/fixtures/data/storage/`
+The table was drawn at the beta.1 dependency (`bsv-rs =0.9.0-beta.1`). Fields
+owned by bsv-rs are not rewritten here. Its #105 / PR #271 reached this wire at
+the `=0.9.0-beta.2` pin: D1-D3, D5 and D6 now send the reference's form, and
+the createAction, internalizeAction and relinquishCertificate witnesses were
+re-recorded with it (#199). The ordinary storage fixtures under `tests/fixtures/data/storage/`
 are local storage arguments, including `inputBeef`, and are not wire fixtures.
 
 ## Sources and notation
@@ -114,7 +116,8 @@ are reference-only capabilities, not calls missing a toolbox witness.
 ## Shared arguments and results, field by field
 
 Status `differs and fixed` marks a toolbox-owned wire correction committed
-with its changed witness. `moves with bsv-rs #105` is deliberately left at beta.1.
+with its changed witness. `moves with bsv-rs #105` was left at beta.1; the rows
+marked `moved with bsv-rs #105 at beta.2` carry the reference's form since the pin.
 `owner's word` requires information or a shape the current public type does not
 hold, or a validation/encoding decision beyond renaming this storage wire.
 
@@ -135,9 +138,9 @@ hold, or a validation/encoding decision beyond renaming this storage wire.
 | C4 outpoint | `inputs[].outpoint:S (H.N)` | `{txid:H,vout:N}` V570,606 | validated OutPoint object | owner's word; bsv-rs public Outpoint encoding is not changed |
 | C5 | `outputs[].lockingScript:H,satoshis:N,outputDescription:S,basket:S?,customInstructions:S?,tags:S[]?` | same names V615-622 | same | same |
 | C6 | `options.signAndProcess:F?,acceptDelayedBroadcast:F?,trustSelf:"known"?,noSend:F?,randomizeOutputs:F?` | same names V658-688 | same | same |
-| D1 | `options.knownTxids:A[]?` | `H[]` V662-664 | H[] | moves with bsv-rs #105 |
-| D2 | `options.sendWith:A[]?` | `H[]` V670 | H[] | moves with bsv-rs #105 |
-| D3 | `options.returnTxidOnly:F?` | `returnTXIDOnly:F` V665 | same | moves with bsv-rs #105 |
+| D1 | `options.knownTxids:A[]?` | `H[]` V662-664 | H[] | moved with bsv-rs #105 at beta.2 |
+| D2 | `options.sendWith:A[]?` | `H[]` V670 | H[] | moved with bsv-rs #105 at beta.2 |
+| D3 | `options.returnTxidOnly:F?` | `returnTXIDOnly:F` V665 | same | moved with bsv-rs #105 at beta.2 |
 | D4 | `options.noSendChange:S[]? (H.N)` | `{txid:H,vout:N}[]` V667-669 | validated OutPoint objects | owner's word; distinct from #105's public BRC form |
 | C missing defaults | optional arrays, options and numbers may be absent; own derived defaults | fully validated V751-806, default delayed true, flags derived from validated inputs | uses validated values | owner's word; validation/default behavior is not a wire rename |
 | Create extra | absent | `isTestWerrReviewActions:F,randomVals:N[]?,logger:O?` V710,728,565 | optional behavior/test hooks | reference-only |
@@ -145,7 +148,7 @@ hold, or a validation/encoding decision beyond renaming this storage wire.
 | Process extra | absent | `logger:O?` I361 | remote logging object | reference-only |
 | ProcessResult | `sendWithResults:{txid:H,status:S}[]?,notDelayedResults:{txid:H,status:S,competingTxs:H[]?,competingBeef:A?}[]?,log:S?` | same I384-406 | same; statuses `success,doubleSpend,serviceError,invalidTx` | same |
 | Process logger | `log:S?` | configured remote logger may return `{logs:O[]}` StorageClient.ts25-72 | S1110-1119 can replace log with object | owner's word; String slot cannot preserve structured logs |
-| D5 | `Internalize.tx:H` | `tx:A` W602, C467-468 | A | moves with bsv-rs #105 |
+| D5 | `Internalize.tx:H` | `tx:A` W602, C467-468 | A | moved with bsv-rs #105 at beta.2 |
 | Internalize | `description:S,labels:S[]?,seekPermission:F?,outputs[].{outputIndex:N,protocol:S,paymentRemittance:{derivationPrefix:B,derivationSuffix:B,senderIdentityKey:H}?,insertionRemittance:{basket:S,customInstructions:S?,tags:S[]?}?}` | same W564-607 | same | same |
 | InternalizeResult | `accepted:F,isMerge:F,txid:H,satoshis:N,sendWithResults:[]?,notDelayedResults:[]?` | same I364-377 | same | same |
 | L1 | `labels:S[],labelQueryMode:S?,includeLabels:F?,includeInputs:F?,includeInputSourceLockingScripts:F?,includeInputUnlockingScripts:F?,includeOutputs:F?,includeOutputLockingScripts:F?,limit:N?,offset:N?,seekPermission:F?` | same names, defaults populated V1656-1670 | same | same |
@@ -153,7 +156,7 @@ hold, or a validation/encoding decision beyond renaming this storage wire.
 | L2 include | `include:S?` | `includeLockingScripts:F,includeTransactions:F,knownTxids:H[]` V1640-1650 | those validated flags | owner's word; bsv-rs public args are not validated storage args |
 | L3 | `certifiers:H[],types:B[],limit:N?,offset:N?,privileged:F?,privilegedReason:S?` | same names V1166-1180 | same | same |
 | L3 partial | absent | `partial:{type:B?,serialNumber:B?,certifier:H?,subject:H?,revocationOutpoint:S?,signature:H?}?` V1167-1174 | same | reference-only |
-| D6 | `relinquishCertificate.certificateType:B`; `listCertificates.certificates[].certificate:O` with `certificateType:B` | `type:B`; flat certificate entries | W936-940, W905-908 | moves with bsv-rs #105 |
+| D6 | `relinquishCertificate.certificateType:B`; `listCertificates.certificates[].certificate:O` with `certificateType:B` | `type:B`; flat certificate entries | W936-940, W905-908 | moved with bsv-rs #105 at beta.2 |
 | D7 | `ListActionsResult.totalActions:N,actions:[]` with `actions[].txid:H` | same W540-557; beta.1 already uses `hex_txid` | same | same |
 | D8 | `ListOutputsResult.totalOutputs:N,outputs:[],beef:H?` | `totalOutputs:N,outputs:[],BEEF:A?` W644 | same | moves with bsv-rs #105 |
 | WalletAction fields | `txid:H,satoshis:N,status:S,isOutgoing:F,description:S,labels:S[]?,version:N,lockTime:N,inputs:[]?,outputs:[]?` | same W540-552 | same | same |
@@ -186,11 +189,9 @@ decodes it into `SignableTransaction.reference: Vec<u8>`; callers base64-encode
 those bytes for `SignActionArgs.reference`. SDK
 `substrates/WalletWireProcessor.ts:638-643` writes the decoded bytes after
 their varint length, and `WalletWireTransceiver.ts:263-266` reconstructs the
-base64 text. The reference's JSON uses that same text. At the pinned
-`bsv-rs =0.9.0-beta.1`, `wallet/types.rs:678-684` instead uses `hex_bytes`
-serde, including through `HttpWalletJson`; its binary reader returns raw
-bytes. That JSON codec discrepancy belongs to the SDK and remains separate
-from this correction to the wallet result (#285).
+base64 text. The reference's JSON uses that same text, and so does bsv-rs's
+serde since the `=0.9.0-beta.2` pin (edfc535; `hex_bytes` at beta.1),
+including through `HttpWalletJson`; its binary reader returns raw bytes.
 
 ## Entity fields (requests and results)
 

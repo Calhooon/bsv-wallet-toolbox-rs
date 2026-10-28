@@ -222,6 +222,26 @@ async fn get_locking_script_from_raw_tx(
     )))
 }
 
+// createAction.ts:503-509: `new WERR_REVIEW_ACTIONS([{ txid: '', status:
+// 'doubleSpend', competingTxs: [doubleSpendTxid], competingBeef }], [])`.
+// bsv-rs's result txid is 32 bytes, so the reference's '' is all zeros
+// here; the competing BEEF (`getBeefForTransaction`, :527-539) is not built
+// under the write lock and is absent.
+fn double_spend_review(competing_txid: &str) -> Error {
+    let competing_txs = hex::decode(competing_txid)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .map(|txid| vec![txid]);
+    Error::ReviewActions(Box::new(bsv_rs::wallet::ReviewActionsRefusal::new(vec![
+        bsv_rs::wallet::ReviewActionResult {
+            txid: [0; 32],
+            status: bsv_rs::wallet::ReviewActionResultStatus::DoubleSpend,
+            competing_txs,
+            competing_beef: None,
+        },
+    ])))
+}
+
 // ts-stack@edf6e03 createAction.ts:399-436 re-reads known inputs before
 // marking them spent. The :982 gate is disabled by default at :61, so this
 // live check has no noSend exemption. A txid names a competing spend even
@@ -245,11 +265,9 @@ async fn check_stored_input_spendable(
                 .await?
                 .flatten();
         if let Some(txid) = competing_txid.filter(|txid| !txid.is_empty()) {
-            // :503-509 requires double-spend review. Keep the existing error
-            // shape, with the reference's review text and the competing txid.
-            return Err(Error::InvalidOperation(format!(
-                "Undelayed createAction or signAction results require review. doubleSpend: {txid}"
-            )));
+            // :503-509 throws WERR_REVIEW_ACTIONS with one doubleSpend result
+            // naming the competing txid (#264, ruling 18.4).
+            return Err(double_spend_review(&txid));
         }
     }
     if !spendable {

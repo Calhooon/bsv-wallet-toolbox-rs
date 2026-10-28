@@ -1220,180 +1220,183 @@ mod tests {
         async fn create_action(
             &self,
             _args: CreateActionArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<CreateActionResult> {
             unimplemented!()
         }
         async fn sign_action(
             &self,
             _args: SignActionArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<SignActionResult> {
             unimplemented!()
         }
         async fn abort_action(
             &self,
             _args: AbortActionArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<AbortActionResult> {
             unimplemented!()
         }
         async fn list_actions(
             &self,
             _args: ListActionsArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<ListActionsResult> {
             unimplemented!()
         }
         async fn internalize_action(
             &self,
             _args: InternalizeActionArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<InternalizeActionResult> {
             unimplemented!()
         }
         async fn list_outputs(
             &self,
             _args: ListOutputsArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<ListOutputsResult> {
             unimplemented!()
         }
         async fn relinquish_output(
             &self,
             _args: RelinquishOutputArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<RelinquishOutputResult> {
             unimplemented!()
         }
         async fn get_public_key(
             &self,
             _args: GetPublicKeyArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<GetPublicKeyResult> {
             unimplemented!()
         }
         async fn reveal_counterparty_key_linkage(
             &self,
             _args: interface::RevealCounterpartyKeyLinkageArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
             unimplemented!()
         }
         async fn reveal_specific_key_linkage(
             &self,
             _args: interface::RevealSpecificKeyLinkageArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
             unimplemented!()
         }
         async fn encrypt(
             &self,
             _args: EncryptArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<EncryptResult> {
             unimplemented!()
         }
         async fn decrypt(
             &self,
             _args: DecryptArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<DecryptResult> {
             unimplemented!()
         }
         async fn create_hmac(
             &self,
             _args: CreateHmacArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<CreateHmacResult> {
             unimplemented!()
         }
         async fn verify_hmac(
             &self,
             _args: VerifyHmacArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<VerifyHmacResult> {
             unimplemented!()
         }
         async fn create_signature(
             &self,
             _args: CreateSignatureArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<CreateSignatureResult> {
             unimplemented!()
         }
         async fn verify_signature(
             &self,
             _args: VerifySignatureArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<VerifySignatureResult> {
             unimplemented!()
         }
         async fn acquire_certificate(
             &self,
             _args: AcquireCertificateArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<WalletCertificate> {
             unimplemented!()
         }
         async fn list_certificates(
             &self,
             _args: ListCertificatesArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<ListCertificatesResult> {
             unimplemented!()
         }
         async fn prove_certificate(
             &self,
             _args: ProveCertificateArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<ProveCertificateResult> {
             unimplemented!()
         }
         async fn relinquish_certificate(
             &self,
             _args: RelinquishCertificateArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<RelinquishCertificateResult> {
             unimplemented!()
         }
         async fn discover_by_identity_key(
             &self,
             _args: DiscoverByIdentityKeyArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<DiscoverCertificatesResult> {
             unimplemented!()
         }
         async fn discover_by_attributes(
             &self,
             _args: DiscoverByAttributesArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<DiscoverCertificatesResult> {
             unimplemented!()
         }
-        async fn is_authenticated(&self, _originator: &str) -> bsv_rs::Result<AuthenticatedResult> {
+        async fn is_authenticated(
+            &self,
+            _originator: Option<&str>,
+        ) -> bsv_rs::Result<AuthenticatedResult> {
             unimplemented!()
         }
         async fn wait_for_authentication(
             &self,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<AuthenticatedResult> {
             unimplemented!()
         }
-        async fn get_height(&self, _originator: &str) -> bsv_rs::Result<GetHeightResult> {
+        async fn get_height(&self, _originator: Option<&str>) -> bsv_rs::Result<GetHeightResult> {
             unimplemented!()
         }
         async fn get_header_for_height(
             &self,
             _args: GetHeaderArgs,
-            _originator: &str,
+            _originator: Option<&str>,
         ) -> bsv_rs::Result<GetHeaderResult> {
             unimplemented!()
         }
-        async fn get_network(&self, _originator: &str) -> bsv_rs::Result<GetNetworkResult> {
+        async fn get_network(&self, _originator: Option<&str>) -> bsv_rs::Result<GetNetworkResult> {
             unimplemented!()
         }
-        async fn get_version(&self, _originator: &str) -> bsv_rs::Result<GetVersionResult> {
+        async fn get_version(&self, _originator: Option<&str>) -> bsv_rs::Result<GetVersionResult> {
             unimplemented!()
         }
     }

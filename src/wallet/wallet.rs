@@ -263,6 +263,16 @@ pub struct UtxoInfo {
     pub outpoint: String,
 }
 
+/// What [`Wallet::reverify_stored_certificates`] read (#188): how many stored
+/// certificates were checked and how many did not verify.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoredCertificateReverification {
+    /// Certificates read from storage.
+    pub checked: u32,
+    /// Certificates whose signature did not verify.
+    pub failed: u32,
+}
+
 // =============================================================================
 // WalletOptions
 // =============================================================================
@@ -577,11 +587,12 @@ where
     /// Returns Ok(()) if no manager is set or if permission is granted.
     async fn check_protocol_permission(
         &self,
-        originator: &str,
+        originator: Option<&str>,
         protocol: &Protocol,
         counterparty: Option<&str>,
         usage_type: crate::managers::PermissionUsageType,
     ) -> Result<()> {
+        let originator = originator.unwrap_or_default();
         if let Some(ref pm) = self.permissions_manager {
             pm.ensure_protocol_permission(
                 originator,
@@ -599,21 +610,25 @@ where
     /// Checks basket access permission if a permissions manager is set.
     async fn check_basket_permission(
         &self,
-        originator: &str,
+        originator: Option<&str>,
         basket: &str,
         usage_type: crate::managers::BasketUsageType,
     ) -> Result<()> {
         if let Some(ref pm) = self.permissions_manager {
-            pm.ensure_basket_access(originator, basket, None, usage_type)
+            pm.ensure_basket_access(originator.unwrap_or_default(), basket, None, usage_type)
                 .await?;
         }
         Ok(())
     }
 
     /// Checks spending permission if a permissions manager is set.
-    async fn check_spending_permission(&self, originator: &str, satoshis: u64) -> Result<()> {
+    async fn check_spending_permission(
+        &self,
+        originator: Option<&str>,
+        satoshis: u64,
+    ) -> Result<()> {
         if let Some(ref pm) = self.permissions_manager {
-            pm.ensure_spending_permission(originator, satoshis, None)
+            pm.ensure_spending_permission(originator.unwrap_or_default(), satoshis, None)
                 .await?;
         }
         Ok(())
@@ -622,13 +637,14 @@ where
     /// Checks certificate access permission if a permissions manager is set.
     async fn check_certificate_permission(
         &self,
-        originator: &str,
+        originator: Option<&str>,
         privileged: bool,
         verifier: &str,
         cert_type: &str,
         fields: &[String],
         usage_type: crate::managers::CertificateUsageType,
     ) -> Result<()> {
+        let originator = originator.unwrap_or_default();
         if let Some(ref pm) = self.permissions_manager {
             pm.ensure_certificate_access(
                 originator, privileged, verifier, cert_type, fields, None, usage_type,
@@ -775,7 +791,7 @@ where
             options: None,
         };
 
-        let result = WalletInterface::create_action(self, args, "sweep")
+        let result = WalletInterface::create_action(self, args, Some("sweep"))
             .await
             .map_err(|e| Error::TransactionError(e.to_string()))?;
 
@@ -1086,7 +1102,7 @@ where
     pub async fn process_action(
         &self,
         mut args: StorageProcessActionArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> Result<crate::storage::StorageProcessActionResults> {
         validate_originator(originator)?;
         if args.is_new_tx || args.raw_tx.is_some() {
@@ -1103,6 +1119,65 @@ where
         self.storage.process_action(&self.auth(), args).await
     }
 
+    /// The owner's word on #188 (2026-10-26): one read of every certificate
+    /// this wallet's storage holds, each re-verified as the issuance door now
+    /// verifies (bsv-rs's `Certificate::verify` under BRC-52's derived key,
+    /// bsv-rs #251 and #299), the count logged and answered. A one-off for a
+    /// host to run once after the 0.9.0-beta.2 pin; it changes nothing and
+    /// deletes nothing. Zero failures are expected if every stored certificate
+    /// was issued by the reference or this crate at the pin.
+    ///
+    /// # Errors
+    /// Returns the storage's error if a page cannot be read.
+    pub async fn reverify_stored_certificates(&self) -> Result<StoredCertificateReverification> {
+        const PAGE: u32 = 10_000;
+        let auth = self.auth();
+        let mut tally = StoredCertificateReverification::default();
+        loop {
+            let args = ListCertificatesArgs {
+                certifiers: Vec::new(),
+                types: Vec::new(),
+                limit: Some(PAGE),
+                offset: Some(tally.checked),
+                privileged: None,
+                privileged_reason: None,
+            };
+            let page = self.storage.list_certificates(&auth, args).await?;
+            let read = page.certificates.len() as u32;
+            for entry in page.certificates {
+                let certificate = entry.certificate;
+                let raw = super::certificate_issuance::CertificateResponse {
+                    cert_type: certificate.certificate_type,
+                    serial_number: certificate.serial_number,
+                    subject: certificate.subject,
+                    certifier: certificate.certifier,
+                    revocation_outpoint: certificate.revocation_outpoint,
+                    fields: certificate.fields,
+                    signature: certificate.signature,
+                };
+                if !super::certificate_issuance::issued_certificate_verifies(&raw) {
+                    tracing::warn!(
+                        cert_type = %raw.cert_type,
+                        serial_number = %raw.serial_number,
+                        certifier = %raw.certifier,
+                        "stored certificate does not verify under the derived key"
+                    );
+                    tally.failed += 1;
+                }
+            }
+            tally.checked += read;
+            if read < PAGE {
+                break;
+            }
+        }
+        tracing::info!(
+            checked = tally.checked,
+            failed = tally.failed,
+            "stored certificates re-verified (#188)"
+        );
+        Ok(tally)
+    }
+
     /// `createAction` with the host's offer (bsv-wallet-cli #44): `offer`
     /// is the output ids of the change coins the host offers, and the
     /// allocation takes from these only, under concurrency too (the dry-run
@@ -1114,7 +1189,7 @@ where
     pub async fn create_action_offering(
         &self,
         args: CreateActionArgs,
-        originator: &str,
+        originator: Option<&str>,
         offer: &[i64],
     ) -> bsv_rs::Result<CreateActionResult> {
         self.create_action_at(args, originator, Some(offer)).await
@@ -1123,7 +1198,7 @@ where
     async fn create_action_at(
         &self,
         args: CreateActionArgs,
-        originator: &str,
+        originator: Option<&str>,
         offer: Option<&[i64]>,
     ) -> bsv_rs::Result<CreateActionResult> {
         validate_originator(originator)?;
@@ -1788,7 +1863,7 @@ where
     async fn get_public_key(
         &self,
         args: GetPublicKeyArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<GetPublicKeyResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for public key revelation
@@ -1804,7 +1879,11 @@ where
         self.proto_get_public_key(args)
     }
 
-    async fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_rs::Result<EncryptResult> {
+    async fn encrypt(
+        &self,
+        args: EncryptArgs,
+        originator: Option<&str>,
+    ) -> bsv_rs::Result<EncryptResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for encryption
         self.check_protocol_permission(
@@ -1817,7 +1896,11 @@ where
         self.proto_encrypt(args)
     }
 
-    async fn decrypt(&self, args: DecryptArgs, originator: &str) -> bsv_rs::Result<DecryptResult> {
+    async fn decrypt(
+        &self,
+        args: DecryptArgs,
+        originator: Option<&str>,
+    ) -> bsv_rs::Result<DecryptResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for decryption
         self.check_protocol_permission(
@@ -1833,7 +1916,7 @@ where
     async fn create_hmac(
         &self,
         args: CreateHmacArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<CreateHmacResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for HMAC
@@ -1850,7 +1933,7 @@ where
     async fn verify_hmac(
         &self,
         args: VerifyHmacArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<VerifyHmacResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for HMAC verification
@@ -1867,7 +1950,7 @@ where
     async fn create_signature(
         &self,
         args: CreateSignatureArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<CreateSignatureResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for signing
@@ -1884,7 +1967,7 @@ where
     async fn verify_signature(
         &self,
         args: VerifySignatureArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<VerifySignatureResult> {
         validate_originator(originator)?;
         self.proto_verify_signature(args)
@@ -1893,7 +1976,7 @@ where
     async fn reveal_counterparty_key_linkage(
         &self,
         args: InterfaceRevealCounterpartyArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
         validate_originator(originator)?;
 
@@ -1932,7 +2015,7 @@ where
     async fn reveal_specific_key_linkage(
         &self,
         args: InterfaceRevealSpecificArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
         validate_originator(originator)?;
 
@@ -1981,7 +2064,7 @@ where
     async fn create_action(
         &self,
         args: CreateActionArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<CreateActionResult> {
         self.create_action_at(args, originator, None).await
     }
@@ -1989,7 +2072,7 @@ where
     async fn sign_action(
         &self,
         args: SignActionArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<SignActionResult> {
         validate_originator(originator)?;
 
@@ -2376,7 +2459,7 @@ where
     async fn abort_action(
         &self,
         args: AbortActionArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<AbortActionResult> {
         validate_originator(originator)?;
 
@@ -2393,7 +2476,7 @@ where
     async fn list_actions(
         &self,
         args: ListActionsArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<ListActionsResult> {
         validate_originator(originator)?;
 
@@ -2407,7 +2490,7 @@ where
     async fn internalize_action(
         &self,
         args: InternalizeActionArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<InternalizeActionResult> {
         validate_originator(originator)?;
 
@@ -2532,7 +2615,7 @@ where
     async fn list_outputs(
         &self,
         args: ListOutputsArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<ListOutputsResult> {
         validate_originator(originator)?;
 
@@ -2554,7 +2637,7 @@ where
     async fn relinquish_output(
         &self,
         args: RelinquishOutputArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<RelinquishOutputResult> {
         validate_originator(originator)?;
 
@@ -2583,7 +2666,7 @@ where
     async fn acquire_certificate(
         &self,
         args: AcquireCertificateArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<WalletCertificate> {
         validate_originator(originator)?;
 
@@ -2673,7 +2756,7 @@ where
     async fn list_certificates(
         &self,
         args: ListCertificatesArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<ListCertificatesResult> {
         validate_originator(originator)?;
 
@@ -2687,7 +2770,7 @@ where
     async fn prove_certificate(
         &self,
         args: ProveCertificateArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<ProveCertificateResult> {
         validate_originator(originator)?;
 
@@ -2840,7 +2923,7 @@ where
     async fn relinquish_certificate(
         &self,
         args: RelinquishCertificateArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<RelinquishCertificateResult> {
         validate_originator(originator)?;
 
@@ -2858,7 +2941,7 @@ where
     async fn discover_by_identity_key(
         &self,
         args: DiscoverByIdentityKeyArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
         validate_originator(originator)?;
 
@@ -2883,20 +2966,23 @@ where
         let local_certs: Vec<bsv_rs::wallet::IdentityCertificate> = certs
             .into_iter()
             .filter(|cert| cert.subject == *identity_key_hex)
-            .map(|cert| bsv_rs::wallet::IdentityCertificate {
-                certificate: WalletCertificate {
-                    certificate_type: cert.cert_type.clone(),
-                    serial_number: cert.serial_number.clone(),
-                    subject: cert.subject.clone(),
-                    certifier: cert.certifier.clone(),
-                    revocation_outpoint: cert.revocation_outpoint.clone(),
-                    fields: std::collections::HashMap::new(),
-                    signature: cert.signature.clone(),
+            .filter_map(|cert| Some((certifier_info(&cert.certifier)?, cert)))
+            .map(
+                |(certifier_info, cert)| bsv_rs::wallet::IdentityCertificate {
+                    certificate: WalletCertificate {
+                        certificate_type: cert.cert_type.clone(),
+                        serial_number: cert.serial_number.clone(),
+                        subject: cert.subject.clone(),
+                        certifier: cert.certifier.clone(),
+                        revocation_outpoint: cert.revocation_outpoint.clone(),
+                        fields: std::collections::HashMap::new(),
+                        signature: cert.signature.clone(),
+                    },
+                    decrypted_fields: std::collections::HashMap::new(),
+                    publicly_revealed_keyring: std::collections::HashMap::new(),
+                    certifier_info,
                 },
-                decrypted_fields: None,
-                publicly_revealed_keyring: None,
-                certifier_info: None,
-            })
+            )
             .collect();
 
         // 2. Overlay discovery: query ls_identity via SLAP resolution
@@ -2908,7 +2994,7 @@ where
         let overlay_certs = match resolver.lookup_by_identity_key(identity_key_hex).await {
             Ok(certs) => certs
                 .into_iter()
-                .map(|c| c.to_identity_certificate())
+                .filter_map(|c| Some(c.to_identity_certificate(certifier_info(&c.certifier)?)))
                 .collect::<Vec<_>>(),
             Err(e) => {
                 tracing::debug!("Overlay lookup failed (using local only): {}", e);
@@ -2930,7 +3016,7 @@ where
     async fn discover_by_attributes(
         &self,
         args: DiscoverByAttributesArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
         validate_originator(originator)?;
 
@@ -2943,7 +3029,7 @@ where
         let certificates = match resolver.lookup_by_attributes(&args.attributes).await {
             Ok(certs) => certs
                 .into_iter()
-                .map(|c| c.to_identity_certificate())
+                .filter_map(|c| Some(c.to_identity_certificate(certifier_info(&c.certifier)?)))
                 .collect::<Vec<_>>(),
             Err(e) => {
                 tracing::debug!("Overlay attribute lookup failed: {}", e);
@@ -2961,7 +3047,10 @@ where
     // Chain/Status Operations
     // =========================================================================
 
-    async fn is_authenticated(&self, originator: &str) -> bsv_rs::Result<AuthenticatedResult> {
+    async fn is_authenticated(
+        &self,
+        originator: Option<&str>,
+    ) -> bsv_rs::Result<AuthenticatedResult> {
         validate_originator(originator)?;
 
         // Wallet is always authenticated (it has a key)
@@ -2972,17 +3061,13 @@ where
 
     async fn wait_for_authentication(
         &self,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<AuthenticatedResult> {
-        validate_originator(originator)?;
-
-        // Wallet is always authenticated
-        Ok(AuthenticatedResult {
-            authenticated: true,
-        })
+        // Wallet is always authenticated: the same answer, the same check
+        self.is_authenticated(originator).await
     }
 
-    async fn get_height(&self, originator: &str) -> bsv_rs::Result<GetHeightResult> {
+    async fn get_height(&self, originator: Option<&str>) -> bsv_rs::Result<GetHeightResult> {
         validate_originator(originator)?;
 
         let height = self.services.get_height().await?;
@@ -2993,7 +3078,7 @@ where
     async fn get_header_for_height(
         &self,
         args: GetHeaderArgs,
-        originator: &str,
+        originator: Option<&str>,
     ) -> bsv_rs::Result<GetHeaderResult> {
         validate_originator(originator)?;
 
@@ -3005,7 +3090,7 @@ where
         })
     }
 
-    async fn get_network(&self, originator: &str) -> bsv_rs::Result<GetNetworkResult> {
+    async fn get_network(&self, originator: Option<&str>) -> bsv_rs::Result<GetNetworkResult> {
         validate_originator(originator)?;
 
         let network = match self.chain {
@@ -3016,7 +3101,7 @@ where
         Ok(GetNetworkResult { network })
     }
 
-    async fn get_version(&self, originator: &str) -> bsv_rs::Result<GetVersionResult> {
+    async fn get_version(&self, originator: Option<&str>) -> bsv_rs::Result<GetVersionResult> {
         validate_originator(originator)?;
 
         Ok(GetVersionResult {
@@ -3029,19 +3114,65 @@ where
 // Helper Functions
 // =============================================================================
 
-/// Validates the originator string.
-fn validate_originator(originator: &str) -> Result<()> {
-    if originator.is_empty() {
-        return Err(Error::ValidationError(
-            "originator cannot be empty".to_string(),
-        ));
-    }
-    // The originator should be a valid domain or identifier
-    // For now, just check it's not empty and doesn't contain invalid characters
-    if originator.len() > 253 {
-        return Err(Error::ValidationError(
-            "originator exceeds maximum length".to_string(),
-        ));
+/// The certifier information BRC-100 requires on every discovered entry
+/// (`0100.md:1401-1411`, bsv-rs #105). The reference reads it from the user's
+/// trust settings and drops a certificate whose certifier is not trusted
+/// (`identityUtils.ts:313-372`); this wallet reads no trust settings yet
+/// (`settings_manager.rs` holds default trusted certifiers the `Wallet` does
+/// not use; #388), so it
+/// builds no entry rather than emit an empty name, icon URL or description,
+/// which the reference's identity client refuses.
+fn certifier_info(_certifier: &str) -> Option<bsv_rs::wallet::IdentityCertifier> {
+    None
+}
+
+/// Validates an in-process originator (`ts-stack@edf6e03`, `validationHelpers.ts:1003-1036`).
+/// `None` is the reference's `undefined` and passes; `Some("")` is a supplied
+/// string and fails its length rule (#284, bsv-rs #329).
+fn validate_originator(originator: Option<&str>) -> Result<()> {
+    let Some(originator) = originator else {
+        return Ok(());
+    };
+    let originator = trim_ecmascript_whitespace(originator).to_lowercase();
+    let invalid = |name: &str, rule: &str| {
+        Error::ValidationError(format!("The {name} parameter must be {rule}"))
+    };
+    let check_length = |value: &str, name: &str, max: usize| -> Result<()> {
+        if value.is_empty() {
+            return Err(invalid(name, "at least 1 length."));
+        }
+        if value.len() > max {
+            return Err(invalid(name, &format!("no more than {max} length.")));
+        }
+        Ok(())
+    };
+    check_length(&originator, "originator", 250)?;
+
+    let hostname_rule = "a canonical DNS hostname with an optional port";
+    let hostname = if let Some((hostname, port)) = originator.rsplit_once(':') {
+        if hostname.contains(':')
+            || port.is_empty()
+            || port.len() > 5
+            || !port.bytes().all(|byte| byte.is_ascii_digit())
+            || port.parse::<u16>().is_err()
+        {
+            return Err(invalid("originator", hostname_rule));
+        }
+        hostname
+    } else {
+        &originator
+    };
+    check_length(hostname, "originator hostname", 250)?;
+    for part in hostname.split('.') {
+        check_length(part, "originator part", 63)?;
+        if part.starts_with('-')
+            || part.ends_with('-')
+            || !part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(invalid("originator", hostname_rule));
+        }
     }
     Ok(())
 }
@@ -3679,7 +3810,7 @@ fn create_keyring_for_verifier(
     fields_to_reveal: &[String],
     master_keyring: &HashMap<String, String>,
     serial_number: &str,
-    _originator: &str,
+    _originator: Option<&str>,
 ) -> bsv_rs::Result<HashMap<String, String>> {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use bsv_rs::primitives::SymmetricKey;
@@ -4057,14 +4188,155 @@ mod tests {
     #[test]
     fn test_validate_originator() {
         // Valid originator
-        assert!(validate_originator("app.example.com").is_ok());
+        assert!(validate_originator(Some("app.example.com")).is_ok());
 
-        // Empty originator
-        assert!(validate_originator("").is_err());
+        // Absent originator: the reference's `undefined` (#284)
+        assert!(validate_originator(None).is_ok());
+
+        // Empty originator: a supplied string, refused by the length rule
+        assert_eq!(
+            validate_originator(Some("")).unwrap_err().to_string(),
+            "Validation error: The originator parameter must be at least 1 length."
+        );
 
         // Too long originator
         let long_originator = "a".repeat(254);
-        assert!(validate_originator(&long_originator).is_err());
+        assert!(validate_originator(Some(&long_originator)).is_err());
+    }
+
+    // #284 (PR #290's witnesses on bsv-rs #329's `Option<&str>`): `None` is
+    // absence and passes; `Some("")` is a supplied string and is refused.
+    #[cfg(feature = "sqlite")]
+    mod originator_284 {
+        use super::super::busy_door_tests::{fund_tagged, wallet};
+        use super::*;
+
+        async fn create(originator: Option<&str>) -> bsv_rs::Result<CreateActionResult> {
+            let (_dir, wallet) = wallet().await;
+            fund_tagged(&wallet, &[0x51], 284).await;
+            let args = serde_json::from_value(serde_json::json!({
+                "description": "originator boundary witness",
+                "outputs": [{
+                    "lockingScript": "51",
+                    "satoshis": 1_000,
+                    "outputDescription": "local unsigned output"
+                }],
+                "options": {"noSend": true, "signAndProcess": false}
+            }))
+            .unwrap();
+            wallet.create_action(args, originator).await
+        }
+
+        async fn list(originator: Option<&str>) -> bsv_rs::Result<ListOutputsResult> {
+            let (_dir, wallet) = wallet().await;
+            let args = serde_json::from_value(serde_json::json!({"basket": "default"})).unwrap();
+            wallet.list_outputs(args, originator).await
+        }
+
+        // Through WalletInterface the refusal is bsv-rs's WalletError carrying the text.
+        const EMPTY: &str =
+            "wallet error: Validation error: The originator parameter must be at least 1 length.";
+
+        #[tokio::test]
+        async fn named_originator_reaches_both_doors() {
+            let created = create(Some("app.example.com")).await.unwrap();
+            assert!(created.signable_transaction.is_some());
+            assert_eq!(
+                list(Some("app.example.com")).await.unwrap().total_outputs,
+                0
+            );
+        }
+
+        #[tokio::test]
+        async fn create_action_accepts_absent_originator() {
+            let config = bsv_rs::identity::IdentityClientConfig::default();
+            assert!(config.originator.is_none());
+            let result = create(config.originator.as_deref()).await;
+            assert!(result.is_ok(), "absent originator refused: {result:?}");
+        }
+
+        #[tokio::test]
+        async fn list_outputs_accepts_absent_originator() {
+            let config = bsv_rs::identity::IdentityClientConfig::default();
+            assert!(config.originator.is_none());
+            let result = list(config.originator.as_deref()).await;
+            assert!(result.is_ok(), "absent originator refused: {result:?}");
+        }
+
+        #[tokio::test]
+        async fn create_action_refuses_empty_originator() {
+            let error = create(Some("")).await.unwrap_err();
+            assert_eq!(error.to_string(), EMPTY);
+        }
+
+        #[tokio::test]
+        async fn list_outputs_refuses_empty_originator() {
+            let error = list(Some("")).await.unwrap_err();
+            assert_eq!(error.to_string(), EMPTY);
+        }
+
+        #[test]
+        fn supplied_originator_rules() {
+            // Pinned validationHelpers.ts:1005-1036, including UTF-8 limits,
+            // ECMAScript trimming, single-label hosts and optional ports.
+            let maximum_host = [
+                "a".repeat(63),
+                "b".repeat(63),
+                "c".repeat(63),
+                "d".repeat(58),
+            ]
+            .join(".");
+            for originator in [
+                "localhost",
+                "A-B.Example:65535",
+                "localhost:00000",
+                " \u{feff}APP.EXAMPLE.COM:80\u{2029}",
+                &maximum_host,
+            ] {
+                assert!(
+                    validate_originator(Some(originator)).is_ok(),
+                    "{originator:?}"
+                );
+            }
+
+            let overlong_host = format!("{maximum_host}x");
+            let overlong_part = "a".repeat(64);
+            for (originator, name, rule) in [
+                ("", "originator", "at least 1 length."),
+                (" \u{feff} ", "originator", "at least 1 length."),
+                (&overlong_host, "originator", "no more than 250 length."),
+                (":80", "originator hostname", "at least 1 length."),
+                (&overlong_part, "originator part", "no more than 63 length."),
+                (".example", "originator part", "at least 1 length."),
+                ("example.", "originator part", "at least 1 length."),
+            ] {
+                let error = validate_originator(Some(originator)).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    format!("Validation error: The {name} parameter must be {rule}"),
+                    "{originator:?}"
+                );
+            }
+
+            for originator in [
+                "example:65536",
+                "example:123456",
+                "example:",
+                "example:abc",
+                "example:80:90",
+                "-example",
+                "example-",
+                "bad_name.example",
+                "\u{0085}example",
+                "éxample",
+            ] {
+                assert_eq!(
+                    validate_originator(Some(originator)).unwrap_err().to_string(),
+                    "Validation error: The originator parameter must be a canonical DNS hostname with an optional port",
+                    "{originator:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4183,7 +4455,7 @@ mod tests {
                 &[field_name.to_string()],
                 &master_keyring,
                 &BASE64.encode([14; 32]),
-                "certificate.test",
+                Some("certificate.test"),
             )
         }
 
@@ -4240,7 +4512,7 @@ mod tests {
                 &["__proto__".to_string()],
                 &HashMap::from([("__proto__".to_string(), "unused".to_string())]),
                 &BASE64.encode([14; 32]),
-                "certificate.test",
+                Some("certificate.test"),
             );
             assert_wallet_error("invalid absent name", result, FIELD_NAME_ERROR);
         }
@@ -4265,7 +4537,7 @@ mod tests {
                 &fields_to_reveal,
                 &master_keyring,
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // 32-byte serial
-                "test.app.com",
+                Some("test.app.com"),
             );
 
             assert_field_recovery_error("empty master keyring", result);
@@ -4295,7 +4567,7 @@ mod tests {
                 &fields_to_reveal,
                 &master_keyring,
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                "test.app.com",
+                Some("test.app.com"),
             );
 
             assert_wallet_error(
@@ -4329,7 +4601,7 @@ mod tests {
                 &fields_to_reveal,
                 &master_keyring,
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                "test.app.com",
+                Some("test.app.com"),
             );
 
             assert_field_recovery_error("missing master entry", result);
@@ -4359,7 +4631,7 @@ mod tests {
                     &fields_to_reveal,
                     &master_keyring,
                     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                    "test.app.com",
+                    Some("test.app.com"),
                 ),
                 "Master certificate keyring field name must use canonical base64 encoding",
             );
@@ -4440,7 +4712,7 @@ mod tests {
                         &self.reveal,
                         &self.master,
                         &self.serial,
-                        "certificate.test",
+                        Some("certificate.test"),
                     )
                 }
 
@@ -4541,7 +4813,9 @@ mod tests {
                     };
                     // Mutate only the request, preserving the stored certificate.
                     mutate(&mut args);
-                    wallet.prove_certificate(args, "certificate.test").await
+                    wallet
+                        .prove_certificate(args, Some("certificate.test"))
+                        .await
                 }
 
                 #[cfg(feature = "sqlite")]
@@ -5465,7 +5739,7 @@ mod tests {
                                     privileged: None,
                                     privileged_reason: None,
                                 },
-                                "certificate.test",
+                                Some("certificate.test"),
                             )
                             .await
                             .unwrap();
@@ -5482,7 +5756,7 @@ mod tests {
                                         privileged: None,
                                         privileged_reason: None,
                                     },
-                                    "certificate.test",
+                                    Some("certificate.test"),
                                 )
                                 .await;
                             assert!(
@@ -5541,7 +5815,7 @@ mod tests {
                                         privileged: None,
                                         privileged_reason: None,
                                     },
-                                    "certificate.test",
+                                    Some("certificate.test"),
                                 )
                                 .await;
                             assert_wallet_error(&outpoint, result, &refusal(parameter, rule));
@@ -5996,7 +6270,7 @@ mod tests {
                 &["name".to_string()],
                 &HashMap::from([("name".to_string(), BASE64.encode(wrapped_key.ciphertext))]),
                 &BASE64.encode([8; 32]),
-                "certificate.test",
+                Some("certificate.test"),
             );
             assert_field_recovery_error("non-UTF-8 field plaintext", result);
         }
@@ -6079,7 +6353,7 @@ mod tests {
                 &fields_to_reveal,
                 &master_keyring,
                 &serial_number,
-                "test.app.com",
+                Some("test.app.com"),
             )
             .expect("create_keyring_for_verifier should succeed");
 
@@ -6167,7 +6441,7 @@ mod tests {
                 &["name".to_string()],
                 &master_keyring,
                 &serial_number,
-                "certificate.test",
+                Some("certificate.test"),
             )
             .unwrap();
             let recovered = verifier_wallet
@@ -6250,7 +6524,7 @@ mod tests {
                 &fields_to_reveal,
                 &master_keyring,
                 &serial_number,
-                "test.app.com",
+                Some("test.app.com"),
             )
             .expect("Should succeed");
 
@@ -6485,7 +6759,7 @@ mod tests {
                     raw_tx: None,
                     send_with: vec!["not-built".into()],
                 },
-                "fixture.local",
+                Some("fixture.local"),
             ),
         )
         .await
@@ -6870,12 +7144,12 @@ mod reference_tests {
     async fn reference_round_trip_in_process() {
         let wallet = funded_wallet().await;
         let created = wallet
-            .create_action(deferred_action(), ORIGINATOR)
+            .create_action(deferred_action(), Some(ORIGINATOR))
             .await
             .unwrap();
         let reference = STANDARD.encode(created.signable_transaction.unwrap().reference);
         let signed = wallet
-            .sign_action(sign_request(reference.clone()), ORIGINATOR)
+            .sign_action(sign_request(reference.clone()), Some(ORIGINATOR))
             .await
             .expect("the answered reference must identify the pending action");
         let stored: (String, String) =
@@ -6901,7 +7175,7 @@ mod reference_tests {
     async fn reference_bytes_match_storage_json_and_binary_decoding() {
         let wallet = funded_wallet().await;
         let created = wallet
-            .create_action(deferred_action(), ORIGINATOR)
+            .create_action(deferred_action(), Some(ORIGINATOR))
             .await
             .unwrap();
         let stored: String =
@@ -6926,7 +7200,7 @@ mod reference_tests {
         frame.write_bytes(&expected);
         let wire = WalletWireTransceiver::new(ReferenceFrame(frame.into_bytes()));
         let decoded = wire
-            .create_action(deferred_action(), ORIGINATOR)
+            .create_action(deferred_action(), Some(ORIGINATOR))
             .await
             .unwrap()
             .signable_transaction
@@ -6934,10 +7208,13 @@ mod reference_tests {
         assert_eq!(signable.reference, decoded.reference);
         assert_eq!(STANDARD.encode(&decoded.reference), stored);
 
-        // beta.1's serde is hex; its decoder must recover the same payload.
+        // beta.2's serde is base64 (bsv-rs edfc535), the reference's JSON
+        // text: the stored reference itself, byte for byte.
         let json = serde_json::to_value(&created).unwrap();
-        let json_bytes =
-            hex::decode(json["signableTransaction"]["reference"].as_str().unwrap()).unwrap();
+        assert_eq!(json["signableTransaction"]["reference"], stored.as_str());
+        let json_bytes = STANDARD
+            .decode(json["signableTransaction"]["reference"].as_str().unwrap())
+            .unwrap();
         assert_eq!(json_bytes, expected);
         let decoded_json: CreateActionResult = serde_json::from_value(json).unwrap();
         assert_eq!(
@@ -6999,12 +7276,12 @@ mod reference_tests {
             .await
             .unwrap();
         let created = wallet
-            .create_action(deferred_action(), ORIGINATOR)
+            .create_action(deferred_action(), Some(ORIGINATOR))
             .await
             .unwrap();
         let reference = STANDARD.encode(created.signable_transaction.unwrap().reference);
         wallet
-            .sign_action(sign_request(reference), ORIGINATOR)
+            .sign_action(sign_request(reference), Some(ORIGINATOR))
             .await
             .expect("the reference must survive both directions of the storage wire");
         user_call.assert_async().await;

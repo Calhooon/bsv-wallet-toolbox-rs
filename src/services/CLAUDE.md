@@ -22,9 +22,11 @@ path uses a separate wrapper around the SDK's `SimplifiedFetchTransport`
 under the same cfgs (#263). It calls the shared `check_url` on the peer's
 configured base URL before every SDK send, including through `peer()`.
 This covers the default authenticated branch without an opt-in flag.
-The SDK's redirects, proxy handling, and `localhost` resolution stay outside
-the toolbox HTTP wrapper; the Peer guard checks the configured destination,
-not redirect hops. Keep the test proxy prefix in place for this SDK boundary.
+Since the bsv-rs 0.9.0-beta.2 pin the wrapper builds the SDK transport with
+`SimplifiedFetchTransport::with_client` (bsv-rs #320) and the policy's client
+(`sdk_transport_client`: no proxy, `localhost` pinned, no redirect followed,
+the SDK's own 30 s and 10 s timeouts), so the SDK's connections come under
+the policy too and a redirect status is refused by the SDK before its body.
 
 Constructors can still describe production defaults in these builds, so
 configuration and ordering tests keep their existing assertions. A request

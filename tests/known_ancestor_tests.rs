@@ -167,7 +167,7 @@ async fn witness(deferred: bool, known: bool) {
         options.known_txids = Some(vec![hex::decode(&ancestor).unwrap().try_into().unwrap()]);
     }
     let result = wallet
-        .create_action(args, "test.local")
+        .create_action(args, Some("test.local"))
         .await
         .expect("createAction");
     if deferred {
@@ -187,7 +187,7 @@ async fn witness(deferred: bool, known: bool) {
                     spends: Default::default(),
                     options: None,
                 },
-                "test.local",
+                Some("test.local"),
             )
             .await
             .expect("signAction");

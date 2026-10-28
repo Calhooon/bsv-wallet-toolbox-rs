@@ -109,7 +109,7 @@ async fn named_input_scene() -> NamedInputScene {
     let (dir, wallet) = wallet().await;
     fund_wallet_change(&wallet, 0).await;
     let made = wallet
-        .create_action(payment(1_000), ORIGINATOR)
+        .create_action(payment(1_000), Some(ORIGINATOR))
         .await
         .unwrap();
     let txid = hex::encode(made.txid.unwrap());
@@ -172,7 +172,7 @@ async fn defer_named(
 async fn create_signable(scene: &NamedInputScene, args: CreateActionArgs) -> SignableTransaction {
     scene
         .wallet
-        .create_action(args, ORIGINATOR)
+        .create_action(args, Some(ORIGINATOR))
         .await
         .unwrap()
         .signable_transaction
@@ -218,7 +218,7 @@ async fn assert_create_input_refused(script: Option<Vec<u8>>, length: Option<u32
         };
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            scene.wallet.create_action(args, ORIGINATOR),
+            scene.wallet.create_action(args, Some(ORIGINATOR)),
         )
         .await
         .expect("the argument refusal must not wait for storage");
@@ -324,7 +324,7 @@ async fn sign_named(
                 spends,
                 options: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
 }

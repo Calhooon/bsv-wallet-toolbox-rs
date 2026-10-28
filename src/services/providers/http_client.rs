@@ -17,6 +17,14 @@ pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
     isolated::check_url(&url)
 }
 
+/// The policy's client for the SDK transport that takes one (bsv-rs #320's
+/// `SimplifiedFetchTransport::with_client`), so the authenticated storage
+/// client's own hops come under #182 too (#263).
+#[cfg(all(feature = "remote", any(test, feature = "bench-support")))]
+pub(crate) fn sdk_transport_client() -> reqwest::Client {
+    isolated::sdk_transport_client()
+}
+
 #[cfg(test)]
 #[path = "../../../tests/common/transport_isolation.rs"]
 pub(crate) mod test_support;
@@ -104,6 +112,24 @@ mod isolated {
                 Ok(client) => client,
                 Err(error) => panic!("#182 rule 28: cannot build isolated HTTP client: {error}"),
             }
+        }
+    }
+
+    /// No proxy and `localhost` pinned as [`Client::builder`]; no redirect
+    /// followed, since the SDK refuses a redirect status before its body
+    /// (bsv-rs #320); the timeouts and idle pool of bsv-rs's own default.
+    #[cfg(feature = "remote")]
+    pub(crate) fn sdk_transport_client() -> reqwest::Client {
+        match Client::builder()
+            .0
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(0)
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => panic!("#182 rule 28: cannot build isolated SDK client: {error}"),
         }
     }
 

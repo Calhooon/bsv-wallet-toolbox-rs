@@ -201,7 +201,7 @@ pub async fn acquire_certificate_issuance<W, S>(
     auth: &AuthId,
     mut args: AcquireCertificateArgs,
     identity_key: &str,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<WalletCertificate>
 where
     W: WalletInterface + Send + Sync,
@@ -411,7 +411,7 @@ async fn prepare_issuance_action_data<W>(
     args: &AcquireCertificateArgs,
     certifier: &PublicKey,
     subject: &PublicKey,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<PrepareIssuanceActionDataResult>
 where
     W: WalletInterface + Send + Sync,
@@ -471,7 +471,7 @@ where
 async fn create_client_nonce<W: WalletInterface + Send + Sync>(
     wallet: &W,
     certifier: &PublicKey,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<String> {
     let random: [u8; NONCE_SIZE] = rand::random();
     let hmac = wallet
@@ -506,7 +506,7 @@ async fn create_certificate_fields_for_issuance<W>(
     certifier: &PublicKey,
     _subject: &PublicKey,
     plain_fields: &HashMap<String, String>,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<(HashMap<String, Vec<u8>>, HashMap<String, Vec<u8>>)>
 where
     W: WalletInterface + Send + Sync,
@@ -740,7 +740,7 @@ fn decode_issued_certificate(raw: &CertificateResponse) -> Result<Certificate> {
     certificate.revocation_outpoint =
         Some(parse_revocation_outpoint(&raw.revocation_outpoint).ok_or_else(invalid)?);
     for (name, value) in &raw.fields {
-        certificate.set_field(name.clone(), value.as_bytes().to_vec());
+        certificate.set_field(name.clone(), value.clone());
     }
     certificate.signature = Some(hex::decode(&raw.signature).map_err(|_| invalid())?);
     Ok(certificate)
@@ -752,7 +752,7 @@ async fn verify_issuance_serial<W: WalletInterface + Send + Sync>(
     client_nonce: &str,
     server_nonce: &str,
     certifier: &PublicKey,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<()> {
     let invalid = || Error::ValidationError("Invalid serialNumber".into());
     // Wallet.ts:808-809 decode the serial, then `clientNonce + serverNonce` as
@@ -792,7 +792,7 @@ async fn verify_counterparty_hmac<W: WalletInterface + Send + Sync>(
     protocol: &str,
     key_id: String,
     counterparty: &PublicKey,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<bool> {
     let args = VerifyHmacArgs {
         hmac,
@@ -850,7 +850,7 @@ async fn verify_server_nonce<W: WalletInterface + Send + Sync>(
     wallet: &W,
     nonce: &str,
     certifier: &PublicKey,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<bool> {
     let Ok(bytes) = BASE64.decode(nonce) else {
         return Ok(false);
@@ -877,7 +877,7 @@ async fn verify_certificate_issuance<W>(
     identity_key: &str,
     certifier_hex: &str,
     certifier: &PublicKey,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<()>
 where
     W: WalletInterface + Send + Sync,
@@ -900,10 +900,24 @@ where
         identity_key,
         certifier_hex,
     )?;
-    decode_issued_certificate(&parsed.certificate)?
-        .verify()
-        .map_err(|_| Error::ValidationError("Certificate verification failed".into()))?;
+    // Wallet.ts:816: `if (!(await signedCertificate.verify())) throw`. bsv-rs
+    // #299 answers false, never an error, for every failure the reference's
+    // verify answers false to (absent, non-DER or wrong-signer signature).
+    if !issued_certificate_verifies(&parsed.certificate) {
+        return Err(Error::ValidationError(
+            "Certificate verification failed".into(),
+        ));
+    }
     Ok(())
+}
+
+/// The reference's `Certificate.verify` (Certificate.ts:425-441) on a
+/// certificate in its wire shape: false on any decode failure or a signature
+/// that does not verify under BRC-52's derived key (bsv-rs #251, #299).
+pub(super) fn issued_certificate_verifies(raw: &CertificateResponse) -> bool {
+    decode_issued_certificate(raw)
+        .and_then(|certificate| certificate.verify().map_err(Into::into))
+        .unwrap_or(false)
 }
 
 // MasterCertificate.decryptFields at Wallet.ts:817 verifies that every returned
@@ -913,7 +927,7 @@ async fn decrypt_issued_fields<W: WalletInterface + Send + Sync>(
     fields: &HashMap<String, String>,
     keyring: &HashMap<String, String>,
     certifier: &PublicKey,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<()> {
     // MasterCertificate.ts:522-524, outside the decrypt try at 525-561.
     if keyring.is_empty() {
@@ -1208,7 +1222,7 @@ mod tests {
                         privileged: None,
                         privileged_reason: None,
                     },
-                    "certificate.test",
+                    Some("certificate.test"),
                 )
                 .await;
             // The reference throws Error, not WERR_INVALID_PARAMETER, at

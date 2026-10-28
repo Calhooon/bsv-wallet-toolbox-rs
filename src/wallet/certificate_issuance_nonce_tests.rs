@@ -24,10 +24,16 @@ async fn client_nonce(wallet: &TestWallet) -> String {
     let certifier_key = PublicKey::from_hex(&certifier()).unwrap();
     let subject = PublicKey::from_hex(wallet.identity_key()).unwrap();
     let acquisition = args(certifier(), "https://issuer.example/issue".to_string());
-    prepare_issuance_action_data(wallet, &acquisition, &certifier_key, &subject, ORIGINATOR)
-        .await
-        .unwrap()
-        .client_nonce
+    prepare_issuance_action_data(
+        wallet,
+        &acquisition,
+        &certifier_key,
+        &subject,
+        Some(ORIGINATOR),
+    )
+    .await
+    .unwrap()
+    .client_nonce
 }
 
 #[tokio::test]
@@ -58,7 +64,9 @@ async fn client_nonce_is_create_nonce_and_passes_verify_nonce() {
         };
         // The subject's own reading (counterparty the certifier) and the
         // certifier's (verifyNonce(clientNonce, wallet, subject)).
-        let own = wallet.verify_hmac(args(&certifier_key), ORIGINATOR).await;
+        let own = wallet
+            .verify_hmac(args(&certifier_key), Some(ORIGINATOR))
+            .await;
         assert!(own.unwrap().valid);
         assert!(certifier_wallet.verify_hmac(args(&subject)).unwrap().valid);
     }
@@ -103,6 +111,6 @@ async fn nonce_key_id_is_textdecoder_lossy_utf8() {
     let nonce = BASE64.encode([data.as_slice(), &hmac].concat());
     let reader = ProtoWallet::new(Some(subject));
     let certifier_key = certifier_key.public_key();
-    let valid = verify_server_nonce(&reader, &nonce, &certifier_key, ORIGINATOR);
+    let valid = verify_server_nonce(&reader, &nonce, &certifier_key, Some(ORIGINATOR));
     assert!(valid.await.unwrap());
 }

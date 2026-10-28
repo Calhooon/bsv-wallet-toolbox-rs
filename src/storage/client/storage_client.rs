@@ -54,14 +54,15 @@ mod isolated_peer_transport {
     use bsv_rs::auth::transports::{Transport, TransportCallback};
     use bsv_rs::auth::{AuthMessage, SimplifiedFetchTransport as SdkTransport};
 
-    use crate::services::providers::http_client::check_url_str;
+    use crate::services::providers::http_client::{check_url_str, sdk_transport_client};
 
-    /// A test/bench Peer transport that checks its destination before SDK I/O.
+    /// A test/bench Peer transport that checks its destination before SDK I/O
+    /// and hands the SDK the #182 policy's client (bsv-rs #320).
     pub struct SimplifiedFetchTransport(SdkTransport);
 
     impl SimplifiedFetchTransport {
         pub fn new(url: &str) -> Self {
-            Self(SdkTransport::new(url))
+            Self(SdkTransport::with_client(url, sdk_transport_client()))
         }
     }
 
@@ -69,7 +70,8 @@ mod isolated_peer_transport {
     impl Transport for SimplifiedFetchTransport {
         async fn send(&self, message: &AuthMessage) -> bsv_rs::Result<()> {
             // Check every send, including handshakes and calls through peer().
-            // The SDK owns redirects and proxy handling inside its transport.
+            // The SDK's client is the policy's: no proxy, localhost pinned,
+            // and a redirect refused by the SDK before its body.
             check_url_str(self.0.base_url())?;
             self.0.send(message).await
         }
@@ -300,10 +302,6 @@ pub struct StorageClient<W: WalletInterface> {
     /// Set to false for testing without authentication.
     use_auth: bool,
 
-    /// Whether to verify server response signatures.
-    /// Set to false if server doesn't provide auth headers.
-    verify_responses: bool,
-
     /// Cached server identity key (from settings).
     server_identity_key: Arc<RwLock<Option<PublicKey>>>,
 
@@ -352,7 +350,6 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             next_id: AtomicU64::new(1),
             settings: Arc::new(RwLock::new(None)),
             use_auth: true,
-            verify_responses: false, // Most servers don't sign responses yet
             server_identity_key: Arc::new(RwLock::new(None)),
             timeout: std::time::Duration::from_secs(30),
         }
@@ -380,14 +377,6 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         let mut client = Self::new(wallet, endpoint_url);
         client.use_auth = false;
         client
-    }
-
-    /// Enables or disables response signature verification.
-    ///
-    /// By default, response verification is disabled because most storage
-    /// servers don't sign their responses yet.
-    pub fn set_verify_responses(&mut self, verify: bool) {
-        self.verify_responses = verify;
     }
 
     /// Sets the server's identity key for signature verification.
@@ -444,7 +433,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
                     for_self: None,
                     ..Default::default()
                 },
-                "bsv-wallet-toolbox",
+                Some("bsv-wallet-toolbox"),
             )
             .await
             .map_err(|_| Error::AuthenticationRequired)?;
@@ -515,7 +504,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         let payload = http_request.to_payload();
 
         // Set up a channel to receive the response
-        let (tx, rx) = oneshot::channel::<Result<Vec<u8>>>();
+        let (tx, rx) = oneshot::channel::<Result<(PublicKey, Vec<u8>)>>();
         let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
         let request_nonce_for_callback = request_nonce;
 
@@ -523,7 +512,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         let tx_clone = tx.clone();
         let callback_id = self
             .peer
-            .listen_for_general_messages(move |_sender, response_payload| {
+            .listen_for_general_messages(move |sender, response_payload| {
                 let tx = tx_clone.clone();
                 let expected_nonce = request_nonce_for_callback;
                 Box::pin(async move {
@@ -535,8 +524,8 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
                         if response_nonce == expected_nonce {
                             // This is our response
                             let mut tx_guard = tx.lock().await;
-                            if let Some(sender) = tx_guard.take() {
-                                let _ = sender.send(Ok(response_payload));
+                            if let Some(reply) = tx_guard.take() {
+                                let _ = reply.send(Ok((sender, response_payload)));
                             }
                         }
                     }
@@ -588,12 +577,17 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             .stop_listening_for_general_messages(callback_id)
             .await;
 
-        let response_payload = match response_result {
-            Ok(Ok(Ok(payload))) => payload,
+        let (sender, response_payload) = match response_result {
+            Ok(Ok(Ok(answer))) => answer,
             Ok(Ok(Err(e))) => return Err(e),
             Ok(Err(_)) => return Err(Error::NetworkError("Response channel closed".to_string())),
             Err(_) => return Err(Error::NetworkError("Request timed out".to_string())),
         };
+
+        // The Peer verified the answer and bound its sender to the session
+        // (bsv-rs #353); as AuthFetch.ts:441-445, that is the server's
+        // identity for the next call.
+        self.set_server_identity_key(sender).await;
 
         // Parse the HTTP response from the payload
         let http_response = bsv_rs::auth::transports::HttpResponse::from_payload(&response_payload)

@@ -262,7 +262,7 @@ async fn acquire_as_test_wallet(
         &AuthId::with_user_id(wallet.identity_key(), 1),
         acquisition,
         identity,
-        ORIGINATOR,
+        Some(ORIGINATOR),
     )
     .await
     .map_err(Into::into)

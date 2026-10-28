@@ -92,6 +92,11 @@ pub(super) async fn verify_beef_spends(
         Verdict::Unverifiable { check, .. } => Err(header_fault(format!(
             "the supplied mining context could not answer {check:?}"
         ))),
+        // `Verdict` is non_exhaustive (bsv-rs #240): a verdict this crate
+        // does not read holds, never passes.
+        other => Err(Error::ServiceError(format!(
+            "the spend verifier answered a verdict this wallet does not read: {other:?}"
+        ))),
     }
 }
 

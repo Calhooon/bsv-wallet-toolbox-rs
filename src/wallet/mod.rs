@@ -102,5 +102,6 @@ pub use lookup::{
 };
 pub use signer::{ScriptType, SignerInput, UnlockingScriptTemplate, WalletSigner};
 pub use wallet::{
-    PendingTransaction, PrivilegedKeyManager, UtxoInfo, Wallet, WalletBalance, WalletOptions,
+    PendingTransaction, PrivilegedKeyManager, StoredCertificateReverification, UtxoInfo, Wallet,
+    WalletBalance, WalletOptions,
 };

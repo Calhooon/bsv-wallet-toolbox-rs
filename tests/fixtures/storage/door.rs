@@ -50,7 +50,7 @@ fn status(result: &StorageProcessActionResults) -> &str {
 
 async fn build(wallet: &TestWallet, coin: i64) -> Result<CreateActionResult> {
     Ok(wallet
-        .create_action_offering(payment(true), "fixture.local", &[coin])
+        .create_action_offering(payment(true), Some("fixture.local"), &[coin])
         .await?)
 }
 
@@ -61,8 +61,8 @@ async fn two_built_actions_post_concurrently_and_record_each_instance() -> Resul
     let b = hex::encode(build(&wallet, 2).await?.txid.context("signed txid")?);
     assert_eq!(wallet.services().call_count("post_beef"), 0);
     let (a_result, b_result) = tokio::join!(
-        wallet.process_action(post(a.clone()), "fixture.local"),
-        wallet.process_action(post(b.clone()), "fixture.local"),
+        wallet.process_action(post(a.clone()), Some("fixture.local")),
+        wallet.process_action(post(b.clone()), Some("fixture.local")),
     );
     assert_eq!(status(&a_result?), "unproven");
     assert_eq!(status(&b_result?), "unproven");
@@ -89,18 +89,18 @@ async fn post_handles_templates_unknown_references_and_repeats_without_writes() 
         .get_or_insert_with(CreateActionOptions::default)
         .sign_and_process = Some(false);
     let template = wallet
-        .create_action_offering(args, "fixture.local", &[1])
+        .create_action_offering(args, Some("fixture.local"), &[1])
         .await?;
     let reference = bsv_rs::primitives::to_base64(
         &template.signable_transaction.context("template")?.reference,
     );
     let before = rows(wallet.storage()).await?;
     let refused = wallet
-        .process_action(post(reference), "fixture.local")
+        .process_action(post(reference), Some("fixture.local"))
         .await;
     assert!(matches!(refused, Err(Error::InvalidTransactionStatus(_))));
     let unknown = wallet
-        .process_action(post("not-built".into()), "fixture.local")
+        .process_action(post("not-built".into()), Some("fixture.local"))
         .await?;
     assert_eq!(status(&unknown), "failed");
     assert_eq!(rows(wallet.storage()).await?, before);
@@ -112,7 +112,7 @@ async fn post_handles_templates_unknown_references_and_repeats_without_writes() 
     assert_eq!(
         status(
             &wallet
-                .process_action(post(reference.clone()), "fixture.local")
+                .process_action(post(reference.clone()), Some("fixture.local"))
                 .await?
         ),
         "unproven"
@@ -121,7 +121,7 @@ async fn post_handles_templates_unknown_references_and_repeats_without_writes() 
     assert_eq!(
         status(
             &wallet
-                .process_action(post(reference), "fixture.local")
+                .process_action(post(reference), Some("fixture.local"))
                 .await?
         ),
         "unproven"
@@ -139,7 +139,7 @@ async fn post_preserves_no_send_and_schedules_delayed_without_network() -> Resul
     let mut args = post(txid.clone());
     args.is_no_send = true;
     args.is_send_with = false;
-    let result = wallet.process_action(args, "fixture.local").await?;
+    let result = wallet.process_action(args, Some("fixture.local")).await?;
     assert!(result
         .send_with_results
         .context("noSend result")?
@@ -148,7 +148,7 @@ async fn post_preserves_no_send_and_schedules_delayed_without_network() -> Resul
     let mut args = post(txid.clone());
     args.is_delayed = true;
     assert_eq!(
-        status(&wallet.process_action(args, "fixture.local").await?),
+        status(&wallet.process_action(args, Some("fixture.local")).await?),
         "sending"
     );
     let stored: (String, String) = sqlx::query_as(
@@ -170,7 +170,7 @@ async fn invalid_member_prevents_posting_the_ready_subset() -> Result<()> {
     let before = rows(wallet.storage()).await?;
     let mut args = post(txid);
     args.send_with.push("not-built".into());
-    let result = wallet.process_action(args, "fixture.local").await?;
+    let result = wallet.process_action(args, Some("fixture.local")).await?;
     assert!(result
         .send_with_results
         .context("results")?
@@ -192,12 +192,16 @@ async fn post_rebuilds_trimmed_ancestry_from_storage() -> Result<()> {
     let mut args = payment(true);
     args.options.as_mut().context("options")?.known_txids = Some(vec![known]);
     let built = wallet
-        .create_action_offering(args, "fixture.local", &[1])
+        .create_action_offering(args, Some("fixture.local"), &[1])
         .await?;
     let compact_len = built.beef.context("compact BEEF")?.len();
     let txid = hex::encode(built.txid.context("txid")?);
     assert_eq!(
-        status(&wallet.process_action(post(txid), "fixture.local").await?),
+        status(
+            &wallet
+                .process_action(post(txid), Some("fixture.local"))
+                .await?
+        ),
         "unproven"
     );
     let calls = wallet.services().call_history();
@@ -236,7 +240,7 @@ async fn post_keeps_acceptance_and_refusal_words_per_instance() -> Result<()> {
     assert_eq!(
         status(
             &wallet
-                .process_action(post(txid.clone()), "fixture.local")
+                .process_action(post(txid.clone()), Some("fixture.local"))
                 .await?
         ),
         "unproven"
@@ -264,7 +268,7 @@ async fn no_send_outputs_match_the_reference_before_and_after_post() -> Result<(
     for posted in [false, true] {
         if posted {
             wallet
-                .process_action(post(txid.clone()), "fixture.local")
+                .process_action(post(txid.clone()), Some("fixture.local"))
                 .await?;
         }
         let flags: Vec<bool> = sqlx::query_scalar("SELECT spendable FROM outputs WHERE txid = ?")
@@ -294,7 +298,7 @@ async fn post_preserves_legacy_history_text() -> Result<()> {
         .execute(wallet.storage().writer())
         .await?;
     wallet
-        .process_action(post(txid.clone()), "fixture.local")
+        .process_action(post(txid.clone()), Some("fixture.local"))
         .await?;
     let history: String = sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
         .bind(txid)
@@ -312,7 +316,11 @@ async fn post_uses_the_services_tracker_when_storage_has_none() -> Result<()> {
     let txid = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
     wallet.storage().clear_chain_tracker().await;
     assert_eq!(
-        status(&wallet.process_action(post(txid), "fixture.local").await?),
+        status(
+            &wallet
+                .process_action(post(txid), Some("fixture.local"))
+                .await?
+        ),
         "unproven"
     );
     assert_eq!(wallet.services().call_count("get_chain_tracker"), 1);
@@ -332,7 +340,7 @@ async fn post_service_fault_is_recorded_without_fabricating_an_instance() -> Res
     assert_eq!(
         status(
             &wallet
-                .process_action(post(txid.clone()), "fixture.local")
+                .process_action(post(txid.clone()), Some("fixture.local"))
                 .await?
         ),
         "sending"
@@ -392,11 +400,11 @@ async fn composition_writes_the_post_note_the_door_post_writes() -> Result<()> {
     let wallet = wallet().await?;
     let built = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
     wallet
-        .process_action(post(built.clone()), "fixture.local")
+        .process_action(post(built.clone()), Some("fixture.local"))
         .await?;
     let composed = hex::encode(
         wallet
-            .create_action_offering(payment(false), "fixture.local", &[2])
+            .create_action_offering(payment(false), Some("fixture.local"), &[2])
             .await?
             .txid
             .context("signed txid")?,

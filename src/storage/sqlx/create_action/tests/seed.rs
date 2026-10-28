@@ -146,7 +146,7 @@ async fn seeded_wallet_actions_repeat_references_derivations_and_unsigned_bytes(
         )
         .await
         .unwrap();
-        let result = WalletInterface::create_action(&wallet, action_args(), "rng-test")
+        let result = WalletInterface::create_action(&wallet, action_args(), Some("rng-test"))
             .await
             .unwrap();
         let signable = result.signable_transaction.unwrap();

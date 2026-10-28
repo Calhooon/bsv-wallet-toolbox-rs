@@ -63,7 +63,9 @@ fn direct_args() -> AcquireCertificateArgs {
 /// leaves the store without a certificate or a field.
 async fn assert_refused(scenario: &str, args: AcquireCertificateArgs, expected: &str) {
     let wallet = wallet().await;
-    let result = wallet.acquire_certificate(args, "certificate.test").await;
+    let result = wallet
+        .acquire_certificate(args, Some("certificate.test"))
+        .await;
     match result {
         Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, expected, "{scenario}"),
         other => panic!("{scenario}: expected WalletError({expected:?}), got {other:?}"),
@@ -85,7 +87,7 @@ async fn refused_with(scenario: &str, edit: impl FnOnce(&mut AcquireCertificateA
 async fn accepts_the_valid_arguments_and_stores_one_row() {
     let wallet = wallet().await;
     let acquired = wallet
-        .acquire_certificate(direct_args(), "certificate.test")
+        .acquire_certificate(direct_args(), Some("certificate.test"))
         .await
         .unwrap();
     assert_eq!(acquired.certifier, key(7));
@@ -200,7 +202,7 @@ async fn refuses_an_absent_keyring_or_revealer() {
     let mut args = direct_args();
     args.keyring_for_subject = Some(HashMap::new());
     wallet
-        .acquire_certificate(args, "certificate.test")
+        .acquire_certificate(args, Some("certificate.test"))
         .await
         .unwrap();
     assert_eq!(certificate_rows(&wallet).await, (1, 1), "an empty keyring");
@@ -421,7 +423,7 @@ async fn stores_the_normalized_arguments() {
     args.certificate_type = format!(" {} ", BASE64.encode([33; 32]));
     args.serial_number = Some(format!("\t{}\n", BASE64.encode([32; 32])));
     let acquired = wallet
-        .acquire_certificate(args, "certificate.test")
+        .acquire_certificate(args, Some("certificate.test"))
         .await
         .unwrap();
     assert_eq!(acquired.certifier, key(7));
@@ -444,4 +446,52 @@ async fn stores_the_normalized_arguments() {
             Some(key(7)),
         )
     );
+}
+
+// #188, the owner's word: one read of every stored certificate under the
+// derived key, counted, nothing deleted. A direct acquire stores what it is
+// given, so one row signed by the certifier and one with a signature that
+// does not verify make the count.
+#[tokio::test]
+async fn reverify_counts_stored_certificates_that_do_not_verify() {
+    use bsv_rs::auth::certificates::Certificate;
+
+    let wallet = wallet().await;
+    assert_eq!(
+        wallet.reverify_stored_certificates().await.unwrap(),
+        StoredCertificateReverification::default()
+    );
+
+    // direct_args' signature (r = 10, s = 11) is DER that verifies nowhere.
+    wallet
+        .acquire_certificate(direct_args(), Some("certificate.test"))
+        .await
+        .unwrap();
+
+    let certifier = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
+    let mut certificate = Certificate::new(
+        [34; 32],
+        [32; 32],
+        PublicKey::from_hex(wallet.identity_key()).unwrap(),
+        certifier.public_key(),
+    );
+    certificate.revocation_outpoint = Some(bsv_rs::wallet::Outpoint::new([0xab; 32], 0));
+    certificate.set_field("name".to_string(), "YQ==".to_string());
+    certificate.sign(&certifier).unwrap();
+    let mut signed = direct_args();
+    signed.certificate_type = BASE64.encode([34; 32]);
+    signed.signature = Some(hex::encode(certificate.signature.unwrap()));
+    wallet
+        .acquire_certificate(signed, Some("certificate.test"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        wallet.reverify_stored_certificates().await.unwrap(),
+        StoredCertificateReverification {
+            checked: 2,
+            failed: 1
+        }
+    );
+    assert_eq!(certificate_rows(&wallet).await, (2, 2), "nothing deleted");
 }

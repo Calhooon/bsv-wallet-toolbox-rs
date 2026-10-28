@@ -83,7 +83,7 @@ fn main() {
                 let started = Instant::now();
                 let result = store
                     .wallet
-                    .create_action_offering(args, ORIGINATOR, &store.coins[..offered])
+                    .create_action_offering(args, Some(ORIGINATOR), &store.coins[..offered])
                     .await
                     .expect("offered signed action");
                 let elapsed = started.elapsed();
@@ -112,7 +112,7 @@ fn main() {
                 // process_action writes in the door's single transaction.
                 let result = large
                     .wallet
-                    .create_action(args, ORIGINATOR)
+                    .create_action(args, Some(ORIGINATOR))
                     .await
                     .expect("signed action");
                 let elapsed = started.elapsed();
@@ -173,7 +173,7 @@ fn main() {
             let started = Instant::now();
             let result = large
                 .wallet
-                .list_outputs(args, ORIGINATOR)
+                .list_outputs(args, Some(ORIGINATOR))
                 .await
                 .expect("list outputs");
             let elapsed = started.elapsed();

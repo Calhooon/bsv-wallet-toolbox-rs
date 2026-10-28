@@ -72,6 +72,11 @@ beta at bb0a149 (CLI PR 274, 2026-10-26) together with this crate's
 pins a prerelease, so the gate builds the CLI's beta on this crate's beta and
 its main on main.
 
+From #199 the beta line takes `bsv-rs` `=0.9.0-beta.2` (the owner's standing
+word of 2026-10-27); the CLI's beta re-pins it in its pin PR (CLI #277) with
+this crate's next beta, and the CHANGELOG's `[Unreleased]` host note lists
+every host-visible change that pin carries.
+
 ### Re-pin plan
 
 A row whose ci column is not `yes` stays out of the CI job, and the job never
