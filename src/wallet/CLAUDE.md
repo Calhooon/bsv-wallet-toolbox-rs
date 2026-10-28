@@ -191,6 +191,21 @@ retain `wallet error: Signature is not valid` and `wallet error: HMAC is not val
 class and message together. The table's large data bound is the upstream
 entry's reading; the toolbox witnesses do not allocate that input.
 
+The same checks reach `get_public_key`, `encrypt`, `decrypt` and the
+inherent linkage methods at beta.3 (bsv-rs #420). The identity-key branch
+now checks supplied arguments too. Missing `protocolID` changes from
+`wallet error: protocolID is required when identityKey is false` to
+`The protocolID parameter must be a [securityLevel, protocolName] tuple`;
+missing `keyID` changes from `wallet error: keyID is required when identityKey is false`
+to `The keyID parameter must be a string`. An empty `keyID` uses the
+length refusal in the table. `Counterparty::from_hex` now refuses a valid
+uncompressed key with `The counterparty parameter must be no more than 66 length.`
+where beta.2 parsed and accepted it. Oversized plaintext and ciphertext
+use `The plaintext parameter must be at most 268435456 bytes` and
+`The ciphertext parameter must be at most 268435456 bytes` where beta.2
+processed them. The public-key, cipher and encoded-counterparty cases are
+also pinned in `tests/proto_validator_pin.rs`.
+
 ## Architecture
 
 ```
