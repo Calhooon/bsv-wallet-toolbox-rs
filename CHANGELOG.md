@@ -29,13 +29,16 @@
   send request: <bsv-rs's refusal>` (`Auth endpoint returned 404 ...`,
   `Failed to parse auth response: ...`, `... without valid BSV
   authentication (missing headers: ...)`, `Signature is not valid`,
-  `redirect refused: <status>`); a signed non-2xx answer is read as a body,
+  `redirect refused: <status>`; all but the missing-headers text are
+  bsv-rs's own words, not the reference's: bsv-rs #407 and #410); a signed non-2xx answer is read as a body,
   so `Certifier returned HTTP <status>: <body>` is gone; no answer within
   30 s is `Network error: Timed out waiting for authenticated response.`; a
   bsv-rs transport fault keeps its class (`Error::SdkError`). For the CLI's
   captain and certifier operators: a certifier behind the reference
-  middleware now answers (it refused the old request as
-  `400 ERR_AUTH_MALFORMED`), and a certifier that read the
+  middleware is expected to answer (it refused the old request as
+  `400 ERR_AUTH_MALFORMED`); this crate shows it against its own fixture
+  of the middleware, and the run against the middleware itself is the
+  interop lane's (the design's section 5, steps 1 to 4). A certifier that read the
   `x-bsv-identity-key` request header stops receiving it. No public shape
   moves: the issuance module is private, `Wallet<S, V>` gains no bound,
   `Error` no variant.
