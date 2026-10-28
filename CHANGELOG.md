@@ -13,8 +13,21 @@
   existing typed forms, and other faults stay faults. The mapping and nearest
   reference classes are documented in `src/wallet/CLAUDE.md`. CLI #330 must
   take this migration with the next published toolbox beta; no version or pin
-  is changed here. Direct SDK error sites and the remaining response-wait
-  and tracker transport erasures still require follow-up under #185.
+  is changed here. Direct SDK error sites still require follow-up under #185.
+
+- #185: the authenticated storage client's response-wait timeout now carries
+  `Error::SdkError(bsv_rs::Error::TransportFault)` with
+  `MayHaveBeenReceived`, no status and the existing `Request timed out` detail.
+  Through the SDK its Display moves from
+  `wallet error: Network error: Request timed out` to
+  `transport fault MAY_HAVE_BEEN_RECEIVED: Request timed out`.
+  The internalize door and BEEF proof helpers also retain a tracker's
+  `TransportFault` class, status and detail, including a rate-limit wait.
+  Their SDK Display loses `wallet error: Service error: ChainTracker
+  verification failed: ` and keeps the tracker's own Display. Other tracker
+  errors and missing mining context retain their existing service-fault text.
+  CLI #330 and other hosts read the typed fault; a response-wait timeout
+  promises nothing about whether the request acted.
 
 - CI: `release.yml`'s call of the reusable `ci.yml` grants `pull-requests: read`
   beside `contents: read`, the permission the semver job reads on a push run

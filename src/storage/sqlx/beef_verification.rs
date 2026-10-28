@@ -6,7 +6,7 @@
 use bsv_rs::transaction::beef_stream::{
     display_hex, verify_stream_two_pass, ChainTip, Hash32, Headers, StreamError, Verdict,
 };
-use bsv_rs::transaction::{Beef, BeefStream, ChainTracker};
+use bsv_rs::transaction::{Beef, BeefStream, ChainTracker, ChainTrackerError};
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
@@ -25,6 +25,15 @@ pub(super) fn stream_error(error: StreamError) -> Error {
 /// A header fault is a retryable hold, never a verdict about a payment.
 pub(super) fn header_fault(error: impl std::fmt::Display) -> Error {
     Error::ServiceError(format!("ChainTracker verification failed: {error}"))
+}
+
+/// Keep a tracker's transport class, status and detail for the host.
+fn tracker_fault(error: ChainTrackerError) -> Error {
+    if error.transport_fault().is_some() {
+        Error::SdkError(error.into())
+    } else {
+        header_fault(error)
+    }
 }
 
 struct VerificationHeaders {
@@ -54,7 +63,7 @@ pub(super) async fn verify_beef_spends(
     let tip = tracker
         .mining_tip()
         .await
-        .map_err(header_fault)?
+        .map_err(tracker_fault)?
         .ok_or_else(|| header_fault("the header service supplied no mining tip"))?;
     let mut headers = VerificationHeaders {
         tip,
@@ -69,7 +78,7 @@ pub(super) async fn verify_beef_spends(
             if tracker
                 .is_valid_root_for_height(&display_hex(&root), height32)
                 .await
-                .map_err(header_fault)?
+                .map_err(tracker_fault)?
             {
                 headers.roots.insert((height, root));
             }
@@ -197,7 +206,7 @@ pub async fn verify_beef_merkle_proofs(
         let is_valid = chain_tracker
             .is_valid_root_for_height(root, *height)
             .await
-            .map_err(header_fault)?;
+            .map_err(tracker_fault)?;
 
         if !is_valid {
             return Err(Error::ValidationError(format!(
@@ -256,7 +265,7 @@ pub async fn verify_txid_merkle_proof(
     let is_valid = chain_tracker
         .is_valid_root_for_height(&computed_root, block_height)
         .await
-        .map_err(header_fault)?;
+        .map_err(tracker_fault)?;
 
     if !is_valid {
         return Err(Error::ValidationError(format!(
