@@ -70,7 +70,7 @@ done
 # with its reading, or `to file: <repo> `
 # with the finding; an empty or missing cell fails, and so does a repository
 # outside the other SDKs' list.
-repo='(bsv-blockchain/)?(ts-stack|go-sdk|py-sdk|go-wallet-toolbox|BRCs)'
+repo='(bsv-blockchain/)?(ts-stack|go-sdk|py-sdk|go-wallet-toolbox|BRCs)|(Calhooon/)?bsv-rs'
 s7=$(awk '/^## 7\. /{s=1; next} /^## /{s=0} s' docs/ARCHITECTURE.md)
 if printf '%s\n' "$s7" | grep -qxF '| # | the code | the charter | filing |'; then
   echo "ok   section 7 header names the filing column"
