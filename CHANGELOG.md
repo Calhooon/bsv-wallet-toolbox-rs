@@ -162,6 +162,27 @@
   `services.arcade` holds the broadcaster.
 ### Added
 
+- #353 (bsv-wallet-cli #313): the offering call takes a must-spend list
+  beside the offer, output ids the action spends ahead of the pick. The
+  public lines that move: `Wallet::create_action_offering(args,
+  originator, offer, must_spend: &[i64])` and
+  `StorageSqlx::create_action_offering(auth, args, offer, must_spend:
+  &[i64])` each gain the last parameter (a caller passes `&[]` for the
+  former behaviour), and `storage::CreateActionDoor` gains the field
+  `must_spend: &'a [i64]` (a struct literal adds `must_spend: &[]`). Each
+  named coin is allocated as a picked coin (storage-provided change, signed
+  with the wallet's derivation) and counts toward the target; the pick funds
+  the remainder and the fee from the rest of the offer by the unchanged
+  formula, and change returns as always. A named coin outside the offer,
+  named twice, not this user's, not wallet-managed change, spent or
+  reserved, a received coin whose transaction is not `completed` when the
+  action does not carry `underReceivedRule` (R1 (d)), or a coin whose
+  transaction is neither `completed` nor `unproven`, is refused with
+  `Validation error: mustSpend[i]: output ...` naming it, nothing written.
+  `createAction`'s `inputs`, the served `WalletInterface::create_action`
+  and the refusal of a named change input are unchanged. A storage on the
+  trait's default door refuses a non-empty list. The CLI's `--from` flag
+  wraps this call (its captain told).
 - #187: `WalletStorageWriter::update_transaction_status_after_post`, a
   defaulted method taking the broadcasters' per-instance results
   (`WalletServices::post_beef`'s `Vec<PostBeefResult>`) or the post's own
