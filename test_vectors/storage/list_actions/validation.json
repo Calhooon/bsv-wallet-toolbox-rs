@@ -55,11 +55,12 @@
     },
     {
       "id": "go_label_too_long",
-      "description": "Label cannot exceed 300 characters",
+      "description": "Normalized label cannot exceed 300 UTF-8 bytes",
       "inputs": {
         "labels": ["REPEAT_CHAR_X_301_TIMES"]
       },
-      "expected_error": "label exceeds maximum length"
+      "expected_error": "The label parameter must be no more than 300 length.",
+      "notes": "#392 replaces stale pre-#386 wording with ts-stack@edf6e03 validationHelpers.ts:409-417,1691; test_vectors executes this text."
     },
     {
       "id": "go_label_empty",
@@ -67,7 +68,8 @@
       "inputs": {
         "labels": [""]
       },
-      "expected_error": "label cannot be empty"
+      "expected_error": "The label parameter must be at least 1 length.",
+      "notes": "#392 replaces stale pre-#386 wording with ts-stack@edf6e03 validationHelpers.ts:409-417,1691; test_vectors executes this text."
     },
     {
       "id": "go_include_input_source_without_inputs",

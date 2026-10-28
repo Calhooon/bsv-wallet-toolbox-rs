@@ -57,14 +57,14 @@ async fn assert_refused_with(labels: &[&str], text: &str) {
 }
 
 /// The door internalizes the action with `label` as ordinary metadata.
-async fn assert_internalized(label: &str) {
+async fn assert_internalized(label: &str, expected: &str) {
     let (storage, _before, result) = internalize(&[label]).await;
     result.unwrap_or_else(|e| panic!("{label:?}: {e}"));
     let stored: Vec<String> = sqlx::query_scalar("SELECT label FROM tx_labels")
         .fetch_all(storage.pool())
         .await
         .unwrap();
-    assert_eq!(stored, vec![label.to_string()]);
+    assert_eq!(stored, vec![expected.to_string()]);
 }
 
 #[tokio::test]
@@ -84,13 +84,13 @@ async fn nosend_label_beside_an_ordinary_label_is_refused() {
 
 #[tokio::test]
 async fn label_continuing_the_word_is_ordinary_metadata() {
-    assert_internalized("p nosendx").await;
+    assert_internalized("p nosendx", "p nosendx").await;
 }
 
 #[tokio::test]
 async fn bare_module_word_is_ordinary_metadata() {
     // No trailing space: the prefix `p nosend ` is not matched.
-    assert_internalized("p nosend").await;
+    assert_internalized("p nosend", "p nosend").await;
 }
 
 /// validateLabel's texts (ts-stack@edf6e03 validationHelpers.ts:385-387 and
@@ -117,7 +117,7 @@ async fn label_bound_is_bytes_of_the_trimmed_label() {
     assert_refused_with(&[&"\u{e9}".repeat(151)], LABEL_TOO_LONG).await;
     assert_refused_with(&["   "], LABEL_EMPTY).await;
     assert_refused_with(&[""], LABEL_EMPTY).await;
-    assert_internalized(&format!(" {} ", "a".repeat(300))).await;
+    assert_internalized(&format!(" {} ", "a".repeat(300)), &"a".repeat(300)).await;
 }
 
 /// #365: the reference refuses a wallet payment whose derivation does not
@@ -158,7 +158,7 @@ async fn byte_order_mark_label_is_refused_as_empty() {
 
 #[tokio::test]
 async fn next_line_label_is_internalized() {
-    assert_internalized("\u{0085}").await;
+    assert_internalized("\u{0085}", "\u{0085}").await;
 }
 
 /// #379: the BRC-177 match reads the label as ECMAScript's trim leaves it.
@@ -169,7 +169,7 @@ async fn nosend_label_behind_a_byte_order_mark_is_refused() {
 
 #[tokio::test]
 async fn nosend_label_behind_a_next_line_is_ordinary_metadata() {
-    assert_internalized("\u{0085}p nosend batch").await;
+    assert_internalized("\u{0085}p nosend batch", "\u{0085}p nosend batch").await;
 }
 
 /// #379: the whitespace both trims strip is stripped as before.

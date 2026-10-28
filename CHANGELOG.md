@@ -11,11 +11,18 @@
   `Result must exist and be unique.`. One matching row is still soft-deleted;
   the storage result remains a count.
 
+- #392: `createAction` and `internalizeAction` store labels after ECMAScript
+  trim and lowercase, and `listActions` normalizes its label filters the same
+  way. Host stored-data change for CLI #347: a label supplied as `  Label `
+  now reads back as `label`, and a filter of `LABEL` matches it. Existing rows
+  keep their stored spelling; an unfiltered listing still returns that spelling,
+  while a label filter matches only rows equal to its normalized value.
+  The stored `underReceivedRule` label also reads back as `underreceivedrule`;
+  the action's opt-in check still reads the supplied argument.
 - #386: `createAction` shares the internalize door's `validateLabel` bound:
   1 to 300 UTF-8 bytes after ECMAScript trim and lowercase. Whitespace-only
   labels, including U+FEFF, now refuse before options and BRC-177 parsing;
   labels padded past 300 raw bytes are accepted when the normalized value fits.
-  Accepted labels keep their supplied form in storage and `listActions` (#392).
   Host TEXT-DIFF for the CLI replay, with class `InvalidParameter` unchanged:
   `Validation error: label cannot be empty` becomes
   `Validation error: The label parameter must be at least 1 length.`;

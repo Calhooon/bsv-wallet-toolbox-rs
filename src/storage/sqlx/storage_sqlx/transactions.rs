@@ -5,6 +5,8 @@ use super::{
 use crate::storage::sqlx::internalize_action::{
     validate_array_bound, MAXIMUM_WALLET_COLLECTION_ITEMS,
 };
+use crate::storage::sqlx::label::normalize_label;
+use crate::wallet::internalize_args::validate_label;
 
 #[cfg(test)]
 #[path = "list_action_inputs_tests.rs"]
@@ -58,6 +60,11 @@ impl StorageSqlx {
         // validateListActionsArgs (ts-stack@edf6e03 validationHelpers.ts
         // 1683-1714): validateArray's bound (105-114) on labels at 1691 (#309).
         validate_array_bound(args.labels.len(), "labels", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
+        let mut labels = Vec::with_capacity(args.labels.len());
+        for label in &args.labels {
+            validate_label(label)?;
+            labels.push(normalize_label(label));
+        }
 
         let limit = args.limit.unwrap_or(10).min(10000);
         let offset = args.offset.unwrap_or(0);
@@ -83,8 +90,8 @@ impl StorageSqlx {
 
         // If labels are provided, look up their IDs
         let mut label_ids: Vec<i64> = Vec::new();
-        if !args.labels.is_empty() {
-            let placeholders: Vec<&str> = args.labels.iter().map(|_| "?").collect();
+        if !labels.is_empty() {
+            let placeholders: Vec<&str> = labels.iter().map(|_| "?").collect();
             let sql = format!(
                 r#"
                 SELECT tx_label_id FROM tx_labels
@@ -94,7 +101,7 @@ impl StorageSqlx {
             );
 
             let mut query = sqlx::query(&sql).bind(user_id);
-            for label in &args.labels {
+            for label in &labels {
                 query = query.bind(label);
             }
 
@@ -105,7 +112,7 @@ impl StorageSqlx {
                 .collect();
 
             // If using 'all' mode and not all labels exist, return empty
-            if label_query_mode == QueryMode::All && label_ids.len() < args.labels.len() {
+            if label_query_mode == QueryMode::All && label_ids.len() < labels.len() {
                 return Ok(ListActionsResult {
                     total_actions: 0,
                     actions: vec![],
@@ -113,8 +120,7 @@ impl StorageSqlx {
             }
 
             // If using 'any' mode and no labels exist, return empty
-            if label_query_mode == QueryMode::Any && label_ids.is_empty() && !args.labels.is_empty()
-            {
+            if label_query_mode == QueryMode::Any && label_ids.is_empty() && !labels.is_empty() {
                 return Ok(ListActionsResult {
                     total_actions: 0,
                     actions: vec![],

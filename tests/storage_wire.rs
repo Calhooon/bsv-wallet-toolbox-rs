@@ -152,7 +152,7 @@ fn create_args() -> CreateActionArgs {
         }))]),
         lock_time: Some(42),
         version: Some(1),
-        labels: Some(vec!["label".into()]),
+        labels: Some(vec!["  LaBeL ".into()]),
         options: Some(CreateActionOptions {
             sign_and_process: Some(true),
             accept_delayed_broadcast: Some(true),
@@ -345,7 +345,7 @@ wire!(find_transactions, "findTransactions", |c: StorageClient<
 wire!(list_actions, "listActions", |c: StorageClient<
     ProtoWallet,
 >| async move {
-    c.list_actions(&auth(), sample(json!({"labels": ["label"], "labelQueryMode": "all",
+    c.list_actions(&auth(), sample(json!({"labels": ["  LaBeL "], "labelQueryMode": "all",
         "includeLabels": true, "includeInputs": true, "includeInputSourceLockingScripts": true,
         "includeInputUnlockingScripts": true, "includeOutputs": true, "includeOutputLockingScripts": true,
         "limit": 3, "offset": 2, "seekPermission": false}))).await
@@ -416,7 +416,7 @@ wire!(
             "paymentRemittance": {"derivationPrefix": "cHJlZml4", "derivationSuffix": "c3VmZml4", "senderIdentityKey": key()}})),
             sample(json!({"outputIndex": 1, "protocol": "basket insertion",
             "insertionRemittance": {"basket": "basket", "customInstructions": "keep", "tags": ["tag"]}}))],
-        description: "wire scene".into(), labels: Some(vec!["label".into()]), seek_permission: Some(false) }).await
+        description: "wire scene".into(), labels: Some(vec!["  LaBeL ".into()]), seek_permission: Some(false) }).await
     }
 );
 wire!(

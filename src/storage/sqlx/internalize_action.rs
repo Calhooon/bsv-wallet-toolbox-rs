@@ -799,6 +799,8 @@ async fn add_label(
     transaction_id: i64,
     label: &str,
 ) -> Result<()> {
+    let normalized = super::label::normalize_label(label);
+    let label = normalized.as_str();
     let now = Utc::now();
 
     // Find or create label

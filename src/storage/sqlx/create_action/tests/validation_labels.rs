@@ -9,7 +9,7 @@ use bsv_rs::wallet::{ListActionsArgs, WalletInterface};
 const TOO_SHORT: &str = "Validation error: The label parameter must be at least 1 length.";
 const TOO_LONG: &str = "Validation error: The label parameter must be no more than 300 length.";
 
-async fn assert_label_accepted(label: &str) {
+async fn assert_label_accepted(label: &str, expected: &str) {
     let wallet = wallet().await;
     let before = transaction_rows(wallet.storage()).await;
     let created = WalletInterface::create_action(&wallet, no_send_args(&[label]), None)
@@ -21,7 +21,7 @@ async fn assert_label_accepted(label: &str) {
         .fetch_one(wallet.storage().pool())
         .await
         .unwrap();
-    assert_eq!(stored, label);
+    assert_eq!(stored, expected);
 
     let query: ListActionsArgs = serde_json::from_value(serde_json::json!({
         "labels": [label],
@@ -32,7 +32,7 @@ async fn assert_label_accepted(label: &str) {
         .await
         .unwrap();
     assert_eq!(listed.total_actions, 1);
-    assert_eq!(listed.actions[0].labels, Some(vec![label.to_string()]));
+    assert_eq!(listed.actions[0].labels, Some(vec![expected.to_string()]));
 }
 
 #[tokio::test]
@@ -55,26 +55,30 @@ async fn create_label_refuses_301_utf8_bytes_with_reference_text() {
 
 #[tokio::test]
 async fn create_label_accepts_300_utf8_bytes() {
-    assert_label_accepted(&"a".repeat(300)).await;
-    assert_label_accepted(&"é".repeat(150)).await;
+    assert_label_accepted(&"a".repeat(300), &"a".repeat(300)).await;
+    assert_label_accepted(&"é".repeat(150), &"é".repeat(150)).await;
 }
 
 #[tokio::test]
-async fn create_label_keeps_supplied_form_in_storage_and_listing() {
-    assert_label_accepted("  MiXeD Label  ").await;
-    assert_label_accepted("\u{FEFF}\t MiXeD Label \u{3000}\n").await;
-    assert_label_accepted("\u{0085}").await;
+async fn create_label_stores_normalized_form_in_storage_and_listing() {
+    assert_label_accepted("  MiXeD Label  ", "mixed label").await;
+    assert_label_accepted("\u{FEFF}\t MiXeD Label \u{3000}\n", "mixed label").await;
+    assert_label_accepted("\u{0085}", "\u{0085}").await;
 }
 
 #[tokio::test]
 async fn create_label_measures_bytes_after_trimming() {
-    assert_label_accepted(&format!("\u{FEFF} {} \u{3000}", "é".repeat(150))).await;
+    assert_label_accepted(
+        &format!("\u{FEFF} {} \u{3000}", "é".repeat(150)),
+        &"é".repeat(150),
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn create_label_measures_bytes_after_lowercasing() {
     // U+0130 expands from two UTF-8 bytes to three when lowercased.
-    assert_label_accepted(&"İ".repeat(100)).await;
+    assert_label_accepted(&"İ".repeat(100), &"i\u{0307}".repeat(100)).await;
     assert_refused(no_send_args(&[&"İ".repeat(101)]), TOO_LONG).await;
 }
 
@@ -112,7 +116,12 @@ async fn create_stored_labels_are_normalized_and_reused() {
     let listed = WalletInterface::list_actions(&wallet, query, None)
         .await
         .unwrap();
-    let mut listed_labels = listed.actions[0].labels.clone().unwrap();
+    let created = listed
+        .actions
+        .iter()
+        .find(|action| action.is_outgoing)
+        .unwrap();
+    let mut listed_labels = created.labels.clone().unwrap();
     listed_labels.sort();
     assert_eq!(listed_labels, ["label", "second"]);
 }
