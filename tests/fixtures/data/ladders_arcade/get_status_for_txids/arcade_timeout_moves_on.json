@@ -1,0 +1,96 @@
+{
+  "about": "Arcade gives no answer within the client timeout: a fault; WhatsOnChain places it in a block.",
+  "ladder": "get_status_for_txids",
+  "providers": [
+    {
+      "name": "ArcadeV2",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "txStatus": "MINED",
+                "txid": "abababababababababababababababababababababababababababababababab"
+              },
+              "delay_ms": 3000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "POST /txs/status",
+          "answers": [
+            {
+              "status": 200,
+              "json": [
+                {
+                  "blockhash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "blockheight": 900000,
+                  "confirmations": 3,
+                  "txid": "abababababababababababababababababababababababababababababababab"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "WoC",
+          "results": [
+            {
+              "depth": 3,
+              "status": "mined",
+              "txid": "abababababababababababababababababababababababababababababababab"
+            }
+          ],
+          "status": "success"
+        }
+      }
+    ],
+    "requests": {
+      "ArcadeV2": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "WhatsOnChain": {
+        "POST /txs/status": 1
+      }
+    },
+    "request_bodies": {
+      "WhatsOnChain": {
+        "POST /txs/status": [
+          {
+            "txids": [
+              "abababababababababababababababababababababababababababababababab"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
