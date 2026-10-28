@@ -13,8 +13,9 @@ use crate::wallet::internalize_args::validate_label;
 mod list_action_inputs_tests;
 
 /// The proof-request statuses whose raw bytes `get_proven_or_raw_tx` serves,
-/// as `getProvenOrRawTx` (ts-stack@edf6e03 `StorageKnex.ts:202`).
-const RAW_TX_REQ_STATUSES: &str =
+/// as `getProvenOrRawTx` (ts-stack@edf6e03 `StorageKnex.ts:202`); createAction's
+/// review evidence reads the same set (#389).
+pub(in crate::storage::sqlx) const RAW_TX_REQ_STATUSES: &str =
     "'unsent', 'unmined', 'unconfirmed', 'sending', 'nosend', 'completed'";
 
 impl StorageSqlx {

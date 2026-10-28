@@ -4,6 +4,7 @@ use super::beef_graph::merge_beef_linked;
 use super::beef_storage::parse_input_txids;
 use super::StorageSqlx;
 use crate::error::Result;
+use crate::storage::sqlx::storage_sqlx::RAW_TX_REQ_STATUSES;
 use bsv_rs::transaction::{Beef, MerklePath, Transaction};
 use bsv_rs::wallet::{CreateActionArgs, ReviewActionsRefusal};
 use sqlx::{Row, SqliteConnection};
@@ -65,8 +66,10 @@ impl PreparedReviews {
 // createAction.ts:528-539 calls getBeefForTransaction after the input lock
 // ends. StorageProvider.ts:1288-1338 merges raw bytes and a proof, or the
 // stored inputBEEF and each missing ancestor. This diagnostic read needs no
-// tracker verdict and writes nothing. Missing stored data uses the reference's
-// INVALID_PARAMETER fallback: a BEEF containing the competing txid alone.
+// tracker verdict and writes nothing. Missing stored data answers a BEEF
+// containing the competing txid alone: the reference's INVALID_PARAMETER
+// fallback, reached there only after services also miss. Create asks no
+// provider, so a competitor neither store holds answers txid-only at once.
 async fn build_competing_beef(conn: &mut SqliteConnection, root: &str) -> Result<Vec<u8>> {
     let mut beef = Beef::new();
     let mut pending = vec![root.to_owned()];
@@ -109,21 +112,18 @@ fn txid_only(txid: &str) -> Vec<u8> {
 }
 
 async fn stored_fragment(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Beef>> {
-    // StorageKnex.ts:189-210 prefers proven_txs, then an eligible request.
-    // The local transaction row also holds raw_tx/input_beef before a request
-    // exists. Its status does not decide whether a competing spend is reported.
-    let row = sqlx::query(
+    // The sources of getProvenOrRawTx (StorageKnex.ts:189-210), as the port's
+    // get_proven_or_raw_tx reads them: proven_txs, else a request in the six
+    // served statuses. transactions.raw_tx is not read (#351).
+    let row = sqlx::query(&format!(
         "SELECT raw_tx, input_beef, merkle_path FROM (
            SELECT raw_tx, NULL AS input_beef, merkle_path, 0 AS priority
              FROM proven_txs WHERE txid = ?
            UNION ALL
            SELECT raw_tx, input_beef, NULL, 1 FROM proven_tx_reqs WHERE txid = ?
-             AND status IN ('unsent', 'unmined', 'unconfirmed', 'sending', 'nosend', 'completed')
-           UNION ALL
-           SELECT raw_tx, input_beef, NULL, 2 FROM transactions WHERE txid = ?
-         ) WHERE raw_tx IS NOT NULL ORDER BY priority LIMIT 1",
-    )
-    .bind(txid)
+             AND status IN ({RAW_TX_REQ_STATUSES})
+         ) WHERE raw_tx IS NOT NULL ORDER BY priority LIMIT 1"
+    ))
     .bind(txid)
     .bind(txid)
     .fetch_optional(&mut *conn)
