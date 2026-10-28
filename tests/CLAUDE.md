@@ -17,7 +17,7 @@ cargo test -- --test-threads=1       # Serialize tests sharing resources
 cargo test -- --ignored              # Run network-dependent tests only
 ```
 
-Most integration tests require the `sqlite` feature (default). The `valid_create_action_args` module in `test_vectors.rs` requires the `remote` feature.
+Most integration tests require the `sqlite` feature (default). The `valid_create_action_args` module in `test_vectors.rs` requires the `remote` feature. A test that opens a `StorageSqlx` carries a `sqlite` gate (the file's `#![cfg]`, or the module's or statement's), so `cargo test --lib --tests --no-default-features --features remote` builds and runs; CI's Test Suite job runs it (#429).
 
 ## Files
 
@@ -28,7 +28,7 @@ Most integration tests require the `sqlite` feature (default). The `valid_create
 | `monitor_tests.rs` | 527 | 8 | `sqlite` | Monitor daemon lifecycle, task execution, callbacks |
 | `error_recovery_tests.rs` | 590 | 10 | none (one test under `bench-support`) | Service layer HTTP errors, adaptive timeouts, EMA |
 | `services_tests.rs` | 949 | ~58 | none | Service creation, provider config, result types, nLockTime |
-| `test_vectors.rs` | 2059 | ~40 | none/`remote` | Cross-SDK test vector validation (7 vector files) |
+| `test_vectors.rs` | 2059 | ~40 | none/`sqlite`/`remote` | Cross-SDK test vector validation (7 vector files) |
 | `storage_wire.rs` | 617 | 42 | `remote` | Recorded JSON-RPC request witnesses for every remote storage method |
 | `beef_edge_cases.rs` | 309 | 5 | none | BEEF format edge cases and serialization roundtrips |
 | `double_spend_tests.rs` | 309 | 5 | none | Double-spend detection data structures and status enums |

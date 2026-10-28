@@ -38,6 +38,7 @@
 ### CI
 
 - #417: Check the remote-only feature set in the Clippy job; compile RNG state and methods only for their SQL storage and test consumers.
+- #429: Run the unit tests and every integration suite with `remote` alone in the Test Suite job; the lib-test helper `assert_argument_refusal`, `tests/sync_manager_tests.rs`, the three `StorageSqlx` modules of `tests/test_vectors.rs` and one assertion of `tests/rule_28_cadence_tests.rs` carry the SQL feature gate they need.
 
 ## [0.14.0-beta.3] - 2026-10-28
 
