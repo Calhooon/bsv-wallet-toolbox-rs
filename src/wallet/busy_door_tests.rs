@@ -16,6 +16,7 @@ use bsv_rs::wallet::{
 };
 
 const ORIGINATOR: &str = "busy.example.com";
+const GENESIS: u32 = bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT;
 
 /// An unrelated P2PKH locking script.
 fn pay_lock() -> Vec<u8> {
@@ -249,7 +250,7 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
     });
     let txid = tx.id();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, GENESIS + 1));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_transaction(tx);
     let atomic = beef.to_binary_atomic(&txid).unwrap();
@@ -1066,7 +1067,7 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
     });
     let txid = tx.id();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_002));
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, GENESIS + 2));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_transaction(tx);
     let atomic = beef.to_binary_atomic(&txid).unwrap();

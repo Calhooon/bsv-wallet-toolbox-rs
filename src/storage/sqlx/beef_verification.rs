@@ -4,13 +4,16 @@
 //! Extended Format) merkle proofs against a ChainTracker.
 
 use bsv_rs::transaction::beef_stream::{
-    display_hex, verify_stream_two_pass, ChainTip, Hash32, Headers, StreamError, Verdict,
+    display_hex, verify_stream_structure, verify_stream_two_pass, ChainTip, Hash32, Headers,
+    SpendRefusal, StreamError, Verdict,
 };
 use bsv_rs::transaction::{Beef, BeefStream, ChainTracker, ChainTrackerError};
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
 use crate::storage::traits::BeefVerificationMode;
+
+mod live_word;
 
 pub(super) fn stream_error(error: StreamError) -> Error {
     match error {
@@ -51,14 +54,15 @@ impl Headers for VerificationHeaders {
     }
 }
 
-/// The bytes already reside in the caller's argument. Two passes keep only
-/// referenced output scripts until spent, plus the verifier's element/index.
+/// The bytes already reside in the caller's argument. The stream and interim
+/// word passes retain only referenced outputs and entries waiting for parents.
 /// Roots were collected during the door's element scan; each distinct root is
 /// asked once, and the synchronous verifier reads that snapshot without I/O.
 pub(super) async fn verify_beef_spends(
     bytes: &[u8],
     roots: &[(u64, Hash32)],
     tracker: &dyn ChainTracker,
+    network: &str,
 ) -> Result<()> {
     let tip = tracker
         .mining_tip()
@@ -84,10 +88,25 @@ pub(super) async fn verify_beef_spends(
             }
         }
     }
-    // This still runs the SDK default. The #422 word and era policy are
-    // supplied, but this signature lacks the network identity held by the
-    // caller's store settings. Never infer that identity from Genesis height.
-    match verify_stream_two_pass(std::io::Cursor::new(bytes), headers, None)? {
+    // Interim second evaluation until bsv-rs #440 provides a per-input hook.
+    // Only the typed default-mode script refusal is set aside. Because it can
+    // hide later structure/proof checks, complete those before the word pass.
+    let verdict = verify_stream_two_pass(std::io::Cursor::new(bytes), &headers, None)?;
+    match verdict {
+        Verdict::Valid { .. } => live_word::verify(bytes, &headers, network),
+        Verdict::SpendRefused {
+            why: SpendRefusal::Script(_),
+            ..
+        } => {
+            verification_result(verify_stream_structure(bytes, &headers, None)?)?;
+            live_word::verify(bytes, &headers, network)
+        }
+        other => verification_result(other),
+    }
+}
+
+fn verification_result(verdict: Verdict) -> Result<()> {
+    match verdict {
         Verdict::Valid { .. } => Ok(()),
         Verdict::Invalid { offset, kind, .. } => Err(Error::InvalidBeef { offset, kind }),
         Verdict::SpendRefused {
@@ -144,8 +163,8 @@ pub fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
 ///
 /// This function validates that all merkle proofs in a BEEF are valid
 /// according to the provided ChainTracker. No door calls it since #103:
-/// internalize runs the spend verifier, which checks structure, roots and
-/// scripts in one pass; the helper stays public for hosts that hold a BEEF.
+/// internalize runs the stream verifier for structure and roots, plus the
+/// interim per-input script word; this helper stays public for BEEF holders.
 ///
 /// # Arguments
 ///

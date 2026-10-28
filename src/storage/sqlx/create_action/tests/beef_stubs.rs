@@ -103,11 +103,14 @@ async fn l2_23_pin_iii_strict_round_trip_of_wallet_assembly() {
     use bsv_rs::transaction::MockChainTracker;
     let (s, bytes, chain) = l2_23_assembly(true).await;
     let (user, _) = s.find_or_insert_user("03abcd").await.unwrap();
-    let mut t = MockChainTracker::new(101);
-    t.add_root(100, chain[0].1.clone());
+    // This internalize round trip uses a post-Genesis mainnet coin (#422).
+    let height = bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT + 100;
+    let mut t = MockChainTracker::new(height + 1);
+    t.add_root(height, chain[0].1.clone());
     s.set_chain_tracker(std::sync::Arc::new(L2MiningHeaders(t)))
         .await;
     let mut beef = Beef::from_binary(&bytes).unwrap();
+    beef.bumps[0].block_height = height;
     let result = super::super::internalize_action::internalize_action_internal(
         &s,
         user.user_id,
