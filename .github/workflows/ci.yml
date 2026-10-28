@@ -366,7 +366,7 @@ jobs:
   # a path dependency. The clones are reads of public repositories; no token.
   # One bsv-rs per lock (bsv-stack-lean #182): a committed Cargo.lock holding
   # two bsv-rs entries fails, the gate a self-merging stack PR stands behind.
-  # The reusable CI call also runs the workflow-grants-check.sh permission check.
+  # The locks job checks that the reusable CI call grants every job's permissions.
   locks:
     runs-on: ubuntu-latest
     steps:

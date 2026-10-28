@@ -21,7 +21,8 @@
   Refusals remain `WalletRefusal` with class `InvalidParameter`.
   The CLI captain must re-record these replies when taking this change.
 - #412: an explicit dependents `--line` (including `cli_ref`) must name an
-  existing branch; a missing branch fails without cloning. Implicit CI lines
+  existing branch; a missing branch fails without cloning and names the branch
+  and repository URL in its failure row. Implicit CI lines
   retain the noted default-branch fallback. The workflow grants check accepts
   callee jobs with no permission override as inheriting the caller's grant.
 

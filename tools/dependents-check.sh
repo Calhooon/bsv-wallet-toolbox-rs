@@ -219,8 +219,8 @@ run_one() {
         ;;
       2)
         if [ "$explicit_line" -eq 1 ]; then
-          echo "== $crate: no $line branch (explicit --line)"
-          summary+=("$crate|no $line branch (explicit --line)|-")
+          echo "== $crate: no $line branch at $clone (explicit --line)"
+          summary+=("$crate|no $line branch at $clone (explicit --line)|-")
           status=1
           return
         fi
