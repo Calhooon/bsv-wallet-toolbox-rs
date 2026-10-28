@@ -29,6 +29,7 @@ a narrowed row is noted in the summary. The dispatched workflow `dependents.yml`
 before a tag and when the pin lane asks, never on a push run (the owner's word of
 2026-10-27); a private repository needs a token the job does not hold, so its
 row runs on a laptop with `--from`.
+Select a CLI branch with the optional `cli_ref` input: `gh workflow run Dependents --ref beta -f cli_ref=<branch>`; leaving it empty keeps the branch named like this line, including the CLI's main on main.
 Every probe or clone fault appears as a summary row, and the job fails for the named reason.
 
 The rows a test run carries (#252). A `default` row's tests run with
