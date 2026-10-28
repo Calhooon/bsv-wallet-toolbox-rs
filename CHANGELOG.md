@@ -38,7 +38,17 @@
 ### CI
 
 - #417: Check the remote-only feature set in the Clippy job; compile RNG state and methods only for their SQL storage and test consumers.
-- #429: Run the unit tests and every integration suite with `remote` alone in the Test Suite job; the lib-test helper `assert_argument_refusal`, `tests/sync_manager_tests.rs`, the three `StorageSqlx` modules of `tests/test_vectors.rs` and one assertion of `tests/rule_28_cadence_tests.rs` carry the SQL feature gate they need.
+- #429: A host running the crate's tests with `remote` alone now builds and
+  passes them: `cargo test --lib --tests --no-default-features --features remote`
+  went from a build failure on the lib-test helper `assert_argument_refusal`
+  and on `tests/rule_28_cadence_tests.rs` (both reaching items the SQL
+  features export) to 974 tests passing. The helper, that assertion,
+  `tests/sync_manager_tests.rs` and the three `StorageSqlx` vector modules
+  carry the feature gate their consumers have; the default and `full` builds
+  run the same tests as before. CI's Test Suite job runs that remote-only
+  build and test step last, so a gate a remote-only host needs cannot go
+  missing again.
+
 
 ## [0.14.0-beta.3] - 2026-10-28
 
