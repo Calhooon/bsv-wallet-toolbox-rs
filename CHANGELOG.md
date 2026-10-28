@@ -20,6 +20,9 @@
   text above.
   Refusals remain `WalletRefusal` with class `InvalidParameter`.
   The CLI captain must re-record these replies when taking this change.
+- #410: the ladder replay checks that mock server locks are taken off runtime
+  workers with a task-local witness; elapsed timings are diagnostics, so runner
+  load alone cannot fail the lock regression check.
 
 - #404, #185: toolbox request refusals converted at the `WalletInterface`
   boundary now carry `bsv_rs::Error::WalletRefusal { class, message }`.
