@@ -148,8 +148,8 @@ async fn nosend_refusal_answers_ahead_of_a_derivation_that_locks_nothing() {
 /// A valid compressed public key (the secp256k1 generator).
 const SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
-/// #379: validateLabel trims with ECMAScript's `String.prototype.trim`
-/// (WhiteSpace and LineTerminator): U+FEFF trims to nothing and is refused
+/// #379: `validateLabel` trims with ECMAScript's `String.prototype.trim`
+/// (`WhiteSpace` and `LineTerminator`): U+FEFF trims to nothing and is refused
 /// as empty; U+0085 is kept, 2 bytes, and the label is stored as given.
 #[tokio::test]
 async fn byte_order_mark_label_is_refused_as_empty() {

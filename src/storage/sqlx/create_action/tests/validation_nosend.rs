@@ -123,10 +123,10 @@ async fn bare_module_word_is_accepted() {
 }
 
 /// #379: the label is trimmed as ECMAScript's `String.prototype.trim`
-/// trims it (WhiteSpace and LineTerminator), so U+FEFF is stripped ahead of
+/// trims it (`WhiteSpace` and `LineTerminator`), so U+FEFF is stripped ahead of
 /// the prefix check and U+0085 is kept, as in the reference.
 #[tokio::test]
-async fn nosend_label_behind_a_byte_order_mark_is_refused() {
+async fn expiry_label_behind_a_byte_order_mark_is_refused_at_create() {
     assert_refused(&["\u{FEFF}p nosend expiry seconds 300"]).await;
 }
 
