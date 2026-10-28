@@ -21,6 +21,11 @@
   sessions are `NotImplemented`; the other listed guards are `InvalidParameter`.
   The abort door's non-outgoing and unabortable-status guards are
   `InvalidParameter`; process-action status guards remain `InvalidOperation`.
+  At the storage trait, those four abort guards now return
+  `Error::SdkError(WalletRefusal { class: InvalidParameter, .. })` where they
+  returned `Error::InvalidTransactionStatus(text)`, with the text unchanged.
+  The port-only stored-acceptance guards, including retirement, retain
+  `Error::InvalidTransactionStatus(text)`.
   An SDK `WalletRefusal` inside the toolbox's `SdkError` now displays its
   message directly, preserving the abort storage texts; other SDK errors
   keep their `SDK error: ` prefix.
@@ -30,6 +35,8 @@
 - #185: the authenticated storage client's response-wait timeout now carries
   `Error::SdkError(bsv_rs::Error::TransportFault)` with
   `MayHaveBeenReceived`, no status and the existing `Request timed out` detail.
+  Storage-level hosts now receive that SDK wrapper where they received
+  `Error::NetworkError("Request timed out")`.
   Through the SDK its Display moves from
   `wallet error: Network error: Request timed out` to
   `transport fault MAY_HAVE_BEEN_RECEIVED: Request timed out`.

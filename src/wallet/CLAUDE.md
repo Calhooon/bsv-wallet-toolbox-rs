@@ -77,7 +77,9 @@ protocol and require no changes for this boundary conversion.
 
 The authenticated storage client's response-wait timeout carries an SDK
 `TransportFault` with `MayHaveBeenReceived`, no status and the original
-`Request timed out` detail. Its SDK Display is now
+`Request timed out` detail. Storage-level hosts receive
+`Error::SdkError(bsv_rs::Error::TransportFault { .. })` instead of
+`Error::NetworkError("Request timed out")`. Its SDK Display is now
 `transport fault MAY_HAVE_BEEN_RECEIVED: Request timed out`, formerly
 `wallet error: Network error: Request timed out`. The response-channel closure
 remains a local `NetworkError`; it supplies no remote outcome.
@@ -95,6 +97,10 @@ The four reference/status guards in `validate_transaction_for_abort` use
 `Error::into_invalid_parameter`: it wraps the variant's unchanged Display in
 `SdkError(WalletRefusal { class: InvalidParameter, message })`. This is a
 site-specific override, not a change to every `InvalidTransactionStatus`.
+Storage-level hosts receive that SDK wrapper where these four guards returned
+`Error::InvalidTransactionStatus(text)`. Stored-acceptance guards, including
+retirement, still return `Error::InvalidTransactionStatus(text)` and become
+`InvalidOperation` at the wallet boundary.
 The `SdkError` Display is transparent for an SDK `WalletRefusal`, so the
 storage caller sees the same message too; other SDK errors retain their
 `SDK error: ` prefix.
