@@ -921,19 +921,8 @@ where
         &self,
         args: GetPublicKeyArgs,
     ) -> std::result::Result<GetPublicKeyResult, bsv_rs::Error> {
-        // ProtoWallet uses the same types that are re-exported
-        use bsv_rs::wallet::GetPublicKeyArgs as ProtoGetPublicKeyArgs;
-
-        let proto_args = ProtoGetPublicKeyArgs {
-            identity_key: args.identity_key,
-            protocol_id: args.protocol_id,
-            key_id: args.key_id,
-            counterparty: args.counterparty,
-            for_self: args.for_self,
-            ..Default::default()
-        };
-
-        let result = self.proto_wallet.get_public_key(proto_args)?;
+        // Pass the SDK request intact so every field reaches its validator.
+        let result = self.proto_wallet.get_public_key(args)?;
 
         Ok(GetPublicKeyResult {
             public_key: result.public_key,
@@ -945,17 +934,7 @@ where
         &self,
         args: EncryptArgs,
     ) -> std::result::Result<EncryptResult, bsv_rs::Error> {
-        use bsv_rs::wallet::EncryptArgs as ProtoEncryptArgs;
-
-        let proto_args = ProtoEncryptArgs {
-            plaintext: args.plaintext,
-            protocol_id: args.protocol_id,
-            key_id: args.key_id,
-            counterparty: args.counterparty,
-            ..Default::default()
-        };
-
-        let result = self.proto_wallet.encrypt(proto_args)?;
+        let result = self.proto_wallet.encrypt(args)?;
 
         Ok(EncryptResult {
             ciphertext: result.ciphertext,
@@ -967,17 +946,7 @@ where
         &self,
         args: DecryptArgs,
     ) -> std::result::Result<DecryptResult, bsv_rs::Error> {
-        use bsv_rs::wallet::DecryptArgs as ProtoDecryptArgs;
-
-        let proto_args = ProtoDecryptArgs {
-            ciphertext: args.ciphertext,
-            protocol_id: args.protocol_id,
-            key_id: args.key_id,
-            counterparty: args.counterparty,
-            ..Default::default()
-        };
-
-        let result = self.proto_wallet.decrypt(proto_args)?;
+        let result = self.proto_wallet.decrypt(args)?;
 
         Ok(DecryptResult {
             plaintext: result.plaintext,
@@ -989,17 +958,7 @@ where
         &self,
         args: CreateHmacArgs,
     ) -> std::result::Result<CreateHmacResult, bsv_rs::Error> {
-        use bsv_rs::wallet::CreateHmacArgs as ProtoCreateHmacArgs;
-
-        let proto_args = ProtoCreateHmacArgs {
-            data: args.data,
-            protocol_id: args.protocol_id,
-            key_id: args.key_id,
-            counterparty: args.counterparty,
-            ..Default::default()
-        };
-
-        let result = self.proto_wallet.create_hmac(proto_args)?;
+        let result = self.proto_wallet.create_hmac(args)?;
 
         Ok(CreateHmacResult { hmac: result.hmac })
     }
@@ -1009,18 +968,7 @@ where
         &self,
         args: VerifyHmacArgs,
     ) -> std::result::Result<VerifyHmacResult, bsv_rs::Error> {
-        use bsv_rs::wallet::VerifyHmacArgs as ProtoVerifyHmacArgs;
-
-        let proto_args = ProtoVerifyHmacArgs {
-            data: args.data,
-            hmac: args.hmac,
-            protocol_id: args.protocol_id,
-            key_id: args.key_id,
-            counterparty: args.counterparty,
-            ..Default::default()
-        };
-
-        let result = self.proto_wallet.verify_hmac(proto_args)?;
+        let result = self.proto_wallet.verify_hmac(args)?;
 
         Ok(VerifyHmacResult {
             valid: result.valid,
@@ -1032,18 +980,7 @@ where
         &self,
         args: CreateSignatureArgs,
     ) -> std::result::Result<CreateSignatureResult, bsv_rs::Error> {
-        use bsv_rs::wallet::CreateSignatureArgs as ProtoCreateSignatureArgs;
-
-        let proto_args = ProtoCreateSignatureArgs {
-            data: args.data,
-            hash_to_directly_sign: args.hash_to_directly_sign,
-            protocol_id: args.protocol_id,
-            key_id: args.key_id,
-            counterparty: args.counterparty,
-            ..Default::default()
-        };
-
-        let result = self.proto_wallet.create_signature(proto_args)?;
+        let result = self.proto_wallet.create_signature(args)?;
 
         Ok(CreateSignatureResult {
             signature: result.signature,
@@ -1055,20 +992,7 @@ where
         &self,
         args: VerifySignatureArgs,
     ) -> std::result::Result<VerifySignatureResult, bsv_rs::Error> {
-        use bsv_rs::wallet::VerifySignatureArgs as ProtoVerifySignatureArgs;
-
-        let proto_args = ProtoVerifySignatureArgs {
-            data: args.data,
-            hash_to_directly_verify: args.hash_to_directly_verify,
-            signature: args.signature,
-            protocol_id: args.protocol_id,
-            key_id: args.key_id,
-            counterparty: args.counterparty,
-            for_self: args.for_self,
-            ..Default::default()
-        };
-
-        let result = self.proto_wallet.verify_signature(proto_args)?;
+        let result = self.proto_wallet.verify_signature(args)?;
 
         Ok(VerifySignatureResult {
             valid: result.valid,
