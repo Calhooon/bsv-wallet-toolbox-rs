@@ -50,6 +50,10 @@ use crate::storage::{not_busy, AuthId, WalletStorageProvider};
 mod network_isolation_tests;
 
 #[cfg(test)]
+#[path = "certificate_issuance_peer_fixture.rs"]
+mod peer_fixture;
+
+#[cfg(test)]
 tokio::task_local! {
     // Route a validated public URL to a loopback fixture within one test future.
     // Argument validation always runs, and production has no override.
