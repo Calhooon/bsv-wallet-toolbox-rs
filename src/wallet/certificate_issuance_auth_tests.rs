@@ -43,11 +43,15 @@ async fn refused_in_send(server: &ServerGuard, words: &str) {
 /// text's move to the reference's does not break the witness.
 async fn refused_with_status(server: &ServerGuard, status: Option<u16>) {
     let error = issue(server).await.unwrap_err().to_string();
-    let status = status.map(|code| code.to_string()).unwrap_or_default();
-    assert!(
-        error.starts_with(SEND_REFUSED) && error.contains(&status),
-        "{error}"
-    );
+    // The status is matched as a whole number, so a port such as 53071 in
+    // the URL never passes for a 307.
+    let status_present = status.is_none_or(|code| {
+        let code = code.to_string();
+        error
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|token| token == code)
+    });
+    assert!(error.starts_with(SEND_REFUSED) && status_present, "{error}");
 }
 
 /// `certifier`'s answer on `/issue`, expected once.

@@ -1,5 +1,5 @@
 //! #315: a certifier fixture that speaks BRC-104 as the reference middleware
-//! answers it (ts-stack@edf6e03 `packages/auth-express-middleware/src/index.ts`):
+//! answers it (ts-stack@edf6e03 `packages/middleware/auth-express-middleware/src/index.ts`):
 //! the handshake on `POST /.well-known/auth` (`:1005-1031`), then the issuance
 //! path, the client's signature checked and the answer signed (`:931-968`), or
 //! a request whose session or signature fails refused with an unsigned 401
@@ -193,6 +193,10 @@ impl PeerCertifier {
     /// reaches a session has its signature and `x-bsv-*` names recorded.
     fn verdict(&self, request: &Request) -> Verdict {
         let request_id = header(request, "x-bsv-auth-request-id");
+        // Partial `x-bsv-auth-*` headers with no request id are read as
+        // unauthenticated here; the reference throws `AuthProtocolError` for
+        // that shape (`index.ts:1099-1102`), which this crate's client never
+        // sends.
         if request_id.is_empty() {
             return Verdict::Unauthenticated;
         }
