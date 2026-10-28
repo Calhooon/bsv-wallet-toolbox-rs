@@ -102,6 +102,11 @@ async fn a_base64_signature_is_refused_by_the_client() {
 }
 
 #[tokio::test]
+async fn a_signature_past_2048_characters_is_refused_by_the_client() {
+    refused("signature", "signature_2050_characters").await;
+}
+
+#[tokio::test]
 async fn a_certificate_request_answer_keeps_its_type_through_the_client() {
     // The type kept: the Peer reads a certificateRequest and asks for its set.
     let name = "type_certificateRequest";

@@ -13,6 +13,7 @@ pub(crate) struct Case {
     pub(crate) handshake: bool,
     certificate_bytes: Option<usize>,
     signature: Option<String>,
+    signature_chars: Option<usize>,
     message_type: Option<String>,
     body_bytes: Option<usize>,
     request_id: Option<String>,
@@ -73,8 +74,12 @@ impl Case {
     /// The answer's headers past version and identity, built as
     /// `tests/brc104_bounds.rs` builds them (no case here is Latin-1).
     pub(crate) fn headers(&self) -> Vec<(String, String)> {
-        let signature = self.signature.as_deref().unwrap_or("3006020101020101");
-        let mut values = vec![("x-bsv-auth-signature".to_string(), signature.to_string())];
+        let signature = self.signature.clone().unwrap_or_else(|| {
+            self.signature_chars
+                .map(|size| "a".repeat(size))
+                .unwrap_or_else(|| "3006020101020101".into())
+        });
+        let mut values = vec![("x-bsv-auth-signature".to_string(), signature)];
         for (name, value) in [
             ("x-bsv-auth-message-type", &self.message_type),
             ("x-bsv-auth-request-id", &self.request_id),
