@@ -3944,6 +3944,8 @@ fn validate_named_input_unlocking_scripts(
 mod tests {
     use super::*;
 
+    // Its consumers are the SQL-store door tests below (#429).
+    #[cfg(feature = "sqlite")]
     fn assert_argument_refusal<T: std::fmt::Debug>(
         scenario: &str,
         result: bsv_rs::Result<T>,
