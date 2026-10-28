@@ -3,6 +3,7 @@ use crate::storage::sqlx::internalize_action::{
     validate_array_bound, MAXIMUM_SEND_WITH_TRANSACTIONS, MAXIMUM_WALLET_COLLECTION_ITEMS,
 };
 use crate::storage::sqlx::label::normalize_label;
+use crate::wallet::internalize_args::validate_description;
 // =============================================================================
 // Constants
 // =============================================================================
@@ -41,23 +42,7 @@ const BRC177_UNSUPPORTED: &str = "Active storage does not support BRC-177 noSend
 
 /// Validates create action arguments.
 pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArgs) -> Result<()> {
-    // Validate description length
-    if args.description.len() < MIN_DESCRIPTION_LENGTH {
-        return Err(Error::ValidationError(format!(
-            "description length must be between {} and {}, got {}",
-            MIN_DESCRIPTION_LENGTH,
-            MAX_DESCRIPTION_LENGTH,
-            args.description.len()
-        )));
-    }
-    if args.description.len() > MAX_DESCRIPTION_LENGTH {
-        return Err(Error::ValidationError(format!(
-            "description length must be between {} and {}, got {}",
-            MIN_DESCRIPTION_LENGTH,
-            MAX_DESCRIPTION_LENGTH,
-            args.description.len()
-        )));
-    }
+    validate_description(&args.description)?;
 
     // ts-stack@edf6e03 validationHelpers.ts validateCreateActionArgs order
     // (749-808): description (755), inputs (758), outputs (759, each
@@ -130,7 +115,10 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
             // Validate output description
             if output.output_description.len() < MIN_DESCRIPTION_LENGTH {
                 return Err(Error::ValidationError(format!(
-                    "outputs[{}]: output description length must be between {} and {}",
+                    concat!(
+                        "outputs[{}]: output description length must be ",
+                        "between {} and {}"
+                    ),
                     i, MIN_DESCRIPTION_LENGTH, MAX_DESCRIPTION_LENGTH
                 )));
             }
