@@ -31,8 +31,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bsv_rs::auth::certificates::Certificate;
 use bsv_rs::primitives::{PublicKey, SymmetricKey};
 use bsv_rs::wallet::{
-    AcquireCertificateArgs, Counterparty, CreateHmacArgs, Protocol, SecurityLevel, VerifyHmacArgs,
-    WalletCertificate, WalletInterface,
+    AcquireCertificateArgs, Counterparty, CreateHmacArgs, ProtoWallet, Protocol, SecurityLevel,
+    VerifyHmacArgs, WalletCertificate, WalletInterface,
 };
 use serde::{Deserialize, Serialize};
 
@@ -191,6 +191,7 @@ pub(crate) struct ParseCertificateResponseResult {
 ///
 /// # Arguments
 /// * `wallet` - The wallet implementing WalletInterface for crypto operations
+/// * `peer_wallet` - The wallet's `ProtoWallet`, the identity the certifier is sent
 /// * `storage` - Storage provider for persisting the certificate
 /// * `auth` - Authentication context for storage operations
 /// * `args` - Certificate acquisition arguments
@@ -201,6 +202,7 @@ pub(crate) struct ParseCertificateResponseResult {
 /// The acquired certificate on success
 pub async fn acquire_certificate_issuance<W, S>(
     wallet: &W,
+    peer_wallet: ProtoWallet,
     storage: &S,
     auth: &AuthId,
     mut args: AcquireCertificateArgs,
@@ -225,7 +227,7 @@ where
 
     // Step 2: Send HTTP POST to certifier; the identity header is checked before the body
     let response =
-        send_issuance_request(certifier_url, &prepared.body, identity_key, &certifier_hex).await?;
+        send_issuance_request(peer_wallet, certifier_url, &prepared.body, &certifier_hex).await?;
 
     // Step 3: Parse and validate response
     let parsed = parse_certificate_response(&response)?;
@@ -565,9 +567,9 @@ where
 /// The response's identity header must equal `certifier_hex` before the body is
 /// read, as at ts-stack@edf6e03 Wallet.ts:789-793.
 async fn send_issuance_request(
+    peer_wallet: ProtoWallet,
     certifier_url: &str,
     body: &[u8],
-    identity_key: &str,
     certifier_hex: &str,
 ) -> Result<ProtocolIssuanceResponse> {
     #[cfg(test)]
@@ -579,7 +581,7 @@ async fn send_issuance_request(
     let response = client
         .post(certifier_url)
         .header(HEADER_AUTH_VERSION, BRC104_AUTH_VERSION)
-        .header(HEADER_IDENTITY_KEY, identity_key)
+        .header(HEADER_IDENTITY_KEY, peer_wallet.identity_key_hex())
         .header("Content-Type", "application/json")
         .body(body.to_vec())
         .send()
@@ -1430,14 +1432,13 @@ mod tests {
     async fn test_send_issuance_request_network_error() {
         // Test that network errors are properly handled
         let body = b"{}";
-        let identity_key = "02abc123";
 
         // Use an invalid URL to trigger network error
         let result = send_issuance_request(
+            ProtoWallet::new(None),
             "http://invalid-url-that-does-not-exist.local:12345",
             body,
-            identity_key,
-            identity_key,
+            "02abc123",
         )
         .await;
 

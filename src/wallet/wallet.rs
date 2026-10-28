@@ -2755,6 +2755,7 @@ where
 
                 super::certificate_issuance::acquire_certificate_issuance(
                     self,
+                    self.proto_wallet.clone(),
                     self.storage.as_ref(),
                     &auth,
                     args,

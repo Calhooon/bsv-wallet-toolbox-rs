@@ -258,6 +258,7 @@ async fn acquire_as_test_wallet(
 ) -> bsv_rs::Result<WalletCertificate> {
     acquire_certificate_issuance(
         wallet,
+        subject_proto(),
         wallet.storage(),
         &AuthId::with_user_id(wallet.identity_key(), 1),
         acquisition,
