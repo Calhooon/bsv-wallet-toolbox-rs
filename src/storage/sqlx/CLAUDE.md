@@ -442,6 +442,20 @@ the pinned reference's merge details are in `docs/STORAGE-WIRE.md`.
 
 The `beef_verification.rs` module provides BEEF (Background Evaluation Extended Format) merkle proof verification:
 
+The live `internalize_action` door calls `verify_beef_spends`, which currently
+uses bsv-rs 0.9.0-beta.3's `verify_stream_two_pass` in the SDK default script
+mode. The keeper's #422 rule requires `Spend::set_flags(ScriptFlags::standard(era))`
+per input, with the coin's proven height when its parent is proved by the BEEF
+and the tracker tip's height otherwise. The pinned stream API has no flag
+argument or per-input hook, and `ChainTip` supplies Genesis and CSV activation
+heights but no Chronicle activation height. `ProtocolEra::mainnet` switches at
+943,816 and returns `None` below 620,538; `at_height` requires the caller to supply
+both activation heights and defines no testnet or regtest defaults. A local
+per-input `Spend` pass after structural verification is possible, but must also
+preserve the stream verifier's mining, value and resource checks. The unresolved
+era cases still need a rule; do not assign them a guessed word. D15 remains open.
+The mode comparisons in `script_pin_tests` are API evidence, not a live-door fix.
+
 ### Core Functions
 ```rust
 pub async fn verify_beef_merkle_proofs(

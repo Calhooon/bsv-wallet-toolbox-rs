@@ -3,19 +3,24 @@
 use super::beef_verification::verify_beef_spends;
 use crate::Error;
 use bsv_rs::primitives::bsv::sighash::{
-    compute_sighash_original_for_signing, parse_transaction, SighashParams,
+    compute_sighash_original_for_signing, parse_transaction, SighashParams, TxSighashCache,
 };
 use bsv_rs::primitives::PrivateKey;
-use bsv_rs::script::{LockingScript, UnlockingScript};
+use bsv_rs::script::{
+    LockingScript, ProtocolEra, ScriptFlags, Spend, TxSpendParams, UnlockingScript,
+};
 use bsv_rs::transaction::beef_stream::{ChainTip, SpendRefusal};
 use bsv_rs::transaction::{
     Beef, ChainTracker, ChainTrackerError, MerklePath, Transaction, TransactionInput,
     TransactionOutput,
 };
+use std::sync::Arc;
 
 const HEIGHT: u32 = 100_001;
 
-struct Tracker;
+struct Tracker {
+    height: u32,
+}
 
 #[async_trait::async_trait]
 impl ChainTracker for Tracker {
@@ -24,16 +29,16 @@ impl ChainTracker for Tracker {
         _: &str,
         height: u32,
     ) -> Result<bool, ChainTrackerError> {
-        Ok(height == HEIGHT)
+        Ok(height == self.height)
     }
 
     async fn current_height(&self) -> Result<u32, ChainTrackerError> {
-        Ok(HEIGHT + 6)
+        Ok(self.height + 6)
     }
 
     async fn mining_tip(&self) -> Result<Option<ChainTip>, ChainTrackerError> {
         Ok(Some(ChainTip {
-            height: HEIGHT + 6,
+            height: self.height + 6,
             median_time_past: 1_700_000_000,
             genesis_height: 620_538,
             csv_height: 419_328,
@@ -65,9 +70,17 @@ fn payment(lock: &str) -> (Transaction, Transaction) {
 }
 
 async fn verify(parent: Transaction, child: Transaction) -> crate::Result<()> {
+    verify_at_height(parent, child, HEIGHT).await
+}
+
+async fn verify_at_height(
+    parent: Transaction,
+    child: Transaction,
+    height: u32,
+) -> crate::Result<()> {
     let parent_id = parent.id();
     let child_id = child.id();
-    let bump = MerklePath::from_coinbase_txid(&parent_id, HEIGHT);
+    let bump = MerklePath::from_coinbase_txid(&parent_id, height);
     let root = bump.compute_root(Some(&parent_id)).unwrap();
     let mut root_bytes: [u8; 32] = hex::decode(root).unwrap().try_into().unwrap();
     root_bytes.reverse();
@@ -77,13 +90,13 @@ async fn verify(parent: Transaction, child: Transaction) -> crate::Result<()> {
     beef.merge_transaction(child);
     verify_beef_spends(
         &beef.to_binary_atomic(&child_id).unwrap(),
-        &[(u64::from(HEIGHT), root_bytes)],
-        &Tracker,
+        &[(u64::from(height), root_bytes)],
+        &Tracker { height },
     )
     .await
 }
 
-async fn signed(scope: u8) -> crate::Result<()> {
+fn signed_payment(scope: u8) -> (Transaction, Transaction) {
     let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
     let lock = format!("21{}ac", key.public_key().to_hex());
     let (parent, mut child) = payment(&lock);
@@ -105,6 +118,11 @@ async fn signed(scope: u8) -> crate::Result<()> {
     unlock.extend(signature);
     child.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
     child.invalidate_caches();
+    (parent, child)
+}
+
+async fn signed(scope: u8) -> crate::Result<()> {
+    let (parent, child) = signed_payment(scope);
     verify(parent, child).await
 }
 
@@ -145,4 +163,100 @@ async fn internalize_verifier_uses_the_default_nonminimal_number_words() {
         verify(parent, child).await,
         "non-minimally encoded script number",
     );
+}
+
+// #422 API audit: these compare the pinned SDK modes directly. They do not
+// claim the live internalize verifier has selected a word.
+fn word_verdict(
+    parent: &Transaction,
+    child: &Transaction,
+    era: ProtocolEra,
+) -> Result<bool, String> {
+    let raw = parse_transaction(&child.to_binary()).unwrap();
+    let transaction = Arc::new(TxSighashCache::new(
+        raw.version,
+        raw.inputs,
+        raw.outputs,
+        raw.locktime,
+    ));
+    let mut spend = Spend::with_transaction(TxSpendParams {
+        transaction,
+        input_index: 0,
+        source_satoshis: parent.outputs[0].satoshis.unwrap(),
+        locking_script: parent.outputs[0].locking_script.clone(),
+        unlocking_script: child.inputs[0].unlocking_script.clone().unwrap(),
+        memory_limit: None,
+        work_limit: None,
+    })
+    .unwrap();
+    spend.set_flags(ScriptFlags::standard(era));
+    spend.validate().map_err(|error| error.message)
+}
+
+/// A valid `OP_SUBSTR` at version 1 is accepted in both modes after Chronicle.
+/// It cannot witness a default-mode acceptance that the word refuses.
+#[tokio::test]
+async fn post_chronicle_version_one_substr_passes_both_modes() {
+    let (parent, mut child) = payment("0052b302616287");
+    child.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("03616263").unwrap());
+    assert_eq!(
+        word_verdict(&parent, &child, ProtocolEra::PostChronicle),
+        Ok(true)
+    );
+    assert!(
+        verify_at_height(parent, child, ProtocolEra::MAINNET_CHRONICLE_HEIGHT)
+            .await
+            .is_ok()
+    );
+    eprintln!("version-1 OP_SUBSTR: default accepted; post-Chronicle standard accepted");
+}
+
+/// The same valid signature that the default mode refuses is accepted under
+/// the post-Chronicle word, as overlay #205 describes.
+#[tokio::test]
+async fn post_chronicle_word_accepts_version_one_chronicle_signature() {
+    let (parent, child) = signed_payment(0x61);
+    assert_eq!(
+        word_verdict(&parent, &child, ProtocolEra::PostChronicle),
+        Ok(true)
+    );
+    assert_eq!(
+        word_verdict(&parent, &child, ProtocolEra::PostGenesis),
+        Err("The signature must not use SIGHASH_CHRONICLE before Chronicle.".into())
+    );
+    script_words(
+        verify_at_height(parent, child, ProtocolEra::MAINNET_CHRONICLE_HEIGHT).await,
+        "The signature format is invalid.",
+    );
+    eprintln!("version-1 0x61: default refused; post-Chronicle standard accepted");
+}
+
+#[tokio::test]
+async fn standard_word_refuses_original_digest_without_forkid() {
+    let (parent, child) = signed_payment(0x01);
+    for era in [ProtocolEra::PostGenesis, ProtocolEra::PostChronicle] {
+        assert_eq!(
+            word_verdict(&parent, &child, era),
+            Err("The signature must use SIGHASH_FORKID.".into())
+        );
+    }
+    assert!(
+        verify_at_height(parent, child, ProtocolEra::MAINNET_CHRONICLE_HEIGHT)
+            .await
+            .is_ok()
+    );
+    eprintln!("0x01: default accepted; standard refused: The signature must use SIGHASH_FORKID.");
+}
+
+#[test]
+fn sdk_mainnet_era_mapping_declines_pre_genesis_heights() {
+    for (height, expected) in [
+        (620_537, None),
+        (620_538, Some(ProtocolEra::PostGenesis)),
+        (943_815, Some(ProtocolEra::PostGenesis)),
+        (943_816, Some(ProtocolEra::PostChronicle)),
+    ] {
+        assert_eq!(ProtocolEra::mainnet(height), expected);
+    }
+    eprintln!("mainnet eras: pre-620538 unavailable; 620538..943815 post-Genesis; 943816 onward post-Chronicle");
 }
