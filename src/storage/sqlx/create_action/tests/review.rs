@@ -116,6 +116,20 @@ impl Fixture {
         review.clone()
     }
 
+    /// A proof request for the competitor in `status`, holding its raw bytes.
+    async fn request(&self, status: &str, input_beef: Option<Vec<u8>>) {
+        sqlx::query(
+            "INSERT INTO proven_tx_reqs (txid, status, raw_tx, input_beef) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&self.competitor)
+        .bind(status)
+        .bind(&self.raw)
+        .bind(input_beef)
+        .execute(self.wallet.storage().writer())
+        .await
+        .unwrap();
+    }
+
     async fn beef(&self) -> Beef {
         let review = self.refuse().await;
         Beef::from_binary(
@@ -151,6 +165,7 @@ async fn create_review_carries_competing_beef_with_stored_proof() {
 #[tokio::test]
 async fn create_review_carries_competing_beef_with_stored_ancestry() {
     let f = fixture().await;
+    f.request("unsent", None).await;
     let mut beef = f.beef().await;
     assert_eq!(
         beef.find_txid(&f.competitor).unwrap().raw_tx(),
@@ -177,15 +192,7 @@ async fn create_review_carries_competing_beef_from_request_input_beef() {
         .execute(f.wallet.storage().writer())
         .await
         .unwrap();
-    sqlx::query(
-        "INSERT INTO proven_tx_reqs (txid, status, raw_tx, input_beef) VALUES (?, 'unmined', ?, ?)",
-    )
-    .bind(&f.competitor)
-    .bind(&f.raw)
-    .bind(ancestry.to_binary())
-    .execute(f.wallet.storage().writer())
-    .await
-    .unwrap();
+    f.request("unmined", Some(ancestry.to_binary())).await;
     let beef = f.beef().await;
     assert_eq!(
         beef.find_txid(&f.competitor).unwrap().raw_tx(),
@@ -206,4 +213,28 @@ async fn create_review_carries_txid_only_beef_when_raw_tx_is_missing() {
     assert_eq!(beef.txs.len(), 1);
     assert!(beef.find_txid(&f.competitor).unwrap().is_txid_only());
     assert!(beef.bumps.is_empty());
+}
+
+/// The review's probe: `getProvenOrRawTx` (StorageKnex.ts:189-210) reads
+/// `proven_txs`, then a request in its six statuses, never the action's own
+/// `transactions.raw_tx`. A `doubleSpend` request with a stored row answers
+/// txid-only, as the reference does when services also miss.
+#[tokio::test]
+async fn create_review_reads_no_transaction_row_beside_a_double_spend_request() {
+    let f = fixture().await;
+    f.request("doubleSpend", None).await;
+    let beef = f.beef().await;
+    assert_eq!(beef.txs.len(), 1);
+    assert!(beef.find_txid(&f.competitor).unwrap().is_txid_only());
+    assert!(beef.bumps.is_empty());
+}
+
+/// A stored action row with no proven tx and no request answers txid-only:
+/// create asks no provider for the bytes.
+#[tokio::test]
+async fn create_review_reads_no_transaction_row_without_a_request() {
+    let f = fixture().await;
+    let beef = f.beef().await;
+    assert_eq!(beef.txs.len(), 1);
+    assert!(beef.find_txid(&f.competitor).unwrap().is_txid_only());
 }
