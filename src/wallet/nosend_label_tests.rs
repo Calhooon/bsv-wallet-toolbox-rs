@@ -175,7 +175,7 @@ async fn nosend_batch_label_is_refused_with_the_grammar_text_through_wallet_inte
 async fn assert_internalize_refused(
     wallet: &Wallet<StorageSqlx, MockWalletServices>,
     args: InternalizeActionArgs,
-    expected_class: Option<WalletRefusalClass>,
+    expected_class: WalletRefusalClass,
     text: &str,
 ) {
     let before = store_snapshot(wallet).await;
@@ -183,13 +183,12 @@ async fn assert_internalize_refused(
         .internalize_action(args, Some(ORIGIN))
         .await
         .unwrap_err();
-    match (expected_class, error) {
-        (Some(expected), error @ bsv_rs::Error::WalletRefusal { class, .. }) => {
-            assert_eq!(class, expected);
+    match error {
+        error @ bsv_rs::Error::WalletRefusal { class, .. } => {
+            assert_eq!(class, expected_class);
             assert_eq!(error.to_string(), text);
         }
-        (None, bsv_rs::Error::WalletError(message)) => assert_eq!(message, text),
-        (_, other) => panic!("refused with another error: {other:?}"),
+        other => panic!("refused with another error: {other:?}"),
     }
     assert_eq!(store_snapshot(wallet).await, before);
 }
@@ -203,7 +202,7 @@ async fn over_long_label_answers_ahead_of_the_nosend_refusal_through_wallet_inte
     assert_internalize_refused(
         &wallet,
         insertion_labelled(&["p nosend expiry seconds 300", &long]),
-        Some(WalletRefusalClass::InvalidParameter),
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The label parameter must be no more than 300 length.",
     )
     .await;
@@ -257,7 +256,7 @@ async fn derivation_mismatch_answers_ahead_of_the_nosend_refusal_through_wallet_
         hex::encode(derived.hash160()),
         hex::encode(&lock[3..23])
     );
-    assert_internalize_refused(&wallet, args, None, &text).await;
+    assert_internalize_refused(&wallet, args, WalletRefusalClass::InvalidParameter, &text).await;
 }
 
 /// #380: validateStringLength(args.description, 'description', 5, 2000)
@@ -272,7 +271,7 @@ async fn short_description_answers_ahead_of_an_over_long_label_through_wallet_in
     assert_internalize_refused(
         &wallet,
         args,
-        Some(WalletRefusalClass::InvalidParameter),
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The description parameter must be at least 5 length.",
     )
     .await;
@@ -295,6 +294,21 @@ fn payment_of(prefix: &str, suffix: &str, sender: &str) -> InternalizeActionArgs
 
 const PAYMENT_SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
+/// ts-stack@edf6e03 signer/methods/internalizeAction.ts:57-58.
+#[tokio::test]
+async fn internalize_output_index_is_an_invalid_parameter_without_writes() {
+    let (_dir, wallet) = wallet().await;
+    let mut args = payment_of("cHJlZml4", "c3VmZml4", PAYMENT_SENDER);
+    args.outputs[0].output_index = 1;
+    assert_internalize_refused(
+        &wallet,
+        args,
+        WalletRefusalClass::InvalidParameter,
+        "output_index 1 exceeds transaction output count 1",
+    )
+    .await;
+}
+
 /// #377: the wallet refuses an empty derivationPrefix or derivationSuffix
 /// ahead of the store (D13) in the text of the reference's
 /// validateBase64String (ts-stack@edf6e03 validationHelpers.ts:439-441,
@@ -305,14 +319,14 @@ async fn empty_derivation_answers_the_base64_text_through_wallet_interface() {
     assert_internalize_refused(
         &wallet,
         payment_of("", "", PAYMENT_SENDER),
-        None,
+        WalletRefusalClass::InvalidParameter,
         "The derivationPrefix parameter must be valid base64 string",
     )
     .await;
     assert_internalize_refused(
         &wallet,
         payment_of("cHJlZml4", "", PAYMENT_SENDER),
-        None,
+        WalletRefusalClass::InvalidParameter,
         "The derivationSuffix parameter must be valid base64 string",
     )
     .await;
@@ -327,21 +341,21 @@ async fn door_payment_texts_are_served_through_wallet_interface() {
     assert_internalize_refused(
         &wallet,
         payment_of("test_prefix", "c3VmZml4", PAYMENT_SENDER),
-        Some(WalletRefusalClass::InvalidParameter),
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The derivationPrefix parameter must be valid base64 string",
     )
     .await;
     assert_internalize_refused(
         &wallet,
         payment_of("cHJlZml4", "sender_key", "sender_key"),
-        Some(WalletRefusalClass::InvalidParameter),
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The derivationSuffix parameter must be valid base64 string",
     )
     .await;
     assert_internalize_refused(
         &wallet,
         payment_of("cHJlZml4", "c3VmZml4", "sender_key"),
-        Some(WalletRefusalClass::InvalidParameter),
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
     )
     .await;
@@ -368,7 +382,7 @@ async fn invalid_sender_on_p2pkh_answers_the_wallet_text_through_wallet_interfac
     assert_internalize_refused(
         &wallet,
         args,
-        None,
+        WalletRefusalClass::InvalidParameter,
         "Invalid sender_identity_key: invalid hex string: Invalid character 's' at position 0",
     )
     .await;
@@ -386,7 +400,7 @@ async fn empty_sender_on_p2pkh_answers_the_door_hex_text_through_wallet_interfac
     assert_internalize_refused(
         &wallet,
         args,
-        Some(WalletRefusalClass::InvalidParameter),
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
     )
     .await;
@@ -399,7 +413,7 @@ async fn empty_sender_on_p2pkh_answers_the_door_hex_text_through_wallet_interfac
         hex::encode(&own_lock(&wallet)[3..23]),
         "00".repeat(20)
     );
-    assert_internalize_refused(&wallet, args, None, &text).await;
+    assert_internalize_refused(&wallet, args, WalletRefusalClass::InvalidParameter, &text).await;
 }
 
 /// #371: a wallet payment with no paymentRemittance, and a basket insertion
@@ -413,7 +427,7 @@ async fn missing_remittance_answers_the_door_text_through_wallet_interface() {
     assert_internalize_refused(
         &wallet,
         args,
-        Some(WalletRefusalClass::InvalidParameter),
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The output remittance parameter must be only paymentRemittance for wallet payment",
     )
     .await;
@@ -422,7 +436,7 @@ async fn missing_remittance_answers_the_door_text_through_wallet_interface() {
     assert_internalize_refused(
         &wallet,
         args,
-        Some(WalletRefusalClass::InvalidParameter),
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The output remittance parameter must be only insertionRemittance for basket insertion",
     )
     .await;

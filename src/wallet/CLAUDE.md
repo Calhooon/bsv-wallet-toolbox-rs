@@ -39,7 +39,7 @@ from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
 | `NotFound { entity, id }` | `InvalidParameter` | `WERR_INVALID_PARAMETER` (nearest) | `Entity not found: {entity} with id {id}` |
 | `UserNotFound(detail)` | `InvalidParameter` | `WERR_INVALID_PARAMETER` (nearest) | `User not found: {detail}` |
 | `InvalidOperation(detail)` | `InvalidOperation` | `WERR_INVALID_OPERATION` | `Invalid operation: {detail}` |
-| `InvalidTransactionStatus(detail)` | `InvalidOperation` | `WERR_INVALID_OPERATION` | `Invalid transaction status: {detail}` |
+| `InvalidTransactionStatus(detail)` | `InvalidOperation` | `WERR_INVALID_OPERATION` (`processAction.ts:477-478`; nearest for port-only guards) | `Invalid transaction status: {detail}` |
 | `UnspendableCoin { outpoint, missing }` | `InvalidOperation` | `WERR_INVALID_OPERATION` (nearest) | `Unspendable coin: {outpoint}: its stored ancestry is incomplete, ancestor(s) not stored: [{missing joined with commas}]; createAction fetches none, and the wallet's other coins do not cover the action` |
 | `FailedAncestor { txid }` | `InvalidOperation` | `WERR_INVALID_OPERATION` (nearest) | `Failed ancestor: {txid} is failed in this wallet; nothing built on it is assembled or broadcast` |
 | `Duplicate { entity, id }` | `InvalidOperation` | `WERR_INVALID_OPERATION` (nearest) | `Duplicate entity: {entity} with id {id}` |
@@ -91,17 +91,70 @@ The service-factory lookup in the internalize door still wraps errors from a
 custom `WalletServices::get_chain_tracker`; built-in Services only reports
 missing configuration there. That custom-provider erasure remains under #185.
 
-This conversion cannot recover types from the 40 direct `WalletError`
-constructors in `wallet.rs`. The retained groups are assembly, signing and
-compensation faults in create/sign; parsing SDK-returned keys in key linkage;
-the direct sign reference/expiry/sequence guards; the internalize remittance,
-index, sender and derivation guards; certificate lookup and missing keyring;
-and the certificate field, map, base64, serial, subset and recovery helpers.
-The certificate helpers follow the reference's plain `Error` paths and keep
-separate helper and argument-boundary assertions. Direct sign and internalize
-guards need their own class-specific door witnesses under #185. Neither the
-remaining faults nor a missing dedicated class is classified by its text.
-An abort-on-chain variant still needs the owner's public API decision.
+The four reference/status guards in `validate_transaction_for_abort` use
+`Error::into_invalid_parameter`: it wraps the variant's unchanged Display in
+`SdkError(WalletRefusal { class: InvalidParameter, message })`. This is a
+site-specific override, not a change to every `InvalidTransactionStatus`.
+`StorageProvider.ts:716-720` raises `WERR_INVALID_PARAMETER` for non-outgoing
+and unabortable actions. The process door instead raises
+`WERR_INVALID_OPERATION` (`storage/methods/processAction.ts:477-478`). The
+port-only missing-txid, proven-descendant, stored-acceptance, unknown-status
+and spent-output guards retain the nearest `InvalidOperation` judgement.
+The reference's on-chain abort answers `aborted: false`
+(`StorageProvider.ts:878-889`); a dedicated abort-on-chain variant remains
+an owner's public API decision under #185.
+
+Nine direct SDK constructors now carry classed refusals too, with their
+message bytes unchanged. Hosts matching `WalletError` at these doors must
+read `WalletRefusalClass`; SDK Display loses the generic `wallet error: `
+prefix, as for the variant mapping above:
+
+- `sign_action`'s empty reference is `InvalidParameter`
+  (`validationHelpers.ts:439-441,861`). Missing pending data is
+  `NotImplemented`, the reference's `WERR_NOT_IMPLEMENTED`
+  (`signer/methods/signAction.ts:57-60`). The port's expired-cache refusal
+  uses that missing-session class as a judgement: the reference has no TTL.
+- `internalize_action`'s empty derivation values, output index, invalid
+  sender and derivation mismatch are `InvalidParameter`
+  (`validationHelpers.ts:439-441,918-920,185-191` and
+  `signer/methods/internalizeAction.ts:57-58,88-89`).
+- `prove_certificate`'s absent and ambiguous certificate matches are
+  `InvalidParameter` (`signer/methods/proveCertificate.ts:28-29`).
+
+The remaining 31 direct `WalletError` constructors are faults or the SDK
+reference's plain `Error`/`TypeError` paths. They carry no WERR class to
+preserve. This table accounts for every retained site in `wallet.rs`:
+
+| Site in `wallet.rs` | Fault and reason for retaining `WalletError` |
+|---|---|
+| `create_action_at`, signing and processing (1390, 1402) | The wallet's atomic build failed and rolled back; not a caller-argument guard. |
+| `create_action_at`, missing broadcast BEEF (1635) | The wallet failed to assemble its own broadcast bytes. |
+| `create_action_at`, txid decode (1670) | The wallet produced a malformed txid. |
+| `create_action_at`, unsigned build (1724) | Local transaction assembly failed. |
+| `create_action_at`, reference decode (1729) | Storage returned malformed reference bytes, not the caller's reference. |
+| `create_action_at`, BEEF parse/encode (1829, 1840) | Parsing stored ancestry or encoding the wallet's result failed. |
+| Key-linkage methods (2015, 2019, 2056) | A key returned by the SDK failed to parse. |
+| `sign_action`, sequence patch (2185) | The wallet's cached transaction could not be patched after the caller input was validated. |
+| `sign_action`, signing/processing (2218, 2284) | Local signing or processing failed; compensation text is retained. |
+| `sign_action`, broadcast preparation (2379) | Cached ancestry could not produce the wallet's broadcast bytes. |
+| `sign_action`, txid decode (2415) | The signed transaction's own txid failed to decode. |
+| `sign_action`, BEEF parse/encode (2433, 2443) | Parsing cached ancestry or encoding the wallet's result failed. |
+| `internalize_action`, key derivation (2591) | The SDK failed to derive a key after the sender parsed. |
+| `prove_certificate`, missing stored keyring (2925) | Incomplete stored certificate data; `MasterCertificate.ts:35-37,350` raises plain `Error` for a missing record. |
+| Field name helper (3469) | The SDK reference raises plain `Error`, `MasterCertificate.ts:23-29`. |
+| Reveal array limit (3478) | The SDK reference raises plain `TypeError`, `MasterCertificate.ts:125-129`. |
+| Duplicate reveal name (3486) | The SDK reference raises plain `Error`, `MasterCertificate.ts:138-140`. |
+| Record entry limit (3499) | The SDK reference raises plain `Error`, `MasterCertificate.ts:43-45`. |
+| Field/keyring base64 helpers (3519, 3522) | The SDK reference raises plain `Error`, `MasterCertificate.ts:63-73,351-364`. |
+| Serial base64/length helpers (3859, 3864, 3869) | The SDK reference raises plain `Error`, `MasterCertificate.ts:63-78,365`. |
+| Field recovery (3875) | Decryption/UTF-8 recovery failed; the reference catches these as plain `Error`, `MasterCertificate.ts:573-622`. |
+| Missing reveal field (3888) | The SDK reference raises plain `Error`, `MasterCertificate.ts:370-379`. |
+
+`direct_refusal_tests.rs` checks the direct sign, abort and certificate
+lookups; `nosend_label_tests.rs` checks the internalize guards. The BEEF
+proof-helper tests exercise all three transport classes, status and detail.
+For #185, the custom `get_chain_tracker` factory erasure and the local
+response-channel closure remain; neither is reclassified by matching text.
 
 ## Architecture
 

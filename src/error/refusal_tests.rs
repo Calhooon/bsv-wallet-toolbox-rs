@@ -56,6 +56,20 @@ string_refusal!(
     InvalidOperation,
     "Invalid transaction status: "
 );
+
+#[test]
+fn abort_reference_status_uses_its_site_class_and_preserves_the_text() {
+    for words in ["probe", "changed detail without a class name"] {
+        let source = Error::InvalidTransactionStatus(words.to_string());
+        let expected = source.to_string();
+        let sdk = bsv_rs::Error::from(source.into_invalid_parameter());
+        assert!(
+            matches!(&sdk, bsv_rs::Error::WalletRefusal { class, message }
+            if *class == WalletRefusalClass::InvalidParameter && message == &expected)
+        );
+        assert_eq!(sdk.to_string(), expected);
+    }
+}
 string_refusal!(access, AccessDenied, Unauthorized, "Access denied: ");
 string_refusal!(
     identity_key,
