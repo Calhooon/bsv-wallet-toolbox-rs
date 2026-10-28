@@ -730,7 +730,8 @@ class (`Error::SdkError`); any other refusal is `Error::NetworkError` with
 ported, each its own issue: the 402 payment (#328), the certifier's
 certificate request (#333), the private-address refusal (#334).
 
-What a certifier behind the reference middleware sees, per issuance: a
+What a certifier behind the reference middleware is expected to see, per
+issuance (read from `index.ts`, not yet run against it): a
 `POST /.well-known/auth` `initialRequest` from the wallet's identity key,
 then `POST <path>` with the six `x-bsv-auth-*` headers (version, identity
 key, nonce, your nonce, signature, request id), its handler called with
@@ -744,21 +745,31 @@ What the wallet's caller sees (through `WalletInterface`, each inside
 
 | situation | before #315 | after |
 |---|---|---|
-| a reference certifier | `Network error: Certifier returned HTTP 400 Bad Request: {...ERR_AUTH_MALFORMED...}` | the certificate |
+| a reference certifier | `Network error: Certifier returned HTTP 400 Bad Request: {...ERR_AUTH_MALFORMED...}` | the certificate, expected: shown against this crate's fixture, not yet run against the reference middleware (the interop lane, the design's section 5, steps 1 to 4) |
 | a certifier signing with another key | (no handshake; its header compared) | `Validation error: Invalid certifier! Expected: <certifier>, Received: <its key>` |
-| a plain server answering the handshake with its body | the header compared, `Received: null` or the body's | `Network error: Failed to send request: authentication error: Failed to parse auth response: ...` |
-| a server answering the handshake `404` | (no handshake) | `Network error: Failed to send request: authentication error: Auth endpoint returned 404 Not Found: <body>` |
+| a plain server answering the handshake with its body | the header compared, `Received: null` or the body's | `Network error: Failed to send request: authentication error: Failed to parse auth response: ...`, bsv-rs's text, not the reference's (bsv-rs #410) |
+| a server answering the handshake `404` | (no handshake) | `Network error: Failed to send request: authentication error: Auth endpoint returned 404 Not Found: <body>`, bsv-rs's text (`transport_fault.rs:220`); the reference's is `Received HTTP 404 ... from <url> without valid BSV authentication (...)` (`SimplifiedFetchTransport.ts:146,479`; bsv-rs #410) |
 | an unsigned answer to the signed request | n/a | `Network error: Failed to send request: authentication error: Received HTTP <status> from <url> without valid BSV authentication (missing headers: ...)` |
-| a bad answer signature | n/a | `Network error: Failed to send request: wallet error: Signature is not valid` |
-| a redirect | refused by the policy client under test, followed by reqwest in production | `Network error: Failed to send request: authentication error: Network error while sending authenticated request to <url>: redirect refused: <status>` |
+| a bad answer signature | n/a | `Network error: Failed to send request: wallet error: Signature is not valid`, bsv-rs's verifier's text; the reference's Peer says `Invalid signature in generalMessage from <key>` (`Peer.ts:1303-1305`; bsv-rs #407) |
+| a redirect | refused by the policy client under test, followed by reqwest in production | `Network error: Failed to send request: authentication error: Network error while sending authenticated request to <url>: redirect refused: <status>`, bsv-rs's text; the reference surfaces fetch's error (bsv-rs #410) |
 | a non-2xx signed answer | `Network error: Certifier returned HTTP <status>: <body>` | the body read: its envelope checks name it |
 | no answer within 30 s | reqwest's timeout text | `Network error: Timed out waiting for authenticated response.` |
+
+The witnesses of the three texts bsv-rs #410 names pin the refusal's class,
+the status where there is one and the general request unsent, not the
+sentence, so the text's move to the reference's does not break them.
 
 Tests: `certificate_issuance_auth_tests.rs` (the design's witnesses),
 `certificate_issuance_auth.rs` (the deadline), the fixture certifier
 `certificate_issuance_peer_fixture.rs` (the handshake and the signed answer
-as `index.ts:931-968,1005-1031` send them; its self-check in
-`certificate_issuance_peer_fixture_tests.rs`). The #269 header witnesses are
+as `index.ts:931-968,1005-1031` send them, and a request whose session or
+signature fails refused as `index.ts:1380-1395` refuses it: `401`, none of
+the six headers, `{"status":"error","code":"ERR_AUTH_FAILED","description":"Authentication failed."}`,
+the handler not called; its self-check in
+`certificate_issuance_peer_fixture_tests.rs`). The fixture is this crate's
+reading of the middleware; the recorded shapes and the live loopback run
+against the middleware itself are the interop lane's (the design's
+section 5, steps 1 to 4). The #269 header witnesses are
 gone with the header they read.
 
 `certificate_issuance_guard_tests.rs` checks the representable argument guards
