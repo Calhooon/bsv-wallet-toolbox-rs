@@ -265,13 +265,15 @@ async fn internalize_output_index_is_an_invalid_parameter_without_writes() {
 #[tokio::test]
 async fn empty_derivation_answers_the_base64_text_through_wallet_interface() {
     let (_dir, wallet) = wallet().await;
-    assert_internalize_refused(
-        &wallet,
-        payment_of("", "", PAYMENT_SENDER),
-        WalletRefusalClass::InvalidParameter,
-        "Validation error: The derivationPrefix parameter must be valid base64 string",
-    )
-    .await;
+    for (prefix, suffix) in [("", ""), ("test_prefix", "c3VmZml4")] {
+        assert_internalize_refused(
+            &wallet,
+            payment_of(prefix, suffix, PAYMENT_SENDER),
+            WalletRefusalClass::InvalidParameter,
+            "Validation error: The derivationPrefix parameter must be valid base64 string",
+        )
+        .await;
+    }
     assert_internalize_refused(
         &wallet,
         payment_of("cHJlZml4", "", PAYMENT_SENDER),
@@ -287,13 +289,6 @@ async fn empty_derivation_answers_the_base64_text_through_wallet_interface() {
 #[tokio::test]
 async fn door_payment_texts_are_served_through_wallet_interface() {
     let (_dir, wallet) = wallet().await;
-    assert_internalize_refused(
-        &wallet,
-        payment_of("test_prefix", "c3VmZml4", PAYMENT_SENDER),
-        WalletRefusalClass::InvalidParameter,
-        "Validation error: The derivationPrefix parameter must be valid base64 string",
-    )
-    .await;
     assert_internalize_refused(
         &wallet,
         payment_of("cHJlZml4", "sender_key", "sender_key"),
@@ -321,45 +316,28 @@ fn own_payment(
     args
 }
 
-/// #376: on a P2PKH output the shared validator refuses an invalid sender
-/// before the wallet parses the key for its script comparison.
+/// #376: invalid and empty senders meet the same argument refusal before
+/// derivation, for either P2PKH script (validationHelpers.ts:525-528).
 #[tokio::test]
 async fn invalid_sender_on_p2pkh_answers_the_argument_text_through_wallet_interface() {
     let (_dir, wallet) = wallet().await;
-    let args = own_payment(&wallet, "sender_key");
-    assert_internalize_refused(
-        &wallet,
-        args,
-        WalletRefusalClass::InvalidParameter,
-        "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
-    )
-    .await;
-}
-
-/// #376: an empty sender has the same argument refusal for both P2PKH
-/// scripts (validationHelpers.ts:525-528), before derivation.
-#[tokio::test]
-async fn empty_sender_on_p2pkh_answers_the_door_hex_text_through_wallet_interface() {
-    let (_dir, wallet) = wallet().await;
-    let args = own_payment(&wallet, "");
-    assert_internalize_refused(
-        &wallet,
-        args,
-        WalletRefusalClass::InvalidParameter,
-        "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
-    )
-    .await;
-
+    let own = hex::encode(own_lock(&wallet));
     let other = format!("76a914{}88ac", "00".repeat(20));
-    let mut args = payment_of("cHJlZml4", "c3VmZml4", "");
-    args.tx = atomic_beef_paying(&other);
-    assert_internalize_refused(
-        &wallet,
-        args,
-        WalletRefusalClass::InvalidParameter,
-        "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
-    )
-    .await;
+    for (sender, lock) in [
+        ("sender_key", own.as_str()),
+        ("", own.as_str()),
+        ("", other.as_str()),
+    ] {
+        let mut args = payment_of("cHJlZml4", "c3VmZml4", sender);
+        args.tx = atomic_beef_paying(lock);
+        assert_internalize_refused(
+            &wallet,
+            args,
+            WalletRefusalClass::InvalidParameter,
+            "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
+        )
+        .await;
+    }
 }
 
 /// #371: a wallet payment with no paymentRemittance, and a basket insertion
