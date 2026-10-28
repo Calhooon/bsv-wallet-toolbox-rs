@@ -123,9 +123,24 @@
   and that text). A non-base64 derivation or a sender such as `sender_key`
   was stored before; these are new refusals of input that succeeded before.
   The wallet's own refusal of an empty derivation, still ahead of the store
-  (D13, #376), now reads the reference's text above, the prefix ahead of the suffix, in
+  (D13, #376), now reads the reference's text above, the prefix ahead of
+  the suffix, in
   place of `Wallet payment outputs require non-empty derivation_prefix and
-  derivation_suffix`.
+  derivation_suffix`. Both checks trim as ECMAScript's `trim()` does
+  (`label.rs`): a value behind U+FEFF is read without it, and U+0085 is
+  kept, so `cHJlZml4` followed by U+0085 is refused with the base64 text and
+  a key followed by it with `even length, not 67.`. Two cases still answer
+  in the wallet's place ahead of the door (D13, #376): on a P2PKH output
+  the wallet parses the sender first, so `sender_key` there answers
+  `Invalid sender_identity_key: invalid hex string: Invalid character 's' at
+  position 0` (on any other output, the door's
+  `Validation error: The senderIdentityKey parameter must be hexadecimal string.`);
+  and the wallet reads an empty sender as self, so on a P2PKH output paying
+  the wallet's self-derived key it passes the derivation check and the door
+  refuses it with
+  `Validation error: The senderIdentityKey parameter must be hexadecimal string.`,
+  while on a P2PKH output paying another key it answers the wallet's
+  `Derivation mismatch for output <n>: ...`.
 
 - #380: internalizeAction bounds the description as the reference's
   validateStringLength does (ts-stack@edf6e03 `validationHelpers.ts:1053`,
