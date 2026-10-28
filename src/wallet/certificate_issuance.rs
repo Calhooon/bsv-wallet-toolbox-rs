@@ -23,7 +23,7 @@
 //! 5. **StoreCertificate**: Save certificate to storage with encrypted fields
 //!    and master keyring
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bsv_rs::auth::certificates::Certificate;
@@ -91,9 +91,9 @@ pub struct ProtocolIssuanceRequest {
     /// Client nonce (base64 encoded)
     pub client_nonce: String,
     /// Encrypted field values
-    pub fields: HashMap<String, String>,
+    pub fields: IndexMap<String, String>,
     /// Master keyring for field encryption
-    pub master_keyring: HashMap<String, String>,
+    pub master_keyring: IndexMap<String, String>,
 }
 
 /// Response from the certifier containing the signed certificate
@@ -133,7 +133,7 @@ pub struct CertificateResponse {
     #[serde(default)]
     pub revocation_outpoint: String,
     /// Encrypted field values
-    pub fields: HashMap<String, String>,
+    pub fields: IndexMap<String, String>,
     /// Signature (hex encoded)
     pub signature: String,
 }
@@ -147,9 +147,9 @@ pub(crate) struct PrepareIssuanceActionDataResult {
     /// JSON request body
     pub body: Vec<u8>,
     /// Encrypted fields
-    pub fields: HashMap<String, String>,
+    pub fields: IndexMap<String, String>,
     /// Master keyring
-    pub master_keyring: HashMap<String, String>,
+    pub master_keyring: IndexMap<String, String>,
     /// Certificate type (base64 encoded)
     pub cert_type_b64: String,
     /// Client nonce (base64 encoded)
@@ -371,7 +371,7 @@ fn validate_issuance_url(value: &str) -> Result<String> {
     Ok(value.trim_end_matches('/').to_string())
 }
 
-fn validate_issuance_fields(fields: &HashMap<String, String>) -> Result<()> {
+fn validate_issuance_fields(fields: &IndexMap<String, String>) -> Result<()> {
     if fields.len() > 100_000 {
         return Err(invalid_certificate_argument(
             "fields",
@@ -428,12 +428,12 @@ where
     .await?;
 
     // Convert to string maps for JSON serialization
-    let fields: HashMap<String, String> = encrypted_fields
+    let fields: IndexMap<String, String> = encrypted_fields
         .into_iter()
         .map(|(k, v)| (k, BASE64.encode(&v)))
         .collect();
 
-    let master_keyring: HashMap<String, String> = master_keyring
+    let master_keyring: IndexMap<String, String> = master_keyring
         .into_iter()
         .map(|(k, v)| (k, BASE64.encode(&v)))
         .collect();
@@ -500,9 +500,9 @@ async fn create_certificate_fields_for_issuance<W>(
     wallet: &W,
     certifier: &PublicKey,
     _subject: &PublicKey,
-    plain_fields: &HashMap<String, String>,
+    plain_fields: &IndexMap<String, String>,
     originator: Option<&str>,
-) -> Result<(HashMap<String, Vec<u8>>, HashMap<String, Vec<u8>>)>
+) -> Result<(IndexMap<String, Vec<u8>>, IndexMap<String, Vec<u8>>)>
 where
     W: WalletInterface + Send + Sync,
 {
@@ -510,8 +510,8 @@ where
 
     let protocol = Protocol::new(SecurityLevel::Counterparty, "certificate field encryption");
 
-    let mut encrypted_fields = HashMap::new();
-    let mut master_keyring = HashMap::new();
+    let mut encrypted_fields = IndexMap::new();
+    let mut master_keyring = IndexMap::new();
 
     for (field_name, plain_value) in plain_fields {
         let field_key = SymmetricKey::random();
@@ -761,7 +761,7 @@ async fn verify_counterparty_hmac<W: WalletInterface + Send + Sync>(
 
 fn validate_issued_certificate(
     raw: &CertificateResponse,
-    sent_fields: &HashMap<String, String>,
+    sent_fields: &IndexMap<String, String>,
     cert_type: &str,
     identity: &str,
     certifier: &str,
@@ -826,7 +826,7 @@ async fn verify_certificate_issuance<W>(
     wallet: &W,
     parsed: &ParseCertificateResponseResult,
     client_nonce: &str,
-    sent_fields: &HashMap<String, String>,
+    sent_fields: &IndexMap<String, String>,
     cert_type_b64: &str,
     identity_key: &str,
     certifier_hex: &str,
@@ -878,8 +878,8 @@ pub(super) fn issued_certificate_verifies(raw: &CertificateResponse) -> bool {
 // field decrypts with the master keyring produced for this request.
 async fn decrypt_issued_fields<W: WalletInterface + Send + Sync>(
     wallet: &W,
-    fields: &HashMap<String, String>,
-    keyring: &HashMap<String, String>,
+    fields: &IndexMap<String, String>,
+    keyring: &IndexMap<String, String>,
     certifier: &PublicKey,
     originator: Option<&str>,
 ) -> Result<()> {
@@ -954,7 +954,7 @@ pub(super) async fn store_certificate<S>(
     storage: &S,
     auth: &AuthId,
     parsed: &ParseCertificateResponseResult,
-    master_keyring: &HashMap<String, String>,
+    master_keyring: &IndexMap<String, String>,
     certifier: &PublicKey,
     identity_key: &str,
     cert_type_b64: &str,
@@ -1135,7 +1135,7 @@ mod tests {
                 version: "1.0".to_string(),
             })
             .unwrap();
-            let mut keyring: HashMap<String, String> =
+            let mut keyring: IndexMap<String, String> =
                 serde_json::from_value(issued["master_keyring"].clone()).unwrap();
             let wrong_entry = corrupt_city_keyring_entry(
                 subject.clone(),
@@ -1194,8 +1194,8 @@ mod tests {
         let request = ProtocolIssuanceRequest {
             cert_type: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
             client_nonce: "dGVzdC1ub25jZQ==".to_string(),
-            fields: HashMap::from([("name".to_string(), "ZW5jcnlwdGVkLW5hbWU=".to_string())]),
-            master_keyring: HashMap::from([("name".to_string(), "bWFzdGVyLWtleQ==".to_string())]),
+            fields: IndexMap::from([("name".to_string(), "ZW5jcnlwdGVkLW5hbWU=".to_string())]),
+            master_keyring: IndexMap::from([("name".to_string(), "bWFzdGVyLWtleQ==".to_string())]),
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -1301,7 +1301,7 @@ mod tests {
                 subject: "unparsed subject".to_string(),
                 certifier: "unparsed certifier".to_string(),
                 revocation_outpoint: "unparsed outpoint".to_string(),
-                fields: HashMap::new(),
+                fields: IndexMap::new(),
                 signature: "unparsed signature".to_string(),
             }),
             server_nonce: "fixture".to_string(),
@@ -1323,8 +1323,8 @@ mod tests {
         // Test that PrepareIssuanceActionDataResult is properly constructed
         let result = PrepareIssuanceActionDataResult {
             body: vec![1, 2, 3],
-            fields: HashMap::from([("name".to_string(), "value".to_string())]),
-            master_keyring: HashMap::from([("name".to_string(), "key".to_string())]),
+            fields: IndexMap::from([("name".to_string(), "value".to_string())]),
+            master_keyring: IndexMap::from([("name".to_string(), "key".to_string())]),
             cert_type_b64: "test_type".to_string(),
             client_nonce: "test_nonce".to_string(),
         };
@@ -1357,7 +1357,7 @@ mod tests {
                 certifier: certifier_key.public_key().to_hex(),
                 revocation_outpoint:
                     "0000000000000000000000000000000000000000000000000000000000000001.0".to_string(),
-                fields: HashMap::new(),
+                fields: IndexMap::new(),
                 signature: "3045022100".to_string(),
             }),
             server_nonce: BASE64.encode([0u8; 32]),

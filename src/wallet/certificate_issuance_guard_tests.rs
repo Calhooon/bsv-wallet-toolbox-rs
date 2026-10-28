@@ -100,7 +100,7 @@ async fn revocation_outpoint_before_keyring_revealer() {
 async fn keyring_revealer_before_subject_keyring() {
     let mut a = acquisition();
     a.keyring_revealer = Some(KeyringRevealer::Certifier);
-    a.keyring_for_subject = Some(HashMap::new());
+    a.keyring_for_subject = Some(IndexMap::new());
     refuses(
         a,
         "keyringRevealer",
@@ -112,7 +112,7 @@ async fn keyring_revealer_before_subject_keyring() {
 #[tokio::test]
 async fn empty_subject_keyring_before_missing_url() {
     let mut a = acquisition();
-    a.keyring_for_subject = Some(HashMap::new());
+    a.keyring_for_subject = Some(IndexMap::new());
     a.certifier_url = None;
     refuses(
         a,

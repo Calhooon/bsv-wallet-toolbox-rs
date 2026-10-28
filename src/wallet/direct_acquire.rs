@@ -7,7 +7,7 @@
 //! match), the revealer's key (1438, a parsed `PublicKey`) and `privileged`
 //! (1440) unfailing, and 1441 repeats 1405.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use bsv_rs::auth::certificates::{Certificate, MasterCertificate};
 use bsv_rs::primitives::{from_base64, from_hex, PublicKey};
@@ -29,7 +29,7 @@ pub(super) struct ValidDirectAcquire {
     /// (`acquireDirectCertificate.ts:19`).
     pub(super) verifier: String,
     /// The subject's master keyring.
-    pub(super) keyring: HashMap<String, String>,
+    pub(super) keyring: IndexMap<String, String>,
 }
 
 /// The presence checks at 1409-1430: a falsy string (absent or empty) or an
@@ -39,7 +39,7 @@ struct Present<'a> {
     signature: &'a str,
     revocation_outpoint: &'a str,
     revealer: &'a KeyringRevealer,
-    keyring: &'a HashMap<String, String>,
+    keyring: &'a IndexMap<String, String>,
 }
 
 const DIRECT: &str = "valid when acquisitionProtocol is \"direct\"";
@@ -75,8 +75,8 @@ fn require_direct_args(args: &AcquireCertificateArgs) -> bsv_rs::Result<Present<
 
 // validateKeyringForSubject at 1248-1259: validateRecord on the map, then per
 // name its length and its value's base64 structure with no size bound. The
-// names in sorted order, as `validate_record_arg` gives them.
-fn validate_keyring_for_subject_arg(keyring: &HashMap<String, String>) -> bsv_rs::Result<()> {
+// names in insertion order, as `validate_record_arg` gives them.
+fn validate_keyring_for_subject_arg(keyring: &IndexMap<String, String>) -> bsv_rs::Result<()> {
     for name in validate_record_arg(keyring, "keyringForSubject")? {
         validate_record_name_arg(name, "keyringForSubject field name")?;
         validate_base64_structure_arg(&keyring[name], "keyringForSubject field value")?;
@@ -151,7 +151,7 @@ fn decode_32(value: &str) -> bsv_rs::Result<[u8; 32]> {
 
 fn master_certificate(
     certificate: &WalletCertificate,
-    keyring: &HashMap<String, String>,
+    keyring: &IndexMap<String, String>,
 ) -> bsv_rs::Result<MasterCertificate> {
     let base = Certificate::new(
         decode_32(&certificate.certificate_type)?,
@@ -174,7 +174,7 @@ fn master_certificate(
 pub(super) async fn verify_acquire_direct(
     wallet: &ProtoWallet,
     certificate: &WalletCertificate,
-    keyring: &HashMap<String, String>,
+    keyring: &IndexMap<String, String>,
     args: &AcquireCertificateArgs,
 ) -> bsv_rs::Result<()> {
     let master = master_certificate(certificate, keyring).map_err(proof_error)?;

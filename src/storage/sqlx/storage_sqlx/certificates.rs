@@ -149,7 +149,7 @@ impl StorageSqlx {
         args: ListCertificatesArgs,
     ) -> Result<ListCertificatesResult> {
         use bsv_rs::wallet::CertificateResult;
-        use std::collections::HashMap;
+        use indexmap::IndexMap;
 
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
 
@@ -257,8 +257,8 @@ impl StorageSqlx {
                 .fetch_all(&self.reader)
                 .await?;
 
-            let mut fields: HashMap<String, String> = HashMap::new();
-            let mut keyring: HashMap<String, String> = HashMap::new();
+            let mut fields: IndexMap<String, String> = IndexMap::new();
+            let mut keyring: IndexMap<String, String> = IndexMap::new();
 
             for f_row in field_rows {
                 let field_name: String = f_row.get("field_name");
