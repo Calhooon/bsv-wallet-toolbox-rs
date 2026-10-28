@@ -1,0 +1,39 @@
+[
+  {
+    "family": "certificate_header",
+    "name": "certificate_ascii_262143",
+    "certificate_bytes": 262143,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "certificate_header",
+    "name": "certificate_ascii_262144",
+    "certificate_bytes": 262144,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "certificate_header",
+    "name": "certificate_ascii_262145",
+    "certificate_bytes": 262145,
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-requested-certificates returned by {url}/sendMessage: [oversized]. header exceeds its byte limit"
+    },
+    "delivered": null,
+    "cancelled": false
+  }
+]

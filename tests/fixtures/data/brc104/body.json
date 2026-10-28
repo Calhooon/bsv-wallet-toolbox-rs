@@ -1,0 +1,92 @@
+[
+  {
+    "family": "body",
+    "name": "handshake_1048575",
+    "handshake": true,
+    "body_bytes": 1048575,
+    "error": null,
+    "delivered": {
+      "message_type": "initialRequest",
+      "signature_hex": "",
+      "payload_bytes": 0,
+      "payload_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "body",
+    "name": "handshake_1048576",
+    "handshake": true,
+    "body_bytes": 1048576,
+    "error": null,
+    "delivered": {
+      "message_type": "initialRequest",
+      "signature_hex": "",
+      "payload_bytes": 0,
+      "payload_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "body",
+    "name": "handshake_1048577",
+    "handshake": true,
+    "body_bytes": 1048577,
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response from {url}/.well-known/auth exceeds 1048576 bytes"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "body",
+    "name": "handshake_over_limit_404",
+    "handshake": true,
+    "body_bytes": 1048577,
+    "status": 404,
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response from {url}/.well-known/auth exceeds 1048576 bytes"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "body",
+    "name": "general_1048577",
+    "body_bytes": 1048577,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 1048584,
+      "payload_sha256": "51e624d0064a45be80a31480b3d5930b9b10bbf5069e415cfa9838e5718e403c"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "body",
+    "name": "general_16777216",
+    "body_bytes": 16777216,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 16777223,
+      "payload_sha256": "e9b06bce3dab02afbc4b4524c70bc35773c4a24f51b8cbad08f168a5d1348205"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "body",
+    "name": "general_16777217",
+    "body_bytes": 16777217,
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response from {url}/sendMessage exceeds 16777216 bytes"
+    },
+    "delivered": null,
+    "cancelled": false
+  }
+]
