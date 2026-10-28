@@ -574,43 +574,41 @@ async fn refuses_in_the_reference_order() {
     }
 }
 
-// A Rust map keeps no insertion order (bsv-rs's `IndexMap` fields), so where
-// the reference walks Object.keys order (1236, 1254) the port walks the names
-// in byte order: of two bad names the one that sorts lower decides the text,
-// every run. A map with one bad name gets the reference's own text.
+// bsv-rs #385/#394 retain the supplied map order. Match the reference's
+// Object.keys walk (1236, 1254) for these non-integer field names.
 #[tokio::test]
-async fn several_bad_names_refuse_by_the_lowest_name() {
+async fn several_bad_names_refuse_in_insertion_order() {
     refused_with(
-        "fields: empty name sorts before a long one",
+        "fields: supplied long name precedes the empty name",
         |a| {
             a.fields = IndexMap::from([
                 ("n".repeat(51), "YQ==".to_string()),
                 (String::new(), "YQ==".to_string()),
             ]);
         },
-        &refusal("field name", "at least 1 length."),
+        &refusal("field name", "no more than 50 length."),
     )
     .await;
     refused_with(
-        "keyring: a bad value under 'a' before a long name under 'b...'",
+        "keyring: supplied long name precedes the bad value",
         |a| {
             a.keyring_for_subject = Some(IndexMap::from([
                 ("b".repeat(51), "Yg==".to_string()),
                 ("a".to_string(), "!".to_string()),
             ]));
         },
-        &refusal("keyringForSubject field value", "valid base64 string"),
+        &refusal("keyringForSubject field name", "no more than 50 length."),
     )
     .await;
     refused_with(
-        "keyring: a long name under 'a...' before a bad value under 'b'",
+        "keyring: supplied bad value precedes the long name",
         |a| {
             a.keyring_for_subject = Some(IndexMap::from([
                 ("b".to_string(), "!".to_string()),
                 ("a".repeat(51), "Yg==".to_string()),
             ]));
         },
-        &refusal("keyringForSubject field name", "no more than 50 length."),
+        &refusal("keyringForSubject field value", "valid base64 string"),
     )
     .await;
 }
