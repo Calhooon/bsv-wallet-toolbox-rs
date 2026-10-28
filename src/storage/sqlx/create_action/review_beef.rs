@@ -43,6 +43,9 @@ impl PreparedReviews {
                 }
             }
         }
+        drop(conn);
+        #[cfg(test)]
+        race::after_read().await;
         Ok(Self(prepared))
     }
 
@@ -146,4 +149,33 @@ async fn stored_fragment(conn: &mut SqliteConnection, txid: &str) -> Result<Opti
         }
     }
     Ok(Some(beef))
+}
+
+/// Tests only: a step run after the reviews are read and before the door
+/// takes its writer, where another writer may change an input's spender.
+#[cfg(test)]
+pub(super) mod race {
+    use std::cell::RefCell;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    pub(in crate::storage::sqlx::create_action) type Hook =
+        Box<dyn FnMut() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+    thread_local! {
+        static AFTER_READ: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Run `hook` after every review read on this test's thread.
+    pub(in crate::storage::sqlx::create_action) fn set_after_read(hook: Hook) {
+        AFTER_READ.with(|slot| *slot.borrow_mut() = Some(hook));
+    }
+
+    pub(super) async fn after_read() {
+        let Some(mut hook) = AFTER_READ.with(|slot| slot.borrow_mut().take()) else {
+            return;
+        };
+        hook().await;
+        AFTER_READ.with(|slot| *slot.borrow_mut() = Some(hook));
+    }
 }
