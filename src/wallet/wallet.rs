@@ -5772,7 +5772,6 @@ mod tests {
                     async fn test_direct_acquire_uppercase_outpoint_proves() {
                         use crate::services::mock::MockWalletServices;
                         use crate::storage::WalletStorageWriter;
-                        use bsv_rs::wallet::AcquisitionProtocol;
 
                         let key31 = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
                         let storage = crate::StorageSqlx::in_memory().await.unwrap();
@@ -5782,33 +5781,11 @@ mod tests {
                             .await
                             .unwrap();
                         let txid = "AB".repeat(32);
+                        let mut args =
+                            crate::wallet::wallet::direct_acquire_tests::signed_args(&wallet).await;
+                        args.revocation_outpoint = Some(format!("{txid}.0"));
                         let acquired = wallet
-                            .acquire_certificate(
-                                AcquireCertificateArgs {
-                                    certificate_type: BASE64.encode([33; 32]),
-                                    certifier: key(31),
-                                    acquisition_protocol: AcquisitionProtocol::Direct,
-                                    // A field with a master key, so the row has a keyring.
-                                    fields: HashMap::from([(
-                                        "name".to_string(),
-                                        "YQ==".to_string(),
-                                    )]),
-                                    serial_number: Some(BASE64.encode([32; 32])),
-                                    revocation_outpoint: Some(format!("{txid}.0")),
-                                    signature: Some("300602010a02010b".to_string()),
-                                    certifier_url: None,
-                                    keyring_revealer: Some(
-                                        bsv_rs::wallet::KeyringRevealer::Certifier,
-                                    ),
-                                    keyring_for_subject: Some(HashMap::from([(
-                                        "name".to_string(),
-                                        "Yg==".to_string(),
-                                    )])),
-                                    privileged: None,
-                                    privileged_reason: None,
-                                },
-                                Some("certificate.test"),
-                            )
+                            .acquire_certificate(args, Some("certificate.test"))
                             .await
                             .unwrap();
                         let lowercase = format!("{}.0", txid.to_lowercase());
