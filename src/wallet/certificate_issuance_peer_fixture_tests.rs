@@ -101,3 +101,75 @@ async fn fixture_bad_signature_is_refused_by_a_bsv_rs_peer() {
         "wallet error: Signature is not valid"
     );
 }
+
+/// A general request to `/issue` past a handshake the client opened, its
+/// signature `signature` and its session nonce the certifier's unless `stale`;
+/// the handler is never called, as `index.ts:1380-1395` calls no `next`.
+async fn raw_run(signature: &str, stale: bool) -> (PeerCertifier, reqwest::Response) {
+    let certifier = PeerCertifier::new(key(31));
+    let client = key(37);
+    let mut server = mockito::Server::new_async().await;
+    certifier.handshake(&mut server).await;
+    let handler = certifier
+        .general(&mut server, "/issue", 200, Answer::Signed, |_| {
+            b"{\"ok\":true}".to_vec()
+        })
+        .expect(0)
+        .create_async()
+        .await;
+    let http = reqwest::Client::new();
+    let mut opening = AuthMessage::new(MessageType::InitialRequest, client.public_key());
+    opening.initial_nonce = Some(to_base64(&[5; 32]));
+    let answer: AuthMessage = http
+        .post(format!("{}/.well-known/auth", server.url()))
+        .json(&opening)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session = match stale {
+        true => to_base64(&[6; 32]),
+        false => answer.initial_nonce.unwrap(),
+    };
+    let response = http
+        .post(format!("{}/issue", server.url()))
+        .header("content-type", "application/json")
+        .header("x-bsv-auth-version", "0.1")
+        .header("x-bsv-auth-identity-key", client.public_key().to_hex())
+        .header("x-bsv-auth-nonce", to_base64(&[7; 32]))
+        .header("x-bsv-auth-your-nonce", session)
+        .header("x-bsv-auth-request-id", to_base64(&[9; 32]))
+        .header("x-bsv-auth-signature", signature)
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    handler.assert_async().await;
+    (certifier, response)
+}
+
+/// The middleware's refusal (`index.ts:1380-1395`): 401, none of the six
+/// headers, the error body.
+async fn assert_refused(response: reqwest::Response) {
+    assert_eq!(response.status(), 401);
+    for name in SIGNED_HEADERS {
+        assert!(response.headers().get(name).is_none(), "{name}");
+    }
+    assert_eq!(response.text().await.unwrap(), AUTH_FAILED);
+}
+
+#[tokio::test]
+async fn fixture_refuses_a_bad_client_signature_unsigned() {
+    let (certifier, response) = raw_run("3006020101020101", false).await;
+    assert_refused(response).await;
+    assert_eq!(certifier.client_signatures(), vec![false]);
+}
+
+#[tokio::test]
+async fn fixture_refuses_an_unknown_session_unsigned() {
+    let (certifier, response) = raw_run("3006020101020101", true).await;
+    assert_refused(response).await;
+    assert_eq!(certifier.client_signatures(), Vec::<bool>::new());
+}
