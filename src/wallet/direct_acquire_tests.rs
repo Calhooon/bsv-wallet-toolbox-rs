@@ -14,9 +14,11 @@ use bsv_rs::auth::certificates::MasterCertificate;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::wallet::{AcquisitionProtocol, KeyringRevealer};
 
+use crate::managers::{WalletPermissionsManager, WalletPermissionsManagerConfig};
 use crate::services::mock::MockWalletServices;
 use crate::storage::WalletStorageWriter;
 use crate::StorageSqlx;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The validator's presence rule at validationHelpers.ts:1409-1430.
 const DIRECT: &str = "valid when acquisitionProtocol is \"direct\"";
@@ -142,9 +144,7 @@ async fn direct_acquire_verify_refuses_undecryptable_keyring() {
     assert_refused(
         "undecryptable keyring entry",
         master_args(master),
-        &verification_refusal(
-            "CertificateValidationError: Failed to decrypt all master certificate fields.",
-        ),
+        &verification_refusal("WERR_UNKNOWN: Failed to decrypt all master certificate fields."),
     )
     .await;
 }
@@ -155,7 +155,7 @@ async fn direct_acquire_verify_refuses_field_over_one_mib() {
     for (length, tail) in [
         (
             1_048_577,
-            "CertificateValidationError: Certificate field name must use canonical base64 encoding",
+            "WERR_UNKNOWN: Certificate field name must use canonical base64 encoding",
         ),
         (1_048_580, "WERR_UNKNOWN: Certificate verification failed"),
     ] {
@@ -220,6 +220,40 @@ async fn direct_acquire_verify_stores_ciphertext_and_keyring_unchanged() {
             }
         );
     }
+}
+
+#[tokio::test]
+async fn direct_acquire_verify_needs_no_protocol_permission() {
+    let mut wallet = wallet().await;
+    let manager = Arc::new(WalletPermissionsManager::new(
+        Arc::new(wallet.proto_wallet.clone()),
+        "wallet.admin".to_string(),
+        WalletPermissionsManagerConfig::all_enabled(),
+    ));
+    assert_ne!(manager.admin_originator(), "certificate.test");
+    let prompts = Arc::new(AtomicUsize::new(0));
+    let prompt_count = Arc::clone(&prompts);
+    manager
+        .set_permission_request_handler(Arc::new(move |_| {
+            prompt_count.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Err(crate::Error::AccessDenied(
+                    "Protocol permission refused by the test".to_string(),
+                ))
+            })
+        }))
+        .await;
+    wallet.set_permissions_manager(manager);
+    let args = signed_args(&wallet).await;
+    let expected_fields = args.fields.clone();
+    let result = wallet
+        .acquire_certificate(args, Some("certificate.test"))
+        .await;
+    assert_eq!(prompts.load(Ordering::SeqCst), 0, "{result:?}");
+    let acquired = result.expect("direct acquisition needs no protocol permission");
+    assert_eq!(acquired.subject, wallet.identity_key());
+    assert_eq!(acquired.fields, expected_fields);
+    assert_eq!(certificate_rows(&wallet).await, (1, 2));
 }
 
 /// The direct acquire of `args` is refused with exactly `expected` and
@@ -364,12 +398,18 @@ async fn refuses_an_absent_keyring_or_revealer() {
         &refusal("keyringForSubject", DIRECT),
     )
     .await;
-    let wallet = wallet().await;
     let mut args = direct_args();
     args.keyring_for_subject = Some(HashMap::new());
     // Presence is a validator rule; the later proof has separate requirements.
     assert!(direct_acquire::validate_acquire_direct_args(&args).is_ok());
-    assert_eq!(certificate_rows(&wallet).await, (0, 0));
+    assert_refused(
+        "empty keyring",
+        args,
+        &verification_refusal(
+            "WERR_UNKNOWN: Master keyring must contain a value for every field. Missing or empty key for field: \"name\".",
+        ),
+    )
+    .await;
 }
 
 // 1439: validateKeyringForSubject at 1248-1259: validateRecord (81-103) on
