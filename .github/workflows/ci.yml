@@ -103,6 +103,7 @@ jobs:
       - name: Run doc tests
         run: cargo test --doc --features sqlite,remote,bench-support
 
+  # Clippy covers SQL storage with remote, plus remote without default features.
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -128,6 +129,9 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --all-targets --features sqlite,remote -- -D warnings
+
+      - name: Run Clippy (remote only)
+        run: cargo clippy --no-default-features --features remote -- -D warnings
 
   fmt:
     name: Rustfmt

@@ -15,6 +15,10 @@
   `Validation error: label exceeds maximum length of 300 characters` becomes
   `Validation error: The label parameter must be no more than 300 length.`.
 
+### CI
+
+- #417: Check the remote-only feature set in the Clippy job; compile RNG state and methods only for their SQL storage and test consumers.
+
 ## [0.14.0-beta.3] - 2026-10-28
 
 ### Changed
