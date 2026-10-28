@@ -3,7 +3,7 @@
 //! A mockito 1.7.2 server answers on a thread of its own, holding its
 //! state's write lock (`std::sync::RwLock`, `server.rs:536`) while it runs a
 //! mock's status closure, and a `delay_ms` answer sleeps inside that closure.
-//! `Server::reset`, `Mock::create_async` and `Server`'s drop take the same
+//! `Server::reset`, `Mock::create` and `Server`'s drop take the same
 //! lock synchronously. The fixtures' 3000 ms answers outlive the client's
 //! 2000 ms deadline by a second, so a worker that moves to its next scene
 //! on the same servers waits out that second inside `reset`; on a runtime
