@@ -115,10 +115,7 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
             // Validate output description
             if output.output_description.len() < MIN_DESCRIPTION_LENGTH {
                 return Err(Error::ValidationError(format!(
-                    concat!(
-                        "outputs[{}]: output description length must be ",
-                        "between {} and {}"
-                    ),
+                    "outputs[{}]: output description length must be between {} and {}",
                     i, MIN_DESCRIPTION_LENGTH, MAX_DESCRIPTION_LENGTH
                 )));
             }
