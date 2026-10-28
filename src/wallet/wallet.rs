@@ -2098,12 +2098,13 @@ where
         let reference = args.reference;
 
         if reference.is_empty() {
-            return Err(bsv_rs::Error::WalletError(
-                "Missing reference argument for sign action".to_string(),
-            ));
+            return Err(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message: "Missing reference argument for sign action".to_string(),
+            });
         }
 
-        // Look up the pending transaction from cache
+        // A missing session follows ts-stack@edf6e03 signAction.ts:57-60.
         let pending_tx = {
             let cache = self.pending_transactions.read().await;
             cache.get(&reference).cloned()
@@ -2113,22 +2114,21 @@ where
             transaction: pending_tx,
             storage_inputs,
             unlocking_script_lengths,
-        } = pending_tx.ok_or_else(|| {
-            bsv_rs::Error::WalletError(format!(
-                "No pending transaction found for reference: {}",
-                reference
-            ))
+        } = pending_tx.ok_or_else(|| bsv_rs::Error::WalletRefusal {
+            class: bsv_rs::WalletRefusalClass::NotImplemented,
+            message: format!("No pending transaction found for reference: {}", reference),
         })?;
 
-        // Check if the pending transaction has expired
+        // The local TTL expires the session; use signAction.ts:57-60's class.
         let cutoff = Utc::now() - chrono::Duration::seconds(PENDING_TRANSACTION_TTL_SECS);
         if pending_tx.created_at < cutoff {
             // Remove expired transaction from cache
             let mut cache = self.pending_transactions.write().await;
             cache.remove(&reference);
-            return Err(bsv_rs::Error::WalletError(
-                "Pending transaction has expired".to_string(),
-            ));
+            return Err(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::NotImplemented,
+                message: "Pending transaction has expired".to_string(),
+            });
         }
 
         // Merge any client-provided unlocking scripts AND sequence numbers from
@@ -2522,9 +2522,10 @@ where
                     (&payment.derivation_suffix, "derivationSuffix"),
                 ] {
                     if value.is_empty() {
-                        return Err(bsv_rs::Error::WalletError(format!(
-                            "The {name} parameter must be valid base64 string"
-                        )));
+                        return Err(bsv_rs::Error::WalletRefusal {
+                            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                            message: format!("The {name} parameter must be valid base64 string"),
+                        });
                     }
                 }
                 tracing::debug!(
@@ -2543,11 +2544,14 @@ where
                 if let Some(ref payment) = output.payment_remittance {
                     let vout = output.output_index as usize;
                     if vout >= tx.outputs.len() {
-                        return Err(bsv_rs::Error::WalletError(format!(
-                            "output_index {} exceeds transaction output count {}",
-                            vout,
-                            tx.outputs.len()
-                        )));
+                        return Err(bsv_rs::Error::WalletRefusal {
+                            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                            message: format!(
+                                "output_index {} exceeds transaction output count {}",
+                                vout,
+                                tx.outputs.len()
+                            ),
+                        });
                     }
                     let script = tx.outputs[vout].locking_script.as_script().to_binary();
                     // Only validate P2PKH (25 bytes: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG)
@@ -2561,10 +2565,10 @@ where
                         let counterparty = if !payment.sender_identity_key.is_empty() {
                             Counterparty::Other(
                                 PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
-                                    bsv_rs::Error::WalletError(format!(
-                                        "Invalid sender_identity_key: {}",
-                                        e
-                                    ))
+                                    bsv_rs::Error::WalletRefusal {
+                                        class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                                        message: format!("Invalid sender_identity_key: {}", e),
+                                    }
                                 })?,
                             )
                         } else {
@@ -2586,12 +2590,15 @@ where
                                 ))
                             })?;
                         if derived.hash160()[..] != script[3..23] {
-                            return Err(bsv_rs::Error::WalletError(format!(
-                                "Derivation mismatch for output {}: derived {} != script {}",
-                                vout,
-                                hex::encode(derived.hash160()),
-                                hex::encode(&script[3..23])
-                            )));
+                            return Err(bsv_rs::Error::WalletRefusal {
+                                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                                message: format!(
+                                    "Derivation mismatch for output {}: derived {} != script {}",
+                                    vout,
+                                    hex::encode(derived.hash160()),
+                                    hex::encode(&script[3..23])
+                                ),
+                            });
                         }
                     }
                 }
@@ -2893,15 +2900,18 @@ where
 
         // Ensure exactly one certificate matches
         if matching_certs.is_empty() {
-            return Err(bsv_rs::Error::WalletError(
-                "Certificate not found with the provided arguments".to_string(),
-            ));
+            return Err(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message: "Certificate not found with the provided arguments".to_string(),
+            });
         }
         if matching_certs.len() > 1 {
-            return Err(bsv_rs::Error::WalletError(
-                "Multiple certificates match the provided arguments, expected unique match"
-                    .to_string(),
-            ));
+            return Err(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message:
+                    "Multiple certificates match the provided arguments, expected unique match"
+                        .to_string(),
+            });
         }
 
         let storage_cert = &matching_certs[0];
@@ -4900,8 +4910,8 @@ mod tests {
                     (encoding_error, true),
                     (encoding_error, true),
                     (encoding_error, true),
-                    ("Certificate not found with the provided arguments", false),
-                    ("Certificate not found with the provided arguments", false),
+                    ("Certificate not found with the provided arguments", true),
+                    ("Certificate not found with the provided arguments", true),
                     (
                         "Certificate serial number must use canonical base64 encoding",
                         false,
@@ -5619,7 +5629,11 @@ mod tests {
                                 args.certificate.signature = format!("3026020101022100{}", "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140");
                             })
                             .await;
-                            assert_wallet_error("valid arguments reach lookup", result, NOT_FOUND);
+                            assert_argument_refusal(
+                                "valid arguments reach lookup",
+                                result,
+                                NOT_FOUND,
+                            );
                         }
                         // Reserved names pass the argument length check, then the
                         // verifier check. The helper retains its safe-name gate.
@@ -5743,7 +5757,7 @@ mod tests {
                                 format!("{}.4294967295", "AB".repeat(32));
                         })
                         .await;
-                        assert_wallet_error("largest vout reaches lookup", result, NOT_FOUND);
+                        assert_argument_refusal("largest vout reaches lookup", result, NOT_FOUND);
                     }
 
                     // #291: a direct acquire normalizes the outpoint as
@@ -5991,7 +6005,11 @@ mod tests {
                                 args.privileged_reason = Some(reason);
                             })
                             .await;
-                            assert_wallet_error("valid reason reaches lookup", result, NOT_FOUND);
+                            assert_argument_refusal(
+                                "valid reason reaches lookup",
+                                result,
+                                NOT_FOUND,
+                            );
                         }
                     }
 
@@ -6064,7 +6082,11 @@ mod tests {
                                 args.privileged_reason = None;
                             })
                             .await;
-                            assert_wallet_error("unprivileged reaches lookup", result, NOT_FOUND);
+                            assert_argument_refusal(
+                                "unprivileged reaches lookup",
+                                result,
+                                NOT_FOUND,
+                            );
                         }
                     }
 
@@ -6096,7 +6118,7 @@ mod tests {
                             args.fields_to_reveal = names(100);
                         })
                         .await;
-                        assert_wallet_error("100 fields reach lookup", result, NOT_FOUND);
+                        assert_argument_refusal("100 fields reach lookup", result, NOT_FOUND);
                     }
 
                     #[tokio::test]
@@ -6197,10 +6219,14 @@ mod tests {
                     // argument, so a corrupt stored certifier is never returned.
                     for reveal in [&["name"][..], &[]] {
                         let result = prove(Some(&"zz".repeat(33)), &key(5), &key(6), reveal).await;
-                        assert_wallet_error("corrupt stored certifier", result, NOT_FOUND);
+                        assert_argument_refusal("corrupt stored certifier", result, NOT_FOUND);
                         let upper = key(5).to_uppercase();
                         let result = prove(Some(&upper), &key(5), &key(6), reveal).await;
-                        assert_wallet_error("stored certifier in another case", result, NOT_FOUND);
+                        assert_argument_refusal(
+                            "stored certifier in another case",
+                            result,
+                            NOT_FOUND,
+                        );
                     }
                 }
 

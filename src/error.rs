@@ -269,6 +269,17 @@ pub enum Error {
     Internal(String),
 }
 
+#[cfg(any(feature = "sqlite", test))]
+impl Error {
+    /// Preserve the text when a site's reference class differs from the variant's default.
+    pub(crate) fn into_invalid_parameter(self) -> Self {
+        Self::SdkError(bsv_rs::Error::WalletRefusal {
+            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+            message: self.to_string(),
+        })
+    }
+}
+
 /// Why the store answered `Error::StoreBusy` (bsv-wallet-cli #44).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

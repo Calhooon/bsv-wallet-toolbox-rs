@@ -13,7 +13,16 @@
   existing typed forms, and other faults stay faults. The mapping and nearest
   reference classes are documented in `src/wallet/CLAUDE.md`. CLI #330 must
   take this migration with the next published toolbox beta; no version or pin
-  is changed here. Direct SDK error sites still require follow-up under #185.
+  is changed here. Direct SDK guards at signAction (empty reference, missing
+  or expired pending action), internalizeAction (derivation values, output
+  index, sender and derivation mismatch) and proveCertificate (absent or
+  ambiguous match) now carry their reference class too, with the same message
+  bytes and without the generic Display wrapper. Missing or expired sign
+  sessions are `NotImplemented`; the other listed guards are `InvalidParameter`.
+  The abort door's non-outgoing and unabortable-status guards are
+  `InvalidParameter`; process-action status guards remain `InvalidOperation`.
+  The remaining direct SDK errors are local faults or the reference's plain
+  helper errors, documented with their reasons under #185.
 
 - #185: the authenticated storage client's response-wait timeout now carries
   `Error::SdkError(bsv_rs::Error::TransportFault)` with

@@ -112,7 +112,7 @@ async fn a_signing_server_with_another_key_is_refused_with_the_reference_text() 
     impostor.handshake(&mut server).await;
     let request = answered(&mut server, &impostor, 200, Answer::Signed, no_certificate).await;
     // Wallet.ts:789-791, the received key the session's signed sender.
-    assert_wallet_error(
+    assert_invalid_parameter(
         issue(&server).await,
         &format!(
             "Validation error: Invalid certifier! Expected: {}, Received: {}",
@@ -161,10 +161,13 @@ async fn a_bad_response_signature_is_refused_with_the_body_unread() {
     )
     .await;
     // Peer.ts:1303-1305; bsv-rs's verifier errs rather than answer false.
-    assert_wallet_error(
-        issue(&server).await,
-        "Network error: Failed to send request: wallet error: Signature is not valid",
-    );
+    match issue(&server).await {
+        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
+            message,
+            "Network error: Failed to send request: wallet error: Signature is not valid"
+        ),
+        other => panic!("expected a signature transport fault, got {other:?}"),
+    }
     request.assert_async().await;
 }
 
@@ -189,7 +192,7 @@ async fn the_request_carries_no_caller_bsv_header() {
         .expect(1)
         .create_async()
         .await;
-    assert_wallet_error(
+    assert_invalid_parameter(
         issue(&server).await,
         "Validation error: No certificate received from certifier!",
     );
@@ -218,7 +221,7 @@ async fn a_signed_400_with_an_error_body_reaches_the_envelope_check() {
     })
     .await;
     // Wallet.ts:779-795 has no status gate.
-    assert_wallet_error(
+    assert_invalid_parameter(
         issue(&server).await,
         "Validation error: No certificate received from certifier!",
     );

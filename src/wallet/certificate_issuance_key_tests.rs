@@ -63,7 +63,7 @@ fn args(certifier: String, url: String) -> AcquireCertificateArgs {
     }
 }
 
-fn assert_wallet_error(result: bsv_rs::Result<WalletCertificate>, expected: &str) {
+fn assert_invalid_parameter(result: bsv_rs::Result<WalletCertificate>, expected: &str) {
     match result {
         Err(bsv_rs::Error::WalletRefusal {
             class: bsv_rs::WalletRefusalClass::InvalidParameter,
@@ -80,7 +80,7 @@ async fn assert_type_refusals(certifier: &str, cases: Vec<(String, &str)>) {
     for (value, rule) in cases {
         let mut invalid = args(certifier.to_string(), format!("{}/issue", server.url()));
         invalid.certificate_type = value;
-        assert_wallet_error(
+        assert_invalid_parameter(
             acquire_from_fixture(&wallet, invalid).await,
             &format!("Validation error: The type parameter must be {rule}"),
         );
@@ -156,7 +156,7 @@ async fn test_issuance_bad_certifier_refuses_before_protocol() {
     ] {
         let result =
             acquire_from_fixture(&wallet, args(value, format!("{}/issue", server.url()))).await;
-        assert_wallet_error(
+        assert_invalid_parameter(
             result,
             &format!("Validation error: The certifier parameter must be {rule}"),
         );
@@ -185,7 +185,7 @@ async fn test_issuance_bad_certifier_precedes_identity() {
     )
     .await
     .map_err(Into::into);
-    assert_wallet_error(
+    assert_invalid_parameter(
         result,
         "Validation error: The certifier parameter must be hexadecimal string.",
     );
@@ -259,7 +259,7 @@ async fn normalized_args_reach_response_checks(
     // transport, and a valid serial HMAC before the metadata comparison.
     acquisition.certifier_url = Some(format!("{}/issue", server.url()));
     let result = acquire_from_fixture(&wallet, acquisition).await;
-    assert_wallet_error(
+    assert_invalid_parameter(
         result,
         &format!(
             "Validation error: Invalid certificate type! Expected: {}, Received: {issued_type}",
@@ -366,14 +366,14 @@ async fn mismatched_response(field: Option<&str>) -> (bsv_rs::Result<WalletCerti
 #[tokio::test]
 async fn test_issuance_revocation_outpoint_uses_reference_text() {
     let (result, expected) = mismatched_response(None).await;
-    assert_wallet_error(result, &expected);
+    assert_invalid_parameter(result, &expected);
 }
 
 #[tokio::test]
 async fn test_issuance_field_mismatch_uses_reference_text() {
     for field in ["city", "name"] {
         let (result, expected) = mismatched_response(Some(field)).await;
-        assert_wallet_error(result, &expected);
+        assert_invalid_parameter(result, &expected);
     }
 }
 

@@ -572,11 +572,13 @@ fn parse_status(status: &str) -> Option<TransactionStatus> {
 
 /// Validate that the transaction can be aborted, and how.
 fn validate_transaction_for_abort(tx: &TransactionRecord) -> Result<AbortKind> {
+    // ts-stack@edf6e03 StorageProvider.ts:716-720 classes these reference refusals.
     // Must be an outgoing transaction
     if !tx.is_outgoing {
         return Err(Error::InvalidTransactionStatus(
             "cannot abort action: must be an outgoing transaction".to_string(),
-        ));
+        )
+        .into_invalid_parameter());
     }
 
     // Parse and validate status
@@ -588,7 +590,7 @@ fn validate_transaction_for_abort(tx: &TransactionRecord) -> Result<AbortKind> {
         return Err(Error::InvalidTransactionStatus(format!(
             "cannot abort action: action with status '{}' records an acceptance and cannot be aborted",
             tx.status
-        )));
+        )).into_invalid_parameter());
     }
 
     // Check if status is abortable
@@ -606,14 +608,16 @@ fn validate_transaction_for_abort(tx: &TransactionRecord) -> Result<AbortKind> {
         return Err(Error::InvalidTransactionStatus(format!(
             "cannot abort action: action with status '{}' cannot be aborted",
             tx.status
-        )));
+        ))
+        .into_invalid_parameter());
     }
 
     // Unknown status - treat as non-abortable
     Err(Error::InvalidTransactionStatus(format!(
         "cannot abort action: unexpected transaction status '{}'",
         tx.status
-    )))
+    ))
+    .into_invalid_parameter())
 }
 
 /// Check that the transaction's outputs have not been spent by another transaction.
@@ -819,12 +823,13 @@ mod tests {
     // -------------------------------------------------------------------------
 
     /// Asks the door to abort `reference` and requires the accepting-word
-    /// refusal (#165): `InvalidTransactionStatus` whose text holds `expected`.
+    /// refusal (#165), with the site class and text containing `expected`.
     async fn abort_refused_as_accepted(
         storage: &StorageSqlx,
         user_id: i64,
         reference: &str,
         expected: &str,
+        expected_class: bsv_rs::WalletRefusalClass,
     ) {
         let err = abort_action_internal(
             storage,
@@ -835,11 +840,12 @@ mod tests {
         )
         .await
         .unwrap_err();
-        match err {
-            Error::InvalidTransactionStatus(msg) => {
-                assert!(msg.contains(expected), "{msg}");
+        match bsv_rs::Error::from(err) {
+            bsv_rs::Error::WalletRefusal { class, message } => {
+                assert_eq!(class, expected_class);
+                assert!(message.contains(expected), "{message}");
             }
-            other => panic!("Expected InvalidTransactionStatus, got: {other:?}"),
+            other => panic!("Expected {expected_class:?}, got: {other:?}"),
         }
     }
 
@@ -923,15 +929,18 @@ mod tests {
         )
         .await;
 
-        // Should fail with InvalidTransactionStatus
+        // The reference classes this status as an invalid parameter.
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
-            Error::InvalidTransactionStatus(msg) => {
+            Error::SdkError(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message: msg,
+            }) => {
                 assert!(msg.contains("cannot be aborted"));
                 assert!(msg.contains("completed"));
             }
-            _ => panic!("Expected InvalidTransactionStatus error, got: {:?}", err),
+            _ => panic!("Expected InvalidParameter error, got: {:?}", err),
         }
     }
 
@@ -1127,10 +1136,13 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
-            Error::InvalidTransactionStatus(msg) => {
+            Error::SdkError(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message: msg,
+            }) => {
                 assert!(msg.contains("must be an outgoing transaction"));
             }
-            _ => panic!("Expected InvalidTransactionStatus error, got: {:?}", err),
+            _ => panic!("Expected InvalidParameter error, got: {:?}", err),
         }
     }
 
@@ -1169,10 +1181,13 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
-            Error::InvalidTransactionStatus(msg) => {
+            Error::SdkError(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message: msg,
+            }) => {
                 assert!(msg.contains("must be an outgoing transaction"));
             }
-            _ => panic!("Expected InvalidTransactionStatus error, got: {:?}", err),
+            _ => panic!("Expected InvalidParameter error, got: {:?}", err),
         }
     }
 
@@ -1203,10 +1218,13 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
-            Error::InvalidTransactionStatus(msg) => {
+            Error::SdkError(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message: msg,
+            }) => {
                 assert!(msg.contains("cannot be aborted"));
             }
-            _ => panic!("Expected InvalidTransactionStatus error, got: {:?}", err),
+            _ => panic!("Expected InvalidParameter error, got: {:?}", err),
         }
     }
 
@@ -1287,7 +1305,14 @@ mod tests {
             .await
             .unwrap();
 
-        abort_refused_as_accepted(&storage, auth.user_id.unwrap(), reference, "acceptance").await;
+        abort_refused_as_accepted(
+            &storage,
+            auth.user_id.unwrap(),
+            reference,
+            "acceptance",
+            bsv_rs::WalletRefusalClass::InvalidOperation,
+        )
+        .await;
         assert_eq!(get_transaction_status(&storage, tx_id).await, "sending");
     }
 
@@ -1534,6 +1559,7 @@ mod tests {
             auth.user_id.unwrap(),
             reference,
             "records an acceptance",
+            bsv_rs::WalletRefusalClass::InvalidParameter,
         )
         .await;
         // Nothing moved.
@@ -1559,6 +1585,7 @@ mod tests {
             auth.user_id.unwrap(),
             reference,
             "records an acceptance",
+            bsv_rs::WalletRefusalClass::InvalidParameter,
         )
         .await;
         assert_eq!(get_transaction_status(&storage, c.a).await, "unproven");
@@ -1775,6 +1802,7 @@ mod tests {
             auth.user_id.unwrap(),
             &txid,
             "records an acceptance",
+            bsv_rs::WalletRefusalClass::InvalidParameter,
         )
         .await;
         assert_eq!(get_transaction_status(&storage, tx_id).await, "unproven");
@@ -1791,7 +1819,14 @@ mod tests {
             Some(&other_txid),
         )
         .await;
-        abort_refused_as_accepted(&storage, auth.user_id.unwrap(), &other_txid, "acceptance").await;
+        abort_refused_as_accepted(
+            &storage,
+            auth.user_id.unwrap(),
+            &other_txid,
+            "acceptance",
+            bsv_rs::WalletRefusalClass::InvalidParameter,
+        )
+        .await;
         assert_eq!(get_transaction_status(&storage, other_id).await, "unproven");
     }
 

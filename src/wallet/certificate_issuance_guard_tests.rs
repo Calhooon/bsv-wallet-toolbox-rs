@@ -9,7 +9,7 @@ fn acquisition() -> AcquireCertificateArgs {
 
 async fn refuses(acquisition: AcquireCertificateArgs, name: &str, rule: &str) {
     let wallet = wallet().await;
-    assert_wallet_error(
+    assert_invalid_parameter(
         acquire_as_test_wallet(&wallet, acquisition, "invalid identity").await,
         &format!("Validation error: The {name} parameter must be {rule}"),
     );
@@ -30,7 +30,7 @@ async fn privilege_reason_minimum_before_protocol() {
     a.privileged_reason = Some("éé".into());
     a.acquisition_protocol = AcquisitionProtocol::Direct;
     let result = acquire_as_test_wallet(&wallet, a, wallet.identity_key()).await;
-    assert_wallet_error(
+    assert_invalid_parameter(
         result,
         "Validation error: The privilegedReason parameter must be at least 5 length.",
     );
@@ -51,7 +51,7 @@ async fn issuance_protocol_before_serial_number() {
     a.acquisition_protocol = AcquisitionProtocol::Direct;
     a.serial_number = Some("bad later argument".into());
     let result = acquire_as_test_wallet(&wallet, a, wallet.identity_key()).await;
-    assert_wallet_error(
+    assert_invalid_parameter(
         result,
         "Validation error: Only acquire certificate via issuance requests allowed here.",
     );
