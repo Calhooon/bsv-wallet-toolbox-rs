@@ -22,6 +22,62 @@
 //! behind a sleeping one and serves once it wakes).
 
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+tokio::task_local! {
+    static REPLAY_WORKER: ();
+    static LOCK_WITNESS: Arc<LockWitness>;
+}
+
+/// Count lock-taking batches and those called while an async worker is polled.
+/// The worker marker follows the future across threads and awaits, but is not
+/// inherited by `spawn_blocking`. Scheduling delays cannot change this witness.
+#[derive(Default)]
+pub(super) struct LockWitness {
+    scripts: AtomicUsize,
+    batches: AtomicUsize,
+    on_worker: AtomicUsize,
+}
+
+impl LockWitness {
+    fn current() -> Arc<Self> {
+        LOCK_WITNESS.try_with(Arc::clone).unwrap_or_default()
+    }
+
+    fn counts(&self) -> (usize, usize) {
+        (
+            self.batches.load(Ordering::Relaxed),
+            self.on_worker.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// Scope both the witness and the polling marker to one replay worker.
+pub(super) async fn watch_worker<T>(
+    witness: Arc<LockWitness>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    LOCK_WITNESS
+        .scope(witness, REPLAY_WORKER.scope((), future))
+        .await
+}
+
+/// Called before a scene's reset and mock creation, including replay retries.
+pub(super) fn record_script_locks() {
+    LockWitness::current()
+        .scripts
+        .fetch_add(1, Ordering::Relaxed);
+    record_server_locks();
+}
+
+/// Called at the synchronous entry to a batch of server lock operations.
+fn record_server_locks() {
+    let witness = LockWitness::current();
+    witness.batches.fetch_add(1, Ordering::Relaxed);
+    if REPLAY_WORKER.try_with(|()| ()).is_ok() {
+        witness.on_worker.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// Stand up the fixture's script on the servers off the runtime's workers:
 /// `reset` and mock creation wait there for any answer still sleeping
@@ -34,9 +90,11 @@ pub(super) async fn script(
 ) -> Result<Vec<mockito::Mock>, String> {
     let providers = fixture.providers.clone();
     let counts = Arc::clone(counts);
+    let witness = LockWitness::current();
     let mut held = std::mem::take(&mut servers.0);
     let (held, mocks) = tokio::task::spawn_blocking(move || {
-        let mocks = script_blocking(&providers, &mut held, &counts);
+        let mocks =
+            LOCK_WITNESS.sync_scope(witness, || script_blocking(&providers, &mut held, &counts));
         (held, mocks)
     })
     .await
@@ -50,7 +108,13 @@ impl Drop for Servers {
     fn drop(&mut self) {
         let servers = std::mem::take(&mut self.0);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn_blocking(move || drop(servers));
+            let witness = LockWitness::current();
+            runtime.spawn_blocking(move || {
+                LOCK_WITNESS.sync_scope(witness, || {
+                    record_server_locks();
+                    drop(servers);
+                });
+            });
         }
     }
 }
@@ -63,7 +127,19 @@ async fn late_fault_msecs(company: Vec<pool::Scene>, workers: usize) -> u64 {
     let mut scenes = company;
     scenes.push((late.clone(), Ok(stall::late_second_answer())));
     scenes.sort_by(|a, b| a.0.cmp(&b.0));
-    let replayed = pool::replay_queue(scenes, workers).await;
+    let scripted = scenes.len();
+    let witness = Arc::new(LockWitness::default());
+    let replayed = pool::replay_queue_with_witness(scenes, workers, Arc::clone(&witness)).await;
+    let (batches, on_worker) = witness.counts();
+    eprintln!("server lock batches: {batches} checked, {on_worker} on runtime workers ({workers} replay workers)");
+    assert!(
+        witness.scripts.load(Ordering::Relaxed) >= scripted,
+        "each scene's script must be witnessed"
+    );
+    assert_eq!(
+        on_worker, 0,
+        "a runtime worker took a server's lock, which can wait behind a sleeping answer (#292)"
+    );
     let (_, outcome) = replayed
         .into_iter()
         .find(|(path, _)| *path == late)
@@ -77,27 +153,15 @@ async fn late_fault_msecs(company: Vec<pool::Scene>, workers: usize) -> u64 {
     rung.msecs
 }
 
-/// How far the late fault's reading on the default workers may sit from a
-/// single worker's. A worker blocked in `reset` behind a fixture's 3000 ms
-/// answer holds every timer back by that answer's remainder past the
-/// 2000 ms deadline, 1000 ms (measured on base: 3002 against 2003 ms);
-/// half of it parts the two readings with room either side for a loaded
-/// runner's scheduling, tens of milliseconds where it was measured.
-const LOCK_MARGIN_MS: u64 = 500;
-
 /// The late scene's recorded fault, replayed in its sorted place among
-/// every fixture on the default workers, against the same scene on one
-/// worker: they agree within [`LOCK_MARGIN_MS`] only when no worker waits
-/// on a server's lock behind a sleeping answer.
+/// every fixture on the default workers, and the same scene on one worker.
+/// Both replays must take every server lock off the runtime workers. The
+/// timings remain diagnostics: a loaded runner can delay either reading
+/// without a lock wait (2587 against 2001 ms in run 40671013907, #410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ladder_fixtures_replay_times_match_a_single_worker() {
     let company: Vec<pool::Scene> = fixture_files().into_iter().map(pool::load).collect();
     let pooled = late_fault_msecs(company, WORKERS).await;
     let alone = late_fault_msecs(Vec::new(), 1).await;
     eprintln!("late fault: {pooled} ms on {WORKERS} workers, {alone} ms on one");
-    assert!(
-        pooled.abs_diff(alone) <= LOCK_MARGIN_MS,
-        "the late fault took {pooled} ms on {WORKERS} workers, {alone} ms on one: \
-         a worker waited on a server's lock behind a sleeping answer (#292)"
-    );
 }

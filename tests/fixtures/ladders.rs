@@ -465,6 +465,7 @@ fn script_blocking(
     servers: &mut [(&'static str, mockito::Server)],
     counts: &Counts,
 ) -> Result<Vec<mockito::Mock>, String> {
+    lock::record_script_locks();
     let mut mocks = Vec::new();
     for (name, server) in servers.iter_mut() {
         server.reset();
