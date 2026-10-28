@@ -56,9 +56,12 @@
 
 - #389: A `createAction` double-spend refusal now carries `competingBeef`
   alongside `competingTxs` in its review result (CLI #347). The BEEF contains
-  the stored competing transaction and its proof or ancestry; unavailable
-  stored data yields a txid-only BEEF, as in the reference. The result's own
-  zero `txid` remains the D14 filing (ts-stack #1436).
+  the stored competing transaction and its proof or ancestry, read from
+  `proven_txs` and served `proven_tx_reqs` rows as the reference's
+  `getProvenOrRawTx`, never `transactions.raw_tx`. Create asks no provider, so
+  a competitor or ancestor the stores lack yields a txid-only BEEF where the
+  reference would first ask services. The result's own zero `txid` remains
+  the D14 filing (ts-stack #1436).
 
 - #386: `createAction` shares the internalize door's `validateLabel` bound:
   1 to 300 UTF-8 bytes after ECMAScript trim and lowercase. Whitespace-only
