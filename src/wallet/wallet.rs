@@ -4088,6 +4088,25 @@ fn validate_named_input_unlocking_scripts(
 mod tests {
     use super::*;
 
+    fn assert_argument_refusal<T: std::fmt::Debug>(
+        scenario: &str,
+        result: bsv_rs::Result<T>,
+        expected: &str,
+    ) {
+        let error = result.expect_err(scenario);
+        assert!(
+            matches!(
+                error,
+                bsv_rs::Error::WalletRefusal {
+                    class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                    ..
+                }
+            ),
+            "{scenario}: {error:?}"
+        );
+        assert_eq!(error.to_string(), expected, "{scenario}");
+    }
+
     #[test]
     fn test_pending_transaction_struct() {
         // Test that PendingTransaction can be created
@@ -4279,28 +4298,12 @@ mod tests {
 
         #[tokio::test]
         async fn create_action_refuses_empty_originator() {
-            let error = create(Some("")).await.unwrap_err();
-            assert!(matches!(
-                error,
-                bsv_rs::Error::WalletRefusal {
-                    class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                    ..
-                }
-            ));
-            assert_eq!(error.to_string(), EMPTY);
+            assert_argument_refusal("create originator", create(Some("")).await, EMPTY);
         }
 
         #[tokio::test]
         async fn list_outputs_refuses_empty_originator() {
-            let error = list(Some("")).await.unwrap_err();
-            assert!(matches!(
-                error,
-                bsv_rs::Error::WalletRefusal {
-                    class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                    ..
-                }
-            ));
-            assert_eq!(error.to_string(), EMPTY);
+            assert_argument_refusal("list originator", list(Some("")).await, EMPTY);
         }
 
         #[test]
@@ -4436,25 +4439,6 @@ mod tests {
                 }
                 other => panic!("{scenario}: expected WalletError({expected:?}), got {other:?}"),
             }
-        }
-
-        fn assert_argument_refusal<T: std::fmt::Debug>(
-            scenario: &str,
-            result: bsv_rs::Result<T>,
-            expected: &str,
-        ) {
-            let error = result.expect_err(scenario);
-            assert!(
-                matches!(
-                    error,
-                    bsv_rs::Error::WalletRefusal {
-                        class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                        ..
-                    }
-                ),
-                "{scenario}: {error:?}"
-            );
-            assert_eq!(error.to_string(), expected, "{scenario}");
         }
 
         fn assert_field_recovery_error(
