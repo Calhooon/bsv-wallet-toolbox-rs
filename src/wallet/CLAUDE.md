@@ -45,7 +45,7 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 │  - sweep_to_address() for full-wallet sweeps                    │
 ├─────────────────────────────────────────────────────────────────┤
 │                  Certificate Issuance Protocol                  │
-│  - BRC-104 HTTP communication with certifiers                   │
+│  - BRC-104 mutual auth with certifiers via bsv-rs Peer (#315)   │
 │  - Field encryption and master keyring creation                 │
 │  - HMAC-based serial number verification                        │
 ├─────────────────────────────────────────────────────────────────┤
@@ -68,7 +68,8 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 | `mod.rs` | ~102 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput`, `ScriptType`, `UnlockingScriptTemplate`, `WalletBalance`, `UtxoInfo`, `HttpLookupResolver`, `OverlayCertificate`, `OverlayLookupResolver` |
 | `wallet.rs` | ~3547 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `WalletBalance`, `UtxoInfo`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, balance/sweep helpers, permission checks, and helper functions |
 | `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
-| `certificate_issuance.rs` | ~1090 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
+| `certificate_issuance.rs` | ~1430 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
+| `certificate_issuance_auth.rs` | ~130 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
 | `direct_acquire.rs` | ~120 | `validateAcquireDirectCertificateArgs` for the direct `acquire_certificate` (#311) |
 | `lookup.rs` | ~610 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication |
 
@@ -699,19 +700,66 @@ of keys.`, `Missing field: <field> in certificate.fields`, and
 The existing error envelope is retained; the internal identity-key parse is
 unchanged.
 
-For #269, the certifier's identity header is read as `Wallet.ts:789-793`
-reads it, after the HTTP status check and before the body is read: the name
-is `x-bsv-auth-identity-key` (the name `AuthFetch.ts:479` sets on the
-response from the authenticated sender's key, and the auth middleware sends
-at `auth-express-middleware/src/index.ts:936,1008`), it is required, and it
-must equal the normalized certifier. An absent header refuses with
-`Invalid certifier! Expected: <certifier>, Received: null`, so a body that
-would fail the JSON parse is never the error named. The value is read as
-fetch's `Headers.get` reads it: each byte one code point (a non-ASCII value
-is compared, and refused, rather than dropped) and repeated values joined
-with `, `. The old `x-bsv-identity-key` response header is not read; the
-reference reads one name. The request still sends `x-bsv-identity-key`.
-Tests: `certificate_issuance_header_tests.rs`.
+For #315 (the owner's ruling 19.2 (a)), the issuance request goes over
+BRC-104 mutual auth, as `Wallet.ts:773-795` sends it through `AuthFetch`
+(design: `docs/design/issuance-mutual-auth.md`). `certificate_issuance_auth.rs`
+builds a bsv-rs `Peer` per call, as the reference builds an AuthFetch per
+call, over the wallet's `ProtoWallet` (the same root key; `Peer` needs an
+owned wallet, so `Wallet<S, V>` gains no bound, and the port's BRC-98/99
+check does not run on the handshake signatures, as the reference's Wallet
+makes none). At bsv-rs `=0.9.0-beta.2` `Peer::start` is the verifying path
+(bsv-rs #353): the initial response's nonce and signature, then the general
+answer's session, sender and signature. The transport is the shared guarded
+one (`services/providers/http_client.rs`): bsv-rs's `SimplifiedFetchTransport`
+in production, its redirect refused on both paths (bsv-rs #320); under test
+and `bench-support` the #182 wrapper, which checks every send and hands the
+SDK the policy's client through `with_client`. The base URL is the
+endpoint's origin and the request path its path (`signCertificate` is not
+appended: #332). The request is an `HttpRequest`: 32 random bytes, `POST`,
+the path, `content-type: application/json` only, the JSON body; it is sent
+with `to_peer` and no pinned identity, as a fresh AuthFetch has none. A
+general-message listener takes the answer whose leading 32 bytes are the
+request id. Then, in the reference's order: the signed sender must equal the
+normalized certifier, else `Invalid certifier! Expected: <certifier>,
+Received: <sender hex>` (`Wallet.ts:789-791`); then the body as JSON, with no
+status gate (a signed `400` reaches `No certificate received from
+certifier!`). A 30 s deadline answers `Timed out waiting for authenticated
+response.` (`AuthFetch.ts:298-300`). A bsv-rs transport fault keeps its
+class (`Error::SdkError`); any other refusal is `Error::NetworkError` with
+`Failed to send request: <bsv-rs text>`, as the storage client's. Not
+ported, each its own issue: the 402 payment (#328), the certifier's
+certificate request (#333), the private-address refusal (#334).
+
+What a certifier behind the reference middleware sees, per issuance: a
+`POST /.well-known/auth` `initialRequest` from the wallet's identity key,
+then `POST <path>` with the six `x-bsv-auth-*` headers (version, identity
+key, nonce, your nonce, signature, request id), its handler called with
+`req.auth.identityKey` the wallet's key. Before #315 it saw one request
+carrying `x-bsv-auth-version` with no request id, which the middleware
+answers `400 ERR_AUTH_MALFORMED` (`index.ts:1099-1102`). A certifier that
+read the `x-bsv-identity-key` request header stops receiving it.
+
+What the wallet's caller sees (through `WalletInterface`, each inside
+`wallet error: `):
+
+| situation | before #315 | after |
+|---|---|---|
+| a reference certifier | `Network error: Certifier returned HTTP 400 Bad Request: {...ERR_AUTH_MALFORMED...}` | the certificate |
+| a certifier signing with another key | (no handshake; its header compared) | `Validation error: Invalid certifier! Expected: <certifier>, Received: <its key>` |
+| a plain server answering the handshake with its body | the header compared, `Received: null` or the body's | `Network error: Failed to send request: authentication error: Failed to parse auth response: ...` |
+| a server answering the handshake `404` | (no handshake) | `Network error: Failed to send request: authentication error: Auth endpoint returned 404 Not Found: <body>` |
+| an unsigned answer to the signed request | n/a | `Network error: Failed to send request: authentication error: Received HTTP <status> from <url> without valid BSV authentication (missing headers: ...)` |
+| a bad answer signature | n/a | `Network error: Failed to send request: wallet error: Signature is not valid` |
+| a redirect | refused by the policy client under test, followed by reqwest in production | `Network error: Failed to send request: authentication error: Network error while sending authenticated request to <url>: redirect refused: <status>` |
+| a non-2xx signed answer | `Network error: Certifier returned HTTP <status>: <body>` | the body read: its envelope checks name it |
+| no answer within 30 s | reqwest's timeout text | `Network error: Timed out waiting for authenticated response.` |
+
+Tests: `certificate_issuance_auth_tests.rs` (the design's witnesses),
+`certificate_issuance_auth.rs` (the deadline), the fixture certifier
+`certificate_issuance_peer_fixture.rs` (the handshake and the signed answer
+as `index.ts:931-968,1005-1031` send them; its self-check in
+`certificate_issuance_peer_fixture_tests.rs`). The #269 header witnesses are
+gone with the header they read.
 
 `certificate_issuance_guard_tests.rs` checks the representable argument guards
 and their precedence. `certificate_issuance_response_tests.rs` exercises the
@@ -919,8 +967,8 @@ runs on `storageCert.fields`, `signer/methods/proveCertificate.ts:35`).
 ### Protocol Flow
 
 1. **PrepareIssuanceActionData**: Create the client nonce as `createNonce` (16 random bytes and their 32-byte HMAC, 64 base64 characters), encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
-2. **HTTP POST**: Send request to certifier URL with BRC-104 headers (`x-bsv-auth-version: 0.1`, `x-bsv-identity-key`)
-3. **Identity header**: Require `x-bsv-auth-identity-key` equal to the certifier before the body is read (#269)
+2. **BRC-104 request**: A handshake with the certifier, then the request as a signed general message through bsv-rs's `Peer` (#315)
+3. **Signed sender**: Require the answer's verified sender equal to the certifier before the body is read
 4. **ParseCertificateResponse**: Require the certificate, then nonce, and retain the supplied certificate text
 5. **VerifyCertificateIssuance**: Run the nonce helper, verify the serial HMAC, validate metadata and fields, verify the signature, then decrypt every master field
 6. **StoreCertificate**: Save certificate to storage with encrypted fields and master keyring
@@ -950,10 +998,7 @@ pub struct ProtocolIssuanceResponse {
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `BRC104_AUTH_VERSION` | "0.1" | BRC-104 authentication version |
-| `HEADER_AUTH_VERSION` | "x-bsv-auth-version" | Version header name |
-| `HEADER_IDENTITY_KEY` | "x-bsv-identity-key" | Request identity key header name |
-| `HEADER_CERTIFIER_IDENTITY_KEY` | "x-bsv-auth-identity-key" | Response header the certifier's key must be sent under (#269) |
+| `auth::RESPONSE_DEADLINE` | 30 s | The answer's deadline (`AuthFetch.ts:90`) |
 | `CERTIFICATE_ISSUANCE_PROTOCOL` | "certificate issuance" | Protocol for HMAC verification |
 | `NONCE_HMAC_SIZE` | 32 | Expected HMAC/serial number size |
 | `NONCE_SIZE` | 16 | The client nonce's random part in bytes (`createNonce.ts:27`) |
@@ -964,6 +1009,7 @@ pub struct ProtocolIssuanceResponse {
 ```rust
 pub async fn acquire_certificate_issuance<W, S>(
     wallet: &W,
+    peer_wallet: ProtoWallet,   // the wallet's own, the BRC-104 Peer's signer
     storage: &S,
     auth: &AuthId,
     args: AcquireCertificateArgs,

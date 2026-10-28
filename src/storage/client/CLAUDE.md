@@ -340,7 +340,11 @@ checks the configured base URL with the shared #182 `check_url` before
 delegating to the SDK, including sends through the public `peer()` accessor.
 Non-loopback destinations return the existing rule 28 refusal. Construction
 stays infallible and `use_auth` remains enabled by default. Production keeps
-the SDK transport and the existing public types.
+the SDK transport and the existing public types. The wrapper lives in
+`src/services/providers/http_client.rs` (`SimplifiedFetchTransport`, through a
+`use` here), shared with certificate issuance's BRC-104 client (#315); its
+URL check builds under `any(test, feature = "bench-support")`, not only with
+`remote`.
 
 Since the bsv-rs 0.9.0-beta.2 pin the wrapper hands the SDK the policy's
 reqwest client through `SimplifiedFetchTransport::with_client` (bsv-rs #320):
