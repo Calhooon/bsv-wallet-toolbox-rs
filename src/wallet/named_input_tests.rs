@@ -186,7 +186,10 @@ async fn assert_refused<T>(
     before: &[String],
 ) {
     match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, expected),
+        Err(bsv_rs::Error::WalletRefusal {
+            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+            message,
+        }) => assert_eq!(message, expected),
         Ok(_) => panic!("wallet accepted an invalid caller input"),
         Err(error) => panic!("unexpected refusal: {error}"),
     }

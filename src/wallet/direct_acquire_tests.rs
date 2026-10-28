@@ -67,8 +67,11 @@ async fn assert_refused(scenario: &str, args: AcquireCertificateArgs, expected: 
         .acquire_certificate(args, Some("certificate.test"))
         .await;
     match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, expected, "{scenario}"),
-        other => panic!("{scenario}: expected WalletError({expected:?}), got {other:?}"),
+        Err(bsv_rs::Error::WalletRefusal {
+            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+            message,
+        }) => assert_eq!(message, expected, "{scenario}"),
+        other => panic!("{scenario}: expected InvalidParameter({expected:?}), got {other:?}"),
     }
     assert_eq!(
         certificate_rows(&wallet).await,
