@@ -2417,11 +2417,18 @@ where
         // Validate wallet payment outputs have correct BRC-29 derivation parameters
         for output in &args.outputs {
             if let Some(ref payment) = output.payment_remittance {
-                // Validate derivation parameters are present and non-empty
-                if payment.derivation_prefix.is_empty() || payment.derivation_suffix.is_empty() {
-                    return Err(bsv_rs::Error::WalletError(
-                        "Wallet payment outputs require non-empty derivation_prefix and derivation_suffix".to_string()
-                    ));
+                // Validate derivation parameters are present and non-empty, in
+                // the text of the reference's validateBase64String (#377,
+                // ts-stack@edf6e03 validationHelpers.ts:439-441, 490-491)
+                for (value, name) in [
+                    (&payment.derivation_prefix, "derivationPrefix"),
+                    (&payment.derivation_suffix, "derivationSuffix"),
+                ] {
+                    if value.is_empty() {
+                        return Err(bsv_rs::Error::WalletError(format!(
+                            "The {name} parameter must be valid base64 string"
+                        )));
+                    }
                 }
                 tracing::debug!(
                     output_index = output.output_index,

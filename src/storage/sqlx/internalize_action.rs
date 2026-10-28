@@ -698,13 +698,17 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
         "outputs",
         MAXIMUM_WALLET_COLLECTION_ITEMS,
     )?;
-    // The earliest output refused by its remittance exclusivity or its tags
-    // bound is refused only once every output reached before it has passed
-    // its customInstructions, as the reference maps the outputs in order;
-    // bsv-rs reads only the outputs. Exclusivity runs ahead of the output's
-    // own customInstructions, the tags bound after them.
+    // The earliest output refused by its remittance exclusivity, its wallet
+    // payment or its tags bound is refused only once every output reached
+    // before it has passed its customInstructions, as the reference maps the
+    // outputs in order; bsv-rs reads only the outputs. Exclusivity and the
+    // payment run ahead of the output's own customInstructions, the tags
+    // bound after them.
     let over = args.outputs.iter().enumerate().find_map(|(index, output)| {
-        if let Err(refusal) = validate_remittance_exclusivity(output) {
+        let payment = output.payment_remittance.as_ref();
+        if let Err(refusal) = validate_remittance_exclusivity(output)
+            .and_then(|()| payment.map_or(Ok(()), validate_wallet_payment))
+        {
             return Some((index, refusal));
         }
         let tags = output.insertion_remittance.as_ref()?.tags.as_ref()?;
@@ -809,6 +813,62 @@ fn validate_remittance_exclusivity(output: &bsv_rs::wallet::InternalizeOutput) -
     Err(Error::ValidationError(format!(
         "The output remittance parameter must be {mustbe}"
     )))
+}
+
+/// The reference's validateWalletPayment (#377, ts-stack@edf6e03
+/// validationHelpers.ts:914-923), run after the one-remittance check (972-977)
+/// at 981: the base64 `derivationPrefix`, then `derivationSuffix`, then the
+/// `senderIdentityKey` as a compressed public key, in its texts.
+fn validate_wallet_payment(payment: &WalletPayment) -> Result<()> {
+    validate_base64(&payment.derivation_prefix, "derivationPrefix")?;
+    validate_base64(&payment.derivation_suffix, "derivationSuffix")?;
+    validate_public_key(&payment.sender_identity_key, "senderIdentityKey")
+}
+
+/// validateBase64String with no bounds (488-498, 443-462): trimmed, not
+/// empty, the base64 alphabet with `=` only in the last two places, and a
+/// length that is a multiple of 4 (462 refuses every other remainder).
+fn validate_base64(value: &str, name: &str) -> Result<()> {
+    let value = value.trim().as_bytes();
+    let alphabet = |c: u8| c.is_ascii_alphanumeric() || c == b'+' || c == b'/';
+    let refused = value.is_empty()
+        || !value.len().is_multiple_of(4)
+        || value
+            .iter()
+            .enumerate()
+            .any(|(i, &c)| !alphabet(c) && (c != b'=' || i + 2 < value.len()));
+    if refused {
+        return Err(invalid_parameter(name, "valid base64 string"));
+    }
+    Ok(())
+}
+
+/// validatePublicKey (185-191): validateHexString with 66 to 66 (522-534),
+/// then isValidCompressedPublicKey (Secp256k1Validation.ts:15-22).
+fn validate_public_key(value: &str, name: &str) -> Result<()> {
+    let value = value.trim();
+    let length = value.encode_utf16().count();
+    let mustbe = if length % 2 == 1 {
+        format!("even length, not {length}.")
+    } else if value.is_empty() || !value.bytes().all(|c| c.is_ascii_hexdigit()) {
+        "hexadecimal string.".to_string()
+    } else if length < 66 {
+        "at least 66 length.".to_string()
+    } else if length > 66 {
+        "no more than 66 length.".to_string()
+    } else if !(value.starts_with("02") || value.starts_with("03"))
+        || bsv_rs::primitives::PublicKey::from_hex(value).is_err()
+    {
+        "a valid compressed secp256k1 public key".to_string()
+    } else {
+        return Ok(());
+    };
+    Err(invalid_parameter(name, &mustbe))
+}
+
+/// The reference's `WERR_INVALID_PARAMETER` text.
+fn invalid_parameter(name: &str, mustbe: &str) -> Error {
+    Error::ValidationError(format!("The {name} parameter must be {mustbe}"))
 }
 
 /// bsv-rs's customInstructions check (#143), its refusal in bsv-rs's words.
