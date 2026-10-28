@@ -6,8 +6,8 @@ use bsv_rs::WalletRefusalClass;
 
 const ORIGINATOR: &str = "refusal.test";
 
-fn assert_refusal(error: bsv_rs::Error, expected: WalletRefusalClass, text: &str) {
-    match &error {
+fn assert_refusal(error: &bsv_rs::Error, expected: WalletRefusalClass, text: &str) {
+    match error {
         bsv_rs::Error::WalletRefusal { class, message } => {
             assert_eq!(*class, expected);
             assert_eq!(message, text);
@@ -46,7 +46,7 @@ async fn sign_reference_refusals_keep_class_and_text_without_writes() {
             .sign_action(sign_request(reference), Some(ORIGINATOR))
             .await
             .unwrap_err();
-        assert_refusal(error, class, text);
+        assert_refusal(&error, class, text);
         assert_eq!(store_snapshot(&wallet).await, before);
         assert!(wallet.pending_transactions.read().await.is_empty());
     }
@@ -82,7 +82,7 @@ async fn expired_sign_reference_uses_the_missing_session_class() {
         .await
         .unwrap_err();
     assert_refusal(
-        error,
+        &error,
         WalletRefusalClass::NotImplemented,
         "Pending transaction has expired",
     );
@@ -144,7 +144,7 @@ async fn abort_reference_refusals_keep_their_site_class_without_writes() {
             .abort_action(AbortActionArgs { reference }, Some(ORIGINATOR))
             .await
             .unwrap_err();
-        assert_refusal(error, class, &format!("Invalid transaction status: {detail}"));
+        assert_refusal(&error, class, &format!("Invalid transaction status: {detail}"));
         assert_eq!(store_snapshot(&wallet).await, before);
     }
     assert_eq!(wallet.services().total_calls(), 0);
@@ -227,12 +227,12 @@ async fn prove_lookup_refusals_and_missing_keyring_fault_keep_class_and_text() {
             .unwrap_err();
         match count {
             0 => assert_refusal(
-                error,
+                &error,
                 WalletRefusalClass::InvalidParameter,
                 "Certificate not found with the provided arguments",
             ),
             2 => assert_refusal(
-                error,
+                &error,
                 WalletRefusalClass::InvalidParameter,
                 "Multiple certificates match the provided arguments, expected unique match",
             ),
