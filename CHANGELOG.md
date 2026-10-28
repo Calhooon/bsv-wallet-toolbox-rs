@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.2] - 2026-10-28
+
 ### Changed
 
 - #199, the pin: `bsv-rs` `=0.9.0-beta.2` (was `=0.9.0-beta.1`), the
