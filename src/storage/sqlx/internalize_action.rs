@@ -825,11 +825,12 @@ fn validate_wallet_payment(payment: &WalletPayment) -> Result<()> {
     validate_public_key(&payment.sender_identity_key, "senderIdentityKey")
 }
 
-/// validateBase64String with no bounds (488-498, 443-462): trimmed, not
-/// empty, the base64 alphabet with `=` only in the last two places, and a
-/// length that is a multiple of 4 (462 refuses every other remainder).
+/// validateBase64String with no bounds (488-498, 443-462): trimmed as
+/// ECMAScript trims (`label.rs`), not empty, the base64 alphabet with `=`
+/// only in the last two places, and a length that is a multiple of 4 (462
+/// refuses every other remainder).
 fn validate_base64(value: &str, name: &str) -> Result<()> {
-    let value = value.trim().as_bytes();
+    let value = super::label::trim_ecmascript(value).as_bytes();
     let alphabet = |c: u8| c.is_ascii_alphanumeric() || c == b'+' || c == b'/';
     let refused = value.is_empty()
         || !value.len().is_multiple_of(4)
@@ -844,9 +845,10 @@ fn validate_base64(value: &str, name: &str) -> Result<()> {
 }
 
 /// validatePublicKey (185-191): validateHexString with 66 to 66 (522-534),
-/// then isValidCompressedPublicKey (Secp256k1Validation.ts:15-22).
+/// then isValidCompressedPublicKey (Secp256k1Validation.ts:15-22); trimmed
+/// as ECMAScript trims (`label.rs`).
 fn validate_public_key(value: &str, name: &str) -> Result<()> {
-    let value = value.trim();
+    let value = super::label::trim_ecmascript(value);
     let length = value.encode_utf16().count();
     let mustbe = if length % 2 == 1 {
         format!("even length, not {length}.")
