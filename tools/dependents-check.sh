@@ -4,8 +4,9 @@
 # For every row of the check table (between the dependents-check markers):
 #   1. clone the dependent at the branch matching the line under test: `--line L`
 #      (in CI, GITHUB_BASE_REF on a pull request, GITHUB_REF_NAME on a push), the
-#      dependent's default branch when it has no branch of that name or no line is
-#      named (or copy a local checkout given with --from; the source is never
+#      dependent's default branch when an implicit line has no matching branch
+#      or no line is named; an explicit missing branch fails (or copy a local
+#      checkout given with --from; the source is never
 #      written). The CLI pins this crate's prereleases on its beta only, so the
 #      toolbox's beta builds the CLI's beta and the toolbox's main the CLI's main (#208);
 #   2. rewrite its dependency on bsv-wallet-toolbox-rs to a path dependency on
@@ -27,8 +28,9 @@
 #        tools/dependents-check.sh --parse FILE [--only CRATE]
 #   --ci          run only the rows whose ci column is `yes`
 #   --only CRATE  run one row
-#   --line L      clone each dependent at its branch L when it has one (default: the
-#                 line CI runs on, GITHUB_BASE_REF or GITHUB_REF_NAME; else the default branch)
+#   --line L      require and clone each dependent's branch L (default: the line CI
+#                 runs on, GITHUB_BASE_REF or GITHUB_REF_NAME; missing implicit lines
+#                 fall back to the default branch)
 #   --from C=DIR  take crate C's repository from the local DIR (a copy is built; DIR is never written)
 #   --parse FILE  read FILE as a dependent's captured test output and print its rows
 #                 only (nothing is cloned or built); exits 1 when it names a failed test
@@ -48,12 +50,13 @@ ci=0
 only=""
 parse=""
 line="${GITHUB_BASE_REF:-${GITHUB_REF_NAME:-}}"
+explicit_line=0
 declare -a froms=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --ci) ci=1 ;;
     --only) only="$2"; shift ;;
-    --line) line="$2"; shift ;;
+    --line) line="$2"; explicit_line=1; shift ;;
     --from) froms+=("$2"); shift ;;
     --parse) parse="$2"; shift ;;
     -h|--help) sed -n '2,/^set -euo/{ /^#/p; }' "$0"; exit 0 ;;
@@ -200,11 +203,11 @@ run_one() {
     echo "== $crate: copying $from (the source is not touched)"
     rsync -a --exclude target --exclude .git "$from/" "$dest/"
   else
-    # The dependent's branch named after the line under test, when it has one; else its
-    # default. The probe's answer is a verdict only when it is a yes (0) or a no (2):
+    # An explicit line must exist; an implicit missing line uses the default.
+    # The probe's answer is a verdict only when it is a yes (0) or a no (2):
     # any other exit is a fault (host unreachable, auth), and a fault is not a verdict.
     probe=0
-    if [ -n "$line" ] && [ "$line" != main ]; then
+    if [ -n "$line" ] && { [ "$explicit_line" -eq 1 ] || [ "$line" != main ]; }; then
       git ls-remote --exit-code --heads "$clone" "refs/heads/$line" >/dev/null 2>&1 || probe=$?
     else
       probe=2
@@ -215,6 +218,12 @@ run_one() {
         git clone --quiet --depth 1 --branch "$line" "$clone" "$dest" || rc=$?
         ;;
       2)
+        if [ "$explicit_line" -eq 1 ]; then
+          echo "== $crate: no $line branch (explicit --line)"
+          summary+=("$crate|no $line branch (explicit --line)|-")
+          status=1
+          return
+        fi
         [ -n "$line" ] && [ "$line" != main ] && echo "   NOTE: $clone has no $line branch; its default branch stands in"
         echo "== $crate: cloning $clone at its default branch"
         git clone --quiet --depth 1 "$clone" "$dest" || rc=$?

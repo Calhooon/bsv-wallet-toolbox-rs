@@ -89,7 +89,7 @@ expect 0 "workflow grants: ok" "write-all covers write" "$dir/write-all.yml" "$d
 expect 0 "workflow grants: ok" "write-all covers read-all" "$dir/write-all.yml" "$dir/read-all-ci.yml"
 expect 1 "callee job sample requests *: read" "a scoped grant does not cover read-all" "$dir/write.yml" "$dir/read-all-ci.yml"
 expect 1 "no explicit grant; token default is unknown" "an absent grant is refused" "$dir/absent.yml" "$dir/none-ci.yml"
-expect 1 "callee job sample: no explicit permissions" "an absent ask is refused" "$dir/write.yml" "$dir/absent-ci.yml"
+expect 0 "workflow grants: ok" "an absent ask inherits the caller grant" "$dir/write.yml" "$dir/absent-ci.yml"
 expect 0 "workflow grants: ok" "quoted inline scopes and comments" "$dir/quoted.yml" "$dir/read.yml"
 expect 1 "unsupported permissions" "unsupported syntax is refused" "$dir/bad.yml" "$dir/read.yml"
 expect 1 "duplicate field: contents" "duplicate scopes are refused" "$dir/duplicate.yml" "$dir/read.yml"
