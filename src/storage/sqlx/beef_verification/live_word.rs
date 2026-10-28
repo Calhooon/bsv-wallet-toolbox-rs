@@ -16,28 +16,62 @@ use bsv_rs::transaction::BeefStream;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-/// Mainnet uses a proven coin's height. Other networks temporarily use the
-/// tip against the SDK constants until #440 exposes their activation heights.
-pub(crate) fn input_era(
+/// The two eras the node reads for one input: the spend's, for the
+/// transaction-level bits, and the coin's, for the per-input UTXO bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InputEras {
+    pub(crate) spend: ProtocolEra,
+    pub(crate) coin: ProtocolEra,
+}
+
+/// A mined parent's spender takes the tip's era and the coin its proven
+/// height's; an unproven parent's spender takes tip+1's for both. Other
+/// networks use the spend's era for the coin until #440 exposes their
+/// activation heights.
+pub(crate) fn input_eras(
     network: &str,
     tip: ChainTip,
     proven_height: Option<u64>,
-) -> std::result::Result<ProtocolEra, &'static str> {
-    let height = match network {
-        "mainnet" | "main" => match proven_height {
-            Some(height) => {
-                u32::try_from(height).map_err(|_| "The coin height has no supported script era.")?
-            }
-            None => tip.height,
-        },
-        "testnet" | "test" | "regtest" => tip.height,
+) -> std::result::Result<InputEras, &'static str> {
+    let mainnet = match network {
+        "mainnet" | "main" => true,
+        "testnet" | "test" | "regtest" => false,
         _ => return Err("The storage network has no script era policy."),
     };
-    ProtocolEra::mainnet(height).ok_or(if matches!(network, "mainnet" | "main") {
+    let spend_height = match proven_height {
+        Some(_) => tip.height,
+        None => tip.height.saturating_add(1),
+    };
+    let coin = match (mainnet, proven_height) {
+        (true, Some(height)) => {
+            let height = u32::try_from(height)
+                .map_err(|_| "The coin height has no supported script era.")?;
+            Some(ProtocolEra::mainnet(height).ok_or("The mainnet coin height is before Genesis.")?)
+        }
+        _ => None,
+    };
+    let spend = ProtocolEra::mainnet(spend_height).ok_or(if mainnet {
         "The mainnet coin height is before Genesis."
     } else {
         "The tracker tip height is before the supported Genesis era."
+    })?;
+    Ok(InputEras {
+        spend,
+        coin: coin.unwrap_or(spend),
     })
+}
+
+/// The per-input bits (`UTXO_AFTER_GENESIS`, `UTXO_AFTER_CHRONICLE`); every
+/// other bit of the standard word is the transaction's.
+const UTXO_BITS: u32 =
+    ScriptFlags::UTXO_AFTER_GENESIS.bits() | ScriptFlags::UTXO_AFTER_CHRONICLE.bits();
+
+/// The node's word for one input: the spend era's transaction-level bits
+/// with the coin era's UTXO bits.
+pub(crate) fn input_word(eras: InputEras) -> std::result::Result<ScriptFlags, String> {
+    let transaction = ScriptFlags::standard(eras.spend).bits() & !UTXO_BITS;
+    let input = ScriptFlags::standard(eras.coin).bits() & UTXO_BITS;
+    ScriptFlags::from_bits(transaction | input).map_err(|error| error.to_string())
 }
 
 struct Coin {
@@ -366,12 +400,13 @@ impl WordPass<'_> {
         let input = &body.inputs[vin];
         let refusal = |why| refused(input.at, txid, u32::try_from(vin).ok(), why);
         let script_error = |message| refusal(SpendRefusal::Script(message));
-        let era = input_era(
+        let eras = input_eras(
             self.network,
             self.tip,
             self.heights.get(&input.prev).copied(),
         )
         .map_err(|message| script_error(message.into()))?;
+        let word = input_word(eras).map_err(script_error)?;
         let locking_script = LockingScript::from_binary(&source.script)
             .map_err(|error| script_error(error.to_string()))?;
         let unlocking_script = UnlockingScript::from_binary(&body.raw[input.script.clone()])
@@ -386,7 +421,7 @@ impl WordPass<'_> {
             work_limit: None,
         })
         .map_err(|error| script_error(error.to_string()))?;
-        spend.set_flags(ScriptFlags::standard(era));
+        spend.set_flags(word);
         match spend.validate() {
             Ok(true) => Ok(()),
             Ok(false) => Err(script_error("the script did not succeed".into())),
@@ -441,16 +476,30 @@ mod tests {
         }
     }
 
+    fn eras(spend: ProtocolEra, coin: ProtocolEra) -> InputEras {
+        InputEras { spend, coin }
+    }
+
     #[test]
-    fn mainnet_proven_coin_uses_its_height_at_both_boundaries() {
-        for (height, expected) in [
-            (GENESIS, ProtocolEra::PostGenesis),
-            (CHRONICLE - 1, ProtocolEra::PostGenesis),
-            (CHRONICLE, ProtocolEra::PostChronicle),
+    fn mainnet_mined_parent_spender_takes_the_tip_and_the_proof_height() {
+        use ProtocolEra::{PostChronicle, PostGenesis};
+        for (tip_height, height, expected) in [
+            (CHRONICLE + 100, GENESIS, eras(PostChronicle, PostGenesis)),
+            (
+                CHRONICLE + 100,
+                CHRONICLE - 1,
+                eras(PostChronicle, PostGenesis),
+            ),
+            (
+                CHRONICLE + 100,
+                CHRONICLE,
+                eras(PostChronicle, PostChronicle),
+            ),
+            (CHRONICLE - 1, GENESIS, eras(PostGenesis, PostGenesis)),
         ] {
             for network in ["main", "mainnet"] {
                 assert_eq!(
-                    input_era(network, tip(CHRONICLE + 100), Some(u64::from(height))),
+                    input_eras(network, tip(tip_height), Some(u64::from(height))),
                     Ok(expected)
                 );
             }
@@ -458,47 +507,44 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_unproven_coin_uses_the_tip() {
-        for (height, expected) in [
-            (GENESIS, ProtocolEra::PostGenesis),
-            (CHRONICLE, ProtocolEra::PostChronicle),
+    fn mainnet_unproven_parent_spender_takes_the_next_block_for_both() {
+        use ProtocolEra::{PostChronicle, PostGenesis};
+        for (tip_height, expected) in [
+            (GENESIS - 1, eras(PostGenesis, PostGenesis)),
+            (CHRONICLE - 2, eras(PostGenesis, PostGenesis)),
+            (CHRONICLE - 1, eras(PostChronicle, PostChronicle)),
         ] {
-            assert_eq!(input_era("mainnet", tip(height), None), Ok(expected));
+            assert_eq!(input_eras("mainnet", tip(tip_height), None), Ok(expected));
         }
     }
 
     #[test]
-    fn testnet_uses_the_tip_until_activation_metadata_exists() {
-        for network in ["test", "testnet"] {
+    fn testnet_and_regtest_take_the_spend_era_for_the_coin() {
+        use ProtocolEra::{PostChronicle, PostGenesis};
+        for network in ["test", "testnet", "regtest"] {
             assert_eq!(
-                input_era(network, tip(CHRONICLE), Some(1)),
-                Ok(ProtocolEra::PostChronicle)
+                input_eras(network, tip(CHRONICLE), Some(1)),
+                Ok(eras(PostChronicle, PostChronicle))
             );
             assert_eq!(
-                input_era(network, tip(GENESIS), Some(u64::from(CHRONICLE))),
-                Ok(ProtocolEra::PostGenesis)
+                input_eras(network, tip(GENESIS), Some(u64::from(CHRONICLE))),
+                Ok(eras(PostGenesis, PostGenesis))
+            );
+            assert_eq!(
+                input_eras(network, tip(CHRONICLE - 1), None),
+                Ok(eras(PostChronicle, PostChronicle))
             );
         }
-    }
-
-    /// Regtest models both tip eras using the SDK height constants.
-    #[test]
-    fn regtest_uses_the_named_tip_era() {
-        assert_eq!(
-            input_era("regtest", tip(CHRONICLE), Some(1)),
-            Ok(ProtocolEra::PostChronicle)
-        );
-        assert_eq!(
-            input_era("regtest", tip(GENESIS), Some(u64::from(CHRONICLE))),
-            Ok(ProtocolEra::PostGenesis)
-        );
     }
 
     #[test]
     fn mainnet_pre_genesis_coin_is_refused() {
-        for proven in [Some(u64::from(GENESIS - 1)), None] {
+        for (tip_height, proven) in [
+            (CHRONICLE, Some(u64::from(GENESIS - 1))),
+            (GENESIS - 2, None),
+        ] {
             assert_eq!(
-                input_era("mainnet", tip(GENESIS - 1), proven),
+                input_eras("mainnet", tip(tip_height), proven),
                 Err("The mainnet coin height is before Genesis.")
             );
         }
@@ -507,16 +553,34 @@ mod tests {
     #[test]
     fn unsupported_tip_and_network_are_refused() {
         assert_eq!(
-            input_era("regtest", tip(1), None),
+            input_eras("regtest", tip(1), None),
             Err("The tracker tip height is before the supported Genesis era.")
         );
         assert_eq!(
-            input_era("other", tip(CHRONICLE), None),
+            input_eras("other", tip(CHRONICLE), None),
             Err("The storage network has no script era policy.")
         );
         assert_eq!(
-            input_era("mainnet", tip(CHRONICLE), Some(u64::MAX)),
+            input_eras("mainnet", tip(CHRONICLE), Some(u64::MAX)),
             Err("The coin height has no supported script era.")
         );
+    }
+
+    /// The transaction-level bits follow the spend; the UTXO bits the coin.
+    #[test]
+    fn input_word_combines_the_spend_and_coin_words() {
+        use ProtocolEra::{PostChronicle, PostGenesis};
+        let mixed = input_word(eras(PostChronicle, PostGenesis)).unwrap();
+        assert!(mixed.contains(ScriptFlags::CHRONICLE | ScriptFlags::GENESIS));
+        assert!(mixed.contains(ScriptFlags::UTXO_AFTER_GENESIS));
+        assert!(!mixed.contains(ScriptFlags::UTXO_AFTER_CHRONICLE));
+        assert_eq!(
+            mixed,
+            ScriptFlags::standard(PostChronicle).without(ScriptFlags::UTXO_AFTER_CHRONICLE)
+        );
+        assert!(mixed.check().is_ok());
+        for era in [PostGenesis, PostChronicle] {
+            assert_eq!(input_word(eras(era, era)), Ok(ScriptFlags::standard(era)));
+        }
     }
 }
