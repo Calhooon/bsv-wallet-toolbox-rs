@@ -183,6 +183,11 @@
   and the refusal of a named change input are unchanged. A storage on the
   trait's default door refuses a non-empty list. The CLI's `--from` flag
   wraps this call (its captain told).
+  The migration (the keeper's ruling of 2026-10-28 06:0xZ under 19.3: the three
+  lines move as one): a `CreateActionDoor` literal written with
+  `..Default::default()` builds as before, a full literal adds `must_spend: &[]`,
+  and every caller of `create_action_offering` passes `&[]` where it names no
+  coin.
 - #187: `WalletStorageWriter::update_transaction_status_after_post`, a
   defaulted method taking the broadcasters' per-instance results
   (`WalletServices::post_beef`'s `Vec<PostBeefResult>`) or the post's own
