@@ -2696,7 +2696,7 @@ where
         validate_originator(originator)?;
 
         // Route based on acquisition protocol:
-        // - Direct: certificate data is already provided in args, store directly
+        // - Direct: validate, verify and prove the keyring before storing
         // - Issuance: use BRC-104 HTTP communication with certifier service
 
         match args.acquisition_protocol {
@@ -2717,6 +2717,14 @@ where
 
                 // Set the subject to the wallet's identity key (Wallet.ts:698-704)
                 certificate.subject = self.identity_key.clone();
+                direct_acquire::verify_acquire_direct(
+                    self,
+                    &certificate,
+                    &keyring,
+                    &args,
+                    originator,
+                )
+                .await?;
 
                 let now = chrono::Utc::now();
 

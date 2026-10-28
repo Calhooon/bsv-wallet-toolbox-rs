@@ -9,7 +9,11 @@
 
 use std::collections::HashMap;
 
-use bsv_rs::wallet::{AcquireCertificateArgs, KeyringRevealer, WalletCertificate};
+use bsv_rs::auth::certificates::{Certificate, MasterCertificate};
+use bsv_rs::primitives::{from_base64, from_hex, PublicKey};
+use bsv_rs::wallet::{
+    AcquireCertificateArgs, KeyringRevealer, Outpoint, WalletCertificate, WalletInterface,
+};
 
 use super::{
     invalid_certificate_argument, validate_base64_structure_arg, validate_certificate_base64_arg,
@@ -111,4 +115,91 @@ pub(super) fn validate_acquire_direct_args(
         verifier,
         keyring: present.keyring.clone(),
     })
+}
+
+// Wallet.ts:705-731: proof errors use the same outer WERR_INVALID_PARAMETER
+// text as the validator. Rust error variants supply the inner name where
+// the reference uses WalletError.fromUnknown's JavaScript error name.
+fn invalid_proof(name: &str, message: &str) -> bsv_rs::Error {
+    invalid_certificate_argument(
+        "args",
+        &format!(
+            "valid encrypted and signed certificate and keyring from revealer. {name}: {message}"
+        ),
+    )
+}
+
+fn proof_error(error: bsv_rs::Error) -> bsv_rs::Error {
+    let (name, message) = match error {
+        bsv_rs::Error::CertificateValidationError(message) => {
+            ("CertificateValidationError", message)
+        }
+        bsv_rs::Error::InvalidBase64(message) => ("InvalidBase64", message),
+        bsv_rs::Error::InvalidHex(message) => ("InvalidHex", message),
+        bsv_rs::Error::InvalidPublicKey(message) => ("InvalidPublicKey", message),
+        bsv_rs::Error::InvalidDataLength { expected, actual } => (
+            "InvalidDataLength",
+            format!("invalid data length: expected {expected}, got {actual}"),
+        ),
+        other => ("bsv_rs::Error", other.to_string()),
+    };
+    invalid_proof(name, &message)
+}
+
+fn decode_32(value: &str) -> bsv_rs::Result<[u8; 32]> {
+    from_base64(value)?
+        .try_into()
+        .map_err(|bytes: Vec<u8>| bsv_rs::Error::InvalidDataLength {
+            expected: 32,
+            actual: bytes.len(),
+        })
+}
+
+fn master_certificate(
+    certificate: &WalletCertificate,
+    keyring: &HashMap<String, String>,
+) -> bsv_rs::Result<MasterCertificate> {
+    let base = Certificate::new(
+        decode_32(&certificate.certificate_type)?,
+        decode_32(&certificate.serial_number)?,
+        PublicKey::from_hex(&certificate.subject)?,
+        PublicKey::from_hex(&certificate.certifier)?,
+    )
+    .with_revocation_outpoint(Some(Outpoint::from_string(
+        &certificate.revocation_outpoint,
+    )?))
+    .with_fields(certificate.fields.clone())
+    .with_signature(Some(from_hex(&certificate.signature)?));
+    MasterCertificate::new(base, keyring.clone())
+}
+
+/// Verify the signature and prove every field can be decrypted through the
+/// acquiring wallet, before storage. The plaintext is discarded; the caller
+/// stores the validated encrypted fields and keyring unchanged (#374).
+pub(super) async fn verify_acquire_direct<W: WalletInterface>(
+    wallet: &W,
+    certificate: &WalletCertificate,
+    keyring: &HashMap<String, String>,
+    args: &AcquireCertificateArgs,
+    originator: Option<&str>,
+) -> bsv_rs::Result<()> {
+    let master = master_certificate(certificate, keyring).map_err(proof_error)?;
+    if !master.verify().map_err(proof_error)? {
+        // WalletError.fromUnknown maps the reference's plain Error to this name.
+        return Err(invalid_proof(
+            "WERR_UNKNOWN",
+            "Certificate verification failed",
+        ));
+    }
+    master
+        .decrypt_fields(
+            wallet,
+            &master.certifier,
+            args.privileged,
+            args.privileged_reason.as_deref(),
+            originator,
+        )
+        .await
+        .map_err(proof_error)?;
+    Ok(())
 }
