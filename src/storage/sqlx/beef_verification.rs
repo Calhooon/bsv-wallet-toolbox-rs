@@ -84,9 +84,9 @@ pub(super) async fn verify_beef_spends(
             }
         }
     }
-    // This convenience verifier runs the SDK's default script mode, without
-    // an explicit ScriptFlags word. The beta.3 effects are pinned by
-    // script_pin_tests; choosing a word is a separate policy decision (#419).
+    // This still runs the SDK default. The #422 word and era policy are
+    // supplied, but this signature lacks the network identity held by the
+    // caller's store settings. Never infer that identity from Genesis height.
     match verify_stream_two_pass(std::io::Cursor::new(bytes), headers, None)? {
         Verdict::Valid { .. } => Ok(()),
         Verdict::Invalid { offset, kind, .. } => Err(Error::InvalidBeef { offset, kind }),

@@ -1,4 +1,4 @@
-//! #422: the live internalize verifier uses the node's word per input.
+//! #422: required node-word verdicts at the live internalize door.
 
 use super::beef_verification::verify_beef_spends;
 use crate::Error;
