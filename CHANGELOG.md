@@ -21,6 +21,9 @@
   sessions are `NotImplemented`; the other listed guards are `InvalidParameter`.
   The abort door's non-outgoing and unabortable-status guards are
   `InvalidParameter`; process-action status guards remain `InvalidOperation`.
+  An SDK `WalletRefusal` inside the toolbox's `SdkError` now displays its
+  message directly, preserving the abort storage texts; other SDK errors
+  keep their `SDK error: ` prefix.
   The remaining direct SDK errors are local faults or the reference's plain
   helper errors, documented with their reasons under #185.
 

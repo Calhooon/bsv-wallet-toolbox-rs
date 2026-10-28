@@ -244,7 +244,7 @@ pub enum Error {
     // Wrapped errors
     // ===================
     /// An error from the underlying `bsv-sdk` crate.
-    #[error("SDK error: {0}")]
+    #[error("{}", sdk_error_display(.0))]
     SdkError(#[from] bsv_rs::Error),
 
     /// A JSON serialization or deserialization error.
@@ -267,6 +267,13 @@ pub enum Error {
     /// An unexpected internal error that does not fit other categories.
     #[error("Internal error: {0}")]
     Internal(String),
+}
+
+fn sdk_error_display(error: &bsv_rs::Error) -> String {
+    match error {
+        bsv_rs::Error::WalletRefusal { message, .. } => message.clone(),
+        _ => format!("SDK error: {error}"),
+    }
 }
 
 #[cfg(any(feature = "sqlite", test))]

@@ -62,12 +62,48 @@ fn abort_reference_status_uses_its_site_class_and_preserves_the_text() {
     for words in ["probe", "changed detail without a class name"] {
         let source = Error::InvalidTransactionStatus(words.to_string());
         let expected = source.to_string();
-        let sdk = bsv_rs::Error::from(source.into_invalid_parameter());
+        let wrapped = source.into_invalid_parameter();
+        assert_eq!(wrapped.to_string(), expected);
+        let sdk = bsv_rs::Error::from(wrapped);
         assert!(
             matches!(&sdk, bsv_rs::Error::WalletRefusal { class, message }
             if *class == WalletRefusalClass::InvalidParameter && message == &expected)
         );
         assert_eq!(sdk.to_string(), expected);
+    }
+}
+
+#[test]
+fn sdk_fault_display_keeps_its_wrapper() {
+    let fault = Error::SdkError(bsv_rs::Error::WalletError("local SDK failure".into()));
+    assert_eq!(
+        fault.to_string(),
+        "SDK error: wallet error: local SDK failure"
+    );
+    let transport = Error::SdkError(bsv_rs::Error::TransportFault {
+        fault: bsv_rs::TransportFault::NeverSent,
+        status: Some(503),
+        detail: "unavailable".into(),
+    });
+    assert_eq!(
+        transport.to_string(),
+        "SDK error: transport fault NEVER_SENT: unavailable"
+    );
+}
+
+#[test]
+fn sdk_refusals_display_their_original_message() {
+    for class in WalletRefusalClass::ALL {
+        let wrapped = Error::SdkError(bsv_rs::Error::WalletRefusal {
+            class,
+            message: "sdk refusal text".into(),
+        });
+        assert_eq!(wrapped.to_string(), "sdk refusal text");
+        let sdk = bsv_rs::Error::from(wrapped);
+        assert!(
+            matches!(sdk, bsv_rs::Error::WalletRefusal { class: actual, message }
+            if actual == class && message == "sdk refusal text")
+        );
     }
 }
 string_refusal!(access, AccessDenied, Unauthorized, "Access denied: ");
