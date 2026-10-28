@@ -12,6 +12,33 @@
 ## [0.14.0-beta.2] - 2026-10-28
 
 ### Changed
+- #315, the owner's ruling 19.2 (a): certificate issuance speaks BRC-104
+  mutual auth to the certifier through bsv-rs's `Peer`, as the reference's
+  `AuthFetch` does (`Wallet.ts:773-795`). The wire moves: a
+  `POST /.well-known/auth` handshake from the wallet's identity key, then the
+  issuance request as a signed general message carrying the six
+  `x-bsv-auth-*` headers; the answer's signature and session are verified
+  before its body is read, and its signed sender is the key compared with
+  the certifier. The client no longer writes `x-bsv-auth-version` or
+  `x-bsv-identity-key` itself, and no longer reads an
+  `x-bsv-auth-identity-key` header a server wrote. The texts that change,
+  each through `WalletInterface` inside `wallet error: `: a certifier
+  signing with another key is `Validation error: Invalid certifier!
+  Expected: <certifier>, Received: <its key>`; a server that does not
+  answer the handshake, or answers unsigned, is `Network error: Failed to
+  send request: <bsv-rs's refusal>` (`Auth endpoint returned 404 ...`,
+  `Failed to parse auth response: ...`, `... without valid BSV
+  authentication (missing headers: ...)`, `Signature is not valid`,
+  `redirect refused: <status>`); a signed non-2xx answer is read as a body,
+  so `Certifier returned HTTP <status>: <body>` is gone; no answer within
+  30 s is `Network error: Timed out waiting for authenticated response.`; a
+  bsv-rs transport fault keeps its class (`Error::SdkError`). For the CLI's
+  captain and certifier operators: a certifier behind the reference
+  middleware now answers (it refused the old request as
+  `400 ERR_AUTH_MALFORMED`), and a certifier that read the
+  `x-bsv-identity-key` request header stops receiving it. No public shape
+  moves: the issuance module is private, `Wallet<S, V>` gains no bound,
+  `Error` no variant.
 
 - #199, the pin: `bsv-rs` `=0.9.0-beta.2` (was `=0.9.0-beta.1`), the
   owner's standing word of 2026-10-27, in `Cargo.toml` and in the fuzz
