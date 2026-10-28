@@ -7,6 +7,7 @@
 
 use async_trait::async_trait;
 use indexmap::IndexMap;
+use serde::Serialize;
 
 use bsv_rs::overlay::{LookupAnswer, NetworkPreset};
 use bsv_rs::script::templates::PushDrop;
@@ -271,10 +272,7 @@ impl HttpLookupResolver {
     }
 
     /// Query the overlay endpoint and parse certificate results from the response.
-    async fn query_overlay<Q>(&self, query: Q) -> Result<Vec<OverlayCertificate>>
-    where
-        Q: serde::Serialize + Send + Sync,
-    {
+    async fn query_overlay<Q: Serialize>(&self, query: Q) -> Result<Vec<OverlayCertificate>> {
         // Step 1: Resolve competent hosts for ls_identity via SLAP
         let hosts = self.resolve_competent_hosts("ls_identity").await;
         if hosts.is_empty() {
@@ -282,7 +280,7 @@ impl HttpLookupResolver {
             return Ok(vec![]);
         }
 
-        #[derive(serde::Serialize)]
+        #[derive(Serialize)]
         struct LookupRequest<Q> {
             query: Q,
             service: &'static str,
