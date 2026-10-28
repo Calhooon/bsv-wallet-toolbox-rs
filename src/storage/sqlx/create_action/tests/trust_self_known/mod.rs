@@ -343,6 +343,7 @@ async fn offering(
         funded_args(),
         CreateActionDoor {
             offer: Some(offer),
+            must_spend: &[],
             sign_and_process: None,
         },
     )

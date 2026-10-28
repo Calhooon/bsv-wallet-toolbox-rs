@@ -535,6 +535,7 @@ mod sync_received {
                     reserved: &mut reserved,
                     skip: &[],
                     offer: Some(&[output_id]),
+                    must_spend: &[],
                     allow_received,
                 },
             )

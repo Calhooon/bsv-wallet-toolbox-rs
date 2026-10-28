@@ -110,23 +110,35 @@ pub(in crate::storage::sqlx) enum ChangePick<'a> {
     /// pre-check reads.
     /// `skip` are coins the pre-check found unspendable (their BEEF cannot
     /// be built) and never picks again. With an `offer` (the host's), only
-    /// those coins are picked.
+    /// those coins are picked. `must_spend` (#353) are taken ahead of the
+    /// pick.
     DryRun {
         reserved: &'a mut PickReservation,
         skip: &'a [i64],
         offer: Option<&'a [i64]>,
         allow_received: bool,
+        must_spend: &'a [i64],
     },
     /// Under the write lock: allocate, but only from the coins the pre-check
     /// read. A coin taken meanwhile is skipped as any allocated coin is.
     Within {
         allowed: &'a [i64],
         allow_received: bool,
+        must_spend: &'a [i64],
     },
 }
 
-impl ChangePick<'_> {
-    fn allows_received(&self) -> bool {
+impl<'a> ChangePick<'a> {
+    /// The coins the action must spend, ahead of the pick (#353).
+    pub(super) fn must_spend(&self) -> &'a [i64] {
+        match self {
+            #[cfg(any(test, feature = "bench-support"))]
+            Self::Allocate => &[],
+            Self::DryRun { must_spend, .. } | Self::Within { must_spend, .. } => must_spend,
+        }
+    }
+
+    pub(super) fn allows_received(&self) -> bool {
         match self {
             #[cfg(any(test, feature = "bench-support"))]
             Self::Allocate => false,
@@ -471,6 +483,18 @@ fn placeholders(n: usize) -> String {
     vec!["?"; n].join(", ")
 }
 impl Door<'_> {
+    /// The pre-check's pick: a dry run within the host's offer, never `skip`,
+    /// the named coins ahead of it (#353).
+    fn dry_run<'b>(&'b self, reserved: &'b mut PickReservation, skip: &'b [i64]) -> ChangePick<'b> {
+        ChangePick::DryRun {
+            reserved,
+            skip,
+            offer: self.offer,
+            allow_received: self.allows_received(),
+            must_spend: self.must_spend,
+        }
+    }
+
     /// Before the write lock, on a reader: pick the change coins as the
     /// allocation would (marking nothing) and assemble the BEEF they and the
     /// caller's inputs need, every stored proof's root read against the
@@ -528,12 +552,7 @@ impl Door<'_> {
                 &extended_outputs,
                 available_change_count,
                 self.is_delayed(),
-                &mut ChangePick::DryRun {
-                    reserved: &mut *reserved,
-                    skip: &skip,
-                    offer: self.offer,
-                    allow_received: self.allows_received(),
-                },
+                &mut self.dry_run(&mut *reserved, &skip),
                 &self.storage.rng,
             )
             .await;
@@ -556,12 +575,7 @@ impl Door<'_> {
                     &extended_outputs,
                     available_change_count,
                     self.is_delayed(),
-                    &mut ChangePick::DryRun {
-                        reserved: &mut own_only,
-                        skip: &skip,
-                        offer: self.offer,
-                        allow_received: self.allows_received(),
-                    },
+                    &mut self.dry_run(&mut own_only, &skip),
                     &self.storage.rng,
                 )
                 .await
@@ -614,6 +628,13 @@ impl Door<'_> {
                 )
                 .await?
                 {
+                    // A named coin is never picked around: it is the refusal.
+                    if self.must_spend.contains(&coin.output_id) {
+                        return Err(Error::UnspendableCoin {
+                            outpoint: format!("{}.{}", coin.txid, coin.vout),
+                            missing,
+                        });
+                    }
                     tracing::info!(
                         outpoint = %format!("{}.{}", coin.txid, coin.vout),
                         missing = ?missing,
@@ -681,6 +702,7 @@ mod received_rule_tests {
                 skip: &[],
                 offer: None,
                 allow_received: false,
+                must_spend: &[],
             },
         )
         .await
@@ -736,6 +758,7 @@ mod received_rule_tests {
                         skip: &[],
                         offer: Some(&[1]),
                         allow_received,
+                        must_spend: &[],
                     },
                 )
                 .await

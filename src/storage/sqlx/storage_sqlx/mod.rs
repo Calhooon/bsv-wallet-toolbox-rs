@@ -643,19 +643,23 @@ impl StorageSqlx {
     /// `create_action` with the host's offer (bsv-wallet-cli #44): the change
     /// coins are picked from the output ids in `offer` only (the dry-run pick
     /// and the locked set both); an offer that does not cover the action, or
-    /// an empty one, refuses `InsufficientFunds`. The storage-level
-    /// `Wallet::create_action_offering`.
+    /// an empty one, refuses `InsufficientFunds`. `must_spend` (#353) is
+    /// the output ids the action spends ahead of the pick, each wallet-managed
+    /// change inside the offer (see `CreateActionDoor::must_spend`); empty,
+    /// the pick alone. The storage-level `Wallet::create_action_offering`.
     pub async fn create_action_offering(
         &self,
         auth: &AuthId,
         args: bsv_rs::wallet::CreateActionArgs,
         offer: &[i64],
+        must_spend: &[i64],
     ) -> Result<StorageCreateActionResult> {
         self.create_action_at_door(
             auth,
             args,
             crate::storage::CreateActionDoor {
                 offer: Some(offer),
+                must_spend,
                 sign_and_process: None,
             },
         )

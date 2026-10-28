@@ -190,6 +190,7 @@ impl Replay {
                             args.clone(),
                             CreateActionDoor {
                                 offer: None,
+                                must_spend: &[],
                                 sign_and_process: Some(SignAndProcess {
                                     sign: &signer,
                                     process: flags(no_send),
@@ -236,7 +237,7 @@ impl Replay {
                 }
                 let result = self
                     .storage
-                    .create_action_offering(&self.auth, args.clone(), &ids)
+                    .create_action_offering(&self.auth, args.clone(), &ids, &[])
                     .await;
                 if let Ok(created) = &result {
                     self.drafts.insert(name.clone(), (created.clone(), args));
@@ -342,7 +343,7 @@ impl Replay {
             .wallet
             .as_ref()
             .context("wallet")?
-            .create_action_offering(args, Some("fixture.local"), &ids)
+            .create_action_offering(args, Some("fixture.local"), &ids, &[])
             .await;
         match result {
             Ok(result) => {

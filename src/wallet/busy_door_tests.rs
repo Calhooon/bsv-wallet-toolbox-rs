@@ -779,7 +779,7 @@ async fn create_action_offering_spends_only_the_offer() {
 
     for offer in [&[][..], &[coin + 1000][..]] {
         match wallet
-            .create_action_offering(labelled_payment(true), Some(ORIGINATOR), offer)
+            .create_action_offering(labelled_payment(true), Some(ORIGINATOR), offer, &[])
             .await
         {
             Err(bsv_rs::Error::WalletError(text)) => {
@@ -791,7 +791,7 @@ async fn create_action_offering_spends_only_the_offer() {
     }
 
     let result = wallet
-        .create_action_offering(labelled_payment(true), Some(ORIGINATOR), &[coin])
+        .create_action_offering(labelled_payment(true), Some(ORIGINATOR), &[coin], &[])
         .await
         .expect("the offered coin funds the action");
     assert!(result.txid.is_some());

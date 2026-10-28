@@ -1186,13 +1186,25 @@ where
     /// `Insufficient funds:`. The `WalletInterface` method is unchanged:
     /// it offers every coin. The host never writes around the door to hold
     /// back the coins it does not offer.
+    ///
+    /// `must_spend` (#353, bsv-wallet-cli #313) is the output ids of the
+    /// coins the action spends: each is allocated ahead of the pick, counts
+    /// toward the target and is signed as a picked coin (storage-provided
+    /// change, the wallet's derivation); the pick funds the remainder and the
+    /// fee from the rest of the offer and change returns as always. Each must
+    /// be wallet-managed change inside the offer, unspent and this user's;
+    /// a received unproven coin needs the action's `underReceivedRule` label
+    /// (R1 (d)). Any other is refused by name, nothing written. Empty: the
+    /// offer alone, as before.
     pub async fn create_action_offering(
         &self,
         args: CreateActionArgs,
         originator: Option<&str>,
         offer: &[i64],
+        must_spend: &[i64],
     ) -> bsv_rs::Result<CreateActionResult> {
-        self.create_action_at(args, originator, Some(offer)).await
+        self.create_action_at(args, originator, Some(offer), must_spend)
+            .await
     }
 
     async fn create_action_at(
@@ -1200,6 +1212,7 @@ where
         args: CreateActionArgs,
         originator: Option<&str>,
         offer: Option<&[i64]>,
+        must_spend: &[i64],
     ) -> bsv_rs::Result<CreateActionResult> {
         validate_originator(originator)?;
         validation::validate_create_action_inputs(&args)?;
@@ -1345,6 +1358,7 @@ where
         };
         let door = crate::storage::CreateActionDoor {
             offer,
+            must_spend,
             sign_and_process: (!is_sign_action).then(|| crate::storage::SignAndProcess {
                 sign: &sign,
                 process: StorageProcessActionArgs {
@@ -2066,7 +2080,7 @@ where
         args: CreateActionArgs,
         originator: Option<&str>,
     ) -> bsv_rs::Result<CreateActionResult> {
-        self.create_action_at(args, originator, None).await
+        self.create_action_at(args, originator, None, &[]).await
     }
 
     async fn sign_action(
