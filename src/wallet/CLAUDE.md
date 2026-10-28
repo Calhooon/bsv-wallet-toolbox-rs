@@ -11,6 +11,70 @@ For a caller-named stored input, the create door checks change, then the presenc
 
 This module provides the main `Wallet<S, V>` struct that implements the complete `WalletInterface` trait from `bsv_sdk::wallet`. The Wallet orchestrates three components: `ProtoWallet` for cryptographic operations (key derivation, signing, encryption), a storage backend for persistent state (UTXOs, transactions, certificates), and a services backend for blockchain interaction (broadcasting, merkle proofs, chain height).
 
+## Error boundary (#404, #185)
+
+`From<crate::Error> for bsv_rs::Error` preserves a request refusal as
+`WalletRefusal { class, message }`. A host matches the class, never its words.
+`message` is the existing toolbox Display, including its prefix. The SDK
+displays the message alone; the former generic `wallet error: ` wrapper is
+absent. No toolbox variant or argument type changes.
+
+The reference is `ts-stack@edf6e03`,
+`packages/wallet/wallet-toolbox/src/sdk/WERR_errors.ts`; the typed classes are
+from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
+
+| Toolbox variant | `WalletRefusalClass` | Reference class | Message / Display |
+|---|---|---|---|
+| `ValidationError(detail)` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Validation error: {detail}` |
+| `InvalidArgument(detail)` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Invalid argument: {detail}` |
+| `InvalidBeef { offset, kind }` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Invalid BEEF at byte {offset}: {kind:?}` |
+| `SpendRefused { offset, txid, input, why }` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `spend refused at offset {offset}, input {input or none} of {txid}: {why}` |
+| `NotFound { entity, id }` | `InvalidParameter` | `WERR_INVALID_PARAMETER` (nearest) | `Entity not found: {entity} with id {id}` |
+| `UserNotFound(detail)` | `InvalidParameter` | `WERR_INVALID_PARAMETER` (nearest) | `User not found: {detail}` |
+| `InvalidOperation(detail)` | `InvalidOperation` | `WERR_INVALID_OPERATION` | `Invalid operation: {detail}` |
+| `InvalidTransactionStatus(detail)` | `InvalidOperation` | `WERR_INVALID_OPERATION` | `Invalid transaction status: {detail}` |
+| `UnspendableCoin { outpoint, missing }` | `InvalidOperation` | `WERR_INVALID_OPERATION` (nearest) | `Unspendable coin: {outpoint}: its stored ancestry is incomplete, ancestor(s) not stored: [{missing joined with commas}]; createAction fetches none, and the wallet's other coins do not cover the action` |
+| `FailedAncestor { txid }` | `InvalidOperation` | `WERR_INVALID_OPERATION` (nearest) | `Failed ancestor: {txid} is failed in this wallet; nothing built on it is assembled or broadcast` |
+| `Duplicate { entity, id }` | `InvalidOperation` | `WERR_INVALID_OPERATION` (nearest) | `Duplicate entity: {entity} with id {id}` |
+| `AccessDenied(detail)` | `Unauthorized` | `WERR_UNAUTHORIZED` | `Access denied: {detail}` |
+| `AuthenticationRequired` | `Unauthorized` | `WERR_UNAUTHORIZED` | `Authentication required` |
+| `InvalidIdentityKey(detail)` | `InvalidPublicKey` | `WERR_INVALID_PUBLIC_KEY` | `Invalid identity key: {detail}` |
+| `InsufficientFunds { needed, available }` | `InsufficientFunds` | `WERR_INSUFFICIENT_FUNDS` | `Insufficient funds: need {needed}, have {available}` |
+| `StorageNotAvailable` | `NotActive` | `WERR_NOT_ACTIVE` (nearest) | `Storage not available` |
+
+Neither reference supplies dedicated not-found, duplicate, unspendable-coin,
+failed-ancestor or storage-not-available classes. The nearest classes describe
+an invalid requested identifier or an operation unavailable in the wallet's
+state. They do not provide distinct host status codes for those subcases.
+`InvalidBeef` and `SpendRefused` are argument refusals, not separate BEEF classes.
+
+`NetworkError`, `ServiceError`, `StorageError`, `DatabaseError`, `SqlxError`,
+`HttpError`, `LockTimeout`, `Internal`, `RateLimited`, `NoExplorerAnswered`,
+`NoServicesAvailable`, `SyncError`, `SyncConflict`, `MigrationError`, `IoError`
+and `JsonError` stay faults in `WalletError`, with their existing payloads.
+`BroadcastFailed`, `TransactionError` and `SigningError` also stay faults:
+these variants do not establish a classed request refusal. A provider outage
+must not become a refusal by matching a phrase in its detail.
+
+`StoreBusy` keeps `WalletBusy { detail, retry_after_ms: None }` for every
+`StoreBusyReason`, and `ReviewActions` keeps `WalletReviewActions` with its
+results (`WERR_REVIEW_ACTIONS`). `SdkError` passes its SDK error through,
+including an existing refusal or transport fault.
+
+The SDK's binary wallet wire frames only classes with `wire_code()`:
+`InvalidParameter` uses 6 and `InsufficientFunds` uses 7. `ReviewActions`
+continues to use 5. Other mapped classes have no binary code and the SDK
+frames them as code 1, `Wallet operation failed`; its HTTP JSON client can
+read their named class. The storage JSON-RPC fixtures exercise a separate
+protocol and require no changes for this boundary conversion.
+
+This conversion cannot recover types from direct `WalletError` constructors
+in `wallet.rs`, including its missing pending action and certificate paths.
+Those doors need separate changes. #185 also remains open for the response
+wait in `storage/client/storage_client.rs` and `header_fault` in
+`storage/sqlx/beef_verification.rs`, which still erase transport details.
+An abort-on-chain variant needs the owner's public API decision.
+
 ## Architecture
 
 ```
@@ -402,7 +466,7 @@ SignActionArgs → Lookup from cache → Merge and require caller unlocking scri
     → SignActionResult { txid, tx, ... }
 ```
 
-The private cache retains which inputs storage allocated (`provided_by = "storage"`), separately from the public `PendingTransaction` data. A caller-named input is never authorized for wallet signing. Its non-empty script from `create_action` or `sign_action` is preserved. This port refuses a missing or empty named-input script before signing or processing, using the reference's `The inputs[N].unlockScript parameter must be valid.` text and mapping its `WERR_INVALID_PARAMETER` to `Error::ValidationError`; `ts-stack@edf6e03` completes and processes the action before `verifyUnlockScripts` reports a missing script's refusal, and refuses an empty script earlier, at its argument gate, as not a hexadecimal string (`validationHelpers.ts:522-530`), the same class. The WalletInterface boundary wraps this as `WalletError("Validation error: ...")`. The action stays unsigned and its inputs stay reserved, so the caller can supply the script on a later call. Reference: `ts-stack@edf6e03`'s `signer/methods/signAction.ts:65-90`, `buildSignableTransaction.ts:176-189`, `completeSignedTransaction.ts:15-32,50-79`, and `verifyUnlockScripts.ts:51-64`.
+The private cache retains which inputs storage allocated (`provided_by = "storage"`), separately from the public `PendingTransaction` data. A caller-named input is never authorized for wallet signing. Its non-empty script from `create_action` or `sign_action` is preserved. This port refuses a missing or empty named-input script before signing or processing, using the reference's `The inputs[N].unlockScript parameter must be valid.` text and mapping its `WERR_INVALID_PARAMETER` to `Error::ValidationError`; `ts-stack@edf6e03` completes and processes the action before `verifyUnlockScripts` reports a missing script's refusal, and refuses an empty script earlier, at its argument gate, as not a hexadecimal string (`validationHelpers.ts:522-530`), the same class. The WalletInterface boundary carries this as `WalletRefusal` of class `InvalidParameter`, with `Validation error: ...` as its message. The action stays unsigned and its inputs stay reserved, so the caller can supply the script on a later call. Reference: `ts-stack@edf6e03`'s `signer/methods/signAction.ts:65-90`, `buildSignableTransaction.ts:176-189`, `completeSignedTransaction.ts:15-32,50-79`, and `verifyUnlockScripts.ts:51-64`.
 
 For #211, `sign_action` accepts spends only for caller inputs deferred with `unlockingScriptLength`, refusing storage-allocated or absent vins and replacements for scripts supplied at `create_action` with `Error::ValidationError` and the text `The args parameter must be spend does not correspond to prior input with valid unlockingScriptLength.`, without changing storage or the pending action, as in `ts-stack@edf6e03`'s `completeSignedTransaction.ts:19-24` and `WERR_errors.ts:105`.
 
