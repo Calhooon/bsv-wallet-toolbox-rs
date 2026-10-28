@@ -283,6 +283,9 @@ mod bounds_tests;
 #[path = "tests/validation_description.rs"]
 mod description_tests;
 #[cfg(test)]
+#[path = "tests/validation_labels.rs"]
+mod label_tests;
+#[cfg(test)]
 #[path = "tests/validation_nosend_grammar.rs"]
 mod nosend_grammar_tests;
 #[cfg(test)]

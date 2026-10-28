@@ -15,7 +15,7 @@ const TOO_SHORT: &str = "Validation error: The description parameter must be at 
 const TOO_LONG: &str =
     "Validation error: The description parameter must be no more than 2000 length.";
 
-async fn wallet() -> Wallet<StorageSqlx, MockWalletServices> {
+pub(super) async fn wallet() -> Wallet<StorageSqlx, MockWalletServices> {
     let storage = StorageSqlx::in_memory().await.unwrap();
     let root = PrivateKey::random();
     let identity = root.public_key().to_hex();
@@ -37,7 +37,7 @@ fn described(description: &str) -> CreateActionArgs {
     args
 }
 
-async fn assert_refused(args: CreateActionArgs, expected: &str) {
+pub(super) async fn assert_refused(args: CreateActionArgs, expected: &str) {
     let wallet = wallet().await;
     let before = transaction_rows(wallet.storage()).await;
     match WalletInterface::create_action(&wallet, args, None).await {
