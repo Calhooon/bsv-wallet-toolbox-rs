@@ -442,19 +442,27 @@ the pinned reference's merge details are in `docs/STORAGE-WIRE.md`.
 
 The `beef_verification.rs` module provides BEEF (Background Evaluation Extended Format) merkle proof verification:
 
-The live `internalize_action` door calls `verify_beef_spends`, which currently
-uses bsv-rs 0.9.0-beta.3's `verify_stream_two_pass` in the SDK default script
-mode. The keeper's #422 rule requires `Spend::set_flags(ScriptFlags::standard(era))`
-per input, with the coin's proven height when its parent is proved by the BEEF
-and the tracker tip's height otherwise. The pinned stream API has no flag
-argument or per-input hook, and `ChainTip` supplies Genesis and CSV activation
-heights but no Chronicle activation height. `ProtocolEra::mainnet` switches at
-943,816 and returns `None` below 620,538; `at_height` requires the caller to supply
-both activation heights and defines no testnet or regtest defaults. A local
-per-input `Spend` pass after structural verification is possible, but must also
-preserve the stream verifier's mining, value and resource checks. The unresolved
-era cases still need a rule; do not assign them a guessed word. D15 remains open.
-The mode comparisons in `script_pin_tests` are API evidence, not a live-door fix.
+The live `internalize_action` door calls `verify_beef_spends`, which still
+uses bsv-rs 0.9.0-beta.3's `verify_stream_two_pass` in the SDK default mode.
+The keeper's #422 readings require `Spend::set_flags(ScriptFlags::standard(era))`
+per input. The interim second evaluation must set aside only
+`SpendRefusal::Script`, complete the structural/proof checks, and preserve the
+later mining, outpoint and value checks that a default script refusal can mask.
+The stream's scope is each unique unproven raw transaction, including parents;
+proven entries supply outputs without having their own scripts rejudged.
+
+Mainnet uses the coin's proven BUMP height, or the tracker tip for an unproven
+coin, against the SDK's Genesis and Chronicle constants. Pre-Genesis mainnet
+is refused. Testnet and regtest use the tip against those constants until
+bsv-rs #440 supplies their activation heights. The rule is now supplied, but
+`verify_beef_spends(bytes, roots, tracker)` has no network identity: neither
+`ChainTracker` nor `ChainTip` supplies it. The existing store setting
+`get_settings().chain` is available in `internalize_action_internal`; passing
+it requires a private argument and a call-site edit in `internalize_action.rs`,
+outside this continuation lane's listed bounds. No public API or schema change
+is needed. Do not infer the network from Genesis height. D15 remains open;
+the required live-word witness assertions in `script_pin_tests` are red until
+the production path is connected.
 
 ### Core Functions
 ```rust
