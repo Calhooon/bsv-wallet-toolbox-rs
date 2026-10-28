@@ -25,6 +25,8 @@ fn load_test_vectors(relative_path: &str) -> Value {
 // `StorageSqlx::create_action` API. Each test vector specifies invalid inputs
 // that should produce a validation error.
 
+// Driven through an in-memory SQLite store (#429).
+#[cfg(feature = "sqlite")]
 mod create_action_validation {
 
     use bsv_rs::wallet::{
@@ -636,6 +638,8 @@ mod create_action_defaults {
 // Since there is no standalone validation function, these tests exercise the
 // ListOutputsArgs struct construction and verify constraints documented in the vectors.
 
+// Driven through an in-memory SQLite store (#429).
+#[cfg(feature = "sqlite")]
 mod list_outputs_validation {
     use super::*;
     use bsv_rs::wallet::ListOutputsArgs;
@@ -805,6 +809,8 @@ mod list_outputs_validation {
 //
 // Tests for ListActions argument validation from test_vectors/storage/list_actions/validation.json.
 
+// Driven through an in-memory SQLite store (#429).
+#[cfg(feature = "sqlite")]
 mod list_actions_validation {
     use super::*;
     use bsv_rs::wallet::ListActionsArgs;
