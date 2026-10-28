@@ -443,27 +443,31 @@ the pinned reference's merge details are in `docs/STORAGE-WIRE.md`.
 
 The `beef_verification.rs` module provides BEEF (Background Evaluation Extended Format) merkle proof verification:
 
-The live `internalize_action` door calls `verify_beef_spends`, which still
-uses bsv-rs 0.9.0-beta.3's `verify_stream_two_pass` in the SDK default mode.
-The keeper's #422 readings require `Spend::set_flags(ScriptFlags::standard(era))`
-per input. The interim second evaluation must set aside only
-`SpendRefusal::Script`, complete the structural/proof checks, and preserve the
-later mining, outpoint and value checks that a default script refusal can mask.
-The stream's scope is each unique unproven raw transaction, including parents;
-proven entries supply outputs without having their own scripts rejudged.
+The live `internalize_action` door passes `get_settings().chain` to
+`verify_beef_spends`. Each input of each unique unproven raw transaction,
+including parents, runs through `Spend::set_flags(ScriptFlags::standard(era))`.
+Proven raw entries supply outputs; txid-only entries supply proof identity.
+Neither has its own scripts rejudged, and duplicate raw entries are not rejudged.
 
-Mainnet uses the coin's proven BUMP height, or the tracker tip for an unproven
-coin, against the SDK's Genesis and Chronicle constants. Pre-Genesis mainnet
-is refused. Testnet and regtest use the tip against those constants until
-bsv-rs #440 supplies their activation heights. The rule is now supplied, but
-`verify_beef_spends(bytes, roots, tracker)` has no network identity: neither
-`ChainTracker` nor `ChainTip` supplies it. The existing store setting
-`get_settings().chain` is available in `internalize_action_internal`; passing
-it requires a private argument and a call-site edit in `internalize_action.rs`,
-outside this continuation lane's listed bounds. No public API or schema change
-is needed. Do not infer the network from Genesis height. D15 remains open;
-the required live-word witness assertions in `script_pin_tests` are red until
-the production path is connected.
+This is an interim second evaluation until bsv-rs #440 supplies its per-input
+hook. The SDK's `verify_stream_two_pass` retains the structural/proof verdict;
+only `SpendRefusal::Script` is set aside. A default script refusal can stop
+that scan early, so `verify_stream_structure` must then finish cleanly before
+the word pass. The word pass preserves the later mining, outpoint, resource
+and value checks that such a refusal can mask. It retains only referenced
+outputs, shares one sighash cache per transaction, and releases transactions
+waiting for parents in wire order.
+
+The `pub(crate)` `input_era` helper uses a mainnet coin's proven BUMP height,
+or the tracker tip for an unproven coin, against bsv-rs's Genesis and Chronicle
+constants. Pre-Genesis mainnet refuses with
+`The mainnet coin height is before Genesis.`. Testnet and regtest use the tip
+against those constants until #440 supplies their activation heights; regtest
+fixtures name the era they model. An unsupported network or tip also refuses.
+The network comes from settings, never from guessing what a Genesis height
+means. The `script_pin_tests` witnesses pin the fork-ID refusal, post-Chronicle
+version-1 `0x61` acceptance and pre-Chronicle era refusal. D15 is closed by
+#422; create/process script verification stays with #426.
 
 ### Core Functions
 ```rust

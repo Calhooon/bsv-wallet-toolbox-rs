@@ -103,7 +103,7 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 ## Known Issues / Gotchas
 
 - `bsv-rs` is pinned exactly from crates.io; a pin move is the owner's word and lands with the CLI's pin of the same version
-- The live internalize verifier still uses the SDK default script mode (#422); the required `script_pin_tests` verdicts expose that gap. Its private caller must supply `get_settings().chain` before the verifier can distinguish mainnet's proven-coin era from testnet/regtest's tip era without guessing a network.
+- The live internalize verifier uses `ScriptFlags::standard(era)` per input (#422): mainnet uses the proven coin height or tracker tip; testnet/regtest use the tip against the SDK constants pending bsv-rs #440. Keep the interim second evaluation's structural/proof and non-script refusals intact when replacing it with #440's hook.
 - `StorageSqlx::pool()` is the READER pool (`query_only`): writes go to `writer()` (one connection) or `write_tx()` (`BEGIN IMMEDIATE`); never await a service or tracker while holding either. `clippy.toml` bans every other `begin` (bsv-wallet-cli #44)
 - One store per file per process: give a `Wallet` and a `Monitor` clones of ONE `StorageSqlx` (`impl Clone` shares the pools and every field); never open the same file twice in one process (two writer pools meet on SQLite's busy handler)
 - `ChainTrackerError` must be imported separately: `use bsv_sdk::transaction::ChainTrackerError;`
