@@ -204,7 +204,7 @@ async fn over_long_label_answers_ahead_of_the_nosend_refusal_through_wallet_inte
 /// derivation locks nothing (`signer/methods/internalizeAction.ts:84-89`,
 /// "The paymentRemittance parameter must be locked by script conforming to
 /// BRC-29"). The port's wallet checks the derivation ahead of the storage
-/// door, where the label checks live, so the mismatch answers first.
+/// door, where the label checks live, so the mismatch answers ahead of them.
 #[tokio::test]
 async fn derivation_mismatch_answers_ahead_of_the_nosend_refusal_through_wallet_interface() {
     use bsv_rs::wallet::{
