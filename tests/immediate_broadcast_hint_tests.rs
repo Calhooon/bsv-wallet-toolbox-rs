@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use bsv_rs::primitives::{hash160, PrivateKey};
-use bsv_rs::script::{LockingScript, UnlockingScript};
+use bsv_rs::script::{LockingScript, ProtocolEra, UnlockingScript};
 use bsv_rs::transaction::{Beef, Transaction, TransactionInput, TransactionOutput};
 use bsv_rs::wallet::{
     BasketInsertion, Counterparty, CreateActionArgs, CreateActionOptions, CreateActionOutput,
@@ -529,7 +529,7 @@ async fn sign_action_answered_465_is_a_hint_not_an_error() {
 }
 
 /// An unmined transaction paying 10,000 sats to an unrelated P2PKH,
-/// carrying its full funding parent and the parent's single-leaf proof.
+/// carrying its funding parent and a post-Genesis mainnet proof.
 fn incoming_atomic_beef() -> (Vec<u8>, String) {
     let mut parent = Transaction::new();
     let mut parent_input = TransactionInput::new("11".repeat(32), 0);
@@ -555,7 +555,7 @@ fn incoming_atomic_beef() -> (Vec<u8>, String) {
     let mut beef = Beef::new();
     let bump_index = beef.merge_bump(bsv_rs::transaction::MerklePath::from_coinbase_txid(
         &parent_txid,
-        100_001,
+        ProtocolEra::MAINNET_GENESIS_HEIGHT + 101,
     ));
     beef.merge_raw_tx(parent.to_binary(), Some(bump_index));
     beef.merge_transaction(tx);

@@ -9,7 +9,7 @@
 #![cfg(feature = "sqlite")]
 
 use bsv_rs::primitives::hash::sha256;
-use bsv_rs::script::{LockingScript, UnlockingScript};
+use bsv_rs::script::{LockingScript, ProtocolEra, UnlockingScript};
 use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
 use bsv_rs::wallet::{BasketInsertion, InternalizeActionArgs, InternalizeOutput, ListOutputsArgs};
 use bsv_wallet_toolbox_rs::{AuthId, Error, StorageSqlx, WalletStorageReader, WalletStorageWriter};
@@ -36,8 +36,8 @@ fn op_true_output(satoshis: u64) -> TransactionOutput {
     }
 }
 
-/// A0 mined with two outputs; the AtomicBEEF of an unmined child spending
-/// A0's output `vout`.
+/// A0 mined after Genesis with two outputs; the AtomicBEEF of an unmined
+/// child spending A0's output `vout`.
 fn child_beef(vout: u32) -> Vec<u8> {
     let mut a0 = Transaction::new();
     let mut input = TransactionInput::new("11".repeat(32), 0);
@@ -53,7 +53,10 @@ fn child_beef(vout: u32) -> Vec<u8> {
     child.outputs.push(op_true_output(9_999));
     let txid = child.id();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&a0_txid, 100_000));
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(
+        &a0_txid,
+        ProtocolEra::MAINNET_GENESIS_HEIGHT + 100,
+    ));
     beef.merge_raw_tx(a0.to_binary(), Some(bump));
     beef.merge_transaction(child);
     beef.to_binary_atomic(&txid).unwrap()
