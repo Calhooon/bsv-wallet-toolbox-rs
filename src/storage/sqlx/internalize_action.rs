@@ -180,25 +180,10 @@ pub async fn internalize_action_internal(
 
         let (satoshis, locking_script) = extracted_outputs[vout as usize].clone();
 
+        // Step 0 refused a missing remittance (#371, validationHelpers.ts:972, 975).
         let (payment, insertion) = match output_spec.protocol.as_str() {
-            WALLET_PAYMENT_PROTOCOL => {
-                let p = output_spec.payment_remittance.clone().ok_or_else(|| {
-                    Error::ValidationError(format!(
-                        "Wallet payment at index {} missing paymentRemittance",
-                        vout
-                    ))
-                })?;
-                (Some(p), None)
-            }
-            BASKET_INSERTION_PROTOCOL => {
-                let i = output_spec.insertion_remittance.clone().ok_or_else(|| {
-                    Error::ValidationError(format!(
-                        "Basket insertion at index {} missing insertionRemittance",
-                        vout
-                    ))
-                })?;
-                (None, Some(i))
-            }
+            WALLET_PAYMENT_PROTOCOL => (output_spec.payment_remittance.clone(), None),
+            BASKET_INSERTION_PROTOCOL => (None, output_spec.insertion_remittance.clone()),
             _ => {
                 return Err(Error::ValidationError(format!(
                     "Unknown protocol: {}",
@@ -795,17 +780,19 @@ fn has_brc177_no_send_label(labels: Option<&[String]>) -> bool {
     })
 }
 
-/// One remittance per output (#337): the reference refuses a wallet payment
-/// carrying an insertionRemittance, and a basket insertion carrying a
-/// paymentRemittance, before either remittance's fields (ts-stack@edf6e03
-/// validationHelpers.ts:971-976). A missing remittance is refused later at
-/// the door in the port's own words.
+/// One remittance per output (#337, #371): the reference refuses a wallet
+/// payment with no paymentRemittance or carrying an insertionRemittance
+/// (ts-stack@edf6e03 validationHelpers.ts:972), and a basket insertion with
+/// no insertionRemittance or carrying a paymentRemittance (975), before
+/// either remittance's fields (981-982).
 fn validate_remittance_exclusivity(output: &bsv_rs::wallet::InternalizeOutput) -> Result<()> {
+    let payment = output.payment_remittance.is_some();
+    let insertion = output.insertion_remittance.is_some();
     let mustbe = match output.protocol.as_str() {
-        WALLET_PAYMENT_PROTOCOL if output.insertion_remittance.is_some() => {
+        WALLET_PAYMENT_PROTOCOL if !payment || insertion => {
             "only paymentRemittance for wallet payment"
         }
-        BASKET_INSERTION_PROTOCOL if output.payment_remittance.is_some() => {
+        BASKET_INSERTION_PROTOCOL if !insertion || payment => {
             "only insertionRemittance for basket insertion"
         }
         _ => return Ok(()),
