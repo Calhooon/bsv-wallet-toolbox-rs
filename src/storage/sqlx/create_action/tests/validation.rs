@@ -1,6 +1,50 @@
 use super::*;
 use bsv_rs::wallet::CreateActionOutput;
 
+/// The storage door meets the wallet's input-script texts (#416): an empty
+/// unlocking script (ts-stack@edf6e03 validationHelpers.ts:522-530, 595) and
+/// a zero unlocking script length (BRCs@5119a9b wallet/0100.md:649).
+#[test]
+fn test_validate_input_empty_unlocking_script_and_zero_length() {
+    use bsv_rs::wallet::{CreateActionArgs, CreateActionInput, Outpoint};
+
+    let mut args = CreateActionArgs {
+        description: "Test transaction".to_string(),
+        labels: None,
+        options: None,
+        input_beef: None,
+        inputs: None,
+        outputs: None,
+        lock_time: None,
+        version: None,
+    };
+    for (unlocking_script, unlocking_script_length, expected) in [
+        (
+            Some(Vec::new()),
+            None,
+            "unlockingScript parameter must be hexadecimal string.",
+        ),
+        (
+            None,
+            Some(0),
+            "unlockingScriptLength parameter must be a positive integer.",
+        ),
+    ] {
+        args.inputs = Some(vec![CreateActionInput {
+            outpoint: Outpoint {
+                txid: [0x11; 32],
+                vout: 0,
+            },
+            input_description: "Test input".to_string(),
+            unlocking_script,
+            unlocking_script_length,
+            sequence_number: None,
+        }]);
+        let err = validate_create_action_args(&args).unwrap_err();
+        assert_eq!(err.to_string(), format!("Validation error: The {expected}"));
+    }
+}
+
 #[test]
 fn test_validate_description_too_short() {
     let args = bsv_rs::wallet::CreateActionArgs {
