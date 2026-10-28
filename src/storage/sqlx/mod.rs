@@ -97,3 +97,5 @@ pub use storage_sqlx::{
     DEFAULT_MAX_OUTPUT_SCRIPT, STORE_BUSY_CEILING_MS,
 };
 pub use sync::entity_names;
+#[cfg(test)]
+mod script_pin_tests;
