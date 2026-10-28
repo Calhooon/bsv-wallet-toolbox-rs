@@ -136,6 +136,7 @@ async fn an_application_body_past_16_mib_is_refused_by_the_client() {
 #[tokio::test]
 async fn a_request_id_not_of_32_bytes_is_refused_by_the_client() {
     refused("request_id", "request_id_31_bytes").await;
+    refused("request_id", "request_id_33_bytes").await;
     refused("request_id", "request_id_\"!\"").await;
 }
 
