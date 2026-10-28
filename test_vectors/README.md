@@ -22,6 +22,8 @@ test_vectors/
 
 ## Test Vector Format
 
+The `expected_error` texts in `storage/create_action/validation.json` are this crate's and follow the TypeScript reference's words (ts-stack edf6e03); Go's texts differ in case and punctuation and are not what the vectors pin (#383).
+
 All test vectors are stored as JSON files with the following conventions:
 
 ### Common Fields

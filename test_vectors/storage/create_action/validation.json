@@ -1,5 +1,6 @@
 {
   "description": "CreateAction argument validation test vectors from TypeScript and Go implementations",
+  "note": "The expected_error texts are this crate's and follow the TypeScript reference (ts-stack edf6e03, validationHelpers.ts:353-355 and :755: 'The description parameter must be at least 5 length.' / 'no more than 2000 length.'); they were not imported from Go, whose text is lowercase without the full stop (valid_create_action_args.go:59). The two description vectors are bounds in UTF-8 bytes.",
   "source_files": [
     "wallet-toolbox/test/Wallet/action/createAction.test.ts",
     "go-wallet-toolbox/pkg/internal/validate/valid_create_action_args_test.go"

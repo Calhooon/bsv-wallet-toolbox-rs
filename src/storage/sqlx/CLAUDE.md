@@ -508,7 +508,7 @@ With `sign_and_process` the template is signed and processed inside the create s
 | `P2PKH_LOCKING_SCRIPT_LENGTH` | 25 | Standard P2PKH output size |
 | `P2PKH_UNLOCKING_SCRIPT_LENGTH` | 107 | Standard P2PKH input size |
 | `MIN_DESCRIPTION_LENGTH` | 5 | Minimum output-description bytes |
-| `MAX_DESCRIPTION_LENGTH` | 2000 | Description byte bound and output-description refusal text |
+| `MAX_DESCRIPTION_LENGTH` | 2000 | The output-description refusal text's figure (the description bound itself is `validate_description`'s 5 and 2000, #383) |
 | `MAX_LABEL_LENGTH` | 300 | Maximum label chars |
 
 ### Features
