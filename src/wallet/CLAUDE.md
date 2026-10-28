@@ -33,6 +33,7 @@ from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
 | Toolbox variant | `WalletRefusalClass` | Reference class | Message / Display |
 |---|---|---|---|
 | `ValidationError(detail)` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Validation error: {detail}` |
+| Direct acquire proof (`ValidationError`, #374) | `InvalidParameter` | `WERR_INVALID_PARAMETER` (`Wallet.ts:716-728`) | `Validation error: The args parameter must be valid encrypted and signed certificate and keyring from revealer. <name>: <message>` |
 | `InvalidArgument(detail)` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Invalid argument: {detail}` |
 | `InvalidBeef { offset, kind }` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Invalid BEEF at byte {offset}: {kind:?}` |
 | `SpendRefused { offset, txid, input, why }` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `spend refused at offset {offset}, input {input or none} of {txid}: {why}` |
@@ -1125,10 +1126,11 @@ No storage write lock is held during the proof. The constructor's field and
 keyring checks and `verify`'s serialized field bound apply: a field value
 over 1 MiB is refused before storage.
 
-The wrapper uses the existing `WalletError("Validation error: ...")` form
-for `WERR_INVALID_PARAMETER('args', ...)`, with the exact message prefix
-`The args parameter must be valid encrypted and signed certificate and keyring from revealer. `
-(`sdk/WERR_errors.ts:100-105`). A false signature ends in
+The wrapper returns a `ValidationError`, which crosses `WalletInterface` as
+`bsv_rs::Error::WalletRefusal { class: InvalidParameter, message }` for the
+reference's `WERR_INVALID_PARAMETER('args', ...)`, with the exact message prefix
+`Validation error: The args parameter must be valid encrypted and signed certificate and keyring from revealer. `
+(`Wallet.ts:716-728`, `sdk/WERR_errors.ts:100-105`). A false signature ends in
 `WERR_UNKNOWN: Certificate verification failed`, as the reference's
 `WalletError.fromUnknown(new Error(...))` does. Constructor and decrypt
 failures use `CertificateValidationError: <message>` in the suffix, the

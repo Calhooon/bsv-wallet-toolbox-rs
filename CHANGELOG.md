@@ -36,7 +36,8 @@
   signature does not verify, a keyring this wallet cannot open, and a field
   value over bsv-rs's 1 MiB bound, before any storage write. It previously
   stored these after argument validation. The refusal is
-  `WalletError("Validation error: The args parameter must be valid encrypted and signed certificate and keyring from revealer. <name>: <message>")`.
+  `bsv_rs::Error::WalletRefusal { class: InvalidParameter, message }`, with
+  `message` equal to `Validation error: The args parameter must be valid encrypted and signed certificate and keyring from revealer. <name>: <message>`.
   A false signature ends in `WERR_UNKNOWN: Certificate verification failed`;
   an undecryptable keyring in `CertificateValidationError: Failed to decrypt all master certificate fields.`
   Constructor and decryption suffixes use bsv-rs's `CertificateValidationError`
