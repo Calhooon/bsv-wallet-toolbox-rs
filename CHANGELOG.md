@@ -19,6 +19,7 @@
   while a label filter matches only rows equal to its normalized value.
   The stored `underReceivedRule` label also reads back as `underreceivedrule`;
   the action's opt-in check still reads the supplied argument.
+  `listActions` with a label filter that fails validateLabel (empty after the trim, or over 300 UTF-8 bytes) is refused with `Validation error: The label parameter must be at least 1 length.` or `... no more than 300 length.` (class `InvalidParameter`) where it answered zero actions: the reference's `validationHelpers.ts:1691`; a TEXT-DIFF for the CLI's replay (CLI #347).
 - #386: `createAction` shares the internalize door's `validateLabel` bound:
   1 to 300 UTF-8 bytes after ECMAScript trim and lowercase. Whitespace-only
   labels, including U+FEFF, now refuse before options and BRC-177 parsing;
