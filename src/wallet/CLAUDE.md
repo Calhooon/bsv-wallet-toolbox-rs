@@ -990,7 +990,10 @@ the issuance caller's `Network error: Failed to send request: ` envelope.
 through this door (#423): the fixture certifier's server answers them after
 its handshake, or on the handshake path, and each refusal is the payload
 above, byte for byte, inside `Network error: Failed to send request: authentication error: `
-as `WalletError`. At the door the kept type is visible: an answer typed
+as `WalletError`. Each bound has a case past it: the 2,050-character
+signature past the 2,048 cap (`response_bounds.rs:47`, beside `MAA=`'s
+shape), and the 33-byte request id beside the 31-byte one, both answering
+`must encode exactly 32 bytes` (`:65-76`). At the door the kept type is visible: an answer typed
 `certificateRequest` with no requested-certificates header reaches the Peer
 as a certificate request and is refused with
 `requestedCertificates must be an object.`; the vector's `CertificateRequest`
