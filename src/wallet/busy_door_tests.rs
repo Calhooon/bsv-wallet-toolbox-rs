@@ -1214,27 +1214,11 @@ async fn a_wallet_and_a_monitor_over_one_store_share_the_writer() {
     assert_eq!(wallet.storage().writer().size(), 1, "one writer connection");
 }
 
-/// The arguments of a direct `acquireCertificate` with one field.
-fn direct_certificate_args() -> bsv_rs::wallet::AcquireCertificateArgs {
-    let mut fields = HashMap::new();
-    fields.insert("name".to_string(), "v".to_string());
-    bsv_rs::wallet::AcquireCertificateArgs {
-        // Arguments the direct acquire's checks accept (#291, #311): a
-        // 32-byte type and serial, a well-formed outpoint, a canonical DER
-        // signature, a revealer and a keyring.
-        certificate_type: "ISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISE=".to_string(),
-        certifier: "02".to_string() + &"ab".repeat(32),
-        acquisition_protocol: bsv_rs::wallet::AcquisitionProtocol::Direct,
-        fields,
-        serial_number: Some("ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA=".to_string()),
-        revocation_outpoint: Some(format!("{}.0", "ab".repeat(32))),
-        signature: Some("300602010a02010b".to_string()),
-        certifier_url: None,
-        keyring_revealer: Some(bsv_rs::wallet::KeyringRevealer::Certifier),
-        keyring_for_subject: Some(HashMap::new()),
-        privileged: None,
-        privileged_reason: None,
-    }
+/// A signed direct `acquireCertificate` with encrypted fields for this wallet.
+async fn direct_certificate_args(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+) -> bsv_rs::wallet::AcquireCertificateArgs {
+    super::direct_acquire_tests::signed_args(wallet).await
 }
 
 /// `(certificates, certificate_fields)` rows.
@@ -1263,10 +1247,11 @@ pub(super) async fn certificate_rows(
 #[tokio::test]
 async fn a_busy_certificate_field_insert_writes_nothing_and_is_wallet_busy() {
     let (_dir, wallet) = wallet().await;
+    let args = direct_certificate_args(&wallet).await;
 
     wallet.storage().busy_next_certificate_field();
     let first = wallet
-        .acquire_certificate(direct_certificate_args(), Some(ORIGINATOR))
+        .acquire_certificate(args.clone(), Some(ORIGINATOR))
         .await;
     assert!(
         matches!(first, Err(bsv_rs::Error::WalletBusy { .. })),
@@ -1279,11 +1264,9 @@ async fn a_busy_certificate_field_insert_writes_nothing_and_is_wallet_busy() {
         "nothing stored: the certificate and its fields are one write"
     );
 
-    let repeat = wallet
-        .acquire_certificate(direct_certificate_args(), Some(ORIGINATOR))
-        .await;
+    let repeat = wallet.acquire_certificate(args, Some(ORIGINATOR)).await;
     assert!(repeat.is_ok(), "the repeat stores it: {:?}", repeat.err());
-    assert_eq!(certificate_rows(&wallet).await, (1, 1));
+    assert_eq!(certificate_rows(&wallet).await, (1, 2));
 }
 
 /// The issued certificate `store_certificate` is handed after the exchange
