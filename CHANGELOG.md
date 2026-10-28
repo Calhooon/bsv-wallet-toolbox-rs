@@ -129,6 +129,8 @@
   certifier (was the certifier as given) or the revealer's key; a missing
   revealer stored no verifier and is now refused. Of several bad names in one
   map, the one that sorts lowest decides the text (docs/ARCHITECTURE.md D12).
+  The certificate's signature verification and field decryption after the
+  validator (`Wallet.ts:705-728`) stay unported: #374.
 - #351: `list_actions` with `includeInputs` reads the action's raw
   transaction where `ts-stack@edf6e03` does (`getRawTxOfKnownValidTransaction`,
   `StorageKnex.ts:507-508`, through `getProvenOrRawTx` at 189-211): the

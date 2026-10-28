@@ -874,7 +874,7 @@ signature lowercased) and `verifier` is the normalized certifier for
 A map's names are walked in sorted order where the reference walks
 `Object.keys` (`docs/ARCHITECTURE.md` D12). The toolbox's own checks after the
 validator, the signature verification and the field decryption
-(`Wallet.ts:705-728`), are not ported. Tests: `direct_acquire_tests.rs`.
+(`Wallet.ts:705-728`), are not ported: #374. Tests: `direct_acquire_tests.rs`.
 
 `prove_certificate` checks the argument's `certificate.fields` after
 `validatePrivilege` and ahead of `certificate.type`
