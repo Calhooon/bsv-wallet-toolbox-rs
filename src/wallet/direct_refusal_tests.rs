@@ -177,7 +177,7 @@ async fn prove_lookup_refusals_and_missing_keyring_fault_keep_class_and_text() {
         certifier: public_key.clone(),
         revocation_outpoint: format!("{}.0", "ab".repeat(32)),
         signature: "300602010a02010b".to_string(),
-        fields: HashMap::new(),
+        fields: IndexMap::new(),
     };
     for count in [0, 2, 1] {
         let mut server = mockito::Server::new_async().await;

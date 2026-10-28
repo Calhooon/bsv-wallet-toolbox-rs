@@ -3,6 +3,7 @@
 //! This module provides the main `Wallet` struct that implements the full
 //! `WalletInterface` trait from `bsv_rs::wallet`.
 
+use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -2987,11 +2988,11 @@ where
                         subject: cert.subject.clone(),
                         certifier: cert.certifier.clone(),
                         revocation_outpoint: cert.revocation_outpoint.clone(),
-                        fields: std::collections::HashMap::new(),
+                        fields: IndexMap::new(),
                         signature: cert.signature.clone(),
                     },
-                    decrypted_fields: std::collections::HashMap::new(),
-                    publicly_revealed_keyring: std::collections::HashMap::new(),
+                    decrypted_fields: IndexMap::new(),
+                    publicly_revealed_keyring: IndexMap::new(),
                     certifier_info,
                 },
             )
@@ -3475,7 +3476,7 @@ fn validate_certificate_reveal_names(names: &[String]) -> bsv_rs::Result<()> {
 }
 
 fn validate_certificate_record(
-    record: &HashMap<String, String>,
+    record: &IndexMap<String, String>,
     label: &str,
 ) -> bsv_rs::Result<()> {
     if record.len() > MAX_CERTIFICATE_FIELDS {
@@ -3490,7 +3491,7 @@ fn validate_certificate_record(
 }
 
 fn validate_certificate_base64_values(
-    record: &HashMap<String, String>,
+    record: &IndexMap<String, String>,
     label: &str,
 ) -> bsv_rs::Result<()> {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -3624,9 +3625,9 @@ fn validate_base64_structure_arg(value: &str, name: &str) -> bsv_rs::Result<(Str
 // argument's map (1478-1480). validateRecord (81-103) bounds the map at
 // 100000 keys (67, 90-92) and refuses an unsafe key (94-96, SafeRecord.ts:2-3)
 // before any name, then each name is 1 to 50 UTF-8 bytes (348-355). A Rust
-// map holds only string values, so 1238 cannot fail; names are checked in
-// sorted order, as a map keeps no insertion order.
-fn validate_certificate_fields_arg(fields: &HashMap<String, String>) -> bsv_rs::Result<()> {
+// map holds only string values, so 1238 cannot fail; names retain the
+// argument map's insertion order (bsv-rs #385 and #394).
+fn validate_certificate_fields_arg(fields: &IndexMap<String, String>) -> bsv_rs::Result<()> {
     for name in validate_record_arg(fields, "fields")? {
         validate_record_name_arg(name, "field name")?;
     }
@@ -3634,9 +3635,9 @@ fn validate_certificate_fields_arg(fields: &HashMap<String, String>) -> bsv_rs::
 }
 
 // validateRecord (81-103) on a string map: the 100000-key bound, then the
-// unsafe keys; the names in sorted order, as a map keeps no insertion order.
+// unsafe keys; names retain the argument map's insertion order.
 fn validate_record_arg<'a>(
-    map: &'a HashMap<String, String>,
+    map: &'a IndexMap<String, String>,
     name: &str,
 ) -> bsv_rs::Result<Vec<&'a String>> {
     if map.len() > MAXIMUM_WALLET_COLLECTION_ITEMS {
@@ -3654,9 +3655,7 @@ fn validate_record_arg<'a>(
             "an object with safe string keys",
         ));
     }
-    let mut names: Vec<&String> = map.keys().collect();
-    names.sort();
-    Ok(names)
+    Ok(map.keys().collect())
 }
 
 // validateStringLength(name, parameter, 1, 50) at 348-355.
@@ -3818,12 +3817,12 @@ fn create_keyring_for_verifier(
     subject_wallet: &ProtoWallet,
     certifier: &PublicKey,
     verifier: &PublicKey,
-    fields: &HashMap<String, String>,
+    fields: &IndexMap<String, String>,
     fields_to_reveal: &[String],
-    master_keyring: &HashMap<String, String>,
+    master_keyring: &IndexMap<String, String>,
     serial_number: &str,
     _originator: Option<&str>,
-) -> bsv_rs::Result<HashMap<String, String>> {
+) -> bsv_rs::Result<IndexMap<String, String>> {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use bsv_rs::primitives::SymmetricKey;
     use bsv_rs::wallet::{DecryptArgs as ProtoDecryptArgs, EncryptArgs as ProtoEncryptArgs};
@@ -3862,7 +3861,7 @@ fn create_keyring_for_verifier(
         CERTIFICATE_FIELD_ENCRYPTION_PROTOCOL,
     );
 
-    let mut keyring_for_verifier = HashMap::new();
+    let mut keyring_for_verifier = IndexMap::new();
 
     for field_name in fields_to_reveal {
         // Match the subset check at MasterCertificate.ts:370-379, including
@@ -4440,12 +4439,12 @@ mod tests {
 
         fn assert_field_recovery_error(
             scenario: &str,
-            result: bsv_rs::Result<HashMap<String, String>>,
+            result: bsv_rs::Result<IndexMap<String, String>>,
         ) {
             assert_wallet_error(scenario, result, "Failed to decrypt certificate field!");
         }
 
-        fn keyring_for_field_name(field_name: &str) -> bsv_rs::Result<HashMap<String, String>> {
+        fn keyring_for_field_name(field_name: &str) -> bsv_rs::Result<IndexMap<String, String>> {
             use bsv_rs::primitives::SymmetricKey;
             use bsv_rs::wallet::EncryptArgs;
 
@@ -4467,8 +4466,8 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            let fields = HashMap::from([(field_name.to_string(), BASE64.encode(encrypted_value))]);
-            let master_keyring = HashMap::from([(
+            let fields = IndexMap::from([(field_name.to_string(), BASE64.encode(encrypted_value))]);
+            let master_keyring = IndexMap::from([(
                 field_name.to_string(),
                 BASE64.encode(master_entry.ciphertext),
             )]);
@@ -4536,9 +4535,9 @@ mod tests {
                 &subject_wallet,
                 &public_key,
                 &public_key,
-                &HashMap::new(),
+                &IndexMap::new(),
                 &["__proto__".to_string()],
-                &HashMap::from([("__proto__".to_string(), "unused".to_string())]),
+                &IndexMap::from([("__proto__".to_string(), "unused".to_string())]),
                 &BASE64.encode([14; 32]),
                 Some("certificate.test"),
             );
@@ -4552,9 +4551,9 @@ mod tests {
             let verifier_key = PrivateKey::random();
             let subject_wallet = ProtoWallet::new(Some(subject_key));
 
-            let fields: HashMap<String, String> =
-                HashMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
-            let master_keyring: HashMap<String, String> = HashMap::new(); // Empty
+            let fields: IndexMap<String, String> =
+                IndexMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
+            let master_keyring: IndexMap<String, String> = IndexMap::new(); // Empty
             let fields_to_reveal = vec!["name".to_string()];
 
             let result = create_keyring_for_verifier(
@@ -4578,9 +4577,9 @@ mod tests {
             let verifier_key = PrivateKey::random();
             let subject_wallet = ProtoWallet::new(Some(subject_key));
 
-            let fields: HashMap<String, String> =
-                HashMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
-            let master_keyring: HashMap<String, String> = HashMap::from([
+            let fields: IndexMap<String, String> =
+                IndexMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
+            let master_keyring: IndexMap<String, String> = IndexMap::from([
                 ("name".to_string(), BASE64.encode("encrypted_key")),
                 ("email".to_string(), BASE64.encode("encrypted_key2")),
             ]);
@@ -4612,13 +4611,13 @@ mod tests {
             let verifier_key = PrivateKey::random();
             let subject_wallet = ProtoWallet::new(Some(subject_key));
 
-            let fields: HashMap<String, String> = HashMap::from([
+            let fields: IndexMap<String, String> = IndexMap::from([
                 ("name".to_string(), BASE64.encode("encrypted_name")),
                 ("email".to_string(), BASE64.encode("encrypted_email")),
             ]);
             // Master keyring missing 'email' key
-            let master_keyring: HashMap<String, String> =
-                HashMap::from([("name".to_string(), BASE64.encode("encrypted_key"))]);
+            let master_keyring: IndexMap<String, String> =
+                IndexMap::from([("name".to_string(), BASE64.encode("encrypted_key"))]);
             let fields_to_reveal = vec!["email".to_string()];
 
             let result = create_keyring_for_verifier(
@@ -4642,11 +4641,11 @@ mod tests {
             let verifier_key = PrivateKey::random();
             let subject_wallet = ProtoWallet::new(Some(subject_key));
 
-            let fields: HashMap<String, String> =
-                HashMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
+            let fields: IndexMap<String, String> =
+                IndexMap::from([("name".to_string(), BASE64.encode("encrypted_name"))]);
             // Invalid base64
-            let master_keyring: HashMap<String, String> =
-                HashMap::from([("name".to_string(), "not-valid-base64!!!".to_string())]);
+            let master_keyring: IndexMap<String, String> =
+                IndexMap::from([("name".to_string(), "not-valid-base64!!!".to_string())]);
             let fields_to_reveal = vec!["name".to_string()];
 
             assert_wallet_error(
@@ -4680,9 +4679,9 @@ mod tests {
             }
 
             struct Request {
-                fields: HashMap<String, String>,
+                fields: IndexMap<String, String>,
                 reveal: Vec<String>,
-                master: HashMap<String, String>,
+                master: IndexMap<String, String>,
                 serial: String,
             }
 
@@ -4690,9 +4689,9 @@ mod tests {
                 fn new() -> Self {
                     Self {
                         // Canonical but not ciphertext: the gate must precede recovery.
-                        fields: HashMap::from([("name".to_string(), "YQ==".to_string())]),
+                        fields: IndexMap::from([("name".to_string(), "YQ==".to_string())]),
                         reveal: vec!["name".to_string()],
-                        master: HashMap::from([("name".to_string(), "Yg==".to_string())]),
+                        master: IndexMap::from([("name".to_string(), "Yg==".to_string())]),
                         serial: BASE64.encode([32; 32]),
                     }
                 }
@@ -4729,7 +4728,7 @@ mod tests {
                     request
                 }
 
-                fn create(&self) -> bsv_rs::Result<HashMap<String, String>> {
+                fn create(&self) -> bsv_rs::Result<IndexMap<String, String>> {
                     let key = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
                     let public_key = key.public_key();
                     create_keyring_for_verifier(
@@ -5831,7 +5830,7 @@ mod tests {
                                         certificate_type: BASE64.encode([33; 32]),
                                         certifier: key(31),
                                         acquisition_protocol: AcquisitionProtocol::Direct,
-                                        fields: HashMap::new(),
+                                        fields: IndexMap::new(),
                                         serial_number: Some(BASE64.encode([32; 32])),
                                         revocation_outpoint: Some(outpoint.clone()),
                                         signature: Some("300602010a02010b".to_string()),
@@ -5839,7 +5838,7 @@ mod tests {
                                         keyring_revealer: Some(
                                             bsv_rs::wallet::KeyringRevealer::Certifier,
                                         ),
-                                        keyring_for_subject: Some(HashMap::new()),
+                                        keyring_for_subject: Some(IndexMap::new()),
                                         privileged: None,
                                         privileged_reason: None,
                                     },
@@ -6306,9 +6305,9 @@ mod tests {
                 &wallet,
                 &certifier.public_key(),
                 &verifier.public_key(),
-                &HashMap::from([("name".to_string(), BASE64.encode(field_ciphertext))]),
+                &IndexMap::from([("name".to_string(), BASE64.encode(field_ciphertext))]),
                 &["name".to_string()],
-                &HashMap::from([("name".to_string(), BASE64.encode(wrapped_key.ciphertext))]),
+                &IndexMap::from([("name".to_string(), BASE64.encode(wrapped_key.ciphertext))]),
                 &BASE64.encode([8; 32]),
                 Some("certificate.test"),
             );
@@ -6377,10 +6376,10 @@ mod tests {
             let master_key_base64 = BASE64.encode(&master_key_encrypted.ciphertext);
 
             // Build the structures
-            let fields: HashMap<String, String> =
-                HashMap::from([(field_name.to_string(), encrypted_field_base64.clone())]);
-            let master_keyring: HashMap<String, String> =
-                HashMap::from([(field_name.to_string(), master_key_base64)]);
+            let fields: IndexMap<String, String> =
+                IndexMap::from([(field_name.to_string(), encrypted_field_base64.clone())]);
+            let master_keyring: IndexMap<String, String> =
+                IndexMap::from([(field_name.to_string(), master_key_base64)]);
             let fields_to_reveal = vec![field_name.to_string()];
 
             // Step 4: Call create_keyring_for_verifier
@@ -6469,9 +6468,9 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            let fields = HashMap::from([("name".to_string(), BASE64.encode(&field_ciphertext))]);
+            let fields = IndexMap::from([("name".to_string(), BASE64.encode(&field_ciphertext))]);
             let master_keyring =
-                HashMap::from([("name".to_string(), BASE64.encode(master_entry.ciphertext))]);
+                IndexMap::from([("name".to_string(), BASE64.encode(master_entry.ciphertext))]);
 
             let keyring = create_keyring_for_verifier(
                 &subject_wallet,
@@ -6530,8 +6529,8 @@ mod tests {
 
             // Create multiple fields
             let field_names = ["name", "email", "organization"];
-            let mut fields: HashMap<String, String> = HashMap::new();
-            let mut master_keyring: HashMap<String, String> = HashMap::new();
+            let mut fields: IndexMap<String, String> = IndexMap::new();
+            let mut master_keyring: IndexMap<String, String> = IndexMap::new();
 
             for field_name in &field_names {
                 let symmetric_key = SymmetricKey::random();
@@ -6673,13 +6672,13 @@ mod tests {
             certifier: "02".to_string() + &"ab".repeat(32),
             revocation_outpoint: "txid.0".to_string(),
             signature: "deadbeef".to_string(),
-            fields: HashMap::from([
+            fields: IndexMap::from([
                 ("name".to_string(), "enc_name".to_string()),
                 ("email".to_string(), "enc_email".to_string()),
             ]),
         };
 
-        let keyring: HashMap<String, String> = HashMap::from([
+        let keyring: IndexMap<String, String> = IndexMap::from([
             ("name".to_string(), "master_key_name".to_string()),
             ("email".to_string(), "master_key_email".to_string()),
         ]);
@@ -6746,7 +6745,7 @@ mod tests {
         // When no keyring_for_subject is provided, master_key should be empty string
 
         let now = chrono::Utc::now();
-        let keyring: Option<&HashMap<String, String>> = None;
+        let keyring: Option<&IndexMap<String, String>> = None;
 
         let master_key = keyring
             .and_then(|kr| kr.get("name"))

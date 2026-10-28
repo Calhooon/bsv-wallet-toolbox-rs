@@ -29,7 +29,7 @@ bench-support = ["sqlite"]
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits
-bsv-rs = { version = "=0.9.0-beta.2", features = ["full", "http"] }
+bsv-rs = { version = "=0.9.0-beta.3", features = ["full", "http"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -43,6 +43,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+indexmap = { version = "2", features = ["serde"] }
 
 # Error handling
 thiserror = "1.0"

@@ -6,7 +6,7 @@
 //! POST to their `/lookup` endpoint.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use bsv_rs::overlay::{LookupAnswer, NetworkPreset};
 use bsv_rs::script::templates::PushDrop;
@@ -42,16 +42,16 @@ pub struct OverlayCertificate {
     pub revocation_outpoint: Option<String>,
     /// Certificate fields (field_name -> encrypted_value).
     #[serde(default)]
-    pub fields: HashMap<String, String>,
+    pub fields: IndexMap<String, String>,
     /// Keyring for publicly revealed fields.
     #[serde(default)]
-    pub keyring: HashMap<String, String>,
+    pub keyring: IndexMap<String, String>,
     /// Certificate signature.
     #[serde(default)]
     pub signature: Option<String>,
     /// Decrypted field values (populated after decryption).
     #[serde(default)]
-    pub decrypted_fields: HashMap<String, String>,
+    pub decrypted_fields: IndexMap<String, String>,
 }
 
 impl OverlayCertificate {
@@ -108,7 +108,7 @@ pub trait OverlayLookupResolver: Send + Sync {
     /// Network errors are handled gracefully (returns empty vec).
     async fn lookup_by_attributes(
         &self,
-        attributes: &HashMap<String, String>,
+        attributes: &IndexMap<String, String>,
     ) -> Result<Vec<OverlayCertificate>>;
 }
 
@@ -367,7 +367,7 @@ impl OverlayLookupResolver for HttpLookupResolver {
 
     async fn lookup_by_attributes(
         &self,
-        attributes: &HashMap<String, String>,
+        attributes: &IndexMap<String, String>,
     ) -> Result<Vec<OverlayCertificate>> {
         let query = serde_json::json!({
             "attributes": attributes,
@@ -518,13 +518,13 @@ mod tests {
             certifier: "03eeff0011".to_string(),
             revocation_outpoint: Some("deadbeef.0".to_string()),
             fields: {
-                let mut m = HashMap::new();
+                let mut m = IndexMap::new();
                 m.insert("name".to_string(), "encrypted_value".to_string());
                 m
             },
-            keyring: HashMap::new(),
+            keyring: IndexMap::new(),
             signature: Some("3045022100...".to_string()),
-            decrypted_fields: HashMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         let json = serde_json::to_string(&cert).unwrap();
@@ -577,18 +577,18 @@ mod tests {
             certifier: "03eeff0011".to_string(),
             revocation_outpoint: Some("deadbeef.0".to_string()),
             fields: {
-                let mut m = HashMap::new();
+                let mut m = IndexMap::new();
                 m.insert("name".to_string(), "encrypted_value".to_string());
                 m
             },
             keyring: {
-                let mut m = HashMap::new();
+                let mut m = IndexMap::new();
                 m.insert("name".to_string(), "keyring_value".to_string());
                 m
             },
             signature: Some("3045022100...".to_string()),
             decrypted_fields: {
-                let mut m = HashMap::new();
+                let mut m = IndexMap::new();
                 m.insert("name".to_string(), "Alice".to_string());
                 m
             },
@@ -616,12 +616,12 @@ mod tests {
                 subject: "subject1".to_string(),
                 certifier: "certifier1".to_string(),
                 revocation_outpoint: String::new(),
-                fields: HashMap::new(),
+                fields: IndexMap::new(),
                 signature: String::new(),
             },
             certifier_info: test_certifier(),
-            publicly_revealed_keyring: HashMap::new(),
-            decrypted_fields: HashMap::new(),
+            publicly_revealed_keyring: IndexMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         let cert2 = IdentityCertificate {
@@ -631,12 +631,12 @@ mod tests {
                 subject: "subject1".to_string(),
                 certifier: "certifier1".to_string(),
                 revocation_outpoint: String::new(),
-                fields: HashMap::new(),
+                fields: IndexMap::new(),
                 signature: "different_sig".to_string(),
             },
             certifier_info: test_certifier(),
-            publicly_revealed_keyring: HashMap::new(),
-            decrypted_fields: HashMap::new(),
+            publicly_revealed_keyring: IndexMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         // Different (type_id, serial_number) should be kept
@@ -647,12 +647,12 @@ mod tests {
                 subject: "subject2".to_string(),
                 certifier: "certifier2".to_string(),
                 revocation_outpoint: String::new(),
-                fields: HashMap::new(),
+                fields: IndexMap::new(),
                 signature: String::new(),
             },
             certifier_info: test_certifier(),
-            publicly_revealed_keyring: HashMap::new(),
-            decrypted_fields: HashMap::new(),
+            publicly_revealed_keyring: IndexMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         let certs = vec![cert1, cert2, cert3];
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn test_overlay_certificate_fields() {
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("name".to_string(), "encrypted_name".to_string());
         fields.insert("email".to_string(), "encrypted_email".to_string());
         fields.insert("phone".to_string(), "encrypted_phone".to_string());
@@ -676,9 +676,9 @@ mod tests {
             certifier: "03eeff0011".to_string(),
             revocation_outpoint: Some("txid.0".to_string()),
             fields: fields.clone(),
-            keyring: HashMap::new(),
+            keyring: IndexMap::new(),
             signature: Some("sig".to_string()),
-            decrypted_fields: HashMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         assert_eq!(cert.fields.len(), 3);
@@ -699,10 +699,10 @@ mod tests {
             subject: "subject".to_string(),
             certifier: "certifier".to_string(),
             revocation_outpoint: None,
-            fields: HashMap::new(),
-            keyring: HashMap::new(),
+            fields: IndexMap::new(),
+            keyring: IndexMap::new(),
             signature: None,
-            decrypted_fields: HashMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         let identity = cert.to_identity_certificate(test_certifier());
@@ -747,13 +747,13 @@ mod tests {
             certifier: "03certifier1".to_string(),
             revocation_outpoint: None,
             fields: {
-                let mut m = HashMap::new();
+                let mut m = IndexMap::new();
                 m.insert("name".to_string(), "Alice".to_string());
                 m
             },
-            keyring: HashMap::new(),
+            keyring: IndexMap::new(),
             signature: Some("sig1".to_string()),
-            decrypted_fields: HashMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         let cert2 = OverlayCertificate {
@@ -763,13 +763,13 @@ mod tests {
             certifier: "03certifier2".to_string(),
             revocation_outpoint: None,
             fields: {
-                let mut m = HashMap::new();
+                let mut m = IndexMap::new();
                 m.insert("email".to_string(), "alice@example.com".to_string());
                 m
             },
-            keyring: HashMap::new(),
+            keyring: IndexMap::new(),
             signature: Some("sig2".to_string()),
-            decrypted_fields: HashMap::new(),
+            decrypted_fields: IndexMap::new(),
         };
 
         let certs = [cert1, cert2];

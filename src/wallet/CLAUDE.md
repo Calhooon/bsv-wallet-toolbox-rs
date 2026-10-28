@@ -1113,8 +1113,10 @@ parameter must be at least 1 length.` or `... no more than 50 length.` and
 The row stores the normalized values (type and serial trimmed, certifier and
 signature lowercased) and `verifier` is the normalized certifier for
 `Certifier`, else the revealer's key (`acquireDirectCertificate.ts:19`).
-A map's names are walked in sorted order where the reference walks
-`Object.keys` (`docs/ARCHITECTURE.md` D12).
+A map's names retain insertion order at the beta.3 pin (bsv-rs #385/#394),
+closing the recorded bad-name refusals in `docs/ARCHITECTURE.md` D12.
+Integer-like keys retain `IndexMap` order; bsv-rs records that residual
+difference from JavaScript's numeric-key order.
 
 For #374, after validation and before storage, the direct arm builds bsv-rs's
 `MasterCertificate` from those normalized values, requires `verify()` to

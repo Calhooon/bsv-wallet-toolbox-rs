@@ -104,7 +104,7 @@ async fn response_run(
     nonce: Vec<u8>,
     mutate: impl Fn(&mut Value) + Send + Sync + 'static,
 ) -> (Result<WalletCertificate>, Value) {
-    let fields = HashMap::from([("city".to_string(), "Paris".to_string())]);
+    let fields = IndexMap::from([("city".to_string(), "Paris".to_string())]);
     let outpoint = Outpoint::new([0; 32], 0);
     response_run_with(observer, cert_type, nonce, fields, outpoint, mutate).await
 }
@@ -114,7 +114,7 @@ async fn response_run_with(
     observer: &ObservedWallet,
     cert_type: String,
     nonce: Vec<u8>,
-    fields: HashMap<String, String>,
+    fields: IndexMap<String, String>,
     signed_outpoint: Outpoint,
     mutate: impl Fn(&mut Value) + Send + Sync + 'static,
 ) -> (Result<WalletCertificate>, Value) {
@@ -485,7 +485,7 @@ async fn empty_master_keyring_is_refused_before_storage() {
         &ObservedWallet::default(),
         BASE64.encode([7; 32]),
         vec![5; 32],
-        HashMap::new(),
+        IndexMap::new(),
         Outpoint::new([0; 32], 0),
         |_| {},
     )
@@ -614,7 +614,7 @@ async fn outpoint_grammar_is_to_binary_grammar() {
             &ObservedWallet::default(),
             BASE64.encode([7; 32]),
             vec![5; 32],
-            HashMap::from([("city".to_string(), "Paris".to_string())]),
+            IndexMap::from([("city".to_string(), "Paris".to_string())]),
             signed,
             move |r| r["certificate"]["revocationOutpoint"] = json!(text),
         )
@@ -630,7 +630,7 @@ async fn outpoint_grammar_is_to_binary_grammar() {
             &ObservedWallet::default(),
             BASE64.encode([7; 32]),
             vec![5; 32],
-            HashMap::from([("city".to_string(), "Paris".to_string())]),
+            IndexMap::from([("city".to_string(), "Paris".to_string())]),
             Outpoint::new(txid, vout),
             {
                 let text = text.clone();

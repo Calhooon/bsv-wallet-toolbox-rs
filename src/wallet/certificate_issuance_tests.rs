@@ -37,20 +37,20 @@ struct Keys {
 #[derive(Deserialize)]
 struct Issued {
     keys: Keys,
-    plaintexts: HashMap<String, String>,
+    plaintexts: IndexMap<String, String>,
     certificate: CertificateResponse,
-    master_keyring: HashMap<String, String>,
-    verifier_keyring: HashMap<String, String>,
+    master_keyring: IndexMap<String, String>,
+    verifier_keyring: IndexMap<String, String>,
     #[serde(default)]
-    anyone_keyring: HashMap<String, String>,
+    anyone_keyring: IndexMap<String, String>,
     binary_hex: String,
     #[serde(default)]
     preimage_sha256: Option<String>,
     reference_verify: bool,
-    reference_master_plaintexts: HashMap<String, String>,
-    reference_verifier_plaintexts: HashMap<String, String>,
+    reference_master_plaintexts: IndexMap<String, String>,
+    reference_verifier_plaintexts: IndexMap<String, String>,
     #[serde(default)]
-    reference_anyone_plaintexts: HashMap<String, String>,
+    reference_anyone_plaintexts: IndexMap<String, String>,
 }
 
 fn key(value: u32) -> PrivateKey {
@@ -115,10 +115,10 @@ fn decrypt_like_reference(
     reader: &ProtoWallet,
     counterparty: &PublicKey,
     certificate: &CertificateResponse,
-    keyring: &HashMap<String, String>,
+    keyring: &IndexMap<String, String>,
     master: bool,
-) -> HashMap<String, String> {
-    let mut plaintexts = HashMap::new();
+) -> IndexMap<String, String> {
+    let mut plaintexts = IndexMap::new();
     let mut names: Vec<_> = keyring.keys().collect();
     names.sort();
     for name in names {
@@ -159,7 +159,7 @@ async fn store(
     wallet: &TestWallet,
     auth: &AuthId,
     parsed: &ParseCertificateResponseResult,
-    master_keyring: &HashMap<String, String>,
+    master_keyring: &IndexMap<String, String>,
 ) -> WalletCertificate {
     store_certificate(
         wallet.storage(),
@@ -179,7 +179,7 @@ async fn prove(
     certificate: WalletCertificate,
     verifier: u32,
     fields_to_reveal: Vec<String>,
-) -> HashMap<String, String> {
+) -> IndexMap<String, String> {
     wallet
         .prove_certificate(
             ProveCertificateArgs {
@@ -374,7 +374,7 @@ async fn reference_issued_certificate_proves_and_decrypts() {
         assert_eq!(subset.len(), 1);
         assert_eq!(
             decrypt_like_reference(&verifier, &subject, &issued.certificate, &subset, false),
-            HashMap::from([("city".to_string(), issued.plaintexts["city"].clone())])
+            IndexMap::from([("city".to_string(), issued.plaintexts["city"].clone())])
         );
     }
 }
@@ -461,7 +461,7 @@ async fn issuance_uses_fresh_keys_for_equal_and_empty_plaintexts() {
     let subject = key(37);
     let subject_wallet = ProtoWallet::new(Some(subject.clone()));
     let certifier = key(31).public_key();
-    let plaintexts = HashMap::from([
+    let plaintexts = IndexMap::from([
         ("a".to_string(), "same value".to_string()),
         ("b".to_string(), "same value".to_string()),
         ("empty".to_string(), String::new()),

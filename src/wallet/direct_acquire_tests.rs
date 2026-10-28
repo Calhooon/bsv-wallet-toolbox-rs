@@ -51,13 +51,13 @@ fn direct_args() -> AcquireCertificateArgs {
         certificate_type: BASE64.encode([33; 32]),
         certifier: key(7),
         acquisition_protocol: AcquisitionProtocol::Direct,
-        fields: HashMap::from([("name".to_string(), "YQ==".to_string())]),
+        fields: IndexMap::from([("name".to_string(), "YQ==".to_string())]),
         serial_number: Some(BASE64.encode([32; 32])),
         revocation_outpoint: Some(format!("{}.0", "ab".repeat(32))),
         signature: Some("300602010a02010b".to_string()),
         certifier_url: None,
         keyring_revealer: Some(KeyringRevealer::Certifier),
-        keyring_for_subject: Some(HashMap::from([("name".to_string(), "Yg==".to_string())])),
+        keyring_for_subject: Some(IndexMap::from([("name".to_string(), "Yg==".to_string())])),
         privileged: None,
         privileged_reason: None,
     }
@@ -72,7 +72,7 @@ async fn signed_master(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> Mast
         &ProtoWallet::new(Some(certifier.clone())),
         &certifier,
         PublicKey::from_hex(wallet.identity_key()).unwrap(),
-        HashMap::from([
+        IndexMap::from([
             ("name".to_string(), "Alice".to_string()),
             ("role".to_string(), "reader".to_string()),
         ]),
@@ -399,7 +399,7 @@ async fn refuses_an_absent_keyring_or_revealer() {
     )
     .await;
     let mut args = direct_args();
-    args.keyring_for_subject = Some(HashMap::new());
+    args.keyring_for_subject = Some(IndexMap::new());
     // Presence is a validator rule; the later proof has separate requirements.
     assert!(direct_acquire::validate_acquire_direct_args(&args).is_ok());
     assert_refused(
@@ -447,7 +447,7 @@ async fn refuses_a_bad_keyring() {
     ] {
         refused_with(
             scenario,
-            |a| a.keyring_for_subject = Some(HashMap::from([entry])),
+            |a| a.keyring_for_subject = Some(IndexMap::from([entry])),
             &text,
         )
         .await;
@@ -545,7 +545,7 @@ async fn refuses_in_the_reference_order() {
             "outpoint before fields",
             Box::new(|a| {
                 a.revocation_outpoint = Some("abc.0".to_string());
-                a.fields = HashMap::from([(String::new(), "YQ==".to_string())]);
+                a.fields = IndexMap::from([(String::new(), "YQ==".to_string())]);
             }),
             refusal(
                 "revocationOutpoint",
@@ -555,7 +555,7 @@ async fn refuses_in_the_reference_order() {
         (
             "fields before signature",
             Box::new(|a| {
-                a.fields = HashMap::from([(String::new(), "YQ==".to_string())]);
+                a.fields = IndexMap::from([(String::new(), "YQ==".to_string())]);
                 a.signature = Some("deadbeef".to_string());
             }),
             refusal("field name", "at least 1 length."),
@@ -564,7 +564,7 @@ async fn refuses_in_the_reference_order() {
             "signature before keyring",
             Box::new(|a| {
                 a.signature = Some("deadbeef".to_string());
-                a.keyring_for_subject = Some(HashMap::from([(String::new(), String::new())]));
+                a.keyring_for_subject = Some(IndexMap::from([(String::new(), String::new())]));
             }),
             refusal("signature", "a canonical DER-encoded ECDSA signature"),
         ),
@@ -574,7 +574,7 @@ async fn refuses_in_the_reference_order() {
     }
 }
 
-// A Rust map keeps no insertion order (bsv-rs's `HashMap` fields), so where
+// A Rust map keeps no insertion order (bsv-rs's `IndexMap` fields), so where
 // the reference walks Object.keys order (1236, 1254) the port walks the names
 // in byte order: of two bad names the one that sorts lower decides the text,
 // every run. A map with one bad name gets the reference's own text.
@@ -583,7 +583,7 @@ async fn several_bad_names_refuse_by_the_lowest_name() {
     refused_with(
         "fields: empty name sorts before a long one",
         |a| {
-            a.fields = HashMap::from([
+            a.fields = IndexMap::from([
                 ("n".repeat(51), "YQ==".to_string()),
                 (String::new(), "YQ==".to_string()),
             ]);
@@ -594,7 +594,7 @@ async fn several_bad_names_refuse_by_the_lowest_name() {
     refused_with(
         "keyring: a bad value under 'a' before a long name under 'b...'",
         |a| {
-            a.keyring_for_subject = Some(HashMap::from([
+            a.keyring_for_subject = Some(IndexMap::from([
                 ("b".repeat(51), "Yg==".to_string()),
                 ("a".to_string(), "!".to_string()),
             ]));
@@ -605,7 +605,7 @@ async fn several_bad_names_refuse_by_the_lowest_name() {
     refused_with(
         "keyring: a long name under 'a...' before a bad value under 'b'",
         |a| {
-            a.keyring_for_subject = Some(HashMap::from([
+            a.keyring_for_subject = Some(IndexMap::from([
                 ("b".to_string(), "!".to_string()),
                 ("a".repeat(51), "Yg==".to_string()),
             ]));

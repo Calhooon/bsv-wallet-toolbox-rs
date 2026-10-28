@@ -1282,7 +1282,7 @@ fn issued_certificate(
 
     let certifier = PrivateKey::random().public_key();
     let subject = PublicKey::from_hex(&wallet.identity_key).unwrap();
-    let mut cert_fields = HashMap::new();
+    let mut cert_fields = indexmap::IndexMap::new();
     cert_fields.insert("name".to_string(), "encrypted".to_string());
     let certificate = Certificate::new([7u8; 32], [9u8; 32], subject, certifier.clone());
     let parsed = super::super::certificate_issuance::ParseCertificateResponseResult {
@@ -1306,7 +1306,7 @@ async fn store_issued(
     parsed: &super::super::certificate_issuance::ParseCertificateResponseResult,
     certifier: &PublicKey,
 ) -> crate::Result<bsv_rs::wallet::WalletCertificate> {
-    let mut keyring = HashMap::new();
+    let mut keyring = indexmap::IndexMap::new();
     keyring.insert("name".to_string(), "key".to_string());
     super::super::certificate_issuance::store_certificate(
         wallet.storage(),
