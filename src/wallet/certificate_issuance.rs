@@ -9,12 +9,10 @@
 //! 1. **PrepareIssuanceActionData**: Create the client nonce as createNonce, encrypt fields using
 //!    MasterCertificate::create_certificate_fields, build JSON request body
 //!
-//! 2. **HTTP POST**: Send request to certifier URL with BRC-104 headers:
-//!    - `x-bsv-auth-version: 0.1`
-//!    - `x-bsv-identity-key: <wallet identity key hex>`
-//!
-//!    The response's `x-bsv-auth-identity-key` must equal the certifier before
-//!    the body is read; an absent header refuses as `Received: null`.
+//! 2. **BRC-104 request** (`certificate_issuance_auth.rs`, #315): a handshake
+//!    with the certifier, then the request as a signed general message; the
+//!    answer's signature and session are verified by bsv-rs's Peer, and its
+//!    signed sender must equal the certifier before the body is read.
 //!
 //! 3. **ParseCertificateResponse**: Parse JSON response, extract certificate
 //!    components
@@ -41,7 +39,7 @@ use super::wallet::{
     validate_public_key_arg,
 };
 use crate::error::{Error, Result};
-use crate::services::providers::http_client::{Client, Url};
+use crate::services::providers::http_client::Url;
 use crate::storage::entities::{TableCertificate, TableCertificateField};
 use crate::storage::{not_busy, AuthId, WalletStorageProvider};
 
@@ -53,6 +51,9 @@ mod network_isolation_tests;
 #[path = "certificate_issuance_peer_fixture.rs"]
 mod peer_fixture;
 
+#[path = "certificate_issuance_auth.rs"]
+mod auth;
+
 #[cfg(test)]
 tokio::task_local! {
     // Route a validated public URL to a loopback fixture within one test future.
@@ -63,18 +64,6 @@ tokio::task_local! {
 // =============================================================================
 // Constants
 // =============================================================================
-
-/// BRC-104 authentication version header value
-const BRC104_AUTH_VERSION: &str = "0.1";
-
-/// BRC-104 authentication version header name
-const HEADER_AUTH_VERSION: &str = "x-bsv-auth-version";
-
-/// BRC-104 identity key header name
-const HEADER_IDENTITY_KEY: &str = "x-bsv-identity-key";
-
-/// The certifier's identity header, as ts-stack@edf6e03 Wallet.ts:789 reads it
-const HEADER_CERTIFIER_IDENTITY_KEY: &str = "x-bsv-auth-identity-key";
 
 /// Protocol for certificate issuance HMAC verification
 const CERTIFICATE_ISSUANCE_PROTOCOL: &str = "certificate issuance";
@@ -225,7 +214,7 @@ where
         prepare_issuance_action_data(wallet, &args, &certifier, &identity_pub_key, originator)
             .await?;
 
-    // Step 2: Send HTTP POST to certifier; the identity header is checked before the body
+    // Step 2: The BRC-104 request; the signed sender is checked before the body
     let response =
         send_issuance_request(peer_wallet, certifier_url, &prepared.body, &certifier_hex).await?;
 
@@ -562,10 +551,12 @@ where
 // Step 2: Send HTTP Request
 // =============================================================================
 
-/// Sends the issuance request to the certifier URL.
+/// Sends the issuance request to the certifier over BRC-104 mutual auth.
 ///
-/// The response's identity header must equal `certifier_hex` before the body is
-/// read, as at ts-stack@edf6e03 Wallet.ts:789-793.
+/// The answer's sender, which bsv-rs's Peer has bound to a signed session,
+/// must equal `certifier_hex` before the body is read, as `AuthFetch.ts:479`
+/// sets the identity header from it and ts-stack@edf6e03 `Wallet.ts:789-791`
+/// compares it. No status gate: `Wallet.ts:779-795` reads any signed body.
 async fn send_issuance_request(
     peer_wallet: ProtoWallet,
     certifier_url: &str,
@@ -576,66 +567,23 @@ async fn send_issuance_request(
     let fixture_url = ISSUANCE_TEST_URL.try_with(Clone::clone).ok();
     #[cfg(test)]
     let certifier_url = fixture_url.as_deref().unwrap_or(certifier_url);
-    let client = Client::new();
 
-    let response = client
-        .post(certifier_url)
-        .header(HEADER_AUTH_VERSION, BRC104_AUTH_VERSION)
-        .header(HEADER_IDENTITY_KEY, peer_wallet.identity_key_hex())
-        .header("Content-Type", "application/json")
-        .body(body.to_vec())
-        .send()
-        .await
-        .map_err(|e| Error::NetworkError(format!("Failed to send issuance request: {}", e)))?;
-
-    // Check HTTP status
-    let status = response.status();
-    if !status.is_success() {
-        let error_body = response.text().await.unwrap_or_default();
-        return Err(Error::NetworkError(format!(
-            "Certifier returned HTTP {}: {}",
-            status, error_body
-        )));
-    }
-
-    let identity_key_header = fetch_header_value(
-        response
-            .headers()
-            .get_all(HEADER_CERTIFIER_IDENTITY_KEY)
-            .iter()
-            .map(|v| v.as_bytes()),
-    );
-    if identity_key_header.as_deref() != Some(certifier_hex) {
+    let (sender, response) =
+        auth::post_authenticated(peer_wallet, certifier_url, body, auth::RESPONSE_DEADLINE).await?;
+    let sender = sender.to_hex();
+    if sender != certifier_hex {
         return Err(Error::ValidationError(format!(
-            "Invalid certifier! Expected: {}, Received: {}",
-            certifier_hex,
-            identity_key_header.as_deref().unwrap_or("null")
+            "Invalid certifier! Expected: {certifier_hex}, Received: {sender}"
         )));
     }
 
-    // Parse response JSON
-    let response_text = response
-        .text()
-        .await
-        .map_err(|e| Error::NetworkError(format!("Failed to read certifier response: {}", e)))?;
-
-    let parsed: ProtocolIssuanceResponse = serde_json::from_str(&response_text).map_err(|e| {
+    serde_json::from_slice(&response.body).map_err(|e| {
         Error::ValidationError(format!(
             "Failed to parse certifier response: {} - body: {}",
-            e, response_text
+            e,
+            String::from_utf8_lossy(&response.body)
         ))
-    })?;
-
-    Ok(parsed)
-}
-
-/// Reads a header's values as fetch's `Headers.get` does: `None` when absent,
-/// each byte decoded as one code point, and repeated values joined with ", ".
-fn fetch_header_value<'a>(values: impl Iterator<Item = &'a [u8]>) -> Option<String> {
-    let values: Vec<String> = values
-        .map(|v| v.iter().map(|&b| char::from(b)).collect())
-        .collect();
-    (!values.is_empty()).then(|| values.join(", "))
+    })
 }
 
 // =============================================================================
@@ -1315,7 +1263,6 @@ mod tests {
     fn test_constants() {
         assert_eq!(NONCE_HMAC_SIZE, 32);
         assert_eq!(NONCE_SIZE, 16);
-        assert_eq!(BRC104_AUTH_VERSION, "0.1");
         assert_eq!(CERTIFICATE_ISSUANCE_PROTOCOL, "certificate issuance");
     }
 

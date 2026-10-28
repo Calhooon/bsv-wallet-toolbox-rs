@@ -11,7 +11,6 @@ pub(crate) use reqwest::{Client, Error as RequestError, RequestBuilder};
 pub(crate) use reqwest::Url;
 
 #[cfg(any(test, feature = "bench-support"))]
-#[cfg_attr(not(feature = "remote"), allow(dead_code))]
 pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
     let url = reqwest::Url::parse(url)
         .map_err(|error| crate::Error::NetworkError(format!("Invalid transport URL: {error}")))?;
@@ -22,7 +21,6 @@ pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
 /// `SimplifiedFetchTransport::with_client`), so the authenticated storage
 /// client's own hops come under #182 too (#263).
 #[cfg(any(test, feature = "bench-support"))]
-#[cfg_attr(not(feature = "remote"), allow(dead_code))]
 pub(crate) fn sdk_transport_client() -> reqwest::Client {
     isolated::sdk_transport_client()
 }
@@ -31,14 +29,11 @@ pub(crate) fn sdk_transport_client() -> reqwest::Client {
 /// client and certificate issuance): bsv-rs's own in production, and in test
 /// and bench builds a wrapper that checks its destination before SDK I/O.
 #[cfg(not(any(test, feature = "bench-support")))]
-#[cfg_attr(not(feature = "remote"), allow(unused_imports))]
 pub(crate) use bsv_rs::auth::SimplifiedFetchTransport;
 #[cfg(any(test, feature = "bench-support"))]
-#[cfg_attr(not(feature = "remote"), allow(unused_imports))]
 pub(crate) use isolated_peer_transport::SimplifiedFetchTransport;
 
 #[cfg(any(test, feature = "bench-support"))]
-#[cfg_attr(not(feature = "remote"), allow(dead_code))]
 mod isolated_peer_transport {
     use async_trait::async_trait;
     use bsv_rs::auth::transports::{Transport, TransportCallback};
@@ -169,7 +164,6 @@ mod isolated {
     /// No proxy and `localhost` pinned as [`Client::builder`]; no redirect
     /// followed, since the SDK refuses a redirect status before its body
     /// (bsv-rs #320); the timeouts and idle pool of bsv-rs's own default.
-    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
     pub(crate) fn sdk_transport_client() -> reqwest::Client {
         match Client::builder()
             .0
