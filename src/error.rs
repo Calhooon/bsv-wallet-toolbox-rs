@@ -500,22 +500,7 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn every_other_error_is_wallet_error_with_its_display() {
-        for err in [
-            Error::ValidationError("bad".to_string()),
-            Error::InsufficientFunds {
-                needed: 2,
-                available: 1,
-            },
-            Error::LockTimeout("writer".to_string()),
-        ] {
-            let text = err.to_string();
-            match bsv_rs::Error::from(err) {
-                bsv_rs::Error::WalletError(t) => assert_eq!(t, text),
-                other => panic!("expected WalletError, got {other:?}"),
-            }
-        }
-    }
 }
+
+#[cfg(test)]
+mod refusal_tests;
