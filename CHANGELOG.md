@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- CI: `release.yml`'s call of the reusable `ci.yml` grants `pull-requests: read`
+  beside `contents: read`, the permission the semver job reads on a push run
+  since #398; the tag v0.14.0-beta.2's release run failed at startup without it
+  (a called workflow's permissions must fit the caller's), publishing nothing.
+
 ## [0.14.0-beta.2] - 2026-10-28
 
 ### Changed
