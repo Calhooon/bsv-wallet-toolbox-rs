@@ -291,7 +291,7 @@ jobs:
       # because a line collects its owner-worded breaks until its next tag
       # (the pin PR #391 landed with the label and the push run read none; the
       # next PR rebased onto it went red on the pin's breaks).
-      - name: Check the public API against the last release
+      - name: Check the public API against its baseline (a PR against its base branch, a push against the last release)
         env:
           PR_API_BREAK: ${{ contains(github.event.pull_request.labels.*.name, 'api-break') }}
           GH_TOKEN: ${{ github.token }}
@@ -310,13 +310,23 @@ jobs:
             # The PRs merged at or after the tagged commit's date, minus those
             # whose merge commit is an ancestor of the tag (the PR that landed
             # the tagged commit itself merges a second after its commit date).
-            labelled=0
+            # The reads are captured before the loop so a refused or faulted
+            # call stops the step under set -e instead of reading as a clean
+            # zero. The pushed commit's own PRs come from the commits API too,
+            # which is not search-backed, so the labelled PR's own push run is
+            # not red while the search index lags.
+            searched="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base "$branch" --label api-break \
+              --search "merged:>=${since}" --json number,mergeCommit --jq '.[] | "\(.number) \(.mergeCommit.oid)"')"
+            own="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '.[] | select(.merged_at != null) | select([.labels[].name] | index("api-break")) | "\(.number) \(.merge_commit_sha)"')"
+            labelled=0; seen=""
             while read -r number oid; do
               [ -n "$oid" ] || continue
+              case " $seen " in *" $number "*) continue;; esac
+              seen="$seen $number"
               if git merge-base --is-ancestor "$oid" "$base" 2>/dev/null; then continue; fi
               labelled=$((labelled + 1))
-            done < <(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base "$branch" --label api-break \
-              --search "merged:>=${since}" --json number,mergeCommit --jq '.[] | "\(.number) \(.mergeCommit.oid)"')
+            done <<< "$(printf '%s\n%s\n' "$searched" "$own")"
             if [ "$labelled" -gt 0 ]; then API_BREAK=true; fi
             echo "push run: ${labelled} api-break PR(s) merged into ${branch} after ${base} (${since})" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
