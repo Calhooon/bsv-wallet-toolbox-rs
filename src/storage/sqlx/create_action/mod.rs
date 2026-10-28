@@ -695,3 +695,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/seed.rs"]
 mod seed_tests;
+
+#[cfg(test)]
+#[path = "tests/review.rs"]
+mod review_tests;
