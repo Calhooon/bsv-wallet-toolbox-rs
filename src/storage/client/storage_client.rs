@@ -538,7 +538,15 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             Ok(Ok(Ok(answer))) => answer,
             Ok(Ok(Err(e))) => return Err(e),
             Ok(Err(_)) => return Err(Error::NetworkError("Response channel closed".to_string())),
-            Err(_) => return Err(Error::NetworkError("Request timed out".to_string())),
+            Err(_) => {
+                // The send completed; no matching answer arrived. The peer
+                // may have acted, so this carries no safe-to-repeat promise.
+                return Err(Error::SdkError(bsv_rs::Error::TransportFault {
+                    fault: bsv_rs::TransportFault::MayHaveBeenReceived,
+                    status: None,
+                    detail: "Request timed out".to_string(),
+                }));
+            }
         };
 
         // The Peer verified the answer and bound its sender to the session
