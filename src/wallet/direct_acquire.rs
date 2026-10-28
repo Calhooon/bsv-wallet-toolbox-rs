@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use bsv_rs::auth::certificates::{Certificate, MasterCertificate};
 use bsv_rs::primitives::{from_base64, from_hex, PublicKey};
 use bsv_rs::wallet::{
-    AcquireCertificateArgs, KeyringRevealer, Outpoint, WalletCertificate, WalletInterface,
+    AcquireCertificateArgs, KeyringRevealer, Outpoint, ProtoWallet, WalletCertificate,
 };
 
 use super::{
@@ -118,8 +118,8 @@ pub(super) fn validate_acquire_direct_args(
 }
 
 // Wallet.ts:705-731: proof errors use the same outer WERR_INVALID_PARAMETER
-// text as the validator. Rust error variants supply the inner name where
-// the reference uses WalletError.fromUnknown's JavaScript error name.
+// text as the validator. WalletError.fromUnknown names a plain Error
+// WERR_UNKNOWN and keeps its message without a Rust Display prefix.
 fn invalid_proof(name: &str, message: &str) -> bsv_rs::Error {
     invalid_certificate_argument(
         "args",
@@ -130,20 +130,14 @@ fn invalid_proof(name: &str, message: &str) -> bsv_rs::Error {
 }
 
 fn proof_error(error: bsv_rs::Error) -> bsv_rs::Error {
-    let (name, message) = match error {
-        bsv_rs::Error::CertificateValidationError(message) => {
-            ("CertificateValidationError", message)
-        }
-        bsv_rs::Error::InvalidBase64(message) => ("InvalidBase64", message),
-        bsv_rs::Error::InvalidHex(message) => ("InvalidHex", message),
-        bsv_rs::Error::InvalidPublicKey(message) => ("InvalidPublicKey", message),
-        bsv_rs::Error::InvalidDataLength { expected, actual } => (
-            "InvalidDataLength",
-            format!("invalid data length: expected {expected}, got {actual}"),
-        ),
-        other => ("bsv_rs::Error", other.to_string()),
+    let message = match error {
+        bsv_rs::Error::CertificateValidationError(message)
+        | bsv_rs::Error::InvalidBase64(message)
+        | bsv_rs::Error::InvalidHex(message)
+        | bsv_rs::Error::InvalidPublicKey(message) => message,
+        other => other.to_string(),
     };
-    invalid_proof(name, &message)
+    invalid_proof("WERR_UNKNOWN", &message)
 }
 
 fn decode_32(value: &str) -> bsv_rs::Result<[u8; 32]> {
@@ -174,14 +168,14 @@ fn master_certificate(
 }
 
 /// Verify the signature and prove every field can be decrypted through the
-/// acquiring wallet, before storage. The plaintext is discarded; the caller
-/// stores the validated encrypted fields and keyring unchanged (#374).
-pub(super) async fn verify_acquire_direct<W: WalletInterface>(
-    wallet: &W,
+/// acquiring wallet's internal crypto, before storage. The proof carries no
+/// caller originator and needs no protocol permission. The plaintext is
+/// discarded; the caller stores the encrypted fields and keyring unchanged (#374).
+pub(super) async fn verify_acquire_direct(
+    wallet: &ProtoWallet,
     certificate: &WalletCertificate,
     keyring: &HashMap<String, String>,
     args: &AcquireCertificateArgs,
-    originator: Option<&str>,
 ) -> bsv_rs::Result<()> {
     let master = master_certificate(certificate, keyring).map_err(proof_error)?;
     if !master.verify().map_err(proof_error)? {
@@ -197,7 +191,7 @@ pub(super) async fn verify_acquire_direct<W: WalletInterface>(
             &master.certifier,
             args.privileged,
             args.privileged_reason.as_deref(),
-            originator,
+            None,
         )
         .await
         .map_err(proof_error)?;
