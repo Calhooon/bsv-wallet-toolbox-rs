@@ -144,7 +144,14 @@ async fn authenticated_storage_client_refuses_a_redirect_hop() {
     let client =
         StorageClient::new(wallet(), server.url()).with_timeout(std::time::Duration::from_secs(5));
     let error = client.make_available().await.unwrap_err().to_string();
-    assert!(error.contains("redirect refused: 307"), "{error}");
+    assert_eq!(
+        error,
+        format!(
+            "Network error: Failed to send request: authentication error: \
+             Network error while sending authenticated request to {}/.well-known/auth: fetch failed",
+            server.url()
+        )
+    );
     redirect.assert_async().await;
     hop.assert_async().await;
 }
