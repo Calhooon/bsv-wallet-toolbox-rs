@@ -73,7 +73,9 @@
   own README badge; `nightly-mutants.yml` is `mutants.yml` (`Mutants`). A
   cancelled push run (a newer landing's push supersedes it) is never a red.
   The required contexts and release.yml's tag run are unchanged.
-- CI: the semver job's api-break switch reads, on a push run, whether any
+- CI: the semver job compares a pull request against its base branch's tip
+  (the PR's own breaks alone) and a push against the line's last tag; its
+  api-break switch reads, on a push run, whether any
   pull request merged into the branch since the baseline tag carried the
   `api-break` label (a line collects its owner-worded breaks until its next
   tag, and every push run compares the whole tree against that tag); it

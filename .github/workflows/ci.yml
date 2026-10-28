@@ -275,20 +275,29 @@ jobs:
         with:
           tool: cargo-semver-checks
 
-      # HEAD^: the last tag before this commit, never a tag on the commit itself.
-      # The api-break switch: on a pull request, the PR's own label; on a push,
-      # whether any PR merged into this branch since the baseline tag carried
-      # the label, because a line collects its owner-worded breaks until its
-      # next tag and every push run compares the whole tree against that tag
-      # (the pin PR #391 landed with the label and the push run read none).
+      # The baseline: on a pull request, the base branch's tip, so the check
+      # reads the PR's own breaks alone (a PR rebased onto a line that already
+      # carries owner-worded breaks since its last tag is not red for them);
+      # on a push, HEAD^'s last tag, never a tag on the commit itself, so the
+      # line's whole distance from its last release is read. The api-break
+      # switch: on a pull request, the PR's own label; on a push, whether any
+      # PR merged into this branch since the baseline tag carried the label,
+      # because a line collects its owner-worded breaks until its next tag
+      # (the pin PR #391 landed with the label and the push run read none; the
+      # next PR rebased onto it went red on the pin's breaks).
       - name: Check the public API against the last release
         env:
           PR_API_BREAK: ${{ contains(github.event.pull_request.labels.*.name, 'api-break') }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^)"
           API_BREAK="$PR_API_BREAK"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git fetch -q origin "${GITHUB_BASE_REF}"
+            base="origin/${GITHUB_BASE_REF}"
+          else
+            base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^)"
+          fi
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             since="$(git log -1 --format=%cI "$base")"
             branch="${GITHUB_REF_NAME}"
@@ -301,7 +310,9 @@ jobs:
           # The release type the version names: minor or major above the baseline's
           # (0.x: the minor is the breaking release) is a major check; the same
           # line is a minor check. A prerelease suffix is not part of the comparison.
-          release_type="$(python3 - "$base" "$version" <<'EOP'
+          base_version="$base"
+          case "$base" in origin/*) base_version="$(git show "$base:Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)";; esac
+          release_type="$(python3 - "$base_version" "$version" <<'EOP'
           import sys
           def mm(v):
               a = v.lstrip("v").split("-")[0].split(".")
