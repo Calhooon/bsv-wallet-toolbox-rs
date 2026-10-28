@@ -386,6 +386,84 @@ mod tests {
         (beef, txid, merkle_root)
     }
 
+    struct TransportFaultTracker(bsv_rs::TransportFault, Option<u16>);
+
+    #[async_trait::async_trait]
+    impl ChainTracker for TransportFaultTracker {
+        async fn is_valid_root_for_height(
+            &self,
+            _root: &str,
+            _height: u32,
+        ) -> std::result::Result<bool, ChainTrackerError> {
+            Err(ChainTrackerError::TransportFault {
+                fault: self.0,
+                status: self.1,
+                detail: "proof tracker unavailable".into(),
+            })
+        }
+
+        async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
+            panic!("proof helpers only ask for the root")
+        }
+    }
+
+    fn transport_fault_trackers() -> [TransportFaultTracker; 3] {
+        use bsv_rs::TransportFault;
+        [
+            TransportFaultTracker(TransportFault::NeverSent, None),
+            TransportFaultTracker(TransportFault::MayHaveBeenReceived, Some(503)),
+            TransportFaultTracker(
+                TransportFault::RateLimited {
+                    retry_after_ms: Some(7_000),
+                },
+                Some(429),
+            ),
+        ]
+    }
+
+    fn assert_transport_fault(error: Error, tracker: &TransportFaultTracker) {
+        let Error::SdkError(bsv_rs::Error::TransportFault {
+            fault,
+            status,
+            detail,
+        }) = &error
+        else {
+            panic!("expected a typed tracker transport fault, got {error:?}")
+        };
+        assert_eq!(*fault, tracker.0);
+        assert_eq!(*status, tracker.1);
+        assert_eq!(detail, "proof tracker unavailable");
+        let sdk = bsv_rs::Error::from(error);
+        assert_eq!(sdk.transport_fault(), Some(tracker.0));
+    }
+
+    #[tokio::test]
+    async fn beef_proof_helper_preserves_tracker_transport_fault() {
+        for tracker in transport_fault_trackers() {
+            let (mut beef, _, _) = build_single_proven_beef(800_000);
+            let error = verify_beef_merkle_proofs(
+                &mut beef,
+                &tracker,
+                BeefVerificationMode::Strict,
+                &HashSet::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_transport_fault(error, &tracker);
+        }
+    }
+
+    #[tokio::test]
+    async fn txid_proof_helper_preserves_tracker_transport_fault() {
+        for tracker in transport_fault_trackers() {
+            let (beef, txid, _) = build_single_proven_beef(800_000);
+            let error = verify_txid_merkle_proof(&beef, &txid, &tracker)
+                .await
+                .unwrap_err();
+            assert_transport_fault(error, &tracker);
+        }
+    }
+
     // =========================================================================
     // Existing tests
     // =========================================================================
