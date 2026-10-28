@@ -55,6 +55,70 @@ async fn lookup_clients_accept_loopback_fixtures() {
 }
 
 #[tokio::test]
+async fn attribute_lookup_sends_the_supplied_map_order() {
+    use bsv_rs::primitives::PrivateKey;
+    use bsv_rs::script::LockingScript;
+    use bsv_rs::transaction::{Transaction, TransactionOutput};
+
+    let mut server = mockito::Server::new_async().await;
+    let host = server.url();
+    assert!(host.len() < 76);
+    let public = PrivateKey::from_hex(&format!("{:064x}", 42))
+        .unwrap()
+        .public_key();
+    let mut tx = Transaction::new();
+    tx.outputs.push(TransactionOutput {
+        satoshis: Some(1),
+        locking_script: LockingScript::from_hex(&format!(
+            "21{}ac{:02x}{}75",
+            public.to_hex(),
+            host.len(),
+            hex::encode(host.as_bytes())
+        ))
+        .unwrap(),
+        change: false,
+    });
+    let slap = server
+        .mock("POST", "/lookup")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "service": "ls_slap"
+        })))
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "type": "output-list",
+                "outputs": [{"beef": tx.to_beef(true).unwrap(), "outputIndex": 0}]
+            })
+            .to_string(),
+        )
+        .expect(1)
+        .create_async()
+        .await;
+    let lookup = server
+        .mock("POST", "/lookup")
+        .match_body(r#"{"query":{"attributes":{"zeta":"z","alpha":"a"}},"service":"ls_identity"}"#)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"type":"output-list","outputs":[]}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    let attributes = [
+        ("zeta".to_string(), "z".to_string()),
+        ("alpha".to_string(), "a".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let resolver = HttpLookupResolver::new(&host);
+    assert!(resolver
+        .lookup_by_attributes(&attributes)
+        .await
+        .unwrap()
+        .is_empty());
+    slap.assert_async().await;
+    lookup.assert_async().await;
+}
+
+#[tokio::test]
 async fn lookup_clients_refuse_non_loopback_redirects() {
     let mut server = mockito::Server::new_async().await;
     let redirect = server
