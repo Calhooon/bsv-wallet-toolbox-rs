@@ -9,6 +9,10 @@
   since #398; the tag v0.14.0-beta.2's release run failed at startup without it
   (a called workflow's permissions must fit the caller's), publishing nothing.
 
+### CI
+
+- #403: The required `locks` job checks that `release.yml` grants every permission requested by the reusable `ci.yml`, with fixture coverage for the permission levels and fallbacks.
+
 ## [0.14.0-beta.2] - 2026-10-28
 
 ### Changed

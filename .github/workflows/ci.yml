@@ -388,6 +388,11 @@ jobs:
           [ "$found" -gt 0 ] || echo "no committed Cargo.lock"
           exit "$status"
 
+      - name: The reusable CI call grants every job's permissions
+        run: |
+          bash tools/workflow-grants-check.sh
+          bash tools/workflow-grants-check-test.sh
+
   # The north-star table (docs/NORTH-STAR.md) against its sources and its
   # checksum: an edited table or a stale source value fails. Read-only; the
   # producers (#54's bench job, #55's ratchet job) run the write. Not yet a
