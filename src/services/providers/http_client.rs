@@ -75,6 +75,11 @@ mod isolated_peer_transport {
 #[path = "../../../tests/common/transport_isolation.rs"]
 pub(crate) mod test_support;
 
+// #423: the BRC-104 bound cases both doors on this transport replay.
+#[cfg(all(test, any(feature = "sqlite", feature = "remote")))]
+#[path = "../../../tests/common/brc104_door_cases.rs"]
+pub(crate) mod brc104_door_cases;
+
 #[cfg(any(test, feature = "bench-support"))]
 mod isolated {
     use std::net::{Ipv6Addr, SocketAddr};

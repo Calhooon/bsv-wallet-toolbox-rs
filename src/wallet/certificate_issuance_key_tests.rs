@@ -415,3 +415,7 @@ async fn acquire_from_fixture(
         )
         .await
 }
+
+#[cfg(test)]
+#[path = "certificate_issuance_bounds_tests.rs"]
+mod bounds_tests;
