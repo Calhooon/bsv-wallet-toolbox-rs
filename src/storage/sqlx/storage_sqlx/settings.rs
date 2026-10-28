@@ -233,4 +233,43 @@ mod tests {
         assert_eq!(settings.storage_name, "test-storage");
         assert!(storage.is_available());
     }
+
+    /// A later `migrate` keeps the stored chain (#435): the reference writes
+    /// `chain` once, in the migration that creates the settings row
+    /// (`KnexMigrations.ts`'s insert), and never rewrites it.
+    async fn remigrate_keeps(chain: &str) {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        let key = "0".repeat(64);
+        storage.migrate("test-storage", &key).await.unwrap();
+        sqlx::query("UPDATE settings SET chain = ?")
+            .bind(chain)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+
+        storage.migrate("test-storage", &key).await.unwrap();
+
+        assert_eq!(storage.get_settings().chain, chain);
+        assert_eq!(storage.make_available().await.unwrap().chain, chain);
+    }
+
+    #[tokio::test]
+    async fn remigrate_keeps_a_testnet_row() {
+        remigrate_keeps("testnet").await;
+    }
+
+    #[tokio::test]
+    async fn remigrate_keeps_a_regtest_row() {
+        remigrate_keeps("regtest").await;
+    }
+
+    #[tokio::test]
+    async fn a_new_row_is_mainnet() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("test-storage", &"0".repeat(64))
+            .await
+            .unwrap();
+        assert_eq!(storage.get_settings().chain, "mainnet");
+    }
 }
