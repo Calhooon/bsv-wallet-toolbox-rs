@@ -199,7 +199,7 @@ async fn over_long_label_answers_ahead_of_the_nosend_refusal_through_wallet_inte
     .await;
 }
 
-/// #365 pair (b), `docs/ARCHITECTURE.md` D12: the reference refuses the
+/// #365 pair (b), `docs/ARCHITECTURE.md` D13: the reference refuses the
 /// BRC-177 label (Wallet.ts:1248-1250) before its signer finds the
 /// derivation locks nothing (`signer/methods/internalizeAction.ts:84-89`,
 /// "The paymentRemittance parameter must be locked by script conforming to
