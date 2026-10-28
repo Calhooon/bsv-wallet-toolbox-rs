@@ -4248,9 +4248,8 @@ mod tests {
             wallet.list_outputs(args, originator).await
         }
 
-        // Through WalletInterface the refusal is bsv-rs's WalletError carrying the text.
-        const EMPTY: &str =
-            "wallet error: Validation error: The originator parameter must be at least 1 length.";
+        // The boundary keeps the validation text without the SDK's generic wrapper.
+        const EMPTY: &str = "Validation error: The originator parameter must be at least 1 length.";
 
         #[tokio::test]
         async fn named_originator_reaches_both_doors() {
@@ -4281,12 +4280,26 @@ mod tests {
         #[tokio::test]
         async fn create_action_refuses_empty_originator() {
             let error = create(Some("")).await.unwrap_err();
+            assert!(matches!(
+                error,
+                bsv_rs::Error::WalletRefusal {
+                    class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                    ..
+                }
+            ));
             assert_eq!(error.to_string(), EMPTY);
         }
 
         #[tokio::test]
         async fn list_outputs_refuses_empty_originator() {
             let error = list(Some("")).await.unwrap_err();
+            assert!(matches!(
+                error,
+                bsv_rs::Error::WalletRefusal {
+                    class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                    ..
+                }
+            ));
             assert_eq!(error.to_string(), EMPTY);
         }
 
@@ -4423,6 +4436,25 @@ mod tests {
                 }
                 other => panic!("{scenario}: expected WalletError({expected:?}), got {other:?}"),
             }
+        }
+
+        fn assert_argument_refusal<T: std::fmt::Debug>(
+            scenario: &str,
+            result: bsv_rs::Result<T>,
+            expected: &str,
+        ) {
+            let error = result.expect_err(scenario);
+            assert!(
+                matches!(
+                    error,
+                    bsv_rs::Error::WalletRefusal {
+                        class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                        ..
+                    }
+                ),
+                "{scenario}: {error:?}"
+            );
+            assert_eq!(error.to_string(), expected, "{scenario}");
         }
 
         fn assert_field_recovery_error(
@@ -4835,7 +4867,8 @@ mod tests {
 
                 #[cfg(feature = "sqlite")]
                 async fn assert_gate_error(&self, expected: &str) {
-                    self.assert_gate_errors(expected, expected).await;
+                    assert_wallet_error("create_keyring_for_verifier", self.create(), expected);
+                    assert_wallet_error("prove_certificate", self.prove().await, expected);
                 }
 
                 #[cfg(feature = "sqlite")]
@@ -4843,7 +4876,7 @@ mod tests {
                     let direct = self.create();
                     let door = self.prove().await;
                     assert_wallet_error("create_keyring_for_verifier", direct, helper_error);
-                    assert_wallet_error("prove_certificate", door, argument_error);
+                    assert_argument_refusal("prove_certificate", door, argument_error);
                 }
             }
 
@@ -4880,18 +4913,28 @@ mod tests {
                 // Trimming changes the lookup argument. Nonzero pad bits still
                 // pass the argument validator and reach the helper's gate.
                 let errors = [
-                    encoding_error,
-                    encoding_error,
-                    encoding_error,
-                    "Certificate not found with the provided arguments",
-                    "Certificate not found with the provided arguments",
-                    "Certificate serial number must use canonical base64 encoding",
-                    encoding_error,
+                    (encoding_error, true),
+                    (encoding_error, true),
+                    (encoding_error, true),
+                    ("Certificate not found with the provided arguments", false),
+                    ("Certificate not found with the provided arguments", false),
+                    (
+                        "Certificate serial number must use canonical base64 encoding",
+                        false,
+                    ),
+                    (encoding_error, true),
                 ];
-                for (serial, expected) in noncanonical_serials().into_iter().zip(errors) {
+                for (serial, (expected, invalid_argument)) in
+                    noncanonical_serials().into_iter().zip(errors)
+                {
                     let mut request = Request::valid();
                     request.serial = serial;
-                    assert_wallet_error(&request.serial, request.prove().await, expected);
+                    let result = request.prove().await;
+                    if invalid_argument {
+                        assert_argument_refusal(&request.serial, result, expected);
+                    } else {
+                        assert_wallet_error(&request.serial, result, expected);
+                    }
                 }
             }
 
@@ -5022,7 +5065,7 @@ mod tests {
                     let mut request = Request::new();
                     request.reveal = vec![name.clone()];
                     assert_wallet_error("helper name", request.create(), FIELD_NAME_ERROR);
-                    assert_wallet_error(
+                    assert_argument_refusal(
                         "argument name",
                         request.prove().await,
                         &format!("Validation error: The fieldsToReveal {name} parameter must be no more than 50 length."),
@@ -5311,7 +5354,7 @@ mod tests {
                         };
                         let stored_certifier = stored.then_some(certifier);
                         let result = prove(stored_certifier, certifier, verifier, reveal).await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             &format!("{parameter} {bad:?}, stored {stored}, reveal {reveal:?}"),
                             result,
                             &refusal(parameter, must_be),
@@ -5345,7 +5388,7 @@ mod tests {
                 async fn test_prove_certificate_certifier_before_verifier() {
                     // certificate.certifier at 1490-1493 precedes verifier at 1509.
                     let result = prove(None, "abc", "zz", &["name"]).await;
-                    assert_wallet_error(
+                    assert_argument_refusal(
                         "both bad",
                         result,
                         &refusal("certificate.certifier", "even length, not 3."),
@@ -5382,7 +5425,7 @@ mod tests {
                                     args.certificate.subject = bad;
                                 })
                                 .await;
-                                assert_wallet_error(
+                                assert_argument_refusal(
                                     "subject before lookup",
                                     result,
                                     &refusal("certificate.subject", rule),
@@ -5422,7 +5465,7 @@ mod tests {
                                     args.certificate.signature = signature.to_string();
                                 })
                                 .await;
-                                assert_wallet_error(
+                                assert_argument_refusal(
                                     signature,
                                     result,
                                     &refusal("certificate.signature", rule),
@@ -5444,7 +5487,7 @@ mod tests {
                                 args.certificate.signature = signature;
                             })
                             .await;
-                            assert_wallet_error(
+                            assert_argument_refusal(
                                 "scalar at curve order",
                                 result,
                                 &refusal(
@@ -5468,7 +5511,7 @@ mod tests {
                                     args.fields_to_reveal = vec![name.clone()];
                                 })
                                 .await;
-                                assert_wallet_error(
+                                assert_argument_refusal(
                                     "field name before lookup",
                                     result,
                                     &refusal(&format!("fieldsToReveal {name}"), rule),
@@ -5490,7 +5533,7 @@ mod tests {
                                 args.verifier = "abc".to_string();
                             })
                             .await;
-                            assert_wallet_error(
+                            assert_argument_refusal(
                                 "field name before bad verifier",
                                 result,
                                 &refusal(&format!("fieldsToReveal {name}"), rule),
@@ -5516,7 +5559,11 @@ mod tests {
                                     }
                                 })
                                 .await;
-                                assert_wallet_error(parameter, result, &refusal(parameter, rule));
+                                assert_argument_refusal(
+                                    parameter,
+                                    result,
+                                    &refusal(parameter, rule),
+                                );
                             }
                         }
                     }
@@ -5549,7 +5596,7 @@ mod tests {
                                 ("certificate.subject", "even length, not 3."),
                                 ("certificate.signature", "hexadecimal string."),
                             ][stage];
-                            assert_wallet_error(
+                            assert_argument_refusal(
                                 "argument order",
                                 result,
                                 &refusal(parameter, rule),
@@ -5597,7 +5644,7 @@ mod tests {
                             args.verifier = "abc".to_string();
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "reserved name",
                             result,
                             &refusal("verifier", "even length, not 3."),
@@ -5660,7 +5707,11 @@ mod tests {
                                     args.certificate.revocation_outpoint = outpoint.clone();
                                 })
                                 .await;
-                                assert_wallet_error(outpoint, result, &refusal(parameter, rule));
+                                assert_argument_refusal(
+                                    outpoint,
+                                    result,
+                                    &refusal(parameter, rule),
+                                );
                             }
                         }
                     }
@@ -5674,7 +5725,7 @@ mod tests {
                             args.certificate.signature = "zz".to_string();
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "subject before outpoint",
                             result,
                             &refusal("certificate.subject", "even length, not 3."),
@@ -5685,7 +5736,7 @@ mod tests {
                             args.certificate.signature = "zz".to_string();
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "outpoint before signature",
                             result,
                             &refusal(OUTPOINT, OUTPOINT_SHAPE),
@@ -5833,7 +5884,7 @@ mod tests {
                                     Some("certificate.test"),
                                 )
                                 .await;
-                            assert_wallet_error(&outpoint, result, &refusal(parameter, rule));
+                            assert_argument_refusal(&outpoint, result, &refusal(parameter, rule));
                         }
                         let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM certificates")
                             .fetch_one(wallet.storage().pool())
@@ -5856,7 +5907,7 @@ mod tests {
                                 .insert("__proto__".to_string(), String::new());
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "record bound",
                             result,
                             &refusal("fields", "an object with at most 100000 properties"),
@@ -5868,7 +5919,7 @@ mod tests {
                                 .insert("__proto__".to_string(), String::new());
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "safe keys before names",
                             result,
                             &refusal("fields", "an object with safe string keys"),
@@ -5909,7 +5960,7 @@ mod tests {
                                     args.certificate.certificate_type = "!".to_string();
                                 })
                                 .await;
-                                assert_wallet_error(
+                                assert_argument_refusal(
                                     &format!("field {name:?} before type, stored {stored}"),
                                     result,
                                     &refusal(parameter, rule),
@@ -5924,7 +5975,7 @@ mod tests {
                                 .insert(String::new(), "YQ==".to_string());
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "privilege before fields",
                             result,
                             &refusal("privilegedReason", "a value when 'privileged' is true"),
@@ -5944,7 +5995,7 @@ mod tests {
                                     args.privileged_reason = Some(reason.clone());
                                 })
                                 .await;
-                                assert_wallet_error(
+                                assert_argument_refusal(
                                     &reason,
                                     result,
                                     &refusal("privilegedReason", rule),
@@ -5976,7 +6027,7 @@ mod tests {
                                 args.privileged_reason = Some("abcd".to_string());
                             })
                             .await;
-                            assert_wallet_error(
+                            assert_argument_refusal(
                                 "reason before certificate arguments",
                                 result,
                                 &refusal("privilegedReason", "at least 5 length."),
@@ -5989,7 +6040,7 @@ mod tests {
                                 args.privileged_reason = Some("abcd".to_string());
                             })
                             .await;
-                            assert_wallet_error(
+                            assert_argument_refusal(
                                 "reason before count and uniqueness",
                                 result,
                                 &refusal("privilegedReason", "at least 5 length."),
@@ -6010,7 +6061,7 @@ mod tests {
                                 args.verifier = "abc".to_string();
                             })
                             .await;
-                            assert_wallet_error("privileged without reason", result, &rule);
+                            assert_argument_refusal("privileged without reason", result, &rule);
                         }
                         // The length rule at 212-217 precedes the missing-value rule.
                         let result = prove_args(false, |args| {
@@ -6018,7 +6069,7 @@ mod tests {
                             args.privileged_reason = Some("abcd".to_string());
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "length before missing value",
                             result,
                             &refusal("privilegedReason", "at least 5 length."),
@@ -6054,7 +6105,7 @@ mod tests {
                                     args.fields_to_reveal = reveal;
                                 })
                                 .await;
-                                assert_wallet_error("count and uniqueness", result, expected);
+                                assert_argument_refusal("count and uniqueness", result, expected);
                             }
                         }
                         let result = prove_args(false, |args| {
@@ -6073,7 +6124,7 @@ mod tests {
                                 args.verifier = "abc".to_string();
                             })
                             .await;
-                            assert_wallet_error(
+                            assert_argument_refusal(
                                 "verifier before count and uniqueness",
                                 result,
                                 &refusal("verifier", "even length, not 3."),
@@ -6084,7 +6135,7 @@ mod tests {
                                 args.fields_to_reveal = with_bad_name;
                             })
                             .await;
-                            assert_wallet_error(
+                            assert_argument_refusal(
                                 "field name before count and uniqueness",
                                 result,
                                 &refusal("fieldsToReveal ", "at least 1 length."),
@@ -6109,7 +6160,7 @@ mod tests {
                                     args.fields_to_reveal = reveal;
                                 })
                                 .await;
-                                assert_wallet_error("item limit", result, &limit);
+                                assert_argument_refusal("item limit", result, &limit);
                             }
                         }
                         // certificate.signature at 1502-1505 precedes the bound.
@@ -6118,7 +6169,7 @@ mod tests {
                             args.fields_to_reveal = names(100_001);
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "signature before item limit",
                             result,
                             &refusal("certificate.signature", "hexadecimal string."),
@@ -6129,7 +6180,7 @@ mod tests {
                             args.fields_to_reveal = names(100_001);
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "reason before item limit",
                             result,
                             &refusal("privilegedReason", "at least 5 length."),
@@ -6140,13 +6191,13 @@ mod tests {
                             args.verifier = "abc".to_string();
                         })
                         .await;
-                        assert_wallet_error("item limit before verifier", result, &limit);
+                        assert_argument_refusal("item limit before verifier", result, &limit);
                         // 100000 items pass the bound and meet the count at 1513.
                         let result = prove_args(false, |args| {
                             args.fields_to_reveal = names(100_000);
                         })
                         .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             "100000 items pass the bound",
                             result,
                             &refusal("fieldsToReveal", "at most 100 fields"),
@@ -6240,7 +6291,7 @@ mod tests {
                         let result = Request::valid()
                             .prove_with(Some(&certifier), &certifier_arg, &verifier_arg)
                             .await;
-                        assert_wallet_error(
+                        assert_argument_refusal(
                             parameter,
                             result,
                             &refusal(parameter, "hexadecimal string."),

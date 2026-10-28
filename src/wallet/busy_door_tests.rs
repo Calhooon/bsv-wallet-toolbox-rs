@@ -1,6 +1,6 @@
 //! A busy store at the `WalletInterface` boundary (bsv-wallet-cli #44): a
 //! `StoreBusy` from the store surfaces as bsv-rs's `WalletBusy` at every door
-//! that writes, and every other store error keeps its exact `WalletError`
+//! that writes, and other store errors keep their class and exact
 //! text. The writer is held through `write_tx`, so the door waits the store's
 //! ceiling (5 s) and answers busy having written nothing.
 
@@ -590,8 +590,7 @@ async fn create_action_busy_in_the_process_step_writes_nothing() {
     assert_eq!(status, "nosend");
 }
 
-/// A store error that is not busy keeps the exact text the erasure sites
-/// gave: `WalletError` with the toolbox Display.
+/// A missing action is an invalid-parameter refusal with the toolbox text.
 #[tokio::test]
 async fn a_store_error_that_is_not_busy_keeps_its_wallet_error_text() {
     let (_dir, wallet) = wallet().await;
@@ -605,11 +604,14 @@ async fn a_store_error_that_is_not_busy_keeps_its_wallet_error_text() {
         .await
         .unwrap_err();
     match err {
-        bsv_rs::Error::WalletError(text) => assert_eq!(
+        bsv_rs::Error::WalletRefusal {
+            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+            message: text,
+        } => assert_eq!(
             text,
             "Entity not found: transaction with id reference or txid 'no-such-action'"
         ),
-        other => panic!("expected WalletError, got {other:?}"),
+        other => panic!("expected InvalidParameter, got {other:?}"),
     }
 }
 
@@ -782,7 +784,10 @@ async fn create_action_offering_spends_only_the_offer() {
             .create_action_offering(labelled_payment(true), Some(ORIGINATOR), offer, &[])
             .await
         {
-            Err(bsv_rs::Error::WalletError(text)) => {
+            Err(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InsufficientFunds,
+                message: text,
+            }) => {
                 assert!(text.starts_with("Insufficient funds: "), "{text}")
             }
             other => panic!("expected the shortfall, got {other:?}"),

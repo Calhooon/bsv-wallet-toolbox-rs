@@ -65,8 +65,11 @@ fn args(certifier: String, url: String) -> AcquireCertificateArgs {
 
 fn assert_wallet_error(result: bsv_rs::Result<WalletCertificate>, expected: &str) {
     match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, expected),
-        other => panic!("expected WalletError({expected:?}), got {other:?}"),
+        Err(bsv_rs::Error::WalletRefusal {
+            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+            message,
+        }) => assert_eq!(message, expected),
+        other => panic!("expected InvalidParameter({expected:?}), got {other:?}"),
     }
 }
 
