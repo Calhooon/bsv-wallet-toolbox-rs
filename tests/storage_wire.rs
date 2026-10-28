@@ -1,6 +1,9 @@
 //! Recorded JSON-RPC requests from the actual storage client, without signing.
 #![cfg(feature = "remote")]
 
+#[path = "fixtures/internalize_order.rs"]
+mod internalize_order;
+
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
