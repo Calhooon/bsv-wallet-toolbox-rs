@@ -3,7 +3,10 @@
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
-use bsv_rs::wallet::*;
+use bsv_rs::wallet::{
+    CreateActionArgs, CreateActionOptions, InternalizeActionArgs, InternalizeOutput, ProtoWallet,
+    WalletInterface, WalletPayment,
+};
 use bsv_rs::WalletRefusalClass;
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{StorageClient, Wallet};
@@ -101,31 +104,18 @@ async fn internalize_refusal_order_wire_fixture() {
         .expect(0)
         .create_async()
         .await;
-    let proto = ProtoWallet::new(Some(PrivateKey::from_bytes(&[7; 32]).unwrap()));
-    let derived = proto
-        .key_deriver()
-        .derive_public_key(
-            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
-            "cHJlZml4 c3VmZml4",
-            &Counterparty::Other(bsv_rs::primitives::PublicKey::from_hex(SENDER).unwrap()),
-            true,
-        )
-        .unwrap();
     for case in fixture["cases"].as_array().unwrap() {
         let mut args = payment();
         args.labels = Some(vec![
             case["label"].as_str().unwrap().to_string();
-            case["count"].as_u64().unwrap() as usize
+            usize::try_from(case["count"].as_u64().unwrap())
+                .unwrap()
         ]);
         let error = wallet.internalize_action(args, None).await.unwrap_err();
         match error {
             bsv_rs::Error::WalletRefusal { class, message } => {
                 assert_eq!(class, WalletRefusalClass::InvalidParameter);
-                let expected = case["message"]
-                    .as_str()
-                    .unwrap()
-                    .replace("<derived>", &hex::encode(derived.hash160()))
-                    .replace("<script>", &"00".repeat(20));
+                let expected = case["message"].as_str().unwrap();
                 assert_eq!(message, expected, "{}", case["name"]);
             }
             other => panic!("unexpected refusal: {other:?}"),
