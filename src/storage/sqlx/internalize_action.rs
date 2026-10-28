@@ -738,7 +738,7 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
     // internalizeAction once the arguments are valid (ts-stack@edf6e03
     // Wallet.ts:1248-1250, `startsWith` at brc177NoSendExpiry.ts:119), so it
     // never lands as metadata on an incoming action. The label is matched
-    // as the SDK's validateLabel leaves it, trimmed and lowercased
+    // as the SDK's validateLabel leaves it, trimmed with ECMAScript's whitespace set and lowercased
     // (validationHelpers.ts:1054).
     if has_brc177_no_send_label(args.labels.as_deref()) {
         return Err(Error::ValidationError(BRC177_INCOMING_REFUSAL.to_string()));
