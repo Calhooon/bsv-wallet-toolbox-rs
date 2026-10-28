@@ -249,3 +249,20 @@ async fn derivation_mismatch_answers_ahead_of_the_nosend_refusal_through_wallet_
     );
     assert_internalize_refused(&wallet, args, &text).await;
 }
+
+/// #380: validateStringLength(args.description, 'description', 5, 2000)
+/// (ts-stack@edf6e03 validationHelpers.ts:1053) answers ahead of the labels
+/// (1054); the wallet serves the store's text.
+#[tokio::test]
+async fn short_description_answers_ahead_of_an_over_long_label_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    let long = "a".repeat(301);
+    let mut args = insertion_labelled(&[&long]);
+    args.description = "abcd".to_string();
+    assert_internalize_refused(
+        &wallet,
+        args,
+        "Validation error: The description parameter must be at least 5 length.",
+    )
+    .await;
+}

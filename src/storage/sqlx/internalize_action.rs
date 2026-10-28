@@ -4217,3 +4217,7 @@ mod nosend_tests;
 #[cfg(test)]
 #[path = "internalize_remittance_tests.rs"]
 mod remittance_tests;
+
+#[cfg(test)]
+#[path = "internalize_description_tests.rs"]
+mod description_tests;
