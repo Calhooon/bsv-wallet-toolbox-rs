@@ -94,6 +94,20 @@
 
 ### Fixed
 
+- #365: internalizeAction bounds every label as the reference's validateLabel
+  does (ts-stack@edf6e03 `validationHelpers.ts:385-387, 409-417`, mapped at
+  1054): 1 to 300 UTF-8 bytes once trimmed and lowercased, refused with
+  `The label parameter must be no more than 300 length.` or
+  `The label parameter must be at least 1 length.` (through
+  `WalletInterface`, a `WalletError` reading `Validation error: ` and that
+  text), ahead of the BRC-177 refusal of #357 as `Wallet.ts:1248-1250` orders
+  them. A request carrying a `p nosend ` label beside an over-long label
+  answered the BRC-177 text; a lone over-long or empty label was stored. This
+  is a new refusal of input that succeeded before. Through `WalletInterface`
+  a wallet payment whose derivation locks nothing still answers the wallet's
+  `Derivation mismatch for output <i>: ...` ahead of every door refusal, the
+  BRC-177 text included (the divergence row D12 in `docs/ARCHITECTURE.md`).
+
 - #337: `internalize_action` refuses an output carrying the other protocol's
   remittance ahead of the remittance's fields, as the reference does
   (ts-stack@edf6e03 `validationHelpers.ts:971-976`, one remittance per
