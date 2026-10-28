@@ -276,12 +276,27 @@ jobs:
           tool: cargo-semver-checks
 
       # HEAD^: the last tag before this commit, never a tag on the commit itself.
+      # The api-break switch: on a pull request, the PR's own label; on a push,
+      # whether any PR merged into this branch since the baseline tag carried
+      # the label, because a line collects its owner-worded breaks until its
+      # next tag and every push run compares the whole tree against that tag
+      # (the pin PR #391 landed with the label and the push run read none).
       - name: Check the public API against the last release
         env:
-          API_BREAK: ${{ contains(github.event.pull_request.labels.*.name, 'api-break') }}
+          PR_API_BREAK: ${{ contains(github.event.pull_request.labels.*.name, 'api-break') }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^)"
+          API_BREAK="$PR_API_BREAK"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            since="$(git log -1 --format=%cI "$base")"
+            branch="${GITHUB_REF_NAME}"
+            labelled="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base "$branch" --label api-break \
+              --search "merged:>=${since}" --json number --jq 'length')"
+            if [ "${labelled:-0}" -gt 0 ]; then API_BREAK=true; fi
+            echo "push run: ${labelled:-0} api-break PR(s) merged into ${branch} since ${base} (${since})" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "bsv-wallet-toolbox-rs") | .version')"
           # The release type the version names: minor or major above the baseline's
           # (0.x: the minor is the breaking release) is a major check; the same

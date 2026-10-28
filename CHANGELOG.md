@@ -73,6 +73,12 @@
   own README badge; `nightly-mutants.yml` is `mutants.yml` (`Mutants`). A
   cancelled push run (a newer landing's push supersedes it) is never a red.
   The required contexts and release.yml's tag run are unchanged.
+- CI: the semver job's api-break switch reads, on a push run, whether any
+  pull request merged into the branch since the baseline tag carried the
+  `api-break` label (a line collects its owner-worded breaks until its next
+  tag, and every push run compares the whole tree against that tag); it
+  read the pull request's own label alone, so beta's push run at the pin
+  a3cc155 went red on breaks the landed PR #391 carried the label for.
 - CI: the Test Suite job runs `tools/arch-doc-tests.sh` after the unit and
   integration tests, the `--lib` rows with the unit-test step's features and
   the `--test` rows with the integration step's (`ARCH_DOC_LIB_FEATURES`,
