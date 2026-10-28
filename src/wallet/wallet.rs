@@ -1963,9 +1963,7 @@ where
         validate_originator(originator)?;
 
         // Convert interface args to proto_wallet args
-        use bsv_rs::wallet::{
-            Counterparty, RevealSpecificKeyLinkageArgs as ProtoRevealSpecificArgs,
-        };
+        use bsv_rs::wallet::RevealSpecificKeyLinkageArgs as ProtoRevealSpecificArgs;
 
         let proto_args = ProtoRevealSpecificArgs {
             counterparty: args.counterparty.clone(),
@@ -1980,11 +1978,10 @@ where
         let prover = PublicKey::from_hex(&result.prover)
             .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid prover key: {}", e)))?;
 
-        // Counterparty may be "self" or "anyone" - handle gracefully
-        let counterparty_key = match &args.counterparty {
-            Counterparty::Self_ | Counterparty::Anyone => self.proto_wallet.identity_key(),
-            Counterparty::Other(pk) => pk.clone(),
-        };
+        // The inherent result carries the compressed counterparty key since
+        // bsv-rs #427, including the distinct key for Anyone.
+        let counterparty_key = PublicKey::from_hex(&result.counterparty)
+            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid counterparty key: {}", e)))?;
 
         Ok(RevealSpecificKeyLinkageResult {
             linkage: KeyLinkageResult {
