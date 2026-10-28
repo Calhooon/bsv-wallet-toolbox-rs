@@ -32,6 +32,20 @@
   The remaining direct SDK errors are local faults or the reference's plain
   helper errors, documented with their reasons under #185.
 
+- #374: Direct `Wallet::acquire_certificate` now refuses a certificate whose
+  signature does not verify, a keyring this wallet cannot open, and a field
+  value over bsv-rs's 1 MiB bound, before any storage write. It previously
+  stored these after argument validation. The refusal is
+  `WalletError("Validation error: The args parameter must be valid encrypted and signed certificate and keyring from revealer. <name>: <message>")`.
+  A false signature ends in `WERR_UNKNOWN: Certificate verification failed`;
+  an undecryptable keyring in `CertificateValidationError: Failed to decrypt all master certificate fields.`
+  Constructor and decryption suffixes use bsv-rs's `CertificateValidationError`
+  name instead of the reference's `WERR_UNKNOWN`, preserving the inner
+  message; conversion faults name the Rust error variant (`bsv_rs::Error`
+  and Display text for an unexpected variant). Stored encrypted fields and
+  keyring entries retain their input values. Hosts, including the CLI, must
+  supply signed certificates and usable keyrings on direct acquisition.
+
 - #185: the authenticated storage client's response-wait timeout now carries
   `Error::SdkError(bsv_rs::Error::TransportFault)` with
   `MayHaveBeenReceived`, no status and the existing `Request timed out` detail.

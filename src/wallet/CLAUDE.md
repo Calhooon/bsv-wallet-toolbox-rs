@@ -224,7 +224,7 @@ response-channel closure remain; neither is reclassified by matching text.
 | `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1430 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
 | `certificate_issuance_auth.rs` | ~130 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
-| `direct_acquire.rs` | ~120 | `validateAcquireDirectCertificateArgs` for the direct `acquire_certificate` (#311) |
+| `direct_acquire.rs` | ~210 | Direct `acquire_certificate` argument validation and normalization, signature verification and keyring decryption proof before storage (#311, #374) |
 | `lookup.rs` | ~610 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication |
 
 ## Key Exports
@@ -466,7 +466,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 
 | Method | Description |
 |--------|-------------|
-| `acquire_certificate` | Acquire identity certificate (direct or issuance protocol); a direct acquire validates and normalizes its arguments in the reference's order before storing (#291, #311) |
+| `acquire_certificate` | Acquire identity certificate (direct or issuance protocol); direct acquisition validates and normalizes arguments, verifies the signature and proves the keyring by decrypting every field before storing the encrypted values (#291, #311, #374) |
 | `list_certificates` | List certificates by certifier/type |
 | `prove_certificate` | Prove certificate fields to verifier by creating a verifier-specific keyring |
 | `relinquish_certificate` | Remove certificate from wallet |
@@ -727,6 +727,7 @@ Internal helper functions in `wallet.rs`:
 | `compute_txid(raw_tx: &[u8])` | Computes txid (double SHA256, reversed) from raw transaction |
 | `build_unsigned_transaction(result, key_deriver)` | Builds unsigned transaction bytes from storage result; optionally derives P2PKH locking scripts for change outputs via BRC-29 |
 | `direct_acquire::validate_acquire_direct_args(args)` | The direct acquire's argument checks (`validationHelpers.ts:1405-1439`) and the normalized certificate, verifier and keyring (#311) |
+| `direct_acquire::verify_acquire_direct(wallet, certificate, keyring, args, originator)` | Builds a `MasterCertificate`, verifies its signature and decrypts all fields through the acquiring wallet before storage (`Wallet.ts:705-731`); discards the plaintext (#374) |
 | `create_keyring_for_verifier(...)` | Creates verifier-specific keyring for selective field disclosure (BRC-52/53) |
 | `address_to_p2pkh_script(address: &str)` | Decodes Base58Check BSV address to P2PKH locking script bytes (used by `sweep_to_address`) |
 
@@ -1111,9 +1112,34 @@ The row stores the normalized values (type and serial trimmed, certifier and
 signature lowercased) and `verifier` is the normalized certifier for
 `Certifier`, else the revealer's key (`acquireDirectCertificate.ts:19`).
 A map's names are walked in sorted order where the reference walks
-`Object.keys` (`docs/ARCHITECTURE.md` D12). The toolbox's own checks after the
-validator, the signature verification and the field decryption
-(`Wallet.ts:705-728`), are not ported: #374. Tests: `direct_acquire_tests.rs`.
+`Object.keys` (`docs/ARCHITECTURE.md` D12).
+
+For #374, after validation and before storage, the direct arm builds bsv-rs's
+`MasterCertificate` from those normalized values, requires `verify()` to
+succeed, then calls `decrypt_fields` through `self` as a `WalletInterface`,
+with the certificate's certifier, `privileged`, `privilegedReason` and the
+call's originator. This is the reference's `Wallet.ts:705-731` proof: every
+field must open with this wallet's keys. The plaintext is discarded; the
+stored encrypted fields, keyring entries and verifier retain their values.
+No storage write lock is held during the proof. The constructor's field and
+keyring checks and `verify`'s serialized field bound apply: a field value
+over 1 MiB is refused before storage.
+
+The wrapper uses the existing `WalletError("Validation error: ...")` form
+for `WERR_INVALID_PARAMETER('args', ...)`, with the exact message prefix
+`The args parameter must be valid encrypted and signed certificate and keyring from revealer. `
+(`sdk/WERR_errors.ts:100-105`). A false signature ends in
+`WERR_UNKNOWN: Certificate verification failed`, as the reference's
+`WalletError.fromUnknown(new Error(...))` does. Constructor and decrypt
+failures use `CertificateValidationError: <message>` in the suffix, the
+bsv-rs variant name instead of JavaScript's normalized `WERR_UNKNOWN`;
+its message is preserved without the Rust Display prefix. An undecryptable
+keyring ends in `CertificateValidationError: Failed to decrypt all master certificate fields.`
+Conversion faults similarly name `InvalidBase64`, `InvalidHex`,
+`InvalidPublicKey` or `InvalidDataLength`; an unexpected SDK variant uses
+`bsv_rs::Error` and its Display text. The tests build encrypted, signed
+certificates with `MasterCertificate::issue_for_subject`, the SDK equivalent
+of `issueCertificateForSubject`. Tests: `direct_acquire_tests.rs`.
 
 `prove_certificate` checks the argument's `certificate.fields` after
 `validatePrivilege` and ahead of `certificate.type`
