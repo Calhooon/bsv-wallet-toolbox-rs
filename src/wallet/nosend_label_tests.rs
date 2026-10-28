@@ -330,3 +330,56 @@ async fn door_payment_texts_are_served_through_wallet_interface() {
     )
     .await;
 }
+
+/// The payment fixture on a P2PKH output paying the wallet's own key for
+/// counterparty self under `cHJlZml4 c3VmZml4`, its sender as given.
+fn own_payment(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    sender: &str,
+) -> InternalizeActionArgs {
+    let mut args = payment_of("cHJlZml4", "c3VmZml4", sender);
+    args.tx = atomic_beef_paying(&hex::encode(own_lock(wallet)));
+    args
+}
+
+/// #377, D13 until #376: on a P2PKH output the wallet parses the sender
+/// ahead of the store, so a sender the door would refuse with the
+/// reference's hex text answers in the wallet's own words.
+#[tokio::test]
+async fn invalid_sender_on_p2pkh_answers_the_wallet_text_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    let args = own_payment(&wallet, "sender_key");
+    assert_internalize_refused(
+        &wallet,
+        args,
+        "Invalid sender_identity_key: invalid hex string: Invalid character 's' at position 0",
+    )
+    .await;
+}
+
+/// #377: the wallet reads an empty sender as counterparty self on a P2PKH
+/// output, so a payment to its own self-derived key passes the derivation
+/// check and the door refuses the empty sender with the hex text
+/// (validationHelpers.ts:525-528); on a P2PKH output paying another key it
+/// answers the wallet's derivation mismatch.
+#[tokio::test]
+async fn empty_sender_on_p2pkh_answers_the_door_hex_text_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    let args = own_payment(&wallet, "");
+    assert_internalize_refused(
+        &wallet,
+        args,
+        "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
+    )
+    .await;
+
+    let other = format!("76a914{}88ac", "00".repeat(20));
+    let mut args = payment_of("cHJlZml4", "c3VmZml4", "");
+    args.tx = atomic_beef_paying(&other);
+    let text = format!(
+        "Derivation mismatch for output 0: derived {} != script {}",
+        hex::encode(&own_lock(&wallet)[3..23]),
+        "00".repeat(20)
+    );
+    assert_internalize_refused(&wallet, args, &text).await;
+}
