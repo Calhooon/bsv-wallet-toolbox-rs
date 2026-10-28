@@ -46,6 +46,8 @@
 //! ```
 
 pub mod auth;
+#[cfg(test)]
+mod brc104_bounds_tests;
 mod json_rpc;
 mod storage_client;
 #[cfg(test)]
