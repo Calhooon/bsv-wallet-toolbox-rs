@@ -109,12 +109,22 @@ impl StorageSqlx {
         // Run migrations
         self.run_migrations().await?;
 
+        // The chain is written once, when the row is created: a later
+        // migrate keeps the stored chain, as the reference writes `chain`
+        // only in the migration that inserts the row (KnexMigrations.ts at
+        // ts-stack edf6e03). No constructor takes a Chain yet (#435), so a
+        // new row is mainnet.
+        let chain = match self.read_settings().await? {
+            Some(existing) => existing.chain,
+            None => "mainnet".to_string(),
+        };
+
         // Save settings
         let settings = TableSettings {
             settings_id: 1,
             storage_identity_key: storage_identity_key.to_string(),
             storage_name: storage_name.to_string(),
-            chain: "mainnet".to_string(),
+            chain,
             max_output_script: DEFAULT_MAX_OUTPUT_SCRIPT,
             dbtype: None,
             created_at: Utc::now(),
