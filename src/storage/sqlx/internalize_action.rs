@@ -31,14 +31,6 @@ use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, Validated
 use super::StorageSqlx;
 
 // =============================================================================
-// Constants
-// =============================================================================
-
-/// `MAXIMUM_SEND_WITH_TRANSACTIONS` at validationHelpers.ts:69, sendWith's
-/// own bound in validateSendWith (137).
-pub(super) const MAXIMUM_SEND_WITH_TRANSACTIONS: usize = 1000;
-
-// =============================================================================
 // Internal Types
 // =============================================================================
 

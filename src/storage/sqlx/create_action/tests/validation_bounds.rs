@@ -4,6 +4,7 @@
 //! 1000 at 69), rendered through WERR_INVALID_PARAMETER.ts:14.
 
 use super::*;
+use crate::error::Error;
 use bsv_rs::wallet::{CreateActionInput, CreateActionOptions, CreateActionOutput, Outpoint};
 
 const LIMIT: usize = 100_000;
