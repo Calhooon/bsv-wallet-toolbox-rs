@@ -14,7 +14,10 @@
   `Validation error: The labels parameter must be an array of at most 100000 items`.
   Empty derivation values gain the existing validator's `Validation error: `
   prefix; a malformed or empty sender now reads
-  `Validation error: The senderIdentityKey parameter must be <mustBe>`.
+  `Validation error: The senderIdentityKey parameter must be <mustBe>` where
+  a malformed sender read `Invalid sender_identity_key: <detail>` and an empty
+  sender on a P2PKH output paying another key read the derivation mismatch
+  text above.
   Refusals remain `WalletRefusal` with class `InvalidParameter`.
   The CLI captain must re-record these replies when taking this change.
 
