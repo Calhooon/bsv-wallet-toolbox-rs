@@ -62,6 +62,7 @@ pub(super) async fn replay_queue_with_witness(
                     };
                     done.push((path, outcome));
                 }
+                lock::dispose(servers).await;
                 done
             },
         )));

@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 tokio::task_local! {
     static REPLAY_WORKER: ();
     static LOCK_WITNESS: Arc<LockWitness>;
+    static DISPOSING_SERVERS: ();
 }
 
 /// Count lock-taking batches and those called while an async worker is polled.
@@ -34,9 +35,18 @@ tokio::task_local! {
 /// inherited by `spawn_blocking`. Scheduling delays cannot change this witness.
 #[derive(Default)]
 pub(super) struct LockWitness {
+    created: AtomicUsize,
     scripts: AtomicUsize,
     batches: AtomicUsize,
     on_worker: AtomicUsize,
+    disposals: Mutex<Vec<(std::thread::ThreadId, bool)>>,
+}
+
+/// Count the instances independently of their disposal path.
+pub(super) fn record_servers_created() {
+    LockWitness::current()
+        .created
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 impl LockWitness {
@@ -71,7 +81,7 @@ pub(super) fn record_script_locks() {
 }
 
 /// Called at the synchronous entry to a batch of server lock operations.
-fn record_server_locks() {
+pub(super) fn record_server_locks() {
     let witness = LockWitness::current();
     witness.batches.fetch_add(1, Ordering::Relaxed);
     if REPLAY_WORKER.try_with(|()| ()).is_ok() {
@@ -103,18 +113,41 @@ pub(super) async fn script(
     mocks
 }
 
-/// A server's drop resets it under its lock: off the runtime's workers too.
+/// Dispose the whole instance on a blocking thread and await its lock release.
+/// The disposal scope keeps `Drop` from spawning another, unawaited task.
+pub(super) async fn dispose(servers: Servers) {
+    let witness = LockWitness::current();
+    tokio::task::spawn_blocking(move || {
+        LOCK_WITNESS.sync_scope(witness, || {
+            DISPOSING_SERVERS.sync_scope((), || drop(servers));
+        });
+    })
+    .await
+    .expect("the servers' blocking disposal task");
+}
+
+/// Record disposal at entry, before moving any lock work to another thread.
+/// Callers outside the replay pool retain automatic blocking-pool cleanup.
 impl Drop for Servers {
     fn drop(&mut self) {
+        let entry = (
+            std::thread::current().id(),
+            REPLAY_WORKER.try_with(|()| ()).is_ok(),
+        );
+        let witness = LockWitness::current();
+        witness.disposals.lock().unwrap().push(entry);
         let servers = std::mem::take(&mut self.0);
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let witness = LockWitness::current();
-            runtime.spawn_blocking(move || {
-                LOCK_WITNESS.sync_scope(witness, || {
-                    record_server_locks();
-                    drop(servers);
-                });
+        let release = move || {
+            LOCK_WITNESS.sync_scope(witness, || {
+                record_server_locks();
+                drop(servers);
             });
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) if DISPOSING_SERVERS.try_with(|()| ()).is_err() => {
+                runtime.spawn_blocking(release);
+            }
+            _ => release(),
         }
     }
 }
@@ -131,10 +164,27 @@ async fn late_fault_msecs(company: Vec<pool::Scene>, workers: usize) -> u64 {
     let witness = Arc::new(LockWitness::default());
     let replayed = pool::replay_queue_with_witness(scenes, workers, Arc::clone(&witness)).await;
     let (batches, on_worker) = witness.counts();
+    let created = witness.created.load(Ordering::Relaxed);
+    let disposals = witness.disposals.lock().unwrap();
+    let disposed_on_worker = disposals.iter().filter(|(_, on_worker)| *on_worker).count();
     eprintln!("server lock batches: {batches} checked, {on_worker} on runtime workers ({workers} replay workers)");
-    assert!(
-        witness.scripts.load(Ordering::Relaxed) >= scripted,
-        "each scene's script must be witnessed"
+    eprintln!("server disposals: {} of {created} created, {disposed_on_worker} on runtime workers: {disposals:?}", disposals.len());
+    assert_eq!(created, workers, "each replay worker must create servers");
+    assert_eq!(
+        disposals.len(),
+        created,
+        "every created Servers instance must enter Drop before the replay returns"
+    );
+    assert_eq!(
+        disposed_on_worker, 0,
+        "Servers entered Drop on a runtime worker: {disposals:?}"
+    );
+    let scripts = witness.scripts.load(Ordering::Relaxed);
+    assert!(scripts >= scripted, "each scene's script must be witnessed");
+    assert_eq!(
+        batches,
+        scripts + created,
+        "each script and disposal must witness its server lock batch"
     );
     assert_eq!(
         on_worker, 0,
@@ -155,11 +205,12 @@ async fn late_fault_msecs(company: Vec<pool::Scene>, workers: usize) -> u64 {
 
 /// The late scene's recorded fault, replayed in its sorted place among
 /// every fixture on the default workers, and the same scene on one worker.
-/// Both replays must take every server lock off the runtime workers. The
+/// Both replays must take every server lock and dispose every instance off
+/// the runtime workers, awaiting disposal before checking the witness. The
 /// timings remain diagnostics: a loaded runner can delay either reading
 /// without a lock wait (2587 against 2001 ms in run 40671013907, #410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ladder_fixtures_replay_times_match_a_single_worker() {
+async fn ladder_fixtures_server_locks_and_disposals_stay_off_runtime_workers() {
     let company: Vec<pool::Scene> = fixture_files().into_iter().map(pool::load).collect();
     let pooled = late_fault_msecs(company, WORKERS).await;
     let alone = late_fault_msecs(Vec::new(), 1).await;

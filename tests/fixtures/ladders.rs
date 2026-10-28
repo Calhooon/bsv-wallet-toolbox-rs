@@ -445,6 +445,7 @@ impl Servers {
             let server = mockito::Server::new_with_opts_async(mockito::ServerOpts::default()).await;
             servers.push((name, server));
         }
+        lock::record_servers_created();
         Servers(servers)
     }
 
