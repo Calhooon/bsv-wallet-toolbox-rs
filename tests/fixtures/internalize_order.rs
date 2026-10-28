@@ -4,8 +4,9 @@ use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
 use bsv_rs::wallet::{
-    CreateActionArgs, CreateActionOptions, InternalizeActionArgs, InternalizeOutput, ProtoWallet,
-    WalletInterface, WalletPayment,
+    CreateActionArgs, CreateActionInput, CreateActionOptions, CreateActionOutput,
+    InternalizeActionArgs, InternalizeOutput, Outpoint, ProtoWallet, WalletInterface,
+    WalletPayment,
 };
 use bsv_rs::WalletRefusalClass;
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
@@ -124,9 +125,26 @@ async fn internalize_refusal_order_wire_fixture() {
     internalize.assert_async().await;
 }
 
-/// The create validator remains inside sqlx: these requests reach a remote store.
-#[tokio::test]
-async fn create_nosend_labels_reach_remote_storage() {
+fn create_args(labels: Option<Vec<String>>) -> CreateActionArgs {
+    CreateActionArgs {
+        description: "create validation order witness".into(),
+        labels,
+        options: Some(CreateActionOptions {
+            no_send: Some(true),
+            ..Default::default()
+        }),
+        input_beef: None,
+        inputs: None,
+        outputs: None,
+        lock_time: None,
+        version: None,
+    }
+}
+
+/// A create that storage never sees (#416): the wallet's own validator
+/// refuses ahead of any storage call, as ts-stack@edf6e03 Wallet.ts:1154
+/// runs validateCreateActionArgs before createAction reaches storage.
+async fn refused_before_storage(args: CreateActionArgs) -> (WalletRefusalClass, String) {
     let mut server = mockito::Server::new_async().await;
     let wallet = wallet(&mut server).await;
     let create = server
@@ -134,39 +152,94 @@ async fn create_nosend_labels_reach_remote_storage() {
         .match_body(mockito::Matcher::PartialJson(
             json!({"method": "createAction"}),
         ))
-        .with_body_from_request(|request| {
-            let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
-            serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": body["id"],
-                "error": {"code": -32602, "message": "create storage tripwire"}}))
-            .unwrap()
-        })
-        .expect(2)
+        .expect(0)
         .create_async()
         .await;
-    for label in ["p nosend batch", "p nosend expiry seconds 300"] {
-        let error = wallet
-            .create_action(
-                CreateActionArgs {
-                    description: "create validation order witness".into(),
-                    labels: Some(vec![label.into()]),
-                    options: Some(CreateActionOptions {
-                        no_send: Some(true),
-                        ..Default::default()
-                    }),
-                    input_beef: None,
-                    inputs: None,
-                    outputs: None,
-                    lock_time: None,
-                    version: None,
-                },
-                None,
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("create storage tripwire"),
-            "{error}"
-        );
-    }
+    let error = wallet.create_action(args, None).await.unwrap_err();
     create.assert_async().await;
+    match error {
+        bsv_rs::Error::WalletRefusal { class, message } => (class, message),
+        other => panic!("unexpected refusal: {other:?}"),
+    }
+}
+
+/// BRC-177 labels are refused by the wallet: the grammar's text for a
+/// malformed one (Wallet.ts:1163), the capability's for a well formed one.
+#[tokio::test]
+async fn create_nosend_labels_refused_before_remote_storage() {
+    for (label, class, message) in [
+        (
+            "p nosend batch",
+            WalletRefusalClass::InvalidParameter,
+            "Validation error: The labels parameter must be exactly one BRC-177 noSend expiry label",
+        ),
+        (
+            "p nosend expiry seconds 300",
+            WalletRefusalClass::InvalidOperation,
+            "Invalid operation: Active storage does not support BRC-177 noSend expiry",
+        ),
+    ] {
+        let refusal = refused_before_storage(create_args(Some(vec![label.into()]))).await;
+        assert_eq!(refusal, (class, message.to_string()), "{label}");
+    }
+}
+
+/// The description (validationHelpers.ts:755) answers ahead of an input's
+/// unlocking script (758, validateCreateActionInput at 595).
+#[tokio::test]
+async fn create_description_refused_before_input_script() {
+    let mut args = create_args(None);
+    args.description = "x".into();
+    args.inputs = Some(vec![CreateActionInput {
+        outpoint: Outpoint {
+            txid: [0x11; 32],
+            vout: 0,
+        },
+        input_description: "create input witness".into(),
+        unlocking_script: Some(Vec::new()),
+        unlocking_script_length: None,
+        sequence_number: None,
+    }]);
+    let refusal = refused_before_storage(args).await;
+    assert_eq!(
+        refusal,
+        (
+            WalletRefusalClass::InvalidParameter,
+            "Validation error: The description parameter must be at least 5 length.".to_string()
+        )
+    );
+}
+
+/// An input's unlocking script (validationHelpers.ts:758, 595) answers ahead
+/// of an output's locking script (759).
+#[tokio::test]
+async fn create_input_script_refused_before_output() {
+    let mut args = create_args(None);
+    args.inputs = Some(vec![CreateActionInput {
+        outpoint: Outpoint {
+            txid: [0x11; 32],
+            vout: 0,
+        },
+        input_description: "create input witness".into(),
+        unlocking_script: Some(Vec::new()),
+        unlocking_script_length: None,
+        sequence_number: None,
+    }]);
+    args.outputs = Some(vec![CreateActionOutput {
+        locking_script: Vec::new(),
+        satoshis: 1_000,
+        output_description: "create output witness".into(),
+        basket: None,
+        custom_instructions: None,
+        tags: None,
+    }]);
+    let refusal = refused_before_storage(args).await;
+    assert_eq!(
+        refusal,
+        (
+            WalletRefusalClass::InvalidParameter,
+            "Validation error: The unlockingScript parameter must be hexadecimal string."
+                .to_string()
+        )
+    );
 }
