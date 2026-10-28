@@ -769,7 +769,7 @@ fn validate_description(description: &str) -> Result<()> {
 /// it before the BRC-177 refusal, as validateInternalizeActionArgs maps the
 /// labels (1054) before Wallet.ts:1248-1250 reads them.
 fn validate_label(label: &str) -> Result<()> {
-    let bytes = label.trim().to_lowercase().len();
+    let bytes = super::label::normalize_label(label).len();
     let mustbe = if bytes < 1 {
         "at least 1 length."
     } else if bytes > 300 {
@@ -786,7 +786,7 @@ fn validate_label(label: &str) -> Result<()> {
 /// over labels normalized as validateLabel leaves them.
 fn has_brc177_no_send_label(labels: Option<&[String]>) -> bool {
     labels.into_iter().flatten().any(|label| {
-        let normalized = label.trim().to_lowercase();
+        let normalized = super::label::normalize_label(label);
         normalized.starts_with(BRC177_NO_SEND_MODULE_PREFIX)
     })
 }

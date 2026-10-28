@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::storage::sqlx::internalize_action::{
     validate_array_bound, MAXIMUM_SEND_WITH_TRANSACTIONS, MAXIMUM_WALLET_COLLECTION_ITEMS,
 };
+use crate::storage::sqlx::label::normalize_label;
 // =============================================================================
 // Constants
 // =============================================================================
@@ -214,14 +215,15 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
     // brc177NoSendExpiry.ts:119) to createNoSendExpiryAction once the
     // arguments are valid (Wallet.ts:1155-1165), which refuses without the
     // capability. The label is matched as the SDK's validateLabel leaves it,
-    // trimmed and lowercased (validationHelpers.ts:411), and the label
+    // trimmed with ECMAScript's whitespace and lowercased
+    // (validationHelpers.ts:411, #379), and the label
     // grammar answers ahead of the capability (Wallet.ts:1163, #359).
     let labels: Vec<String> = args
         .labels
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .map(|label| label.trim().to_lowercase())
+        .map(|label| normalize_label(label))
         .collect();
     if parse_brc177_no_send_expiry_labels(&labels)? {
         return Err(Error::InvalidOperation(BRC177_UNSUPPORTED.to_string()));
