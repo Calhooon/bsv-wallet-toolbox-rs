@@ -2,9 +2,10 @@
 //! ruling 19.1 (a')). The reference routes any `p nosend ` label to
 //! `createNoSendExpiryAction` (ts-stack@edf6e03 `Wallet.ts:1162-1165`), which
 //! refuses on a store without the capability (`createNoSendExpiryAction.ts:201-203`).
-//! In the port the storage door's validator refuses it
-//! (`create_action/validation.rs`), ahead of any storage write; the wallet
-//! hands it to the caller as `WalletRefusal`, the action unwritten.
+//! In the port the create validator refuses it (`create_args.rs`, run by the
+//! wallet before storage and by the storage door, #416), ahead of any storage
+//! write; the wallet hands it to the caller as `WalletRefusal`, the action
+//! unwritten.
 
 use super::busy_door_tests::{fund_tagged, own_lock, store_snapshot, wallet};
 use super::*;

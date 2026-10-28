@@ -39,6 +39,22 @@
   `Storage error: RPC error <code>: <message>`. The text of each refusal is
   the server's message unchanged. `WERR_INTERNAL`, a name outside the
   whitelist and a malformed error keep the generic RPC text.
+- #416: `Wallet::create_action` runs the create argument checks (description,
+  inputs, outputs, labels, options, the BRC-177 grammar and capability
+  refusal) after the originator check and ahead of its own work, as the
+  reference's `validateCreateActionArgs` runs before storage; the sqlx door
+  runs the same checks. No text changes; what moves in order, for the CLI's
+  replay (CLI #347): through a wallet over `StorageClient`, a bad argument or
+  a `p nosend ` label is refused by the wallet and the remote store sees no
+  `createAction` (a well formed expiry label answers `Invalid operation:
+  Active storage does not support BRC-177 noSend expiry`, class
+  `InvalidOperation`); with a permissions manager, an argument refusal now
+  precedes the spending and basket permission checks; a bad description, or
+  an earlier input's check, beside an input's empty `unlockingScript` or zero
+  `unlockingScriptLength` answers the earlier text where it answered
+  `The unlockingScript parameter must be hexadecimal string.` or
+  `The unlockingScriptLength parameter must be a positive integer.`; a direct
+  `StorageSqlx` create caller now meets those two refusals too.
 
 - #430: `relinquishCertificate` now refuses an unknown or non-unique certificate
   before changing storage. Host TEXT-DIFF for CLI #344: success with
