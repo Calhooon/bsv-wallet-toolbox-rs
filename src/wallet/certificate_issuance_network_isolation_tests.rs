@@ -73,6 +73,8 @@ async fn issuance_client_refuses_non_loopback_redirects() {
     .await
     .unwrap_err()
     .to_string();
-    assert!(error.contains("redirect refused: 307"), "{error}");
+    assert_eq!(error, format!(
+        "Network error: Failed to send request: authentication error: Network error while sending authenticated request to {}/.well-known/auth: fetch failed", server.url()
+    ));
     redirect.assert_async().await;
 }

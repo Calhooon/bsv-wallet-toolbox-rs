@@ -38,20 +38,12 @@ async fn refused_in_send(server: &ServerGuard, words: &str) {
     );
 }
 
-/// A refusal in the send whose words are bsv-rs's own, not the reference's
-/// (bsv-rs #410): the class and the status pinned, not the sentence, so the
-/// text's move to the reference's does not break the witness.
-async fn refused_with_status(server: &ServerGuard, status: Option<u16>) {
-    let error = issue(server).await.unwrap_err().to_string();
-    // The status is matched as a whole number, so a port such as 53071 in
-    // the URL never passes for a 307.
-    let status_present = status.is_none_or(|code| {
-        let code = code.to_string();
-        error
-            .split(|c: char| !c.is_ascii_digit())
-            .any(|token| token == code)
-    });
-    assert!(error.starts_with(SEND_REFUSED) && status_present, "{error}");
+/// The complete SDK refusal, including the toolbox's existing envelope.
+async fn refused_exact(server: &ServerGuard, detail: &str) {
+    assert_eq!(
+        issue(server).await.unwrap_err().to_string(),
+        format!("{SEND_REFUSED}{detail}")
+    );
 }
 
 /// `certifier`'s answer on `/issue`, expected once.
@@ -129,7 +121,7 @@ async fn a_plain_server_writing_the_identity_header_is_refused_before_the_body()
     let handshake = plain(&mut server, "/.well-known/auth", 200, 1).await;
     // No keyring is sent past the handshake.
     let request = plain(&mut server, "/issue", 200, 0).await;
-    refused_with_status(&server, None).await;
+    refused_in_send(&server, "authentication error:").await;
     handshake.assert_async().await;
     request.assert_async().await;
 }
@@ -176,7 +168,9 @@ async fn a_handshake_answered_404_is_refused_with_no_general_request() {
     let mut server = mockito::Server::new_async().await;
     let handshake = plain(&mut server, "/.well-known/auth", 404, 1).await;
     let request = plain(&mut server, "/issue", 200, 0).await;
-    refused_with_status(&server, Some(404)).await;
+    refused_exact(&server, &format!(
+        "authentication error: Received HTTP 404 Not Found from {}/.well-known/auth without valid BSV authentication (response lacked required BSV auth headers) - body preview: {NO_CERTIFICATE}", server.url()
+    )).await;
     handshake.assert_async().await;
     request.assert_async().await;
 }
@@ -234,7 +228,9 @@ async fn a_redirect_on_the_handshake_is_refused() {
     let handshake = plain(&mut server, "/.well-known/auth", 307, 1).await;
     let hop = plain(&mut server, "/elsewhere", 200, 0).await;
     let request = plain(&mut server, "/issue", 200, 0).await;
-    refused_with_status(&server, Some(307)).await;
+    refused_exact(&server, &format!(
+        "authentication error: Network error while sending authenticated request to {}/.well-known/auth: fetch failed", server.url()
+    )).await;
     handshake.assert_async().await;
     hop.assert_async().await;
     request.assert_async().await;
@@ -246,7 +242,44 @@ async fn a_redirect_on_the_signed_request_is_refused() {
     signing_certifier(&mut server).await;
     let request = plain(&mut server, "/issue", 307, 1).await;
     let hop = plain(&mut server, "/elsewhere", 200, 0).await;
-    refused_with_status(&server, Some(307)).await;
+    refused_exact(&server, &format!(
+        "authentication error: Network error while sending authenticated request to {}/issue: fetch failed", server.url()
+    )).await;
     request.assert_async().await;
     hop.assert_async().await;
+}
+
+#[tokio::test]
+async fn malformed_handshake_json_uses_the_reference_words() {
+    let mut server = mockito::Server::new_async().await;
+    let handshake = server
+        .mock("POST", "/.well-known/auth")
+        .with_body("not auth")
+        .expect(1)
+        .create_async()
+        .await;
+    let request = plain(&mut server, "/issue", 200, 0).await;
+    refused_exact(
+        &server,
+        "authentication error: Unexpected token 'o', \"not auth\" is not valid JSON",
+    )
+    .await;
+    handshake.assert_async().await;
+    request.assert_async().await;
+}
+
+#[tokio::test]
+async fn malformed_requested_certificates_are_refused_before_the_issuance_body() {
+    let mut server = mockito::Server::new_async().await;
+    let certifier = signing_certifier(&mut server).await;
+    let request = certifier
+        .general(&mut server, "/issue", 200, Answer::Signed, no_certificate)
+        .with_header("x-bsv-auth-requested-certificates", "not auth")
+        .expect(1)
+        .create_async()
+        .await;
+    refused_exact(&server, &format!(
+        "authentication error: Failed to parse x-bsv-auth-requested-certificates returned by {}/issue: not auth. Unexpected token 'o', \"not auth\" is not valid JSON", server.url()
+    )).await;
+    request.assert_async().await;
 }
