@@ -238,3 +238,91 @@ fn validate_insertion_instructions(args: &InternalizeActionArgs) -> Result<()> {
         other => Error::ValidationError(other.to_string()),
     })
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use crate::services::mock::MockWalletServices;
+    use crate::{StorageSqlx, Wallet, WalletStorageWriter};
+    use bsv_rs::primitives::PrivateKey;
+    use bsv_rs::script::{LockingScript, UnlockingScript};
+    use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
+    use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput, WalletInterface};
+    use bsv_rs::WalletRefusalClass;
+
+    fn payment() -> Vec<u8> {
+        let transaction = |outpoint: String| {
+            let mut tx = Transaction::new();
+            let mut input = TransactionInput::new(outpoint, 0);
+            input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+            tx.inputs.push(input);
+            tx.outputs.push(TransactionOutput {
+                satoshis: Some(1_000),
+                locking_script: LockingScript::from_hex("7551").unwrap(),
+                change: false,
+            });
+            tx
+        };
+        let parent = transaction("11".repeat(32));
+        let child = transaction(parent.id());
+        let txid = child.id();
+        let mut beef = Beef::new();
+        let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent.id(), 100_001));
+        beef.merge_raw_tx(parent.to_binary(), Some(bump));
+        beef.merge_transaction(child);
+        beef.to_binary_atomic(&txid).unwrap()
+    }
+
+    /// bsv-rs #384: the protocol refusal precedes description and labels,
+    /// as validateInternalizeOutput does at ts-stack@edf6e03:968-970.
+    #[tokio::test]
+    async fn unknown_internalize_protocol_precedes_description_and_labels_at_wallet_door() {
+        let root = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("protocol-door", &root.public_key().to_hex())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+        let wallet = Wallet::new(Some(root), storage, MockWalletServices::new())
+            .await
+            .unwrap();
+        let tx = payment();
+        let mut refusals = Vec::new();
+        for (description, labels) in [
+            ("x", None),
+            ("a valid description", None),
+            ("a valid description", Some(vec![String::new()])),
+        ] {
+            let args = InternalizeActionArgs {
+                tx: tx.clone(),
+                outputs: vec![InternalizeOutput {
+                    output_index: 0,
+                    protocol: "foo".to_string(),
+                    payment_remittance: None,
+                    insertion_remittance: None,
+                }],
+                description: description.to_string(),
+                labels,
+                seek_permission: None,
+            };
+            let error = WalletInterface::internalize_action(&wallet, args, None)
+                .await
+                .unwrap_err();
+            eprintln!("description={description:?}: {error}");
+            refusals.push(error);
+        }
+        for error in refusals {
+            assert!(matches!(
+                &error,
+                bsv_rs::Error::WalletRefusal {
+                    class: WalletRefusalClass::InvalidParameter,
+                    ..
+                }
+            ));
+            assert_eq!(
+                error.to_string(),
+                "Validation error: The protocol parameter must be 'basket insertion' or 'wallet payment'"
+            );
+        }
+    }
+}
