@@ -95,6 +95,9 @@ The four reference/status guards in `validate_transaction_for_abort` use
 `Error::into_invalid_parameter`: it wraps the variant's unchanged Display in
 `SdkError(WalletRefusal { class: InvalidParameter, message })`. This is a
 site-specific override, not a change to every `InvalidTransactionStatus`.
+The `SdkError` Display is transparent for an SDK `WalletRefusal`, so the
+storage caller sees the same message too; other SDK errors retain their
+`SDK error: ` prefix.
 `StorageProvider.ts:716-720` raises `WERR_INVALID_PARAMETER` for non-outgoing
 and unabortable actions. The process door instead raises
 `WERR_INVALID_OPERATION` (`storage/methods/processAction.ts:477-478`). The
