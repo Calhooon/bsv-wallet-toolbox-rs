@@ -4,6 +4,20 @@
 
 ### Changed
 
+- #376: `Wallet::internalize_action` validates arguments before the BRC-29
+  derivation check with both local and remote storage; the sqlx door shares
+  the validator. D13 is closed. Host TEXT-DIFF for the CLI replay: a valid
+  remittance with a bad derivation and a `p nosend ` label changes from
+  `Derivation mismatch for output <i>: derived <hash> != script <hash>` to
+  `Validation error: The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests`.
+  A labels-bound breach beside a bad derivation now reads
+  `Validation error: The labels parameter must be an array of at most 100000 items`.
+  Empty derivation values gain the existing validator's `Validation error: `
+  prefix; a malformed or empty sender now reads
+  `Validation error: The senderIdentityKey parameter must be <mustBe>`.
+  Refusals remain `WalletRefusal` with class `InvalidParameter`.
+  The CLI captain must re-record these replies when taking this change.
+
 - #404, #185: toolbox request refusals converted at the `WalletInterface`
   boundary now carry `bsv_rs::Error::WalletRefusal { class, message }`.
   Hosts that matched `WalletError(text)` must match `WalletRefusalClass`;

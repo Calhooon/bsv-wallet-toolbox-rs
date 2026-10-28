@@ -5,13 +5,13 @@
       "name": "nosend with bad derivation",
       "label": "p nosend expiry seconds 300",
       "count": 1,
-      "message": "Derivation mismatch for output 0: derived <derived> != script <script>"
+      "message": "Validation error: The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests"
     },
     {
       "name": "labels bound with bad derivation",
       "label": "label",
       "count": 100001,
-      "message": "Derivation mismatch for output 0: derived <derived> != script <script>"
+      "message": "Validation error: The labels parameter must be an array of at most 100000 items"
     }
   ]
 }

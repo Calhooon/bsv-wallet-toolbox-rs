@@ -184,9 +184,9 @@ async fn assert_internalize_refused(
         .await
         .unwrap_err();
     match error {
-        error @ bsv_rs::Error::WalletRefusal { class, .. } => {
+        bsv_rs::Error::WalletRefusal { class, message } => {
             assert_eq!(class, expected_class);
-            assert_eq!(error.to_string(), text);
+            assert_eq!(message, text);
         }
         other => panic!("refused with another error: {other:?}"),
     }
@@ -206,57 +206,6 @@ async fn over_long_label_answers_ahead_of_the_nosend_refusal_through_wallet_inte
         "Validation error: The label parameter must be no more than 300 length.",
     )
     .await;
-}
-
-/// #365 pair (b), `docs/ARCHITECTURE.md` D13: the reference refuses the
-/// BRC-177 label (Wallet.ts:1248-1250) before its signer finds the
-/// derivation locks nothing (`signer/methods/internalizeAction.ts:84-89`,
-/// "The paymentRemittance parameter must be locked by script conforming to
-/// BRC-29"). The port's wallet checks the derivation ahead of the storage
-/// door, where the label checks live, so the mismatch answers ahead of them.
-#[tokio::test]
-async fn derivation_mismatch_answers_ahead_of_the_nosend_refusal_through_wallet_interface() {
-    use bsv_rs::wallet::{
-        Counterparty, InternalizeOutput, KeyDeriverApi, Protocol, SecurityLevel, WalletPayment,
-    };
-    const SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-
-    let (_dir, wallet) = wallet().await;
-    // The output pays the wallet's key for counterparty self; the payment
-    // names another sender, so the derived key locks nothing of the output.
-    let lock = own_lock(&wallet);
-    let derived = wallet
-        .proto_wallet
-        .key_deriver()
-        .derive_public_key(
-            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
-            "cHJlZml4 c3VmZml4",
-            &Counterparty::Other(PublicKey::from_hex(SENDER).unwrap()),
-            true,
-        )
-        .unwrap();
-    let args = InternalizeActionArgs {
-        tx: atomic_beef_paying(&hex::encode(&lock)),
-        outputs: vec![InternalizeOutput {
-            output_index: 0,
-            protocol: "wallet payment".to_string(),
-            payment_remittance: Some(WalletPayment {
-                derivation_prefix: "cHJlZml4".to_string(),
-                derivation_suffix: "c3VmZml4".to_string(),
-                sender_identity_key: SENDER.to_string(),
-            }),
-            insertion_remittance: None,
-        }],
-        description: "a BRC-177 label test".to_string(),
-        labels: Some(vec!["p nosend expiry seconds 300".to_string()]),
-        seek_permission: None,
-    };
-    let text = format!(
-        "Derivation mismatch for output 0: derived {} != script {}",
-        hex::encode(derived.hash160()),
-        hex::encode(&lock[3..23])
-    );
-    assert_internalize_refused(&wallet, args, WalletRefusalClass::InvalidParameter, &text).await;
 }
 
 /// #380: validateStringLength(args.description, 'description', 5, 2000)
@@ -309,9 +258,9 @@ async fn internalize_output_index_is_an_invalid_parameter_without_writes() {
     .await;
 }
 
-/// #377: the wallet refuses an empty derivationPrefix or derivationSuffix
-/// ahead of the store (D13) in the text of the reference's
-/// validateBase64String (ts-stack@edf6e03 validationHelpers.ts:439-441,
+/// #377, #376: the shared validator refuses an empty derivationPrefix or
+/// derivationSuffix ahead of the script comparison with validateBase64String's
+/// text (ts-stack@edf6e03 validationHelpers.ts:439-441,
 /// 490-491, called at 918-919), the prefix ahead of the suffix.
 #[tokio::test]
 async fn empty_derivation_answers_the_base64_text_through_wallet_interface() {
@@ -320,14 +269,14 @@ async fn empty_derivation_answers_the_base64_text_through_wallet_interface() {
         &wallet,
         payment_of("", "", PAYMENT_SENDER),
         WalletRefusalClass::InvalidParameter,
-        "The derivationPrefix parameter must be valid base64 string",
+        "Validation error: The derivationPrefix parameter must be valid base64 string",
     )
     .await;
     assert_internalize_refused(
         &wallet,
         payment_of("cHJlZml4", "", PAYMENT_SENDER),
         WalletRefusalClass::InvalidParameter,
-        "The derivationSuffix parameter must be valid base64 string",
+        "Validation error: The derivationSuffix parameter must be valid base64 string",
     )
     .await;
 }
@@ -372,27 +321,23 @@ fn own_payment(
     args
 }
 
-/// #377, D13 until #376: on a P2PKH output the wallet parses the sender
-/// ahead of the store, so a sender the door would refuse with the
-/// reference's hex text answers in the wallet's own words.
+/// #376: on a P2PKH output the shared validator refuses an invalid sender
+/// before the wallet parses the key for its script comparison.
 #[tokio::test]
-async fn invalid_sender_on_p2pkh_answers_the_wallet_text_through_wallet_interface() {
+async fn invalid_sender_on_p2pkh_answers_the_argument_text_through_wallet_interface() {
     let (_dir, wallet) = wallet().await;
     let args = own_payment(&wallet, "sender_key");
     assert_internalize_refused(
         &wallet,
         args,
         WalletRefusalClass::InvalidParameter,
-        "Invalid sender_identity_key: invalid hex string: Invalid character 's' at position 0",
+        "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
     )
     .await;
 }
 
-/// #377: the wallet reads an empty sender as counterparty self on a P2PKH
-/// output, so a payment to its own self-derived key passes the derivation
-/// check and the door refuses the empty sender with the hex text
-/// (validationHelpers.ts:525-528); on a P2PKH output paying another key it
-/// answers the wallet's derivation mismatch.
+/// #376: an empty sender has the same argument refusal for both P2PKH
+/// scripts (validationHelpers.ts:525-528), before derivation.
 #[tokio::test]
 async fn empty_sender_on_p2pkh_answers_the_door_hex_text_through_wallet_interface() {
     let (_dir, wallet) = wallet().await;
@@ -408,12 +353,13 @@ async fn empty_sender_on_p2pkh_answers_the_door_hex_text_through_wallet_interfac
     let other = format!("76a914{}88ac", "00".repeat(20));
     let mut args = payment_of("cHJlZml4", "c3VmZml4", "");
     args.tx = atomic_beef_paying(&other);
-    let text = format!(
-        "Derivation mismatch for output 0: derived {} != script {}",
-        hex::encode(&own_lock(&wallet)[3..23]),
-        "00".repeat(20)
-    );
-    assert_internalize_refused(&wallet, args, WalletRefusalClass::InvalidParameter, &text).await;
+    assert_internalize_refused(
+        &wallet,
+        args,
+        WalletRefusalClass::InvalidParameter,
+        "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
+    )
+    .await;
 }
 
 /// #371: a wallet payment with no paymentRemittance, and a basket insertion
@@ -470,4 +416,29 @@ async fn labels_bound_precedes_bad_derivation_through_wallet_interface() {
         "Validation error: The labels parameter must be an array of at most 100000 items",
     )
     .await;
+}
+
+/// Valid arguments still reach the BRC-29 comparison after validation.
+#[tokio::test]
+async fn valid_args_still_refuse_bad_derivation_through_wallet_interface() {
+    use bsv_rs::wallet::{Counterparty, KeyDeriverApi, Protocol, SecurityLevel};
+
+    let (_dir, wallet) = wallet().await;
+    let args = own_payment(&wallet, PAYMENT_SENDER);
+    let derived = wallet
+        .proto_wallet
+        .key_deriver()
+        .derive_public_key(
+            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
+            "cHJlZml4 c3VmZml4",
+            &Counterparty::Other(PublicKey::from_hex(PAYMENT_SENDER).unwrap()),
+            true,
+        )
+        .unwrap();
+    let text = format!(
+        "Derivation mismatch for output 0: derived {} != script {}",
+        hex::encode(derived.hash160()),
+        hex::encode(&own_lock(&wallet)[3..23]),
+    );
+    assert_internalize_refused(&wallet, args, WalletRefusalClass::InvalidParameter, &text).await;
 }

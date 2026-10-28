@@ -9,6 +9,8 @@
 
 For a caller-named stored input, the create door checks change, then the presence of a locking script and integer satoshis, then the live spendability check, including under `options.no_send = true` (#245). In `ts-stack@edf6e03` `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts`, the `:982` gate is disabled by default at `:61`; `markKnownInputsSpent` (`:399-436`, called at `:503`) decides. The port re-reads the stored output under the write lock before marking it spent. A spender with a txid requires double-spend review regardless of its status, including failed; it answers `Error::ReviewActions` (#264, the owner's ruling 18.4), the reference's `WERR_REVIEW_ACTIONS` text `Undelayed createAction or signAction results require review.` with one `doubleSpend` `ReviewActionResult` whose `competing_txs` names the spender (`:503-509`); its `txid` is all zeros for the reference's `''`, and `competing_beef` is absent. Through `WalletInterface` it is bsv-rs's `Error::WalletReviewActions`. A spender without a txid falls through to the output's `spendable` flag. Without a competing txid, an unspendable row uses `Error::ValidationError` with the live `:420-423` text: `The inputs[N] parameter must be spendable output. output <txid>:<vout> appears to have been spent (spendable=false).` Refusal preserves the original spender through a later abort. A pruned script can still be recovered from stored transaction bytes; zero satoshis and an empty stored script count as present. Missing data uses `Error::ValidationError` with `The <txid>.<vout> parameter must be output with valid lockingScript and satoshis`, without a trailing period (`:979-980`, `sdk/WERR_errors.ts:105`). The change guard and its `:972-976` text remain, and the failed-creator guard still applies.
 
+`internalize_action` runs `internalize_args::validate_internalize_action_args` after originator validation and before the spend lock or BRC-29 derivation check (#376). The module is declared without a feature gate in `mod.rs`; the sqlx door calls the same validator at step 0. Outputs and their remittances, customInstructions and tags precede the description, labels bound, each normalized label and the BRC-177 incoming refusal (`ts-stack@edf6e03` `validationHelpers.ts:1052-1054`, `Wallet.ts:1245-1252`). `Error::ValidationError` still crosses the boundary as `WalletRefusal` of class `InvalidParameter`, with `Validation error: ` in its message. The module compiles the existing `storage/sqlx/label.rs` normalization source once through an unconditional path; sqlx imports that module, so local and remote storage use the same checks. The ordering and unchanged storage are covered in `nosend_label_tests.rs`; `tests/storage_wire.rs` also pins the messages through a wallet over remote storage. Create's BRC-177 grammar and capability checks remain at the sqlx door; `create_nosend_labels_reach_remote_storage` records the separate remote gap for a follow-up lane.
+
 This module provides the main `Wallet<S, V>` struct that implements the complete `WalletInterface` trait from `bsv_sdk::wallet`. The Wallet orchestrates three components: `ProtoWallet` for cryptographic operations (key derivation, signing, encryption), a storage backend for persistent state (UTXOs, transactions, certificates), and a services backend for blockchain interaction (broadcasting, merkle proofs, chain height).
 
 ## Error boundary (#404, #185)
@@ -114,7 +116,7 @@ The reference's on-chain abort answers `aborted: false`
 (`StorageProvider.ts:878-889`); a dedicated abort-on-chain variant remains
 an owner's public API decision under #185.
 
-Nine direct SDK constructors now carry classed refusals too, with their
+The direct SDK guards below carry classed refusals too, with their
 message bytes unchanged. Hosts matching `WalletError` at these doors must
 read `WalletRefusalClass`; SDK Display loses the generic `wallet error: `
 prefix, as for the variant mapping above:
@@ -124,7 +126,7 @@ prefix, as for the variant mapping above:
   `NotImplemented`, the reference's `WERR_NOT_IMPLEMENTED`
   (`signer/methods/signAction.ts:57-60`). The port's expired-cache refusal
   uses that missing-session class as a judgement: the reference has no TTL.
-- `internalize_action`'s empty derivation values, output index, invalid
+- `internalize_action`'s output index, invalid
   sender and derivation mismatch are `InvalidParameter`
   (`validationHelpers.ts:439-441,918-920,185-191` and
   `signer/methods/internalizeAction.ts:57-58,88-89`).
@@ -1071,11 +1073,10 @@ requested names read
 (`validateArray` at 105-114, its default bound at 67, called at 1506); 100000
 pass it and meet the count above. No earlier helper bounds the array.
 The reference's other `validateArray` callers (createAction's inputs, outputs,
-labels, output tags, knownTxids and noSendChange; internalizeAction's outputs
-and labels; basket insertion tags; listCertificates' certifiers and types;
+labels, output tags, knownTxids and noSendChange; listCertificates' certifiers and types;
 listOutputs' tags; listActions' labels) validate outside `wallet.rs` in this
 port and are not bounded here. `sendWith` (137) carries its own bound,
-`MAXIMUM_SEND_WITH_TRANSACTIONS` (1000), and is #309's.
+`MAXIMUM_SEND_WITH_TRANSACTIONS` (1000), and is #309's. InternalizeAction's outputs, insertion tags and labels are bounded at both wallet and storage doors by `internalize_args` (#376).
 
 For #291, a direct `acquire_certificate` passes `revocationOutpoint` through
 the same outpoint validator before storing, as `validateAcquireDirectCertificateArgs`

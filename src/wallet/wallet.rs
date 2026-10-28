@@ -2511,35 +2511,11 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<InternalizeActionResult> {
         validate_originator(originator)?;
+        // Validate arguments before the BRC-29 script comparison and storage.
+        super::internalize_args::validate_internalize_action_args(&args)?;
 
         // Serialize spending operations (creates new spendable outputs).
         let _spend_guard = self.spend_lock.lock().await;
-
-        // Validate wallet payment outputs have correct BRC-29 derivation parameters
-        for output in &args.outputs {
-            if let Some(ref payment) = output.payment_remittance {
-                // Validate derivation parameters are present and non-empty, in
-                // the text of the reference's validateBase64String (#377,
-                // ts-stack@edf6e03 validationHelpers.ts:439-441, 490-491)
-                for (value, name) in [
-                    (&payment.derivation_prefix, "derivationPrefix"),
-                    (&payment.derivation_suffix, "derivationSuffix"),
-                ] {
-                    if value.is_empty() {
-                        return Err(bsv_rs::Error::WalletRefusal {
-                            class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                            message: format!("The {name} parameter must be valid base64 string"),
-                        });
-                    }
-                }
-                tracing::debug!(
-                    output_index = output.output_index,
-                    derivation_prefix = %payment.derivation_prefix,
-                    derivation_suffix = %payment.derivation_suffix,
-                    "Validated BRC-29 derivation parameters for wallet payment output"
-                );
-            }
-        }
 
         // Validate derivation metadata matches locking scripts (death spiral prevention).
         // If the derived key doesn't match the script, this UTXO can never be signed.
