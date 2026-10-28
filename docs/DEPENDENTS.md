@@ -98,7 +98,7 @@ the input and the clone line, not the pin.
 ### Re-pin plan
 
 The toolbox's #419 pin moves this tree to `bsv-rs =0.9.0-beta.3` in both
-workspaces and locks. CLI #338 takes that SDK version with the next toolbox
+workspaces; the lock files stay untracked (the pin does not force tracking them). CLI #338 takes that SDK version with the next toolbox
 prerelease; the CLI row above records its existing published beta.2 pin,
 not a completed beta.3 migration. The `[Unreleased]` host notes list the
 ordered maps, validator and transport words, linkage keys, and the default
