@@ -451,13 +451,22 @@ Wire format for certificates returned from overlay SLAP/SHIP services. Fields: `
 - `to_identity_certificate()` - Convert to SDK's `IdentityCertificate` format
 - `dedup_key()` - Returns `(type_id, serial_number)` tuple for deduplication
 
+The beta.3 pin uses `IndexMap<String, String>` at these public sites (bsv-rs #385/#394). Insertion order follows the reference's `Object.keys` order for non-integer keys; integer-like keys retain the upstream ordering difference noted below.
+
+| Public site | Reason for `IndexMap` |
+|---|---|
+| `OverlayCertificate.fields` | Copies directly into bsv-rs's `WalletCertificate.fields`, whose type is `IndexMap`, retaining certificate field order. |
+| `OverlayCertificate.keyring` | Copies directly into bsv-rs's `IdentityCertificate.publicly_revealed_keyring`, whose type is `IndexMap`, retaining keyring order. |
+| `OverlayCertificate.decrypted_fields` | Copies directly into bsv-rs's `IdentityCertificate.decrypted_fields`, whose type is `IndexMap`, retaining decrypted field order. |
+| `OverlayLookupResolver::lookup_by_attributes` | Receives bsv-rs's `DiscoverByAttributesArgs.attributes`, whose type is `IndexMap`, retaining attribute order through lookup JSON serialization. |
+
 ### OverlayLookupResolver Trait
 
 ```rust
 #[async_trait]
 pub trait OverlayLookupResolver: Send + Sync {
     async fn lookup_by_identity_key(&self, identity_key: &str) -> Result<Vec<OverlayCertificate>>;
-    async fn lookup_by_attributes(&self, attributes: &HashMap<String, String>) -> Result<Vec<OverlayCertificate>>;
+    async fn lookup_by_attributes(&self, attributes: &IndexMap<String, String>) -> Result<Vec<OverlayCertificate>>;
 }
 ```
 
