@@ -383,3 +383,27 @@ async fn empty_sender_on_p2pkh_answers_the_door_hex_text_through_wallet_interfac
     );
     assert_internalize_refused(&wallet, args, &text).await;
 }
+
+/// #371: a wallet payment with no paymentRemittance, and a basket insertion
+/// with no insertionRemittance, answer the door's `output remittance` text
+/// (ts-stack@edf6e03 validationHelpers.ts:972, 975) through the wallet.
+#[tokio::test]
+async fn missing_remittance_answers_the_door_text_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    let mut args = payment_of("cHJlZml4", "c3VmZml4", PAYMENT_SENDER);
+    args.outputs[0].payment_remittance = None;
+    assert_internalize_refused(
+        &wallet,
+        args,
+        "Validation error: The output remittance parameter must be only paymentRemittance for wallet payment",
+    )
+    .await;
+    let mut args = insertion_labelled(&[]);
+    args.outputs[0].insertion_remittance = None;
+    assert_internalize_refused(
+        &wallet,
+        args,
+        "Validation error: The output remittance parameter must be only insertionRemittance for basket insertion",
+    )
+    .await;
+}
