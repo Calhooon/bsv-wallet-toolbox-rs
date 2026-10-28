@@ -94,6 +94,18 @@
 
 ### Fixed
 
+- #380: internalizeAction bounds the description as the reference's
+  validateStringLength does (ts-stack@edf6e03 `validationHelpers.ts:1053`,
+  348-356): 5 to 2000 UTF-8 bytes as given, untrimmed, refused with
+  `The description parameter must be at least 5 length.` or
+  `The description parameter must be no more than 2000 length.` (through
+  `WalletInterface`, a `WalletError` reading `Validation error: ` and that
+  text), after the outputs' checks and ahead of the labels' and the BRC-177
+  refusal. A description under 5 or over 2000 bytes was stored; beside an
+  over-long label it answered the label text. This is a new refusal of input
+  that succeeded before. The create door already bounds its description at
+  the reference's place (755), in the port's own text.
+
 - #365: internalizeAction bounds every label as the reference's validateLabel
   does (ts-stack@edf6e03 `validationHelpers.ts:385-387, 409-417`, mapped at
   1054): 1 to 300 UTF-8 bytes once trimmed and lowercased, refused with
