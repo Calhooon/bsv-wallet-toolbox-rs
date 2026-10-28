@@ -94,6 +94,19 @@
 
 ### Fixed
 
+- #379: both doors trim a label with ECMAScript's whitespace (the
+  WhiteSpace and LineTerminator productions), as the SDK's validateLabel
+  trims it (ts-stack@edf6e03 `validationHelpers.ts:385-387, 411`), where
+  they used Rust's `str::trim` (Unicode White_Space). The two sets differ
+  at U+FEFF and U+0085 only. At internalizeAction a label of U+FEFF alone
+  is refused with `The label parameter must be at least 1 length.` (it was
+  stored), a label of U+0085 alone is stored (it was refused with that
+  text), `\u{FEFF}p nosend ...` meets the BRC-177 refusal and
+  `\u{0085}p nosend ...` is an ordinary label. At createAction
+  `\u{FEFF}p nosend ...` meets the BRC-177 grammar and capability texts
+  (it was an ordinary label) and `\u{0085}p nosend ...` is an ordinary
+  label (it was refused). Every other label answers as before.
+
 - #380: internalizeAction bounds the description as the reference's
   validateStringLength does (ts-stack@edf6e03 `validationHelpers.ts:1053`,
   348-356): 5 to 2000 UTF-8 bytes as given, untrimmed, refused with
