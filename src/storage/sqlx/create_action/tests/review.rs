@@ -89,7 +89,7 @@ impl Fixture {
             WalletInterface::create_action(&self.wallet, args, None),
         )
         .await
-        .expect("review assembly must not wait on the held writer")
+        .expect("the review refusal answers within five seconds")
         .expect_err("a stored spender requires review");
         let bsv_rs::Error::WalletReviewActions(refusal) = error else {
             panic!("expected WalletReviewActions, got {error:?}");
