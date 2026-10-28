@@ -7,7 +7,7 @@ PR, so this page stays current.
 
 | crate | repository | pins this crate | how it consumes | captain |
 |---|---|---|---|---|
-| `bsv-wallet-cli` 0.18.2 | [Calhooon/bsv-wallet-cli](https://github.com/Calhooon/bsv-wallet-cli) (public) | main `=0.13.1` with `bsv-rs` `=0.8.3` (CLI PR 264, 2026-10-26); beta `=0.14.0-beta.2` with `bsv-rs` `=0.9.0-beta.2` and `bsv-tracker` `=0.9.0-beta.2` (CLI PR 332, b101d67, 2026-10-28; before it `=0.14.0-beta.1` with the beta.1 pair, CLI PR 274, bb0a149, 2026-10-26); its main never pins a prerelease; renamed `bsv-wallet-toolbox` | features `sqlite`. The crate root re-exports (`Wallet`, `StorageSqlx`, `Services`, `ServicesOptions`, `Chain`, `Monitor`, `Error` and `StoreBusyReason`, the storage traits `WalletStorageProvider`, `WalletStorageWriter`, `MonitorStorage`, the broadcast and status words `BroadcastStatus`, `BROADCAST_*`, `PROVIDER_*`, `classify_broadcast_results`, `is_fatal_status`, `unproven_ancestors_in_beef`); `services` (`mock::MockWalletServices` in its tests, `traits`, `UtxoVerdict`, `providers::{arcade, whatsonchain, BananaBlocks}`); `storage` (`sqlx::refuse_invalid_beef_bytes`, `ProvenTxAnchor`, `StorageProcessActionArgs`); `monitor` (`ArcadeEventsTask`, `reorg_ops`, `tasks::check_for_proofs`) | the stack keeper (the CLI's programme, bsv-wallet-cli #106) |
+| `bsv-wallet-cli` 0.18.2 | [Calhooon/bsv-wallet-cli](https://github.com/Calhooon/bsv-wallet-cli) (public) | main `=0.13.1` with `bsv-rs` `=0.8.3` (CLI PR 264, 2026-10-26); beta `=0.14.0-beta.3` with `bsv-rs` `=0.9.0-beta.3` and `bsv-tracker` `=0.9.0-beta.3` (CLI PR 345, 6e1a7bc, 2026-10-28 21:11Z; before it `=0.14.0-beta.2` with the beta.2 pair, CLI PR 332, b101d67, 2026-10-28; before it `=0.14.0-beta.1` with the beta.1 pair, CLI PR 274, bb0a149, 2026-10-26); its main never pins a prerelease; renamed `bsv-wallet-toolbox` | features `sqlite`. The crate root re-exports (`Wallet`, `StorageSqlx`, `Services`, `ServicesOptions`, `Chain`, `Monitor`, `Error` and `StoreBusyReason`, the storage traits `WalletStorageProvider`, `WalletStorageWriter`, `MonitorStorage`, the broadcast and status words `BroadcastStatus`, `BROADCAST_*`, `PROVIDER_*`, `classify_broadcast_results`, `is_fatal_status`, `unproven_ancestors_in_beef`); `services` (`mock::MockWalletServices` in its tests, `traits`, `UtxoVerdict`, `providers::{arcade, whatsonchain, BananaBlocks}`); `storage` (`sqlx::refuse_invalid_beef_bytes`, `ProvenTxAnchor`, `StorageProcessActionArgs`); `monitor` (`ArcadeEventsTask`, `reorg_ops`, `tasks::check_for_proofs`) | the stack keeper (the CLI's programme, bsv-wallet-cli #106) |
 | `agent-manage` 0.1.0 (`manage/` in the agents repository) | Calgooon/agents (private) | `0.7.7` (locked 0.7.7), renamed `bsv-wallet-toolbox`, with `bsv-rs` `0.5.0` | features `remote`. The crate root (`Wallet`, `Services`, `ServicesOptions`, `Chain`, `StorageClient`, the storage traits `WalletStorageReader`, `WalletStorageWriter`, `WalletStorageSync`, `WalletStorageProvider`, `WalletServices`); `storage` (`StorageClient`, `entities`, the sync arguments `RequestSyncChunkArgs`, `SyncChunk`, `SyncOffsets`, `FindProvenTxReqsArgs`); `services::providers::arc::ArcConfig` | the agents captain |
 | `dolphin-milk` 0.1.4 | [Calhooon/dolphinmilk](https://github.com/Calhooon/dolphinmilk) (public) | `0.3.38`, optional, with `bsv-rs` `0.3.4` and `bsv-wallet-cli` `0.1.23`; no committed `Cargo.lock` | behind its default feature `embedded-wallet`, default features of this crate (`sqlite`). The crate root (`Wallet`, `WalletOptions`, `Monitor`, `Services`, `ServicesOptions`, `StorageSqlx`, `Chain`, `WalletStorageWriter`); `services::providers::ArcConfig` | none named |
 
@@ -94,6 +94,16 @@ behind the tag v0.14.0-beta.2, and the published crate the CLI pins does not
 carry it. The red closes when the CLI takes the shape (CLI #313) at this
 crate's next prerelease; until then a beta dispatch reads the same and proves
 the input and the clone line, not the pin.
+
+On 2026-10-28 the CLI's beta took the beta.3 pin at 6e1a7bc (CLI PR 345,
+21:11:41Z): `=0.14.0-beta.3` with `bsv-rs` and `bsv-tracker` `=0.9.0-beta.3`,
+both workspaces, with #353's fourth argument (CLI #313) and the typed refusal
+map (CLI #330) inside. Two Dependents runs record it: run 40765080419 (the
+CLI's dispatch with `cli_ref` against the pin branch at 809d782: `build: ok
+(--locked) test: ok`, the clone line naming the branch) and run 40770352588 (the
+plain dispatch on beta a101a10c against the CLI's beta at 6e1a7bc): green.
+The beta.2 row's red above closed with this pin, as #313 said it would. The
+CLI's mainnet gate passed at 21:17Z on 6e1a7bc (24 of 24).
 
 ### Re-pin plan
 
