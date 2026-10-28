@@ -266,3 +266,67 @@ async fn short_description_answers_ahead_of_an_over_long_label_through_wallet_in
     )
     .await;
 }
+
+/// The insertion fixture made a wallet payment, its remittance `prefix`,
+/// `suffix` and `sender` as given.
+fn payment_of(prefix: &str, suffix: &str, sender: &str) -> InternalizeActionArgs {
+    let mut args = insertion_labelled(&[]);
+    let output = &mut args.outputs[0];
+    output.protocol = "wallet payment".to_string();
+    output.insertion_remittance = None;
+    output.payment_remittance = Some(bsv_rs::wallet::WalletPayment {
+        derivation_prefix: prefix.to_string(),
+        derivation_suffix: suffix.to_string(),
+        sender_identity_key: sender.to_string(),
+    });
+    args
+}
+
+const PAYMENT_SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+/// #377: the wallet refuses an empty derivationPrefix or derivationSuffix
+/// ahead of the store (D13) in the text of the reference's
+/// validateBase64String (ts-stack@edf6e03 validationHelpers.ts:439-441,
+/// 490-491, called at 918-919), the prefix ahead of the suffix.
+#[tokio::test]
+async fn empty_derivation_answers_the_base64_text_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    assert_internalize_refused(
+        &wallet,
+        payment_of("", "", PAYMENT_SENDER),
+        "The derivationPrefix parameter must be valid base64 string",
+    )
+    .await;
+    assert_internalize_refused(
+        &wallet,
+        payment_of("cHJlZml4", "", PAYMENT_SENDER),
+        "The derivationSuffix parameter must be valid base64 string",
+    )
+    .await;
+}
+
+/// #377: on the fixture's `7551` output, which the wallet's derivation check
+/// skips (not P2PKH), the door's validateWalletPayment texts are served
+/// (validationHelpers.ts:914-923).
+#[tokio::test]
+async fn door_payment_texts_are_served_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    assert_internalize_refused(
+        &wallet,
+        payment_of("test_prefix", "c3VmZml4", PAYMENT_SENDER),
+        "Validation error: The derivationPrefix parameter must be valid base64 string",
+    )
+    .await;
+    assert_internalize_refused(
+        &wallet,
+        payment_of("cHJlZml4", "sender_key", "sender_key"),
+        "Validation error: The derivationSuffix parameter must be valid base64 string",
+    )
+    .await;
+    assert_internalize_refused(
+        &wallet,
+        payment_of("cHJlZml4", "c3VmZml4", "sender_key"),
+        "Validation error: The senderIdentityKey parameter must be hexadecimal string.",
+    )
+    .await;
+}
