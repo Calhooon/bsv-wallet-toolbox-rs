@@ -33,7 +33,7 @@ pub enum Error {
     /// are idempotent and repeating is safe, so the caller may repeat it
     /// unchanged. `reason` says which busy it was (`StoreBusyReason`). The
     /// Display begins exactly `Store busy: `, then the reason's words;
-    /// consumers classify on that prefix.
+    /// the boundary carries it as `WalletBusy`, classified by type.
     #[error("Store busy: {reason}")]
     StoreBusy {
         /// Which busy it was.
@@ -143,9 +143,10 @@ pub enum Error {
     /// this is not `InsufficientFunds`, and the caller passed no bad
     /// `inputBEEF`, so it is not a `ValidationError`. The action wrote
     /// nothing. The Display begins exactly `Unspendable coin: `, then the
-    /// coin's outpoint and the ancestors not stored; a host maps the prefix
-    /// apart from `Insufficient funds:` (402) and `Validation error:` (400):
-    /// the wallet's own state refuses a well-formed request (409 Conflict).
+    /// coin's outpoint and the ancestors not stored. The boundary carries
+    /// `WalletRefusalClass::InvalidOperation`: the wallet's own state
+    /// refuses a well-formed request, distinct from a funding shortfall or
+    /// an invalid argument.
     #[error(
         "Unspendable coin: {outpoint}: its stored ancestry is incomplete, ancestor(s) not stored: [{}]; createAction fetches none, and the wallet's other coins do not cover the action",
         .missing.join(",")
@@ -347,18 +348,63 @@ impl From<sqlx::Error> for Error {
 /// `retry_after_ms` is `None`: the store does not know the host's retry
 /// policy, and the host sets its own. An `SdkError` passes its bsv-rs error
 /// through, and `ReviewActions` becomes `WalletReviewActions` with its
-/// results. Every other variant is `WalletError` with the toolbox Display,
-/// the text the erasure sites gave before this impl.
+/// results. Request refusals carry a `WalletRefusalClass` and the toolbox
+/// Display as their message. Faults stay `WalletError`; a could-not-look
+/// failure is never classified as a refusal by its text.
 impl From<Error> for bsv_rs::Error {
     fn from(err: Error) -> Self {
-        match err {
-            Error::StoreBusy { .. } => bsv_rs::Error::WalletBusy {
-                detail: err.to_string(),
-                retry_after_ms: None,
-            },
-            Error::SdkError(e) => e,
-            Error::ReviewActions(refusal) => bsv_rs::Error::WalletReviewActions(refusal),
-            other => bsv_rs::Error::WalletError(other.to_string()),
+        use bsv_rs::WalletRefusalClass;
+
+        let class = match err {
+            Error::ValidationError(_)
+            | Error::InvalidArgument(_)
+            | Error::InvalidBeef { .. }
+            | Error::SpendRefused { .. }
+            | Error::NotFound { .. }
+            | Error::UserNotFound(_) => WalletRefusalClass::InvalidParameter,
+            Error::InvalidOperation(_)
+            | Error::InvalidTransactionStatus(_)
+            | Error::UnspendableCoin { .. }
+            | Error::FailedAncestor { .. }
+            | Error::Duplicate { .. } => WalletRefusalClass::InvalidOperation,
+            Error::AccessDenied(_) | Error::AuthenticationRequired => {
+                WalletRefusalClass::Unauthorized
+            }
+            Error::InvalidIdentityKey(_) => WalletRefusalClass::InvalidPublicKey,
+            Error::InsufficientFunds { .. } => WalletRefusalClass::InsufficientFunds,
+            Error::StorageNotAvailable => WalletRefusalClass::NotActive,
+            Error::StoreBusy { .. } => {
+                return bsv_rs::Error::WalletBusy {
+                    detail: err.to_string(),
+                    retry_after_ms: None,
+                };
+            }
+            Error::SdkError(e) => return e,
+            Error::ReviewActions(refusal) => return bsv_rs::Error::WalletReviewActions(refusal),
+            #[cfg(feature = "sqlite")]
+            Error::SqlxError(_) => return bsv_rs::Error::WalletError(err.to_string()),
+            Error::StorageError(_)
+            | Error::DatabaseError(_)
+            | Error::MigrationError(_)
+            | Error::ServiceError(_)
+            | Error::NetworkError(_)
+            | Error::BroadcastFailed(_)
+            | Error::NoServicesAvailable
+            | Error::RateLimited { .. }
+            | Error::NoExplorerAnswered { .. }
+            | Error::TransactionError(_)
+            | Error::SigningError(_)
+            | Error::SyncError(_)
+            | Error::SyncConflict(_)
+            | Error::LockTimeout(_)
+            | Error::JsonError(_)
+            | Error::IoError(_)
+            | Error::HttpError(_)
+            | Error::Internal(_) => return bsv_rs::Error::WalletError(err.to_string()),
+        };
+        bsv_rs::Error::WalletRefusal {
+            class,
+            message: err.to_string(),
         }
     }
 }
