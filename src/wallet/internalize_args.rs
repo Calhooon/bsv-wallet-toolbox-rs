@@ -273,7 +273,7 @@ mod tests {
     }
 
     /// bsv-rs #384: the protocol refusal precedes description and labels,
-    /// as validateInternalizeOutput does at ts-stack@edf6e03:968-970.
+    /// as validateInternalizeOutput does at ts-stack@edf6e03 `packages/sdk/src/wallet/validationHelpers.ts:968-970`.
     #[tokio::test]
     async fn unknown_internalize_protocol_precedes_description_and_labels_at_wallet_door() {
         let root = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
@@ -308,7 +308,6 @@ mod tests {
             let error = WalletInterface::internalize_action(&wallet, args, None)
                 .await
                 .unwrap_err();
-            eprintln!("description={description:?}: {error}");
             refusals.push(error);
         }
         for error in refusals {
