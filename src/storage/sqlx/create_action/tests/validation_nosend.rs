@@ -121,3 +121,25 @@ async fn nosend_label_is_matched_trimmed_and_lowercased() {
 async fn bare_module_word_is_accepted() {
     assert_accepted(&["p nosend "]).await;
 }
+
+/// #379: the label is trimmed as ECMAScript's `String.prototype.trim`
+/// trims it (WhiteSpace and LineTerminator), so U+FEFF is stripped ahead of
+/// the prefix check and U+0085 is kept, as in the reference.
+#[tokio::test]
+async fn nosend_label_behind_a_byte_order_mark_is_refused() {
+    assert_refused(&["\u{FEFF}p nosend expiry seconds 300"]).await;
+}
+
+/// #379: U+0085 is outside ECMAScript's whitespace, so the label does not
+/// start with the prefix and is ordinary metadata.
+#[tokio::test]
+async fn nosend_label_behind_a_next_line_is_accepted() {
+    assert_accepted(&["\u{0085}p nosend expiry seconds 300"]).await;
+}
+
+/// #379: the whitespace both trims strip is stripped as before.
+#[tokio::test]
+async fn nosend_label_is_trimmed_of_shared_whitespace() {
+    assert_refused(&["\t\u{3000}p nosend expiry seconds 300\n"]).await;
+    assert_refused(&["\u{A0}\u{2028}p nosend expiry seconds 300\u{2029}"]).await;
+}
