@@ -10,7 +10,8 @@ pub(crate) use reqwest::{Client, Error as RequestError, RequestBuilder};
 // URL parsing for argument guards outside providers (issuance certifierUrl).
 pub(crate) use reqwest::Url;
 
-#[cfg(all(feature = "remote", any(test, feature = "bench-support")))]
+#[cfg(any(test, feature = "bench-support"))]
+#[cfg_attr(not(feature = "remote"), allow(dead_code))]
 pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
     let url = reqwest::Url::parse(url)
         .map_err(|error| crate::Error::NetworkError(format!("Invalid transport URL: {error}")))?;
@@ -20,9 +21,59 @@ pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
 /// The policy's client for the SDK transport that takes one (bsv-rs #320's
 /// `SimplifiedFetchTransport::with_client`), so the authenticated storage
 /// client's own hops come under #182 too (#263).
-#[cfg(all(feature = "remote", any(test, feature = "bench-support")))]
+#[cfg(any(test, feature = "bench-support"))]
+#[cfg_attr(not(feature = "remote"), allow(dead_code))]
 pub(crate) fn sdk_transport_client() -> reqwest::Client {
     isolated::sdk_transport_client()
+}
+
+/// The BRC-104 Peer transport both authenticated clients use (the storage
+/// client and certificate issuance): bsv-rs's own in production, and in test
+/// and bench builds a wrapper that checks its destination before SDK I/O.
+#[cfg(not(any(test, feature = "bench-support")))]
+#[cfg_attr(not(feature = "remote"), allow(unused_imports))]
+pub(crate) use bsv_rs::auth::SimplifiedFetchTransport;
+#[cfg(any(test, feature = "bench-support"))]
+#[cfg_attr(not(feature = "remote"), allow(unused_imports))]
+pub(crate) use isolated_peer_transport::SimplifiedFetchTransport;
+
+#[cfg(any(test, feature = "bench-support"))]
+#[cfg_attr(not(feature = "remote"), allow(dead_code))]
+mod isolated_peer_transport {
+    use async_trait::async_trait;
+    use bsv_rs::auth::transports::{Transport, TransportCallback};
+    use bsv_rs::auth::{AuthMessage, SimplifiedFetchTransport as SdkTransport};
+
+    use super::{check_url_str, sdk_transport_client};
+
+    /// A test/bench Peer transport that checks its destination before SDK I/O
+    /// and hands the SDK the #182 policy's client (bsv-rs #320).
+    pub struct SimplifiedFetchTransport(SdkTransport);
+
+    impl SimplifiedFetchTransport {
+        pub fn new(url: &str) -> Self {
+            Self(SdkTransport::with_client(url, sdk_transport_client()))
+        }
+    }
+
+    #[async_trait]
+    impl Transport for SimplifiedFetchTransport {
+        async fn send(&self, message: &AuthMessage) -> bsv_rs::Result<()> {
+            // Check every send, including handshakes and calls through peer().
+            // The SDK's client is the policy's: no proxy, localhost pinned,
+            // and a redirect refused by the SDK before its body.
+            check_url_str(self.0.base_url())?;
+            self.0.send(message).await
+        }
+
+        fn set_callback(&self, callback: Box<TransportCallback>) {
+            self.0.set_callback(callback);
+        }
+
+        fn clear_callback(&self) {
+            self.0.clear_callback();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -118,7 +169,7 @@ mod isolated {
     /// No proxy and `localhost` pinned as [`Client::builder`]; no redirect
     /// followed, since the SDK refuses a redirect status before its body
     /// (bsv-rs #320); the timeouts and idle pool of bsv-rs's own default.
-    #[cfg(feature = "remote")]
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
     pub(crate) fn sdk_transport_client() -> reqwest::Client {
         match Client::builder()
             .0
