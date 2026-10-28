@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- #430: `relinquishCertificate` now refuses an unknown or non-unique certificate
+  before changing storage. Host TEXT-DIFF for CLI #344: success with
+  `{ relinquished: true }` and storage count `0` becomes `WalletRefusal` with
+  class `BadRequest` (`WERR_BAD_REQUEST`) and the exact message
+  `Result must exist and be unique.`. One matching row is still soft-deleted;
+  the storage result remains a count.
+
 - #386: `createAction` shares the internalize door's `validateLabel` bound:
   1 to 300 UTF-8 bytes after ECMAScript trim and lowercase. Whitespace-only
   labels, including U+FEFF, now refuse before options and BRC-177 parsing;
