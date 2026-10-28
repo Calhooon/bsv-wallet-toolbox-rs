@@ -706,6 +706,16 @@ mod tests {
     use crate::storage::traits::AuthId;
     use crate::storage::WalletStorageWriter;
 
+    fn invalid_parameter_message(error: Error) -> String {
+        match error {
+            Error::SdkError(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message,
+            }) => message,
+            other => panic!("Expected InvalidParameter error, got: {other:?}"),
+        }
+    }
+
     /// Helper to create test storage
     async fn setup_test_storage() -> (StorageSqlx, i64, AuthId) {
         let storage = StorageSqlx::in_memory().await.unwrap();
@@ -931,17 +941,9 @@ mod tests {
 
         // The reference classes this status as an invalid parameter.
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        match err {
-            Error::SdkError(bsv_rs::Error::WalletRefusal {
-                class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                message: msg,
-            }) => {
-                assert!(msg.contains("cannot be aborted"));
-                assert!(msg.contains("completed"));
-            }
-            _ => panic!("Expected InvalidParameter error, got: {:?}", err),
-        }
+        let msg = invalid_parameter_message(result.unwrap_err());
+        assert!(msg.contains("cannot be aborted"));
+        assert!(msg.contains("completed"));
     }
 
     // -------------------------------------------------------------------------
@@ -1134,16 +1136,8 @@ mod tests {
 
         // Should fail - can't abort incoming transactions
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        match err {
-            Error::SdkError(bsv_rs::Error::WalletRefusal {
-                class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                message: msg,
-            }) => {
-                assert!(msg.contains("must be an outgoing transaction"));
-            }
-            _ => panic!("Expected InvalidParameter error, got: {:?}", err),
-        }
+        let msg = invalid_parameter_message(result.unwrap_err());
+        assert!(msg.contains("must be an outgoing transaction"));
     }
 
     // -------------------------------------------------------------------------
@@ -1179,16 +1173,8 @@ mod tests {
 
         // Should fail - can't abort incoming transactions
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        match err {
-            Error::SdkError(bsv_rs::Error::WalletRefusal {
-                class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                message: msg,
-            }) => {
-                assert!(msg.contains("must be an outgoing transaction"));
-            }
-            _ => panic!("Expected InvalidParameter error, got: {:?}", err),
-        }
+        let msg = invalid_parameter_message(result.unwrap_err());
+        assert!(msg.contains("must be an outgoing transaction"));
     }
 
     // -------------------------------------------------------------------------
@@ -1216,16 +1202,8 @@ mod tests {
 
         // Should fail - can't abort already failed transactions
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        match err {
-            Error::SdkError(bsv_rs::Error::WalletRefusal {
-                class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                message: msg,
-            }) => {
-                assert!(msg.contains("cannot be aborted"));
-            }
-            _ => panic!("Expected InvalidParameter error, got: {:?}", err),
-        }
+        let msg = invalid_parameter_message(result.unwrap_err());
+        assert!(msg.contains("cannot be aborted"));
     }
 
     // -------------------------------------------------------------------------
