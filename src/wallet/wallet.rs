@@ -47,9 +47,6 @@ use crate::wallet::lookup::OverlayLookupResolver;
 
 use super::signer::{SignerInput, WalletSigner};
 
-#[path = "validation.rs"]
-mod validation;
-
 #[path = "direct_acquire.rs"]
 mod direct_acquire;
 
@@ -1144,7 +1141,9 @@ where
         must_spend: &[i64],
     ) -> bsv_rs::Result<CreateActionResult> {
         validate_originator(originator)?;
-        validation::validate_create_action_inputs(&args)?;
+        // ts-stack@edf6e03 Wallet.ts:1154 validates the arguments before any
+        // storage call; the sqlx door runs the same checks again (#416).
+        super::create_args::validate_create_action_args(&args)?;
 
         // Serialize spending operations to prevent UTXO contention and
         // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).

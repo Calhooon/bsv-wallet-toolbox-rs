@@ -92,6 +92,7 @@
 //! - `get_version` - Wallet version string
 
 mod certificate_issuance;
+pub(crate) mod create_args;
 pub(crate) mod internalize_args;
 pub mod lookup;
 mod signer;
