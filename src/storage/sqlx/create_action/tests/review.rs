@@ -64,9 +64,8 @@ impl Fixture {
         .unwrap()
     }
 
-    async fn refuse(&self) -> ReviewActionResult {
-        let before = self.snapshot().await;
-        let args = CreateActionArgs {
+    fn args(&self) -> CreateActionArgs {
+        CreateActionArgs {
             description: "Review the competing spend".into(),
             input_beef: None,
             inputs: Some(vec![covenant_input(&self.source, vec![0x51])]),
@@ -79,7 +78,12 @@ impl Fixture {
                 sign_and_process: Some(false),
                 ..CreateActionOptions::default()
             }),
-        };
+        }
+    }
+
+    async fn refuse(&self) -> ReviewActionResult {
+        let before = self.snapshot().await;
+        let args = self.args();
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             WalletInterface::create_action(&self.wallet, args, None),
@@ -237,4 +241,114 @@ async fn create_review_reads_no_transaction_row_without_a_request() {
     let beef = f.beef().await;
     assert_eq!(beef.txs.len(), 1);
     assert!(beef.find_txid(&f.competitor).unwrap().is_txid_only());
+}
+
+impl Fixture {
+    /// After each of the first `moves` review reads, store a new competitor
+    /// for the input, as another writer would between the read and the lock.
+    /// Returns the read count and the competitors stored, in order.
+    fn move_competitor_after_read(
+        &self,
+        moves: usize,
+    ) -> (
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        use std::sync::atomic::Ordering;
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let moved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (storage, source) = (self.wallet.storage().clone(), self.source.clone());
+        let (hook_reads, hook_moved) = (reads.clone(), moved.clone());
+        review_beef::race::set_after_read(Box::new(move || {
+            let read = hook_reads.fetch_add(1, Ordering::SeqCst);
+            let (storage, source, moved) = (storage.clone(), source.clone(), hook_moved.clone());
+            Box::pin(async move {
+                if read >= moves {
+                    return;
+                }
+                let (raw, txid) = synth_tx(&source, 0, 98_000 - read as u64);
+                let spender = sqlx::query(
+                    "INSERT INTO transactions
+                     (user_id, status, reference, is_outgoing, satoshis, description, txid)
+                     SELECT user_id, 'unproven', ?, 1, 0, 'Raced spend', ?
+                     FROM outputs WHERE txid = ?",
+                )
+                .bind(format!("raced-{read}"))
+                .bind(&txid)
+                .bind(&source)
+                .execute(storage.writer())
+                .await
+                .unwrap()
+                .last_insert_rowid();
+                sqlx::query("UPDATE outputs SET spent_by = ? WHERE txid = ?")
+                    .bind(spender)
+                    .bind(&source)
+                    .execute(storage.writer())
+                    .await
+                    .unwrap();
+                sqlx::query(
+                    "INSERT INTO proven_tx_reqs (txid, status, raw_tx) VALUES (?, 'unsent', ?)",
+                )
+                .bind(&txid)
+                .bind(&raw)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+                moved.lock().unwrap().push(txid);
+            })
+        }));
+        (reads, moved)
+    }
+}
+
+/// A competitor that changes between the review read and the lock: the
+/// locked check names one the read did not prepare, so the action rolls
+/// back (`Again::CompetingSpend`) and repeats the pre-check, whose second
+/// read carries the new competitor's BEEF.
+#[tokio::test]
+async fn create_review_rereads_a_competitor_that_moved_before_the_lock() {
+    use std::sync::atomic::Ordering;
+    let f = fixture().await;
+    let (reads, moved) = f.move_competitor_after_read(1);
+    let error = WalletInterface::create_action(&f.wallet, f.args(), None)
+        .await
+        .expect_err("a stored spender requires review");
+    let bsv_rs::Error::WalletReviewActions(refusal) = error else {
+        panic!("expected WalletReviewActions, got {error:?}");
+    };
+    assert_eq!(reads.load(Ordering::SeqCst), 2, "the pre-check repeated");
+    let raced = moved.lock().unwrap()[0].clone();
+    let [review] = refusal.review_action_results.as_slice() else {
+        panic!("expected one competing spend: {refusal:?}");
+    };
+    assert_eq!(
+        review.competing_txs,
+        Some(vec![hex::decode(&raced).unwrap().try_into().unwrap()])
+    );
+    let beef = Beef::from_binary(
+        review
+            .competing_beef
+            .as_deref()
+            .expect("the repeated read prepared the new competitor's BEEF"),
+    )
+    .unwrap();
+    assert!(beef.find_txid(&raced).is_some_and(|tx| !tx.is_txid_only()));
+    assert!(beef.find_txid(&f.competitor).is_none());
+}
+
+/// The competitor moves before every lock: the repeat finds it moved again,
+/// and the call answers busy, never a review without its evidence.
+#[tokio::test]
+async fn create_review_answers_busy_when_the_competitor_moves_twice() {
+    use std::sync::atomic::Ordering;
+    let f = fixture().await;
+    let (reads, _) = f.move_competitor_after_read(usize::MAX);
+    let error = WalletInterface::create_action(&f.wallet, f.args(), None)
+        .await
+        .expect_err("the store moved under the call twice");
+    assert!(
+        matches!(error, bsv_rs::Error::WalletBusy { .. }),
+        "expected WalletBusy, got {error:?}"
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
 }
