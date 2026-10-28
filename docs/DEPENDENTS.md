@@ -17,7 +17,9 @@ PR, so this page stays current.
 branch named after the line under test when it has one (`--line`; in CI the pull
 request's base or the pushed branch: the toolbox's beta builds the CLI's beta, which
 is where the CLI pins this crate's prereleases, and main builds the CLI's main; a
-dependent without such a branch is cloned at its default with a note, and a probe
+dependent without such a branch is cloned at its default with a note only for an
+implicit line; an explicit `--line` (including a non-empty `cli_ref`) must name an
+existing branch or the row fails without cloning. A probe
 that faults rather than answers marks the row failed, #208) into a
 scratch directory, rewrites its dependency on this crate
 to a path dependency on the tree under test, and runs `cargo build --locked`

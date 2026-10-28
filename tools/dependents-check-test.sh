@@ -141,7 +141,7 @@ cat >"$dir/bin/git" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"$DEPENDENTS_TEST_GIT"
 case "$1" in
-  ls-remote) exit 0 ;;
+  ls-remote) exit "${DEPENDENTS_TEST_PROBE:-0}" ;;
   clone) exit 73 ;;
   *) exit 97 ;;
 esac
@@ -207,6 +207,44 @@ else
   echo 'FAILED  reading the Dependents dispatch step'
   fail=$((fail + 1))
 fi
+
+missing_branch_case() {
+  local explicit="$1" branch='lane/not-pushed' out status git_args row
+  local -a args=(--only bsv-wallet-cli)
+  [ "$explicit" -eq 0 ] || args+=(--line "$branch")
+  : >"$dir/git-args"
+  : >"$dir/missing-summary.md"
+  out="$(PATH="$dir/bin:$PATH" GITHUB_BASE_REF="$branch" GITHUB_REF_NAME=beta \
+    DEPENDENTS_WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/missing-summary.md" \
+    DEPENDENTS_TEST_GIT="$dir/git-args" DEPENDENTS_TEST_PROBE=2 \
+    bash "$check" "${args[@]}" 2>&1)"
+  status=$?
+  git_args="$(cat "$dir/git-args")"
+  if [ "$explicit" -eq 1 ]; then
+    row="| bsv-wallet-cli | no $branch branch (explicit --line) | - |"
+    if [ "$status" -eq 1 ] && [[ "$git_args" == *"refs/heads/$branch"* ]] &&
+      [[ "$git_args" != *clone* && "$out" == *"no $branch branch (explicit --line)"* ]] &&
+      grep -qxF -- "$row" "$dir/missing-summary.md"; then
+      echo "ok      missing explicit line refuses cloning (exit $status): $row"
+      pass=$((pass + 1))
+      return
+    fi
+  elif [ "$status" -eq 1 ] && [[ "$git_args" == *"refs/heads/$branch"* ]] &&
+    [[ "$git_args" == *clone* && "$git_args" != *--branch* ]] &&
+    [[ "$out" == *"has no $branch branch; its default branch stands in"* ]] &&
+    [[ "$out" == *"clone fault (exit 73)"* ]]; then
+    echo "ok      missing implicit line keeps the NOTE and default clone (mock clone exit 73)"
+    pass=$((pass + 1))
+    return
+  fi
+  echo "FAILED  missing branch (explicit=$explicit, exit $status): $out"
+  echo "git arguments: $git_args"
+  cat "$dir/missing-summary.md"
+  fail=$((fail + 1))
+}
+
+missing_branch_case 1
+missing_branch_case 0
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

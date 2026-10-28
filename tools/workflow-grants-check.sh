@@ -132,7 +132,7 @@ def check(release_path, ci_path):
             asks, source = effective(job, ci)
             print(f"callee {name} requests {describe(asks)} ({source})")
             if asks is None:
-                findings.append(f"callee job {name}: no explicit permissions; token default is unknown")
+                # With no callee override, GitHub keeps the caller's grant.
                 continue
             for scope, level in asks.items():
                 given = (grant or {}).get(scope, (grant or {}).get("*", "none"))
