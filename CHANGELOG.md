@@ -7,6 +7,7 @@
 - #419: Pin both workspaces and locks to `bsv-rs =0.9.0-beta.3`, retaining
   `full` and `http`. Host migration notes for the CLI's beta.3 pin (CLI #338):
   - Certificate fields, keyrings and attributes: `HashMap<String, String>` becomes `IndexMap<String, String>` (bsv-rs #385/#394); literals use `IndexMap::from` or `collect()`. The toolbox's `OverlayCertificate` maps and `OverlayLookupResolver::lookup_by_attributes` follow that type.
+  - Attribute lookup JSON: sorted keys such as `{"alpha":"a","zeta":"z"}` become supplied insertion order such as `{"zeta":"z","alpha":"a"}`; the request retains the typed map through HTTP serialization (bsv-rs #394).
   - Direct certificate refusal order: sorted byte order becomes supplied insertion order; D12 closes for the recorded bad-name cases. Integer-like-key ordering remains the upstream residual.
   - `WalletClient` methods: `&mut self` becomes `&self`, and the client implements `WalletInterface` under `wallet`; method-path uses can become closures such as `.map(|client| client.get_version())` (bsv-rs #404). No existing toolbox call site used the client.
   - Malformed signature: `invalid signature: DER too short`, `invalid signature: Expected sequence tag 0x30`, and other DER parser words become `The signature parameter must be a canonical DER-encoded ECDSA signature` (bsv-rs #415).

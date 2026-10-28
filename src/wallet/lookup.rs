@@ -271,7 +271,10 @@ impl HttpLookupResolver {
     }
 
     /// Query the overlay endpoint and parse certificate results from the response.
-    async fn query_overlay(&self, query: serde_json::Value) -> Result<Vec<OverlayCertificate>> {
+    async fn query_overlay<Q>(&self, query: Q) -> Result<Vec<OverlayCertificate>>
+    where
+        Q: serde::Serialize + Send + Sync,
+    {
         // Step 1: Resolve competent hosts for ls_identity via SLAP
         let hosts = self.resolve_competent_hosts("ls_identity").await;
         if hosts.is_empty() {
@@ -279,10 +282,15 @@ impl HttpLookupResolver {
             return Ok(vec![]);
         }
 
-        let body = serde_json::json!({
-            "service": "ls_identity",
-            "query": query,
-        });
+        #[derive(serde::Serialize)]
+        struct LookupRequest<Q> {
+            query: Q,
+            service: &'static str,
+        }
+        let body = LookupRequest {
+            query,
+            service: "ls_identity",
+        };
 
         // Step 2: Query each competent host until one succeeds
         for host in &hosts {
@@ -369,9 +377,7 @@ impl OverlayLookupResolver for HttpLookupResolver {
         &self,
         attributes: &IndexMap<String, String>,
     ) -> Result<Vec<OverlayCertificate>> {
-        let query = serde_json::json!({
-            "attributes": attributes,
-        });
+        let query = IndexMap::from([("attributes", attributes)]);
         self.query_overlay(query).await
     }
 }
