@@ -53,6 +53,13 @@
   `underReceivedRule `) now opts a create into the received-coin rule where
   only the exact spelling did; a label that normalizes to another string still
   does not. No refusal text moves.
+
+- #389: A `createAction` double-spend refusal now carries `competingBeef`
+  alongside `competingTxs` in its review result (CLI #347). The BEEF contains
+  the stored competing transaction and its proof or ancestry; unavailable
+  stored data yields a txid-only BEEF, as in the reference. The result's own
+  zero `txid` remains the D14 filing (ts-stack #1436).
+
 - #386: `createAction` shares the internalize door's `validateLabel` bound:
   1 to 300 UTF-8 bytes after ECMAScript trim and lowercase. Whitespace-only
   labels, including U+FEFF, now refuse before options and BRC-177 parsing;

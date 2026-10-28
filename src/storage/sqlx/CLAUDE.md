@@ -34,6 +34,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | `create_action/signing.rs` | Caller signature commitments and funding permission |
 | `create_action/validation.rs` | Create-action argument validation |
 | `create_action/inputs.rs` | Caller input preparation and spent-input writes |
+| `create_action/review_beef.rs` | Double-spend review BEEF from stored raw bytes, proofs and ancestry, prepared on a reader before the writer (#389) |
 | `create_action/outputs.rs` | Output preparation, action records, baskets, labels, and tags |
 | `create_action/tracker.rs` | Precheck tracker answers, recording tracker, and cached tracker |
 | `create_action/beef.rs` | Input BEEF assembly, known entries, and ancestry gaps |
@@ -549,6 +550,17 @@ With `sign_and_process` the template is signed and processed inside the create s
 | `MAX_DESCRIPTION_LENGTH` | 2000 | The output-description refusal text's figure (the description bound itself is `validate_description`'s 5 and 2000, #383) |
 
 ### Features
+- Double-spend review (#389): the locked input check still decides which
+  competing txid is returned. Before taking the writer, `review_beef` reads
+  that input's spender and prepares its BEEF from `proven_txs` raw bytes and
+  merkle path, or `proven_tx_reqs` / `transactions` raw bytes and `input_beef`,
+  walking stored ancestry. It awaits no provider or tracker and writes nothing.
+  If the locked check finds a different competitor, the action rolls back and
+  repeats the pre-check; another change answers `StoreBusy { MovedUnderUs }`.
+  `ReviewActionResult.competing_beef` carries the prepared bytes. Missing stored
+  data yields a txid-only BEEF, matching `getCompetingBeefForReview` at
+  ts-stack@edf6e03 `createAction.ts:528-539`; the result's own zero txid stays
+  under D14 / ts-stack #1436. Door witnesses: `create_action/tests/review.rs`.
 - Validation in ts-stack@edf6e03 validateCreateActionArgs order (749-808): description, inputs, outputs (each output's tags last), labels, options (knownTxids, noSendChange and its duplicates, sendWith); before #309 it ran labels, outputs, inputs, so a request with several bad arguments now answers the inputs' texts ahead of the outputs' and the labels'
 - The description (#383) uses `validate_description` from `internalize_action.rs`,
   shared with the internalize door: 5 to 2000 untrimmed UTF-8 bytes, as
