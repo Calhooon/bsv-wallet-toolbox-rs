@@ -3,7 +3,7 @@ use crate::storage::sqlx::internalize_action::{
     validate_array_bound, MAXIMUM_SEND_WITH_TRANSACTIONS, MAXIMUM_WALLET_COLLECTION_ITEMS,
 };
 use crate::storage::sqlx::label::normalize_label;
-use crate::wallet::internalize_args::validate_description;
+use crate::wallet::internalize_args::{validate_description, validate_label};
 // =============================================================================
 // Constants
 // =============================================================================
@@ -19,9 +19,6 @@ const MIN_DESCRIPTION_LENGTH: usize = 5;
 
 /// Maximum description length.
 const MAX_DESCRIPTION_LENGTH: usize = 2000;
-
-/// Maximum label length.
-const MAX_LABEL_LENGTH: usize = 300;
 
 /// BRC-177's module prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:5`).
 const BRC177_NO_SEND_MODULE_PREFIX: &str = "p nosend ";
@@ -149,15 +146,7 @@ pub(super) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
     if let Some(ref labels) = args.labels {
         validate_array_bound(labels.len(), "labels", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
         for label in labels {
-            if label.is_empty() {
-                return Err(Error::ValidationError("label cannot be empty".to_string()));
-            }
-            if label.len() > MAX_LABEL_LENGTH {
-                return Err(Error::ValidationError(format!(
-                    "label exceeds maximum length of {} characters",
-                    MAX_LABEL_LENGTH
-                )));
-            }
+            validate_label(label)?;
         }
     }
 

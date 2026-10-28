@@ -263,7 +263,10 @@ fn a_label_runs_ahead_of_the_known_txids_bound() {
     let mut o = options();
     o.known_txids = Some(vec![[1u8; 32]; LIMIT + 1]);
     args.options = Some(o);
-    assert_eq!(refusal(&args), "label cannot be empty");
+    assert_eq!(
+        refusal(&args),
+        "The label parameter must be at least 1 length."
+    );
 }
 
 // options.noSendChange: validateArray(o.noSendChange, 'noSendChange') at 667.

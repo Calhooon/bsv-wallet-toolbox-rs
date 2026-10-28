@@ -1,6 +1,6 @@
 {
   "description": "CreateAction argument validation test vectors from TypeScript and Go implementations",
-  "note": "The expected_error texts are this crate's and follow the TypeScript reference (ts-stack edf6e03, validationHelpers.ts:353-355 and :755: 'The description parameter must be at least 5 length.' / 'no more than 2000 length.'); they were not imported from Go, whose text is lowercase without the full stop (valid_create_action_args.go:59). The two description vectors are bounds in UTF-8 bytes.",
+  "note": "The expected_error texts are this crate's and follow the TypeScript reference (ts-stack edf6e03, validationHelpers.ts:353-355 and :755 for descriptions, :385-387, :409-417 and :762 for labels); they were not imported from Go, whose description text is lowercase without the full stop (valid_create_action_args.go:59). The description vectors bound UTF-8 bytes as given; the label vectors bound UTF-8 bytes after ECMAScript trim and lowercase.",
   "source_files": [
     "wallet-toolbox/test/Wallet/action/createAction.test.ts",
     "go-wallet-toolbox/pkg/internal/validate/valid_create_action_args_test.go"
@@ -64,23 +64,23 @@
     },
     {
       "id": "go_label_empty",
-      "description": "Label cannot be empty string",
+      "description": "Label cannot be empty after ECMAScript trim and lowercase",
       "inputs": {
         "description": "test transaction",
         "labels": [""],
         "outputs": []
       },
-      "expected_error": "label cannot be empty"
+      "expected_error": "The label parameter must be at least 1 length."
     },
     {
       "id": "go_label_too_long",
-      "description": "Label cannot exceed 300 characters",
+      "description": "Label cannot exceed 300 UTF-8 bytes after ECMAScript trim and lowercase",
       "inputs": {
         "description": "test transaction",
         "labels": ["REPEAT_CHAR_A_301_TIMES"],
         "outputs": []
       },
-      "expected_error": "label exceeds maximum length"
+      "expected_error": "The label parameter must be no more than 300 length."
     },
     {
       "id": "go_output_locking_script_not_hex",
