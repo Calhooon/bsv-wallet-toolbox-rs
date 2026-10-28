@@ -295,6 +295,9 @@ fn parse_brc177_no_send_expiry_labels(labels: &[String]) -> Result<bool> {
 #[path = "tests/validation_bounds.rs"]
 mod bounds_tests;
 #[cfg(test)]
+#[path = "tests/validation_description.rs"]
+mod description_tests;
+#[cfg(test)]
 #[path = "tests/validation_nosend_grammar.rs"]
 mod nosend_grammar_tests;
 #[cfg(test)]
