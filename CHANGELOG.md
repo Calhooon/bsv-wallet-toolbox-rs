@@ -131,7 +131,7 @@
   kept, so `cHJlZml4` followed by U+0085 is refused with the base64 text and
   a key followed by it with `even length, not 67.`. Two cases still answer
   in the wallet's place ahead of the door (D13, #376): on a P2PKH output
-  the wallet parses the sender first, so `sender_key` there answers
+  the wallet parses the sender ahead of the derivation check, so `sender_key` there answers
   `Invalid sender_identity_key: invalid hex string: Invalid character 's' at
   position 0` (on any other output, the door's
   `Validation error: The senderIdentityKey parameter must be hexadecimal string.`);
