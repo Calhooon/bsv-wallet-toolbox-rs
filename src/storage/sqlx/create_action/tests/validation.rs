@@ -14,7 +14,10 @@ fn test_validate_description_too_short() {
         options: None,
     };
     let err = validate_create_action_args(&args).unwrap_err();
-    assert!(err.to_string().contains("description length"));
+    assert_eq!(
+        err.to_string(),
+        "Validation error: The description parameter must be at least 5 length."
+    );
 }
 
 #[test]
@@ -30,7 +33,10 @@ fn test_validate_description_too_long() {
         options: None,
     };
     let err = validate_create_action_args(&args).unwrap_err();
-    assert!(err.to_string().contains("description length"));
+    assert_eq!(
+        err.to_string(),
+        "Validation error: The description parameter must be no more than 2000 length."
+    );
 }
 
 #[test]

@@ -507,12 +507,23 @@ With `sign_and_process` the template is signed and processed inside the create s
 | `DEFAULT_FEE_RATE_SAT_PER_KB` | 101 | Default fee rate |
 | `P2PKH_LOCKING_SCRIPT_LENGTH` | 25 | Standard P2PKH output size |
 | `P2PKH_UNLOCKING_SCRIPT_LENGTH` | 107 | Standard P2PKH input size |
-| `MIN_DESCRIPTION_LENGTH` | 5 | Minimum description chars |
-| `MAX_DESCRIPTION_LENGTH` | 2000 | Maximum description chars |
+| `MIN_DESCRIPTION_LENGTH` | 5 | Minimum output-description bytes |
+| `MAX_DESCRIPTION_LENGTH` | 2000 | Description byte bound and output-description refusal text |
 | `MAX_LABEL_LENGTH` | 300 | Maximum label chars |
 
 ### Features
 - Validation in ts-stack@edf6e03 validateCreateActionArgs order (749-808): description, inputs, outputs (each output's tags last), labels, options (knownTxids, noSendChange and its duplicates, sendWith); before #309 it ran labels, outputs, inputs, so a request with several bad arguments now answers the inputs' texts ahead of the outputs' and the labels'
+- The description (#383) uses `validate_description` from `internalize_action.rs`,
+  shared with the internalize door: 5 to 2000 untrimmed UTF-8 bytes, as
+  `validateStringLength(args.description, 'description', 5, 2000)` at
+  ts-stack@edf6e03 `validationHelpers.ts:755, 348-356`. A shorter value answers
+  `The description parameter must be at least 5 length.`; a longer one answers
+  `The description parameter must be no more than 2000 length.`. At
+  `WalletInterface` these are `WalletRefusal { class: InvalidParameter, message }`,
+  with `Validation error: ` before the text. The check precedes inputs and every
+  write. Witnesses: `create_action/tests/validation_description.rs` (exact
+  messages, both byte boundaries, multibyte strings, whitespace retained in
+  storage, and an invalid output beside a short description).
 - BRC-177 (#312): after every other check, a label starting `p nosend ` (trimmed with ECMAScript's whitespace and lowercased by `label.rs`, as the SDK's validateLabel leaves it, #379: `\u{FEFF}p nosend batch` meets the grammar and `\u{0085}p nosend ...` is an ordinary label; `startsWith`, ts-stack@edf6e03 `brc177NoSendExpiry.ts:5,119`) refuses `Error::InvalidOperation("Active storage does not support BRC-177 noSend expiry")`, the reference's text on a store without the capability (`createNoSendExpiryAction.ts:201-203`; the reference routes the label there at `Wallet.ts:1162-1165`). The port has no capability, so every such label is refused, ahead of any write; the label grammar's checks run ahead of it, as `parseBrc177NoSendExpiryLabels` does at `Wallet.ts:1163` (`brc177NoSendExpiry.ts:81-116`, in its order), each refusing `Error::ValidationError("The labels parameter must be <mustBe>")` with the reference's `WERR_INVALID_PARAMETER` text (`WERR_errors.ts:105`, no full stop): exactly one expiry label and one module label, one space between mode and value, the mode `seconds`/`timestamp`/`blockheight`, a canonical unsigned value within 2^53 - 1, `seconds` above zero (#359). A label the grammar accepts meets the capability text. `p nosendx` and `p nosend` alone are ordinary labels. Witnesses: `create_action/tests/validation_nosend.rs`, `create_action/tests/validation_nosend_grammar.rs`, `src/wallet/nosend_label_tests.rs`; the sync divergences are ARCHITECTURE D7 A `Wallet` over `StorageClient` (`remote`) passes the label to the remote store, where the reference parses in `Wallet` ahead of storage (#359's placement note; the lanes for #357 and #359 would put both refusals in the Wallet, keeping the door checks for direct storage callers).
 - Fee calculation with accurate transaction size estimation
 - Change generation with automatic UTXO management

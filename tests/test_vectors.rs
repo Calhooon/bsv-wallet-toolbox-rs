@@ -83,7 +83,7 @@ mod create_action_validation {
     #[tokio::test]
     async fn tv_go_description_too_short() {
         // Test vector: go_description_too_short
-        // Description too short (less than 5 characters)
+        // Description too short (less than 5 UTF-8 bytes)
         let (storage, auth) = setup_storage().await;
         let args = CreateActionArgs {
             description: "sh".to_string(),
@@ -98,17 +98,16 @@ mod create_action_validation {
         let result = storage.create_action(&auth, args).await;
         assert!(result.is_err(), "Short description should fail validation");
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("description") && err_msg.contains("5") && err_msg.contains("2000"),
-            "Error should mention description length bounds: {}",
-            err_msg
+        assert_eq!(
+            err_msg,
+            "Validation error: The description parameter must be at least 5 length."
         );
     }
 
     #[tokio::test]
     async fn tv_go_description_too_long() {
         // Test vector: go_description_too_long
-        // Description too long (more than 2000 characters)
+        // Description too long (more than 2000 UTF-8 bytes)
         let (storage, auth) = setup_storage().await;
         let args = CreateActionArgs {
             description: "A".repeat(2001),
@@ -123,10 +122,9 @@ mod create_action_validation {
         let result = storage.create_action(&auth, args).await;
         assert!(result.is_err(), "Long description should fail validation");
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("description") && err_msg.contains("5") && err_msg.contains("2000"),
-            "Error should mention description length bounds: {}",
-            err_msg
+        assert_eq!(
+            err_msg,
+            "Validation error: The description parameter must be no more than 2000 length."
         );
     }
 

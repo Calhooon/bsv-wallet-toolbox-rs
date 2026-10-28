@@ -30,6 +30,17 @@
   workers with a task-local witness; elapsed timings are diagnostics, so runner
   load alone cannot fail the lock regression check.
 
+- #383: createAction's description refusal text now matches the reference.
+  Through `WalletInterface`, `WalletRefusalClass::InvalidParameter` retains
+  its class but its message changes from
+  `Validation error: description length must be between 5 and 2000, got N`
+  to `Validation error: The description parameter must be at least 5 length.`
+  below the bound, or
+  `Validation error: The description parameter must be no more than 2000 length.`
+  above it. The bound remains 5 to 2000 untrimmed UTF-8 bytes. The two shared
+  description vectors carry the reference text. CLI replay is a TEXT-DIFF
+  until re-recorded at the updated toolbox pin.
+
 - #404, #185: toolbox request refusals converted at the `WalletInterface`
   boundary now carry `bsv_rs::Error::WalletRefusal { class, message }`.
   Hosts that matched `WalletError(text)` must match `WalletRefusalClass`;

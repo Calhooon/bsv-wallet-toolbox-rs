@@ -106,11 +106,11 @@ pub(crate) fn validate_internalize_action_args(args: &InternalizeActionArgs) -> 
     Ok(())
 }
 
-/// The reference's validateStringLength(args.description, 'description', 5,
-/// 2000) (#380, ts-stack@edf6e03 validationHelpers.ts:1053, 348-356): 5 to
-/// 2000 UTF-8 bytes as given, untrimmed, in its texts, after the outputs
-/// (1052) and ahead of the labels (1054).
-fn validate_description(description: &str) -> Result<()> {
+/// The reference's `validateStringLength` for a description (#380, #383,
+/// ts-stack@edf6e03 validationHelpers.ts:348-356): 5 to 2000 UTF-8 bytes as
+/// given, untrimmed, in its texts. Create calls it before inputs (755);
+/// internalize after outputs and before labels (1053).
+pub(crate) fn validate_description(description: &str) -> Result<()> {
     let mustbe = if description.len() < 5 {
         "at least 5 length."
     } else if description.len() > 2000 {

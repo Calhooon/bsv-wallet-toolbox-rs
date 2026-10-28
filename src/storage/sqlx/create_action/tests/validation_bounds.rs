@@ -104,7 +104,10 @@ fn description_runs_ahead_of_the_inputs_bound() {
     let mut args = args();
     args.description = "abc".to_string();
     args.inputs = Some((0..=LIMIT).map(input).collect());
-    assert!(refusal(&args).starts_with("description length"));
+    assert_eq!(
+        refusal(&args),
+        "The description parameter must be at least 5 length."
+    );
 }
 
 // outputs: validateArray(args.outputs, 'outputs') at 759.

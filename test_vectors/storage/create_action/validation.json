@@ -45,21 +45,21 @@
     },
     {
       "id": "go_description_too_short",
-      "description": "Description too short (less than 5 characters)",
+      "description": "Description too short (less than 5 UTF-8 bytes)",
       "inputs": {
         "description": "sh",
         "outputs": []
       },
-      "expected_error": "description length must be between 5 and 2000"
+      "expected_error": "The description parameter must be at least 5 length."
     },
     {
       "id": "go_description_too_long",
-      "description": "Description too long (more than 2000 characters)",
+      "description": "Description too long (more than 2000 UTF-8 bytes)",
       "inputs": {
         "description": "REPEAT_CHAR_A_2001_TIMES",
         "outputs": []
       },
-      "expected_error": "description length must be between 5 and 2000"
+      "expected_error": "The description parameter must be no more than 2000 length."
     },
     {
       "id": "go_label_empty",
