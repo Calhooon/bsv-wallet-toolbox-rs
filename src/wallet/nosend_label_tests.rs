@@ -441,3 +441,33 @@ async fn missing_remittance_answers_the_door_text_through_wallet_interface() {
     )
     .await;
 }
+
+/// #376: argument validation precedes the BRC-29 script comparison.
+#[tokio::test]
+async fn nosend_refusal_precedes_bad_derivation_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    let mut args = own_payment(&wallet, PAYMENT_SENDER);
+    args.labels = Some(vec!["p nosend expiry seconds 300".to_string()]);
+    assert_internalize_refused(
+        &wallet,
+        args,
+        WalletRefusalClass::InvalidParameter,
+        "Validation error: The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests",
+    )
+    .await;
+}
+
+/// #376: the labels array bound precedes the BRC-29 script comparison.
+#[tokio::test]
+async fn labels_bound_precedes_bad_derivation_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    let mut args = own_payment(&wallet, PAYMENT_SENDER);
+    args.labels = Some(vec!["label".to_string(); 100_001]);
+    assert_internalize_refused(
+        &wallet,
+        args,
+        WalletRefusalClass::InvalidParameter,
+        "Validation error: The labels parameter must be an array of at most 100000 items",
+    )
+    .await;
+}

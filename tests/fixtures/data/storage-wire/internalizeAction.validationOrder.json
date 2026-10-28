@@ -1,0 +1,17 @@
+{
+  "method": "internalizeAction",
+  "cases": [
+    {
+      "name": "nosend with bad derivation",
+      "label": "p nosend expiry seconds 300",
+      "count": 1,
+      "message": "Derivation mismatch for output 0: derived <derived> != script <script>"
+    },
+    {
+      "name": "labels bound with bad derivation",
+      "label": "label",
+      "count": 100001,
+      "message": "Derivation mismatch for output 0: derived <derived> != script <script>"
+    }
+  ]
+}
