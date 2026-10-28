@@ -3,6 +3,7 @@
 mod compare;
 mod door;
 mod model;
+mod must_spend;
 mod normalize;
 mod operations;
 mod received_rule;
