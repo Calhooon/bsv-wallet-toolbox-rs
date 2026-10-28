@@ -121,11 +121,15 @@ fn script_words(result: crate::Result<()>, expected: &str) {
     }
 }
 
+/// #422 applies the node's word per input in a lane after the beta.3 tag;
+/// when that lane lands, this assertion flips to a refusal with the node's text.
 #[tokio::test]
 async fn internalize_verifier_accepts_original_digest_without_forkid_at_beta3() {
     assert!(signed(0x01).await.is_ok());
 }
 
+/// #422 applies the node's word per input in a lane after the beta.3 tag;
+/// when that lane lands, this assertion flips to a refusal with the node's text.
 #[tokio::test]
 async fn internalize_verifier_uses_the_default_version_one_signature_words() {
     for scope in [0x61, 0x44] {
