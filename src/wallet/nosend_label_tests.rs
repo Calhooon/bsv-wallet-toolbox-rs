@@ -4,13 +4,14 @@
 //! refuses on a store without the capability (`createNoSendExpiryAction.ts:201-203`).
 //! In the port the storage door's validator refuses it
 //! (`create_action/validation.rs`), ahead of any storage write; the wallet
-//! hands it to the caller as `WalletError`, the action unwritten.
+//! hands it to the caller as `WalletRefusal`, the action unwritten.
 
 use super::busy_door_tests::{fund_tagged, own_lock, store_snapshot, wallet};
 use super::*;
 use crate::services::mock::MockWalletServices;
 use crate::StorageSqlx;
 use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
+use bsv_rs::WalletRefusalClass;
 
 fn expiry_payment(label: &str) -> CreateActionArgs {
     CreateActionArgs {
@@ -37,7 +38,7 @@ fn expiry_payment(label: &str) -> CreateActionArgs {
 }
 
 /// `create_action` refuses `label` with `text` and the store is unchanged.
-async fn assert_refused(label: &str, text: &str) {
+async fn assert_refused(label: &str, expected_class: WalletRefusalClass, text: &str) {
     let (_dir, wallet) = wallet().await;
     fund_tagged(&wallet, &own_lock(&wallet), 0).await;
     let before = store_snapshot(&wallet).await;
@@ -45,11 +46,9 @@ async fn assert_refused(label: &str, text: &str) {
     let result = wallet
         .create_action(expiry_payment(label), Some("nosend.example.com"))
         .await;
-    match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, text, "{label}"),
-        Err(other) => panic!("{label}: refused with another error: {other:?}"),
-        Ok(_) => panic!("{label}: the action was created"),
-    }
+    let error = result.expect_err("the action must be refused");
+    assert_eq!(error.to_string(), text, "{label}");
+    assert!(matches!(error, bsv_rs::Error::WalletRefusal { class, .. } if class == expected_class));
     assert_eq!(store_snapshot(&wallet).await, before, "{label}");
 }
 
@@ -57,6 +56,7 @@ async fn assert_refused(label: &str, text: &str) {
 async fn nosend_expiry_label_is_refused_through_wallet_interface() {
     assert_refused(
         "p nosend expiry seconds 300",
+        WalletRefusalClass::InvalidOperation,
         "Invalid operation: Active storage does not support BRC-177 noSend expiry",
     )
     .await;
@@ -139,7 +139,7 @@ fn insertion_labelled(labels: &[&str]) -> InternalizeActionArgs {
 /// The internalize door (#357): the reference refuses the label on
 /// internalizeAction (ts-stack@edf6e03 `Wallet.ts:1248-1250`); the port's
 /// storage door refuses it ahead of any write, and the wallet hands the
-/// reference's text to the caller as `WalletError`.
+/// reference's text to the caller as `WalletRefusal`.
 #[tokio::test]
 async fn nosend_label_is_refused_on_internalize_through_wallet_interface() {
     let (_dir, wallet) = wallet().await;
@@ -149,8 +149,8 @@ async fn nosend_label_is_refused_on_internalize_through_wallet_interface() {
         .internalize_action(insertion("p nosend expiry seconds 300"), Some(ORIGIN))
         .await;
     match result {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
-            message,
+        Err(error @ bsv_rs::Error::WalletRefusal { class: WalletRefusalClass::InvalidParameter, .. }) => assert_eq!(
+            error.to_string(),
             "Validation error: The labels parameter must be BRC-177 noSend expiry labels only on outgoing createAction requests"
         ),
         Err(other) => panic!("refused with another error: {other:?}"),
@@ -165,6 +165,7 @@ async fn nosend_label_is_refused_on_internalize_through_wallet_interface() {
 async fn nosend_batch_label_is_refused_with_the_grammar_text_through_wallet_interface() {
     assert_refused(
         "p nosend batch",
+        WalletRefusalClass::InvalidParameter,
         "Validation error: The labels parameter must be exactly one BRC-177 noSend expiry label",
     )
     .await;
@@ -178,7 +179,12 @@ async fn assert_internalize_refused(
 ) {
     let before = store_snapshot(wallet).await;
     match wallet.internalize_action(args, Some(ORIGIN)).await {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, text),
+        Err(
+            error @ bsv_rs::Error::WalletRefusal {
+                class: WalletRefusalClass::InvalidParameter,
+                ..
+            },
+        ) => assert_eq!(error.to_string(), text),
         Err(other) => panic!("refused with another error: {other:?}"),
         Ok(_) => panic!("the action was internalized"),
     }
