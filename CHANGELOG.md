@@ -104,7 +104,7 @@
   refusal. A description under 5 or over 2000 bytes was stored; beside an
   over-long label it answered the label text. This is a new refusal of input
   that succeeded before. The create door already bounds its description at
-  the reference's place (755), in the port's own text.
+  the reference's place (755), in the port's own text (#383).
 
 - #365: internalizeAction bounds every label as the reference's validateLabel
   does (ts-stack@edf6e03 `validationHelpers.ts:385-387, 409-417`, mapped at
