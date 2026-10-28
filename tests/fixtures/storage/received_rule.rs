@@ -37,20 +37,23 @@ async fn spend(replay: &mut Replay, label: Option<&str>) -> Result<serde_json::V
 }
 
 #[tokio::test]
-async fn received_rule_is_exact_and_belongs_to_the_spending_action() -> Result<()> {
-    for label in [
-        None,
-        Some("underReceivedRule "),
-        Some("UNDERRECEIVEDRULE"),
-        Some("spend-gate:received-pending"),
-        Some("underReceivedRule"),
+async fn received_rule_matches_the_normalized_label_of_the_spending_action() -> Result<()> {
+    // The rule is matched as every label is stored (#392, #437): trimmed and
+    // lowercased, then exact on `underreceivedrule`.
+    for (label, opts_in) in [
+        (None, false),
+        (Some("underReceivedRule "), true),
+        (Some("UNDERRECEIVEDRULE"), true),
+        (Some("spend-gate:received-pending"), false),
+        (Some("underReceivedRules"), false),
+        (Some("underReceivedRule"), true),
     ] {
         // The receipt already carries the label. Only this call can opt in.
         let mut replay = receipt(false).await?;
         let before = rows(&replay.storage).await?;
         let result = spend(&mut replay, label).await?;
-        if label == Some("underReceivedRule") {
-            assert!(result.get("ok").is_some(), "{result}");
+        if opts_in {
+            assert!(result.get("ok").is_some(), "{label:?}: {result}");
             let labels: Vec<String> = sqlx::query_scalar(
                 "SELECT l.label FROM tx_labels l \
                  JOIN tx_labels_map m ON m.tx_label_id = l.tx_label_id \
@@ -65,7 +68,7 @@ async fn received_rule_is_exact_and_belongs_to_the_spending_action() -> Result<(
                 result["error"]
                     .as_str()
                     .is_some_and(|error| error.starts_with("Insufficient funds")),
-                "{result}"
+                "{label:?}: {result}"
             );
             assert_eq!(rows(&replay.storage).await?, before);
         }
