@@ -8,6 +8,8 @@
 
 use super::busy_door_tests::{fund_tagged, own_lock, store_snapshot, wallet};
 use super::*;
+use crate::services::mock::MockWalletServices;
+use crate::StorageSqlx;
 use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionOutput};
 
 fn expiry_payment(label: &str) -> CreateActionArgs {
@@ -75,8 +77,8 @@ async fn label_outside_the_prefix_still_creates_through_wallet_interface() {
 const ORIGIN: &str = "nosend.example.com";
 
 /// A one-input, one-output transaction spending `outpoint`'s output 0 to
-/// `7551` (`OP_DROP OP_1`).
-fn spend_to_drop_one(outpoint: String, satoshis: u64) -> bsv_rs::transaction::Transaction {
+/// `lock` (hex).
+fn spend_to(outpoint: String, satoshis: u64, lock: &str) -> bsv_rs::transaction::Transaction {
     use bsv_rs::script::{LockingScript, UnlockingScript};
     use bsv_rs::transaction::{Transaction, TransactionInput, TransactionOutput};
     let mut tx = Transaction::new();
@@ -85,28 +87,39 @@ fn spend_to_drop_one(outpoint: String, satoshis: u64) -> bsv_rs::transaction::Tr
     tx.inputs.push(input);
     tx.outputs.push(TransactionOutput {
         satoshis: Some(satoshis),
-        locking_script: LockingScript::from_hex("7551").unwrap(),
+        locking_script: LockingScript::from_hex(lock).unwrap(),
         change: false,
     });
     tx
 }
 
-/// A basket insertion of an `AtomicBEEF` whose parent is proven by a
-/// coinbase-shaped BUMP, carrying `label`.
-fn insertion(label: &str) -> InternalizeActionArgs {
+/// An `AtomicBEEF` whose subject pays `lock` (hex) and whose parent is
+/// proven by a coinbase-shaped BUMP.
+fn atomic_beef_paying(lock: &str) -> Vec<u8> {
     use bsv_rs::transaction::{Beef, MerklePath};
-    use bsv_rs::wallet::{BasketInsertion, InternalizeOutput};
 
-    let parent = spend_to_drop_one("11".repeat(32), 20_000);
+    let parent = spend_to("11".repeat(32), 20_000, "7551");
     let parent_txid = parent.id();
-    let child = spend_to_drop_one(parent_txid.clone(), 10_000);
+    let child = spend_to(parent_txid.clone(), 10_000, lock);
     let txid = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_transaction(child);
+    beef.to_binary_atomic(&txid).unwrap()
+}
+
+/// A basket insertion of an output locked by `7551` (`OP_DROP OP_1`),
+/// carrying `label`.
+fn insertion(label: &str) -> InternalizeActionArgs {
+    insertion_labelled(&[label])
+}
+
+fn insertion_labelled(labels: &[&str]) -> InternalizeActionArgs {
+    use bsv_rs::wallet::{BasketInsertion, InternalizeOutput};
+
     InternalizeActionArgs {
-        tx: beef.to_binary_atomic(&txid).unwrap(),
+        tx: atomic_beef_paying("7551"),
         outputs: vec![InternalizeOutput {
             output_index: 0,
             protocol: "basket insertion".to_string(),
@@ -118,7 +131,7 @@ fn insertion(label: &str) -> InternalizeActionArgs {
             }),
         }],
         description: "a BRC-177 label test".to_string(),
-        labels: Some(vec![label.to_string()]),
+        labels: Some(labels.iter().map(ToString::to_string).collect()),
         seek_permission: None,
     }
 }
@@ -155,4 +168,84 @@ async fn nosend_batch_label_is_refused_with_the_grammar_text_through_wallet_inte
         "Validation error: The labels parameter must be exactly one BRC-177 noSend expiry label",
     )
     .await;
+}
+
+/// `internalize_action` refuses `args` with `text` and the store is unchanged.
+async fn assert_internalize_refused(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    args: InternalizeActionArgs,
+    text: &str,
+) {
+    let before = store_snapshot(wallet).await;
+    match wallet.internalize_action(args, ORIGIN).await {
+        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, text),
+        Err(other) => panic!("refused with another error: {other:?}"),
+        Ok(_) => panic!("the action was internalized"),
+    }
+    assert_eq!(store_snapshot(wallet).await, before);
+}
+
+/// #365 pair (a): validateLabel (ts-stack@edf6e03 validationHelpers.ts:1054,
+/// 385-387, 409-417) answers ahead of the BRC-177 refusal (Wallet.ts:1248-1250).
+#[tokio::test]
+async fn over_long_label_answers_ahead_of_the_nosend_refusal_through_wallet_interface() {
+    let (_dir, wallet) = wallet().await;
+    let long = "a".repeat(301);
+    assert_internalize_refused(
+        &wallet,
+        insertion_labelled(&["p nosend expiry seconds 300", &long]),
+        "Validation error: The label parameter must be no more than 300 length.",
+    )
+    .await;
+}
+
+/// #365 pair (b), `docs/ARCHITECTURE.md` D12: the reference refuses the
+/// BRC-177 label (Wallet.ts:1248-1250) before its signer finds the
+/// derivation locks nothing (`signer/methods/internalizeAction.ts:84-89`,
+/// "The paymentRemittance parameter must be locked by script conforming to
+/// BRC-29"). The port's wallet checks the derivation ahead of the storage
+/// door, where the label checks live, so the mismatch answers first.
+#[tokio::test]
+async fn derivation_mismatch_answers_ahead_of_the_nosend_refusal_through_wallet_interface() {
+    use bsv_rs::wallet::{
+        Counterparty, InternalizeOutput, KeyDeriverApi, Protocol, SecurityLevel, WalletPayment,
+    };
+    const SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+    let (_dir, wallet) = wallet().await;
+    // The output pays the wallet's key for counterparty self; the payment
+    // names another sender, so the derived key locks nothing of the output.
+    let lock = own_lock(&wallet);
+    let derived = wallet
+        .proto_wallet
+        .key_deriver()
+        .derive_public_key(
+            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
+            "cHJlZml4 c3VmZml4",
+            &Counterparty::Other(PublicKey::from_hex(SENDER).unwrap()),
+            true,
+        )
+        .unwrap();
+    let args = InternalizeActionArgs {
+        tx: atomic_beef_paying(&hex::encode(&lock)),
+        outputs: vec![InternalizeOutput {
+            output_index: 0,
+            protocol: "wallet payment".to_string(),
+            payment_remittance: Some(WalletPayment {
+                derivation_prefix: "cHJlZml4".to_string(),
+                derivation_suffix: "c3VmZml4".to_string(),
+                sender_identity_key: SENDER.to_string(),
+            }),
+            insertion_remittance: None,
+        }],
+        description: "a BRC-177 label test".to_string(),
+        labels: Some(vec!["p nosend expiry seconds 300".to_string()]),
+        seek_permission: None,
+    };
+    let text = format!(
+        "Derivation mismatch for output 0: derived {} != script {}",
+        hex::encode(derived.hash160()),
+        hex::encode(&lock[3..23])
+    );
+    assert_internalize_refused(&wallet, args, &text).await;
 }

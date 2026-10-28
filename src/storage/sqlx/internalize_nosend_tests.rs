@@ -42,9 +42,14 @@ async fn internalize(labels: &[&str]) -> (StorageSqlx, Vec<i64>, Result<()>) {
 
 /// The door refuses `labels` with the reference's text and writes no row.
 async fn assert_refused(labels: &[&str]) {
+    assert_refused_with(labels, REFUSAL).await;
+}
+
+/// The door refuses `labels` with `text` and writes no row.
+async fn assert_refused_with(labels: &[&str], text: &str) {
     let (storage, before, result) = internalize(labels).await;
     match result {
-        Err(Error::ValidationError(message)) => assert_eq!(message, REFUSAL, "{labels:?}"),
+        Err(Error::ValidationError(message)) => assert_eq!(message, text, "{labels:?}"),
         Err(other) => panic!("{labels:?}: refused with another error: {other}"),
         Ok(()) => panic!("{labels:?}: the action was internalized"),
     }
@@ -87,3 +92,58 @@ async fn bare_module_word_is_ordinary_metadata() {
     // No trailing space: the prefix `p nosend ` is not matched.
     assert_internalized("p nosend").await;
 }
+
+/// validateLabel's texts (ts-stack@edf6e03 validationHelpers.ts:385-387 and
+/// 409-417, `WERR_errors.ts:105`): 1 to 300 UTF-8 bytes once trimmed and
+/// lowercased.
+const LABEL_TOO_LONG: &str = "The label parameter must be no more than 300 length.";
+const LABEL_EMPTY: &str = "The label parameter must be at least 1 length.";
+
+/// #365: validateInternalizeActionArgs maps every label through
+/// validateLabel (validationHelpers.ts:1054) before Wallet.ts:1248-1250
+/// refuses a `p nosend ` label, so the over-long label answers, on either
+/// side of the BRC-177 label.
+#[tokio::test]
+async fn over_long_label_answers_ahead_of_the_nosend_refusal() {
+    let long = "a".repeat(301);
+    assert_refused_with(&["p nosend expiry seconds 300", &long], LABEL_TOO_LONG).await;
+    assert_refused_with(&[&long, "p nosend expiry seconds 300"], LABEL_TOO_LONG).await;
+}
+
+#[tokio::test]
+async fn label_bound_is_bytes_of_the_trimmed_label() {
+    assert_refused_with(&[&"a".repeat(301)], LABEL_TOO_LONG).await;
+    // 151 two-byte characters are 302 bytes.
+    assert_refused_with(&[&"\u{e9}".repeat(151)], LABEL_TOO_LONG).await;
+    assert_refused_with(&["   "], LABEL_EMPTY).await;
+    assert_refused_with(&[""], LABEL_EMPTY).await;
+    assert_internalized(&format!(" {} ", "a".repeat(300))).await;
+}
+
+/// #365: the reference refuses a wallet payment whose derivation does not
+/// lock the output (`signer/methods/internalizeAction.ts:84-89`) only after
+/// the BRC-177 refusal (Wallet.ts:1248-1252). The door derives no key, so a
+/// well-formed derivation that locks nothing of ours meets the BRC-177 text.
+#[tokio::test]
+async fn nosend_refusal_answers_ahead_of_a_derivation_that_locks_nothing() {
+    let storage = create_test_storage().await;
+    let user_id = create_test_user(&storage).await;
+    let before = rows(&storage).await;
+    let (bytes, _txid, _satoshis) = create_test_atomic_beef();
+    let mut args = wallet_payment_args(bytes, "a BRC-177 label test");
+    args.outputs[0].payment_remittance = Some(bsv_rs::wallet::WalletPayment {
+        derivation_prefix: "cHJlZml4".to_string(),
+        derivation_suffix: "c3VmZml4".to_string(),
+        sender_identity_key: SENDER.to_string(),
+    });
+    args.labels = Some(vec!["p nosend expiry seconds 300".to_string()]);
+    match internalize_action_internal(&storage, user_id, args).await {
+        Err(Error::ValidationError(message)) => assert_eq!(message, REFUSAL),
+        Err(other) => panic!("refused with another error: {other}"),
+        Ok(_) => panic!("the action was internalized"),
+    }
+    assert_eq!(rows(&storage).await, before);
+}
+
+/// A valid compressed public key (the secp256k1 generator).
+const SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
