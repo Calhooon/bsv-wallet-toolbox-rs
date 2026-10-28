@@ -1,12 +1,12 @@
-//! Label normalization as the SDK's validateLabel leaves a label
+//! Label normalization as the SDK's `validateLabel` leaves a label
 //! (ts-stack@edf6e03 `sdk/src/wallet/validationHelpers.ts:385-387, 411`):
 //! `trim().toLowerCase()`. ECMAScript's `String.prototype.trim` strips the
-//! WhiteSpace and LineTerminator productions, not Unicode White_Space, which
+//! `WhiteSpace` and `LineTerminator` productions, not Unicode `White_Space`, which
 //! Rust's `str::trim` strips: the two differ on U+FEFF (ECMAScript only) and
 //! U+0085 (Rust only), so the doors trim with this set (#379).
 
-/// ECMAScript's WhiteSpace (TAB, VT, FF, ZWNBSP, every Zs) and
-/// LineTerminator (LF, CR, LS, PS).
+/// ECMAScript's `WhiteSpace` (TAB, VT, FF, ZWNBSP, every Zs) and
+/// `LineTerminator` (LF, CR, LS, PS).
 fn is_ecmascript_whitespace(c: char) -> bool {
     matches!(
         c,
@@ -31,7 +31,7 @@ pub(crate) fn trim_ecmascript(s: &str) -> &str {
     s.trim_matches(is_ecmascript_whitespace)
 }
 
-/// The label as validateLabel leaves it: trimmed and lowercased.
+/// The label as `validateLabel` leaves it: trimmed and lowercased.
 pub(crate) fn normalize_label(label: &str) -> String {
     trim_ecmascript(label).to_lowercase()
 }
@@ -40,7 +40,7 @@ pub(crate) fn normalize_label(label: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Across every scalar value the set departs from Unicode White_Space
+    /// Across every scalar value the set departs from Unicode `White_Space`
     /// (`char::is_whitespace`) only at U+0085 and U+FEFF.
     #[test]
     fn set_differs_from_unicode_white_space_at_two_characters() {
