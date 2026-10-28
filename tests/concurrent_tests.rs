@@ -592,7 +592,10 @@ mod concurrent {
                 assert!(result.aborted);
                 true
             }
-            Err(bsv_wallet_toolbox_rs::Error::InvalidTransactionStatus(message)) => {
+            Err(bsv_wallet_toolbox_rs::Error::SdkError(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                message,
+            })) => {
                 assert!(message.contains("acceptance"), "{message}");
                 false
             }

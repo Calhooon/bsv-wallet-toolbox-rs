@@ -203,7 +203,13 @@ fn assert_acceptance_refusal<T: std::fmt::Debug>(result: bsv_wallet_toolbox_rs::
 async fn abort_unproven_without_chain_evidence_is_refused_without_writes_or_calls() {
     let s = Seeded::new("unproven").await;
     let before = s.snapshot().await;
-    assert_acceptance_refusal(s.abort().await);
+    match s.abort().await.unwrap_err() {
+        Error::SdkError(bsv_rs::Error::WalletRefusal {
+            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+            message,
+        }) => assert!(message.contains("accept"), "{message}"),
+        other => panic!("expected InvalidParameter refusal, got {other:?}"),
+    }
     assert_eq!(s.snapshot().await, before);
     s.assert_no_chain_calls();
 }
