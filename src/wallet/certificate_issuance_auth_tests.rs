@@ -38,6 +38,18 @@ async fn refused_in_send(server: &ServerGuard, words: &str) {
     );
 }
 
+/// A refusal in the send whose words are bsv-rs's own, not the reference's
+/// (bsv-rs #410): the class and the status pinned, not the sentence, so the
+/// text's move to the reference's does not break the witness.
+async fn refused_with_status(server: &ServerGuard, status: Option<u16>) {
+    let error = issue(server).await.unwrap_err().to_string();
+    let status = status.map(|code| code.to_string()).unwrap_or_default();
+    assert!(
+        error.starts_with(SEND_REFUSED) && error.contains(&status),
+        "{error}"
+    );
+}
+
 /// `certifier`'s answer on `/issue`, expected once.
 async fn answered(
     server: &mut ServerGuard,
@@ -113,7 +125,7 @@ async fn a_plain_server_writing_the_identity_header_is_refused_before_the_body()
     let handshake = plain(&mut server, "/.well-known/auth", 200, 1).await;
     // No keyring is sent past the handshake.
     let request = plain(&mut server, "/issue", 200, 0).await;
-    refused_in_send(&server, "Failed to parse auth response").await;
+    refused_with_status(&server, None).await;
     handshake.assert_async().await;
     request.assert_async().await;
 }
@@ -157,7 +169,7 @@ async fn a_handshake_answered_404_is_refused_with_no_general_request() {
     let mut server = mockito::Server::new_async().await;
     let handshake = plain(&mut server, "/.well-known/auth", 404, 1).await;
     let request = plain(&mut server, "/issue", 200, 0).await;
-    refused_in_send(&server, "404").await;
+    refused_with_status(&server, Some(404)).await;
     handshake.assert_async().await;
     request.assert_async().await;
 }
@@ -215,7 +227,7 @@ async fn a_redirect_on_the_handshake_is_refused() {
     let handshake = plain(&mut server, "/.well-known/auth", 307, 1).await;
     let hop = plain(&mut server, "/elsewhere", 200, 0).await;
     let request = plain(&mut server, "/issue", 200, 0).await;
-    refused_in_send(&server, "redirect refused: 307").await;
+    refused_with_status(&server, Some(307)).await;
     handshake.assert_async().await;
     hop.assert_async().await;
     request.assert_async().await;
@@ -227,7 +239,7 @@ async fn a_redirect_on_the_signed_request_is_refused() {
     signing_certifier(&mut server).await;
     let request = plain(&mut server, "/issue", 307, 1).await;
     let hop = plain(&mut server, "/elsewhere", 200, 0).await;
-    refused_in_send(&server, "redirect refused: 307").await;
+    refused_with_status(&server, Some(307)).await;
     request.assert_async().await;
     hop.assert_async().await;
 }
