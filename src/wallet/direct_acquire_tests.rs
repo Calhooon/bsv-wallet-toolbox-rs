@@ -1,10 +1,11 @@
-//! The direct acquire's argument checks at the `WalletInterface` boundary
-//! (#311). The reference's `acquireCertificate` (ts-stack@edf6e03
+//! The direct acquire's argument checks and cryptographic proof at the
+//! `WalletInterface` boundary (#311, #374). The reference's `acquireCertificate` (ts-stack@edf6e03
 //! `wallet-toolbox/src/Wallet.ts:826-833`) routes `direct` to
 //! `acquireDirectCertificateProtocol` (696-733), which opens with
 //! `validateAcquireDirectCertificateArgs` (`sdk/src/wallet/validationHelpers.ts:1401-1450`)
-//! through `validateAuthAndArgs` (697). Each refusal here is that validator's
-//! text, in its order, before any row is written.
+//! through `validateAuthAndArgs` (697). Argument refusals keep that validator's
+//! text and order. The proof witnesses exercise signature verification and
+//! field decryption (705-731), with no row written on a refusal.
 
 use super::busy_door_tests::certificate_rows;
 use super::*;
