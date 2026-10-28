@@ -24,7 +24,7 @@ cd fuzz && cargo +nightly fuzz run <target> -- -max_total_time=60 -timeout=10  #
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
 
-**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.2` on beta since #199, `=0.9.0-beta.1` from #184; main asks `0.8.0`, a caret range, until beta merges into it) with `full` and `http` features. The pin is the owner's word (epic #80).
+**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.3` on beta since #419, `=0.9.0-beta.1` from #184; main asks `0.8.0`, a caret range, until beta merges into it) with `full` and `http` features. The pin is the owner's word (epic #80).
 
 ## Architecture
 
@@ -142,7 +142,7 @@ Shared: test vectors, entity field names (camelCase), API method signatures, sta
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `bsv-rs` | =0.9.0-beta.2 (crates.io, `full` + `http`) | Primitives, transactions, WalletInterface trait |
+| `bsv-rs` | =0.9.0-beta.3 (crates.io, `full` + `http`) | Primitives, transactions, WalletInterface trait |
 | `tokio` | 1 | Async runtime (full features) |
 | `sqlx` | 0.8 | SQLite/MySQL database |
 | `reqwest` | 0.12 | HTTP client |
