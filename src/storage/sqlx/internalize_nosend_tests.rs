@@ -147,3 +147,34 @@ async fn nosend_refusal_answers_ahead_of_a_derivation_that_locks_nothing() {
 
 /// A valid compressed public key (the secp256k1 generator).
 const SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+/// #379: validateLabel trims with ECMAScript's `String.prototype.trim`
+/// (WhiteSpace and LineTerminator): U+FEFF trims to nothing and is refused
+/// as empty; U+0085 is kept, 2 bytes, and the label is stored as given.
+#[tokio::test]
+async fn byte_order_mark_label_is_refused_as_empty() {
+    assert_refused_with(&["\u{FEFF}"], LABEL_EMPTY).await;
+}
+
+#[tokio::test]
+async fn next_line_label_is_internalized() {
+    assert_internalized("\u{0085}").await;
+}
+
+/// #379: the BRC-177 match reads the label as ECMAScript's trim leaves it.
+#[tokio::test]
+async fn nosend_label_behind_a_byte_order_mark_is_refused() {
+    assert_refused(&["\u{FEFF}p nosend expiry seconds 300"]).await;
+}
+
+#[tokio::test]
+async fn nosend_label_behind_a_next_line_is_ordinary_metadata() {
+    assert_internalized("\u{0085}p nosend batch").await;
+}
+
+/// #379: the whitespace both trims strip is stripped as before.
+#[tokio::test]
+async fn label_bound_trims_shared_whitespace() {
+    assert_refused_with(&["\t\u{A0}\u{3000}\n"], LABEL_EMPTY).await;
+    assert_refused(&["\u{2028}P NOSEND batch\u{2029}"]).await;
+}

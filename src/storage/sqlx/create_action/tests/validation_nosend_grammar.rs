@@ -176,3 +176,10 @@ async fn grammatical_labels_still_meet_the_capability_refusal() {
     assert_capability(&["p nosend expiry blockheight 9007199254740991"]).await;
     assert_capability(&["invoice", "P NoSend Expiry Seconds 300"]).await;
 }
+
+/// #379: the grammar reads the label as ECMAScript's trim leaves it, so a
+/// leading U+FEFF is stripped and the module label meets the grammar.
+#[tokio::test]
+async fn module_label_behind_a_byte_order_mark_meets_the_grammar() {
+    assert_grammar(&["\u{FEFF}p nosend batch"], EXACTLY_ONE).await;
+}
