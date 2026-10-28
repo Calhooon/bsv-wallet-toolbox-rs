@@ -4,6 +4,18 @@
 
 ### Changed
 
+- #404, #185: toolbox request refusals converted at the `WalletInterface`
+  boundary now carry `bsv_rs::Error::WalletRefusal { class, message }`.
+  Hosts that matched `WalletError(text)` must match `WalletRefusalClass`;
+  invalid BEEF and spend refusals share `InvalidParameter`. The toolbox
+  message is unchanged; the SDK's Display prints it without the former
+  generic `wallet error: ` wrapper. Busy, review and SDK errors retain their
+  existing typed forms, and other faults stay faults. The mapping and nearest
+  reference classes are documented in `src/wallet/CLAUDE.md`. CLI #330 must
+  take this migration with the next published toolbox beta; no version or pin
+  is changed here. Direct SDK error sites and the remaining response-wait
+  and tracker transport erasures still require follow-up under #185.
+
 - CI: `release.yml`'s call of the reusable `ci.yml` grants `pull-requests: read`
   beside `contents: read`, the permission the semver job reads on a push run
   since #398; the tag v0.14.0-beta.2's release run failed at startup without it
