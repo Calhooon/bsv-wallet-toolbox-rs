@@ -106,7 +106,7 @@
   is a new refusal of input that succeeded before. Through `WalletInterface`
   a wallet payment whose derivation locks nothing still answers the wallet's
   `Derivation mismatch for output <i>: ...` ahead of every door refusal, the
-  BRC-177 text included (the divergence row D12 in `docs/ARCHITECTURE.md`).
+  BRC-177 text included (the divergence row D13 in `docs/ARCHITECTURE.md`).
 
 - #337: `internalize_action` refuses an output carrying the other protocol's
   remittance ahead of the remittance's fields, as the reference does
