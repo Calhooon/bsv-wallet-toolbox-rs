@@ -99,10 +99,10 @@ fn script_words(result: crate::Result<()>, expected: &str) {
     }
 }
 
-/// The beta.3 default accepted this original-digest signature. The live
-/// door must require a fork ID under the node's word (#422).
+/// Witness (a): the beta.3 default accepted this original-digest signature.
+/// The live door refuses it under the node's word (#422).
 #[tokio::test]
-async fn internalize_verifier_accepts_original_digest_without_forkid_at_beta3() {
+async fn internalize_verifier_refuses_the_original_digest_beta3_accepted() {
     script_words(signed(0x01).await, "The signature must use SIGHASH_FORKID.");
 }
 
@@ -484,8 +484,10 @@ async fn word_preserves_spent_outputs_after_default_script_refusal() {
     );
 }
 
+/// Witness (c): a pre-Chronicle coin spent today. The spend's word carries
+/// CHRONICLE, so the version-1 0x61 signature on the older input passes.
 #[tokio::test]
-async fn word_uses_the_proof_height_of_each_input() {
+async fn word_accepts_a_chronicle_signature_on_a_pre_chronicle_coin() {
     let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
     let (new_coin, mut child) = signed_payment(0x61);
     let mut old_coin = new_coin.clone();
@@ -503,21 +505,70 @@ async fn word_uses_the_proof_height_of_each_input() {
         "mainnet",
     )
     .await;
-    match result {
-        Err(Error::SpendRefused {
-            input: Some(1),
-            why: SpendRefusal::Script(message),
-            ..
-        }) => assert_eq!(
-            message,
-            "The signature must not use SIGHASH_CHRONICLE before Chronicle."
+    eprintln!("version-1 0x61 on a pre-Chronicle coin spent today: {result:?}");
+    assert!(result.is_ok(), "{result:?}");
+}
+
+async fn opcode_spend(lock: &str, unlock: &str, coin_height: u32) -> crate::Result<()> {
+    let (parent, mut child) = payment(lock);
+    child.inputs[0].unlocking_script = Some(UnlockingScript::from_hex(unlock).unwrap());
+    let bump = proof(&parent, coin_height);
+    verify_entries(
+        vec![(parent, Some(0)), (child, None)],
+        vec![bump],
+        ProtocolEra::MAINNET_CHRONICLE_HEIGHT + 6,
+        "mainnet",
+    )
+    .await
+}
+
+/// Witness (c)'s opcode case: the coin's UTXO bits gate the Chronicle
+/// opcodes, so a coin proven before Chronicle keeps `OP_2MUL` disabled and
+/// `OP_SUBSTR` as `OP_NOP4`, which the standard word discourages.
+#[tokio::test]
+async fn word_judges_chronicle_opcodes_by_the_coin_era() {
+    let chronicle = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
+    for (lock, unlock, old_coin) in [
+        (
+            "528d5487",
+            "",
+            "This opcode is currently disabled. (Opcode: OP_2MUL, PC: 1)",
         ),
-        other => panic!("expected the older input's era refusal, got {other:?}"),
+        (
+            "0052b302616287",
+            "03616263",
+            "OP_NOP4 is discouraged by verification flags.",
+        ),
+    ] {
+        let verdict = opcode_spend(lock, unlock, chronicle).await;
+        assert!(
+            verdict.is_ok(),
+            "{lock} on a post-Chronicle coin: {verdict:?}"
+        );
+        script_words(opcode_spend(lock, unlock, chronicle - 1).await, old_coin);
     }
 }
 
+/// Witness (d): regtest with its tip between Genesis and Chronicle, so the
+/// spend's word lacks CHRONICLE and the 0x61 signature takes the era text.
 #[tokio::test]
-async fn word_uses_the_tip_for_an_unproven_coin() {
+async fn regtest_post_genesis_tip_refuses_a_chronicle_signature() {
+    let (parent, child) = signed_payment(0x61);
+    let bump = proof(&parent, 1);
+    script_words(
+        verify_entries(
+            vec![(parent, Some(0)), (child, None)],
+            vec![bump],
+            ProtocolEra::MAINNET_GENESIS_HEIGHT + 100,
+            "regtest",
+        )
+        .await,
+        "The signature must not use SIGHASH_CHRONICLE before Chronicle.",
+    );
+}
+
+#[tokio::test]
+async fn word_uses_the_next_block_for_an_unproven_coin() {
     let (parent, subject) = signed_payment(0x61);
     let (mut root, _) = payment("51");
     root.outputs[0].satoshis = Some(110);
@@ -529,10 +580,12 @@ async fn word_uses_the_tip_for_an_unproven_coin() {
     subject.inputs[0].source_txid = Some(parent.id());
     sign_input(&parent, &mut subject, 0, 0x61);
     let bump = proof(&root, HEIGHT);
+    // The block after this tip is Chronicle's: the mempool parent and its
+    // spender take tip+1's era.
     let result = verify_entries(
         vec![(root, Some(0)), (parent, None), (subject, None)],
         vec![bump],
-        ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
+        ProtocolEra::MAINNET_CHRONICLE_HEIGHT - 1,
         "mainnet",
     )
     .await;
