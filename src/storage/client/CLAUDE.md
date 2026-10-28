@@ -36,6 +36,7 @@ marks their #105 changes and the remaining decisions that need the owner.
 | `storage_client.rs` | 2619 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
 | `wire.rs` | 205 | Request field names and reference result aliases |
 | `wire_tests.rs` | 361 | Reference responses and outgoing-name regressions |
+| `brc104_bounds_tests.rs` | 155 | beta.3's BRC-104 response bounds through the authenticated client (#423) |
 
 ## Key Exports
 
@@ -325,6 +326,18 @@ match client.make_available().await {
     Err(e) => { /* other errors */ }
 }
 ```
+
+bsv-rs beta.3's BRC-104 response bounds (#416; the payloads are in
+`src/wallet/CLAUDE.md`'s issuance table) refuse inside the `NetworkError`
+arm as `Network error: Failed to send request: authentication error: <payload>`,
+`WalletError` through the boundary. `brc104_bounds_tests.rs` drives each
+through the client (#423): the handshake body cap on a client with no
+session, the rest on a seeded session's general message. An answer typed
+`certificateRequest` without a requested-certificates header is refused by
+the Peer with `requestedCertificates must be an object.`. The signed-header
+count bound is not reached over the client's HTTP/1 transport: hyper's
+100-header limit answers before it, as the `MAY_HAVE_BEEN_RECEIVED` transport
+fault above.
 
 ## BRC-104 Peer-Based Authentication
 

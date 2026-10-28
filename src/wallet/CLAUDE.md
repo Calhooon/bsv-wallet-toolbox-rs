@@ -986,6 +986,22 @@ the issuance caller's `Network error: Failed to send request: ` envelope.
 | Optional request ID | Canonical padded base64 for exactly 32 bytes; absent stays absent | `Authenticated response request ID must be canonical base64` or `Authenticated response request ID must encode exactly 32 bytes` |
 | Signed headers | 512 distinct headers; names at most 1,024 bytes, values 32,768 bytes, sum 262,144 UTF-8 bytes | `Authenticated response contains an oversized signed header` or `Authenticated response signed headers exceed their limit` |
 
+`certificate_issuance_bounds_tests.rs` drives the vector's refused cases
+through this door (#423): the fixture certifier's server answers them after
+its handshake, or on the handshake path, and each refusal is the payload
+above, byte for byte, inside `Network error: Failed to send request: authentication error: `
+as `WalletError`. At the door the kept type is visible: an answer typed
+`certificateRequest` with no requested-certificates header reaches the Peer
+as a certificate request and is refused with
+`requestedCertificates must be an object.`; the vector's `CertificateRequest`
+spelling stays general and meets the Peer's nonce check. The signed-header
+count bound is not reachable here: the door's HTTP/1 client fails at hyper's
+100-header limit, as `TransportFault` `MAY_HAVE_BEEN_RECEIVED` with
+`HTTP request failed: error sending request for url (<url>)`, before 512
+signed headers arrive; `tests/brc104_bounds.rs` replays it over HTTP/2.
+The cases are shared with the storage client from
+`tests/common/brc104_door_cases.rs`.
+
 The requested-certificates preimage remains the keeper's stated divergence:
 bsv-rs verifies the received header text; the reference verifies the parsed
 object's stringified form. Whitespace and redundant escapes can therefore
