@@ -210,6 +210,7 @@ fi
 
 missing_branch_case() {
   local explicit="$1" branch='lane/not-pushed' out status git_args row
+  local clone='https://github.com/Calhooon/bsv-wallet-cli.git'
   local -a args=(--only bsv-wallet-cli)
   [ "$explicit" -eq 0 ] || args+=(--line "$branch")
   : >"$dir/git-args"
@@ -221,9 +222,9 @@ missing_branch_case() {
   status=$?
   git_args="$(cat "$dir/git-args")"
   if [ "$explicit" -eq 1 ]; then
-    row="| bsv-wallet-cli | no $branch branch (explicit --line) | - |"
+    row="| bsv-wallet-cli | no $branch branch at $clone (explicit --line) | - |"
     if [ "$status" -eq 1 ] && [[ "$git_args" == *"refs/heads/$branch"* ]] &&
-      [[ "$git_args" != *clone* && "$out" == *"no $branch branch (explicit --line)"* ]] &&
+      [[ "$git_args" != *clone* && "$out" == *"no $branch branch at $clone (explicit --line)"* ]] &&
       grep -qxF -- "$row" "$dir/missing-summary.md"; then
       echo "ok      missing explicit line refuses cloning (exit $status): $row"
       pass=$((pass + 1))
