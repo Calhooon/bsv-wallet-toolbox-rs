@@ -4182,23 +4182,21 @@ mod tests {
             if fault < 3 {
                 assert!(matches!(result, Err(Error::ServiceError(_))), "{result:?}");
             } else {
-                let expected = match fault % 3 {
-                    0 => (bsv_rs::TransportFault::NeverSent, None),
-                    1 => (bsv_rs::TransportFault::MayHaveBeenReceived, Some(503)),
-                    _ => (
-                        bsv_rs::TransportFault::RateLimited {
-                            retry_after_ms: Some(7_000),
-                        },
-                        Some(429),
-                    ),
+                let bsv_rs::transaction::ChainTrackerError::TransportFault {
+                    fault: expected_fault,
+                    status: expected_status,
+                    detail: expected_detail,
+                } = typed_header_fault(fault)
+                else {
+                    unreachable!("the fixture supplies a typed transport fault")
                 };
                 let sdk = bsv_rs::Error::from(result.unwrap_err());
                 assert!(
                     matches!(&sdk, bsv_rs::Error::TransportFault { fault, status, detail }
-                    if (*fault, *status) == expected && detail == "header fixture unavailable"),
+                    if *fault == expected_fault && *status == expected_status && detail == &expected_detail),
                     "{sdk:?}"
                 );
-                assert_eq!(sdk.transport_fault(), Some(expected.0));
+                assert_eq!(sdk.transport_fault(), Some(expected_fault));
             }
             assert_eq!(tx_status(&storage, user_id, &txid).await, None);
             assert_eq!(req_status(&storage, &txid).await, None);
