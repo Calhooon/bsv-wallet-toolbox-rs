@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.3] - 2026-10-28
+
 ### Changed
 
 - #419: Pin both workspaces to `bsv-rs =0.9.0-beta.3`, retaining
