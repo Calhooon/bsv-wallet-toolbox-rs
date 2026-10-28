@@ -1,0 +1,112 @@
+{
+  "about": "Arcade 404 (a broadcaster's unknown, a gap), WhatsOnChain unknown and Bitails 404: two chain indexes' clean negatives make unknown; BananaBlocks is asked too.",
+  "ladder": "get_status_for_txids",
+  "providers": [
+    {
+      "name": "ArcadeV2",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "WhatsOnChain",
+      "routes": [
+        {
+          "route": "POST /txs/status",
+          "answers": [
+            {
+              "status": 200,
+              "json": [
+                {
+                  "error": "unknown",
+                  "txid": "abababababababababababababababababababababababababababababababab"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bitails",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 404
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "ArcadeV2",
+          "results": [
+            {
+              "status": "unknown",
+              "txid": "abababababababababababababababababababababababababababababababab"
+            }
+          ],
+          "status": "success"
+        }
+      }
+    ],
+    "requests": {
+      "ArcadeV2": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "BananaBlocks": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "Bitails": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      },
+      "WhatsOnChain": {
+        "POST /txs/status": 1
+      }
+    },
+    "request_bodies": {
+      "WhatsOnChain": {
+        "POST /txs/status": [
+          {
+            "txids": [
+              "abababababababababababababababababababababababababababababababab"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

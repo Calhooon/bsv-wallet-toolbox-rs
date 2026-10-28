@@ -1,0 +1,70 @@
+{
+  "about": "Arcade's status document says MINED and carries its proof: mined ends the question; no explorer is asked.",
+  "ladder": "get_status_for_txids",
+  "providers": [
+    {
+      "name": "ArcadeV2",
+      "routes": [
+        {
+          "route": "GET /tx/abababababababababababababababababababababababababababababababab",
+          "answers": [
+            {
+              "status": 200,
+              "json": {
+                "blockHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "blockHeight": 900000,
+                "merklePath": "fea0bb0d0001020002abababababababababababababababababababababababababababababababab0100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "txStatus": "MINED",
+                "txid": "abababababababababababababababababababababababababababababababab"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "WhatsOnChain",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    },
+    {
+      "name": "BananaBlocks",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {
+      "txids": [
+        "abababababababababababababababababababababababababababababababab"
+      ]
+    }
+  ],
+  "expected": {
+    "results": [
+      {
+        "ok": {
+          "name": "ArcadeV2",
+          "results": [
+            {
+              "block_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "block_height": 900000,
+              "depth": 1,
+              "merkle_path": "fea0bb0d0001020002abababababababababababababababababababababababababababababababab0100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "status": "mined",
+              "txid": "abababababababababababababababababababababababababababababababab"
+            }
+          ],
+          "status": "success"
+        }
+      }
+    ],
+    "requests": {
+      "ArcadeV2": {
+        "GET /tx/abababababababababababababababababababababababababababababababab": 1
+      }
+    }
+  }
+}

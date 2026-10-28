@@ -67,6 +67,9 @@ mod pool;
 #[path = "ladder_lock.rs"]
 mod lock;
 
+#[path = "ladder_arcade.rs"]
+mod arcade;
+
 /// The explorers' client timeout in a replay: a `delay_ms` past it is a
 /// timeout.
 const CLIENT_TIMEOUT_SECS: u64 = 2;
@@ -74,13 +77,15 @@ const CLIENT_TIMEOUT_SECS: u64 = 2;
 /// How many fixtures replay at once, each worker on servers of its own.
 const WORKERS: usize = 8;
 
-/// Every provider a fixture can name, in the order the servers are built.
-const PROVIDERS: [&str; 5] = [
+/// Every provider a fixture can name, in the order the servers are built
+/// (`ArcadeV2` only in an Arcade scene, `ladder_arcade.rs`).
+const PROVIDERS: [&str; 6] = [
     "WhatsOnChain",
     "BananaBlocks",
     "Bitails",
     "Chaintracks",
     "BHS",
+    "ArcadeV2",
 ];
 
 /// The ladders, each with its providers in the order the ladder asks them.
@@ -369,14 +374,6 @@ fn ladder_fixtures_mask_only_a_later_calls_remainder() {
         mask_remainder("retry after 7s; retry after soon; retry after 12x; retry after 3s"),
         "retry after <n>s; retry after soon; retry after 12x; retry after <n>s"
     );
-}
-
-/// The fixtures recorded the explorer read ladders, which carry no
-/// broadcaster rung only in classic mode: the deprecated knob, at a
-/// loopback port nothing listens on, since no fixture posts (#317).
-#[allow(deprecated)]
-fn classic_options() -> ServicesOptions {
-    ServicesOptions::mainnet().with_classic_arc("http://127.0.0.1:9", None)
 }
 
 fn fixture_root() -> PathBuf {
@@ -680,7 +677,7 @@ async fn replay(
     let counts: Counts = Arc::default();
     let _mocks = lock::script(fixture, servers, &counts).await?;
     let named = |name: &str| fixture.providers.iter().any(|p| p.name == name);
-    let mut options = classic_options();
+    let mut options = arcade::options(fixture, servers);
     if named("Chaintracks") {
         options = options.with_chaintracks_url(servers.url("Chaintracks"));
     }
@@ -743,7 +740,7 @@ async fn ladder_status_429_without_retry_after_uses_the_controlled_clock() {
     let counts: Counts = Arc::default();
     let _mocks = lock::script(&fixture, &mut servers, &counts).await.unwrap();
     let (services, clock) = services_at(
-        classic_options(),
+        arcade::classic_options(),
         &servers.url("WhatsOnChain"),
         &servers.url("Bitails"),
         Some(&servers.url("BananaBlocks")),
