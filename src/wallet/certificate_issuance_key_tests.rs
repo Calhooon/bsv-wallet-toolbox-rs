@@ -1,5 +1,6 @@
 //! #261 and #271: issuance argument order, normalization, and response texts.
 
+use super::peer_fixture::{Answer, PeerCertifier};
 use super::*;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::wallet::{AcquisitionProtocol, CreateHmacArgs, ProtoWallet};
@@ -18,6 +19,13 @@ fn certifier() -> String {
         .unwrap()
         .public_key()
         .to_hex()
+}
+
+// The certifier's key on a fixture server: it answers the BRC-104 handshake.
+async fn signing_certifier(server: &mut mockito::ServerGuard) -> PeerCertifier {
+    let certifier = PeerCertifier::new(PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap());
+    certifier.handshake(server).await;
+    certifier
 }
 
 // The test wallet's ProtoWallet: the subject's key, as Wallet::acquire_certificate passes it.
@@ -209,14 +217,9 @@ async fn normalized_args_reach_response_checks(
         timestamp: String::new(),
         version: "1.0".to_string(),
     };
-    let request = server
-        .mock("POST", "/issue")
-        .match_header(HEADER_IDENTITY_KEY, wallet.identity_key())
-        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-            "type": expected_type,
-        })))
-        .with_header(HEADER_CERTIFIER_IDENTITY_KEY, &canonical)
-        .with_body_from_request(move |request| {
+    let request = signing_certifier(&mut server)
+        .await
+        .general(&mut server, "/issue", 200, Answer::Signed, move |request| {
             let request: ProtocolIssuanceRequest =
                 serde_json::from_slice(request.body().unwrap()).unwrap();
             let signer =
@@ -243,6 +246,9 @@ async fn normalized_args_reach_response_checks(
             response.certificate.as_mut().unwrap().serial_number = BASE64.encode(serial);
             serde_json::to_vec(&response).unwrap()
         })
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "type": expected_type,
+        })))
         .expect(1)
         .create_async()
         .await;
@@ -294,11 +300,9 @@ async fn mismatched_response(field: Option<&str>) -> (bsv_rs::Result<WalletCerti
     let subject = PublicKey::from_hex(wallet.identity_key()).unwrap();
     let certifier_key = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
     let signer = ProtoWallet::new(Some(certifier_key));
-    let request = server
-        .mock("POST", "/issue")
-        .match_header(HEADER_IDENTITY_KEY, wallet.identity_key())
-        .with_header(HEADER_CERTIFIER_IDENTITY_KEY, &certifier())
-        .with_body_from_request(move |request| {
+    let request = signing_certifier(&mut server)
+        .await
+        .general(&mut server, "/issue", 200, Answer::Signed, move |request| {
             let issued: ProtocolIssuanceRequest =
                 serde_json::from_slice(request.body().unwrap()).unwrap();
             let server_nonce = BASE64.encode([5; 32]);
@@ -383,34 +387,6 @@ async fn test_issuance_padded_certifier_reaches_response_checks() {
     }
 }
 
-#[tokio::test]
-async fn test_issuance_header_certifier_mismatch_uses_reference_text() {
-    let wallet = wallet().await;
-    let mut server = mockito::Server::new_async().await;
-    let unexpected = wallet.identity_key();
-    let request = server
-        .mock("POST", "/issue")
-        .with_header(HEADER_CERTIFIER_IDENTITY_KEY, unexpected)
-        .with_body(r#"{"serverNonce":"fixture","certificate":null}"#)
-        .expect(1)
-        .create_async()
-        .await;
-    let result = acquire_from_fixture(
-        &wallet,
-        args(certifier(), format!("{}/issue", server.url())),
-    )
-    .await;
-    // ts-stack@edf6e03 Wallet.ts:789-791 uses this text for a differing header.
-    assert_wallet_error(
-        result,
-        &format!(
-            "Validation error: Invalid certifier! Expected: {}, Received: {unexpected}",
-            certifier()
-        ),
-    );
-    request.assert_async().await;
-}
-
 #[cfg(test)]
 #[path = "certificate_issuance_guard_tests.rs"]
 mod guard_tests;
@@ -418,10 +394,6 @@ mod guard_tests;
 #[cfg(test)]
 #[path = "certificate_issuance_response_tests.rs"]
 mod response_tests;
-
-#[cfg(test)]
-#[path = "certificate_issuance_header_tests.rs"]
-mod header_tests;
 
 #[cfg(test)]
 #[path = "certificate_issuance_nonce_tests.rs"]

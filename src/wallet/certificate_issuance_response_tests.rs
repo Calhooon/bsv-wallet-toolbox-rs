@@ -1,5 +1,9 @@
 //! #283: the response guards are exercised through local HTTP and real storage.
 
+#[cfg(test)]
+#[path = "certificate_issuance_auth_tests.rs"]
+mod auth_tests;
+
 use super::*;
 use bsv_rs::auth::certificates::Certificate;
 use bsv_rs::wallet::*;
@@ -119,9 +123,8 @@ async fn response_run_with(
     let issued_response = Arc::new(Mutex::new(Value::Null));
     let captured = Arc::clone(&issued_response);
     let subject = PublicKey::from_hex(wallet.identity_key()).unwrap();
-    let request = server.mock("POST", "/issue")
-        .with_header(HEADER_CERTIFIER_IDENTITY_KEY, &certifier())
-        .with_body_from_request(move |request| {
+    let request = signing_certifier(&mut server).await
+        .general(&mut server, "/issue", 200, super::peer_fixture::Answer::Signed, move |request| {
             let request: ProtocolIssuanceRequest = serde_json::from_slice(request.body().unwrap()).unwrap();
             let private = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
             let signer = ProtoWallet::new(Some(private.clone()));
