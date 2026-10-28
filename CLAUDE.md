@@ -90,7 +90,7 @@ Adding methods to any storage trait requires updating ALL 3 implementors:
 
 **Service failover:** `ServiceCollection<S>` wraps multiple providers, tries each in order, tracks call history.
 
-**Error handling:** `thiserror`-based `Error` enum in `error.rs`, crate-wide `Result<T>` alias. Errors categorized: storage, authentication, service, transaction, validation, sync, wrapped.
+**Error handling:** `thiserror`-based `Error` enum in `error.rs`, crate-wide `Result<T>` alias. At the `WalletInterface` boundary, request refusals become bsv-rs's `WalletRefusal { class, message }`; hosts match `WalletRefusalClass`, never the message. The message keeps the toolbox Display text, and the SDK displays that message alone. `StoreBusy` stays `WalletBusy`, `ReviewActions` stays `WalletReviewActions`, and `SdkError` passes through. Other faults stay `WalletError`. The variant, reference class and text table is in `src/wallet/CLAUDE.md`; direct SDK errors created in wallet methods are outside this conversion.
 
 **Generic types:** `Wallet<S, V>` where `S: WalletStorageProvider`, `V: WalletServices`. `Monitor<S, V>` where `S: MonitorStorage`, `V: WalletServices`.
 
