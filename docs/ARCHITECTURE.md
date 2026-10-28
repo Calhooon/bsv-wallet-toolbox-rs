@@ -528,7 +528,7 @@ proof checked against our headers writes `doubleSpend`.
 | the status scene's 429 without Retry-After closes the rung at 999 ms and reopens it at 1000 ms on a controlled clock | (no charter window; #194, WhatsOnChain's one-second default) | `ladder_status_429_without_retry_after_uses_the_controlled_clock` |
 | a ladder replay that differs prints the call history and the requests per provider | (no charter; #194) | `ladder_fixtures_a_mismatch_prints_the_call_history` |
 | a late second answer (WhatsOnChain 429, Bitails 200, then Bitails past the client's deadline) falls to the unscripted rung and reads as a runner stall, not a ladder verdict | (no charter; #194) | `ladder_fixtures_a_late_second_answer_reads_as_a_runner_stall` |
-| the replay's late fault among every fixture on the default workers agrees with one worker's within 500 ms: no worker waits on a mock server's lock behind a sleeping answer | (no charter; #292) | `ladder_fixtures_replay_times_match_a_single_worker` |
+| the replay's late fault among every fixture on the default workers agrees with one worker's within 500 ms: no worker waits on a mock server's lock behind a sleeping answer | (no charter; #292) | `ladder_fixtures_server_locks_and_disposals_stay_off_runtime_workers` |
 | a service answer is built only by services | (no charter; #56) | `service_answers_are_only_built_by_services` |
 | provider requests stay in providers | (no charter; #56) | `provider_requests_stay_in_providers` |
 
