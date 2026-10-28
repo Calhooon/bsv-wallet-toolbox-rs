@@ -128,7 +128,7 @@ pub(crate) fn validate_description(description: &str) -> Result<()> {
 /// UTF-8 bytes once trimmed and lowercased, in its texts. Every label meets
 /// it before the BRC-177 refusal, as validateInternalizeActionArgs maps the
 /// labels (1054) before Wallet.ts:1248-1250 reads them.
-fn validate_label(label: &str) -> Result<()> {
+pub(crate) fn validate_label(label: &str) -> Result<()> {
     let bytes = label::normalize_label(label).len();
     let mustbe = if bytes < 1 {
         "at least 1 length."

@@ -146,17 +146,16 @@ mod create_action_validation {
         let result = storage.create_action(&auth, args).await;
         assert!(result.is_err(), "Empty label should fail validation");
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("label") && err_msg.contains("empty"),
-            "Error should mention label empty: {}",
-            err_msg
+        assert_eq!(
+            err_msg,
+            "Validation error: The label parameter must be at least 1 length."
         );
     }
 
     #[tokio::test]
     async fn tv_go_label_too_long() {
         // Test vector: go_label_too_long
-        // Label cannot exceed 300 characters
+        // Label cannot exceed 300 UTF-8 bytes after normalization
         let (storage, auth) = setup_storage().await;
         let args = CreateActionArgs {
             description: "test transaction".to_string(),
@@ -171,10 +170,9 @@ mod create_action_validation {
         let result = storage.create_action(&auth, args).await;
         assert!(result.is_err(), "Long label should fail validation");
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("label") && err_msg.contains("maximum length"),
-            "Error should mention label maximum length: {}",
-            err_msg
+        assert_eq!(
+            err_msg,
+            "Validation error: The label parameter must be no more than 300 length."
         );
     }
 
@@ -514,8 +512,7 @@ mod create_action_validation {
             // It's OK if it fails for non-validation reasons (no UTXOs to fund the tx)
             assert!(
                 !err_msg.contains("description length")
-                    && !err_msg.contains("label cannot be empty")
-                    && !err_msg.contains("label exceeds")
+                    && !err_msg.contains("The label parameter must be")
                     && !err_msg.contains("satoshis exceeds")
                     && !err_msg.contains("output description length")
                     && !err_msg.contains("basket cannot be empty")

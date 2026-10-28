@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- #386: `createAction` shares the internalize door's `validateLabel` bound:
+  1 to 300 UTF-8 bytes after ECMAScript trim and lowercase. Whitespace-only
+  labels, including U+FEFF, now refuse before options and BRC-177 parsing;
+  labels padded past 300 raw bytes are accepted when the normalized value fits.
+  Accepted labels keep their supplied form in storage and `listActions` (#392).
+  Host TEXT-DIFF for the CLI replay, with class `InvalidParameter` unchanged:
+  `Validation error: label cannot be empty` becomes
+  `Validation error: The label parameter must be at least 1 length.`;
+  `Validation error: label exceeds maximum length of 300 characters` becomes
+  `Validation error: The label parameter must be no more than 300 length.`.
+
 ## [0.14.0-beta.3] - 2026-10-28
 
 ### Changed

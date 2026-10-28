@@ -67,7 +67,10 @@ fn test_validate_empty_label() {
         options: None,
     };
     let err = validate_create_action_args(&args).unwrap_err();
-    assert!(err.to_string().contains("label cannot be empty"));
+    assert_eq!(
+        err.to_string(),
+        "Validation error: The label parameter must be at least 1 length."
+    );
 }
 
 #[test]
@@ -83,7 +86,10 @@ fn test_validate_label_too_long() {
         options: None,
     };
     let err = validate_create_action_args(&args).unwrap_err();
-    assert!(err.to_string().contains("label exceeds maximum length"));
+    assert_eq!(
+        err.to_string(),
+        "Validation error: The label parameter must be no more than 300 length."
+    );
 }
 
 #[test]
