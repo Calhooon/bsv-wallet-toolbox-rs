@@ -724,6 +724,7 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
         return Err(refusal);
     }
     validate_insertion_instructions(args)?;
+    validate_description(&args.description)?;
     validate_array_bound(
         args.labels.as_ref().map_or(0, Vec::len),
         "labels",
@@ -743,6 +744,23 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
         return Err(Error::ValidationError(BRC177_INCOMING_REFUSAL.to_string()));
     }
     Ok(())
+}
+
+/// The reference's validateStringLength(args.description, 'description', 5,
+/// 2000) (#380, ts-stack@edf6e03 validationHelpers.ts:1053, 348-356): 5 to
+/// 2000 UTF-8 bytes as given, untrimmed, in its texts, after the outputs
+/// (1052) and ahead of the labels (1054).
+fn validate_description(description: &str) -> Result<()> {
+    let mustbe = if description.len() < 5 {
+        "at least 5 length."
+    } else if description.len() > 2000 {
+        "no more than 2000 length."
+    } else {
+        return Ok(());
+    };
+    Err(Error::ValidationError(format!(
+        "The description parameter must be {mustbe}"
+    )))
 }
 
 /// The reference's validateLabel (#365, ts-stack@edf6e03
