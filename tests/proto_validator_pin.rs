@@ -203,6 +203,62 @@ async fn public_key_and_cipher_arguments_use_the_beta3_reference_words() {
     );
 }
 
+#[tokio::test]
+async fn linkage_privilege_arguments_reach_the_beta3_validators() {
+    let wallet = wallet().await;
+    let key = PrivateKey::from_hex(&format!("{:064x}", 7))
+        .unwrap()
+        .public_key();
+    for (privileged, reason, expected) in [
+        (
+            Some(true),
+            None,
+            "The privilegedReason parameter must be a value when 'privileged' is true",
+        ),
+        (
+            Some(false),
+            Some("tiny".to_string()),
+            "The privilegedReason parameter must be at least 5 length.",
+        ),
+        (
+            None,
+            Some("x".repeat(51)),
+            "The privilegedReason parameter must be no more than 50 length.",
+        ),
+    ] {
+        invalid(
+            wallet
+                .reveal_counterparty_key_linkage(
+                    bsv_rs::wallet::interface::RevealCounterpartyKeyLinkageArgs {
+                        counterparty: key.clone(),
+                        verifier: key.clone(),
+                        privileged,
+                        privileged_reason: reason.clone(),
+                    },
+                    None,
+                )
+                .await,
+            expected,
+        );
+        invalid(
+            wallet
+                .reveal_specific_key_linkage(
+                    bsv_rs::wallet::interface::RevealSpecificKeyLinkageArgs {
+                        counterparty: Counterparty::Self_,
+                        verifier: key.clone(),
+                        protocol_id: protocol(),
+                        key_id: "key".into(),
+                        privileged,
+                        privileged_reason: reason,
+                    },
+                    None,
+                )
+                .await,
+            expected,
+        );
+    }
+}
+
 #[test]
 fn an_uncompressed_counterparty_is_refused_in_the_reference_words() {
     let public = PrivateKey::from_hex(&format!("{:064x}", 42))

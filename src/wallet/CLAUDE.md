@@ -206,6 +206,12 @@ use `The plaintext parameter must be at most 268435456 bytes` and
 processed them. The public-key, cipher and encoded-counterparty cases are
 also pinned in `tests/proto_validator_pin.rs`.
 
+Both linkage methods delegate through ProtoWallet's `WalletInterface`
+adapter, retaining `privileged` and `privilegedReason` for its beta.3
+validator. The inherent argument types omit those fields. Missing, short
+and long reasons use the same three refusal texts above, before any
+linkage cryptography; the returned counterparty keys remain compressed.
+
 ## Architecture
 
 ```
