@@ -85,6 +85,7 @@ pub(super) fn derived_lock(
     Ok((script, public))
 }
 
+/// Regtest replays model the post-Genesis era at tip 880000 (#422).
 pub(super) async fn setup(inputs: &Inputs) -> Result<Replay> {
     let keys: Value =
         serde_json::from_str(include_str!("../../../test_vectors/keys/test_users.json"))?;
@@ -104,6 +105,9 @@ pub(super) async fn setup(inputs: &Inputs) -> Result<Replay> {
                 .as_str()
                 .unwrap(),
         )
+        .await?;
+    sqlx::query("UPDATE settings SET chain = 'regtest'")
+        .execute(storage.writer())
         .await?;
     storage.make_available().await?;
     let (user, _) = storage.find_or_insert_user(&identity).await?;
