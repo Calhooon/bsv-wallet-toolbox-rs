@@ -23,9 +23,9 @@ use bsv_rs::wallet::{
     DiscoverByIdentityKeyArgs, DiscoverCertificatesResult, EncryptArgs, EncryptResult,
     GetHeaderArgs, GetHeaderResult, GetHeightResult, GetNetworkResult, GetPublicKeyArgs,
     GetPublicKeyResult, GetVersionResult, InternalizeActionArgs, InternalizeActionResult,
-    KeyLinkageResult, ListActionsArgs, ListActionsResult, ListCertificatesArgs,
-    ListCertificatesResult, ListOutputsArgs, ListOutputsResult, Network, Outpoint, ProtoWallet,
-    Protocol, ProveCertificateArgs, ProveCertificateResult, RelinquishCertificateArgs,
+    ListActionsArgs, ListActionsResult, ListCertificatesArgs, ListCertificatesResult,
+    ListOutputsArgs, ListOutputsResult, Network, Outpoint, ProtoWallet, Protocol,
+    ProveCertificateArgs, ProveCertificateResult, RelinquishCertificateArgs,
     RelinquishCertificateResult, RelinquishOutputArgs, RelinquishOutputResult,
     RevealCounterpartyKeyLinkageResult, RevealSpecificKeyLinkageResult, SecurityLevel,
     SignActionArgs, SignActionResult, SignableTransaction, VerifyHmacArgs, VerifyHmacResult,
@@ -1922,37 +1922,8 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
         validate_originator(originator)?;
-
-        // Convert interface args to proto_wallet args
-        use bsv_rs::wallet::RevealCounterpartyKeyLinkageArgs as ProtoRevealCounterpartyArgs;
-
-        let proto_args = ProtoRevealCounterpartyArgs {
-            counterparty: args.counterparty.clone(),
-            verifier: args.verifier.clone(),
-        };
-
-        let result = self
-            .proto_wallet
-            .reveal_counterparty_key_linkage(proto_args)?;
-
-        // Parse the prover hex string back to PublicKey
-        let prover = PublicKey::from_hex(&result.prover)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid prover key: {}", e)))?;
-
-        // Parse the counterparty hex string back to PublicKey
-        let counterparty_key = PublicKey::from_hex(&result.counterparty)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid counterparty key: {}", e)))?;
-
-        Ok(RevealCounterpartyKeyLinkageResult {
-            linkage: KeyLinkageResult {
-                encrypted_linkage: result.encrypted_linkage,
-                encrypted_linkage_proof: result.encrypted_linkage_proof,
-                prover,
-                verifier: args.verifier,
-                counterparty: counterparty_key,
-            },
-            revelation_time: result.revelation_time,
-        })
+        // The trait adapter checks privilege fields omitted by the inherent API.
+        WalletInterface::reveal_counterparty_key_linkage(&self.proto_wallet, args, originator).await
     }
 
     async fn reveal_specific_key_linkage(
@@ -1961,40 +1932,8 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
         validate_originator(originator)?;
-
-        // Convert interface args to proto_wallet args
-        use bsv_rs::wallet::RevealSpecificKeyLinkageArgs as ProtoRevealSpecificArgs;
-
-        let proto_args = ProtoRevealSpecificArgs {
-            counterparty: args.counterparty.clone(),
-            verifier: args.verifier.clone(),
-            protocol_id: args.protocol_id.clone(),
-            key_id: args.key_id.clone(),
-        };
-
-        let result = self.proto_wallet.reveal_specific_key_linkage(proto_args)?;
-
-        // Parse the prover hex string back to PublicKey
-        let prover = PublicKey::from_hex(&result.prover)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid prover key: {}", e)))?;
-
-        // The inherent result carries the compressed counterparty key since
-        // bsv-rs #427, including the distinct key for Anyone.
-        let counterparty_key = PublicKey::from_hex(&result.counterparty)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid counterparty key: {}", e)))?;
-
-        Ok(RevealSpecificKeyLinkageResult {
-            linkage: KeyLinkageResult {
-                encrypted_linkage: result.encrypted_linkage,
-                encrypted_linkage_proof: result.encrypted_linkage_proof,
-                prover,
-                verifier: args.verifier,
-                counterparty: counterparty_key,
-            },
-            protocol: result.protocol_id,
-            key_id: result.key_id,
-            proof_type: result.proof_type,
-        })
+        // Keep the beta.3 validator and its compressed-key result together.
+        WalletInterface::reveal_specific_key_linkage(&self.proto_wallet, args, originator).await
     }
 
     // =========================================================================
