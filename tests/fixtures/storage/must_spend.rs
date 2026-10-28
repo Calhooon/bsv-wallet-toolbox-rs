@@ -10,6 +10,8 @@ use serde_json::json;
 
 use super::{model::Fixture, rows, seed, Replay};
 
+mod refusals;
+
 /// The recorded receipt (an unproven wallet payment of 9999, `receive`) and
 /// one proven seed: `funding.0` 600 and `funding.1` 5000 and `funding.3`
 /// 8000, managed change; `funding.2` 700, the user's but not change.
