@@ -1,0 +1,548 @@
+{
+  "description": "revealCounterpartyKeyLinkage (9) and revealSpecificKeyLinkage (10) on the wallet wire (#406): each case's request frame as the reference's WalletWireTransceiver writes it and its response frame as the reference's WalletWireProcessor writes it for a wallet answering fixed values bound to the request; the refusals a valid response with one rule broken, served to the transceiver alone",
+  "reference": "@bsv/sdk at ts-stack@edf6e03 (packages/sdk, bundled with bun build), run under Node v22.18.0 by tests/support/wire_linkage_calls_406.mjs",
+  "reference_lines": "WalletWireTransceiver.ts:790-849 (revealCounterpartyKeyLinkage), :851-924 (revealSpecificKeyLinkage), :1351-1376 (#encodeKeyRelatedParams), :1448-1462 (#encodePrivilegedParams), :1936-1938, :2004-2016; WalletWireProcessor.ts:1734-1788, :1790-1849",
+  "originator": "fixtures.invalid",
+  "cases": [
+    {
+      "name": "counterparty-minimal",
+      "call": "revealCounterpartyKeyLinkage",
+      "args": {
+        "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+      },
+      "request_hex": "091066697874757265732e696e76616c6964ffff02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe402f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f918323032362d31302d32385430363a30303a30302e3030305a2001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff",
+      "wallet_observed": {
+        "method": "revealCounterpartyKeyLinkage",
+        "args": {
+          "privileged": null,
+          "privilegedReason": null,
+          "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+        },
+        "originator": "fixtures.invalid"
+      },
+      "result": {
+        "prover": "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "revelationTime": "2026-10-28T06:00:00.000Z",
+        "encryptedLinkage": [
+          1,
+          8,
+          15,
+          22,
+          29,
+          36,
+          43,
+          50,
+          57,
+          64,
+          71,
+          78,
+          85,
+          92,
+          99,
+          106,
+          113,
+          120,
+          127,
+          134,
+          141,
+          148,
+          155,
+          162,
+          169,
+          176,
+          183,
+          190,
+          197,
+          204,
+          211,
+          218
+        ],
+        "encryptedLinkageProof": [
+          0,
+          1,
+          127,
+          128,
+          254,
+          255
+        ]
+      }
+    },
+    {
+      "name": "counterparty-privileged",
+      "call": "revealCounterpartyKeyLinkage",
+      "args": {
+        "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "privileged": true,
+        "privilegedReason": "fixture linkage reason"
+      },
+      "request_hex": "091066697874757265732e696e76616c6964011666697874757265206c696e6b61676520726561736f6e02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe402f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f918323032362d31302d32385430363a30303a30302e3030305a2001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff",
+      "wallet_observed": {
+        "method": "revealCounterpartyKeyLinkage",
+        "args": {
+          "privileged": true,
+          "privilegedReason": "fixture linkage reason",
+          "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+        },
+        "originator": "fixtures.invalid"
+      },
+      "result": {
+        "prover": "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "revelationTime": "2026-10-28T06:00:00.000Z",
+        "encryptedLinkage": [
+          1,
+          8,
+          15,
+          22,
+          29,
+          36,
+          43,
+          50,
+          57,
+          64,
+          71,
+          78,
+          85,
+          92,
+          99,
+          106,
+          113,
+          120,
+          127,
+          134,
+          141,
+          148,
+          155,
+          162,
+          169,
+          176,
+          183,
+          190,
+          197,
+          204,
+          211,
+          218
+        ],
+        "encryptedLinkageProof": [
+          0,
+          1,
+          127,
+          128,
+          254,
+          255
+        ]
+      }
+    },
+    {
+      "name": "counterparty-unprivileged",
+      "call": "revealCounterpartyKeyLinkage",
+      "args": {
+        "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "privileged": false
+      },
+      "request_hex": "091066697874757265732e696e76616c696400ff02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe402f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f918323032362d31302d32385430363a30303a30302e3030305a2001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff",
+      "wallet_observed": {
+        "method": "revealCounterpartyKeyLinkage",
+        "args": {
+          "privileged": false,
+          "privilegedReason": null,
+          "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+        },
+        "originator": "fixtures.invalid"
+      },
+      "result": {
+        "prover": "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "revelationTime": "2026-10-28T06:00:00.000Z",
+        "encryptedLinkage": [
+          1,
+          8,
+          15,
+          22,
+          29,
+          36,
+          43,
+          50,
+          57,
+          64,
+          71,
+          78,
+          85,
+          92,
+          99,
+          106,
+          113,
+          120,
+          127,
+          134,
+          141,
+          148,
+          155,
+          162,
+          169,
+          176,
+          183,
+          190,
+          197,
+          204,
+          211,
+          218
+        ],
+        "encryptedLinkageProof": [
+          0,
+          1,
+          127,
+          128,
+          254,
+          255
+        ]
+      }
+    },
+    {
+      "name": "specific-key",
+      "call": "revealSpecificKeyLinkage",
+      "args": {
+        "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "protocolID": [
+          2,
+          "fixture linkage"
+        ],
+        "keyID": "key-1"
+      },
+      "request_hex": "0a1066697874757265732e696e76616c6964020f66697874757265206c696e6b616765056b65792d3102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9ffff022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe402f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9020f66697874757265206c696e6b616765056b65792d312001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff01",
+      "wallet_observed": {
+        "method": "revealSpecificKeyLinkage",
+        "args": {
+          "protocolID": [
+            2,
+            "fixture linkage"
+          ],
+          "keyID": "key-1",
+          "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          "privileged": null,
+          "privilegedReason": null,
+          "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+        },
+        "originator": "fixtures.invalid"
+      },
+      "result": {
+        "prover": "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "counterparty": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "protocolID": [
+          2,
+          "fixture linkage"
+        ],
+        "keyID": "key-1",
+        "encryptedLinkage": [
+          1,
+          8,
+          15,
+          22,
+          29,
+          36,
+          43,
+          50,
+          57,
+          64,
+          71,
+          78,
+          85,
+          92,
+          99,
+          106,
+          113,
+          120,
+          127,
+          134,
+          141,
+          148,
+          155,
+          162,
+          169,
+          176,
+          183,
+          190,
+          197,
+          204,
+          211,
+          218
+        ],
+        "encryptedLinkageProof": [
+          0,
+          1,
+          127,
+          128,
+          254,
+          255
+        ],
+        "proofType": 1
+      }
+    },
+    {
+      "name": "specific-self",
+      "call": "revealSpecificKeyLinkage",
+      "args": {
+        "counterparty": "self",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "protocolID": [
+          0,
+          "fixture linkage"
+        ],
+        "keyID": "key-2"
+      },
+      "request_hex": "0a1066697874757265732e696e76616c6964000f66697874757265206c696e6b616765056b65792d320bffff022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc000f66697874757265206c696e6b616765056b65792d322001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff01",
+      "wallet_observed": {
+        "method": "revealSpecificKeyLinkage",
+        "args": {
+          "protocolID": [
+            0,
+            "fixture linkage"
+          ],
+          "keyID": "key-2",
+          "counterparty": "self",
+          "privileged": null,
+          "privilegedReason": null,
+          "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+        },
+        "originator": "fixtures.invalid"
+      },
+      "result": {
+        "prover": "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "counterparty": "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "protocolID": [
+          0,
+          "fixture linkage"
+        ],
+        "keyID": "key-2",
+        "encryptedLinkage": [
+          1,
+          8,
+          15,
+          22,
+          29,
+          36,
+          43,
+          50,
+          57,
+          64,
+          71,
+          78,
+          85,
+          92,
+          99,
+          106,
+          113,
+          120,
+          127,
+          134,
+          141,
+          148,
+          155,
+          162,
+          169,
+          176,
+          183,
+          190,
+          197,
+          204,
+          211,
+          218
+        ],
+        "encryptedLinkageProof": [
+          0,
+          1,
+          127,
+          128,
+          254,
+          255
+        ],
+        "proofType": 1
+      }
+    },
+    {
+      "name": "specific-anyone-privileged",
+      "call": "revealSpecificKeyLinkage",
+      "args": {
+        "counterparty": "anyone",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "protocolID": [
+          1,
+          "fixture linkage"
+        ],
+        "keyID": "key-3",
+        "privileged": true,
+        "privilegedReason": "fixture linkage reason"
+      },
+      "request_hex": "0a1066697874757265732e696e76616c6964010f66697874757265206c696e6b616765056b65792d330c011666697874757265206c696e6b61676520726561736f6e022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe40279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798010f66697874757265206c696e6b616765056b65792d332001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff01",
+      "wallet_observed": {
+        "method": "revealSpecificKeyLinkage",
+        "args": {
+          "protocolID": [
+            1,
+            "fixture linkage"
+          ],
+          "keyID": "key-3",
+          "counterparty": "anyone",
+          "privileged": true,
+          "privilegedReason": "fixture linkage reason",
+          "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"
+        },
+        "originator": "fixtures.invalid"
+      },
+      "result": {
+        "prover": "025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
+        "verifier": "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        "counterparty": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "protocolID": [
+          1,
+          "fixture linkage"
+        ],
+        "keyID": "key-3",
+        "encryptedLinkage": [
+          1,
+          8,
+          15,
+          22,
+          29,
+          36,
+          43,
+          50,
+          57,
+          64,
+          71,
+          78,
+          85,
+          92,
+          99,
+          106,
+          113,
+          120,
+          127,
+          134,
+          141,
+          148,
+          155,
+          162,
+          169,
+          176,
+          183,
+          190,
+          197,
+          204,
+          211,
+          218
+        ],
+        "encryptedLinkageProof": [
+          0,
+          1,
+          127,
+          128,
+          254,
+          255
+        ],
+        "proofType": 1
+      }
+    }
+  ],
+  "refusals": [
+    {
+      "name": "counterparty-trailing-byte",
+      "base": "counterparty-minimal",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe402f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f918323032362d31302d32385430363a30303a30302e3030305a2001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff00",
+      "thrown": {
+        "name": "Error",
+        "code": null,
+        "message": "Wallet Wire revealCounterpartyKeyLinkage response contains trailing data"
+      }
+    },
+    {
+      "name": "counterparty-other-verifier",
+      "base": "counterparty-minimal",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc03774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f918323032362d31302d32385430363a30303a30302e3030305a2001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff",
+      "thrown": {
+        "name": "Error",
+        "code": null,
+        "message": "Invalid revealCounterpartyKeyLinkage result verifier: expected the requested verifier"
+      }
+    },
+    {
+      "name": "counterparty-other-counterparty",
+      "base": "counterparty-minimal",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe403774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb18323032362d31302d32385430363a30303a30302e3030305a2001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff",
+      "thrown": {
+        "name": "Error",
+        "code": null,
+        "message": "Invalid revealCounterpartyKeyLinkage result counterparty: expected the requested counterparty"
+      }
+    },
+    {
+      "name": "counterparty-prover-not-a-point",
+      "base": "counterparty-minimal",
+      "response_hex": "00055cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe402f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f918323032362d31302d32385430363a30303a30302e3030305a2001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff",
+      "thrown": {
+        "name": "Error",
+        "code": null,
+        "message": "Unknown point format"
+      }
+    },
+    {
+      "name": "specific-trailing-byte",
+      "base": "specific-key",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe402f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9020f66697874757265206c696e6b616765056b65792d312001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff0100",
+      "thrown": {
+        "name": "Error",
+        "code": null,
+        "message": "Wallet Wire revealSpecificKeyLinkage response contains trailing data"
+      }
+    },
+    {
+      "name": "specific-security-level-3",
+      "base": "specific-key",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe402f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9030f66697874757265206c696e6b616765056b65792d312001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff01",
+      "thrown": {
+        "name": "Error",
+        "code": null,
+        "message": "Invalid revealSpecificKeyLinkage security level: 3"
+      }
+    },
+    {
+      "name": "specific-other-verifier",
+      "base": "specific-key",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc03774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9020f66697874757265206c696e6b616765056b65792d312001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff01",
+      "thrown": {
+        "name": "Error",
+        "code": null,
+        "message": "Invalid revealSpecificKeyLinkage result verifier: expected the requested verifier"
+      }
+    },
+    {
+      "name": "specific-self-not-the-prover",
+      "base": "specific-self",
+      "response_hex": "00025cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe403774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb000f66697874757265206c696e6b616765056b65792d322001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da0600017f80feff01",
+      "thrown": {
+        "name": "Error",
+        "code": null,
+        "message": "Invalid revealSpecificKeyLinkage result counterparty: expected the prover's identity key for counterparty self"
+      }
+    }
+  ]
+}
