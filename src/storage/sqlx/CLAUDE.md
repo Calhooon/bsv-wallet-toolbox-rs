@@ -34,7 +34,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | `create_action/signing.rs` | Caller signature commitments and funding permission |
 | `create_action/validation.rs` | Create-action argument validation |
 | `create_action/inputs.rs` | Caller input preparation and spent-input writes |
-| `create_action/review_beef.rs` | Double-spend review BEEF from stored raw bytes, proofs and ancestry, prepared on a reader before the writer (#389) |
+| `create_action/review_beef.rs` | Double-spend review BEEF from `proven_txs` and served `proven_tx_reqs` bytes, proofs and ancestry, prepared on a reader before the writer (#389) |
 | `create_action/outputs.rs` | Output preparation, action records, baskets, labels, and tags |
 | `create_action/tracker.rs` | Precheck tracker answers, recording tracker, and cached tracker |
 | `create_action/beef.rs` | Input BEEF assembly, known entries, and ancestry gaps |
@@ -552,14 +552,24 @@ With `sign_and_process` the template is signed and processed inside the create s
 ### Features
 - Double-spend review (#389): the locked input check still decides which
   competing txid is returned. Before taking the writer, `review_beef` reads
-  that input's spender and prepares its BEEF from `proven_txs` raw bytes and
-  merkle path, or `proven_tx_reqs` / `transactions` raw bytes and `input_beef`,
-  walking stored ancestry. It awaits no provider or tracker and writes nothing.
-  If the locked check finds a different competitor, the action rolls back and
-  repeats the pre-check; another change answers `StoreBusy { MovedUnderUs }`.
-  `ReviewActionResult.competing_beef` carries the prepared bytes. Missing stored
-  data yields a txid-only BEEF, matching `getCompetingBeefForReview` at
-  ts-stack@edf6e03 `createAction.ts:528-539`; the result's own zero txid stays
+  that input's spender and prepares its BEEF from the sources of the
+  reference's `getProvenOrRawTx` (ts-stack@edf6e03 `StorageKnex.ts:189-210`),
+  as `get_proven_or_raw_tx` reads them: `proven_txs` raw bytes and merkle path,
+  else a `proven_tx_reqs` row in `RAW_TX_REQ_STATUSES` with its `input_beef`,
+  walking stored ancestry; `transactions.raw_tx` is not read (#351). It awaits
+  no provider or tracker and writes nothing. If the locked check finds a
+  different competitor, the action rolls back and repeats the pre-check;
+  another change answers `StoreBusy { MovedUnderUs }`.
+  `ReviewActionResult.competing_beef` carries the prepared bytes. Where the
+  stores lack the competitor or an ancestor, the BEEF is txid-only. This
+  differs from `getCompetingBeefForReview` (`createAction.ts:528-539`): with
+  options `{}`, `resolveBeefForTransaction` (`getBeefForTransaction.ts:436-476`)
+  asks services through `getProvenOrRawTxFromServices` (:465) when storage
+  misses, and answers txid-only (INVALID_PARAMETER) only after services also
+  miss. Create asks no provider, so the port answers txid-only where the
+  reference would have asked services. A stored competitor with a missing
+  ancestor agrees: `getValidBeefForKnownTxid` throws INVALID_PARAMETER and the
+  reference falls back to txid-only too. The result's own zero txid stays
   under D14 / ts-stack #1436. Door witnesses: `create_action/tests/review.rs`.
 - Validation in ts-stack@edf6e03 validateCreateActionArgs order (749-808): description, inputs, outputs (each output's tags last), labels, options (knownTxids, noSendChange and its duplicates, sendWith); before #309 it ran labels, outputs, inputs, so a request with several bad arguments now answers the inputs' texts ahead of the outputs' and the labels'
 - The description (#383) uses `validate_description` from `internalize_action.rs`,
