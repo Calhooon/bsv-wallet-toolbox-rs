@@ -5,7 +5,7 @@
 //!
 //! A Peer per call, as `Wallet.ts:773` builds an `AuthFetch` per call, over
 //! the wallet's `ProtoWallet`: the same root key, owned as `Peer` needs it, so
-//! `Wallet<S, V>` gains no bound. At bsv-rs 0.9.0-beta.2 `Peer::start`
+//! `Wallet<S, V>` gains no bound. At bsv-rs 0.9.0-beta.3 `Peer::start`
 //! installs the verifying path (bsv-rs #353): the initial response's nonce and
 //! signature, and a general message's session, sender and signature.
 

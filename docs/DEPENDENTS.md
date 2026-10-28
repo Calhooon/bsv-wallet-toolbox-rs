@@ -97,6 +97,14 @@ the input and the clone line, not the pin.
 
 ### Re-pin plan
 
+The toolbox's #419 pin moves this tree to `bsv-rs =0.9.0-beta.3` in both
+workspaces and locks. CLI #338 takes that SDK version with the next toolbox
+prerelease; the CLI row above records its existing published beta.2 pin,
+not a completed beta.3 migration. The `[Unreleased]` host notes list the
+ordered maps, validator and transport words, linkage keys, and the default
+script behavior the CLI must account for. Run the dependents check after
+landing and after the CLI takes the new shapes.
+
 A row whose ci column is not `yes` stays out of the CI job, and the job never
 carries a row that is red for a reason this repository cannot fix. Each
 excluded row joins the job when its captain re-pins it onto this crate's
