@@ -496,9 +496,9 @@ outputs, shares one sighash cache per transaction, and releases transactions
 waiting for parents in wire order.
 
 The `pub(crate)` `input_eras` helper returns both eras against bsv-rs's
-Genesis and Chronicle constants. On mainnet a mined parent's spender takes
-the tracker tip's era and the coin its proven BUMP height's; an unproven
-parent and its spender take tip+1's, the block the mempool judges for.
+Genesis and Chronicle constants. On mainnet every spender takes tip+1's era,
+the block it would be mined in; a mined parent's coin takes its proven BUMP
+height's era for the UTXO bits, an unproven parent's coin tip+1's.
 Pre-Genesis mainnet refuses with `The mainnet coin height is before Genesis.`.
 Testnet and regtest use the spend's era for the coin until #440 supplies their
 activation heights; regtest fixtures name the era they model. An unsupported

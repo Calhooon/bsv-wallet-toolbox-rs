@@ -24,10 +24,10 @@ pub(crate) struct InputEras {
     pub(crate) coin: ProtocolEra,
 }
 
-/// A mined parent's spender takes the tip's era and the coin its proven
-/// height's; an unproven parent's spender takes tip+1's for both. Other
-/// networks use the spend's era for the coin until #440 exposes their
-/// activation heights.
+/// Every spender takes tip+1's era, the block it would be mined in; a mined
+/// parent's coin takes its proven height's era for the UTXO bits and an
+/// unproven parent's coin tip+1's. Other networks use the spend's era for the
+/// coin until #440 exposes their activation heights.
 pub(crate) fn input_eras(
     network: &str,
     tip: ChainTip,
@@ -38,10 +38,7 @@ pub(crate) fn input_eras(
         "testnet" | "test" | "regtest" => false,
         _ => return Err("The storage network has no script era policy."),
     };
-    let spend_height = match proven_height {
-        Some(_) => tip.height,
-        None => tip.height.saturating_add(1),
-    };
+    let spend_height = tip.height.saturating_add(1);
     let coin = match (mainnet, proven_height) {
         (true, Some(height)) => {
             let height = u32::try_from(height)
@@ -481,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_mined_parent_spender_takes_the_tip_and_the_proof_height() {
+    fn mainnet_mined_parent_spender_takes_the_next_block_and_the_proof_height() {
         use ProtocolEra::{PostChronicle, PostGenesis};
         for (tip_height, height, expected) in [
             (CHRONICLE + 100, GENESIS, eras(PostChronicle, PostGenesis)),
@@ -495,7 +492,8 @@ mod tests {
                 CHRONICLE,
                 eras(PostChronicle, PostChronicle),
             ),
-            (CHRONICLE - 1, GENESIS, eras(PostGenesis, PostGenesis)),
+            (CHRONICLE - 1, GENESIS, eras(PostChronicle, PostGenesis)),
+            (CHRONICLE - 2, GENESIS, eras(PostGenesis, PostGenesis)),
         ] {
             for network in ["main", "mainnet"] {
                 assert_eq!(

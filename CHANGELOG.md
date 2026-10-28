@@ -19,9 +19,10 @@
   Nonminimal numbers now say
   `Invalid script number: script execution error: Non-minimally encoded script number`
   instead of `non-minimally encoded script number`.
-  On mainnet a mined parent's spender takes the tracker tip's era and the
-  coin its proven BUMP height's; an unproven parent and its spender take the
-  era of the block after the tip, against bsv-rs's activation constants.
+  On mainnet every spender takes the era of the block after the tracker tip,
+  the block it would be mined in; a mined parent's coin takes its proven BUMP
+  height's era for the UTXO bits and an unproven parent's coin that same next
+  block's, against bsv-rs's activation constants.
   Pre-Genesis mainnet refuses with `The mainnet coin height is before Genesis.`.
   Testnet and regtest use the spend's era for the coin until bsv-rs #440
   supplies their activation heights. The interim second evaluation preserves
