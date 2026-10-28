@@ -454,6 +454,24 @@ impl StorageSqlx {
         args: RelinquishCertificateArgs,
     ) -> Result<i64> {
         let user_id = auth.user_id.ok_or(Error::AuthenticationRequired)?;
+        let mut tx = self.write_tx().await?;
+        // ts-stack@edf6e03 StorageProvider.ts:1356-1369 includes deleted rows in verifyOne.
+        let certificate_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT certificate_id FROM certificates \
+             WHERE user_id = ? AND type = ? AND certifier = ? AND serial_number = ? LIMIT 2",
+        )
+        .bind(user_id)
+        .bind(&args.certificate_type)
+        .bind(&args.certifier)
+        .bind(&args.serial_number)
+        .fetch_all(&mut *tx)
+        .await?;
+        let [certificate_id] = certificate_ids.as_slice() else {
+            return Err(Error::SdkError(bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::BadRequest,
+                message: "Result must exist and be unique.".into(),
+            }));
+        };
 
         let now = Utc::now();
 
@@ -462,16 +480,14 @@ impl StorageSqlx {
             r#"
             UPDATE certificates
             SET is_deleted = 1, updated_at = ?
-            WHERE user_id = ? AND type = ? AND certifier = ? AND serial_number = ?
+            WHERE certificate_id = ?
             "#,
         )
         .bind(now)
-        .bind(user_id)
-        .bind(&args.certificate_type)
-        .bind(&args.certifier)
-        .bind(&args.serial_number)
-        .execute(&mut *self.writer_conn().await?)
+        .bind(certificate_id)
+        .execute(&mut *tx)
         .await?;
+        commit(tx).await?;
 
         Ok(result.rows_affected() as i64)
     }

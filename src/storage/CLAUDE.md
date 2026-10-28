@@ -69,7 +69,7 @@ Write operations (extends `WalletStorageReader`):
 | `internalize_action()` | Import an external transaction |
 | `insert_certificate()` | Add a certificate |
 | `insert_certificate_field()` | Add a certificate field value |
-| `relinquish_certificate()` | Release a certificate |
+| `relinquish_certificate()` | Verify one match by user, type, certifier and serial, then soft-delete it in one write transaction; zero or multiple matches refuse with `BadRequest` and `Result must exist and be unique.` (#430) |
 | `relinquish_output()` | Release an output |
 | `update_transaction_status_after_broadcast()` | Update tx/proven_tx_req status after broadcast attempt |
 | `review_status()` | Review storage status, clean up aged items |
