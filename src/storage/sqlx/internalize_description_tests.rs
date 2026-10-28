@@ -3,7 +3,7 @@
 //! checks `description` through validateStringLength(args.description,
 //! 'description', 5, 2000) at 1053, after the outputs (1052) and ahead of
 //! the labels (1054). validateStringLength (348-356) counts UTF-8 bytes of
-//! the string as given, untrimmed, in WERR_INVALID_PARAMETER's text.
+//! the string as given, untrimmed, in `WERR_INVALID_PARAMETER`'s text.
 
 use super::bounds_tests::{args, refusal};
 use super::*;
