@@ -2718,11 +2718,10 @@ where
                 // Set the subject to the wallet's identity key (Wallet.ts:698-704)
                 certificate.subject = self.identity_key.clone();
                 direct_acquire::verify_acquire_direct(
-                    self,
+                    &self.proto_wallet,
                     &certificate,
                     &keyring,
                     &args,
-                    originator,
                 )
                 .await?;
 
