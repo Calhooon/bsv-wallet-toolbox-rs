@@ -4,8 +4,14 @@ name: Dependents
 # Dispatched by the captain (`gh workflow run "Dependents" --ref beta|main`), once
 # before a tag and when a reading asks; never on a push run (the owner's word of
 # 2026-10-27, through the stack keeper: a push runs the required set alone).
+# Use `gh workflow run Dependents --ref beta -f cli_ref=<branch>` to select a CLI branch.
 on:
   workflow_dispatch:
+    inputs:
+      cli_ref:
+        description: 'The CLI branch to build against this tree; empty uses the branch named like this line.'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -38,6 +44,12 @@ jobs:
             ubuntu-dependents-
 
       - name: Build and test the dependents against this tree
-        run: tools/dependents-check.sh --ci
+        run: |
+          args=(--ci)
+          if [ -n "$CLI_REF" ]; then
+            args+=(--line "$CLI_REF")
+          fi
+          tools/dependents-check.sh "${args[@]}"
         env:
+          CLI_REF: ${{ inputs.cli_ref }}
           DEPENDENTS_TARGET_DIR: ${{ runner.temp }}/dependents-target

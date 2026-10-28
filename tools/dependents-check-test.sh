@@ -134,5 +134,79 @@ else
   fail=$((fail + 1))
 fi
 
+# Exercise the actual dispatch step and the script's --line handling without a
+# network read or a build. The git stub records each argument and stops cloning.
+mkdir -p "$dir/bin" "$dir/dispatch/tools"
+cat >"$dir/bin/git" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$DEPENDENTS_TEST_GIT"
+case "$1" in
+  ls-remote) exit 0 ;;
+  clone) exit 73 ;;
+  *) exit 97 ;;
+esac
+EOF
+cat >"$dir/dispatch/tools/dependents-check.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$DEPENDENTS_TEST_ARGS"
+bash "$DEPENDENTS_TEST_CHECK" "$@" --only bsv-wallet-cli
+EOF
+chmod +x "$dir/bin/git" "$dir/dispatch/tools/dependents-check.sh"
+
+workflow="$(cd "$(dirname "$0")/.." && pwd)/.github/workflows/dependents.yml"
+if python3 - "$workflow" "$dir/dispatch-step.sh" <<'PY'
+import re
+import sys
+import textwrap
+from pathlib import Path
+
+workflow = Path(sys.argv[1]).read_text()
+assert re.search(r"(?m)^      cli_ref:$", workflow), "cli_ref input is missing"
+step = workflow.split("      - name: Build and test the dependents against this tree\n", 1)[1]
+assert "          CLI_REF: ${{ inputs.cli_ref }}" in step, "cli_ref environment is missing"
+body = step.split("        run: |\n", 1)[1].split("        env:\n", 1)[0]
+Path(sys.argv[2]).write_text(textwrap.dedent(body))
+PY
+then
+  dispatch_case() {
+    local ref="$1" base="$2" line="$3" branch="$4" name="$5"
+    local out status git_args want_args branch_args probe_arg
+    : >"$dir/git-args"
+    out="$(cd "$dir/dispatch" &&
+      PATH="$dir/bin:$PATH" CLI_REF="$ref" GITHUB_BASE_REF="$base" GITHUB_REF_NAME="$line" \
+      DEPENDENTS_WORK="$dir/work" GITHUB_STEP_SUMMARY="" \
+      DEPENDENTS_TEST_ARGS="$dir/step-args" DEPENDENTS_TEST_GIT="$dir/git-args" \
+      DEPENDENTS_TEST_CHECK="${workflow%/.github/workflows/dependents.yml}/tools/dependents-check.sh" \
+      bash -e "$dir/dispatch-step.sh" 2>&1)"
+    status=$?
+    want_args=--ci
+    [ -z "$ref" ] || want_args+=$'\n--line\n'"$ref"
+    git_args="$(cat "$dir/git-args")"
+    branch_args=$'--branch\n'"$branch"$'\n'
+    probe_arg="refs/heads/$branch"$'\n'
+    if [ "$status" -eq 1 ] && [ "$(cat "$dir/step-args")" = "$want_args" ] &&
+      [[ "$out" == *"clone fault (exit 73)"* ]] &&
+      { { [ -n "$branch" ] && [[ "$git_args" == *"$probe_arg"* && "$git_args" == *"$branch_args"* ]]; } ||
+        { [ -z "$branch" ] && [[ "$git_args" != *--branch* && "$git_args" != *ls-remote* ]]; }; }; then
+      echo "ok      $name (arguments preserved; mock clone stopped before build)"
+      pass=$((pass + 1))
+    else
+      echo "FAILED  $name (exit $status): $out"
+      echo "step arguments: $(cat "$dir/step-args")"
+      echo "git arguments: $git_args"
+      fail=$((fail + 1))
+    fi
+  }
+
+  dispatch_case 'lane/p1-277-pin-beta2' main beta 'lane/p1-277-pin-beta2' \
+    'cli_ref with a slash reaches --line, the branch probe and clone'
+  dispatch_case '' '' main '' 'empty cli_ref on main keeps the default branch'
+  dispatch_case '' '' beta beta 'empty cli_ref on beta keeps the beta branch'
+  dispatch_case '' beta 'lane/review' beta 'empty cli_ref keeps the pull request base branch'
+else
+  echo 'FAILED  reading the Dependents dispatch step'
+  fail=$((fail + 1))
+fi
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

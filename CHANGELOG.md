@@ -12,6 +12,7 @@
 ### CI
 
 - #403: The required `locks` job checks that `release.yml` grants every permission requested by the reusable `ci.yml`, with fixture coverage for the permission levels and fallbacks.
+- #405: The Dependents dispatch accepts an optional `cli_ref` branch and passes it as `--line`; an empty input keeps the branch named like this line.
 
 ## [0.14.0-beta.2] - 2026-10-28
 
