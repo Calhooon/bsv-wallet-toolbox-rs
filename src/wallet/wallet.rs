@@ -65,6 +65,10 @@ mod named_input_tests;
 mod nosend_label_tests;
 
 #[cfg(all(test, feature = "sqlite"))]
+#[path = "direct_refusal_tests.rs"]
+mod direct_refusal_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
 #[path = "direct_acquire_tests.rs"]
 mod direct_acquire_tests;
 
