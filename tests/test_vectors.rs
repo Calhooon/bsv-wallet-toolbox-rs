@@ -826,6 +826,30 @@ mod list_actions_validation {
     }
 
     #[tokio::test]
+    async fn tv_stored_label_filter_errors_match_the_vectors() {
+        let (storage, auth) = setup_storage().await;
+        let vectors = load_test_vectors("test_vectors/storage/list_actions/validation.json");
+        let cases = vectors["test_vectors"].as_array().unwrap();
+        for id in ["go_label_empty", "go_label_too_long"] {
+            let case = cases.iter().find(|case| case["id"] == id).unwrap();
+            let mut inputs = case["inputs"].clone();
+            if inputs["labels"][0] == "REPEAT_CHAR_X_301_TIMES" {
+                inputs["labels"][0] = Value::String("X".repeat(301));
+            }
+            let args = serde_json::from_value(inputs).unwrap();
+            let error = storage.list_actions(&auth, args).await.unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "Validation error: {}",
+                    case["expected_error"].as_str().unwrap()
+                ),
+                "{id}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn tv_go_valid_labels_defaults() {
         // Test vector: go_valid_labels_defaults
         // Valid args with labels and default query mode

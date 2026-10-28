@@ -85,3 +85,34 @@ async fn create_label_validation_precedes_brc177_grammar_and_capability() {
         assert_refused(no_send_args(&["\u{FEFF}", brc177]), TOO_SHORT).await;
     }
 }
+
+#[tokio::test]
+async fn create_stored_labels_are_normalized_and_reused() {
+    let wallet = wallet().await;
+    let args = no_send_args(&["  Label ", "\u{FEFF}LABEL\u{3000}", " SECOND "]);
+    WalletInterface::create_action(&wallet, args, None)
+        .await
+        .unwrap();
+
+    let labels: Vec<String> = sqlx::query_scalar("SELECT label FROM tx_labels ORDER BY label")
+        .fetch_all(wallet.storage().pool())
+        .await
+        .unwrap();
+    assert_eq!(labels, ["label", "second"]);
+    let maps: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tx_labels_map")
+        .fetch_one(wallet.storage().pool())
+        .await
+        .unwrap();
+    assert_eq!(maps, 2);
+
+    let query = serde_json::from_value(serde_json::json!({
+        "labels": [], "includeLabels": true,
+    }))
+    .unwrap();
+    let listed = WalletInterface::list_actions(&wallet, query, None)
+        .await
+        .unwrap();
+    let mut listed_labels = listed.actions[0].labels.clone().unwrap();
+    listed_labels.sort();
+    assert_eq!(listed_labels, ["label", "second"]);
+}

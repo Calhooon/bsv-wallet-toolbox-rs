@@ -4110,3 +4110,7 @@ mod description_tests;
 #[cfg(test)]
 #[path = "internalize_payment_tests.rs"]
 mod payment_tests;
+
+#[cfg(test)]
+#[path = "internalize_label_tests.rs"]
+mod stored_label_tests;
