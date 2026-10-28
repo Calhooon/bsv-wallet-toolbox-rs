@@ -107,6 +107,26 @@
   (it was an ordinary label) and `\u{0085}p nosend ...` is an ordinary
   label (it was refused). Every other label answers as before.
 
+- #377: internalizeAction runs the reference's validateWalletPayment
+  (ts-stack@edf6e03 `validationHelpers.ts:914-923`) on every wallet payment,
+  per output in order, after the one-remittance check and ahead of the
+  description and labels: a `derivationPrefix` or `derivationSuffix` that is
+  not base64 (trimmed, not empty, the base64 alphabet, `=` only in the last
+  two places, a length that is a multiple of 4) is refused with
+  `The derivationPrefix parameter must be valid base64 string` or
+  `The derivationSuffix parameter must be valid base64 string`, and a
+  `senderIdentityKey` that is not a compressed secp256k1 key in hex with
+  `The senderIdentityKey parameter must be ` and one of
+  `even length, not <n>.`, `hexadecimal string.`, `at least 66 length.`,
+  `no more than 66 length.`, `a valid compressed secp256k1 public key`
+  (through `WalletInterface`, a `WalletError` reading `Validation error: `
+  and that text). A non-base64 derivation or a sender such as `sender_key`
+  was stored before; these are new refusals of input that succeeded before.
+  The wallet's own refusal of an empty derivation, still ahead of the store
+  (D13, #376), now reads the reference's text above, the prefix ahead of the suffix, in
+  place of `Wallet payment outputs require non-empty derivation_prefix and
+  derivation_suffix`.
+
 - #380: internalizeAction bounds the description as the reference's
   validateStringLength does (ts-stack@edf6e03 `validationHelpers.ts:1053`,
   348-356): 5 to 2000 UTF-8 bytes as given, untrimmed, refused with
