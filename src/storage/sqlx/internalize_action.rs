@@ -4104,6 +4104,7 @@ mod tests {
                 1 => Err(bsv_rs::transaction::ChainTrackerError::NetworkError(
                     "tip unavailable".into(),
                 )),
+                3..=5 => Err(typed_header_fault(self.0)),
                 _ => {
                     CountingTracker::new(MockChainTracker::new(PROVEN_HEIGHT + 6))
                         .mining_tip()
@@ -4117,15 +4118,37 @@ mod tests {
             _: &str,
             _: u32,
         ) -> std::result::Result<bool, bsv_rs::transaction::ChainTrackerError> {
+            if self.0 >= 6 {
+                return Err(typed_header_fault(self.0));
+            }
             Err(bsv_rs::transaction::ChainTrackerError::NetworkError(
                 "root unavailable".into(),
             ))
         }
     }
 
+    fn typed_header_fault(mode: u8) -> bsv_rs::transaction::ChainTrackerError {
+        use bsv_rs::TransportFault;
+        let (fault, status) = match mode % 3 {
+            0 => (TransportFault::NeverSent, None),
+            1 => (TransportFault::MayHaveBeenReceived, Some(503)),
+            _ => (
+                TransportFault::RateLimited {
+                    retry_after_ms: Some(7_000),
+                },
+                Some(429),
+            ),
+        };
+        bsv_rs::transaction::ChainTrackerError::TransportFault {
+            fault,
+            status,
+            detail: "header fixture unavailable".into(),
+        }
+    }
+
     #[tokio::test]
     async fn a_header_fault_or_missing_tip_holds_even_a_failing_spend_without_writes() {
-        for fault in 0..3 {
+        for fault in 0..9 {
             let storage = create_test_storage().await;
             let user_id = create_test_user(&storage).await;
             let (bytes, txid, _) = payment_spending_abcd("02abce");
@@ -4156,7 +4179,27 @@ mod tests {
                 wallet_payment_args(bytes, "unavailable headers"),
             )
             .await;
-            assert!(matches!(result, Err(Error::ServiceError(_))), "{result:?}");
+            if fault < 3 {
+                assert!(matches!(result, Err(Error::ServiceError(_))), "{result:?}");
+            } else {
+                let expected = match fault % 3 {
+                    0 => (bsv_rs::TransportFault::NeverSent, None),
+                    1 => (bsv_rs::TransportFault::MayHaveBeenReceived, Some(503)),
+                    _ => (
+                        bsv_rs::TransportFault::RateLimited {
+                            retry_after_ms: Some(7_000),
+                        },
+                        Some(429),
+                    ),
+                };
+                let sdk = bsv_rs::Error::from(result.unwrap_err());
+                assert!(
+                    matches!(&sdk, bsv_rs::Error::TransportFault { fault, status, detail }
+                    if (*fault, *status) == expected && detail == "header fixture unavailable"),
+                    "{sdk:?}"
+                );
+                assert_eq!(sdk.transport_fault(), Some(expected.0));
+            }
             assert_eq!(tx_status(&storage, user_id, &txid).await, None);
             assert_eq!(req_status(&storage, &txid).await, None);
             for (table, expected) in tables.into_iter().zip(before) {
