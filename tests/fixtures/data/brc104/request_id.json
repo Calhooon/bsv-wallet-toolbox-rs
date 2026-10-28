@@ -1,0 +1,128 @@
+[
+  {
+    "family": "request_id",
+    "name": "request_id_31_bytes",
+    "request_id": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw==",
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response request ID must encode exactly 32 bytes"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_32_bytes",
+    "request_id": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 41,
+      "payload_sha256": "0688d9f4fcc61a946050709e0d22b10fa77be1acf807ff7aac316bd5b5d8b8a0"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_33_bytes",
+    "request_id": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH",
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response request ID must encode exactly 32 bytes"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_\"\"",
+    "request_id": "",
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response request ID must encode exactly 32 bytes"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_\"!\"",
+    "request_id": "!",
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response request ID must be canonical base64"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_\"Bw\"",
+    "request_id": "Bw",
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response request ID must be canonical base64"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\"",
+    "request_id": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response request ID must be canonical base64"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwd=\"",
+    "request_id": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwd=",
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response request ID must encode exactly 32 bytes"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_\"___________________________________________=\"",
+    "request_id": "___________________________________________=",
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response request ID must be canonical base64"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_absent",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "request_id",
+    "name": "request_id_different_from_request",
+    "request_id": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 41,
+      "payload_sha256": "6191ccf95f5e3f2f586d0ebccd6f6c1db73038dee396d38a94bfd8d358b68f32"
+    },
+    "cancelled": false
+  }
+]

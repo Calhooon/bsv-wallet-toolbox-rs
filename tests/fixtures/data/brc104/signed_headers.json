@@ -1,0 +1,185 @@
+[
+  {
+    "family": "signed_headers",
+    "name": "signed_name_1024",
+    "signed_key_bytes": 1024,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 1038,
+      "payload_sha256": "819ce0ebd4eeb12bc64e1ad53ceacf3d3bb74a302d79e5513609ec02732fe36c"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_name_1025",
+    "signed_key_bytes": 1025,
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response contains an oversized signed header"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_value_32768",
+    "signed_value_bytes": 32768,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 32792,
+      "payload_sha256": "b1adb3f82079405495bb0b557c8ad258374117cd02d1df5a4e54704d92e26a2c"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_value_32769",
+    "signed_value_bytes": 32769,
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response contains an oversized signed header"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_count_512",
+    "signed_count": 512,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 6155,
+      "payload_sha256": "b3feb9e3dfc0bced042e7c71a51d94e85d1c533839eaf58a3c9d3c4d7ccad446"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_count_513",
+    "signed_count": 513,
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response signed headers exceed their limit"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_total_262144",
+    "signed_total_bytes": 262144,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 262185,
+      "payload_sha256": "d6c973748e872911e1b1d2747169acdb3ace1a19214c51213eacc8fd3d866471"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_total_262145",
+    "signed_total_bytes": 262145,
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response signed headers exceed their limit"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_authorization_over",
+    "extra_headers": [
+      {
+        "name": "authorization",
+        "character": "x",
+        "count": 32769
+      }
+    ],
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response contains an oversized signed header"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "unsigned_headers_excluded",
+    "extra_headers": [
+      {
+        "name": "unrelated",
+        "character": "x",
+        "count": 32769
+      },
+      {
+        "name": "x-bsv-auth-extra",
+        "character": "x",
+        "count": 32769
+      }
+    ],
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_repeated_value_at",
+    "extra_headers": [
+      {
+        "name": "x-bsv-repeat",
+        "character": "a",
+        "count": 16383
+      },
+      {
+        "name": "x-bsv-repeat",
+        "character": "b",
+        "count": 16383
+      }
+    ],
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 32793,
+      "payload_sha256": "f906aa6137585d13377485b7606ff94f0aab881e1ebfc571b1c270b73aa6afa7"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signed_headers",
+    "name": "signed_repeated_value_over",
+    "extra_headers": [
+      {
+        "name": "x-bsv-repeat",
+        "character": "a",
+        "count": 16384
+      },
+      {
+        "name": "x-bsv-repeat",
+        "character": "b",
+        "count": 16383
+      }
+    ],
+    "error": {
+      "name": "Error",
+      "message": "Authenticated response contains an oversized signed header"
+    },
+    "delivered": null,
+    "cancelled": false
+  }
+]

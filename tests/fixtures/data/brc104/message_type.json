@@ -1,0 +1,67 @@
+[
+  {
+    "family": "message_type",
+    "name": "type_certificateRequest",
+    "message_type": "certificateRequest",
+    "error": null,
+    "delivered": {
+      "message_type": "certificateRequest",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "message_type",
+    "name": "type_CertificateRequest",
+    "message_type": "CertificateRequest",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "message_type",
+    "name": "type_certificateResponse",
+    "message_type": "certificateResponse",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "message_type",
+    "name": "type_general",
+    "message_type": "general",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "message_type",
+    "name": "type_",
+    "message_type": "",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "3006020101020101",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  }
+]

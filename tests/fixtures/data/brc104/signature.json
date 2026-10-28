@@ -1,0 +1,204 @@
+[
+  {
+    "family": "signature",
+    "name": "signature_\"MAA=\"",
+    "signature": "MAA=",
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"0\"",
+    "signature": "0",
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"300\"",
+    "signature": "300",
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"0g\"",
+    "signature": "0g",
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"0x30\"",
+    "signature": "0x30",
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"30 00\"",
+    "signature": "30 00",
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"é\"",
+    "signature": "é",
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"00\"",
+    "signature": "00",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "00",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\" 00 \"",
+    "signature": " 00 ",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "00",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"ABcd\"",
+    "signature": "ABcd",
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "abcd",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"\"",
+    "signature": "",
+    "error": {
+      "name": "Error",
+      "message": "Received HTTP 200 OK from {url}/sendMessage without valid BSV authentication (missing headers: x-bsv-auth-signature) - body preview: signed"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_\"   \"",
+    "signature": "   ",
+    "error": {
+      "name": "Error",
+      "message": "Received HTTP 200 OK from {url}/sendMessage without valid BSV authentication (missing headers: x-bsv-auth-signature) - body preview: signed"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_2048_characters",
+    "signature_chars": 2048,
+    "error": null,
+    "delivered": {
+      "message_type": "general",
+      "signature_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "payload_bytes": 9,
+      "payload_sha256": "7898e0a62a0dd2c0869d9c6b9fea66760aad77e4a67cd57c514a7a3c4255ff26"
+    },
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_2049_characters",
+    "signature_chars": 2049,
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_2050_characters",
+    "signature_chars": 2050,
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_repeated",
+    "extra_headers": [
+      {
+        "name": "x-bsv-auth-signature",
+        "character": "0",
+        "count": 2
+      }
+    ],
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  },
+  {
+    "family": "signature",
+    "name": "signature_refused_before_oversized_certificates",
+    "signature": "MAA=",
+    "certificate_bytes": 262145,
+    "error": {
+      "name": "Error",
+      "message": "Failed to parse x-bsv-auth-signature returned by {url}/sendMessage: [invalid]. signature must be bounded even-length hexadecimal"
+    },
+    "delivered": null,
+    "cancelled": false
+  }
+]

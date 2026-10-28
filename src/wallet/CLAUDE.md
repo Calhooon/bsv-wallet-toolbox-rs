@@ -957,6 +957,26 @@ existing toolbox envelope, and show that redirects and a failed handshake
 send no later request. The malformed-header witness uses the signed
 issuance path and refuses before the envelope is read.
 
+At beta.3 the transport also applies bsv-rs #416's bounds before delivery.
+Every refusal below has the existing `authentication error: ` prefix, then
+the issuance caller's `Network error: Failed to send request: ` envelope.
+`tests/brc104_bounds.rs` replays 55 recorded reference cases with mockito.
+
+| Input | Accepted limit or mapping | Refusal payload |
+|---|---|---|
+| Requested-certificates header | 262,144 UTF-8 bytes | `Failed to parse x-bsv-auth-requested-certificates returned by <url>: [oversized]. header exceeds its byte limit` |
+| Signature header | Nonempty even-length hexadecimal, at most 2,048 characters; `MAA=` is refused | `Failed to parse x-bsv-auth-signature returned by <url>: [invalid]. signature must be bounded even-length hexadecimal` |
+| Message type | Exact `certificateRequest` remains `CertificateRequest`, formerly `General` | No refusal at the transport layer; issuance certificate-response policy remains #333 |
+| Handshake / application body | 1,048,576 / 16,777,216 bytes | `Authenticated response from <url> exceeds <maximum> bytes` |
+| Optional request ID | Canonical padded base64 for exactly 32 bytes; absent stays absent | `Authenticated response request ID must be canonical base64` or `Authenticated response request ID must encode exactly 32 bytes` |
+| Signed headers | 512 distinct headers; names at most 1,024 bytes, values 32,768 bytes, sum 262,144 UTF-8 bytes | `Authenticated response contains an oversized signed header` or `Authenticated response signed headers exceed their limit` |
+
+The requested-certificates preimage remains the keeper's stated divergence:
+bsv-rs verifies the received header text; the reference verifies the parsed
+object's stringified form. Whitespace and redundant escapes can therefore
+give opposite verdicts. This pin does not resolve that difference; bsv-rs
+#426 is outside beta.3.
+
 Tests: `certificate_issuance_auth_tests.rs` (the design's witnesses),
 `certificate_issuance_auth.rs` (the deadline), the fixture certifier
 `certificate_issuance_peer_fixture.rs` (the handshake and the signed answer
