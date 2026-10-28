@@ -186,3 +186,31 @@ fn earlier_payment_answers_ahead_of_later_custom_instructions() {
         key_text("hexadecimal string.")
     );
 }
+
+// Both checks trim as ECMAScript's `String.prototype.trim` does
+// (validationHelpers.ts:439-441, 524), not as Rust's `str::trim`: U+FEFF is
+// stripped and U+0085 kept (#377 review, `label.rs`).
+
+#[test]
+fn prefix_behind_feff_passes() {
+    let out = payment("\u{FEFF}cHJlZml4", "c3VmZml4", SENDER);
+    validate_internalize_action_args(&args(vec![out])).unwrap();
+}
+
+#[test]
+fn prefix_before_nel_is_refused() {
+    let out = payment("cHJlZml4\u{85}", "c3VmZml4", SENDER);
+    assert_eq!(refusal(&args(vec![out])), PREFIX_TEXT);
+}
+
+#[test]
+fn key_behind_feff_passes() {
+    let out = payment("cHJlZml4", "c3VmZml4", &format!("\u{FEFF}{SENDER}"));
+    validate_internalize_action_args(&args(vec![out])).unwrap();
+}
+
+#[test]
+fn key_before_nel_is_refused() {
+    let out = payment("cHJlZml4", "c3VmZml4", &format!("{SENDER}\u{85}"));
+    assert_eq!(refusal(&args(vec![out])), key_text("even length, not 67."));
+}
