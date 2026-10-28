@@ -267,11 +267,13 @@ impl std::fmt::Display for Again {
 }
 
 impl Door<'_> {
+    /// The received-coin rule (R1 (d)) read as every label is stored (#437).
     fn allows_received(&self) -> bool {
-        self.args
-            .labels
-            .as_ref()
-            .is_some_and(|labels| labels.iter().any(|label| label == "underReceivedRule"))
+        self.args.labels.as_ref().is_some_and(|labels| {
+            labels
+                .iter()
+                .any(|label| super::label::normalize_label(label) == "underreceivedrule")
+        })
     }
 
     fn options(&self) -> Option<&bsv_rs::wallet::CreateActionOptions> {
