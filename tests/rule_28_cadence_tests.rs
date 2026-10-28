@@ -114,7 +114,9 @@ fn the_cadence_is_one_to_sixty_four_minutes_doubling() {
     assert_eq!(STRANGER_SPEND_LOOKUP_PACE.as_millis(), 350);
     let minutes: Vec<i64> = (0..=9).map(stranger_spend_recheck_minutes).collect();
     assert_eq!(minutes, vec![1, 1, 2, 4, 8, 16, 32, 64, 64, 64]);
-    // The names 0.5.0 exported are the same numbers, defined here.
+    // The names 0.5.0 exported are the same numbers, defined here; the
+    // backoff name is exported with the SQL stores.
+    #[cfg(any(feature = "sqlite", feature = "mysql"))]
     assert_eq!(
         bsv_wallet_toolbox_rs::locked_input_backoff_minutes(40),
         stranger_spend_recheck_minutes(40)
