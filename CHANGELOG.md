@@ -162,6 +162,19 @@
 
 ### Fixed
 
+- #371: `internalize_action` refuses a `wallet payment` with no
+  `paymentRemittance` and a `basket insertion` with no `insertionRemittance`
+  at step 0, in the same check as #337 and with its texts, as the reference
+  does (ts-stack@edf6e03 `validationHelpers.ts:972, 975`): ahead of the
+  remittances' fields, the later outputs and any BEEF. A served text moves and
+  comes earlier: `Wallet payment at index <i> missing paymentRemittance` and
+  `Basket insertion at index <i> missing insertionRemittance`, answered after
+  BEEF verification (an undecodable BEEF answered `Invalid BEEF ...`), are now
+  `The output remittance parameter must be only paymentRemittance for wallet payment`
+  and `The output remittance parameter must be only insertionRemittance for basket insertion`,
+  served through `WalletInterface` as `Validation error: <text>`. The CLI's
+  captain is told.
+
 - #379: both doors trim a label with ECMAScript's whitespace (the
   WhiteSpace and LineTerminator productions), as the SDK's validateLabel
   trims it (ts-stack@edf6e03 `validationHelpers.ts:385-387, 411`), where
