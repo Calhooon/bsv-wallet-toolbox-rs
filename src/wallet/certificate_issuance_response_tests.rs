@@ -163,6 +163,7 @@ async fn response_run_with(
             fixture_url,
             acquire_certificate_issuance(
                 observer,
+                subject_proto(),
                 wallet.storage(),
                 &AuthId::with_user_id(wallet.identity_key(), 1),
                 acquisition,

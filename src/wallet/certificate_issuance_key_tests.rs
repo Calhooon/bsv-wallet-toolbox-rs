@@ -20,6 +20,11 @@ fn certifier() -> String {
         .to_hex()
 }
 
+// The test wallet's ProtoWallet: the subject's key, as Wallet::acquire_certificate passes it.
+fn subject_proto() -> ProtoWallet {
+    ProtoWallet::new(Some(PrivateKey::from_hex(&format!("{:064x}", 37)).unwrap()))
+}
+
 async fn wallet() -> TestWallet {
     let subject = PrivateKey::from_hex(&format!("{:064x}", 37)).unwrap();
     let storage = StorageSqlx::in_memory().await.unwrap();
@@ -160,6 +165,7 @@ async fn test_issuance_bad_certifier_precedes_identity() {
     // (:1339), which #271 ports.
     let result = acquire_certificate_issuance(
         &wallet,
+        subject_proto(),
         wallet.storage(),
         &AuthId::with_user_id(wallet.identity_key().to_string(), 1),
         invalid,
