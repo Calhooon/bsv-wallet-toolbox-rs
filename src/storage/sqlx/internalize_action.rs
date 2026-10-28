@@ -729,6 +729,9 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
         "labels",
         MAXIMUM_WALLET_COLLECTION_ITEMS,
     )?;
+    for label in args.labels.iter().flatten() {
+        validate_label(label)?;
+    }
 
     // BRC-177 (#357): the reference refuses a `p nosend ` label on
     // internalizeAction once the arguments are valid (ts-stack@edf6e03
@@ -740,6 +743,25 @@ fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> 
         return Err(Error::ValidationError(BRC177_INCOMING_REFUSAL.to_string()));
     }
     Ok(())
+}
+
+/// The reference's validateLabel (#365, ts-stack@edf6e03
+/// validationHelpers.ts:385-387, validateIdentifier at 409-417): 1 to 300
+/// UTF-8 bytes once trimmed and lowercased, in its texts. Every label meets
+/// it before the BRC-177 refusal, as validateInternalizeActionArgs maps the
+/// labels (1054) before Wallet.ts:1248-1250 reads them.
+fn validate_label(label: &str) -> Result<()> {
+    let bytes = label.trim().to_lowercase().len();
+    let mustbe = if bytes < 1 {
+        "at least 1 length."
+    } else if bytes > 300 {
+        "no more than 300 length."
+    } else {
+        return Ok(());
+    };
+    Err(Error::ValidationError(format!(
+        "The label parameter must be {mustbe}"
+    )))
 }
 
 /// The reference's `hasBrc177NoSendExpiryLabel` (brc177NoSendExpiry.ts:118-120)
