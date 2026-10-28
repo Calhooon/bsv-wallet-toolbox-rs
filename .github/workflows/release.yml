@@ -61,8 +61,12 @@ jobs:
     name: CI
     needs: version
     uses: ./.github/workflows/ci.yml
+    # The called workflow's permissions must fit the caller's: ci.yml's semver
+    # job reads pull requests on a push run since #398, so this call grants it
+    # (the tag v0.14.0-beta.2's run failed at startup without it).
     permissions:
       contents: read
+      pull-requests: read
 
   publish:
     name: Publish to crates.io
