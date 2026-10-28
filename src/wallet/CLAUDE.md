@@ -168,6 +168,29 @@ proof-helper tests exercise all three transport classes, status and detail.
 For #185, the custom `get_chain_tracker` factory erasure and the local
 response-channel closure remain; neither is reclassified by matching text.
 
+## ProtoWallet refusal words at beta.3 (#419 item 4)
+
+The delegated signature and HMAC methods validate their arguments before
+cryptography (bsv-rs #415). These messages are `WalletRefusal` with class
+`InvalidParameter`, displayed without a prefix. Valid cryptographic misses
+retain `wallet error: Signature is not valid` and `wallet error: HMAC is not valid`.
+
+| Condition | Before beta.3 | At beta.3 |
+|---|---|---|
+| Noncanonical signature | `invalid signature: DER too short`, `invalid signature: Expected sequence tag 0x30`, or the DER parser's other words | `The signature parameter must be a canonical DER-encoded ECDSA signature` |
+| Signature over 72 bytes | DER parser error or crypto miss | `The signature parameter must be at most 72 bytes` |
+| Missing signing data/hash; both supplied | `wallet error: data or hashToDirectlySign must be provided`; both accepted | `The data, hashToDirectlySign parameter must be exactly one value` |
+| Missing verification data/hash; both supplied | `wallet error: data or hashToDirectlyVerify must be provided`; both accepted | `The data, hashToDirectlyVerify parameter must be exactly one value` |
+| Protocol name below 5 / above 400 bytes | `protocol validation error: protocol name must be at least 5 characters` / `protocol validation error: protocol name must be 400 characters or less` | `The protocolID[1] parameter must be at least 5 length.` / `The protocolID[1] parameter must be no more than 400 length.` |
+| Empty / oversized key ID | `protocol validation error: key ID must be at least 1 character` / `protocol validation error: key ID must be 800 characters or less` | `The keyID parameter must be at least 1 length.` / `The keyID parameter must be no more than 800 length.` |
+| Privileged operation without a reason | Ignored | `The privilegedReason parameter must be a value when 'privileged' is true` |
+| Reason below 5 / above 50 bytes | Ignored | `The privilegedReason parameter must be at least 5 length.` / `The privilegedReason parameter must be no more than 50 length.` |
+| Data over 268435456 bytes | Processed | `The data parameter must be at most 268435456 bytes` |
+
+`tests/proto_validator_pin.rs` exercises the delegated methods and their
+class and message together. The table's large data bound is the upstream
+entry's reading; the toolbox witnesses do not allocate that input.
+
 ## Architecture
 
 ```
