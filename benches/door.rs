@@ -83,7 +83,7 @@ fn main() {
                 let started = Instant::now();
                 let result = store
                     .wallet
-                    .create_action_offering(args, Some(ORIGINATOR), &store.coins[..offered])
+                    .create_action_offering(args, Some(ORIGINATOR), &store.coins[..offered], &[])
                     .await
                     .expect("offered signed action");
                 let elapsed = started.elapsed();

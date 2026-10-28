@@ -12,6 +12,7 @@ mod broadcast;
 mod change;
 mod fees;
 mod inputs;
+mod must_spend;
 mod outputs;
 mod signing;
 mod tracker;
@@ -144,6 +145,7 @@ pub async fn create_action_at_door_internal(
 ) -> std::result::Result<CreateActionDone, DoorRefusal> {
     // Step 1: Validate all inputs
     validate_create_action_args(&args)?;
+    must_spend::check_listed(door_with.offer, door_with.must_spend)?;
 
     // Step 2: Get or create default output basket
     // NOTE: This uses its own pool connection (known limitation for first pass).
@@ -172,6 +174,7 @@ pub async fn create_action_at_door_internal(
         change_basket: &change_basket,
         then: door_with.sign_and_process.as_ref(),
         offer: door_with.offer,
+        must_spend: door_with.must_spend,
     };
 
     // This call's pre-check picks, reserved until it returns (review 2 F1):
@@ -229,6 +232,8 @@ struct Door<'a> {
     then: Option<&'a SignAndProcess<'a>>,
     /// The host's offered change coins: nothing outside them is picked.
     offer: Option<&'a [i64]>,
+    /// The offered coins the action must spend, ahead of the pick (#353).
+    must_spend: &'a [i64],
 }
 
 /// What the write-locked step did.
@@ -367,6 +372,7 @@ impl Door<'_> {
             &mut ChangePick::Within {
                 allowed: &allowed,
                 allow_received: self.allows_received(),
+                must_spend: self.must_spend,
             },
             &self.storage.rng,
         )

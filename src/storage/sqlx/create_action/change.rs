@@ -4,6 +4,7 @@ use super::fees::{
     DEFAULT_FEE_RATE_SAT_PER_KB, P2PKH_LOCKING_SCRIPT_LENGTH, P2PKH_UNLOCKING_SCRIPT_LENGTH,
 };
 use super::inputs::ExtendedInput;
+use super::must_spend::allocate_named_change_input;
 use super::outputs::ExtendedOutput;
 use super::signing::caller_inputs_permit_funding;
 use super::AllocatedChangeInput;
@@ -124,7 +125,8 @@ pub(super) async fn plan_change(
         let out_sats: u64 = extended_outputs.iter().map(|o| o.satoshis).sum();
         let fundable = caller_inputs_permit_funding(args.inputs.as_deref().unwrap_or(&[]));
         let fee_required = caller_fixed_fee_required(&params);
-        match caller_complete_plan(in_sats, out_sats, fee_required, fundable) {
+        let plan = caller_complete_plan(in_sats, out_sats, fee_required, fundable);
+        match with_named_coins(plan, fundable, !pick.must_spend().is_empty())? {
             CallerCompletePlan::Verbatim => {
                 // Inputs - outputs is the (caller-fixed) miner fee. No change.
                 tracing::debug!(
@@ -210,6 +212,24 @@ enum CallerCompletePlan {
     /// transaction: appending anything would invalidate it, so the shortfall is
     /// a hard `InsufficientFunds`.
     Unfundable,
+}
+
+/// Named coins (#353) are appended as funding is: only where every provided
+/// signature permits it, and never dropped.
+fn with_named_coins(
+    plan: CallerCompletePlan,
+    fundable: bool,
+    named: bool,
+) -> Result<CallerCompletePlan> {
+    match (named, fundable) {
+        (false, _) => Ok(plan),
+        (true, true) => Ok(CallerCompletePlan::Fund),
+        (true, false) => Err(Error::ValidationError(
+            "mustSpend: a caller input is signed over the whole transaction; \
+             the wallet cannot add the named coins"
+                .to_string(),
+        )),
+    }
 }
 
 /// The rule, as a pure function.
@@ -352,29 +372,51 @@ async fn generate_change(
         let (_, _, _, initial_excess) = calculate_state(&allocated_inputs, &change_outputs);
         fee_excess = initial_excess;
 
-        // Funding loop: add one change input at a time
-        while fee_excess < 0 {
+        // Funding loop: add one change input at a time, the coins the
+        // action must spend ahead of the pick (#353), each counted as a picked coin;
+        // then the pick while the action is short. With no list this is
+        // the reference's `while fee_excess < 0`.
+        let mut named = pick.must_spend().iter().enumerate();
+        loop {
             // Check if we should add an output to balance a new input
             let add_output = has_target_net_count
                 && (net_change_count(&change_outputs, &allocated_inputs) - 1) < target_net;
 
-            let extra_for_output = if add_output {
-                2 * params.change_initial_satoshis
-            } else {
-                0
-            };
-            let target_sats = (-fee_excess) as u64 + extra_for_output;
+            let allocated = if let Some((index, output_id)) = named.next() {
+                Some(
+                    allocate_named_change_input(
+                        &mut *conn,
+                        user_id,
+                        basket_id,
+                        transaction_id,
+                        !is_delayed,
+                        pick,
+                        index,
+                        *output_id,
+                    )
+                    .await?,
+                )
+            } else if fee_excess < 0 {
+                let extra_for_output = if add_output {
+                    2 * params.change_initial_satoshis
+                } else {
+                    0
+                };
+                let target_sats = (-fee_excess) as u64 + extra_for_output;
 
-            let allocated = allocate_change_input_by(
-                &mut *conn,
-                user_id,
-                basket_id,
-                transaction_id,
-                target_sats,
-                !is_delayed,
-                pick,
-            )
-            .await?;
+                allocate_change_input_by(
+                    &mut *conn,
+                    user_id,
+                    basket_id,
+                    transaction_id,
+                    target_sats,
+                    !is_delayed,
+                    pick,
+                )
+                .await?
+            } else {
+                break;
+            };
 
             if let Some(input) = allocated {
                 allocated_inputs.push(input);

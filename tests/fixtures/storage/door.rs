@@ -50,7 +50,7 @@ fn status(result: &StorageProcessActionResults) -> &str {
 
 async fn build(wallet: &TestWallet, coin: i64) -> Result<CreateActionResult> {
     Ok(wallet
-        .create_action_offering(payment(true), Some("fixture.local"), &[coin])
+        .create_action_offering(payment(true), Some("fixture.local"), &[coin], &[])
         .await?)
 }
 
@@ -89,7 +89,7 @@ async fn post_handles_templates_unknown_references_and_repeats_without_writes() 
         .get_or_insert_with(CreateActionOptions::default)
         .sign_and_process = Some(false);
     let template = wallet
-        .create_action_offering(args, Some("fixture.local"), &[1])
+        .create_action_offering(args, Some("fixture.local"), &[1], &[])
         .await?;
     let reference = bsv_rs::primitives::to_base64(
         &template.signable_transaction.context("template")?.reference,
@@ -192,7 +192,7 @@ async fn post_rebuilds_trimmed_ancestry_from_storage() -> Result<()> {
     let mut args = payment(true);
     args.options.as_mut().context("options")?.known_txids = Some(vec![known]);
     let built = wallet
-        .create_action_offering(args, Some("fixture.local"), &[1])
+        .create_action_offering(args, Some("fixture.local"), &[1], &[])
         .await?;
     let compact_len = built.beef.context("compact BEEF")?.len();
     let txid = hex::encode(built.txid.context("txid")?);
@@ -404,7 +404,7 @@ async fn composition_writes_the_post_note_the_door_post_writes() -> Result<()> {
         .await?;
     let composed = hex::encode(
         wallet
-            .create_action_offering(payment(false), Some("fixture.local"), &[2])
+            .create_action_offering(payment(false), Some("fixture.local"), &[2], &[])
             .await?
             .txid
             .context("signed txid")?,

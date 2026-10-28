@@ -312,6 +312,13 @@ pub struct CreateActionDoor<'a> {
     /// from these only, and a shortfall among them refuses
     /// `InsufficientFunds`. `None`: every change coin of the default basket.
     pub offer: Option<&'a [i64]>,
+    /// The change coins (output ids) the action must spend (#353): each is
+    /// allocated ahead of the pick and counts toward the target, or the
+    /// call refuses it by name (outside the offer, named twice, not this
+    /// user's, not wallet-managed change, spent or reserved, or a received
+    /// unproven coin without the action's `underReceivedRule`). Empty: the
+    /// pick alone, as before.
+    pub must_spend: &'a [i64],
     /// Sign and process in the create step's own write transaction: one
     /// commit, then the caller broadcasts. `None`, or a template with no
     /// inputs: the create step only (the template for a later `signAction`).
@@ -643,8 +650,8 @@ pub trait WalletStorageWriter: WalletStorageReader {
     /// leaves nothing written. This default runs `create_action`, the signer
     /// and `process_action` as separate steps, aborting the action when the
     /// signer or the process step refuses (a busy there is then a
-    /// `StorageError`: the abort wrote), and refuses an `offer`, which it
-    /// cannot enforce.
+    /// `StorageError`: the abort wrote), and refuses an `offer` and a
+    /// `must_spend` list, which it cannot enforce.
     async fn create_action_at_door(
         &self,
         auth: &AuthId,
@@ -654,6 +661,11 @@ pub trait WalletStorageWriter: WalletStorageReader {
         if door.offer.is_some() {
             return Err(DoorRefusal::Create(Error::InvalidOperation(
                 "this storage cannot restrict createAction to an offer".to_string(),
+            )));
+        }
+        if !door.must_spend.is_empty() {
+            return Err(DoorRefusal::Create(Error::InvalidOperation(
+                "this storage cannot allocate a must-spend list".to_string(),
             )));
         }
         let created = self.create_action(auth, args).await?;
