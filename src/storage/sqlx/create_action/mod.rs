@@ -14,6 +14,7 @@ mod fees;
 mod inputs;
 mod must_spend;
 mod outputs;
+mod review_beef;
 mod signing;
 mod tracker;
 mod validation;
@@ -185,7 +186,17 @@ pub async fn create_action_at_door_internal(
         let prechecked = door
             .precheck(chain_tracker, storage_tracker.as_deref(), &mut reserved)
             .await?;
-        match door.step(&prechecked).await? {
+        let mut reviews = review_beef::PreparedReviews::read(storage, user_id, &args).await?;
+        let step = match door.step(&prechecked).await {
+            Err(DoorRefusal::Create(Error::ReviewActions(mut refusal))) => {
+                if reviews.attach(&mut refusal)? {
+                    return Err(DoorRefusal::Create(Error::ReviewActions(refusal)));
+                }
+                Step::Again(Again::CompetingSpend)
+            }
+            result => result?,
+        };
+        match step {
             Step::Done(result) => return Ok(*result),
             Step::Again(why) => {
                 if again.is_some() {
@@ -200,7 +211,7 @@ pub async fn create_action_at_door_internal(
                         // The latest pre-check covered the action and the
                         // store moved under it again: transient, never a
                         // shortfall.
-                        Again::Uncovered(_) => Error::StoreBusy {
+                        Again::Uncovered(_) | Again::CompetingSpend => Error::StoreBusy {
                             reason: StoreBusyReason::MovedUnderUs,
                         },
                     }));
@@ -252,12 +263,17 @@ enum Again {
     /// The assembly needed a root the pre-check did not read (a proof
     /// stored meanwhile).
     NotPrechecked { height: u32, root: String },
+    /// An input acquired a competing spend after the review data was read.
+    CompetingSpend,
 }
 
 impl std::fmt::Display for Again {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Again::Uncovered(e) => write!(f, "the pre-checked coins were taken: {e}"),
+            Again::CompetingSpend => {
+                f.write_str("a competing spend was not read before the write lock")
+            }
             Again::NotPrechecked { height, root } => write!(
                 f,
                 "the merkle root {root} at height {height} was not read before the write lock"

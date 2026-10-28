@@ -225,8 +225,8 @@ async fn get_locking_script_from_raw_tx(
 // createAction.ts:503-509: `new WERR_REVIEW_ACTIONS([{ txid: '', status:
 // 'doubleSpend', competingTxs: [doubleSpendTxid], competingBeef }], [])`.
 // bsv-rs's result txid is 32 bytes, so the reference's '' is all zeros
-// here; the competing BEEF (`getBeefForTransaction`, :527-539) is not built
-// under the write lock and is absent.
+// here. The door attaches the competing BEEF prepared by review_beef before
+// the write lock; a newly observed spend rolls back and repeats that read.
 fn double_spend_review(competing_txid: &str) -> Error {
     let competing_txs = hex::decode(competing_txid)
         .ok()
