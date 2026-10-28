@@ -16,6 +16,8 @@ name: CI
 # wire witnesses (tests/storage_wire.rs, #202) gate every pull request. The
 # integration step and the doc-test step also enable `bench-support` (the four
 # #182 witnesses; one library build shared, #253).
+# A last step builds and runs the unit tests and every suite with `remote`
+# alone, so a gate a remote-only host needs cannot go missing (#429).
 #
 # The balance (the owner's word of 2026-10-27, through the stack keeper, which
 # replaces the 2026-10-26 reading): a push to `main` or `beta` runs exactly the
@@ -102,6 +104,12 @@ jobs:
       # here and the job compiles it once less (#253).
       - name: Run doc tests
         run: cargo test --doc --features sqlite,remote,bench-support
+
+      # The unit tests and every suite under tests/ with `remote` alone: a test
+      # needing a SQL store carries its feature gate (#429). The run takes
+      # well under a minute past its build, so it runs rather than only builds.
+      - name: Run unit and integration tests (remote only)
+        run: cargo test --lib --tests --no-default-features --features remote
 
   # Clippy covers SQL storage with remote, plus remote without default features.
   clippy:
