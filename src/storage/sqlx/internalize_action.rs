@@ -4242,3 +4242,7 @@ mod remittance_tests;
 #[cfg(test)]
 #[path = "internalize_description_tests.rs"]
 mod description_tests;
+
+#[cfg(test)]
+#[path = "internalize_payment_tests.rs"]
+mod payment_tests;
