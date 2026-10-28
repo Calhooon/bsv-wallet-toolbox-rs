@@ -19,6 +19,13 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 displays the message alone; the former generic `wallet error: ` wrapper is
 absent. No toolbox variant or argument type changes.
 
+For example, `ValidationError("bad input")` formerly displayed through the
+SDK as `wallet error: Validation error: bad input`; it now displays as
+`Validation error: bad input`. Every row below loses exactly the same
+`wallet error: ` prefix, with the payload preserved byte for byte. The two
+originator Display assertions reflect that move; the other legacy refusal
+checks keep their existing payload text and assert the class beside it.
+
 The reference is `ts-stack@edf6e03`,
 `packages/wallet/wallet-toolbox/src/sdk/WERR_errors.ts`; the typed classes are
 from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
@@ -68,12 +75,33 @@ frames them as code 1, `Wallet operation failed`; its HTTP JSON client can
 read their named class. The storage JSON-RPC fixtures exercise a separate
 protocol and require no changes for this boundary conversion.
 
-This conversion cannot recover types from direct `WalletError` constructors
-in `wallet.rs`, including its missing pending action and certificate paths.
-Those doors need separate changes. #185 also remains open for the response
-wait in `storage/client/storage_client.rs` and `header_fault` in
-`storage/sqlx/beef_verification.rs`, which still erase transport details.
-An abort-on-chain variant needs the owner's public API decision.
+The authenticated storage client's response-wait timeout carries an SDK
+`TransportFault` with `MayHaveBeenReceived`, no status and the original
+`Request timed out` detail. Its SDK Display is now
+`transport fault MAY_HAVE_BEEN_RECEIVED: Request timed out`, formerly
+`wallet error: Network error: Request timed out`. The response-channel closure
+remains a local `NetworkError`; it supplies no remote outcome.
+
+BEEF verification retains a `ChainTrackerError::TransportFault` as
+`Error::SdkError`, so the internalize door and proof helpers preserve its
+class, status, detail and rate-limit wait. SDK Display loses the former
+`wallet error: Service error: ChainTracker verification failed: ` prefix.
+Missing mining context and untyped tracker errors keep the service-fault text.
+The service-factory lookup in the internalize door still wraps errors from a
+custom `WalletServices::get_chain_tracker`; built-in Services only reports
+missing configuration there. That custom-provider erasure remains under #185.
+
+This conversion cannot recover types from the 40 direct `WalletError`
+constructors in `wallet.rs`. The retained groups are assembly, signing and
+compensation faults in create/sign; parsing SDK-returned keys in key linkage;
+the direct sign reference/expiry/sequence guards; the internalize remittance,
+index, sender and derivation guards; certificate lookup and missing keyring;
+and the certificate field, map, base64, serial, subset and recovery helpers.
+The certificate helpers follow the reference's plain `Error` paths and keep
+separate helper and argument-boundary assertions. Direct sign and internalize
+guards need their own class-specific door witnesses under #185. Neither the
+remaining faults nor a missing dedicated class is classified by its text.
+An abort-on-chain variant still needs the owner's public API decision.
 
 ## Architecture
 
