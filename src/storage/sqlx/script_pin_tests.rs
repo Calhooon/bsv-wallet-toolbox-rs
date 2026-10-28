@@ -1,4 +1,4 @@
-//! #419 item 6: the internalize verifier inherits the SDK's default mode.
+//! #422: the live internalize verifier uses the node's word per input.
 
 use super::beef_verification::verify_beef_spends;
 use crate::Error;
@@ -16,7 +16,7 @@ use bsv_rs::transaction::{
 };
 use std::sync::Arc;
 
-const HEIGHT: u32 = 100_001;
+const HEIGHT: u32 = ProtocolEra::MAINNET_GENESIS_HEIGHT + 100;
 
 struct Tracker {
     height: u32,
@@ -133,30 +133,36 @@ fn script_words(result: crate::Result<()>, expected: &str) {
             why: SpendRefusal::Script(message),
             ..
         } => {
+            eprintln!("input script refusal: {message}");
             assert_eq!(message, expected);
         }
         other => panic!("expected an input script refusal, got {other:?}"),
     }
 }
 
-/// #422 applies the node's word per input in a lane after the beta.3 tag;
-/// when that lane lands, this assertion flips to a refusal with the node's text.
+/// The beta.3 default accepted this original-digest signature. The live
+/// door must require a fork ID under the node's word (#422).
 #[tokio::test]
 async fn internalize_verifier_accepts_original_digest_without_forkid_at_beta3() {
-    assert!(signed(0x01).await.is_ok());
+    script_words(signed(0x01).await, "The signature must use SIGHASH_FORKID.");
 }
 
-/// #422 applies the node's word per input in a lane after the beta.3 tag;
-/// when that lane lands, this refusal keeps its verdict and takes the node's text.
+/// Before Chronicle, the live door returns the word's era text for 0x61
+/// and its hash-type text for an undefined base type.
 #[tokio::test]
-async fn internalize_verifier_uses_the_default_version_one_signature_words() {
-    for scope in [0x61, 0x44] {
-        script_words(signed(scope).await, "The signature format is invalid.");
-    }
+async fn internalize_verifier_uses_standard_version_one_signature_words() {
+    script_words(
+        signed(0x61).await,
+        "The signature must not use SIGHASH_CHRONICLE before Chronicle.",
+    );
+    script_words(
+        signed(0x44).await,
+        "The signature's hash type (0x44) has no defined base type.",
+    );
 }
 
 #[tokio::test]
-async fn internalize_verifier_uses_the_default_nonminimal_number_words() {
+async fn internalize_verifier_uses_standard_nonminimal_number_words() {
     let (parent, mut child) = payment("8b5287");
     child.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("020100").unwrap());
     script_words(
@@ -165,8 +171,7 @@ async fn internalize_verifier_uses_the_default_nonminimal_number_words() {
     );
 }
 
-// #422 API audit: these compare the pinned SDK modes directly. They do not
-// claim the live internalize verifier has selected a word.
+// Direct SDK witnesses alongside the live door's verdicts.
 fn word_verdict(
     parent: &Transaction,
     child: &Transaction,
@@ -208,7 +213,7 @@ async fn post_chronicle_version_one_substr_passes_both_modes() {
             .await
             .is_ok()
     );
-    eprintln!("version-1 OP_SUBSTR: default accepted; post-Chronicle standard accepted");
+    eprintln!("version-1 OP_SUBSTR: post-Chronicle word and live door accepted");
 }
 
 /// The same valid signature that the default mode refuses is accepted under
@@ -224,11 +229,9 @@ async fn post_chronicle_word_accepts_version_one_chronicle_signature() {
         word_verdict(&parent, &child, ProtocolEra::PostGenesis),
         Err("The signature must not use SIGHASH_CHRONICLE before Chronicle.".into())
     );
-    script_words(
-        verify_at_height(parent, child, ProtocolEra::MAINNET_CHRONICLE_HEIGHT).await,
-        "The signature format is invalid.",
-    );
-    eprintln!("version-1 0x61: default refused; post-Chronicle standard accepted");
+    let verdict = verify_at_height(parent, child, ProtocolEra::MAINNET_CHRONICLE_HEIGHT).await;
+    eprintln!("version-1 0x61 at Chronicle: {verdict:?}");
+    assert!(verdict.is_ok(), "{verdict:?}");
 }
 
 #[tokio::test]
@@ -240,12 +243,10 @@ async fn standard_word_refuses_original_digest_without_forkid() {
             Err("The signature must use SIGHASH_FORKID.".into())
         );
     }
-    assert!(
-        verify_at_height(parent, child, ProtocolEra::MAINNET_CHRONICLE_HEIGHT)
-            .await
-            .is_ok()
+    script_words(
+        verify_at_height(parent, child, ProtocolEra::MAINNET_CHRONICLE_HEIGHT).await,
+        "The signature must use SIGHASH_FORKID.",
     );
-    eprintln!("0x01: default accepted; standard refused: The signature must use SIGHASH_FORKID.");
 }
 
 #[test]
