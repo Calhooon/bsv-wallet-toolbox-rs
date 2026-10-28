@@ -1,7 +1,9 @@
 //! #315: a certifier fixture that speaks BRC-104 as the reference middleware
 //! answers it (ts-stack@edf6e03 `packages/auth-express-middleware/src/index.ts`):
 //! the handshake on `POST /.well-known/auth` (`:1005-1031`), then the issuance
-//! path, the client's signature checked and the answer signed (`:931-968`).
+//! path, the client's signature checked and the answer signed (`:931-968`), or
+//! a request whose session or signature fails refused with an unsigned 401
+//! (`:1380-1395`), its handler never called.
 //!
 //! The mockito closures are synchronous, so the fixture signs with bsv-rs's
 //! key deriver and `PrivateKey::sign`; its self-check verifies that signature
@@ -16,7 +18,7 @@ use bsv_rs::primitives::{from_base64, from_hex, sha256, to_base64, to_hex, Priva
 use bsv_rs::wallet::{
     Counterparty, KeyDeriver, ProtoWallet, Protocol, SecurityLevel, VerifySignatureArgs,
 };
-use mockito::{Mock, Request, ServerGuard};
+use mockito::{Matcher, Mock, Request, ServerGuard};
 
 /// The six headers the middleware writes on a general answer (`index.ts:931-968`).
 const SIGNED_HEADERS: [&str; 6] = [
@@ -43,10 +45,33 @@ struct Signed {
     headers: HashMap<&'static str, String>,
 }
 
+/// The middleware's answer to a request with no auth headers (`index.ts:1778-1792`).
+const UNAUTHENTICATED: &str =
+    r#"{"status":"error","code":"UNAUTHORIZED","message":"Mutual-authentication failed!"}"#;
+
+/// The middleware's answer to a general message its Peer refused on a nonce,
+/// signature or session (`index.ts:1380-1395`).
+pub(super) const AUTH_FAILED: &str =
+    r#"{"status":"error","code":"ERR_AUTH_FAILED","description":"Authentication failed."}"#;
+
+/// What the middleware's Peer makes of a request off the handshake path.
+#[derive(Clone)]
+enum Verdict {
+    /// No request id: the unauthenticated path (`index.ts:1097-1104`).
+    Unauthenticated,
+    /// No session for its nonce (`Peer.ts:1282-1285`) or a signature that
+    /// does not verify (`Peer.ts:1303-1305`).
+    Refused,
+    /// The session's client identity and nonce.
+    Accepted(PublicKey, String),
+}
+
 #[derive(Default)]
 struct State {
     /// The fixture's session nonce to the client's identity and nonce.
     sessions: HashMap<String, (PublicKey, String)>,
+    /// The request id to its verdict, so a request is checked once.
+    verdicts: HashMap<String, Verdict>,
     /// The request id to the answer, so the header and body closures agree.
     answers: HashMap<String, Arc<Signed>>,
     /// Whether each general request's signature verified.
@@ -111,8 +136,26 @@ impl PeerCertifier {
         self.state().request_headers.clone()
     }
 
-    /// `POST /.well-known/auth`, answered with the `initialResponse`.
+    /// `POST /.well-known/auth`, answered with the `initialResponse`; and on
+    /// every other path a request the middleware refuses, answered 401 with
+    /// none of the six headers (mockito writes a header it was given even
+    /// empty, so the refusal is its own mock).
     pub(super) async fn handshake(&self, server: &mut ServerGuard) -> Mock {
+        let (matcher, refusal) = (self.clone(), self.clone());
+        server
+            .mock("POST", Matcher::Any)
+            .match_request(move |request| {
+                request.path() != "/.well-known/auth"
+                    && !matches!(matcher.verdict(request), Verdict::Accepted(..))
+            })
+            .with_status(401)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| match refusal.verdict(request) {
+                Verdict::Unauthenticated => UNAUTHENTICATED.into(),
+                _ => AUTH_FAILED.into(),
+            })
+            .create_async()
+            .await;
         let certifier = self.clone();
         server
             .mock("POST", "/.well-known/auth")
@@ -146,8 +189,54 @@ impl PeerCertifier {
         serde_json::to_vec(&answer).unwrap()
     }
 
+    /// The request's verdict, computed once per request id; a request that
+    /// reaches a session has its signature and `x-bsv-*` names recorded.
+    fn verdict(&self, request: &Request) -> Verdict {
+        let request_id = header(request, "x-bsv-auth-request-id");
+        if request_id.is_empty() {
+            return Verdict::Unauthenticated;
+        }
+        if let Some(verdict) = self.state().verdicts.get(&request_id).cloned() {
+            return verdict;
+        }
+        let verdict = self.check(request, &request_id);
+        let verdicts = &mut self.state().verdicts;
+        verdicts.entry(request_id).or_insert(verdict).clone()
+    }
+
+    fn check(&self, request: &Request, request_id: &str) -> Verdict {
+        let our_nonce = header(request, "x-bsv-auth-your-nonce");
+        let session = self.state().sessions.get(&our_nonce).cloned();
+        let Some((client, client_nonce)) = session else {
+            return Verdict::Refused;
+        };
+        let Some(id) = from_base64(request_id)
+            .ok()
+            .and_then(|id| <[u8; 32]>::try_from(id).ok())
+        else {
+            return Verdict::Refused;
+        };
+        let verified = self.verify_request(request, id, &our_nonce, &client);
+        let mut names: Vec<String> = request
+            .headers()
+            .keys()
+            .map(|name| name.as_str().to_string())
+            .filter(|name| name.starts_with("x-bsv-"))
+            .collect();
+        names.sort();
+        let mut state = self.state();
+        state.client_signatures.push(verified);
+        state.request_headers.push(names);
+        match verified {
+            true => Verdict::Accepted(client, client_nonce),
+            false => Verdict::Refused,
+        }
+    }
+
     /// `POST <path>` answering `status` and `body(request)`, signed as `answer`
-    /// says; not yet created, so the caller adds its matchers and `expect`.
+    /// says, to a request the middleware accepts (`handshake`'s refusal
+    /// answers the rest); not yet created, so the caller adds its matchers and
+    /// `expect`.
     pub(super) fn general(
         &self,
         server: &mut ServerGuard,
@@ -162,9 +251,10 @@ impl PeerCertifier {
             answer,
             body: Box::new(body),
         });
-        let status_of = Arc::clone(&responder);
+        let (status_of, matcher) = (Arc::clone(&responder), self.clone());
         let mut mock = server
             .mock("POST", path)
+            .match_request(move |request| matches!(matcher.verdict(request), Verdict::Accepted(..)))
             .with_status_code_from_request(move |request| status_of.answer(request).status.into());
         for name in SIGNED_HEADERS {
             let responder = Arc::clone(&responder);
@@ -197,32 +287,11 @@ impl Responder {
     }
 
     fn sign(&self, request: &Request, request_id: &str) -> Signed {
-        let our_nonce = header(request, "x-bsv-auth-your-nonce");
-        let session = self.certifier.state().sessions.get(&our_nonce).cloned();
-        let Some((client, client_nonce)) = session else {
-            // `index.ts:1778-1793`: a request with no session is 401, unsigned.
-            let body = r#"{"status":"error","code":"UNAUTHORIZED","message":"Mutual-authentication failed!"}"#;
-            let (status, headers) = (401, HashMap::new());
-            return Signed {
-                status,
-                body: body.into(),
-                headers,
-            };
+        // `general` matches only an accepted request.
+        let Verdict::Accepted(client, client_nonce) = self.certifier.verdict(request) else {
+            unreachable!("the refusal mock answers a refused request");
         };
         let id: [u8; 32] = from_base64(request_id).unwrap().try_into().unwrap();
-        let verified = self.verify_request(request, id, &our_nonce, &client);
-        let mut names: Vec<String> = request
-            .headers()
-            .keys()
-            .map(|name| name.as_str().to_string())
-            .filter(|name| name.starts_with("x-bsv-"))
-            .collect();
-        names.sort();
-        let mut state = self.certifier.state();
-        state.client_signatures.push(verified);
-        state.request_headers.push(names);
-        drop(state);
-
         let body = (self.body)(request);
         let nonce = to_base64(&sha256(format!("answer {request_id}").as_bytes()));
         let mut signed_body = body.clone();
@@ -256,7 +325,9 @@ impl Responder {
             headers,
         }
     }
+}
 
+impl PeerCertifier {
     /// The client's signature over the rebuilt request payload: request id,
     /// method, path, query, the signed headers sorted (`content-type` with its
     /// parameters cut, `authorization`, `x-bsv-*` but not `x-bsv-auth-*`),
@@ -301,7 +372,7 @@ impl Responder {
             return false;
         };
         let key_id = format!("{} {our_nonce}", header(request, "x-bsv-auth-nonce"));
-        ProtoWallet::new(Some(self.certifier.key.clone()))
+        ProtoWallet::new(Some(self.key.clone()))
             .verify_signature(VerifySignatureArgs {
                 data: Some(payload),
                 signature,
