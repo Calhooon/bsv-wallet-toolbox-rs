@@ -164,7 +164,7 @@ async fn test_issuance_bad_certifier_precedes_identity() {
         &AuthId::with_user_id(wallet.identity_key().to_string(), 1),
         invalid,
         "not a public key",
-        ORIGINATOR,
+        Some(ORIGINATOR),
     )
     .await
     .map_err(Into::into);
@@ -430,7 +430,7 @@ async fn acquire_from_fixture(
     ISSUANCE_TEST_URL
         .scope(
             fixture_url,
-            wallet.acquire_certificate(acquisition, ORIGINATOR),
+            wallet.acquire_certificate(acquisition, Some(ORIGINATOR)),
         )
         .await
 }

@@ -119,3 +119,32 @@ async fn authenticated_storage_client_accepts_loopback_handshake() {
     );
     handshake.assert_async().await;
 }
+
+// bsv-rs #320 through the policy's client (#263): a redirect status on the
+// handshake is refused before its body and the hop is never asked.
+#[tokio::test]
+async fn authenticated_storage_client_refuses_a_redirect_hop() {
+    let mut server = mockito::Server::new_async().await;
+    let redirect = server
+        .mock("POST", "/.well-known/auth")
+        .with_status(307)
+        .with_header(
+            "location",
+            &format!("{}/hop/.well-known/auth", server.url()),
+        )
+        .expect(1)
+        .create_async()
+        .await;
+    let hop = server
+        .mock("POST", "/hop/.well-known/auth")
+        .expect(0)
+        .create_async()
+        .await;
+
+    let client =
+        StorageClient::new(wallet(), server.url()).with_timeout(std::time::Duration::from_secs(5));
+    let error = client.make_available().await.unwrap_err().to_string();
+    assert!(error.contains("redirect refused: 307"), "{error}");
+    redirect.assert_async().await;
+    hop.assert_async().await;
+}

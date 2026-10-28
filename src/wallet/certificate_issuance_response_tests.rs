@@ -35,7 +35,7 @@ macro_rules! observed_wallet_methods {
     async fn verify_hmac(
         &self,
         args: VerifyHmacArgs,
-        _originator: &str,
+        _originator: Option<&str>,
     ) -> bsv_rs::Result<VerifyHmacResult> {
         self.calls.lock().unwrap().push(args.clone());
         if args.protocol_id.protocol_name == "server hmac" {
@@ -52,7 +52,7 @@ macro_rules! observed_wallet_methods {
         self.inner.verify_hmac(args)
     }
 
-    async fn decrypt(&self, args: DecryptArgs, _originator: &str) -> bsv_rs::Result<DecryptResult> {
+    async fn decrypt(&self, args: DecryptArgs, _originator: Option<&str>) -> bsv_rs::Result<DecryptResult> {
         if self.decrypt_error {
             return Err(bsv_rs::Error::WalletError("fixture decrypt refused".into()));
         }
@@ -66,32 +66,32 @@ macro_rules! observed_wallet_methods {
 }
 
 observed_wallet_methods! {
-    fn get_public_key(&self, args: GetPublicKeyArgs, originator: &str) -> bsv_rs::Result<GetPublicKeyResult>;
-    fn encrypt(&self, args: EncryptArgs, originator: &str) -> bsv_rs::Result<EncryptResult>;
-    fn create_hmac(&self, args: CreateHmacArgs, originator: &str) -> bsv_rs::Result<CreateHmacResult>;
-    fn create_signature(&self, args: CreateSignatureArgs, originator: &str) -> bsv_rs::Result<CreateSignatureResult>;
-    fn verify_signature(&self, args: VerifySignatureArgs, originator: &str) -> bsv_rs::Result<VerifySignatureResult>;
-    fn reveal_counterparty_key_linkage(&self, args: WalletRevealCounterpartyArgs, originator: &str) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult>;
-    fn reveal_specific_key_linkage(&self, args: WalletRevealSpecificArgs, originator: &str) -> bsv_rs::Result<RevealSpecificKeyLinkageResult>;
-    fn create_action(&self, args: CreateActionArgs, originator: &str) -> bsv_rs::Result<CreateActionResult>;
-    fn sign_action(&self, args: SignActionArgs, originator: &str) -> bsv_rs::Result<SignActionResult>;
-    fn abort_action(&self, args: AbortActionArgs, originator: &str) -> bsv_rs::Result<AbortActionResult>;
-    fn list_actions(&self, args: ListActionsArgs, originator: &str) -> bsv_rs::Result<ListActionsResult>;
-    fn internalize_action(&self, args: InternalizeActionArgs, originator: &str) -> bsv_rs::Result<InternalizeActionResult>;
-    fn list_outputs(&self, args: ListOutputsArgs, originator: &str) -> bsv_rs::Result<ListOutputsResult>;
-    fn relinquish_output(&self, args: RelinquishOutputArgs, originator: &str) -> bsv_rs::Result<RelinquishOutputResult>;
-    fn acquire_certificate(&self, args: AcquireCertificateArgs, originator: &str) -> bsv_rs::Result<WalletCertificate>;
-    fn list_certificates(&self, args: ListCertificatesArgs, originator: &str) -> bsv_rs::Result<ListCertificatesResult>;
-    fn prove_certificate(&self, args: ProveCertificateArgs, originator: &str) -> bsv_rs::Result<ProveCertificateResult>;
-    fn relinquish_certificate(&self, args: RelinquishCertificateArgs, originator: &str) -> bsv_rs::Result<RelinquishCertificateResult>;
-    fn discover_by_identity_key(&self, args: DiscoverByIdentityKeyArgs, originator: &str) -> bsv_rs::Result<DiscoverCertificatesResult>;
-    fn discover_by_attributes(&self, args: DiscoverByAttributesArgs, originator: &str) -> bsv_rs::Result<DiscoverCertificatesResult>;
-    fn is_authenticated(&self, originator: &str) -> bsv_rs::Result<AuthenticatedResult>;
-    fn wait_for_authentication(&self, originator: &str) -> bsv_rs::Result<AuthenticatedResult>;
-    fn get_height(&self, originator: &str) -> bsv_rs::Result<GetHeightResult>;
-    fn get_header_for_height(&self, args: GetHeaderArgs, originator: &str) -> bsv_rs::Result<GetHeaderResult>;
-    fn get_network(&self, originator: &str) -> bsv_rs::Result<GetNetworkResult>;
-    fn get_version(&self, originator: &str) -> bsv_rs::Result<GetVersionResult>;
+    fn get_public_key(&self, args: GetPublicKeyArgs, originator: Option<&str>) -> bsv_rs::Result<GetPublicKeyResult>;
+    fn encrypt(&self, args: EncryptArgs, originator: Option<&str>) -> bsv_rs::Result<EncryptResult>;
+    fn create_hmac(&self, args: CreateHmacArgs, originator: Option<&str>) -> bsv_rs::Result<CreateHmacResult>;
+    fn create_signature(&self, args: CreateSignatureArgs, originator: Option<&str>) -> bsv_rs::Result<CreateSignatureResult>;
+    fn verify_signature(&self, args: VerifySignatureArgs, originator: Option<&str>) -> bsv_rs::Result<VerifySignatureResult>;
+    fn reveal_counterparty_key_linkage(&self, args: WalletRevealCounterpartyArgs, originator: Option<&str>) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult>;
+    fn reveal_specific_key_linkage(&self, args: WalletRevealSpecificArgs, originator: Option<&str>) -> bsv_rs::Result<RevealSpecificKeyLinkageResult>;
+    fn create_action(&self, args: CreateActionArgs, originator: Option<&str>) -> bsv_rs::Result<CreateActionResult>;
+    fn sign_action(&self, args: SignActionArgs, originator: Option<&str>) -> bsv_rs::Result<SignActionResult>;
+    fn abort_action(&self, args: AbortActionArgs, originator: Option<&str>) -> bsv_rs::Result<AbortActionResult>;
+    fn list_actions(&self, args: ListActionsArgs, originator: Option<&str>) -> bsv_rs::Result<ListActionsResult>;
+    fn internalize_action(&self, args: InternalizeActionArgs, originator: Option<&str>) -> bsv_rs::Result<InternalizeActionResult>;
+    fn list_outputs(&self, args: ListOutputsArgs, originator: Option<&str>) -> bsv_rs::Result<ListOutputsResult>;
+    fn relinquish_output(&self, args: RelinquishOutputArgs, originator: Option<&str>) -> bsv_rs::Result<RelinquishOutputResult>;
+    fn acquire_certificate(&self, args: AcquireCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<WalletCertificate>;
+    fn list_certificates(&self, args: ListCertificatesArgs, originator: Option<&str>) -> bsv_rs::Result<ListCertificatesResult>;
+    fn prove_certificate(&self, args: ProveCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<ProveCertificateResult>;
+    fn relinquish_certificate(&self, args: RelinquishCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<RelinquishCertificateResult>;
+    fn discover_by_identity_key(&self, args: DiscoverByIdentityKeyArgs, originator: Option<&str>) -> bsv_rs::Result<DiscoverCertificatesResult>;
+    fn discover_by_attributes(&self, args: DiscoverByAttributesArgs, originator: Option<&str>) -> bsv_rs::Result<DiscoverCertificatesResult>;
+    fn is_authenticated(&self, originator: Option<&str>) -> bsv_rs::Result<AuthenticatedResult>;
+    fn wait_for_authentication(&self, originator: Option<&str>) -> bsv_rs::Result<AuthenticatedResult>;
+    fn get_height(&self, originator: Option<&str>) -> bsv_rs::Result<GetHeightResult>;
+    fn get_header_for_height(&self, args: GetHeaderArgs, originator: Option<&str>) -> bsv_rs::Result<GetHeaderResult>;
+    fn get_network(&self, originator: Option<&str>) -> bsv_rs::Result<GetNetworkResult>;
+    fn get_version(&self, originator: Option<&str>) -> bsv_rs::Result<GetVersionResult>;
 }
 
 async fn response_run(
@@ -138,7 +138,7 @@ async fn response_run_with(
             let type_bytes = if request.cert_type.ends_with("B=") { [0; 32] } else { [7; 32] };
             let mut certificate = Certificate::new(type_bytes, serial, subject.clone(), private.public_key());
             certificate.revocation_outpoint = Some(signed_outpoint.clone());
-            for (name, value) in &request.fields { certificate.set_field(name.clone(), value.as_bytes().to_vec()); }
+            for (name, value) in &request.fields { certificate.set_field(name.clone(), value.clone()); }
             certificate.sign(&private).unwrap();
             let mut response = json!({
                 "serverNonce": server_nonce,
@@ -167,7 +167,7 @@ async fn response_run_with(
                 &AuthId::with_user_id(wallet.identity_key(), 1),
                 acquisition,
                 wallet.identity_key(),
-                ORIGINATOR,
+                Some(ORIGINATOR),
             ),
         )
         .await;
@@ -402,6 +402,23 @@ async fn verification_error_uses_reference_text() {
         "Certificate verification failed",
     )
     .await;
+}
+
+// #188 (bsv-rs #299): verify answers Ok(false), never an error, so each of
+// the three false verdicts (unsigned, non-DER, wrong signer) reaches
+// Wallet.ts:816's refusal.
+#[tokio::test]
+async fn false_verdicts_are_refused() {
+    let stranger = PrivateKey::from_hex(&format!("{:064x}", 41)).unwrap();
+    let wrong_signer = hex::encode(stranger.sign(&[9u8; 32]).unwrap().to_der());
+    let non_der = "30440220".to_string() + &"ab".repeat(32);
+    for signature in [String::new(), non_der, wrong_signer] {
+        response_error(
+            move |r| r["certificate"]["signature"] = json!(signature.clone()),
+            "Certificate verification failed",
+        )
+        .await;
+    }
 }
 
 #[tokio::test]

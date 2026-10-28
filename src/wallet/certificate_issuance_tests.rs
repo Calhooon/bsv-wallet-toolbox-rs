@@ -87,8 +87,8 @@ async fn wallet(subject: u32) -> (TestWallet, AuthId) {
 }
 
 // Certificate.verify at ts-stack@edf6e03 derives the signature key with the
-// anyone key. The pinned bsv-rs 0.9.0-beta.1 uses the raw identity key instead
-// (#251, handled by the separate #199 pin lane), so use the reference rule.
+// anyone key, the reference rule this oracle keeps. bsv-rs uses it too since
+// 0.9.0-beta.2 (#251); the door's own check is `issued_certificate_verifies`.
 fn verify_like_reference(certificate: &Certificate) -> bool {
     let signer = KeyDeriver::new(None)
         .derive_public_key(
@@ -103,7 +103,7 @@ fn verify_like_reference(certificate: &Certificate) -> bool {
         )
         .unwrap();
     signer.verify(
-        &certificate.signing_hash(),
+        &certificate.signing_hash().expect("signing hash"),
         &Signature::from_der(certificate.signature.as_ref().unwrap()).unwrap(),
     )
 }
@@ -189,7 +189,7 @@ async fn prove(
                 privileged: None,
                 privileged_reason: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
         .unwrap()
@@ -244,11 +244,11 @@ fn certifier_response(
         key(issued.keys.certifier).public_key(),
     );
     for (name, value) in &prepared.fields {
-        certificate.set_field(name.clone(), value.as_bytes().to_vec());
+        certificate.set_field(name.clone(), value.clone());
     }
     let signature = certifier
         .create_signature(CreateSignatureArgs {
-            data: Some(certificate.to_binary(false)),
+            data: Some(certificate.to_binary(false).expect("certificate bytes")),
             protocol_id: Protocol::new(SecurityLevel::Counterparty, "certificate signature"),
             key_id: format!("{} {}", prepared.cert_type_b64, BASE64.encode(serial)),
             counterparty: Some(Counterparty::Anyone),
@@ -277,11 +277,18 @@ fn reference_issued_certificate_survives_intake() {
             issued.reference_verify,
             "intake must preserve the reference's signed Base64 field text"
         );
+        // #188: the door's own check (bsv-rs's verify, BRC-52's derived key)
+        // answers the reference's verdict on both halves of the fixture.
+        assert_eq!(
+            issued_certificate_verifies(&parsed.certificate),
+            issued.reference_verify
+        );
         assert_eq!(
             hex::encode(
                 decode_issued_certificate(&parsed.certificate)
                     .unwrap()
                     .to_binary(true)
+                    .expect("certificate bytes")
             ),
             issued.binary_hex
         );
@@ -291,6 +298,7 @@ fn reference_issued_certificate_survives_intake() {
                     decode_issued_certificate(&parsed.certificate)
                         .unwrap()
                         .signing_hash()
+                        .expect("signing hash")
                 ),
                 hash
             );
@@ -384,7 +392,7 @@ async fn toolbox_issued_certificate_decrypts_like_reference() {
             &args,
             &certifier.public_key(),
             &subject,
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
         .unwrap();
@@ -419,7 +427,7 @@ async fn toolbox_issued_certificate_decrypts_like_reference() {
             &auth.identity_key,
             &cert_response.certifier,
             &certifier.public_key(),
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
         .unwrap();
@@ -465,7 +473,7 @@ async fn issuance_uses_fresh_keys_for_equal_and_empty_plaintexts() {
             &certifier,
             &subject.public_key(),
             &plaintexts,
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
         .unwrap();

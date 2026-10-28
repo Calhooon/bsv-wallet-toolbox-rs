@@ -310,7 +310,7 @@ async fn create_action_answered_465_naming_a_competitor_is_a_hint_not_an_error()
     .expect("wallet");
 
     let result = wallet
-        .create_action(pay_args(true), "test.local")
+        .create_action(pay_args(true), Some("test.local"))
         .await
         .expect("a broadcaster's refusal is not an error to the caller");
     let txid = hex::encode(result.txid.expect("the txid"));
@@ -349,7 +349,7 @@ async fn create_action_answered_a_double_spend_word_naming_no_competitor_schedul
         .expect("wallet");
 
     let result = wallet
-        .create_action(pay_args(true), "test.local")
+        .create_action(pay_args(true), Some("test.local"))
         .await
         .expect("a double-spend word is not an error to the caller");
     let txid = hex::encode(result.txid.expect("the txid"));
@@ -416,7 +416,7 @@ async fn a_status_source_holding_it_on_the_next_pass_promotes_it() {
         .await
         .expect("wallet");
     let result = wallet
-        .create_action(pay_args(true), "test.local")
+        .create_action(pay_args(true), Some("test.local"))
         .await
         .expect("a refusal is not an error");
     let txid = hex::encode(result.txid.expect("the txid"));
@@ -462,7 +462,7 @@ async fn create_action_whose_post_reaches_no_broadcaster_is_the_same_hint() {
         .await
         .expect("wallet");
     let result = wallet
-        .create_action(pay_args(true), "test.local")
+        .create_action(pay_args(true), Some("test.local"))
         .await
         .expect("a transport fault is not an error to the caller");
     let txid = hex::encode(result.txid.expect("the txid"));
@@ -498,7 +498,7 @@ async fn sign_action_answered_465_is_a_hint_not_an_error() {
     .expect("wallet");
 
     let created = wallet
-        .create_action(pay_args(false), "test.local")
+        .create_action(pay_args(false), Some("test.local"))
         .await
         .expect("a signable transaction");
     let reference = created
@@ -512,7 +512,7 @@ async fn sign_action_answered_465_is_a_hint_not_an_error() {
                 reference: bsv_rs::primitives::to_base64(&reference),
                 options: None,
             },
-            "test.local",
+            Some("test.local"),
         )
         .await
         .expect("a broadcaster's refusal is not an error to the caller");

@@ -36,7 +36,11 @@
         }
       ],
       "seekPermission": false,
-      "tx": "0080ff"
+      "tx": [
+        0,
+        128,
+        255
+      ]
     }
   ]
 }

@@ -43,7 +43,7 @@ async fn assert_refused(label: &str, text: &str) {
     let before = store_snapshot(&wallet).await;
 
     let result = wallet
-        .create_action(expiry_payment(label), "nosend.example.com")
+        .create_action(expiry_payment(label), Some("nosend.example.com"))
         .await;
     match result {
         Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, text, "{label}"),
@@ -68,7 +68,7 @@ async fn label_outside_the_prefix_still_creates_through_wallet_interface() {
     fund_tagged(&wallet, &own_lock(&wallet), 0).await;
 
     wallet
-        .create_action(expiry_payment("p nosendx"), "nosend.example.com")
+        .create_action(expiry_payment("p nosendx"), Some("nosend.example.com"))
         .await
         .unwrap();
 }
@@ -146,7 +146,7 @@ async fn nosend_label_is_refused_on_internalize_through_wallet_interface() {
     let before = store_snapshot(&wallet).await;
 
     let result = wallet
-        .internalize_action(insertion("p nosend expiry seconds 300"), ORIGIN)
+        .internalize_action(insertion("p nosend expiry seconds 300"), Some(ORIGIN))
         .await;
     match result {
         Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
@@ -177,7 +177,7 @@ async fn assert_internalize_refused(
     text: &str,
 ) {
     let before = store_snapshot(wallet).await;
-    match wallet.internalize_action(args, ORIGIN).await {
+    match wallet.internalize_action(args, Some(ORIGIN)).await {
         Err(bsv_rs::Error::WalletError(message)) => assert_eq!(message, text),
         Err(other) => panic!("refused with another error: {other:?}"),
         Ok(_) => panic!("the action was internalized"),

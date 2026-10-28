@@ -162,7 +162,7 @@ impl Replay {
                                 raw_tx: None,
                                 send_with: vec![handle],
                             },
-                            "fixture.local",
+                            Some("fixture.local"),
                         )
                         .await,
                 )
@@ -276,7 +276,8 @@ impl Replay {
             }
             Call::InternalizeAction { from, args } => {
                 let mut args = self.resolve(args.clone())?;
-                args["tx"] = json!(hex::encode(self.beef(from)?));
+                // BRC-100's AtomicBEEF is a byte array in JSON (bsv-rs #105).
+                args["tx"] = json!(self.beef(from)?);
                 recorded(
                     self.storage
                         .internalize_action(&self.auth, serde_json::from_value(args)?)
@@ -341,7 +342,7 @@ impl Replay {
             .wallet
             .as_ref()
             .context("wallet")?
-            .create_action_offering(args, "fixture.local", &ids)
+            .create_action_offering(args, Some("fixture.local"), &ids)
             .await;
         match result {
             Ok(result) => {

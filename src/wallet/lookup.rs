@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use bsv_rs::overlay::{LookupAnswer, NetworkPreset};
 use bsv_rs::script::templates::PushDrop;
 use bsv_rs::transaction::Transaction;
-use bsv_rs::wallet::{IdentityCertificate, WalletCertificate};
+use bsv_rs::wallet::{IdentityCertificate, IdentityCertifier, WalletCertificate};
 
 use crate::services::providers::http_client::Client;
 use crate::Result;
@@ -55,8 +55,13 @@ pub struct OverlayCertificate {
 }
 
 impl OverlayCertificate {
-    /// Convert to the SDK's `IdentityCertificate` format.
-    pub fn to_identity_certificate(&self) -> IdentityCertificate {
+    /// Convert to the SDK's `IdentityCertificate` format. BRC-100 requires the
+    /// certifier's information on every entry (`0100.md:1401-1411`, bsv-rs
+    /// #105), so the caller supplies it; the maps are empty, never absent.
+    pub fn to_identity_certificate(
+        &self,
+        certifier_info: IdentityCertifier,
+    ) -> IdentityCertificate {
         IdentityCertificate {
             certificate: WalletCertificate {
                 certificate_type: self.type_id.clone(),
@@ -67,17 +72,9 @@ impl OverlayCertificate {
                 fields: self.fields.clone(),
                 signature: self.signature.clone().unwrap_or_default(),
             },
-            certifier_info: None,
-            publicly_revealed_keyring: if self.keyring.is_empty() {
-                None
-            } else {
-                Some(self.keyring.clone())
-            },
-            decrypted_fields: if self.decrypted_fields.is_empty() {
-                None
-            } else {
-                Some(self.decrypted_fields.clone())
-            },
+            certifier_info,
+            publicly_revealed_keyring: self.keyring.clone(),
+            decrypted_fields: self.decrypted_fields.clone(),
         }
     }
 
@@ -562,6 +559,15 @@ mod tests {
         assert!(resolver.slap_trackers[0].contains("bsvb.tech"));
     }
 
+    fn test_certifier() -> IdentityCertifier {
+        IdentityCertifier {
+            name: "Test Certifier".to_string(),
+            icon_url: "https://example.com/icon.png".to_string(),
+            description: "A certifier for tests".to_string(),
+            trust: 5,
+        }
+    }
+
     #[test]
     fn test_overlay_certificate_to_identity_certificate() {
         let cert = OverlayCertificate {
@@ -588,19 +594,16 @@ mod tests {
             },
         };
 
-        let identity_cert = cert.to_identity_certificate();
+        let identity_cert = cert.to_identity_certificate(test_certifier());
         assert_eq!(identity_cert.certificate.certificate_type, "dGVzdC10eXBl");
         assert_eq!(identity_cert.certificate.serial_number, "abc123");
         assert_eq!(identity_cert.certificate.subject, "02aabbccdd");
         assert_eq!(identity_cert.certificate.certifier, "03eeff0011");
         assert_eq!(identity_cert.certificate.revocation_outpoint, "deadbeef.0");
         assert_eq!(identity_cert.certificate.signature, "3045022100...");
-        assert!(identity_cert.publicly_revealed_keyring.is_some());
-        assert!(identity_cert.decrypted_fields.is_some());
-        assert_eq!(
-            identity_cert.decrypted_fields.unwrap().get("name").unwrap(),
-            "Alice"
-        );
+        assert_eq!(identity_cert.publicly_revealed_keyring.len(), 1);
+        assert_eq!(identity_cert.decrypted_fields.get("name").unwrap(), "Alice");
+        assert_eq!(identity_cert.certifier_info.name, "Test Certifier");
     }
 
     #[test]
@@ -616,9 +619,9 @@ mod tests {
                 fields: HashMap::new(),
                 signature: String::new(),
             },
-            certifier_info: None,
-            publicly_revealed_keyring: None,
-            decrypted_fields: None,
+            certifier_info: test_certifier(),
+            publicly_revealed_keyring: HashMap::new(),
+            decrypted_fields: HashMap::new(),
         };
 
         let cert2 = IdentityCertificate {
@@ -631,9 +634,9 @@ mod tests {
                 fields: HashMap::new(),
                 signature: "different_sig".to_string(),
             },
-            certifier_info: None,
-            publicly_revealed_keyring: None,
-            decrypted_fields: None,
+            certifier_info: test_certifier(),
+            publicly_revealed_keyring: HashMap::new(),
+            decrypted_fields: HashMap::new(),
         };
 
         // Different (type_id, serial_number) should be kept
@@ -647,9 +650,9 @@ mod tests {
                 fields: HashMap::new(),
                 signature: String::new(),
             },
-            certifier_info: None,
-            publicly_revealed_keyring: None,
-            decrypted_fields: None,
+            certifier_info: test_certifier(),
+            publicly_revealed_keyring: HashMap::new(),
+            decrypted_fields: HashMap::new(),
         };
 
         let certs = vec![cert1, cert2, cert3];
@@ -702,12 +705,20 @@ mod tests {
             decrypted_fields: HashMap::new(),
         };
 
-        let identity = cert.to_identity_certificate();
+        let identity = cert.to_identity_certificate(test_certifier());
         // revocation_outpoint and signature become empty strings (not Optional in WalletCertificate)
         assert_eq!(identity.certificate.revocation_outpoint, "");
         assert_eq!(identity.certificate.signature, "");
-        assert!(identity.publicly_revealed_keyring.is_none());
-        assert!(identity.decrypted_fields.is_none());
+        assert!(identity.publicly_revealed_keyring.is_empty());
+        assert!(identity.decrypted_fields.is_empty());
+        // BRC-100's entry carries both maps, empty rather than absent.
+        let json = serde_json::to_value(&identity).unwrap();
+        assert_eq!(json["publiclyRevealedKeyring"], serde_json::json!({}));
+        assert_eq!(json["decryptedFields"], serde_json::json!({}));
+        assert_eq!(
+            json["certifierInfo"]["iconUrl"],
+            "https://example.com/icon.png"
+        );
     }
 
     #[test]
@@ -762,8 +773,10 @@ mod tests {
         };
 
         let certs = [cert1, cert2];
-        let identity_certs: Vec<IdentityCertificate> =
-            certs.iter().map(|c| c.to_identity_certificate()).collect();
+        let identity_certs: Vec<IdentityCertificate> = certs
+            .iter()
+            .map(|c| c.to_identity_certificate(test_certifier()))
+            .collect();
 
         assert_eq!(identity_certs.len(), 2);
         assert_eq!(

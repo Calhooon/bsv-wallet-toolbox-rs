@@ -4,6 +4,66 @@
 
 ### Changed
 
+- #199, the pin: `bsv-rs` `=0.9.0-beta.2` (was `=0.9.0-beta.1`), the
+  owner's standing word of 2026-10-27, in `Cargo.toml` and in the fuzz
+  workspace's `fuzz/Cargo.toml` (was a caret `0.8.0`; #243). A dependent
+  that builds against this crate re-pins `bsv-rs` to the same version.
+  The host note for beta.2, one line each (the CLI's captain reads this
+  list):
+  - Every `WalletInterface` method takes `originator: Option<&str>` (bsv-rs
+    #329), and so do `Wallet::process_action`, `Wallet::create_action_offering`
+    and the public `storage::client::auth` helpers (`create_nonce`,
+    `sign_request`, `verify_response`, `create_auth_headers`,
+    `verify_response_auth`). `None` is absence and passes; `Some("")` is
+    refused with `The originator parameter must be at least 1 length.`; a
+    supplied string follows the reference's hostname-and-port rule (#284,
+    PR #290's texts), where it had to be non-empty and at most 253 bytes.
+  - The create door's double spend (a caller-named input whose spender has a
+    txid) answers the new `Error::ReviewActions`, bsv-rs's
+    `Error::WalletReviewActions` through `WalletInterface`, with the
+    reference's words `Undelayed createAction or signAction results require
+    review.` and one `doubleSpend` result naming the competing txid; it was
+    `Error::InvalidOperation` with a `doubleSpend: <txid>` suffix (#264).
+  - Certificate issuance refuses a certificate bsv-rs's `verify` answers
+    false to (absent, non-DER or wrong-signer signature, BRC-52's derived
+    key) with `Certificate verification failed`; an unsigned or non-DER one
+    passed before (#188, bsv-rs #251, #299).
+  - New `Wallet::reverify_stored_certificates`, answering
+    `StoredCertificateReverification { checked, failed }`: one read of every
+    stored certificate through the same check, logged, nothing deleted; a
+    host runs it once after taking the pin (#188, the owner's word).
+  - `discover_by_identity_key` and `discover_by_attributes` answer no
+    certificates: BRC-100 requires each entry's `certifierInfo` and this
+    wallet holds no trust settings (bsv-rs #105).
+    `OverlayCertificate::to_identity_certificate` takes the
+    `IdentityCertifier`.
+  - `StorageClient::set_verify_responses` is gone: bsv-rs's `Peer` verifies
+    every answer (#335, bsv-rs #353); an unsigned general answer is refused
+    in the reference's words (bsv-rs #354) and a redirect status before its
+    body (bsv-rs #320); the verified sender becomes the cached server
+    identity key.
+  - The storage wire sends the reference's `StorageServer` form for
+    createAction's `options.knownTxids` and `options.sendWith` (hex),
+    `options.returnTXIDOnly`, internalizeAction's `tx` (a byte array) and
+    relinquishCertificate's `type` (bsv-rs #105).
+  - bsv-rs's JSON moved under the wallet's types: `SignableTransaction.reference`
+    is base64 (edfc535), `InternalizeActionArgs.tx` a byte array,
+    `IdentityCertificate`'s keyring and decrypted fields required maps,
+    `Certificate.fields` base64 strings (bsv-rs #105, #261).
+  - A TSC proof or BUMP with a duplicate at an even offset is read as the
+    reference reads it, where it was refused (bsv-rs #167).
+  - A spend-verifier verdict this crate does not read holds as
+    `Error::ServiceError`, never passes (bsv-rs #240).
+  - The internalize door's BEEF stream verification (`verify_stream_two_pass`,
+    `beef_verification.rs`) runs scripts with no memory cap: bsv-rs #331
+    removed beta.1's 32,000,000-byte cap and asks a door that verifies
+    untrusted transactions to pass its own figure, which the stream readers
+    take through bsv-rs #373 at beta.3 (#395); until then an untrusted BEEF's
+    scripts run uncapped as the reference's default does.
+  - A BEEF whose children precede their parents is accepted at the internalize
+    door where beta.1 refused it (bsv-rs #240); the two reader changes have no
+    toolbox witness yet (#396).
+
 - CI: a push to `main` or `beta` runs exactly the required set, the same as a
   pull request (the owner's word of 2026-10-27, through the stack keeper:
   "sick of seeing all these CI failures"). The door bench, coverage, the

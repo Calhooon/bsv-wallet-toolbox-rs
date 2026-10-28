@@ -160,7 +160,6 @@ StorageClient<W: WalletInterface>
 ├── next_id: AtomicU64                # Request ID counter
 ├── settings: Arc<RwLock<...>>        # Cached TableSettings
 ├── use_auth: bool                     # Enable/disable BRC-104 auth
-├── verify_responses: bool             # Enable/disable response signature verification
 └── server_identity_key: Arc<RwLock<..>> # Cached server identity key
 ```
 
@@ -244,7 +243,6 @@ Beyond trait implementations, `StorageClient` provides these convenience methods
 | `create_auth_id()` | Create AuthId for current wallet |
 | `create_auth_id_with_user(user_id)` | Create AuthId with user ID |
 | `get_storage_info(user_id, is_active)` | Build WalletStorageInfo for this client |
-| `set_verify_responses(verify)` | Enable/disable response signature verification |
 | `set_server_identity_key(key)` | Set server's identity key for signing |
 | `get_server_identity_key()` | Get cached server identity key |
 | `update_proven_tx_req_with_new_proven_tx(args)` | Update proven tx request with proof |
@@ -344,9 +342,13 @@ Non-loopback destinations return the existing rule 28 refusal. Construction
 stays infallible and `use_auth` remains enabled by default. Production keeps
 the SDK transport and the existing public types.
 
-This checks the configured destination only. The SDK owns its reqwest client,
-redirects, proxy handling, and `localhost` resolution; those do not pass through
-the toolbox's shared HTTP client. Keep the test proxy prefix in place.
+Since the bsv-rs 0.9.0-beta.2 pin the wrapper hands the SDK the policy's
+reqwest client through `SimplifiedFetchTransport::with_client` (bsv-rs #320):
+no proxy, `localhost` pinned, no redirect followed; the SDK refuses a redirect
+status before its body (`redirect refused: <status>`), in production too.
+The Peer's originator, and the one its wallet calls carry, is
+`Some("bsv-wallet-toolbox")`. The HTTP wallet substrates' originator rule
+(bsv-rs #323) does not reach this client: it constructs neither substrate.
 The shared isolation witnesses cover both ordinary authenticated calls and
 the `peer()` accessor, and a mockito handshake proves delegation to the SDK.
 They run as unit tests with `remote` and as integration tests with
@@ -360,7 +362,11 @@ They run as unit tests with `remote` and as integration tests with
 4. Converts to payload via `http_request.to_payload()`
 5. Registers a `oneshot` channel listener via `peer.listen_for_general_messages()`
 6. Sends payload via `peer.to_peer()` with 30s timeout and server identity key
-7. Listener matches response by comparing first 32 bytes (request nonce)
+7. Listener matches response by comparing the leading 32 bytes (request nonce); the
+   Peer has verified the answer's nonce, session and signature (bsv-rs #353) and
+   an unsigned answer is refused by the transport in the reference's words
+   (bsv-rs #354), so the matched sender becomes the cached server identity key,
+   as `AuthFetch.ts:441-445` records it
 8. Parses `HttpResponse` from payload, checks HTTP status
 9. Deserializes `JsonRpcResponse`, validates response ID matches
 10. Returns deserialized result `T` or converts error to `Error::StorageError`

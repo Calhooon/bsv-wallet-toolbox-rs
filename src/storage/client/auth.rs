@@ -173,7 +173,7 @@ impl ResponseAuthHeaders {
 pub async fn create_nonce<W: WalletInterface>(
     wallet: &W,
     server_identity_key: Option<&PublicKey>,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<String> {
     // Generate 16 random bytes
     let mut random_bytes = [0u8; NONCE_RANDOM_SIZE];
@@ -308,7 +308,7 @@ pub async fn sign_request<W: WalletInterface>(
     timestamp: u64,
     nonce: &str,
     server_identity_key: Option<&PublicKey>,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<Vec<u8>> {
     let signing_data = create_signing_data(method, path, body, timestamp, nonce);
 
@@ -350,7 +350,7 @@ pub async fn verify_response<W: WalletInterface>(
     path: &str,
     response_body: &[u8],
     response_headers: &ResponseAuthHeaders,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<bool> {
     // Extract required headers
     let server_identity_key = response_headers
@@ -422,7 +422,7 @@ pub async fn create_auth_headers<W: WalletInterface>(
     path: &str,
     body: &[u8],
     server_identity_key: Option<&PublicKey>,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<AuthHeaders> {
     // Get our identity key
     let identity_result = wallet
@@ -497,7 +497,7 @@ pub async fn verify_response_auth<W: WalletInterface>(
     path: &str,
     response_body: &[u8],
     response_headers: &ResponseAuthHeaders,
-    originator: &str,
+    originator: Option<&str>,
 ) -> Result<AuthVerificationResult> {
     // Check if headers are complete
     if !response_headers.is_complete() {

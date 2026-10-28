@@ -215,6 +215,15 @@ pub enum Error {
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
 
+    /// The reference's `WERR_REVIEW_ACTIONS` (code 5) with its results
+    /// (#264, the owner's ruling 18.4): an undelayed createAction whose
+    /// result requires review, a double spend carrying the competing txid.
+    /// The text is the reference's, `Undelayed createAction or signAction
+    /// results require review.`; it reaches a `WalletInterface` caller as
+    /// bsv-rs's `Error::WalletReviewActions` (bsv-rs #327, #339).
+    #[error("{}", .0.message)]
+    ReviewActions(Box<bsv_rs::wallet::ReviewActionsRefusal>),
+
     // ===================
     // Sync errors
     // ===================
@@ -337,7 +346,8 @@ impl From<sqlx::Error> for Error {
 /// repeating is safe), so the caller may repeat it unchanged.
 /// `retry_after_ms` is `None`: the store does not know the host's retry
 /// policy, and the host sets its own. An `SdkError` passes its bsv-rs error
-/// through. Every other variant is `WalletError` with the toolbox Display,
+/// through, and `ReviewActions` becomes `WalletReviewActions` with its
+/// results. Every other variant is `WalletError` with the toolbox Display,
 /// the text the erasure sites gave before this impl.
 impl From<Error> for bsv_rs::Error {
     fn from(err: Error) -> Self {
@@ -347,6 +357,7 @@ impl From<Error> for bsv_rs::Error {
                 retry_after_ms: None,
             },
             Error::SdkError(e) => e,
+            Error::ReviewActions(refusal) => bsv_rs::Error::WalletReviewActions(refusal),
             other => bsv_rs::Error::WalletError(other.to_string()),
         }
     }
@@ -370,6 +381,28 @@ fn input_text(input: Option<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #264: the review refusal reaches a WalletInterface caller as bsv-rs's
+    // WalletReviewActions with its results, in the reference's words.
+    #[test]
+    fn review_actions_is_wallet_review_actions_with_its_results() {
+        let refusal =
+            bsv_rs::wallet::ReviewActionsRefusal::new(vec![bsv_rs::wallet::ReviewActionResult {
+                txid: [0; 32],
+                status: bsv_rs::wallet::ReviewActionResultStatus::DoubleSpend,
+                competing_txs: Some(vec![[7; 32]]),
+                competing_beef: None,
+            }]);
+        let error = Error::ReviewActions(Box::new(refusal.clone()));
+        assert_eq!(
+            error.to_string(),
+            "Undelayed createAction or signAction results require review."
+        );
+        match bsv_rs::Error::from(error) {
+            bsv_rs::Error::WalletReviewActions(carried) => assert_eq!(*carried, refusal),
+            other => panic!("expected WalletReviewActions, got {other:?}"),
+        }
+    }
 
     #[test]
     fn store_busy_is_wallet_busy_with_no_retry_policy() {

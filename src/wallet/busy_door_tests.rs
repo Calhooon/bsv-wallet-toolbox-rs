@@ -187,7 +187,7 @@ async fn create_action_on_a_busy_store_is_wallet_busy() {
                 labels: None,
                 options: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await;
     assert_wallet_busy(result);
@@ -211,7 +211,7 @@ async fn abort_action_on_a_busy_store_is_wallet_busy() {
             AbortActionArgs {
                 reference: "abort-busy".to_string(),
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await;
     assert_wallet_busy(result);
@@ -273,7 +273,7 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
                 labels: None,
                 seek_permission: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await;
     assert_wallet_busy(result);
@@ -296,7 +296,7 @@ async fn sign_action_on_a_busy_store_is_wallet_busy_and_keeps_the_action() {
                 reference: "sign-busy".to_string(),
                 options: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await;
     assert_wallet_busy(result);
@@ -418,7 +418,7 @@ async fn sign_action_busy_in_process_action_keeps_the_action_and_its_coins() {
                 reference: "sign-busy-coin".to_string(),
                 options: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await;
     assert_wallet_busy_with(result, "Store busy: sqlite code 5");
@@ -451,7 +451,7 @@ async fn sign_action_on_another_process_action_error_still_aborts() {
                 reference: "sign-other".to_string(),
                 options: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
         .unwrap_err();
@@ -555,7 +555,7 @@ async fn create_action_busy_in_the_process_step_writes_nothing() {
 
     wallet.storage().busy_next_process_action();
     let result = wallet
-        .create_action(labelled_payment(true), ORIGINATOR)
+        .create_action(labelled_payment(true), Some(ORIGINATOR))
         .await;
     assert_wallet_busy_with(result, "Store busy: sqlite code 5");
 
@@ -577,7 +577,7 @@ async fn create_action_busy_in_the_process_step_writes_nothing() {
     );
 
     let repeated = wallet
-        .create_action(labelled_payment(true), ORIGINATOR)
+        .create_action(labelled_payment(true), Some(ORIGINATOR))
         .await
         .expect("the same call, repeated unchanged, succeeds");
     assert!(repeated.txid.is_some());
@@ -600,7 +600,7 @@ async fn a_store_error_that_is_not_busy_keeps_its_wallet_error_text() {
             AbortActionArgs {
                 reference: "no-such-action".to_string(),
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
         .unwrap_err();
@@ -660,7 +660,7 @@ async fn a_busy_status_write_after_the_broadcast_is_logged_and_healed_by_send_wa
 
     wallet.storage().busy_next_status_write();
     let result = wallet
-        .create_action(labelled_payment(false), ORIGINATOR)
+        .create_action(labelled_payment(false), Some(ORIGINATOR))
         .await
         .expect("the transaction is on the network: the call succeeds");
     let txid = hex::encode(result.txid.expect("the answer carries the txid"));
@@ -735,7 +735,7 @@ async fn a_busy_status_write_after_a_sign_action_broadcast_is_its_success() {
         sign_and_process: Some(false),
         ..Default::default()
     });
-    let created = wallet.create_action(args, ORIGINATOR).await.unwrap();
+    let created = wallet.create_action(args, Some(ORIGINATOR)).await.unwrap();
     let reference = bsv_rs::primitives::to_base64(&created.signable_transaction.unwrap().reference);
 
     let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -748,7 +748,7 @@ async fn a_busy_status_write_after_a_sign_action_broadcast_is_its_success() {
                 reference,
                 options: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
         .expect("the transaction is on the network: the call succeeds");
@@ -779,7 +779,7 @@ async fn create_action_offering_spends_only_the_offer() {
 
     for offer in [&[][..], &[coin + 1000][..]] {
         match wallet
-            .create_action_offering(labelled_payment(true), ORIGINATOR, offer)
+            .create_action_offering(labelled_payment(true), Some(ORIGINATOR), offer)
             .await
         {
             Err(bsv_rs::Error::WalletError(text)) => {
@@ -791,7 +791,7 @@ async fn create_action_offering_spends_only_the_offer() {
     }
 
     let result = wallet
-        .create_action_offering(labelled_payment(true), ORIGINATOR, &[coin])
+        .create_action_offering(labelled_payment(true), Some(ORIGINATOR), &[coin])
         .await
         .expect("the offered coin funds the action");
     assert!(result.txid.is_some());
@@ -922,7 +922,7 @@ async fn a_busy_retirement_after_a_broadcast_abort_is_its_success_and_review_sta
             AbortActionArgs {
                 reference: "abort-retire".to_string(),
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await;
     assert!(
@@ -1087,7 +1087,7 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
                 labels: None,
                 seek_permission: None,
             },
-            ORIGINATOR,
+            Some(ORIGINATOR),
         )
         .await
         .expect("the payment is committed and posted: the call succeeds");
@@ -1188,7 +1188,7 @@ async fn a_wallet_and_a_monitor_over_one_store_share_the_writer() {
     }
     for round in 0..ROUNDS {
         let (created, pass) = tokio::join!(
-            wallet.create_action(labelled_payment(true), ORIGINATOR),
+            wallet.create_action(labelled_payment(true), Some(ORIGINATOR)),
             monitor.run_once()
         );
         match created {
@@ -1261,7 +1261,7 @@ async fn a_busy_certificate_field_insert_writes_nothing_and_is_wallet_busy() {
 
     wallet.storage().busy_next_certificate_field();
     let first = wallet
-        .acquire_certificate(direct_certificate_args(), ORIGINATOR)
+        .acquire_certificate(direct_certificate_args(), Some(ORIGINATOR))
         .await;
     assert!(
         matches!(first, Err(bsv_rs::Error::WalletBusy { .. })),
@@ -1275,7 +1275,7 @@ async fn a_busy_certificate_field_insert_writes_nothing_and_is_wallet_busy() {
     );
 
     let repeat = wallet
-        .acquire_certificate(direct_certificate_args(), ORIGINATOR)
+        .acquire_certificate(direct_certificate_args(), Some(ORIGINATOR))
         .await;
     assert!(repeat.is_ok(), "the repeat stores it: {:?}", repeat.err());
     assert_eq!(certificate_rows(&wallet).await, (1, 1));

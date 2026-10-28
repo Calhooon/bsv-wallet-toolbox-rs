@@ -203,10 +203,28 @@ async fn assert_spender_requires_review(status: &str) {
         );
         assert_eq!(transaction_count(&storage).await, count);
         match result.expect_err("an existing spender requires review, even under noSend") {
-            Error::InvalidOperation(message) => assert_eq!(
-                message,
-                format!("Undelayed createAction or signAction results require review. doubleSpend: {competing_txid}")
-            ),
+            Error::ReviewActions(refusal) => {
+                assert_eq!(
+                    refusal.message,
+                    "Undelayed createAction or signAction results require review."
+                );
+                let [review] = refusal.review_action_results.as_slice() else {
+                    panic!("one review result: {refusal:?}");
+                };
+                assert_eq!(review.txid, [0; 32]);
+                assert_eq!(
+                    review.status,
+                    bsv_rs::wallet::ReviewActionResultStatus::DoubleSpend
+                );
+                assert_eq!(
+                    review
+                        .competing_txs
+                        .as_deref()
+                        .map(|txs| txs.iter().map(hex::encode).collect::<Vec<_>>()),
+                    Some(vec![competing_txid.clone()])
+                );
+                assert!(refusal.send_with_results.is_empty());
+            }
             error => panic!("expected double-spend review, got {error:?}"),
         }
     }

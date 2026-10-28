@@ -259,7 +259,7 @@ async fn anyonecanpay_shortfall_is_funded_and_the_callers_bytes_are_untouched() 
     let result = wallet
         .create_action(
             v3_publish_args(&seeded.parent_txid, unlock.clone()),
-            "test.local",
+            Some("test.local"),
         )
         .await
         .expect("an ANYONECANPAY shortfall must be funded");
@@ -356,7 +356,7 @@ async fn sighash_all_shortfall_is_insufficient_funds_at_the_wallet() {
     let err = wallet
         .create_action(
             v3_publish_args(&seeded.parent_txid, unlock_with_sighash(0x41)),
-            "test.local",
+            Some("test.local"),
         )
         .await
         .expect_err("SIGHASH_ALL forbids funding");
@@ -400,7 +400,7 @@ async fn sighash_all_self_sufficient_tx_is_broadcast_verbatim() {
         options: None,
     };
     let result = wallet
-        .create_action(args, "test.local")
+        .create_action(args, Some("test.local"))
         .await
         .expect("verbatim broadcast");
     let signed = Transaction::from_binary(result.tx.as_ref().unwrap()).unwrap();
@@ -432,7 +432,7 @@ async fn transient_broadcast_fault_leaves_the_result_sending() {
     let result = wallet
         .create_action(
             v3_publish_args(&seeded.parent_txid, unlock_with_sighash(0xc3)),
-            "test.local",
+            Some("test.local"),
         )
         .await
         .expect("a transient fault is not an error");
@@ -481,7 +481,7 @@ async fn definitive_rejection_is_a_hint_that_keeps_the_action_sending() {
     let result = wallet
         .create_action(
             v3_publish_args(&seeded.parent_txid, unlock_with_sighash(0xc3)),
-            "test.local",
+            Some("test.local"),
         )
         .await
         .expect("a broadcaster's refusal is not an error to the caller");
