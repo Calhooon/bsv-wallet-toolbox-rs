@@ -53,16 +53,19 @@ async fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    async fn refuse(&self) -> ReviewActionResult {
-        let storage = self.wallet.storage();
-        let before: (i64, i64, i64, i64) = sqlx::query_as(
+    async fn snapshot(&self) -> (i64, i64, i64, i64) {
+        sqlx::query_as(
             "SELECT (SELECT COUNT(*) FROM transactions), (SELECT COUNT(*) FROM outputs),
                     (SELECT COUNT(*) FROM tx_labels), (SELECT spent_by FROM outputs WHERE txid = ?)",
         )
         .bind(&self.source)
-        .fetch_one(storage.pool())
+        .fetch_one(self.wallet.storage().pool())
         .await
-        .unwrap();
+        .unwrap()
+    }
+
+    async fn refuse(&self) -> ReviewActionResult {
+        let before = self.snapshot().await;
         let args = CreateActionArgs {
             description: "Review the competing spend".into(),
             input_beef: None,
@@ -91,10 +94,12 @@ impl Fixture {
         let [review] = refusal.review_action_results.as_slice() else {
             panic!("expected one competing spend: {refusal:?}");
         };
-        assert_eq!(review.txid, [0; 32]);
         assert_eq!(
-            review.status,
-            bsv_rs::wallet::ReviewActionResultStatus::DoubleSpend
+            (review.txid, review.status),
+            (
+                [0; 32],
+                bsv_rs::wallet::ReviewActionResultStatus::DoubleSpend
+            )
         );
         assert_eq!(
             review.competing_txs,
@@ -103,16 +108,9 @@ impl Fixture {
                 .try_into()
                 .unwrap()])
         );
-        let after: (i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT (SELECT COUNT(*) FROM transactions), (SELECT COUNT(*) FROM outputs),
-                    (SELECT COUNT(*) FROM tx_labels), (SELECT spent_by FROM outputs WHERE txid = ?)",
-        )
-        .bind(&self.source)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
         assert_eq!(
-            after, before,
+            self.snapshot().await,
+            before,
             "refusal preserves the stored spend and action rows"
         );
         review.clone()
