@@ -27,8 +27,6 @@ use serde_json::Value;
 use tokio::sync::{oneshot, RwLock};
 
 use bsv_rs::auth::transports::HttpRequest;
-#[cfg(not(any(test, feature = "bench-support")))]
-use bsv_rs::auth::SimplifiedFetchTransport;
 use bsv_rs::auth::{Peer, PeerOptions};
 use bsv_rs::primitives::{to_base64, PublicKey};
 use bsv_rs::wallet::{
@@ -38,53 +36,12 @@ use bsv_rs::wallet::{
 };
 
 use crate::error::{Error, Result};
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{Client, SimplifiedFetchTransport};
 use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
 use super::json_rpc::{JsonRpcRequest, JsonRpcResponse};
-
-#[cfg(any(test, feature = "bench-support"))]
-use isolated_peer_transport::SimplifiedFetchTransport;
-
-#[cfg(any(test, feature = "bench-support"))]
-mod isolated_peer_transport {
-    use async_trait::async_trait;
-    use bsv_rs::auth::transports::{Transport, TransportCallback};
-    use bsv_rs::auth::{AuthMessage, SimplifiedFetchTransport as SdkTransport};
-
-    use crate::services::providers::http_client::{check_url_str, sdk_transport_client};
-
-    /// A test/bench Peer transport that checks its destination before SDK I/O
-    /// and hands the SDK the #182 policy's client (bsv-rs #320).
-    pub struct SimplifiedFetchTransport(SdkTransport);
-
-    impl SimplifiedFetchTransport {
-        pub fn new(url: &str) -> Self {
-            Self(SdkTransport::with_client(url, sdk_transport_client()))
-        }
-    }
-
-    #[async_trait]
-    impl Transport for SimplifiedFetchTransport {
-        async fn send(&self, message: &AuthMessage) -> bsv_rs::Result<()> {
-            // Check every send, including handshakes and calls through peer().
-            // The SDK's client is the policy's: no proxy, localhost pinned,
-            // and a redirect refused by the SDK before its body.
-            check_url_str(self.0.base_url())?;
-            self.0.send(message).await
-        }
-
-        fn set_callback(&self, callback: Box<TransportCallback>) {
-            self.0.set_callback(callback);
-        }
-
-        fn clear_callback(&self) {
-            self.0.clear_callback();
-        }
-    }
-}
 
 // =============================================================================
 // ValidCreateActionArgs
