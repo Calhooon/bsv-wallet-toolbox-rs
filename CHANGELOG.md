@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- #422: The live `internalizeAction` door uses `ScriptFlags::standard(era)`
+  for each input of every unproven raw transaction, including parents.
+  A fork-ID-less original-digest signature now refuses with
+  `The signature must use SIGHASH_FORKID.`. A valid version-1 `0x61` signature
+  on a post-Chronicle coin now passes instead of refusing with
+  `The signature format is invalid.`; on a pre-Chronicle post-Genesis coin
+  it refuses with `The signature must not use SIGHASH_CHRONICLE before Chronicle.`.
+  Nonminimal numbers now say
+  `Invalid script number: script execution error: Non-minimally encoded script number`
+  instead of `non-minimally encoded script number`.
+  Mainnet uses the coin's proven BUMP height, or the tracker tip for an
+  unproven coin, against bsv-rs's activation constants. Pre-Genesis mainnet
+  refuses with `The mainnet coin height is before Genesis.`. Testnet and
+  regtest use the tip against those constants until bsv-rs #440 supplies
+  their activation heights. The interim second evaluation preserves the
+  stream verifier's structural, proof and non-script refusals; #440's
+  per-input hook will replace it. The captain must inform CLI #338 at landing.
+
 - #430: `relinquishCertificate` now refuses an unknown or non-unique certificate
   before changing storage. Host TEXT-DIFF for CLI #344: success with
   `{ relinquished: true }` and storage count `0` becomes `WalletRefusal` with

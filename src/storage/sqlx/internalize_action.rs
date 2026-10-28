@@ -100,7 +100,13 @@ pub async fn internalize_action_internal(
     };
     // A valid verdict is required even for an unproven payment, before any
     // basket, transaction, coin, request or broadcast can be created.
-    verify_beef_spends(&args.tx, &incoming.roots, tracker).await?;
+    verify_beef_spends(
+        &args.tx,
+        &incoming.roots,
+        tracker,
+        &storage.get_settings().chain,
+    )
+    .await?;
     let txid = incoming.txid;
     let body = incoming
         .body

@@ -18,35 +18,6 @@ use std::sync::Arc;
 
 const HEIGHT: u32 = ProtocolEra::MAINNET_GENESIS_HEIGHT + 100;
 
-struct Tracker {
-    height: u32,
-}
-
-#[async_trait::async_trait]
-impl ChainTracker for Tracker {
-    async fn is_valid_root_for_height(
-        &self,
-        _: &str,
-        height: u32,
-    ) -> Result<bool, ChainTrackerError> {
-        Ok(height == self.height)
-    }
-
-    async fn current_height(&self) -> Result<u32, ChainTrackerError> {
-        Ok(self.height + 6)
-    }
-
-    async fn mining_tip(&self) -> Result<Option<ChainTip>, ChainTrackerError> {
-        Ok(Some(ChainTip {
-            height: self.height + 6,
-            median_time_past: 1_700_000_000,
-            genesis_height: 620_538,
-            csv_height: 419_328,
-            next_block_time: None,
-        }))
-    }
-}
-
 fn payment(lock: &str) -> (Transaction, Transaction) {
     let mut parent = Transaction::new();
     parent.version = 1;
@@ -88,10 +59,15 @@ async fn verify_at_height(
     let index = beef.merge_bump(bump);
     beef.merge_raw_tx(parent.to_binary(), Some(index));
     beef.merge_transaction(child);
+    let tracker = FixtureTracker {
+        roots: vec![(u64::from(height), root_bytes)],
+        tip: height + 6,
+    };
     verify_beef_spends(
         &beef.to_binary_atomic(&child_id).unwrap(),
-        &[(u64::from(height), root_bytes)],
-        &Tracker { height },
+        &tracker.roots,
+        &tracker,
+        "mainnet",
     )
     .await
 }
@@ -100,24 +76,7 @@ fn signed_payment(scope: u8) -> (Transaction, Transaction) {
     let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
     let lock = format!("21{}ac", key.public_key().to_hex());
     let (parent, mut child) = payment(&lock);
-    let raw = parse_transaction(&child.to_binary()).unwrap();
-    let script = hex::decode(lock).unwrap();
-    let digest = compute_sighash_original_for_signing(&SighashParams {
-        version: raw.version,
-        inputs: &raw.inputs,
-        outputs: &raw.outputs,
-        locktime: raw.locktime,
-        input_index: 0,
-        subscript: &script,
-        satoshis: 100,
-        scope: u32::from(scope),
-    });
-    let mut signature = key.sign(&digest).unwrap().to_der();
-    signature.push(scope);
-    let mut unlock = vec![u8::try_from(signature.len()).unwrap()];
-    unlock.extend(signature);
-    child.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
-    child.invalidate_caches();
+    sign_input(&parent, &mut child, 0, scope);
     (parent, child)
 }
 
@@ -167,7 +126,7 @@ async fn internalize_verifier_uses_standard_nonminimal_number_words() {
     child.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("020100").unwrap());
     script_words(
         verify(parent, child).await,
-        "non-minimally encoded script number",
+        "Invalid script number: script execution error: Non-minimally encoded script number",
     );
 }
 
@@ -260,4 +219,440 @@ fn sdk_mainnet_era_mapping_declines_pre_genesis_heights() {
         assert_eq!(ProtocolEra::mainnet(height), expected);
     }
     eprintln!("mainnet eras: pre-620538 unavailable; 620538..943815 post-Genesis; 943816 onward post-Chronicle");
+}
+
+// The fixtures below name mainnet or the synthetic test network explicitly.
+// BUMPs are checked by the local tracker; no provider participates.
+struct FixtureTracker {
+    roots: Vec<(u64, [u8; 32])>,
+    tip: u32,
+}
+
+#[async_trait::async_trait]
+impl ChainTracker for FixtureTracker {
+    async fn is_valid_root_for_height(
+        &self,
+        root: &str,
+        height: u32,
+    ) -> Result<bool, ChainTrackerError> {
+        Ok(self.roots.iter().any(|(h, r)| {
+            *h == u64::from(height) && bsv_rs::transaction::beef_stream::display_hex(r) == root
+        }))
+    }
+    async fn current_height(&self) -> Result<u32, ChainTrackerError> {
+        Ok(self.tip)
+    }
+    async fn mining_tip(&self) -> Result<Option<ChainTip>, ChainTrackerError> {
+        Ok(Some(ChainTip {
+            height: self.tip,
+            median_time_past: 1_700_000_000,
+            genesis_height: ProtocolEra::MAINNET_GENESIS_HEIGHT,
+            csv_height: 419_328,
+            next_block_time: None,
+        }))
+    }
+}
+
+fn sign_input(parent: &Transaction, child: &mut Transaction, index: usize, scope: u8) {
+    let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
+    let raw = parse_transaction(&child.to_binary()).unwrap();
+    let script = parent.outputs[0].locking_script.to_binary();
+    let digest = compute_sighash_original_for_signing(&SighashParams {
+        version: raw.version,
+        inputs: &raw.inputs,
+        outputs: &raw.outputs,
+        locktime: raw.locktime,
+        input_index: index,
+        subscript: &script,
+        satoshis: parent.outputs[0].satoshis.unwrap(),
+        scope: u32::from(scope),
+    });
+    let mut sig = key.sign(&digest).unwrap().to_der();
+    sig.push(scope);
+    let mut unlock = vec![u8::try_from(sig.len()).unwrap()];
+    unlock.extend(sig);
+    child.inputs[index].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
+    child.invalidate_caches();
+}
+
+async fn verify_entries(
+    entries: Vec<(Transaction, Option<usize>)>,
+    proofs: Vec<MerklePath>,
+    tip: u32,
+    network: &str,
+) -> crate::Result<()> {
+    use bsv_rs::primitives::Writer;
+    use bsv_rs::transaction::BeefTx;
+    let roots = proofs
+        .iter()
+        .map(|bump| {
+            let mut root: [u8; 32] = hex::decode(bump.compute_root(None).unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
+            root.reverse();
+            (u64::from(bump.block_height), root)
+        })
+        .collect::<Vec<_>>();
+    let mut beef = Beef::new();
+    for bump in proofs {
+        beef.merge_bump(bump);
+    }
+    // to_writer keeps the supplied order and duplicate entries for the reader.
+    beef.txs = entries
+        .into_iter()
+        .map(|(tx, bump)| BeefTx::from_tx(tx, bump))
+        .collect();
+    let mut writer = Writer::new();
+    beef.to_writer(&mut writer);
+    let tracker = FixtureTracker { roots, tip };
+    verify_beef_spends(&writer.into_bytes(), &tracker.roots, &tracker, network).await
+}
+
+fn proof(tx: &Transaction, height: u32) -> MerklePath {
+    MerklePath::from_coinbase_txid(&tx.id(), height)
+}
+
+fn spend_refusal(result: crate::Result<()>) -> SpendRefusal {
+    match result {
+        Err(Error::SpendRefused { why, .. }) => why,
+        other => panic!("expected a spend refusal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn word_checks_an_unproven_ancestor_of_the_subject() {
+    let (root, bad_parent) = signed_payment(0x01);
+    let (_, mut subject) = payment("51");
+    subject.inputs[0].source_txid = Some(bad_parent.id());
+    subject.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    let parent_id = bad_parent.id();
+    let bump = proof(&root, HEIGHT);
+    let result = verify_entries(
+        vec![(root, Some(0)), (bad_parent, None), (subject, None)],
+        vec![bump],
+        HEIGHT + 6,
+        "mainnet",
+    )
+    .await;
+    match &result {
+        Err(Error::SpendRefused {
+            txid,
+            input: Some(0),
+            ..
+        }) => assert_eq!(txid, &parent_id),
+        other => panic!("expected the ancestor's refusal, got {other:?}"),
+    }
+    script_words(result, "The signature must use SIGHASH_FORKID.");
+}
+
+#[tokio::test]
+async fn word_preserves_value_checks_after_default_script_refusal() {
+    let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
+    let (parent, mut child) = signed_payment(0x61);
+    child.outputs[0].satoshis = Some(101);
+    sign_input(&parent, &mut child, 0, 0x61);
+    assert_eq!(
+        spend_refusal(verify_at_height(parent, child, height).await),
+        SpendRefusal::CreatesValue,
+    );
+}
+
+#[tokio::test]
+async fn word_preserves_later_transactions_after_default_script_refusal() {
+    let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
+    let (root, parent) = signed_payment(0x61);
+    let (_, mut subject) = payment("51");
+    subject.inputs[0].source_txid = Some(parent.id());
+    subject.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    subject.outputs[0].satoshis = Some(91);
+    let subject_id = subject.id();
+    let bump = proof(&root, height);
+    let result = verify_entries(
+        vec![(root, Some(0)), (parent, None), (subject, None)],
+        vec![bump],
+        height + 6,
+        "mainnet",
+    )
+    .await;
+    assert!(
+        matches!(result, Err(Error::SpendRefused { why: SpendRefusal::CreatesValue, txid, .. }) if txid == subject_id)
+    );
+}
+
+#[tokio::test]
+async fn word_keeps_deferred_parents_and_duplicate_raw_entries() {
+    let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
+    let (root, child) = signed_payment(0x61);
+    let bump = proof(&root, height);
+    verify_entries(
+        vec![(child.clone(), None), (child, None), (root, Some(0))],
+        vec![bump],
+        height + 6,
+        "mainnet",
+    )
+    .await
+    .expect("the deferred child and its duplicate share one spend judgement");
+}
+
+#[tokio::test]
+async fn word_keeps_structural_refusals_final() {
+    let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
+    let (root, child) = signed_payment(0x61);
+    let (_, mut absent_parent) = payment("51");
+    absent_parent.inputs[0].source_txid = Some("55".repeat(32));
+    let bump = proof(&root, height);
+    let result = verify_entries(
+        vec![(root, Some(0)), (child, None), (absent_parent, None)],
+        vec![bump],
+        height + 6,
+        "mainnet",
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(Error::InvalidBeef {
+            kind: bsv_rs::transaction::beef_stream::Kind::InputNamesNoElement,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn word_preserves_later_mining_refusals_after_default_script_refusal() {
+    let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
+    let (root, parent) = signed_payment(0x61);
+    let (_, mut nonfinal) = payment("51");
+    nonfinal.inputs[0].source_txid = Some(parent.id());
+    nonfinal.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    nonfinal.inputs[0].sequence = u32::MAX - 1;
+    nonfinal.lock_time = height + 7;
+    let mut p2sh = nonfinal.clone();
+    p2sh.lock_time = 0;
+    p2sh.outputs[0].locking_script =
+        LockingScript::from_hex(&format!("a914{}87", "22".repeat(20))).unwrap();
+    for (subject, expected) in [
+        (
+            nonfinal,
+            SpendRefusal::NonFinal {
+                lock_time: height + 7,
+            },
+        ),
+        (p2sh, SpendRefusal::P2shOutput { vout: 0 }),
+    ] {
+        let bump = proof(&root, height);
+        let result = verify_entries(
+            vec![
+                (root.clone(), Some(0)),
+                (parent.clone(), None),
+                (subject, None),
+            ],
+            vec![bump],
+            height + 6,
+            "mainnet",
+        )
+        .await;
+        assert_eq!(spend_refusal(result), expected);
+    }
+}
+
+#[tokio::test]
+async fn word_preserves_spent_outputs_after_default_script_refusal() {
+    let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
+    let (root, parent) = signed_payment(0x61);
+    let (_, mut spend) = payment("51");
+    spend.inputs[0].source_txid = Some(parent.id());
+    spend.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    let mut respend = spend.clone();
+    respend.outputs[0].satoshis = Some(80);
+    let bump = proof(&root, height);
+    let result = verify_entries(
+        vec![
+            (root, Some(0)),
+            (parent, None),
+            (spend, None),
+            (respend, None),
+        ],
+        vec![bump],
+        height + 6,
+        "mainnet",
+    )
+    .await;
+    assert_eq!(
+        spend_refusal(result),
+        SpendRefusal::OutputNotAvailable { vout: 0 },
+    );
+}
+
+#[tokio::test]
+async fn word_uses_the_proof_height_of_each_input() {
+    let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
+    let (new_coin, mut child) = signed_payment(0x61);
+    let mut old_coin = new_coin.clone();
+    old_coin.inputs[0].source_output_index = 1;
+    old_coin.invalidate_caches();
+    child.inputs.push(TransactionInput::new(old_coin.id(), 0));
+    child.outputs[0].satoshis = Some(190);
+    sign_input(&new_coin, &mut child, 0, 0x61);
+    sign_input(&old_coin, &mut child, 1, 0x61);
+    let bumps = vec![proof(&new_coin, height), proof(&old_coin, height - 1)];
+    let result = verify_entries(
+        vec![(new_coin, Some(0)), (old_coin, Some(1)), (child, None)],
+        bumps,
+        height + 6,
+        "mainnet",
+    )
+    .await;
+    match result {
+        Err(Error::SpendRefused {
+            input: Some(1),
+            why: SpendRefusal::Script(message),
+            ..
+        }) => assert_eq!(
+            message,
+            "The signature must not use SIGHASH_CHRONICLE before Chronicle."
+        ),
+        other => panic!("expected the older input's era refusal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn word_uses_the_tip_for_an_unproven_coin() {
+    let (parent, subject) = signed_payment(0x61);
+    let (mut root, _) = payment("51");
+    root.outputs[0].satoshis = Some(110);
+    let mut parent = parent;
+    parent.inputs[0].source_txid = Some(root.id());
+    parent.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    parent.invalidate_caches();
+    let mut subject = subject;
+    subject.inputs[0].source_txid = Some(parent.id());
+    sign_input(&parent, &mut subject, 0, 0x61);
+    let bump = proof(&root, HEIGHT);
+    let result = verify_entries(
+        vec![(root, Some(0)), (parent, None), (subject, None)],
+        vec![bump],
+        ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
+        "mainnet",
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+}
+
+/// Regtest models a post-Chronicle tip using the SDK height constants.
+#[tokio::test]
+async fn word_uses_the_tip_for_testnet_and_regtest_proven_coins() {
+    for network in ["testnet", "regtest"] {
+        let (parent, child) = signed_payment(0x61);
+        let bump = proof(&parent, 1);
+        let result = verify_entries(
+            vec![(parent, Some(0)), (child, None)],
+            vec![bump],
+            ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
+            network,
+        )
+        .await;
+        assert!(result.is_ok(), "{network}: {result:?}");
+    }
+}
+
+#[tokio::test]
+async fn word_refuses_a_pre_genesis_mainnet_coin() {
+    let (parent, child) = signed_payment(0x61);
+    let bump = proof(&parent, ProtocolEra::MAINNET_GENESIS_HEIGHT - 1);
+    script_words(
+        verify_entries(
+            vec![(parent, Some(0)), (child, None)],
+            vec![bump],
+            ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
+            "mainnet",
+        )
+        .await,
+        "The mainnet coin height is before Genesis.",
+    );
+}
+
+#[tokio::test]
+async fn word_does_not_rejudge_proven_transaction_inputs() {
+    let (_, child) = signed_payment(0x01);
+    let bump = proof(&child, HEIGHT);
+    let result = verify_entries(vec![(child, Some(0))], vec![bump], HEIGHT + 6, "mainnet").await;
+    assert!(result.is_ok(), "{result:?}");
+}
+
+/// Regtest models a post-Chronicle tip; mainnet's proven coin predates Genesis.
+#[tokio::test]
+async fn internalize_reads_the_stored_network_before_writing_received_outputs() {
+    use crate::services::mock::MockWalletServices;
+    use crate::storage::sqlx::StorageSqlx;
+    use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
+    use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput, WalletPayment};
+
+    let height = ProtocolEra::MAINNET_GENESIS_HEIGHT - 1;
+    let (parent, child) = signed_payment(0x61);
+    let child_id = child.id();
+    let mut beef = Beef::new();
+    let bump = beef.merge_bump(proof(&parent, height));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    beef.merge_transaction(child);
+    let bytes = beef.to_binary_atomic(&child_id).unwrap();
+    let mut root: [u8; 32] = hex::decode(parent.id()).unwrap().try_into().unwrap();
+    root.reverse();
+    let key = PrivateKey::from_hex(&format!("{:064x}", 7))
+        .unwrap()
+        .public_key()
+        .to_hex();
+
+    for network in ["mainnet", "testnet", "regtest"] {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("word-fixture", &key).await.unwrap();
+        sqlx::query("UPDATE settings SET chain = ?")
+            .bind(network)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+        let (user, _) = storage.find_or_insert_user(&key).await.unwrap();
+        storage.set_services(Arc::new(MockWalletServices::new()));
+        storage
+            .set_chain_tracker(Arc::new(FixtureTracker {
+                roots: vec![(u64::from(height), root)],
+                tip: ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
+            }))
+            .await;
+        let result = super::internalize_action::internalize_action_internal(
+            &storage,
+            user.user_id,
+            InternalizeActionArgs {
+                tx: bytes.clone(),
+                outputs: vec![InternalizeOutput {
+                    output_index: 0,
+                    protocol: "wallet payment".into(),
+                    payment_remittance: Some(WalletPayment {
+                        derivation_prefix: "dGVzdA==".into(),
+                        derivation_suffix: "dGVzdA==".into(),
+                        sender_identity_key: key.clone(),
+                    }),
+                    insertion_remittance: None,
+                }],
+                description: "stored network word fixture".into(),
+                labels: None,
+                seek_permission: None,
+            },
+        )
+        .await;
+        if network == "mainnet" {
+            script_words(
+                result.map(|_| ()),
+                "The mainnet coin height is before Genesis.",
+            );
+        } else {
+            assert!(result.unwrap().base.accepted, "{network}");
+        }
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outputs")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows, i64::from(network != "mainnet"), "{network}");
+    }
 }
