@@ -105,6 +105,7 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 - `bsv-rs` is pinned exactly from crates.io; a pin move is the owner's word and lands with the CLI's pin of the same version
 - `StorageSqlx::pool()` is the READER pool (`query_only`): writes go to `writer()` (one connection) or `write_tx()` (`BEGIN IMMEDIATE`); never await a service or tracker while holding either. `clippy.toml` bans every other `begin` (bsv-wallet-cli #44)
 - One store per file per process: give a `Wallet` and a `Monitor` clones of ONE `StorageSqlx` (`impl Clone` shares the pools and every field); never open the same file twice in one process (two writer pools meet on SQLite's busy handler)
+- `settings.chain` is `mainnet` on every new row: no `StorageSqlx` constructor takes a `Chain` and `setup_wallet` is a stub, so a testnet or regtest store sets it by writing the row; `migrate()` keeps a stored chain (#435)
 - `ChainTrackerError` must be imported separately: `use bsv_sdk::transaction::ChainTrackerError;`
 - `target >= u128::MAX` triggers clippy `absurd_extreme_comparisons` - use `==` instead
 - `WalletPermissionsManager` provides full BRC-98/99 permission enforcement (1978 lines)

@@ -719,6 +719,8 @@ query and already selects those two origin columns.
 ### Settings Caching
 Settings are loaded once via `make_available()` and cached in an `RwLock`. The `get_settings()` method returns a reference to cached data.
 
+The settings row's `chain` is written once, when `migrate()` creates the row: a later `migrate()` keeps the stored chain and rewrites only the name and identity key (#435; the reference inserts `chain` only in the migration that creates the row, `KnexMigrations.ts` at ts-stack edf6e03). A new row is `mainnet`: no constructor takes a `Chain` yet, so a testnet or regtest store's chain is set only by writing the row (the tests use `UPDATE settings SET chain`). Readers match its prefix (`proof_requests.rs`: `starts_with("main")`).
+
 ### MonitorStorage Integration
 All MonitorStorage methods are fully implemented:
 - `synchronize_transaction_statuses` - queries chain via services, updates proof records
