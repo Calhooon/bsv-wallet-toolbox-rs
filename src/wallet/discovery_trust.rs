@@ -106,7 +106,7 @@ pub(super) fn transform(
         .flat_map(|group| group.members)
         .collect();
     // Stable sorting keeps the reference's group/member order for equal trust.
-    certificates.sort_by(|a, b| b.certifier_info.trust.cmp(&a.certifier_info.trust));
+    certificates.sort_by_key(|cert| std::cmp::Reverse(cert.certifier_info.trust));
     Ok(DiscoverCertificatesResult {
         total_certificates: certificates.len() as u32,
         certificates,
