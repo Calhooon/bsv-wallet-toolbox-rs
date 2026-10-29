@@ -579,10 +579,10 @@ impl StorageSqlx {
         Ok(results)
     }
     pub(super) fn proof_attempts_limit(&self) -> i64 {
-        if self.get_settings().chain.starts_with("main") {
-            PROOF_ATTEMPTS_LIMIT_MAIN
-        } else {
-            PROOF_ATTEMPTS_LIMIT_TEST
+        match self.get_settings().chain.as_str() {
+            "main" => PROOF_ATTEMPTS_LIMIT_MAIN,
+            // `test`, `regtest` and an unknown word (#472).
+            _ => PROOF_ATTEMPTS_LIMIT_TEST,
         }
     }
 }

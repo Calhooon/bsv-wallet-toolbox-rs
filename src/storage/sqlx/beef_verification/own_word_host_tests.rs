@@ -88,7 +88,7 @@ fn host_judge(
         &child.to_binary(),
         &sources,
         Some(TIP),
-        "mainnet",
+        "main",
         Some(verifier),
     )
 }
@@ -243,7 +243,7 @@ fn host_receives_no_input_when_own_word_skips_it() {
         &child.to_binary(),
         &HashMap::new(),
         Some(TIP),
-        "mainnet",
+        "main",
         Some(&host),
     )
     .unwrap();
@@ -346,7 +346,7 @@ async fn host_live_pass_preserves_value_refusals() {
         &beef.to_binary(),
         &roots,
         &tracker,
-        "mainnet",
+        "main",
         Some(&RecordingVerifier::new(true)),
     )
     .await
@@ -382,7 +382,7 @@ async fn host_live_batch_spans_all_selected_transactions() {
         &beef.to_binary(),
         &beef_roots(&beef),
         &tracker,
-        "mainnet",
+        "main",
         Some(&host),
     )
     .await

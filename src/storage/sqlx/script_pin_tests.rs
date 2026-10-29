@@ -74,7 +74,7 @@ async fn verify_at_height(
         roots: vec![root],
         tip: height + 6,
     };
-    verify_beef_spends(&bytes, &tracker.roots, &tracker, "mainnet").await
+    verify_beef_spends(&bytes, &tracker.roots, &tracker, "main").await
 }
 
 /// The fixture's roots with no mining tip, or with `fault` a tip read that
@@ -118,7 +118,7 @@ async fn verify_without_tip(
         },
         fault,
     };
-    verify_beef_spends(&bytes, &tracker.roots.roots, &tracker, "mainnet").await
+    verify_beef_spends(&bytes, &tracker.roots.roots, &tracker, "main").await
 }
 
 /// #464: bsv-rs's constants name no activation height still ahead, so with
@@ -404,7 +404,7 @@ async fn word_checks_an_unproven_ancestor_of_the_subject() {
         vec![(root, Some(0)), (bad_parent, None), (subject, None)],
         vec![bump],
         HEIGHT + 6,
-        "mainnet",
+        "main",
     )
     .await;
     match &result {
@@ -444,7 +444,7 @@ async fn word_preserves_later_transactions_after_default_script_refusal() {
         vec![(root, Some(0)), (parent, None), (subject, None)],
         vec![bump],
         height + 6,
-        "mainnet",
+        "main",
     )
     .await;
     assert!(
@@ -461,7 +461,7 @@ async fn word_keeps_deferred_parents_and_duplicate_raw_entries() {
         vec![(child.clone(), None), (child, None), (root, Some(0))],
         vec![bump],
         height + 6,
-        "mainnet",
+        "main",
     )
     .await
     .expect("the deferred child and its duplicate share one spend judgement");
@@ -478,7 +478,7 @@ async fn word_keeps_structural_refusals_final() {
         vec![(root, Some(0)), (child, None), (absent_parent, None)],
         vec![bump],
         height + 6,
-        "mainnet",
+        "main",
     )
     .await;
     assert!(matches!(
@@ -521,7 +521,7 @@ async fn word_preserves_later_mining_refusals_after_default_script_refusal() {
             ],
             vec![bump],
             height + 6,
-            "mainnet",
+            "main",
         )
         .await;
         assert_eq!(spend_refusal(result), expected);
@@ -547,7 +547,7 @@ async fn word_preserves_spent_outputs_after_default_script_refusal() {
         ],
         vec![bump],
         height + 6,
-        "mainnet",
+        "main",
     )
     .await;
     assert_eq!(
@@ -574,7 +574,7 @@ async fn word_accepts_a_chronicle_signature_on_a_pre_chronicle_coin() {
         vec![(new_coin, Some(0)), (old_coin, Some(1)), (child, None)],
         bumps,
         height + 6,
-        "mainnet",
+        "main",
     )
     .await;
     eprintln!("version-1 0x61 on a pre-Chronicle coin spent today: {result:?}");
@@ -589,7 +589,7 @@ async fn opcode_spend(lock: &str, unlock: &str, coin_height: u32) -> crate::Resu
         vec![(parent, Some(0)), (child, None)],
         vec![bump],
         ProtocolEra::MAINNET_CHRONICLE_HEIGHT + 6,
-        "mainnet",
+        "main",
     )
     .await
 }
@@ -658,7 +658,7 @@ async fn word_uses_the_next_block_for_an_unproven_coin() {
         vec![(root, Some(0)), (parent, None), (subject, None)],
         vec![bump],
         ProtocolEra::MAINNET_CHRONICLE_HEIGHT - 1,
-        "mainnet",
+        "main",
     )
     .await;
     assert!(result.is_ok(), "{result:?}");
@@ -667,7 +667,7 @@ async fn word_uses_the_next_block_for_an_unproven_coin() {
 /// Regtest models a post-Chronicle tip using the SDK height constants.
 #[tokio::test]
 async fn word_uses_the_tip_for_testnet_and_regtest_proven_coins() {
-    for network in ["testnet", "regtest"] {
+    for network in ["test", "regtest"] {
         let (parent, child) = signed_payment(0x61);
         let bump = proof(&parent, 1);
         let result = verify_entries(
@@ -690,7 +690,7 @@ async fn word_refuses_a_pre_genesis_mainnet_coin() {
             vec![(parent, Some(0)), (child, None)],
             vec![bump],
             ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
-            "mainnet",
+            "main",
         )
         .await,
         "The mainnet coin height is before Genesis.",
@@ -701,7 +701,7 @@ async fn word_refuses_a_pre_genesis_mainnet_coin() {
 async fn word_does_not_rejudge_proven_transaction_inputs() {
     let (_, child) = signed_payment(0x01);
     let bump = proof(&child, HEIGHT);
-    let result = verify_entries(vec![(child, Some(0))], vec![bump], HEIGHT + 6, "mainnet").await;
+    let result = verify_entries(vec![(child, Some(0))], vec![bump], HEIGHT + 6, "main").await;
     assert!(result.is_ok(), "{result:?}");
 }
 
