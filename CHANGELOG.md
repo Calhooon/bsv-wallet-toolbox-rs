@@ -59,9 +59,12 @@
   the stored competing transaction and its proof or ancestry, read from
   `proven_txs` and served `proven_tx_reqs` rows as the reference's
   `getProvenOrRawTx`, never `transactions.raw_tx`. Create asks no provider, so
-  a competitor or ancestor the stores lack yields a txid-only BEEF where the
-  reference would ask services before answering. The result's own zero `txid` remains
-  the D14 filing (ts-stack #1436).
+  a competitor the stores lack yields a txid-only BEEF where the reference
+  asks services before that fallback; a missing ancestor yields the same on
+  both sides, since the reference's `getValidBeefForKnownTxid` throws
+  `WERR_INVALID_PARAMETER` at once (`StorageProvider.ts:1239`) and the review
+  falls back to txid-only. The result's own zero `txid` remains the D14
+  filing (ts-stack #1436).
 
 - #386: `createAction` shares the internalize door's `validateLabel` bound:
   1 to 300 UTF-8 bytes after ECMAScript trim and lowercase. Whitespace-only
