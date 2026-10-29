@@ -522,7 +522,10 @@ Pre-Genesis mainnet refuses with `The mainnet coin height is before Genesis.`.
 Testnet and regtest use the spend's era for the coin until #440 supplies their
 activation heights; regtest fixtures name the era they model. An unsupported
 network or tip also refuses. The network comes from settings, never from
-guessing what a Genesis height means. The `script_pin_tests` witnesses pin the
+guessing what a Genesis height means, and is read as the stored `main`,
+`test` or `regtest` alone (a legacy `mainnet`/`testnet` refuses as unknown,
+and the proof attempts limit takes the test limit for it; no change for a
+store that has run `migrate()` once since #471, #472). The `script_pin_tests` witnesses pin the
 fork-ID refusal, version-1 `0x61` acceptance after Chronicle on post- and
 pre-Chronicle coins, the coin era's `OP_2MUL` and `OP_SUBSTR` refusals, and
 the era refusal on a regtest tip between Genesis and Chronicle. D15 is closed

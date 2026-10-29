@@ -288,7 +288,7 @@ fn interpreter(scene: &Scene, raw: &[u8]) -> Result<()> {
             },
         )]),
         None,
-        "mainnet",
+        "main",
         None,
     )
 }

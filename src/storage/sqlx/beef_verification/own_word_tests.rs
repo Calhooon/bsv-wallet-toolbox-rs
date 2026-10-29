@@ -35,7 +35,7 @@ fn judge(child: &Transaction, parent: &Transaction, proven: Option<u32>) -> Resu
             proven_height: proven.map(u64::from),
         },
     )]);
-    verify_own(&child.to_binary(), &sources, Some(TIP), "mainnet", None)
+    verify_own(&child.to_binary(), &sources, Some(TIP), "main", None)
 }
 
 fn source(lock: &[u8]) -> Transaction {
@@ -118,14 +118,7 @@ fn a_forkid_signature_is_accepted() {
 #[test]
 fn an_input_without_source_bytes_is_skipped() {
     let (_, child) = p2pkh_spend(0x01);
-    verify_own(
-        &child.to_binary(),
-        &HashMap::new(),
-        Some(TIP),
-        "mainnet",
-        None,
-    )
-    .unwrap();
+    verify_own(&child.to_binary(), &HashMap::new(), Some(TIP), "main", None).unwrap();
 }
 
 #[test]

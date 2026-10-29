@@ -67,8 +67,8 @@ pub(crate) fn input_eras(
     proven_height: Option<u64>,
 ) -> std::result::Result<InputEras, &'static str> {
     let mainnet = match network {
-        "mainnet" | "main" => true,
-        "testnet" | "test" | "regtest" => false,
+        "main" => true,
+        "test" | "regtest" => false,
         _ => return Err("The storage network has no script era policy."),
     };
     let coin = match (mainnet, proven_height) {
@@ -564,12 +564,10 @@ mod tests {
             (CHRONICLE - 1, GENESIS, eras(PostChronicle, PostGenesis)),
             (CHRONICLE - 2, GENESIS, eras(PostGenesis, PostGenesis)),
         ] {
-            for network in ["main", "mainnet"] {
-                assert_eq!(
-                    input_eras(network, Some(tip(tip_height)), Some(u64::from(height))),
-                    Ok(expected)
-                );
-            }
+            assert_eq!(
+                input_eras("main", Some(tip(tip_height)), Some(u64::from(height))),
+                Ok(expected)
+            );
         }
     }
 
@@ -582,7 +580,7 @@ mod tests {
             (CHRONICLE - 1, eras(PostChronicle, PostChronicle)),
         ] {
             assert_eq!(
-                input_eras("mainnet", Some(tip(tip_height)), None),
+                input_eras("main", Some(tip(tip_height)), None),
                 Ok(expected)
             );
         }
@@ -591,7 +589,7 @@ mod tests {
     #[test]
     fn testnet_and_regtest_take_the_spend_era_for_the_coin() {
         use ProtocolEra::{PostChronicle, PostGenesis};
-        for network in ["test", "testnet", "regtest"] {
+        for network in ["test", "regtest"] {
             assert_eq!(
                 input_eras(network, Some(tip(CHRONICLE)), Some(1)),
                 Ok(eras(PostChronicle, PostChronicle))
@@ -640,19 +638,15 @@ mod tests {
     fn no_tip_gives_the_spend_the_latest_era() {
         use ProtocolEra::{PostChronicle, PostGenesis};
         for (network, proven, expected) in [
-            ("mainnet", Some(GENESIS), eras(PostChronicle, PostGenesis)),
+            ("main", Some(GENESIS), eras(PostChronicle, PostGenesis)),
             (
                 "main",
                 Some(CHRONICLE - 1),
                 eras(PostChronicle, PostGenesis),
             ),
-            (
-                "mainnet",
-                Some(CHRONICLE),
-                eras(PostChronicle, PostChronicle),
-            ),
-            ("mainnet", None, eras(PostChronicle, PostChronicle)),
-            ("testnet", Some(1), eras(PostChronicle, PostChronicle)),
+            ("main", Some(CHRONICLE), eras(PostChronicle, PostChronicle)),
+            ("main", None, eras(PostChronicle, PostChronicle)),
+            ("test", Some(1), eras(PostChronicle, PostChronicle)),
             ("regtest", None, eras(PostChronicle, PostChronicle)),
         ] {
             assert_eq!(
@@ -662,7 +656,7 @@ mod tests {
             );
         }
         assert_eq!(
-            input_eras("mainnet", None, Some(u64::from(GENESIS - 1))),
+            input_eras("main", None, Some(u64::from(GENESIS - 1))),
             Err("The mainnet coin height is before Genesis.")
         );
     }
@@ -674,7 +668,7 @@ mod tests {
             (GENESIS - 2, None),
         ] {
             assert_eq!(
-                input_eras("mainnet", Some(tip(tip_height)), proven),
+                input_eras("main", Some(tip(tip_height)), proven),
                 Err("The mainnet coin height is before Genesis.")
             );
         }
@@ -691,7 +685,7 @@ mod tests {
             Err("The storage network has no script era policy.")
         );
         assert_eq!(
-            input_eras("mainnet", Some(tip(CHRONICLE)), Some(u64::MAX)),
+            input_eras("main", Some(tip(CHRONICLE)), Some(u64::MAX)),
             Err("The coin height has no supported script era.")
         );
     }
