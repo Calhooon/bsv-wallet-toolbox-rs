@@ -109,5 +109,5 @@ pub(in crate::storage::sqlx) async fn judge_own_tx(
             Err(error) => return Err(error),
         }
     }
-    verify_own(raw_tx, &sources, tip, network)
+    verify_own(raw_tx, &sources, tip, network, None)
 }

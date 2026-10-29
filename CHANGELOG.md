@@ -4,6 +4,22 @@
 
 ### Added
 
+- #450: add the synchronous `SpendVerifier` trait, `SpendRequest` and
+  `SpendVerificationContext`, plus optional `script_verifier` fields on
+  `WalletOptions` and `StorageSqlxOptions`, both defaulting to `None`.
+  The storage option supplies the live internalize script check;
+  unselected inputs and absent verifiers keep the bsv-rs interpreter.
+  Own-signing and create caller-inputBEEF routing still use the interpreter;
+  connecting their call sites remains part of #450.
+  CLI #347 host line for each complete options literal: `script_verifier: None,`
+  (or use `..Default::default()`). A host backend plugs in through
+  `script_verifier: Some(verifier)` with `verifier: Arc<dyn SpendVerifier>`.
+  A false verdict is `Error::SpendRefused` with reason
+  `host script verifier refused the spend`; at `WalletInterface` it is
+  `WalletRefusalClass::InvalidParameter` with the same Display text.
+  The wallet option has no in-process reader: the port checks scripts in
+  storage, and the host configures that storage option explicitly.
+
 - #388: `WalletOptions.settings_manager: Option<Arc<WalletSettingsManager>>`
   supplies host trust settings for discovery. CLI #347 host line:
   `settings_manager: Some(Arc::new(WalletSettingsManager::new(Some(WalletSettingsManagerConfig { default_settings }))?))`.

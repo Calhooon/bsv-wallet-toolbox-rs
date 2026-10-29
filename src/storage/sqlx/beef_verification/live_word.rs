@@ -4,6 +4,7 @@
 //! resident; a transaction waiting for a parent is released in wire order.
 
 use super::{stream_error, VerificationHeaders};
+use crate::SpendVerifier;
 use crate::{Error, Result};
 use bsv_rs::primitives::bsv::sighash::{TxInput, TxOutput, TxSighashCache};
 use bsv_rs::script::{
@@ -145,6 +146,7 @@ fn hold_scripts(mut body: TxBody) -> TxBody {
 struct WordPass<'a> {
     network: &'a str,
     judge: &'a (dyn Fn(&Hash32) -> bool + Sync),
+    verifier: Option<&'a dyn SpendVerifier>,
     tip: Option<ChainTip>,
     heights: HashMap<Hash32, u64>,
     bumps: Vec<u64>,
@@ -164,8 +166,13 @@ fn refused(offset: u64, txid: Hash32, input: Option<u32>, why: SpendRefusal) -> 
     }
 }
 
-pub(super) fn verify(bytes: &[u8], headers: &VerificationHeaders, network: &str) -> Result<()> {
-    verify_judging(bytes, headers, network, &|_| true)
+pub(super) fn verify(
+    bytes: &[u8],
+    headers: &VerificationHeaders,
+    network: &str,
+    verifier: Option<&dyn SpendVerifier>,
+) -> Result<()> {
+    verify_judging(bytes, headers, network, &|_| true, verifier)
 }
 
 /// `verify` for the unproven transactions `judge` names (#426); the others
@@ -175,10 +182,12 @@ pub(super) fn verify_judging(
     headers: &VerificationHeaders,
     network: &str,
     judge: &(dyn Fn(&Hash32) -> bool + Sync),
+    verifier: Option<&dyn SpendVerifier>,
 ) -> Result<()> {
     let mut pass = WordPass {
         network,
         judge,
+        verifier,
         tip: headers.tip,
         heights: HashMap::new(),
         bumps: Vec::new(),
@@ -434,12 +443,13 @@ impl WordPass<'_> {
     fn spends(&self, offset: u64, txid: Hash32, body: &TxBody) -> Result<()> {
         let (sources, input_total) = self.sources(txid, body)?;
         // One sighash cache per transaction, shared by all of its inputs.
-        let shared = transaction_cache(body);
+        let mut judgements = super::own_word::InputJudgements::new(txid, body, self.verifier);
         for (vin, source) in sources.into_iter().enumerate() {
             let proven = self.heights.get(&body.inputs[vin].prev).copied();
             let eras = input_eras(self.network, self.tip, proven);
-            judge_input(eras, txid, body, vin, source, Arc::clone(&shared))?;
+            judgements.judge(eras, vin, source, proven)?;
         }
+        judgements.finish()?;
         if body.outputs.iter().map(|o| o.satoshis).sum::<u64>() > input_total {
             return Err(refused(offset, txid, None, SpendRefusal::CreatesValue));
         }

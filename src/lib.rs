@@ -75,6 +75,10 @@ pub mod storage;
 pub mod tsc_proof;
 pub mod wallet;
 
+#[path = "storage/sqlx/beef_verification/spend_verifier.rs"]
+mod spend_verifier;
+pub use spend_verifier::{SpendRequest, SpendVerificationContext, SpendVerifier};
+
 // Unstable access for the offline performance harness, outside the wallet API.
 #[doc(hidden)]
 #[cfg(feature = "bench-support")]

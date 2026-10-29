@@ -195,6 +195,9 @@ pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
 /// Options for constructing a SQLx storage provider.
 #[derive(Debug, Clone, Default)]
 pub struct StorageSqlxOptions {
+    /// Optional host verifier for script checks at the live internalize door.
+    /// `None` uses the bsv-rs interpreter under the existing per-input word.
+    pub script_verifier: Option<Arc<dyn crate::SpendVerifier>>,
     /// Network written when creating the settings row; defaults to Main.
     /// An existing settings row keeps its stored network.
     pub chain: Chain,
@@ -320,6 +323,10 @@ impl Clone for StorageSqlx {
 }
 
 impl StorageSqlx {
+    pub(super) fn script_verifier(&self) -> Option<&dyn crate::SpendVerifier> {
+        self.options.script_verifier.as_deref()
+    }
+
     /// Create a new SQLite storage provider with the default Main chain.
     ///
     /// # Arguments

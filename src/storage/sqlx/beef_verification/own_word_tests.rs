@@ -9,6 +9,9 @@ use bsv_rs::script::templates::P2PKH;
 use bsv_rs::script::{LockingScript, ProtocolEra, Script, UnlockingScript};
 use bsv_rs::transaction::{Transaction, TransactionInput, TransactionOutput};
 
+#[path = "own_word_host_tests.rs"]
+mod host;
+
 const GENESIS: u32 = ProtocolEra::MAINNET_GENESIS_HEIGHT;
 const CHRONICLE: u32 = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
 const SATOSHIS: u64 = 10_000;
@@ -31,7 +34,7 @@ fn judge(child: &Transaction, parent: &Transaction, proven: Option<u32>) -> Resu
             proven_height: proven.map(u64::from),
         },
     )]);
-    verify_own(&child.to_binary(), &sources, Some(TIP), "mainnet")
+    verify_own(&child.to_binary(), &sources, Some(TIP), "mainnet", None)
 }
 
 fn source(lock: &[u8]) -> Transaction {
@@ -114,7 +117,14 @@ fn a_forkid_signature_is_accepted() {
 #[test]
 fn an_input_without_source_bytes_is_skipped() {
     let (_, child) = p2pkh_spend(0x01);
-    verify_own(&child.to_binary(), &HashMap::new(), Some(TIP), "mainnet").unwrap();
+    verify_own(
+        &child.to_binary(),
+        &HashMap::new(),
+        Some(TIP),
+        "mainnet",
+        None,
+    )
+    .unwrap();
 }
 
 #[test]

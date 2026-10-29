@@ -26,7 +26,7 @@ use chrono::Utc;
 use sqlx::{Row, SqliteConnection};
 use std::collections::HashMap;
 
-use super::beef_verification::{header_fault, stream_error, verify_beef_spends};
+use super::beef_verification::{header_fault, stream_error, verify_beef_spends_with_verifier};
 use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
 use super::StorageSqlx;
 
@@ -93,11 +93,12 @@ pub async fn internalize_action_internal(
     };
     // A valid verdict is required even for an unproven payment, before any
     // basket, transaction, coin, request or broadcast can be created.
-    verify_beef_spends(
+    verify_beef_spends_with_verifier(
         &args.tx,
         &incoming.roots,
         tracker,
         &storage.get_settings().chain,
+        storage.script_verifier(),
     )
     .await?;
     let txid = incoming.txid;

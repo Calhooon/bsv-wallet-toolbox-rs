@@ -289,6 +289,11 @@ pub struct StoredCertificateReverification {
 /// Configuration options for the Wallet.
 #[derive(Debug, Clone)]
 pub struct WalletOptions {
+    /// Optional host script verifier (ts-stack `Wallet.ts:308`). This wallet
+    /// delegates script judgement to storage and has no in-process reader of
+    /// this field. Configure `StorageSqlxOptions::script_verifier` on the store.
+    pub script_verifier: Option<Arc<dyn crate::SpendVerifier>>,
+
     /// Optional seed for the wallet's reserved test-harness stream.
     /// `None` uses OS entropy.
     ///
@@ -319,6 +324,7 @@ pub struct WalletOptions {
 impl Default for WalletOptions {
     fn default() -> Self {
         Self {
+            script_verifier: None,
             rng_seed: None,
             include_all_source_transactions: true,
             auto_known_txids: false,

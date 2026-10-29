@@ -57,7 +57,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 
 ### `StorageSqlx`
 The main storage provider struct implementing all wallet storage traits.
-`storage::sqlx::StorageSqlxOptions { chain: Chain, rng_seed: Option<[u8; 32]> }` configures `new_with_options` and `open_with_options`. `chain` defaults to `Chain::Main` and supplies a fresh settings row; an existing row keeps its stored network. `Chain::Regtest` is the port's extension beyond the reference's stored `main` and `test` values. For `rng_seed`, `None` uses OS entropy, and `Some(seed)` repeats references and change derivations from the store's shared stream; no environment variable supplies the seed.
+`storage::sqlx::StorageSqlxOptions { chain: Chain, rng_seed: Option<[u8; 32]>, script_verifier: Option<Arc<dyn SpendVerifier>> }` configures `new_with_options` and `open_with_options`. `chain` defaults to `Chain::Main` and supplies a fresh settings row; an existing row keeps its stored network. `Chain::Regtest` is the port's extension beyond the reference's stored `main` and `test` values. For `rng_seed`, `None` uses OS entropy, and `Some(seed)` repeats references and change derivations from the store's shared stream; no environment variable supplies the seed.
 
 ```rust
 // impl Clone by hand: every field shared, none copied
@@ -578,8 +578,21 @@ signing. The reference judges it there (ts-stack@edf6e03,
 whose source transaction is absent; :329-331 judges the rest with
 `{ consensus: true, utxoHeight }`, the source's merkle path height when it
 has one. `wallet.scriptVerifier` is an optional host verifier
-(`Wallet.ts:308, 366, 422`); the port has none (the seam stays
-`pub(crate)`; an additive `WalletOptions` field is the owner's word).
+(`Wallet.ts:308, 366, 422`). The port's `SpendVerifier` trait has synchronous
+`verify_spend`, `should_verify_spend` (default true), `is_ready` (default true)
+and `verify_spends_batch` (default per-input calls), where the reference's
+verification methods return promises. `StorageSqlxOptions.script_verifier`
+feeds the live internalize door. The shared own-word and live-word judges
+accept a backend, but both signing routes and the create caller-inputBEEF
+pre-check still pass `None`; their call sites remain to be connected in #450.
+The storage options are shared by every cloned handle. `SpendRequest` carries
+`txid`, `body`, `vin`, `satoshis` and `script`; `SpendVerificationContext` carries
+`word` from `input_word` and `proven_height`. A selected input's host verdict is
+authoritative; false refuses with `host script verifier refused the spend`.
+Selected inputs go through one batch call per transaction; an error or wrong
+verdict count refuses the batch. Unselected inputs and `None` keep the existing
+interpreter. `WalletOptions.script_verifier` has no in-process reader because
+the port's signer check runs here; the host configures the storage option.
 
 The port judges at the same two places through the one verifier,
 `beef_verification::verify_own` (`beef_verification/own_word.rs`). It reads

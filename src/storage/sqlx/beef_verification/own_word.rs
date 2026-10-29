@@ -7,9 +7,10 @@
 //! scripts are judged: the reference runs no mining or value rule here, and
 //! the signed transaction is read by bsv-rs's streaming reader alone.
 
-use super::live_word::{input_eras, judge_input, transaction_cache, Coin};
+use super::live_word::{input_eras, input_word, judge_input, transaction_cache, Coin, InputEras};
 use super::stream_error;
-use crate::{Error, Result};
+use crate::{Error, Result, SpendRequest, SpendVerificationContext, SpendVerifier};
+use bsv_rs::primitives::bsv::sighash::TxSighashCache;
 use bsv_rs::primitives::Reader;
 use bsv_rs::transaction::beef_stream::{
     display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
@@ -87,9 +88,10 @@ pub(crate) fn verify_own(
     sources: &HashMap<String, SourceTx>,
     tip: Option<ChainTip>,
     network: &str,
+    verifier: Option<&dyn SpendVerifier>,
 ) -> Result<()> {
     let (txid, body) = read_tx(raw_tx)?;
-    let shared = transaction_cache(&body);
+    let mut judgements = InputJudgements::new(txid, &body, verifier);
     for (vin, input) in body.inputs.iter().enumerate() {
         let Some(source) = sources.get(&display_hex(&input.prev)) else {
             continue;
@@ -110,9 +112,118 @@ pub(crate) fn verify_own(
             satoshis,
             script: script.into(),
         };
-        judge_input(Ok(eras), txid, &body, vin, &coin, Arc::clone(&shared))?;
+        judgements.judge(Ok(eras), vin, &coin, source.proven_height)?;
     }
-    Ok(())
+    judgements.finish()
+}
+
+/// The per-transaction dispatcher shared by the signing check and live doors.
+/// Unselected inputs keep their interpreter verdict; selected inputs use one
+/// batch call, whose default implementation calls `verify_spend` per item.
+pub(super) struct InputJudgements<'a> {
+    txid: Hash32,
+    body: &'a TxBody,
+    transaction: Arc<TxSighashCache>,
+    verifier: Option<&'a dyn SpendVerifier>,
+    host_body: Option<Arc<TxBody>>,
+    selected: Vec<(SpendRequest, SpendVerificationContext)>,
+}
+
+impl<'a> InputJudgements<'a> {
+    pub(super) fn new(
+        txid: Hash32,
+        body: &'a TxBody,
+        verifier: Option<&'a dyn SpendVerifier>,
+    ) -> Self {
+        Self {
+            txid,
+            body,
+            transaction: transaction_cache(body),
+            verifier,
+            host_body: None,
+            selected: Vec::new(),
+        }
+    }
+
+    fn refusal(&self, vin: usize, message: String) -> Error {
+        Error::SpendRefused {
+            offset: self.body.inputs[vin].at,
+            txid: display_hex(&self.txid),
+            input: u32::try_from(vin).ok(),
+            why: SpendRefusal::Script(message),
+        }
+    }
+
+    pub(super) fn judge(
+        &mut self,
+        eras: std::result::Result<InputEras, &'static str>,
+        vin: usize,
+        source: &Coin,
+        proven_height: Option<u64>,
+    ) -> Result<()> {
+        if let Some(verifier) = self.verifier {
+            let eras = eras.map_err(|message| self.refusal(vin, message.into()))?;
+            let word = input_word(eras).map_err(|message| self.refusal(vin, message))?;
+            let context = SpendVerificationContext {
+                word,
+                proven_height,
+            };
+            let body = self
+                .host_body
+                .get_or_insert_with(|| Arc::new(self.body.clone()));
+            let spend = SpendRequest {
+                txid: self.txid,
+                body: Arc::clone(body),
+                vin,
+                satoshis: source.satoshis,
+                script: source.script.clone(),
+            };
+            if verifier.should_verify_spend(&spend, &context) {
+                self.selected.push((spend, context));
+                return Ok(());
+            }
+        }
+        judge_input(
+            eras,
+            self.txid,
+            self.body,
+            vin,
+            source,
+            Arc::clone(&self.transaction),
+        )
+    }
+
+    pub(super) fn finish(self) -> Result<()> {
+        let [(spend, _), ..] = self.selected.as_slice() else {
+            return Ok(());
+        };
+        let Some(verifier) = self.verifier else {
+            return Ok(());
+        };
+        let verdicts = verifier
+            .verify_spends_batch(&self.selected)
+            .map_err(|error| {
+                self.refusal(spend.vin, format!("host script verifier failed: {error}"))
+            })?;
+        if verdicts.len() != self.selected.len() {
+            return Err(self.refusal(
+                spend.vin,
+                format!(
+                    "host script verifier returned {} verdicts for {} spends",
+                    verdicts.len(),
+                    self.selected.len()
+                ),
+            ));
+        }
+        for ((spend, _), valid) in self.selected.iter().zip(verdicts) {
+            if !valid {
+                return Err(
+                    self.refusal(spend.vin, "host script verifier refused the spend".into())
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
