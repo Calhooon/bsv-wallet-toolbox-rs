@@ -516,7 +516,12 @@ transaction in a chain has one judging door. Bytes the wallet received are
 judged at internalize under the node's word (#422); bytes the wallet made are
 judged at their own signing (#450, the reference's `verifyUnlockScripts` on
 the transaction being signed, not its ancestry); the node judges each at
-broadcast. The posting routes judge nothing a second time: the set at create
+broadcast. An input the era policy cannot place today (a pre-Genesis
+mainnet coin bsv-rs cannot yet express, a tip or network the context does
+not read) is the one difference between the two kinds of door (the
+keeper's reading of #461): the signer skips it, the node's verdict at
+broadcast the backstop; a door that judges bytes it did not make refuses
+it; both until bsv-rs #440. The posting routes judge nothing a second time: the set at create
 is the caller's `inputBEEF` transactions the store does not hold, and at
 process nothing the store holds is judged, the posted roots and their stored
 ancestry alike, whatever format the caller asks back. The roots and the
@@ -577,8 +582,12 @@ shrinks the judged set
 for its one output, so a mined coinbase without its BUMP still supplies the
 coin. An input with neither is skipped, as the reference skips it, and so
 is an input `input_eras` places in no era (a mainnet coin mined before
-Genesis, a tip or network the interim policy does not read): such an input
-is left to the node, as before #450, until bsv-rs #440's hook reads it.
+Genesis, a tip or network the interim policy does not read): under the
+keeper's reading of #461 (2026-10-29) the signer skips it and the node's
+verdict at broadcast is the backstop, as the reference skips what it cannot
+verify, while the doors refuse it (a skip there could hold a phantom coin);
+both until bsv-rs #440 adds the pre-Genesis era and the context, after
+which both judge (`a_coin_mined_before_genesis_is_left_to_the_node`).
 Only scripts are judged: no mining, finality or value rule, as the
 reference runs none there. A refusal is `Error::SpendRefused`, its offset
 within the signed transaction, bsv-rs's text, class `InvalidParameter`.
