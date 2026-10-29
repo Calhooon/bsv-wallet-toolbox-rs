@@ -73,8 +73,9 @@ pub async fn internalize_action_internal(
     user_id: i64,
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
-    // Step 0: Validate the arguments before anything is read or written.
-    validate_internalize_action_args(&args)?;
+    // Step 0: Validate the arguments before anything is read or written. Each
+    // wallet payment stores its validated sender (#453).
+    let senders = validate_internalize_action_args(&args)?;
 
     // Scan one element at a time, keeping the subject and BUMP locations only.
     // No parsed copy of the ancestor graph survives the scan.
@@ -149,7 +150,7 @@ pub async fn internalize_action_internal(
 
     // Step 4: Extract output specifications and validate
     let mut outputs_data: Vec<OutputData> = Vec::new();
-    for output_spec in &args.outputs {
+    for (output_spec, sender) in args.outputs.iter().zip(senders) {
         let vout = output_spec.output_index;
 
         if vout as usize >= tx_outputs_count {
@@ -163,7 +164,17 @@ pub async fn internalize_action_internal(
 
         // Step 0 refused a missing remittance (#371, validationHelpers.ts:972, 975).
         let (payment, insertion) = match output_spec.protocol.as_str() {
-            WALLET_PAYMENT_PROTOCOL => (output_spec.payment_remittance.clone(), None),
+            WALLET_PAYMENT_PROTOCOL => {
+                let payment = output_spec
+                    .payment_remittance
+                    .clone()
+                    .map(|payment| WalletPayment {
+                        sender_identity_key: sender
+                            .map_or(payment.sender_identity_key, |key| key.to_hex()),
+                        ..payment
+                    });
+                (payment, None)
+            }
             BASKET_INSERTION_PROTOCOL => (None, output_spec.insertion_remittance.clone()),
             _ => {
                 return Err(Error::ValidationError(format!(
@@ -1730,6 +1741,22 @@ mod tests {
         assert_eq!(result.satoshis, satoshis as i64);
     }
 
+    /// `payment`'s output 0 as a basket insertion into `assets`.
+    fn as_insertion(payment: &InternalizeActionArgs) -> InternalizeActionArgs {
+        let mut insertion = payment.clone();
+        insertion.outputs[0] = InternalizeOutput {
+            output_index: 0,
+            protocol: BASKET_INSERTION_PROTOCOL.to_string(),
+            payment_remittance: None,
+            insertion_remittance: Some(BasketInsertion {
+                basket: "assets".to_string(),
+                custom_instructions: None,
+                tags: None,
+            }),
+        };
+        insertion
+    }
+
     #[tokio::test]
     async fn wallet_payment_origin_is_marked_on_insert_and_basket_conversion() {
         for convert_basket in [false, true] {
@@ -1738,18 +1765,7 @@ mod tests {
             let (bytes, txid, satoshis) = create_test_atomic_beef();
             let payment = wallet_payment_args(bytes, "received origin");
             if convert_basket {
-                let mut insertion = payment.clone();
-                insertion.outputs[0] = InternalizeOutput {
-                    output_index: 0,
-                    protocol: BASKET_INSERTION_PROTOCOL.to_string(),
-                    payment_remittance: None,
-                    insertion_remittance: Some(BasketInsertion {
-                        basket: "assets".to_string(),
-                        custom_instructions: None,
-                        tags: None,
-                    }),
-                };
-                internalize_action_internal(&storage, user_id, insertion)
+                internalize_action_internal(&storage, user_id, as_insertion(&payment))
                     .await
                     .unwrap();
                 // Caller-managed or synced custom rows can lack the origin mark.
@@ -1773,6 +1789,43 @@ mod tests {
                 .unwrap();
                 assert_eq!(mark, ("receive".to_string(), "storage".to_string(), true));
             }
+        }
+    }
+
+    /// #453: the door stores the validated sender, the value the reference's
+    /// storage writes on insert and on a basket conversion (ts-stack@edf6e03
+    /// storage/methods/internalizeAction.ts:778, 804, from `this.vargs` at 240
+    /// and 425): validateHexString's trimmed, lowercased key (validationHelpers.ts
+    /// 524, 533), not the sender as supplied.
+    #[tokio::test]
+    async fn padded_sender_is_stored_as_validated_on_insert_and_basket_conversion() {
+        for convert_basket in [false, true] {
+            let storage = create_test_storage().await;
+            let user_id = create_test_user(&storage).await;
+            let (bytes, txid, _) = create_test_atomic_beef();
+            let mut payment = wallet_payment_args(bytes, "padded sender");
+            if let Some(remittance) = payment.outputs[0].payment_remittance.as_mut() {
+                remittance.sender_identity_key = format!(" \u{FEFF}{}\n", PAYER.to_uppercase());
+            }
+            if convert_basket {
+                internalize_action_internal(&storage, user_id, as_insertion(&payment))
+                    .await
+                    .unwrap();
+            }
+            internalize_action_internal(&storage, user_id, payment)
+                .await
+                .unwrap();
+            let (stored,): (Option<String>,) =
+                sqlx::query_as("SELECT sender_identity_key FROM outputs WHERE txid = ?")
+                    .bind(&txid)
+                    .fetch_one(storage.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                stored.as_deref(),
+                Some(PAYER),
+                "conversion: {convert_basket}"
+            );
         }
     }
 

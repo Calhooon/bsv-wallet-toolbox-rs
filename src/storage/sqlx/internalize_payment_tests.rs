@@ -214,3 +214,29 @@ fn key_before_nel_is_refused() {
     let out = payment("cHJlZml4", "c3VmZml4", &format!("{SENDER}\u{85}"));
     assert_eq!(refusal(&args(vec![out])), key_text("even length, not 67."));
 }
+
+/// #453: the validated sender is the key validatePublicKey returns (185-191),
+/// parsed from the trimmed value; its hex is validateHexString's lowercased
+/// result (533), and an insertion has none.
+#[test]
+fn validated_sender_is_the_trimmed_key() {
+    let padded = payment(
+        "cHJlZml4",
+        "c3VmZml4",
+        &format!(" \u{FEFF}{}\n", SENDER.to_uppercase()),
+    );
+    let senders = validate_internalize_action_args(&args(vec![padded, valid_insertion()])).unwrap();
+    let keys: Vec<_> = senders
+        .iter()
+        .map(|k| k.as_ref().map(|k| k.to_hex()))
+        .collect();
+    assert_eq!(keys, [Some(SENDER.to_string()), None]);
+}
+
+fn valid_insertion() -> InternalizeOutput {
+    let mut out = instructions_over_the_bound();
+    if let Some(insertion) = out.insertion_remittance.as_mut() {
+        insertion.custom_instructions = None;
+    }
+    out
+}
