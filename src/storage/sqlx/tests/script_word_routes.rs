@@ -533,8 +533,13 @@ async fn process_post_delayed_with_nothing_to_judge_asks_no_tip() {
 
 /// An action spending the caller's unproven parent, its ancestry in the
 /// caller's `inputBEEF`; the caller signs later. With `stored` the store
-/// holds the parent beforehand, as internalize leaves a received transaction.
-async fn create(bad: bool, stored: bool) -> (StorageSqlx, Transaction, crate::Result<()>) {
+/// holds the parent beforehand, as internalize leaves a received transaction;
+/// with `txid_only` the caller asks `returnTXIDOnly`.
+async fn create(
+    bad: bool,
+    stored: bool,
+    txid_only: bool,
+) -> (StorageSqlx, Transaction, crate::Result<()>) {
     let (storage, user_id) = store().await;
     let p2pkh = "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac";
     let (parent, mut beef, tracker) = lineage(bad, p2pkh);
@@ -548,6 +553,7 @@ async fn create(bad: bool, stored: bool) -> (StorageSqlx, Transaction, crate::Re
             "inputDescription": "the caller's coin", "unlockingScriptLength": 107 }],
         "outputs": [{ "lockingScript": p2pkh, "satoshis": 1_000,
             "outputDescription": "the recipient" }],
+        "options": { "returnTXIDOnly": txid_only },
     });
     let args = serde_json::from_value(args).unwrap();
     let created = create_action_internal(&storage, Some(&tracker), user_id, args)
@@ -561,7 +567,19 @@ async fn create(bad: bool, stored: bool) -> (StorageSqlx, Transaction, crate::Re
 /// no action is written.
 #[tokio::test]
 async fn create_refuses_a_caller_unproven_parent_without_forkid() {
-    let (storage, parent, created) = create(true, false).await;
+    assert_create_refused(false).await;
+}
+
+/// The judged set does not depend on the returned format: with
+/// `returnTXIDOnly` no BEEF is returned, and the caller's unproven parent
+/// is judged all the same, refused before anything is written.
+#[tokio::test]
+async fn create_txid_only_refuses_a_caller_unproven_parent_without_forkid() {
+    assert_create_refused(true).await;
+}
+
+async fn assert_create_refused(txid_only: bool) {
+    let (storage, parent, created) = create(true, false, txid_only).await;
     assert_forkid_refusal(created.unwrap_err(), &parent);
     let actions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
         .fetch_one(storage.pool())
@@ -573,7 +591,14 @@ async fn create_refuses_a_caller_unproven_parent_without_forkid() {
 /// Control: the same shape, every input passing the word, is created.
 #[tokio::test]
 async fn create_accepts_a_caller_unproven_parent_the_word_passes() {
-    let (_, _, created) = create(false, false).await;
+    let (_, _, created) = create(false, false, false).await;
+    created.unwrap();
+}
+
+/// Control: with `returnTXIDOnly`, every input passing the word, created.
+#[tokio::test]
+async fn create_txid_only_accepts_a_caller_unproven_parent_the_word_passes() {
+    let (_, _, created) = create(false, false, true).await;
     created.unwrap();
 }
 
@@ -611,6 +636,13 @@ async fn internalized(storage: &StorageSqlx, user_id: i64, parent: &Transaction,
 /// door), so the create door judges it no second time: created.
 #[tokio::test]
 async fn create_accepts_a_caller_parent_the_store_holds() {
-    let (_, _, created) = create(true, true).await;
+    let (_, _, created) = create(true, true, false).await;
+    created.unwrap();
+}
+
+/// The same with `returnTXIDOnly`: the store holds the parent, created.
+#[tokio::test]
+async fn create_txid_only_accepts_a_caller_parent_the_store_holds() {
+    let (_, _, created) = create(true, true, true).await;
     created.unwrap();
 }
