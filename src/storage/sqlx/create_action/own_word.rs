@@ -2,8 +2,10 @@
 //! the create door's `signAndProcess` before processAction's writes (the
 //! reference's `signer/methods/createAction.ts:120`, before `processAction`
 //! at :138), and `signAction`'s `process_action_internal` before its writer
-//! (`signAction.ts:90`). The sources are the action's input BEEF, else the
-//! store's bytes; an input with neither is skipped, as
+//! (`signAction.ts:90`). The sources are untrimmed (the action's input BEEF
+//! before `knownTxids` trims the caller's copy, else the caller's inputBEEF
+//! as supplied), then the store's bytes, so no response option shrinks the
+//! judged set; an input with neither is skipped, as
 //! `verifyUnlockScripts.ts:316-321` skips it. The word is the one verifier's
 //! (`beef_verification::verify_own`), at the tip read before any writer.
 

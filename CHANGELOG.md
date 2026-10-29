@@ -8,8 +8,12 @@
   node's word at its signing, as the reference's signer judges it
   (`signer/methods/createAction.ts:120`, before `processAction` at :138;
   `signAction.ts:90`, after it at :76; ts-stack edf6e03): each input whose
-  source bytes are in the action's input BEEF or the store, under #422's
-  two words; an input without them is skipped
+  source bytes are in the action's untrimmed input BEEF (or, under
+  `returnTXIDOnly`, the caller's as supplied) or the store, under #422's
+  two words, so a source the caller supplied and named in `knownTxids` is
+  judged; the action's stored input BEEF is now the untrimmed assembly, as
+  the reference stores `storageBeef`, and `knownTxids` trims the returned
+  copy alone; an input without them is skipped
   (`verifyUnlockScripts.ts:316-321`), and so is an input the interim era
   policy places in no era (a mainnet coin mined before Genesis, a tip or
   network it does not read), left to the node as before. Host TEXT-DIFF for

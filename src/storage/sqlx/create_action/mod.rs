@@ -649,7 +649,7 @@ impl Door<'_> {
             &extended_inputs,
             &change_result.allocated_change_inputs,
             args.input_beef.as_deref(),
-            &self.known_txids(),
+            &[],
             self.return_txid_only(),
             self.trust_self(),
             read_check,
@@ -658,11 +658,17 @@ impl Door<'_> {
         if let Some((height, root)) = cached.missed() {
             return Ok(Step::Again(Again::NotPrechecked { height, root }));
         }
-        let input_beef = built?;
+        // Untrimmed: the store and the signing check read every source the
+        // caller supplied; `knownTxids` trims the caller's copy alone.
+        let assembled = built?;
+        let input_beef = match &assembled {
+            Some(bytes) => Some(trim_known_txids(bytes, &self.known_txids())?),
+            None => None,
+        };
 
         // Store input_beef in the transaction record (required for process_action)
         // This matches the TypeScript behavior which stores inputBEEF at transaction creation
-        if let Some(ref beef_bytes) = input_beef {
+        if let Some(ref beef_bytes) = assembled {
             sqlx::query(
                 "UPDATE transactions SET input_beef = ?, updated_at = ? WHERE transaction_id = ?",
             )
@@ -700,11 +706,14 @@ impl Door<'_> {
                 };
                 // The signed transaction under the node's word before
                 // processAction's writes and the post (#450): local CPU and
-                // reads on this connection, no provider awaited.
+                // reads on this connection, no provider awaited. Its sources
+                // are untrimmed: the assembly, else (`returnTXIDOnly`
+                // assembles none) the caller's inputBEEF as supplied, then
+                // the store.
                 if let Some(tip) = self.own_tip {
                     judge_own_tx(
                         &mut tx,
-                        created.input_beef.as_deref(),
+                        assembled.as_deref().or(args.input_beef.as_deref()),
                         &raw_tx,
                         tip,
                         self.word.network,
@@ -743,6 +752,22 @@ impl Door<'_> {
             processed,
         })))
     }
+}
+
+/// The caller's copy of an untrimmed assembly: `known_txids` made
+/// txid-only. The store keeps the assembly whole, as the reference keeps
+/// `storageBeef` (ts-stack@edf6e03 `storage/methods/createAction.ts:725`)
+/// and trims the response alone (`trimInputBeef`, :1725), so a response
+/// option never shrinks what signing judges (#450).
+fn trim_known_txids(untrimmed: &[u8], known_txids: &[String]) -> Result<Vec<u8>> {
+    if known_txids.is_empty() {
+        return Ok(untrimmed.to_vec());
+    }
+    let mut beef = bsv_rs::transaction::Beef::from_binary(untrimmed)?;
+    for known_txid in known_txids {
+        beef.make_txid_only(known_txid);
+    }
+    Ok(beef.to_binary())
 }
 
 // =============================================================================
