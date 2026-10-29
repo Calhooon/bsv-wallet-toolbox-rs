@@ -289,6 +289,7 @@ async fn other_create_options_keep_tx() {
             assert_eq!(result.tx.as_ref(), Some(&raw));
             let json = serde_json::to_value(&result).unwrap();
             assert!(json.get("tx").is_some());
+            assert!(result.beef.is_some(), "the other options keep their BEEF");
             assert_side_fields(&wallet, &result, no_send, delayed).await;
         }
     }
