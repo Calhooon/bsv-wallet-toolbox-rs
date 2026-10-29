@@ -64,14 +64,14 @@ impl From<CtBlockHeader> for BlockHeader {
     }
 }
 
+/// The verifier tip's hold for a regtest chaintracks server: this client has no
+/// regtest activation heights until bsv-rs #440's chain parameters (#439).
+pub(crate) const REGTEST_TIP_HELD: &str = "Chaintracks verifier tip: regtest activation heights are not known to this client until bsv-rs #440's chain parameters; the tip is held";
+
 /// Chaintracks HTTP service client.
 ///
 /// Provides block header lookups via a remote Chaintracks server.
 /// Follows the same provider pattern as `BlockHeaderService` (BHS).
-/// The verifier tip's hold for a regtest chaintracks server: this client has no
-/// regtest activation heights until bsv-rs #440's chain parameters (#439).
-pub const REGTEST_TIP_HELD: &str = "Chaintracks verifier tip: regtest activation heights are not known to this client until bsv-rs #440's chain parameters; the tip is held";
-
 pub struct ChaintracksServiceClient {
     client: Client,
     config: ChaintracksConfig,
