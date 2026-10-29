@@ -24,13 +24,13 @@ use crate::storage::entities::TableOutputBasket;
 use crate::storage::traits::{
     CreateActionDone, CreateActionDoor, DoorProcessed, DoorRefusal, SignAndProcess,
     StorageCreateActionResult, StorageCreateTransactionInput, StorageCreateTransactionOutput,
-    StorageProcessActionArgs, StorageProvidedBy,
+    StorageProcessActionArgs, StorageProvidedBy, WalletStorageReader,
 };
 use bsv_rs::transaction::ChainTracker;
 use chrono::Utc;
 
-use super::{proof_root_checks, StorageSqlx};
-use beef::build_input_beef;
+use super::{beef_verification, proof_root_checks, StorageSqlx};
+use beef::{build_input_beef, CallerWord};
 use change::plan_change;
 use fees::P2PKH_UNLOCKING_SCRIPT_LENGTH;
 use inputs::{update_output_spent, validate_and_extend_inputs};
@@ -165,8 +165,17 @@ pub async fn create_action_at_door_internal(
         Some(_) => None,
         None => storage.get_chain_tracker().await,
     };
+    // The caller's unproven transactions are judged under the node's word in
+    // the pre-check (#426): the tip from the caller's tracker, else the
+    // storage's own, else its services' header service, as internalize's.
+    let network = storage.get_settings().chain;
     let door = Door {
         storage,
+        word: CallerWord {
+            tracker: chain_tracker.or(storage_tracker.as_deref()),
+            services: storage.get_services().ok(),
+            network: &network,
+        },
         verify_roots: chain_tracker.is_some(),
         reads_proofs: chain_tracker.is_some() || storage_tracker.is_some(),
         answers: &answers,
@@ -231,6 +240,8 @@ pub async fn create_action_at_door_internal(
 /// gathered before the write lock.
 struct Door<'a> {
     storage: &'a StorageSqlx,
+    /// The node's word for the caller's `inputBEEF`, judged in the pre-check.
+    word: CallerWord<'a>,
     /// The caller passed a tracker: the assembled BEEF's roots are verified.
     verify_roots: bool,
     /// A tracker (the caller's, else the storage's own) reads stored proofs.

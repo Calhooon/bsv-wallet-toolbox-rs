@@ -1,4 +1,4 @@
-use super::beef::{build_input_beef, change_coin_gap};
+use super::beef::{build_input_beef, change_coin_gap, judge_caller_beef};
 use super::change::plan_change;
 use super::inputs::validate_and_extend_inputs;
 use super::outputs::validate_and_extend_outputs;
@@ -600,6 +600,8 @@ impl Door<'_> {
                 Err(e) => return Err(e),
             };
 
+            // The pre-check's bytes are judged, never returned: no known
+            // txid is trimmed, so the word reads every ancestry whole.
             let built = build_input_beef(
                 &mut conn,
                 Some(self.storage.writer()),
@@ -607,14 +609,19 @@ impl Door<'_> {
                 &extended_inputs,
                 &change_result.allocated_change_inputs,
                 self.args.input_beef.as_deref(),
-                &self.known_txids(),
+                &[],
                 self.return_txid_only(),
                 self.trust_self(),
                 own,
             )
             .await;
-            let Err(refusal) = built else {
-                return Ok(reserved.mine().to_vec());
+            let refusal = match built {
+                Ok(assembled) => {
+                    let caller_beef = self.args.input_beef.as_deref();
+                    judge_caller_beef(assembled.as_deref(), caller_beef, &self.word).await?;
+                    return Ok(reserved.mine().to_vec());
+                }
+                Err(refusal) => refusal,
             };
             // Which of the picked coins cannot be built on its own? None:
             // the refusal is the caller's inputs', and it stands.
