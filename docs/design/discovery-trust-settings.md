@@ -347,7 +347,7 @@ discovery step. Under (c) alone the CLI keeps `[]` in its scenario and its
 1. **(b2) now, (a) next.** The shared manager option is built, with a fresh
    `get` per call, no Go cache, and defaults when absent. The decided
    `over_store(...)` constructor is the 0.14.0 parity target after bsv-rs #441
-   (section 4). References: `GO/pkg/wallet/wallet_opts.go:24`,
+   (section 4). References: `GO/pkg/wallet/internal/wallet_opts/wallet_opts.go:24`,
    `GO/pkg/wallet/wallet.go:184,226,1374`; `WT/Wallet.ts:988-991,1046-1049`.
 2. **Sorted keys in the query.** Both resolver methods take
    `certifiers: &[String]`. The HTTP query sends that array alongside
