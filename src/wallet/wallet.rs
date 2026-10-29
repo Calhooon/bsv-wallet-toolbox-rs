@@ -63,6 +63,10 @@ mod named_input_tests;
 mod own_word_tests;
 
 #[cfg(all(test, feature = "sqlite"))]
+#[path = "txid_only_tests.rs"]
+mod txid_only_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
 #[path = "nosend_label_tests.rs"]
 mod nosend_label_tests;
 
@@ -1222,6 +1226,12 @@ where
             .and_then(|o| o.accept_delayed_broadcast)
             .unwrap_or(false);
 
+        let return_txid_only = args
+            .options
+            .as_ref()
+            .and_then(|o| o.return_txid_only)
+            .unwrap_or(false);
+
         let send_with: Vec<String> = args
             .options
             .as_ref()
@@ -1371,8 +1381,28 @@ where
                 "processAction returned"
             );
 
+            // Under returnTXIDOnly the response has no BEEF. processAction
+            // moved the untrimmed input BEEF to the committed proof request.
+            // Read it only when this call must post immediately.
+            let stored_input_beef = if return_txid_only && !no_send && !accept_delayed_broadcast {
+                self.storage
+                    .find_proven_tx_reqs(crate::storage::FindProvenTxReqsArgs {
+                        txids: Some(vec![txid.clone()]),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|req| req.txid == txid)
+                    .and_then(|req| req.input_beef)
+            } else {
+                None
+            };
+            let input_beef = stored_input_beef
+                .as_ref()
+                .or(storage_result.input_beef.as_ref());
+
             // Build the full BEEF (signed tx + ancestor proofs) for broadcasting and returning to caller
-            let full_beef_bytes = if let Some(ref input_beef_bytes) = storage_result.input_beef {
+            let full_beef_bytes = if let Some(input_beef_bytes) = input_beef {
                 match bsv_rs::transaction::Beef::from_binary(input_beef_bytes) {
                     Ok(mut beef) => {
                         beef.merge_raw_tx(signed_tx.clone(), None);
