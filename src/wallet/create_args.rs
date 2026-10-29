@@ -9,6 +9,8 @@ use super::internalize_args::{
     validate_array_bound, validate_description, validate_label, MAXIMUM_WALLET_COLLECTION_ITEMS,
 };
 use crate::error::{Error, Result};
+use bsv_rs::transaction::beef_stream::StreamError;
+use bsv_rs::transaction::BeefStream;
 
 // =============================================================================
 // Constants
@@ -53,9 +55,9 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
 
     // ts-stack@edf6e03 validationHelpers.ts validateCreateActionArgs order
     // (749-808): description (755), inputs (758), outputs (759, each
-    // output's tags last at 639), labels (762), options (763), then the
-    // duplicate input outpoints (784). Each array's validateArray bound
-    // (105-114) runs ahead of its items.
+    // output's tags last at 639), labels (762), options (763), the inputBEEF
+    // envelope (775), then the duplicate input outpoints (784). Each array's
+    // validateArray bound (105-114) runs ahead of its items.
 
     // Validate inputs
     if let Some(ref inputs) = args.inputs {
@@ -192,6 +194,14 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
         }
     }
 
+    // The inputBEEF envelope (775-782, parseWalletResultBEEF) after the
+    // options and ahead of the duplicate input outpoints.
+    if let Some(ref input_beef) = args.input_beef {
+        if !input_beef.is_empty() {
+            refuse_invalid_beef_bytes(input_beef)?;
+        }
+    }
+
     // Duplicate input outpoints (784-790) after every input's own checks
     // (758) and the outputs, labels and options (759-763).
     if let Some(ref inputs) = args.inputs {
@@ -232,6 +242,32 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
     }
 
     Ok(())
+}
+
+/// Reads a stranger's BEEF through bsv-rs's streaming reader, one element at
+/// a time, and refuses it only for invalid bytes: [`Error::InvalidBeef`] with
+/// the offset of the byte and the kind (a bad varint, a cut field, a tree
+/// height over 64, a transaction with no input, trailing bytes, and the rest
+/// of the reader's kinds). Nothing is refused for its size or its counts.
+///
+/// The frame and each element are checked; the graph (an input naming an
+/// earlier transaction) and the roots against the headers are not: those
+/// stay with the caller's own verification.
+pub(crate) fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
+    let mut stream = BeefStream::new(bytes);
+    loop {
+        match stream.next_element() {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(()),
+            Err(StreamError::Refused(r)) => {
+                return Err(Error::InvalidBeef {
+                    offset: r.offset,
+                    kind: r.kind(),
+                })
+            }
+            Err(StreamError::Io(e)) => return Err(Error::IoError(e)),
+        }
+    }
 }
 
 /// The reference's `WERR_INVALID_PARAMETER('labels', mustBe)`
