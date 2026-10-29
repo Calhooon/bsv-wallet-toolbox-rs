@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
+use crate::services::providers::http_client::Url;
 use crate::services::Chain;
 
 /// A trusted certifier for identity certificates.
@@ -153,7 +154,7 @@ fn bounded_string(value: &str, field: &str, minimum: usize, maximum: usize) -> R
 
 fn settings_url(value: &str, field: &str) -> Result<String> {
     bounded_string(value, field, 1, 500)?;
-    let url = reqwest::Url::parse(value)
+    let url = Url::parse(value)
         .map_err(|_| invalid_settings(format!("{field} must be an absolute HTTP(S) URL")))?;
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
