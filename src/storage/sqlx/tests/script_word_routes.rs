@@ -180,12 +180,22 @@ async fn post(
     storage.set_services(services.clone());
     storage.set_chain_tracker(Arc::new(tracker)).await;
     let txid = stored_nosend(&storage, user_id, &subject, &mut beef).await;
+    let posted = send_with(&storage, user_id, txid, delayed).await;
+    (storage, services, parent, posted)
+}
+
+/// A `sendWith` post of the stored `txid`, queued with `delayed`; its status.
+async fn send_with(
+    storage: &StorageSqlx,
+    user_id: i64,
+    txid: String,
+    delayed: bool,
+) -> crate::Result<String> {
     let args = json!({ "isNewTx": false, "isSendWith": true, "isNoSend": false,
         "isDelayed": delayed, "sendWith": [txid] });
-    let posted = process_action_internal(&storage, user_id, serde_json::from_value(args).unwrap())
+    process_action_internal(storage, user_id, serde_json::from_value(args).unwrap())
         .await
-        .map(|result| result.send_with_results.unwrap()[0].status.clone());
-    (storage, services, parent, posted)
+        .map(|result| result.send_with_results.unwrap()[0].status.clone())
 }
 
 /// A stored `nosend` action signed as `subject`, its request carrying
@@ -498,6 +508,40 @@ async fn process_new_tx_sends_a_joined_member_the_word_passes() {
         joined_rows(&storage).await,
         ("sending".into(), "sending".into(), "unsent".into(), 2)
     );
+}
+
+// processAction: a post with nothing to judge
+
+/// A stored `nosend` action spending a proven transaction, its input BEEF
+/// holding that transaction alone, posted by `sendWith` (queued with
+/// `delayed`) under a tracker that answers roots and supplies no mining tip.
+async fn post_unjudged(delayed: bool) -> (Arc<MockWalletServices>, crate::Result<String>) {
+    let (storage, user_id) = store().await;
+    let mut tracker = MockChainTracker::new(HEIGHT + 6);
+    let (source, mut beef) = proven(&mut tracker);
+    let services = Arc::new(MockWalletServices::new());
+    storage.set_services(services.clone());
+    storage.set_chain_tracker(Arc::new(NoTip(tracker))).await;
+    let subject = spend(&source.id(), "", 4_000, "51");
+    let txid = stored_nosend(&storage, user_id, &subject, &mut beef).await;
+    (services, send_with(&storage, user_id, txid, delayed).await)
+}
+
+/// The witness: nothing unproven beside the posted root, so the judged set
+/// is empty; no mining tip is asked and the post goes out.
+#[tokio::test]
+async fn process_post_with_nothing_to_judge_asks_no_tip() {
+    let (services, posted) = post_unjudged(false).await;
+    assert_eq!(posted.unwrap(), "unproven");
+    assert_eq!(services.call_count("post_beef"), 1);
+}
+
+/// The same on the queued path.
+#[tokio::test]
+async fn process_post_delayed_with_nothing_to_judge_asks_no_tip() {
+    let (services, posted) = post_unjudged(true).await;
+    assert_eq!(posted.unwrap(), "sending");
+    assert_eq!(services.call_count("post_beef"), 0);
 }
 
 // createAction: the caller's inputBEEF
