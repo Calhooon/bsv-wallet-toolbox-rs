@@ -254,3 +254,63 @@ async fn test_raw_tx_stored_at_create_time() {
 #[cfg(test)]
 #[path = "trust_self_known/mod.rs"]
 mod trust_self_known;
+
+/// #463: `returnTXIDOnly` drops the response's input BEEF alone; the door
+/// stores the same assembly the other options store and return
+/// (ts-stack@edf6e03 `storage/methods/createAction.ts:725` stores
+/// `storageBeef`, `trimInputBeef` at :1725-1726 returns none).
+#[tokio::test]
+async fn test_create_action_txid_only_stores_the_input_beef() {
+    let mut stored = Vec::new();
+    for return_txid_only in [false, true] {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("test-wallet", "02test_key").await.unwrap();
+        storage.make_available().await.unwrap();
+        let (user, _) = storage
+            .find_or_insert_user("02user_identity_key")
+            .await
+            .unwrap();
+        seed_change_output(&storage, user.user_id, 100_000).await;
+        let args = bsv_rs::wallet::CreateActionArgs {
+            description: "Test returnTXIDOnly storage".to_string(),
+            input_beef: None,
+            inputs: None,
+            outputs: Some(vec![CreateActionOutput {
+                locking_script: vec![0x51],
+                satoshis: 1000,
+                output_description: "Test output".to_string(),
+                basket: None,
+                custom_instructions: None,
+                tags: None,
+            }]),
+            lock_time: None,
+            version: None,
+            labels: None,
+            options: Some(CreateActionOptions {
+                no_send: Some(true),
+                sign_and_process: Some(false),
+                return_txid_only: Some(return_txid_only),
+                randomize_outputs: Some(false),
+                ..Default::default()
+            }),
+        };
+        let result = create_action_internal(&storage, None, user.user_id, args)
+            .await
+            .unwrap();
+        assert!(!result.inputs.is_empty());
+        let beef: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT input_beef FROM transactions WHERE reference = ?")
+                .bind(&result.reference)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        let beef = beef.expect("the input BEEF is stored");
+        assert!(!beef.is_empty());
+        match return_txid_only {
+            true => assert_eq!(result.input_beef, None, "the response is txid-only"),
+            false => assert_eq!(result.input_beef.as_ref(), Some(&beef)),
+        }
+        stored.push(beef);
+    }
+    assert_eq!(stored[0], stored[1], "one assembly whatever is asked back");
+}

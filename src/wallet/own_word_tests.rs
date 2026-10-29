@@ -339,3 +339,103 @@ async fn sign_action_judges_a_supplied_source_named_known() {
     let script = caller_script(&scene, &signable);
     kept.then_signs(&scene, signable, script).await;
 }
+
+/// The input BEEF processAction carried from the action to its request,
+/// by the txid the create answered.
+async fn stored_input_beef(scene: &NamedInputScene, txid: &str) -> Option<Vec<u8>> {
+    sqlx::query_scalar("SELECT input_beef FROM proven_tx_reqs WHERE txid = ?")
+        .bind(txid)
+        .fetch_one(scene.wallet.storage().pool())
+        .await
+        .unwrap()
+}
+
+/// #463: under `returnTXIDOnly` the create door stores the input BEEF it
+/// assembles, as under the other options (the door's response stays
+/// txid-only: `test_create_action_txid_only_stores_the_input_beef`), as
+/// the reference stores `storageBeef` whatever the caller asks back
+/// (ts-stack@edf6e03 `storage/methods/createAction.ts:725`) and drops the
+/// response's BEEF alone (`trimInputBeef`, :1725-1726). So the door's own
+/// signing is processed, where it was refused for want of an inputBEEF,
+/// and the stored copy is untrimmed: a source named in `knownTxids` keeps
+/// its bytes.
+#[tokio::test]
+async fn create_txid_only_signs_and_stores_the_untrimmed_assembly() {
+    // The immediate post is the wallet's, built from the door's response
+    // (`wallet.rs`), outside the door: the stored and delayed paths here.
+    for (no_send, delayed) in [(true, false), (false, true)] {
+        let scene = named_input_scene().await;
+        let mut args = payment(1_000);
+        let options = args.options.as_mut().unwrap();
+        options.no_send = Some(no_send);
+        options.accept_delayed_broadcast = Some(delayed);
+        options.return_txid_only = Some(true);
+        let source = hex::decode(&scene.input.source_txid).unwrap();
+        options.known_txids = Some(vec![source.try_into().unwrap()]);
+        let script = script_for_create_action(&scene);
+        args.inputs = Some(vec![scene.caller_input(
+            Some(script),
+            None,
+            "caller unlocks an owned output",
+        )]);
+        let made = scene
+            .wallet
+            .create_action(args, Some(ORIGINATOR))
+            .await
+            .unwrap();
+        let txid = hex::encode(made.txid.unwrap());
+        assert_eq!(posts(&scene), 0, "stored or delayed, nothing posted");
+        let stored = stored_input_beef(&scene, &txid).await;
+        let beef = Beef::from_binary(&stored.expect("the input BEEF is stored")).unwrap();
+        let entry = beef.find_txid(&scene.input.source_txid).unwrap();
+        assert!(!entry.is_txid_only(), "the stored copy is untrimmed");
+    }
+}
+
+/// The same action deferred: `signAction`'s processAction reads the stored
+/// input BEEF and signs, where it was refused with the "no inputBEEF" text.
+#[tokio::test]
+async fn sign_action_signs_a_txid_only_action() {
+    let scene = named_input_scene().await;
+    let mut args = payment(1_000);
+    let options = args.options.as_mut().unwrap();
+    options.sign_and_process = Some(false);
+    options.return_txid_only = Some(true);
+    args.inputs = Some(vec![scene.caller_input(
+        None,
+        Some(110),
+        "caller unlocks an owned output",
+    )]);
+    let made = scene.wallet.create_action(args, Some(ORIGINATOR)).await;
+    let signable = made.unwrap().signable_transaction.unwrap();
+    let script = caller_script(&scene, &signable);
+    let reference = bsv_rs::primitives::to_base64(&signable.reference);
+    let signed = complete(&scene, signable, Some(script)).await;
+    let (status, txid, _) = stored_action(&scene, &reference).await;
+    assert_eq!((status.as_str(), txid), ("nosend", Some(signed.id())));
+}
+
+/// The door's own signing under `returnTXIDOnly` is judged on the stored
+/// assembly as under the other options: a fork-ID-less input is refused
+/// with nothing written and nothing posted, the caller's inputBEEF absent.
+#[tokio::test]
+async fn create_txid_only_judges_its_own_input_on_the_assembly() {
+    let scene = named_input_scene().await;
+    let before = store_snapshot(&scene.wallet).await;
+    let mut args = payment(1_000);
+    args.options.as_mut().unwrap().return_txid_only = Some(true);
+    let bad = without_fork_id(script_for_create_action(&scene));
+    args.inputs = Some(vec![scene.caller_input(
+        Some(bad),
+        None,
+        "caller unlocks an owned output",
+    )]);
+    let result = scene.wallet.create_action(args, Some(ORIGINATOR)).await;
+    eprintln!("TxidOnly, store: {}", assert_spend_refused(result));
+    assert_eq!(
+        store_snapshot(&scene.wallet).await,
+        before,
+        "nothing stored"
+    );
+    assert_eq!(posts(&scene), 0, "nothing posted");
+}
