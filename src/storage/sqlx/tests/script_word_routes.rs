@@ -286,8 +286,12 @@ async fn process_post_leaves_the_posted_actions_inputs_to_the_node() {
 
 // processAction: a new signed transaction's post
 
-/// A tracker that answers roots and height and supplies no mining tip.
-struct NoTip(MockChainTracker);
+/// A tracker that answers roots and height and supplies no mining tip, or
+/// with `fault` one whose tip read faults.
+struct NoTip {
+    tracker: MockChainTracker,
+    fault: bool,
+}
 
 #[async_trait::async_trait]
 impl ChainTracker for NoTip {
@@ -296,31 +300,63 @@ impl ChainTracker for NoTip {
         root: &str,
         height: u32,
     ) -> Result<bool, ChainTrackerError> {
-        self.0.is_valid_root_for_height(root, height).await
+        self.tracker.is_valid_root_for_height(root, height).await
     }
 
     async fn current_height(&self) -> Result<u32, ChainTrackerError> {
-        self.0.current_height().await
+        self.tracker.current_height().await
+    }
+
+    async fn mining_tip(
+        &self,
+    ) -> Result<Option<bsv_rs::transaction::beef_stream::ChainTip>, ChainTrackerError> {
+        if self.fault {
+            return Err(ChainTrackerError::NetworkError("tip unavailable".into()));
+        }
+        Ok(None)
+    }
+}
+
+/// How the fixture's tracker answers the mining tip.
+#[derive(Clone, Copy, Debug)]
+enum Tip {
+    /// The tip six blocks past the grandparent's proof.
+    Present,
+    /// No mining tip.
+    Missing,
+    /// The tip read faults.
+    Fault,
+}
+
+impl Tip {
+    fn tracker(self, tracker: MockChainTracker) -> Arc<dyn ChainTracker> {
+        match self {
+            Tip::Present => Arc::new(tracker),
+            Tip::Missing => Arc::new(NoTip {
+                tracker,
+                fault: false,
+            }),
+            Tip::Fault => Arc::new(NoTip {
+                tracker,
+                fault: true,
+            }),
+        }
     }
 }
 
 /// An unsigned action whose stored input BEEF carries the parent unproven,
 /// signed as a child spending the parent's coin and processed for a post,
-/// queued with `delayed`; without `tip` the tracker supplies no mining tip.
-/// The signed child is returned with the call's answer.
+/// queued with `delayed`, the tracker answering the tip as `tip` says. The
+/// signed child is returned with the call's answer.
 async fn sign(
     bad: Bad,
     delayed: bool,
-    tip: bool,
+    tip: Tip,
 ) -> (StorageSqlx, Transaction, crate::Result<String>) {
     let (storage, user_id) = store().await;
     let (_, mut beef, tracker, child) = posted(bad);
     storage.set_services(Arc::new(MockWalletServices::new()));
-    if tip {
-        storage.set_chain_tracker(Arc::new(tracker)).await;
-    } else {
-        storage.set_chain_tracker(Arc::new(NoTip(tracker))).await;
-    }
+    storage.set_chain_tracker(tip.tracker(tracker)).await;
     let args = StorageProcessActionArgs {
         is_new_tx: true,
         is_send_with: false,
@@ -370,7 +406,7 @@ async fn signed_rows(storage: &StorageSqlx) -> (String, i64) {
 /// process route judges it no second time: signed and sent.
 #[tokio::test]
 async fn process_new_tx_accepts_a_stored_unproven_parent_without_forkid() {
-    let (storage, _, processed) = sign(Bad::Parent, false, true).await;
+    let (storage, _, processed) = sign(Bad::Parent, false, Tip::Present).await;
     assert_eq!(processed.unwrap(), "sending");
     assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
@@ -378,7 +414,7 @@ async fn process_new_tx_accepts_a_stored_unproven_parent_without_forkid() {
 /// The same on the queued path.
 #[tokio::test]
 async fn process_new_tx_delayed_accepts_a_stored_unproven_parent_without_forkid() {
-    let (storage, _, processed) = sign(Bad::Parent, true, true).await;
+    let (storage, _, processed) = sign(Bad::Parent, true, Tip::Present).await;
     assert_eq!(processed.unwrap(), "sending");
     assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
@@ -392,23 +428,10 @@ async fn process_new_tx_delayed_accepts_a_stored_unproven_parent_without_forkid(
 #[tokio::test]
 async fn process_new_tx_refuses_its_own_input_without_forkid() {
     for delayed in [false, true] {
-        let (storage, child, processed) = sign(Bad::Own, delayed, true).await;
+        let (storage, child, processed) = sign(Bad::Own, delayed, Tip::Present).await;
         assert_forkid_refusal(processed.unwrap_err(), &child);
         assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
     }
-}
-
-/// The own transaction's word needs the tip (#450): a tracker with no
-/// mining tip holds the new transaction with `ServiceError`, as at
-/// internalize, nothing written. The stored parent is still not judged.
-#[tokio::test]
-async fn process_new_tx_holds_without_a_mining_tip() {
-    let (storage, _, processed) = sign(Bad::Parent, false, false).await;
-    assert!(
-        matches!(processed, Err(Error::ServiceError(ref text)) if text.contains("no mining tip")),
-        "{processed:?}"
-    );
-    assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
 }
 
 // processAction: a new signed transaction's call joining stored members
@@ -515,7 +538,9 @@ async fn post_unjudged(delayed: bool) -> (Arc<MockWalletServices>, crate::Result
     let (source, mut beef) = proven(&mut tracker);
     let services = Arc::new(MockWalletServices::new());
     storage.set_services(services.clone());
-    storage.set_chain_tracker(Arc::new(NoTip(tracker))).await;
+    storage
+        .set_chain_tracker(Tip::Missing.tracker(tracker))
+        .await;
     let subject = spend(&source.id(), "", 4_000, "51");
     let txid = stored_nosend(&storage, user_id, &subject, &mut beef).await;
     (services, send_with(&storage, user_id, txid, delayed).await)
@@ -707,3 +732,6 @@ async fn create_txid_only_refuses_missing_caller_ancestry() {
         ));
     }
 }
+
+#[path = "no_tip_word.rs"]
+mod no_tip_word;

@@ -165,47 +165,6 @@ async fn sign_action_skips_an_input_without_source_bytes() {
     assert_eq!(stored_action(&scene, &reference).await.1, Some(signed.id()));
 }
 
-/// A tracker that answers roots and height and supplies no mining tip.
-struct NoTip;
-
-#[async_trait::async_trait]
-impl bsv_rs::transaction::ChainTracker for NoTip {
-    async fn is_valid_root_for_height(
-        &self,
-        _root: &str,
-        _height: u32,
-    ) -> Result<bool, bsv_rs::transaction::ChainTrackerError> {
-        Ok(true)
-    }
-
-    async fn current_height(&self) -> Result<u32, bsv_rs::transaction::ChainTrackerError> {
-        Ok(880_000)
-    }
-}
-
-/// The word's tip cannot be read: signAction holds with the service fault,
-/// nothing written or posted, and the action is not aborted, so the same
-/// call succeeds once the header service answers.
-#[tokio::test]
-async fn sign_action_holds_without_a_mining_tip_and_keeps_the_action() {
-    let scene = named_input_scene().await;
-    let signable = defer_named(&scene, 1_000, None).await;
-    let kept = Kept::read(&scene, &signable).await;
-    let storage = scene.wallet.storage();
-    storage.set_chain_tracker(std::sync::Arc::new(NoTip)).await;
-    let script = caller_script(&scene, &signable);
-    let spends = spend_map(0, script.clone(), None);
-    match sign_named(&scene, kept.reference.clone(), spends).await {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
-            message,
-            "Service error: ChainTracker verification failed: the header service supplied no mining tip"
-        ),
-        other => panic!("expected the header hold, got {other:?}"),
-    }
-    storage.clear_chain_tracker().await;
-    kept.then_signs(&scene, signable, script).await;
-}
-
 /// The scene's source transaction moved out of the store into a caller's
 /// inputBEEF, proven at a post-Genesis height: the only bytes of it the
 /// wallet sees are the ones the caller supplied (the cold review's
@@ -438,4 +397,100 @@ async fn create_txid_only_judges_its_own_input_on_the_assembly() {
         "nothing stored"
     );
     assert_eq!(posts(&scene), 0, "nothing posted");
+/// A tracker that answers roots and height and supplies no mining tip, or
+/// with `fault` one whose tip read faults.
+#[derive(Clone, Copy, Debug)]
+struct NoTip {
+    fault: bool,
+}
+
+#[async_trait::async_trait]
+impl bsv_rs::transaction::ChainTracker for NoTip {
+    async fn is_valid_root_for_height(
+        &self,
+        _root: &str,
+        _height: u32,
+    ) -> Result<bool, bsv_rs::transaction::ChainTrackerError> {
+        Ok(true)
+    }
+
+    async fn current_height(&self) -> Result<u32, bsv_rs::transaction::ChainTrackerError> {
+        Ok(880_000)
+    }
+
+    async fn mining_tip(
+        &self,
+    ) -> Result<
+        Option<bsv_rs::transaction::beef_stream::ChainTip>,
+        bsv_rs::transaction::ChainTrackerError,
+    > {
+        if self.fault {
+            return Err(bsv_rs::transaction::ChainTrackerError::NetworkError(
+                "tip unavailable".into(),
+            ));
+        }
+        Ok(None)
+    }
+}
+
+const NO_TIPS: [NoTip; 2] = [NoTip { fault: false }, NoTip { fault: true }];
+
+/// #464, the keeper's reading of 2026-10-29: bsv-rs's constants name no
+/// activation height still ahead, so with no mining tip (or a tip fault)
+/// createAction judges its own transaction under the latest era's
+/// transaction-level word (post-Chronicle), the supplied source's UTXO bits
+/// from its proof height (Genesis + 100), where it held with `Service error:
+/// ChainTracker verification failed: the header service supplied no mining
+/// tip`: the fork-ID-less input refused before the post with bsv-rs's text,
+/// the valid one created and posted.
+#[tokio::test]
+async fn create_judges_its_own_input_at_the_latest_era_without_a_tip() {
+    for no_tip in NO_TIPS {
+        for bad in [true, false] {
+            let scene = named_input_scene().await;
+            let input_beef = supply_source(&scene).await;
+            let storage = scene.wallet.storage();
+            storage.set_chain_tracker(std::sync::Arc::new(no_tip)).await;
+            scene.wallet.services().reset_history();
+            let before = store_snapshot(&scene.wallet).await;
+            let mut script = script_for_create_action(&scene);
+            if bad {
+                script = without_fork_id(script);
+            }
+            let args = supplied_args(&scene, input_beef, Some(script), Respond::Broadcast, &[]);
+            let result = scene.wallet.create_action(args, Some(ORIGINATOR)).await;
+            if bad {
+                eprintln!("{no_tip:?}: {}", assert_spend_refused(result));
+                let after = store_snapshot(&scene.wallet).await;
+                assert_eq!(after, before, "{no_tip:?}: nothing stored");
+                assert_eq!(posts(&scene), 0, "{no_tip:?}: nothing posted");
+            } else {
+                assert!(result.unwrap().txid.is_some(), "{no_tip:?}");
+                assert_eq!(posts(&scene), 1, "{no_tip:?}: posted");
+            }
+        }
+    }
+}
+
+/// The same at signAction, where the action was kept for a retry: the
+/// fork-ID-less input refused with the action kept, the valid one signed,
+/// with no mining tip throughout.
+#[tokio::test]
+async fn sign_action_judges_its_own_input_at_the_latest_era_without_a_tip() {
+    for no_tip in NO_TIPS {
+        let scene = named_input_scene().await;
+        let input_beef = supply_source(&scene).await;
+        let mut args = supplied_args(&scene, input_beef, None, Respond::KnownTxid, &[]);
+        args.options.as_mut().unwrap().sign_and_process = Some(false);
+        let made = scene.wallet.create_action(args, Some(ORIGINATOR)).await;
+        let signable = made.unwrap().signable_transaction.unwrap();
+        let kept = Kept::read(&scene, &signable).await;
+        let storage = scene.wallet.storage();
+        storage.set_chain_tracker(std::sync::Arc::new(no_tip)).await;
+        let bad = without_fork_id(caller_script(&scene, &signable));
+        let result = sign_named(&scene, kept.reference.clone(), spend_map(0, bad, None)).await;
+        eprintln!("{no_tip:?}: {}", assert_spend_refused(result));
+        let script = caller_script(&scene, &signable);
+        kept.then_signs(&scene, signable, script).await;
+    }
 }

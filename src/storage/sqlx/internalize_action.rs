@@ -4006,8 +4006,14 @@ mod tests {
                 wallet_payment_args(bytes, "unavailable headers"),
             )
             .await;
-            if fault < 3 {
-                assert!(matches!(result, Err(Error::ServiceError(_))), "{result:?}");
+            // #464: a missing tip or a tip fault (modes 0, 1, 3 to 5) no
+            // longer holds by itself; the call holds at the root read, which
+            // faults in every mode, typed in modes 6 to 8.
+            if fault < 6 {
+                assert!(
+                    matches!(result, Err(Error::ServiceError(ref text)) if text.ends_with("root unavailable")),
+                    "{result:?}"
+                );
             } else {
                 let bsv_rs::transaction::ChainTrackerError::TransportFault {
                     fault: expected_fault,
