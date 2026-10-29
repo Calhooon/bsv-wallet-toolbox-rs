@@ -6,12 +6,12 @@
   "measured_at": "2026-10-29",
   "metrics": {
     "files_over_800": 33,
-    "max_file_lines": 7230,
+    "max_file_lines": 7144,
     "unwraps_outside_tests": 61,
     "undocumented_public_items": 308
   },
   "clippy_pedantic": {
-    "total": 3243,
+    "total": 3242,
     "by_lint": {
       "clippy::assigning_clones": 4,
       "clippy::bool_to_int_with_if": 6,
@@ -43,7 +43,7 @@
       "clippy::missing_errors_doc": 200,
       "clippy::missing_fields_in_debug": 1,
       "clippy::missing_panics_doc": 8,
-      "clippy::must_use_candidate": 169,
+      "clippy::must_use_candidate": 168,
       "clippy::naive_bytecount": 1,
       "clippy::needless_continue": 3,
       "clippy::needless_pass_by_value": 8,
@@ -96,11 +96,11 @@
   "files_over_800": {
     "limit": 800,
     "count": 33,
-    "src_files": 232,
-    "src_lines": 121177,
-    "max_lines": 7230,
+    "src_files": 233,
+    "src_lines": 122198,
+    "max_lines": 7144,
     "files": {
-      "src/wallet/wallet.rs": 7230,
+      "src/wallet/wallet.rs": 7144,
       "src/services/services.rs": 4609,
       "src/storage/sqlx/internalize_action.rs": 4175,
       "src/storage/sqlx/process_action.rs": 3650,
@@ -137,7 +137,7 @@
   },
   "functions_over_60": {
     "limit": 60,
-    "count": 141,
+    "count": 140,
     "functions": [
       "src/managers/permissions_manager.rs::check_permission_with_token 69",
       "src/managers/permissions_manager.rs::ensure_basket_access 70",
@@ -227,7 +227,7 @@
       "src/storage/sqlx/storage_sqlx/maintenance.rs::purge_data_impl 78",
       "src/storage/sqlx/storage_sqlx/maintenance.rs::review_status_for_user 95",
       "src/storage/sqlx/storage_sqlx/maintenance.rs::review_status_impl 221",
-      "src/storage/sqlx/storage_sqlx/mod.rs::connect_with_options 84",
+      "src/storage/sqlx/storage_sqlx/mod.rs::connect_with_options 85",
       "src/storage/sqlx/storage_sqlx/output_selection.rs::allocate_change_input 117",
       "src/storage/sqlx/storage_sqlx/outputs.rs::find_outputs_internal 107",
       "src/storage/sqlx/storage_sqlx/proof_requests.rs::synchronize_own_reqs 567",
@@ -276,7 +276,6 @@
       "src/wallet/wallet.rs::build_unsigned_transaction 197",
       "src/wallet/wallet.rs::create_action_at 683",
       "src/wallet/wallet.rs::create_keyring_for_verifier 127",
-      "src/wallet/wallet.rs::discover_by_identity_key 74",
       "src/wallet/wallet.rs::internalize_action 95",
       "src/wallet/wallet.rs::prove_certificate 155",
       "src/wallet/wallet.rs::sign_action 394"
@@ -319,7 +318,7 @@
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
     "count": 6665,
-    "windows": 92615,
+    "windows": 93604,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:324 (38 lines)",
