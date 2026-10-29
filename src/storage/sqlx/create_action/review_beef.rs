@@ -70,9 +70,11 @@ impl PreparedReviews {
 // ends. StorageProvider.ts:1288-1338 merges raw bytes and a proof, or the
 // stored inputBEEF and each missing ancestor. This diagnostic read needs no
 // tracker verdict and writes nothing. Missing stored data answers a BEEF
-// containing the competing txid alone: the reference's INVALID_PARAMETER
-// fallback, reached there only after services also miss. Create asks no
-// provider, so a competitor neither store holds answers txid-only at once.
+// containing the competing txid alone. The reference reaches the same for a
+// missing ancestor at once (getValidBeefForKnownTxid throws
+// INVALID_PARAMETER, StorageProvider.ts:1239); for an unstored competitor it
+// asks services before that fallback. Create asks no provider, so both
+// answer txid-only here.
 async fn build_competing_beef(conn: &mut SqliteConnection, root: &str) -> Result<Vec<u8>> {
     let mut beef = Beef::new();
     let mut pending = vec![root.to_owned()];
