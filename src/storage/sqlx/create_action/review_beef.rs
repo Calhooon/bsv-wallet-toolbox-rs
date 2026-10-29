@@ -5,7 +5,7 @@ use super::beef_storage::parse_input_txids;
 use super::StorageSqlx;
 use crate::error::Result;
 use crate::storage::sqlx::storage_sqlx::RAW_TX_REQ_STATUSES;
-use bsv_rs::transaction::{Beef, MerklePath, Transaction};
+use bsv_rs::transaction::{Beef, BeefTx, MerklePath, Transaction};
 use bsv_rs::wallet::{CreateActionArgs, ReviewActionsRefusal};
 use sqlx::{Row, SqliteConnection};
 use std::collections::{hash_map::Entry, HashMap, HashSet};
@@ -81,7 +81,7 @@ async fn build_competing_beef(conn: &mut SqliteConnection, root: &str) -> Result
         if !visited.insert(txid.clone()) {
             continue;
         }
-        if beef.find_txid(&txid).is_none_or(|tx| tx.is_txid_only()) {
+        if beef.find_txid(&txid).is_none_or(BeefTx::is_txid_only) {
             let Some(fragment) = stored_fragment(conn, &txid).await? else {
                 return Ok(txid_only(root));
             };
