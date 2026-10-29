@@ -618,7 +618,8 @@ impl Door<'_> {
             let refusal = match built {
                 Ok(assembled) => {
                     let caller_beef = self.args.input_beef.as_deref();
-                    judge_caller_beef(assembled.as_deref(), caller_beef, &self.word).await?;
+                    judge_caller_beef(&mut conn, assembled.as_deref(), caller_beef, &self.word)
+                        .await?;
                     return Ok(reserved.mine().to_vec());
                 }
                 Err(refusal) => refusal,
