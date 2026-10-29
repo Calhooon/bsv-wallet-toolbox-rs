@@ -538,10 +538,56 @@ pass's; no door.
 | Route | Judged before #426 | The reference (ts-stack@edf6e03) | The verdict |
 |---|---|---|---|
 | create, the caller's `inputBEEF` | structure (`verify_valid(true)`) and roots (`confirm_caller_beef_roots`, `build_input_beef`); no interpreter | `createAction.ts:909` `beef.verify(chainTracker, true)`: `Beef.ts:1020-1034`, `verifyValid` and `isValidRootForHeight`, no `Spend` | judged once: the action stores the caller's unproven transactions in its input BEEF and broadcasts them. The pre-check (no lock held) builds the BEEF without trimming `knownTxids` (its bytes are judged, never returned), then `judge_caller_beef` (`CallerWord`) judges the set: each unproven raw transaction the caller's BEEF brings that the assembly does not prove and the store does not hold (`store_holds`: a row in `transactions`, `proven_tx_reqs` or `proven_txs`, read on the pre-check's reader). An empty set asks no word and no tip. The write-locked step assembles the same caller bytes without the word. The set is independent of the returned format (#454): with `returnTXIDOnly` the pre-check assembles nothing to return, so when the caller's BEEF brings an unproven raw transaction the store does not hold it assembles the inputs for the word alone (`judging_assembly`, `create_action/beef.rs`: with the change coins, else the caller's inputs alone when a change coin's stored chain has a gap) and judges the same set with the same texts (`create_refuses_a_caller_unproven_parent_without_forkid`, `create_txid_only_refuses_a_caller_unproven_parent_without_forkid`, `create_accepts_a_caller_parent_the_store_holds`) |
-| process, the stored post-BEEF (`sendWith`, `verify_stored_post_beef`), a new signed transaction's post and the `sendWith` members its call joins, sent now or queued | structure and roots (`verify_beef_merkle_proofs`, `Strict`) | `processAction.ts:257` `r.beef.verify(chainTracker)`, no `Spend` | not judged: every transaction a post carries is the store's (the posted roots are the wallet's own, their stored ancestry was judged at create or internalize), so no word and no mining tip is asked; the structure and roots stay (`process_post_accepts_a_stored_unproven_parent_without_forkid`, `process_new_tx_accepts_a_stored_unproven_parent_without_forkid`, `process_new_tx_accepts_a_joined_members_stored_parent_without_forkid`, their queued twins, `process_new_tx_asks_no_mining_tip_for_a_stored_chain`) |
-| the wallet's own signed transaction (`signer.rs`; the create door's `signAndProcess`, `signAction`'s `process_action_internal`, a `sendWith` post's posted transactions) | `process_action_writes` checks the txid and the requested outputs' scripts; the signer runs no interpreter on what it signed | `signer/methods/createAction.ts:116-121` `verifyUnlockScripts` before `processAction` (:138); `signAction.ts:86-91` after it (:76); `verifyUnlockScripts.ts:316-319,329-331` skips an input whose source is absent and runs the rest under `{ consensus: true, utxoHeight }` | not the posting routes': its door is its signing, #450's (the keeper's corrected reading, 2026-10-29 04:0xZ); until that lands the node judges it at broadcast, the broadcaster's answer reaching the host (`process_new_tx_leaves_its_own_inputs_to_the_node`, `process_post_leaves_the_posted_actions_inputs_to_the_node`) |
+| process, the stored post-BEEF (`sendWith`, `verify_stored_post_beef`), a new signed transaction's post and the `sendWith` members its call joins, sent now or queued | structure and roots (`verify_beef_merkle_proofs`, `Strict`) | `processAction.ts:257` `r.beef.verify(chainTracker)`, no `Spend` | not judged: every transaction a post carries is the store's (the posted roots are the wallet's own, their stored ancestry was judged at create or internalize), so no word is asked of them; the structure and roots stay (`process_post_accepts_a_stored_unproven_parent_without_forkid`, `process_new_tx_accepts_a_stored_unproven_parent_without_forkid`, `process_new_tx_accepts_a_joined_members_stored_parent_without_forkid`, their queued twins). A new signed transaction's own inputs are its signing's, the row below |
+| the wallet's own signed transaction (the create door's `signAndProcess`, `signAction`'s `process_action_internal`) | `process_action_writes` checks the txid and the requested outputs' scripts; the signer ran no interpreter on what it signed | `signer/methods/createAction.ts:116-121` `verifyUnlockScripts` before `processAction` (:138); `signAction.ts:86-91` after it (:76); `verifyUnlockScripts.ts:316-321,329-331` skips an input whose source is absent and runs the rest under `{ consensus: true, utxoHeight }` | judged at its signing (#450, the section below): each input whose source bytes are at hand, under the two words; a stored action's later `sendWith` post judges it no second time (`process_post_leaves_the_posted_actions_inputs_to_the_node`) |
 | proof recording (the monitor's ingest, review, reorg) | proofs only | proofs only | not re-judged |
 
+
+### The wallet's own signed transaction (#450)
+
+Under the one-door rule the door of the wallet's own transaction is its
+signing. The reference judges it there (ts-stack@edf6e03,
+`signer/methods/`): `createAction.ts:120` calls
+`verifyUnlockScripts(r.txid!, beef, wallet.scriptVerifier)` before
+`processAction` at :138, and `signAction.ts:90` calls it after
+`processAction` at :76. `verifyUnlockScripts.ts:316-321` skips an input
+whose source transaction is absent; :329-331 judges the rest with
+`{ consensus: true, utxoHeight }`, the source's merkle path height when it
+has one. `wallet.scriptVerifier` is an optional host verifier
+(`Wallet.ts:308, 366, 422`); the port has none (the seam stays
+`pub(crate)`; an additive `WalletOptions` field is the owner's word).
+
+The port judges at the same two places through the one verifier,
+`beef_verification::verify_own` (`beef_verification/own_word.rs`). It reads
+the signed transaction with bsv-rs's streaming reader and judges each
+input with `live_word::judge_input`, the per-input judge internalize's word
+pass uses, under `input_eras` and `input_word`: the spend's era at tip+1,
+the coin's UTXO bits from its proof height, tip+1's for a coin without one.
+The sources (`create_action/own_word.rs`, `judge_own_tx`) are the action's
+input BEEF, else the store's bytes (`get_tx_with_proof`); a source is read
+for its one output, so a mined coinbase without its BUMP still supplies the
+coin. An input with neither is skipped, as the reference skips it, and so
+is an input `input_eras` places in no era (a mainnet coin mined before
+Genesis, a tip or network the interim policy does not read): such an input
+is left to the node, as before #450, until bsv-rs #440's hook reads it.
+Only scripts are judged: no mining, finality or value rule, as the
+reference runs none there. A refusal is `Error::SpendRefused`, its offset
+within the signed transaction, bsv-rs's text, class `InvalidParameter`.
+
+| Place | The port | Order |
+|---|---|---|
+| create (`signAndProcess`) | the tip is read before the lock (`own_word_tip`: the caller's tracker, else the storage's, else the services' header service; none configured, no word); after the door's signer and before `process_action_writes`, inside the write transaction (local CPU and reads on its connection, nothing awaited on a provider) | the reference's: before processAction and the post; a refusal rolls the step back, nothing written, nothing posted (`create_refuses_its_own_fork_id_less_input_before_the_post`) |
+| `signAction` (`process_action_internal`, `is_new_tx`) | before the writer: the tip, the action's stored input BEEF (an `unsigned` or `unprocessed` action this call finds; otherwise processAction's own refusal answers), the store | the reference's is after processAction, so after its post; the port's processAction writes in one transaction and the wallet posts after it, so the refusal precedes both: nothing written, nothing posted, the action still `unsigned` and its inputs reserved, and the wallet answers it without aborting, the caller free to sign again (`process_new_tx_refuses_its_own_input_without_forkid`, `sign_action_refuses_its_own_fork_id_less_input`; `docs/ARCHITECTURE.md` D18) |
+
+The word is the node's mempool word (`ScriptFlags::standard`, the #422
+rule), where the reference's is the consensus word: a transaction the
+standard word refuses and consensus admits (an unclean stack, a
+non-minimal push) is refused at signing, where the broadcaster's policy
+refused it before. A tracker
+with no mining tip, or a tracker fault, holds the signing with
+`ServiceError`, as at internalize (`process_new_tx_holds_without_a_mining_tip`).
+Witnesses: `own_word_tests.rs` beside each place, the seam's in
+`beef_verification/own_word_tests.rs`.
 
 Two witnesses in `script_pin_tests/reader_witnesses.rs` (#396) pin bsv-rs
 0.9.0-beta.2's reader changes at the full door (`internalize_action_internal`,
