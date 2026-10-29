@@ -23,7 +23,8 @@ use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::{LockingScript, ProtocolEra, UnlockingScript};
 use bsv_rs::transaction::beef_stream::SpendRefusal;
 use bsv_rs::transaction::{
-    Beef, MerklePath, MockChainTracker, Transaction, TransactionInput, TransactionOutput,
+    Beef, ChainTracker, ChainTrackerError, MerklePath, MockChainTracker, Transaction,
+    TransactionInput, TransactionOutput,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -120,6 +121,7 @@ fn assert_forkid_refusal(error: Error, parent: &Transaction) {
     assert_eq!((txid, message.as_str()), (&parent.id(), FORKID));
     eprintln!("refused: {error}");
     let refusal = bsv_rs::Error::from(error);
+    eprintln!("host: {refusal}");
     assert!(
         matches!(
             refusal,
@@ -257,14 +259,34 @@ async fn process_post_leaves_the_posted_actions_inputs_to_the_node() {
 
 // processAction: a new signed transaction's post
 
+/// A tracker that answers roots and height and supplies no mining tip.
+struct NoTip(MockChainTracker);
+
+#[async_trait::async_trait]
+impl ChainTracker for NoTip {
+    async fn is_valid_root_for_height(
+        &self,
+        root: &str,
+        height: u32,
+    ) -> Result<bool, ChainTrackerError> {
+        self.0.is_valid_root_for_height(root, height).await
+    }
+
+    async fn current_height(&self) -> Result<u32, ChainTrackerError> {
+        self.0.current_height().await
+    }
+}
+
 /// An unsigned action whose stored input BEEF carries the parent unproven,
 /// signed as a child spending the parent's coin and processed for a post,
 /// queued with `delayed`. With `bad_own` the parent's coin is P2PK and the
-/// child signs it without `SIGHASH_FORKID`.
+/// child signs it without `SIGHASH_FORKID`; without `tip` the tracker
+/// supplies no mining tip.
 async fn sign(
     bad_parent: bool,
     bad_own: bool,
     delayed: bool,
+    tip: bool,
 ) -> (StorageSqlx, Transaction, crate::Result<String>) {
     let (storage, user_id) = store().await;
     let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
@@ -280,7 +302,11 @@ async fn sign(
         sign_without_forkid(&mut child, coin, 9_000, &key);
     }
     storage.set_services(Arc::new(MockWalletServices::new()));
-    storage.set_chain_tracker(Arc::new(tracker)).await;
+    if tip {
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+    } else {
+        storage.set_chain_tracker(Arc::new(NoTip(tracker))).await;
+    }
     let now = chrono::Utc::now();
     sqlx::query(
         "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, \
@@ -325,7 +351,7 @@ async fn signed_rows(storage: &StorageSqlx) -> (String, i64) {
 /// writer is taken: the action stays unsigned and no request is written.
 #[tokio::test]
 async fn process_new_tx_refuses_an_unproven_parent_without_forkid() {
-    let (storage, parent, processed) = sign(true, false, false).await;
+    let (storage, parent, processed) = sign(true, false, false, true).await;
     assert_forkid_refusal(processed.unwrap_err(), &parent);
     assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
 }
@@ -334,7 +360,7 @@ async fn process_new_tx_refuses_an_unproven_parent_without_forkid() {
 /// before anything is queued.
 #[tokio::test]
 async fn process_new_tx_delayed_refuses_an_unproven_parent_without_forkid() {
-    let (storage, parent, processed) = sign(true, false, true).await;
+    let (storage, parent, processed) = sign(true, false, true, true).await;
     assert_forkid_refusal(processed.unwrap_err(), &parent);
     assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
 }
@@ -345,9 +371,27 @@ async fn process_new_tx_delayed_refuses_an_unproven_parent_without_forkid() {
 /// broadcast, and the broadcaster's answer is the host's refusal.
 #[tokio::test]
 async fn process_new_tx_leaves_its_own_inputs_to_the_node() {
-    let (storage, _, processed) = sign(false, true, false).await;
+    let (storage, _, processed) = sign(false, true, false, true).await;
     assert_eq!(processed.unwrap(), "sending");
     assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
+}
+
+/// A tracker with no mining tip holds the post when a transaction is there
+/// to judge; the host meets the `WalletError` text with its `Service error: `
+/// prefix, as the CHANGELOG quotes it.
+#[tokio::test]
+async fn process_new_tx_holds_without_a_mining_tip() {
+    let (storage, _, processed) = sign(true, false, false, false).await;
+    let refusal = bsv_rs::Error::from(processed.unwrap_err());
+    eprintln!("host: {refusal:?}");
+    let bsv_rs::Error::WalletError(message) = &refusal else {
+        panic!("expected WalletError, got {refusal:?}");
+    };
+    assert_eq!(
+        message,
+        "Service error: ChainTracker verification failed: the header service supplied no mining tip"
+    );
+    assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
 }
 
 // createAction: the caller's inputBEEF
