@@ -191,7 +191,12 @@ trusted keys in the overlay query (`:1129-1141`) and runs
 `MapVerifiableCertificatesWithTrust`
 (`internal/mapping/mapping_verifiable_certificates_with_trust.go:25-100`),
 the TS transform with the description passed through unbounded (`:54`) and
-`trust` cast to `uint8` (`:56`). The Go defaults' descriptions are
+`trust` cast to `uint8` (`:56`). One material difference from TS: Go's
+mapper adds `group.TotalTrust += int(certifierInfo.Trust)` once per
+certificate (the same file), so a certifier with several certificates counts
+each time, where the TS transform counts each trusted certifier once,
+deduplicated, within `identityUtils.ts:313-384`; the port follows TS. The Go
+defaults' descriptions are
 `Registry for protocols, baskets, and certificate types` and `Certifies
 social media handles, phone numbers and emails` (`:16`, `:23`), 54 and 56
 bytes. The port's settings manager is Go's, text for text (section 2).
@@ -295,7 +300,13 @@ transform at `certifier_info`'s place. Why:
   in-memory read, so no cache is needed; Go's two-minute cache is not ported.
 - (a)'s token matters when a TS wallet and this port share one store, which
   no host does today. It adds later without moving (b2)'s surface: a second
-  constructor of the manager over a store, the same handle in the options.
+  constructor of the manager over a store, the same handle in the options,
+  with one cost named now: the manager's `new`, `get` and `set` are
+  infallible in memory (`settings_manager.rs:183,192,197`) and a
+  store-backed form fails on a read or a spend, so question 7 asks for
+  `Result` forms of all three now, and the trust bounds of question 6 are
+  checked where settings enter (`new`'s defaults, `set`) and again on a
+  stored read.
 - The default descriptions move to the TS reference's texts in the same
   lane (a value of a `pub static`, not a shape), so the defaults pass
   BRC-100's bound without the cut; the cut still guards a host's text.
@@ -310,8 +321,13 @@ None, currency: None, permission_mode: None } }`, wraps the manager in an
 leaves the field `None` and gets the chain's defaults. Fixtures 053, 054 and
 137 to 140 re-record with the trusted certifiers' certificates and their
 `certifierInfo`; scenario 06 lists the harness's certifier in its `trust`
-section with a trust at or above the threshold, and its discovery assertions
-turn from "empty" to the issued certificate. The MCP's two discover tools
+section with a trust at or above the threshold. Trust configuration alone
+does not turn both of its discovery assertions: the scenario runs both calls
+behind the proxy wall, and `discover_by_attributes` queries the overlay alone
+(`wallet.rs:2902`), so the identity-key call's local leg answers the issued
+certificate while the attributes call stays empty until the harness gains an
+overlay fixture (a local lookup resolver answering the issued certificate);
+the scenario's assertions narrow to that until then. The MCP's two discover tools
 follow the doors. Under (a) the CLI would also `get`, compare and `set` a
 token per change, and the harness would fund the wallet before its
 discovery step. Under (c) alone the CLI keeps `[]` in its scenario and its
@@ -334,8 +350,10 @@ discovery step. Under (c) alone the CLI keeps `[]` in its scenario and its
 6. `Certifier.trust: u32` and `TrustSettings.trust_level: u32` kept with the
    reference's bounds checked on entry (1 to 10, 1 to 2560), or narrowed (a
    `pub` type change).
-7. `WalletSettingsManager::get` stays infallible in memory, or becomes
-   `Result` now so (a)'s constructor needs no second signature later.
+7. `WalletSettingsManager::new`, `get` and `set` stay infallible in memory,
+   or become `Result` now so (a)'s store-backed form needs no second
+   signature later; the trust bounds checked where settings enter and on a
+   stored read.
 
 ## 7. The witness in this lane
 
