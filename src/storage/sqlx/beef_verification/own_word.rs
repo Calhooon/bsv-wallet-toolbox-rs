@@ -118,8 +118,8 @@ pub(crate) fn verify_own(
 }
 
 /// The per-transaction dispatcher shared by the signing check and live doors.
-/// Unselected inputs keep their interpreter verdict; selected inputs use one
-/// batch call, whose default implementation calls `verify_spend` per item.
+/// Unselected inputs keep their interpreter verdict; selected inputs can be
+/// submitted here or collected into the live door's single verification batch.
 pub(super) struct InputJudgements<'a> {
     txid: Hash32,
     body: &'a TxBody,
@@ -194,36 +194,54 @@ impl<'a> InputJudgements<'a> {
     }
 
     pub(super) fn finish(self) -> Result<()> {
-        let [(spend, _), ..] = self.selected.as_slice() else {
-            return Ok(());
-        };
-        let Some(verifier) = self.verifier else {
-            return Ok(());
-        };
-        let verdicts = verifier
-            .verify_spends_batch(&self.selected)
-            .map_err(|error| {
-                self.refusal(spend.vin, format!("host script verifier failed: {error}"))
-            })?;
-        if verdicts.len() != self.selected.len() {
-            return Err(self.refusal(
-                spend.vin,
-                format!(
-                    "host script verifier returned {} verdicts for {} spends",
-                    verdicts.len(),
-                    self.selected.len()
-                ),
+        verify_selected(self.verifier, &self.selected)
+    }
+
+    pub(super) fn into_selected(self) -> Vec<(SpendRequest, SpendVerificationContext)> {
+        self.selected
+    }
+}
+
+fn host_refusal(spend: &SpendRequest, message: String) -> Error {
+    Error::SpendRefused {
+        offset: spend.body.inputs[spend.vin].at,
+        txid: display_hex(&spend.txid),
+        input: u32::try_from(spend.vin).ok(),
+        why: SpendRefusal::Script(message),
+    }
+}
+
+/// One backend call for all selected inputs of this verification, including
+/// inputs from different transactions in a live BEEF.
+pub(super) fn verify_selected(
+    verifier: Option<&dyn SpendVerifier>,
+    selected: &[(SpendRequest, SpendVerificationContext)],
+) -> Result<()> {
+    let (Some(verifier), [(spend, _), ..]) = (verifier, selected) else {
+        return Ok(());
+    };
+    let verdicts = verifier
+        .verify_spends_batch(selected)
+        .map_err(|error| host_refusal(spend, format!("host script verifier failed: {error}")))?;
+    if verdicts.len() != selected.len() {
+        return Err(host_refusal(
+            spend,
+            format!(
+                "host script verifier returned {} verdicts for {} spends",
+                verdicts.len(),
+                selected.len()
+            ),
+        ));
+    }
+    for ((spend, _), valid) in selected.iter().zip(verdicts) {
+        if !valid {
+            return Err(host_refusal(
+                spend,
+                "host script verifier refused the spend".into(),
             ));
         }
-        for ((spend, _), valid) in self.selected.iter().zip(verdicts) {
-            if !valid {
-                return Err(
-                    self.refusal(spend.vin, "host script verifier refused the spend".into())
-                );
-            }
-        }
-        Ok(())
     }
+    Ok(())
 }
 
 #[cfg(test)]

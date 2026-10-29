@@ -589,7 +589,7 @@ The storage options are shared by every cloned handle. `SpendRequest` carries
 `txid`, `body`, `vin`, `satoshis` and `script`; `SpendVerificationContext` carries
 `word` from `input_word` and `proven_height`. A selected input's host verdict is
 authoritative; false refuses with `host script verifier refused the spend`.
-Selected inputs go through one batch call per transaction; an error or wrong
+Selected inputs go through one batch call per verification; an error or wrong
 verdict count refuses the batch. Unselected inputs and `None` keep the existing
 interpreter. `WalletOptions.script_verifier` has no in-process reader because
 the port's signer check runs here; the host configures the storage option.

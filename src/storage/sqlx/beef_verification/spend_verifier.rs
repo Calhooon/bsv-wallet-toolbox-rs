@@ -58,7 +58,7 @@ pub trait SpendVerifier: Send + Sync {
         true
     }
 
-    /// Verify the selected inputs of a transaction in order. An override must
+    /// Verify the selected inputs in order, possibly across transactions. An override must
     /// return one verdict per item or an error; either failure refuses the batch.
     ///
     /// # Errors

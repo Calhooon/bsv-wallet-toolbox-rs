@@ -341,16 +341,7 @@ async fn host_live_pass_preserves_value_refusals() {
     // Only the proven source and this overspending child belong in the frame.
     beef.txs.pop();
     beef.merge_raw_tx(child.to_binary(), None);
-    let roots: Vec<_> = beef
-        .bumps
-        .iter()
-        .map(|bump| {
-            let root = bsv_rs::primitives::from_hex(&bump.compute_root(None).unwrap()).unwrap();
-            let mut wire: [u8; 32] = root.try_into().unwrap();
-            wire.reverse();
-            (u64::from(bump.block_height), wire)
-        })
-        .collect();
+    let roots = beef_roots(&beef);
     let error = super::super::super::verify_beef_spends_with_verifier(
         &beef.to_binary(),
         &roots,
@@ -367,4 +358,41 @@ async fn host_live_pass_preserves_value_refusals() {
             ..
         }
     ));
+}
+
+fn beef_roots(beef: &Beef) -> Vec<(u64, Hash32)> {
+    beef.bumps
+        .iter()
+        .map(|bump| {
+            let root = bsv_rs::primitives::from_hex(&bump.compute_root(None).unwrap()).unwrap();
+            let mut wire: [u8; 32] = root.try_into().unwrap();
+            wire.reverse();
+            (u64::from(bump.block_height), wire)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn host_live_batch_spans_all_selected_transactions() {
+    let (child, mut beef, tracker) = proven_beef();
+    let grandchild = spend(&child, 0, Some(&[]));
+    beef.merge_raw_tx(grandchild.to_binary(), None);
+    let host = batch(Ok(vec![true, true]));
+    super::super::super::verify_beef_spends_with_verifier(
+        &beef.to_binary(),
+        &beef_roots(&beef),
+        &tracker,
+        "mainnet",
+        Some(&host),
+    )
+    .await
+    .unwrap();
+    let batches = host.batches.lock().unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].len(), 2);
+    assert_eq!(display_hex(&batches[0][0].0.txid), child.id());
+    assert_eq!(display_hex(&batches[0][1].0.txid), grandchild.id());
+    assert_eq!(batches[0][0].1.proven_height, Some(u64::from(GENESIS)));
+    assert_eq!(batches[0][1].1.proven_height, None);
+    eprintln!("live batch: one call for two transactions, both coin contexts retained");
 }
