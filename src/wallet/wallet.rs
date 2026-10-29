@@ -59,6 +59,10 @@ mod rng_tests;
 mod named_input_tests;
 
 #[cfg(all(test, feature = "sqlite"))]
+#[path = "own_word_tests.rs"]
+mod own_word_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
 #[path = "nosend_label_tests.rs"]
 mod nosend_label_tests;
 

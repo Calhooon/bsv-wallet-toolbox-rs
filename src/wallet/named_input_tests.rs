@@ -32,16 +32,16 @@ use bsv_rs::wallet::{
 };
 use std::collections::HashMap;
 
-const ORIGINATOR: &str = "named-input.test";
+pub(super) const ORIGINATOR: &str = "named-input.test";
 
-struct NamedInputScene {
+pub(super) struct NamedInputScene {
     _dir: tempfile::TempDir,
-    wallet: Wallet<StorageSqlx, MockWalletServices>,
-    input: SignerInput,
+    pub(super) wallet: Wallet<StorageSqlx, MockWalletServices>,
+    pub(super) input: SignerInput,
 }
 
 impl NamedInputScene {
-    fn caller_input(
+    pub(super) fn caller_input(
         &self,
         script: Option<Vec<u8>>,
         length: Option<u32>,
@@ -81,7 +81,7 @@ async fn fund_wallet_change(wallet: &Wallet<StorageSqlx, MockWalletServices>, ta
         .unwrap();
 }
 
-fn payment(satoshis: u64) -> CreateActionArgs {
+pub(super) fn payment(satoshis: u64) -> CreateActionArgs {
     CreateActionArgs {
         description: "named input signing regression".to_string(),
         input_beef: None,
@@ -105,7 +105,7 @@ fn payment(satoshis: u64) -> CreateActionArgs {
     }
 }
 
-async fn named_input_scene() -> NamedInputScene {
+pub(super) async fn named_input_scene() -> NamedInputScene {
     let (dir, wallet) = wallet().await;
     fund_wallet_change(&wallet, 0).await;
     let made = wallet
@@ -153,7 +153,7 @@ async fn named_input_scene() -> NamedInputScene {
     }
 }
 
-async fn defer_named(
+pub(super) async fn defer_named(
     scene: &NamedInputScene,
     satoshis: u64,
     script: Option<Vec<u8>>,
@@ -271,7 +271,7 @@ async fn create_action_refuses_zero_caller_unlocking_script_length() {
     .await;
 }
 
-fn subject(beef: &[u8]) -> Transaction {
+pub(super) fn subject(beef: &[u8]) -> Transaction {
     let beef = Beef::from_binary(beef).unwrap();
     beef.find_txid(beef.atomic_txid.as_deref().unwrap())
         .unwrap()
@@ -288,7 +288,7 @@ fn input_script(tx: &Transaction, vin: usize) -> Vec<u8> {
         .to_binary()
 }
 
-fn caller_script(scene: &NamedInputScene, signable: &SignableTransaction) -> Vec<u8> {
+pub(super) fn caller_script(scene: &NamedInputScene, signable: &SignableTransaction) -> Vec<u8> {
     let raw = subject(&signable.tx).to_binary();
     let mut script = scene
         .wallet
@@ -300,7 +300,7 @@ fn caller_script(scene: &NamedInputScene, signable: &SignableTransaction) -> Vec
     script
 }
 
-fn spend_map(
+pub(super) fn spend_map(
     vin: u32,
     unlocking_script: Vec<u8>,
     sequence_number: Option<u32>,
@@ -314,7 +314,7 @@ fn spend_map(
     )])
 }
 
-async fn sign_named(
+pub(super) async fn sign_named(
     scene: &NamedInputScene,
     reference: String,
     spends: HashMap<u32, SignActionSpend>,
@@ -332,7 +332,7 @@ async fn sign_named(
         .await
 }
 
-async fn stored_action(
+pub(super) async fn stored_action(
     scene: &NamedInputScene,
     reference: &str,
 ) -> (String, Option<String>, Option<Vec<u8>>) {
@@ -433,7 +433,7 @@ async fn sign_action_accepts_caller_spend_at_or_below_declared_length() {
     }
 }
 
-async fn complete(
+pub(super) async fn complete(
     scene: &NamedInputScene,
     signable: SignableTransaction,
     script: Option<Vec<u8>>,
@@ -516,7 +516,7 @@ async fn sign_action_preserves_named_script_and_signs_only_allocated_inputs() {
     assert!(!input_script(&signed, 1).is_empty());
 }
 
-fn script_for_create_action(scene: &NamedInputScene) -> Vec<u8> {
+pub(super) fn script_for_create_action(scene: &NamedInputScene) -> Vec<u8> {
     let key_id = format!(
         "{} {}",
         scene.input.derivation_prefix.as_ref().unwrap(),
