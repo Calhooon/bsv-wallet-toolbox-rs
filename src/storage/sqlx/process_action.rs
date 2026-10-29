@@ -30,7 +30,6 @@ use super::StorageSqlx;
 use crate::services::{PostBeefResult, PostTxResultForTxid};
 use crate::storage::broadcast::classify_broadcast_results;
 use crate::storage::broadcast::BroadcastOutcome;
-use bsv_rs::transaction::beef_stream::{display_hex, Hash32};
 use bsv_rs::transaction::{Beef, BeefTx};
 
 // =============================================================================
@@ -562,7 +561,6 @@ pub async fn process_action_internal(
         return post_stored_actions(storage, user_id, &args).await;
     }
     validate_process_action_args(&args)?;
-    judge_new_post(storage, user_id, &args).await?;
 
     // Begin SQL transaction - all DB mutations go through `tx`.
     // On drop without commit, sqlx automatically rolls back.
@@ -570,130 +568,6 @@ pub async fn process_action_internal(
     let results = process_action_writes(storage, &mut tx, user_id, &args).await?;
     super::storage_sqlx::commit(tx).await?;
     Ok(results)
-}
-
-/// The judged set of a post (#426): every unproven transaction of the
-/// post-BEEF beside the ones it posts. Those are the wallet's own signed
-/// transactions, judged by the node at broadcast, its refusal reaching the
-/// host as the broadcaster's answer (the keeper's reading of #450); the rest
-/// are bytes another party built and take the node's word here.
-fn judged_set(posted: &[String]) -> impl Fn(&Hash32) -> bool + Sync {
-    let posted: std::collections::HashSet<String> = posted.iter().cloned().collect();
-    move |txid| !posted.contains(&display_hex(txid))
-}
-
-/// Whether an input BEEF holds an unproven raw transaction in the judged
-/// set: a post without one has nothing for the word to judge. Bytes that do
-/// not parse reach no node (the wallet's broadcast refuses them with
-/// `Failed to parse input BEEF`), so they hold none.
-fn holds_judged(input: &[u8], posted: &[String]) -> bool {
-    Beef::from_binary(input).is_ok_and(|beef| beef_holds_judged(&beef, posted))
-}
-
-/// Whether a BEEF holds an unproven raw transaction in the judged set.
-fn beef_holds_judged(beef: &Beef, posted: &[String]) -> bool {
-    beef.txs
-        .iter()
-        .any(|tx| !tx.is_txid_only() && !tx.has_proof() && !posted.contains(&tx.txid()))
-}
-
-/// The `sendWith` members a new transaction's call joins to its post, as the
-/// writes find them: a member whose request is already sent, or which has
-/// none, is not posted; the rest are posted with their input BEEF.
-async fn joined_posts(
-    conn: &mut SqliteConnection,
-    txid: &str,
-    send_with: &[String],
-) -> Result<Vec<StoredPost>> {
-    let mut posts = Vec::new();
-    let mut seen = std::collections::HashSet::from([txid]);
-    for member in send_with
-        .iter()
-        .filter(|member| seen.insert(member.as_str()))
-    {
-        let row =
-            sqlx::query("SELECT status, raw_tx, input_beef FROM proven_tx_reqs WHERE txid = ?")
-                .bind(member)
-                .fetch_optional(&mut *conn)
-                .await?;
-        let Some(row) = row else { continue };
-        let status: String = row.try_get("status")?;
-        if matches!(
-            status.as_str(),
-            proven_tx_req_status::UNMINED | "completed" | "unproven"
-        ) {
-            continue;
-        }
-        let (Some(raw_tx), Some(input_beef)) = (
-            row.try_get::<Option<Vec<u8>>, _>("raw_tx")?,
-            row.try_get::<Option<Vec<u8>>, _>("input_beef")?,
-        ) else {
-            continue;
-        };
-        posts.push(StoredPost {
-            txid: member.clone(),
-            transaction_id: None,
-            request_id: None,
-            status: "sending",
-            raw_tx: Some(raw_tx),
-            input_beef: Some(input_beef),
-        });
-    }
-    Ok(posts)
-}
-
-/// A new transaction that will be posted, now or queued, takes the stored
-/// post's verdict on its input BEEF and on the input BEEF of each `sendWith`
-/// member it joins, before the writer is taken (#426).
-async fn judge_new_post(
-    storage: &StorageSqlx,
-    user_id: i64,
-    args: &StorageProcessActionArgs,
-) -> Result<()> {
-    let (Some(reference), Some(txid), Some(raw_tx)) = (&args.reference, &args.txid, &args.raw_tx)
-    else {
-        return Ok(());
-    };
-    if args.is_no_send && !args.is_send_with {
-        return Ok(());
-    }
-    let (found, joined) = {
-        let mut conn = storage.pool().acquire().await?;
-        let found = find_transaction_by_reference(&mut conn, user_id, reference).await?;
-        (found, joined_posts(&mut conn, txid, &args.send_with).await?)
-    };
-    // A missing, incoming or processed action is the writes' to refuse.
-    let Some(input) = found
-        .filter(|found| {
-            found.is_outgoing
-                && (found.status == TransactionStatus::Unsigned.as_str()
-                    || found.status == TransactionStatus::Unprocessed.as_str())
-        })
-        .and_then(|found| found.input_beef)
-        .filter(|input| !input.is_empty())
-    else {
-        return Ok(());
-    };
-    let mut posts = vec![StoredPost {
-        txid: txid.clone(),
-        transaction_id: None,
-        request_id: None,
-        status: "sending",
-        raw_tx: Some(raw_tx.clone()),
-        input_beef: Some(input),
-    }];
-    posts.extend(joined);
-    // The joined members are the wallet's own signed transactions, posted
-    // beside the new one: excluded as roots, their ancestry judged.
-    let posted: Vec<String> = posts.iter().map(|post| post.txid.clone()).collect();
-    if !posts.iter().any(|post| {
-        post.input_beef
-            .as_deref()
-            .is_some_and(|input| holds_judged(input, &posted))
-    }) {
-        return Ok(());
-    }
-    stored_post_beef(storage, &posts).await.map(|_| ())
 }
 
 // The reference's sendWith path. These are owned bytes and row identifiers;
@@ -871,18 +745,14 @@ async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result
         // Restoring ancestors can append them after the children already merged.
         beef.sort_txs();
     }
-    verify_stored_post_beef(storage, &mut beef, &roots).await?;
+    verify_stored_post_beef(storage, &mut beef).await?;
     if beef.txs.iter().all(|tx| !tx.is_txid_only()) {
         beef.version = bsv_rs::transaction::BEEF_V1;
     }
     Ok(beef.to_binary())
 }
 
-async fn verify_stored_post_beef(
-    storage: &StorageSqlx,
-    beef: &mut Beef,
-    posted: &[String],
-) -> Result<()> {
+async fn verify_stored_post_beef(storage: &StorageSqlx, beef: &mut Beef) -> Result<()> {
     let configured = storage.get_chain_tracker().await;
     let services = storage.get_services()?;
     let tracker = match configured.as_deref() {
@@ -896,21 +766,11 @@ async fn verify_stored_post_beef(
         &std::collections::HashSet::new(),
     )
     .await?;
-    // The post shares raw unproven transactions with the world: each input
-    // of every one in the judged set is judged under the node's word, as
-    // internalize judges a stranger's (#426), after the structure and roots
-    // above; no writer is held here. An empty judged set asks no word and
-    // no mining tip.
-    if !beef_holds_judged(beef, posted) {
-        return Ok(());
-    }
-    super::beef_verification::verify_beef_word(
-        &beef.to_binary(),
-        tracker,
-        &storage.get_settings().chain,
-        &judged_set(posted),
-    )
-    .await
+    // No script is judged here: under the one-door rule (#454, the judged
+    // set's statement on create's `judged_set`) every transaction a post
+    // carries is the store's, judged at its own door, so no word and no
+    // mining tip is asked.
+    Ok(())
 }
 
 async fn post_stored_actions(
@@ -933,18 +793,6 @@ async fn post_stored_actions(
         return Ok(stored_post_result(&posts));
     }
     if args.is_delayed {
-        // The monitor posts what is queued here: the same judged set and
-        // verdict before anything is queued (#426).
-        let posted: Vec<String> = posts.iter().map(|post| post.txid.clone()).collect();
-        if posts.iter().any(|post| {
-            post.status == "sending"
-                && post
-                    .input_beef
-                    .as_deref()
-                    .is_some_and(|input| holds_judged(input, &posted))
-        }) {
-            stored_post_beef(storage, &posts).await?;
-        }
         return Ok(stored_post_result(
             &prepare_stored_posts(storage, user_id, &handles).await?,
         ));
