@@ -9,6 +9,7 @@ use bsv_rs::script::templates::P2PKH;
 use bsv_rs::script::{LockingScript, ProtocolEra, Script, UnlockingScript};
 use bsv_rs::transaction::{Transaction, TransactionInput, TransactionOutput};
 
+#[cfg(test)]
 #[path = "own_word_host_tests.rs"]
 mod host;
 

@@ -4,8 +4,8 @@
 //! resident; a transaction waiting for a parent is released in wire order.
 
 use super::{stream_error, VerificationHeaders};
-use crate::SpendVerifier;
 use crate::{Error, Result};
+use crate::{SpendRequest, SpendVerificationContext, SpendVerifier};
 use bsv_rs::primitives::bsv::sighash::{TxInput, TxOutput, TxSighashCache};
 use bsv_rs::script::{
     LockingScript, ProtocolEra, ScriptFlags, Spend, TxSpendParams, UnlockingScript,
@@ -147,6 +147,7 @@ struct WordPass<'a> {
     network: &'a str,
     judge: &'a (dyn Fn(&Hash32) -> bool + Sync),
     verifier: Option<&'a dyn SpendVerifier>,
+    selected: Vec<(SpendRequest, SpendVerificationContext)>,
     tip: Option<ChainTip>,
     heights: HashMap<Hash32, u64>,
     bumps: Vec<u64>,
@@ -188,6 +189,7 @@ pub(super) fn verify_judging(
         network,
         judge,
         verifier,
+        selected: Vec::new(),
         tip: headers.tip,
         heights: HashMap::new(),
         bumps: Vec::new(),
@@ -232,7 +234,7 @@ pub(super) fn verify_judging(
             "verified structure left an unresolved spend".into(),
         ));
     }
-    Ok(())
+    super::own_word::verify_selected(verifier, &pass.selected)
 }
 
 impl WordPass<'_> {
@@ -440,7 +442,7 @@ impl WordPass<'_> {
         Ok((sources, total))
     }
 
-    fn spends(&self, offset: u64, txid: Hash32, body: &TxBody) -> Result<()> {
+    fn spends(&mut self, offset: u64, txid: Hash32, body: &TxBody) -> Result<()> {
         let (sources, input_total) = self.sources(txid, body)?;
         // One sighash cache per transaction, shared by all of its inputs.
         let mut judgements = super::own_word::InputJudgements::new(txid, body, self.verifier);
@@ -449,7 +451,7 @@ impl WordPass<'_> {
             let eras = input_eras(self.network, self.tip, proven);
             judgements.judge(eras, vin, source, proven)?;
         }
-        judgements.finish()?;
+        self.selected.extend(judgements.into_selected());
         if body.outputs.iter().map(|o| o.satoshis).sum::<u64>() > input_total {
             return Err(refused(offset, txid, None, SpendRefusal::CreatesValue));
         }
