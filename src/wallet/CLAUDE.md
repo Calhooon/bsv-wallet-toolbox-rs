@@ -375,6 +375,7 @@ pub struct WalletOptions {
     pub include_all_source_transactions: bool,  // Default: true
     pub auto_known_txids: bool,                 // Default: false
     pub trust_self: Option<String>,             // Default: Some("known")
+    pub settings_manager: Option<Arc<WalletSettingsManager>>, // Default: None
 }
 ```
 
@@ -382,6 +383,7 @@ Configuration for wallet behavior:
 - `include_all_source_transactions` - Include source transactions for all inputs in signable transactions
 - `auto_known_txids` - TXIDs known to wallet's party beef don't need to be returned from storage
 - `trust_self` - Input BEEF validation behavior ("known" = trust wallet's known TXIDs)
+- `settings_manager` - Shared host trust settings, read on every discovery call; absent means Main defaults or Test defaults for Test and Regtest
 
 ### WalletSigner
 
@@ -487,10 +489,15 @@ The beta.3 pin uses `IndexMap<String, String>` at these public sites (bsv-rs #38
 ```rust
 #[async_trait]
 pub trait OverlayLookupResolver: Send + Sync {
-    async fn lookup_by_identity_key(&self, identity_key: &str) -> Result<Vec<OverlayCertificate>>;
-    async fn lookup_by_attributes(&self, attributes: &IndexMap<String, String>) -> Result<Vec<OverlayCertificate>>;
+    async fn lookup_by_identity_key(&self, identity_key: &str, certifiers: &[String]) -> Result<Vec<OverlayCertificate>>;
+    async fn lookup_by_attributes(&self, attributes: &IndexMap<String, String>, certifiers: &[String]) -> Result<Vec<OverlayCertificate>>;
 }
 ```
+
+The wallet supplies the sorted trusted keys on both calls. Implementors add
+the `certifiers` parameter; the CLI implements no resolver today (#347).
+`HttpLookupResolver` includes the array in both query bodies. Discovery still
+applies the wallet's trust settings to the returned certificates.
 
 ### HttpLookupResolver
 
@@ -553,8 +560,8 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 
 | Method | Description |
 |--------|-------------|
-| `discover_by_identity_key` | Find certificates by identity key (local storage query, filters by subject) |
-| `discover_by_attributes` | Find certificates by attributes (local-only, returns empty - requires overlay service) |
+| `discover_by_identity_key` | Merge stored and overlay certificates, bind the subject, apply current trust settings, then page |
+| `discover_by_attributes` | Query the overlay with trusted keys, apply current trust settings, then page |
 
 ### Chain/Status Operations
 
@@ -774,11 +781,22 @@ The storage client's BRC-31 peer passes a fixed internal originator,
 
 ## Implementation Notes
 
-### Limited Implementations
+### Discovery trust
 
-Some methods have limited or local-only implementations:
-- `discover_by_identity_key` - Local-only: queries storage and filters by subject matching identity_key
-- `discover_by_attributes` - Local-only: returns empty results (full implementation requires overlay service via `lookup.rs`)
+`discovery_trust.rs` applies the TS transform (`identityUtils.ts:313-384`):
+up to 256 input certificates, trusted certifiers only, each certifier counted
+once per subject, certificates deduplicated by type, serial and certifier
+within that subject, the subject's combined trust threshold, then a stable
+sort by descending certifier trust. Descriptions are cut at a UTF-8 boundary
+to 50 bytes, trimmed as ECMAScript, and use `Trusted certifier` below 5 bytes.
+An absent icon uses the reference's fallback. Pagination follows the merge
+and transform, with default limit 10; `totalCertificates` is the full count.
+
+The local identity leg is the port's extension. With a host manager, changing
+its threshold or certifiers applies on the next call. With no manager the
+chain defaults still discover trusted certificates. Attributes use only the
+overlay, so a proxy-isolated CLI fixture needs an overlay fixture to answer
+that call; host trust settings alone enable its local identity leg.
 
 ### Pending Transaction Cache
 

@@ -285,15 +285,15 @@ manager.inner_mut() -> &mut CWIStyleWalletManager
 ### Default Settings
 
 Includes pre-configured trusted certifiers:
-- **Metanet Trust Services** - Registry for protocols, baskets, certificate types (trust: 4)
-- **SocialCert** - Certifies social media handles, phone numbers, emails (trust: 3)
+- **Metanet Trust Services** - Registry of protocols, baskets, certificate types (trust: 4)
+- **SocialCert** - Certifies social media handles, phones and emails (trust: 3)
 
 ### Settings Structure
 
 ```rust
 WalletSettings {
     trust_settings: TrustSettings {
-        trust_level: u32,           // 1-4, higher = more trusted
+        trust_level: u32,           // 1-2560, minimum combined trust per subject
         trusted_certifiers: Vec<Certifier>,
     },
     theme: Option<WalletTheme>,     // "dark" or "light"
@@ -301,6 +301,27 @@ WalletSettings {
     permission_mode: Option<String>, // "simple", etc.
 }
 ```
+
+The manager is in memory. A wallet reads an optional shared manager through
+`WalletOptions.settings_manager` on every discovery call. Without one, Main
+uses `DEFAULT_SETTINGS`; Test and Regtest use `TESTNET_DEFAULT_SETTINGS`.
+The TS name mapping applies only to SocialCert among the defaults and leaves
+its key unchanged at the pin. Settings are not stored in the wallet's basket;
+the decided `over_store(...)` constructor follows bsv-rs #441.
+
+```rust
+new(config: Option<WalletSettingsManagerConfig>) -> Result<WalletSettingsManager>
+get() -> Result<WalletSettings>
+set(settings: WalletSettings) -> Result<()>
+```
+
+`new` and `set` validate the trust settings. Thresholds are 1 to 2560; each
+certifier's `trust: u32` is 1 to 10. At most 256 distinct canonical lowercase
+compressed public keys are allowed. Names use 1 to 100 UTF-8 bytes and
+descriptions 1 to 500. Optional URLs use 1 to 500 bytes and must be absolute,
+credential-free HTTP(S) URLs. Failures return `Error::ValidationError` with
+the TypeScript text and preserve the previous settings. Both JSON load
+methods use the same validation; `get` returns an `Ok` snapshot.
 
 ### Persistence Methods
 
@@ -483,13 +504,13 @@ let wallet = manager.wallet().await?;
 ```rust
 use bsv_wallet_toolbox::managers::{WalletSettingsManager, WalletSettings};
 
-let manager = WalletSettingsManager::new(None); // Uses DEFAULT_SETTINGS
+let manager = WalletSettingsManager::new(None)?; // Uses DEFAULT_SETTINGS
 
-let settings = manager.get().await;
+let settings = manager.get().await?;
 
 let mut new_settings = settings;
 new_settings.currency = Some("EUR".to_string());
-manager.set(new_settings).await;
+manager.set(new_settings).await?;
 
 let bytes = manager.save().await?;
 manager.load(&bytes).await?;

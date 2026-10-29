@@ -2,7 +2,33 @@
 
 ## [Unreleased]
 
+### Added
+
+- #388: `WalletOptions.settings_manager: Option<Arc<WalletSettingsManager>>`
+  supplies host trust settings for discovery. CLI #347 host line:
+  `settings_manager: Some(Arc::new(WalletSettingsManager::new(Some(WalletSettingsManagerConfig { default_settings }))?))`.
+  A literal listing every option gains this field; `None` uses chain defaults.
+
 ### Changed
+
+- #388 (api-break on beta): both `OverlayLookupResolver` methods add
+  `certifiers: &[String]`. A host implementing the trait adds the parameter;
+  the CLI implements none today. HTTP queries include the sorted trusted keys.
+- #388 (api-break on beta): `WalletSettingsManager::new(Option<Config>)`
+  returns `Result<Self>`, `get()` returns `Result<WalletSettings>`, and
+  `set(WalletSettings)` returns `Result<()>`. Hosts propagate or handle these
+  results; the CLI calls none today. Defaults, writes and JSON loads validate
+  the reference's trust bounds and refusal texts.
+- #388: default descriptions now use the TypeScript texts: `Registry of
+  protocols, baskets, certificate types` and `Certifies social media handles,
+  phones and emails`.
+- #388, CLI #347 behaviour: discovery answers the certificates of trusted
+  certifiers with their `certifierInfo`, drops a stranger's, counts each
+  certifier once per subject toward the current threshold, and pages after
+  merging. Manager changes apply on the next call; absent settings use Main
+  defaults or Test defaults for Test and Regtest. CLI #331 can close when its
+  typed trust config supplies the manager; an isolated attributes fixture
+  still needs an overlay fixture because only identity discovery has a local leg.
 
 - #435: `StorageSqlxOptions` gains `chain: Chain`, defaulting to `Chain::Main`, to configure a fresh store. API break on beta; host change for CLI #347: a `StorageSqlxOptions` literal gains `chain: Chain::Main` or `..Default::default()`.
 - #440: settings store `main` and `test`, matching the reference's bytes in a store synced across implementations. Local reads map legacy `mainnet` and `testnet`; the next `migrate()` rewrites them. Hosts reading the row directly see the new words after migration.
