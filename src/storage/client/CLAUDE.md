@@ -32,11 +32,12 @@ marks their #105 changes and the remaining decisions that need the owner.
 |------|-------|---------|
 | `mod.rs` | 61 | Module exports and usage documentation |
 | `auth.rs` | 969 | BRC-31 authentication: nonce creation, request signing, response verification |
-| `json_rpc.rs` | 292 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) |
-| `storage_client.rs` | 2619 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
+| `json_rpc.rs` | 468 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) and the server's WalletError reader (#436) |
+| `storage_client.rs` | 2713 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
 | `wire.rs` | 205 | Request field names and reference result aliases |
 | `wire_tests.rs` | 361 | Reference responses and outgoing-name regressions |
 | `brc104_bounds_tests.rs` | 161 | beta.3's BRC-104 response bounds through the authenticated client (#423) |
+| `refusal_class_tests.rs` | 313 | A server refusal per class through loopback mockito, and through a `Wallet` (#436) |
 
 ## Key Exports
 
@@ -49,7 +50,7 @@ marks their #105 changes and the remaining decisions that need the owner.
 | `JsonRpcRequest` | JSON-RPC 2.0 request structure with `new()` constructor |
 | `JsonRpcResponse` | JSON-RPC 2.0 response with `into_result()` and `is_success()` methods |
 | `JsonRpcError` | JSON-RPC error with code, message, optional data, and factory methods |
-| `json_rpc::WalletError` | Wallet-specific error parsed from JSON-RPC error data (code, message, description, stack) |
+| `json_rpc::WalletError` | The server's WalletError read from the JSON-RPC `error` object (crate-private; `name`, `message`, the class's members) |
 | `UpdateProvenTxReqWithNewProvenTxArgs` | Arguments for updating proven tx requests |
 | `UpdateProvenTxReqWithNewProvenTxResult` | Result containing `txs_updated`, `reqs_updated`, `proven_tx_id` |
 | `AuthHeaders` | Authentication headers for a BRC-31 request |
@@ -135,18 +136,24 @@ Wallet-specific codes in `json_rpc::wallet_error_codes`:
 | `internal_error(details)` | Internal error (-32603) |
 | `is_server_error()` | Returns true if code is in server error range |
 
-### WalletError Parsing
+### Server refusals (#436)
 
-`WalletError` can be extracted from JSON-RPC errors:
+The reference's server answers a thrown `WalletError` with
+`WalletError.unknownToJson`'s object as the JSON-RPC `error` itself
+(`{ isError, name, message, ...the class's members }`, `StorageServer.ts:857-867`
+at ts-stack edf6e03; every fault masked to `WERR_INTERNAL`, `:122-127`), and its
+client rebuilds the class by `name` (`StorageClient.ts:178-181`,
+`WalletErrorFromJson.ts`). `parse_rpc_response` does the same through
+`json_rpc::WalletError::from_rpc_error` and `into_error`, with the reference's
+bounds: at most 64 members, the name at most 128 in `[A-Za-z0-9._:-]+` (a string
+`code` stands for a missing `name`), the message at most 4096 UTF-16 units with
+no control character but tab, line feed and carriage return.
 
-```rust
-if let Some(wallet_err) = WalletError::from_rpc_error(&rpc_error) {
-    println!("Code: {}, Message: {}", wallet_err.code, wallet_err.message);
-    if let Some(desc) = &wallet_err.description {
-        println!("Description: {}", desc);
-    }
-}
-```
+| Server `name` | Toolbox error | At the boundary |
+|---------------|---------------|-----------------|
+| `WERR_BAD_REQUEST`, `WERR_INVALID_PARAMETER`, `WERR_INVALID_OPERATION`, `WERR_INSUFFICIENT_FUNDS`, `WERR_MISSING_PARAMETER`, `WERR_UNAUTHORIZED`, `WERR_NOT_ACTIVE`, `WERR_NOT_IMPLEMENTED`, `WERR_NETWORK_CHAIN`, `WERR_INVALID_PUBLIC_KEY`, `WERR_BROADCAST_UNAVAILABLE`, `WERR_ACTION_BATCH_STATE`, `WERR_UTXO_REVIEW_INCONCLUSIVE` | `SdkError(WalletRefusal { class, message })`, the class `WalletRefusalClass::from_name` reads, the server's message byte for byte | the same refusal |
+| `WERR_REVIEW_ACTIONS` with the reference's results (`reviewActionsEnvelope`) | `ReviewActions` with its results and the server's message | `WalletReviewActions` |
+| `WERR_INTERNAL`, any other name, a malformed error, a plain JSON-RPC error | `StorageError("RPC error <code>: <message>")` (the code `-32000` when the error has none) | `WalletError` |
 
 ## Architecture
 
@@ -313,8 +320,11 @@ match client.make_available().await {
         // Any other send failure, or the response wait timed out
         eprintln!("Network error: {}", msg);
     }
+    Err(Error::SdkError(bsv_rs::Error::WalletRefusal { class, message })) => {
+        // A server refusal with its class (#436)
+    }
     Err(Error::StorageError(msg)) => {
-        // JSON-RPC error from server
+        // Any other JSON-RPC error from the server
         eprintln!("Storage error: {}", msg);
     }
     Err(Error::AuthenticationRequired) => {
@@ -388,7 +398,7 @@ They run as unit tests with `remote` and as integration tests with
    as `AuthFetch.ts:441-445` records it
 8. Parses `HttpResponse` from payload, checks HTTP status
 9. Deserializes `JsonRpcResponse`, validates response ID matches
-10. Returns deserialized result `T` or converts error to `Error::StorageError`
+10. Returns deserialized result `T`, or the server's refusal with its class (see Server refusals), else `Error::StorageError`
 
 ### Unauthenticated Fallback
 

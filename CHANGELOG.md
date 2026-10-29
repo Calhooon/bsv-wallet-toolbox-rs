@@ -29,6 +29,17 @@
   the stream verifier's structural, proof and non-script refusals; #440's
   per-input hook will replace it.
 
+- #436: `StorageClient` rebuilds the server's refusal class from the JSON-RPC
+  error as the reference's client does (`WalletErrorFromJson`). Host class
+  change for the CLI replay (CLI #347): a host behind the remote client now
+  reads `WalletRefusal` with the class the local door answers (`BadRequest`,
+  `InvalidParameter`, `InvalidOperation`, `InsufficientFunds` and the
+  reference's other whitelisted `WERR_*` names) and `WalletReviewActions`
+  with its results, where it read `WalletError` with
+  `Storage error: RPC error <code>: <message>`. The text of each refusal is
+  the server's message unchanged. `WERR_INTERNAL`, a name outside the
+  whitelist and a malformed error keep the generic RPC text.
+
 - #430: `relinquishCertificate` now refuses an unknown or non-unique certificate
   before changing storage. Host TEXT-DIFF for CLI #344: success with
   `{ relinquished: true }` and storage count `0` becomes `WalletRefusal` with
