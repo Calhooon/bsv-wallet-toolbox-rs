@@ -528,6 +528,12 @@ as at internalize), the storage's `chain`, then `live_word::verify_judging`,
 whose `judge` names the transactions to judge (internalize's `verify` passes
 every unproven one). Same era rule, same bsv-rs refusal texts
 (`Error::SpendRefused`), same class at the boundary (`InvalidParameter`).
+A missing ancestor fetched from a provider while a post-BEEF's ancestry is
+rebuilt (`try_network_fallback`) is the network's own bytes under the same rule
+(the keeper's reading of #459): asked for by its txid, bytes that hash to it are
+the transaction the network already holds and the node has judged; the txid
+match is the identity witness and the merkle proof, when mined, the structural
+pass's; no door.
 
 | Route | Judged before #426 | The reference (ts-stack@edf6e03) | The verdict |
 |---|---|---|---|
