@@ -6,7 +6,8 @@ use super::beef_walk::beef_bfs_walk;
 use super::inputs::ExtendedInput;
 use super::AllocatedChangeInput;
 use crate::error::{Error, Result};
-use bsv_rs::transaction::{Beef, ChainTracker};
+use bsv_rs::transaction::beef_stream::display_hex;
+use bsv_rs::transaction::{Beef, BeefTx, ChainTracker};
 use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use std::collections::HashSet;
 
@@ -294,6 +295,66 @@ pub(super) async fn build_input_beef(
     } else {
         Ok(None)
     }
+}
+
+/// The node's word for the caller's `inputBEEF` (#426): its tip comes from
+/// `tracker`, else the `services`' header service, asked only when an
+/// unproven caller transaction is there to judge; its era policy from the
+/// storage's `network`.
+pub(super) struct CallerWord<'a> {
+    pub(super) tracker: Option<&'a dyn ChainTracker>,
+    pub(super) services: Option<std::sync::Arc<dyn crate::services::WalletServices>>,
+    pub(super) network: &'a str,
+}
+
+/// Judge each input of every unproven raw transaction the caller's
+/// `inputBEEF` brings under the node's word (#426), on `assembled`: the
+/// BEEF `build_input_beef` assembled for the pre-check, its structure and
+/// roots already verified and no known txid trimmed, so every judged
+/// transaction's ancestry is whole. A caller transaction the assembly proves
+/// is not judged, nor the wallet's own stored chain.
+pub(super) async fn judge_caller_beef(
+    assembled: Option<&[u8]>,
+    caller: Option<&[u8]>,
+    word: &CallerWord<'_>,
+) -> Result<()> {
+    let (Some(assembled), Some(caller)) = (assembled, caller) else {
+        return Ok(());
+    };
+    // The assembly parsed the caller's bytes already.
+    let Ok(caller) = Beef::from_binary(caller) else {
+        return Ok(());
+    };
+    let beef = Beef::from_binary(assembled)?;
+    let judged: HashSet<String> = caller
+        .txs
+        .iter()
+        .filter(|tx| !tx.is_txid_only())
+        .map(BeefTx::txid)
+        .filter(|txid| {
+            beef.find_txid(txid)
+                .is_some_and(|tx| !tx.is_txid_only() && tx.bump_index().is_none())
+        })
+        .collect();
+    if judged.is_empty() {
+        return Ok(());
+    }
+    let tracker = match (word.tracker, word.services.as_deref()) {
+        (Some(tracker), _) => tracker,
+        (None, Some(services)) => services
+            .get_chain_tracker()
+            .await
+            .map_err(super::beef_verification::header_fault)?,
+        (None, None) => {
+            return Err(super::beef_verification::header_fault(
+                "no header service configured",
+            ))
+        }
+    };
+    super::beef_verification::verify_beef_word(assembled, tracker, word.network, &|txid| {
+        judged.contains(&display_hex(txid))
+    })
+    .await
 }
 
 /// The gap in a change coin's stored ancestry: the BEEF for `txid` alone,
