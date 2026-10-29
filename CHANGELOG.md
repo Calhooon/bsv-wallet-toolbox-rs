@@ -39,6 +39,12 @@
   The judgment is the node's mempool word, where the reference's is the
   consensus word: an unclean stack or a non-minimal push is refused at
   signing.
+  Host stored-data and posting change: the stored input BEEF is the untrimmed
+  assembly, as the reference stores `storageBeef` (`createAction.ts:725`) and
+  trims only the response (`:1725`), so a stored or delayed post (`sendWith`,
+  `acceptDelayedBroadcast`, a later `signAction`) now carries the full source
+  bytes of transactions named in `knownTxids`, where it rebuilt them from the
+  store; an immediate post stays trimmed as before.
 - #453: `internalizeAction` derives a wallet payment's BRC-29 counterparty
   from the validated sender, as the reference's signer derives from `vargs`
   (`signer/methods/internalizeAction.ts:86` at ts-stack edf6e03, after
