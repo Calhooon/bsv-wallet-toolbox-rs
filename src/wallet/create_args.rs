@@ -4,10 +4,10 @@
 //! Wallet.ts:1154 runs validateCreateActionArgs before any storage call; the
 //! sqlx door runs the same checks where it always did.
 
-use super::internalize_args::label::normalize_label;
 use super::internalize_args::{
     validate_array_bound, validate_description, validate_label, MAXIMUM_WALLET_COLLECTION_ITEMS,
 };
+use super::label::normalize_label;
 use crate::error::{Error, Result};
 use bsv_rs::transaction::beef_stream::StreamError;
 use bsv_rs::transaction::BeefStream;

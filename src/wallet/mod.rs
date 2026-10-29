@@ -94,6 +94,7 @@
 mod certificate_issuance;
 pub(crate) mod create_args;
 pub(crate) mod internalize_args;
+pub(crate) mod label;
 pub mod lookup;
 mod signer;
 #[allow(clippy::module_inception)]

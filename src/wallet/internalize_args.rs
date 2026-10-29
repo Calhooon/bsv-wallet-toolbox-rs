@@ -1,11 +1,8 @@
 //! Internalize argument validation shared by the wallet and storage doors.
 
+use super::label;
 use crate::error::{Error, Result};
 use bsv_rs::wallet::{InternalizeActionArgs, WalletPayment};
-
-// Compile the existing normalization source without the sqlx feature gate.
-#[path = "../storage/sqlx/label.rs"]
-pub(crate) mod label;
 
 /// Protocol identifier for wallet payments.
 pub(crate) const WALLET_PAYMENT_PROTOCOL: &str = "wallet payment";
