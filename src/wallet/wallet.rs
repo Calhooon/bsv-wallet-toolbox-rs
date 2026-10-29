@@ -1666,7 +1666,7 @@ where
                 input_type: None,
                 inputs: None,
                 reference_number: None,
-                beef: full_beef_bytes,
+                beef: full_beef_bytes.filter(|_| !return_txid_only),
             });
         }
 

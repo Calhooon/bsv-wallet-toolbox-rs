@@ -240,6 +240,12 @@ async fn assert_side_fields(
         wallet.services().mock.call_count("post_beef"),
         usize::from(!no_send && !delayed)
     );
+    // Under `returnTXIDOnly` (no `tx`) the answer carries no BEEF either; the
+    // other options keep whatever BEEF they carried before #466.
+    assert!(
+        result.tx.is_some() || result.beef.is_none(),
+        "the answer carries no BEEF under returnTXIDOnly"
+    );
 }
 
 #[tokio::test]
@@ -257,6 +263,7 @@ async fn return_txid_only_answer_omits_tx() {
         );
         let json = serde_json::to_value(&result).unwrap();
         assert!(json.get("tx").is_none(), "the JSON answer omits tx");
+        assert!(json.get("beef").is_none(), "the JSON answer omits beef");
         assert!(json.get("txid").is_some());
         assert_side_fields(&wallet, &result, no_send, delayed).await;
     }
