@@ -633,14 +633,62 @@ async fn word_does_not_rejudge_proven_transaction_inputs() {
     assert!(result.is_ok(), "{result:?}");
 }
 
-/// Regtest models a post-Chronicle tip; mainnet's proven coin predates Genesis.
-#[tokio::test]
-async fn internalize_reads_the_stored_network_before_writing_received_outputs() {
+/// Runs `internalize_action_internal` on a fresh store of `network`, a wallet
+/// payment of output 0 to key 7, `tracker` answering roots and the tip.
+async fn internalize_on(
+    network: &str,
+    tracker: FixtureTracker,
+    tx: Vec<u8>,
+) -> (
+    super::StorageSqlx,
+    crate::Result<crate::storage::traits::StorageInternalizeActionResult>,
+) {
     use crate::services::mock::MockWalletServices;
-    use crate::storage::sqlx::StorageSqlx;
     use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
     use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput, WalletPayment};
 
+    let key = PrivateKey::from_hex(&format!("{:064x}", 7))
+        .unwrap()
+        .public_key()
+        .to_hex();
+    let storage = super::StorageSqlx::in_memory().await.unwrap();
+    storage.migrate("word-fixture", &key).await.unwrap();
+    sqlx::query("UPDATE settings SET chain = ?")
+        .bind(network)
+        .execute(storage.writer())
+        .await
+        .unwrap();
+    storage.make_available().await.unwrap();
+    let (user, _) = storage.find_or_insert_user(&key).await.unwrap();
+    storage.set_services(Arc::new(MockWalletServices::new()));
+    storage.set_chain_tracker(Arc::new(tracker)).await;
+    let result = super::internalize_action::internalize_action_internal(
+        &storage,
+        user.user_id,
+        InternalizeActionArgs {
+            tx,
+            outputs: vec![InternalizeOutput {
+                output_index: 0,
+                protocol: "wallet payment".into(),
+                payment_remittance: Some(WalletPayment {
+                    derivation_prefix: "dGVzdA==".into(),
+                    derivation_suffix: "dGVzdA==".into(),
+                    sender_identity_key: key,
+                }),
+                insertion_remittance: None,
+            }],
+            description: "stored network word fixture".into(),
+            labels: None,
+            seek_permission: None,
+        },
+    )
+    .await;
+    (storage, result)
+}
+
+/// Regtest models a post-Chronicle tip; mainnet's proven coin predates Genesis.
+#[tokio::test]
+async fn internalize_reads_the_stored_network_before_writing_received_outputs() {
     let height = ProtocolEra::MAINNET_GENESIS_HEIGHT - 1;
     let (parent, child) = signed_payment(0x61);
     let child_id = child.id();
@@ -651,49 +699,13 @@ async fn internalize_reads_the_stored_network_before_writing_received_outputs() 
     let bytes = beef.to_binary_atomic(&child_id).unwrap();
     let mut root: [u8; 32] = hex::decode(parent.id()).unwrap().try_into().unwrap();
     root.reverse();
-    let key = PrivateKey::from_hex(&format!("{:064x}", 7))
-        .unwrap()
-        .public_key()
-        .to_hex();
 
     for network in ["mainnet", "testnet", "regtest"] {
-        let storage = StorageSqlx::in_memory().await.unwrap();
-        storage.migrate("word-fixture", &key).await.unwrap();
-        sqlx::query("UPDATE settings SET chain = ?")
-            .bind(network)
-            .execute(storage.writer())
-            .await
-            .unwrap();
-        storage.make_available().await.unwrap();
-        let (user, _) = storage.find_or_insert_user(&key).await.unwrap();
-        storage.set_services(Arc::new(MockWalletServices::new()));
-        storage
-            .set_chain_tracker(Arc::new(FixtureTracker {
-                roots: vec![(u64::from(height), root)],
-                tip: ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
-            }))
-            .await;
-        let result = super::internalize_action::internalize_action_internal(
-            &storage,
-            user.user_id,
-            InternalizeActionArgs {
-                tx: bytes.clone(),
-                outputs: vec![InternalizeOutput {
-                    output_index: 0,
-                    protocol: "wallet payment".into(),
-                    payment_remittance: Some(WalletPayment {
-                        derivation_prefix: "dGVzdA==".into(),
-                        derivation_suffix: "dGVzdA==".into(),
-                        sender_identity_key: key.clone(),
-                    }),
-                    insertion_remittance: None,
-                }],
-                description: "stored network word fixture".into(),
-                labels: None,
-                seek_permission: None,
-            },
-        )
-        .await;
+        let tracker = FixtureTracker {
+            roots: vec![(u64::from(height), root)],
+            tip: ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
+        };
+        let (storage, result) = internalize_on(network, tracker, bytes.clone()).await;
         if network == "mainnet" {
             script_words(
                 result.map(|_| ()),
