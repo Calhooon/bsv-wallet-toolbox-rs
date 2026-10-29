@@ -85,37 +85,26 @@ impl OverlayCertificate {
     }
 }
 
-// =============================================================================
-// OverlayLookupResolver trait
-// =============================================================================
-
-/// Trait for resolving identity lookups via overlay services (SLAP/SHIP).
-///
-/// Implementations query overlay services to discover certificates associated
-/// with an identity key or matching specific attributes. The default
-/// implementation (`HttpLookupResolver`) uses direct HTTP POST requests to
-/// the overlay service's `/lookup` endpoint.
+/// Resolve SLAP/SHIP certificates using the wallet's sorted trusted keys.
+/// The HTTP implementation returns empty results on network failures.
 #[async_trait]
 pub trait OverlayLookupResolver: Send + Sync {
-    /// Look up certificates by identity key.
-    ///
-    /// Returns certificates where the subject matches the given identity key.
-    /// Network errors are handled gracefully (returns empty vec).
-    async fn lookup_by_identity_key(&self, identity_key: &str) -> Result<Vec<OverlayCertificate>>;
+    /// Look up certificates whose subject matches `identity_key`.
+    /// `certifiers` contains the wallet's sorted trusted identity keys.
+    async fn lookup_by_identity_key(
+        &self,
+        identity_key: &str,
+        certifiers: &[String],
+    ) -> Result<Vec<OverlayCertificate>>;
 
-    /// Look up certificates by attributes.
-    ///
-    /// Returns certificates matching the given attribute key-value pairs.
-    /// Network errors are handled gracefully (returns empty vec).
+    /// Look up certificates matching the supplied attribute key-value pairs.
+    /// `certifiers` contains the wallet's sorted trusted identity keys.
     async fn lookup_by_attributes(
         &self,
         attributes: &IndexMap<String, String>,
+        certifiers: &[String],
     ) -> Result<Vec<OverlayCertificate>>;
 }
-
-// =============================================================================
-// HttpLookupResolver
-// =============================================================================
 
 /// Default SLAP tracker hosts for mainnet (from @bsv/sdk DEFAULT_SLAP_TRACKERS).
 const MAINNET_SLAP_TRACKERS: &[&str] = &[
@@ -364,9 +353,14 @@ impl HttpLookupResolver {
 
 #[async_trait]
 impl OverlayLookupResolver for HttpLookupResolver {
-    async fn lookup_by_identity_key(&self, identity_key: &str) -> Result<Vec<OverlayCertificate>> {
+    async fn lookup_by_identity_key(
+        &self,
+        identity_key: &str,
+        certifiers: &[String],
+    ) -> Result<Vec<OverlayCertificate>> {
         let query = serde_json::json!({
             "identityKey": identity_key,
+            "certifiers": certifiers,
         });
         self.query_overlay(query).await
     }
@@ -374,15 +368,20 @@ impl OverlayLookupResolver for HttpLookupResolver {
     async fn lookup_by_attributes(
         &self,
         attributes: &IndexMap<String, String>,
+        certifiers: &[String],
     ) -> Result<Vec<OverlayCertificate>> {
-        let query = IndexMap::from([("attributes", attributes)]);
+        #[derive(Serialize)]
+        struct AttributeQuery<'a> {
+            attributes: &'a IndexMap<String, String>,
+            certifiers: &'a [String],
+        }
+        let query = AttributeQuery {
+            attributes,
+            certifiers,
+        };
         self.query_overlay(query).await
     }
 }
-
-// =============================================================================
-// Helper functions
-// =============================================================================
 
 /// Parse a SLAP `LookupAnswer` to extract competent host URLs.
 ///

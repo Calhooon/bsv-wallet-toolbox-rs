@@ -310,6 +310,10 @@ pub struct WalletOptions {
     /// omit supporting validity proof data for all TXIDs known to this wallet.
     /// Default: Some("known")
     pub trust_self: Option<String>,
+
+    /// Shared host trust settings, read afresh by each discovery call.
+    /// `None` uses the chain's default settings.
+    pub settings_manager: Option<Arc<crate::managers::WalletSettingsManager>>,
 }
 
 impl Default for WalletOptions {
@@ -319,6 +323,7 @@ impl Default for WalletOptions {
             include_all_source_transactions: true,
             auto_known_txids: false,
             trust_self: Some("known".to_string()),
+            settings_manager: None,
         }
     }
 }

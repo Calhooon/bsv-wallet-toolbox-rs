@@ -48,7 +48,10 @@ async fn lookup_clients_accept_loopback_fixtures() {
         .await;
 
     for resolver in resolvers(&server.url()) {
-        let certificates = resolver.lookup_by_identity_key("fixture").await.unwrap();
+        let certificates = resolver
+            .lookup_by_identity_key("fixture", &[])
+            .await
+            .unwrap();
         assert!(certificates.is_empty());
     }
     request.assert_async().await;
@@ -91,12 +94,12 @@ async fn attribute_lookup_sends_the_supplied_map_order() {
             })
             .to_string(),
         )
-        .expect(1)
+        .expect(2)
         .create_async()
         .await;
     let lookup = server
         .mock("POST", "/lookup")
-        .match_body(r#"{"query":{"attributes":{"zeta":"z","alpha":"a"}},"service":"ls_identity"}"#)
+        .match_body(r#"{"query":{"attributes":{"zeta":"z","alpha":"a"},"certifiers":["certifier-a","certifier-b"]},"service":"ls_identity"}"#)
         .with_header("content-type", "application/json")
         .with_body(r#"{"type":"output-list","outputs":[]}"#)
         .expect(1)
@@ -109,13 +112,31 @@ async fn attribute_lookup_sends_the_supplied_map_order() {
     .into_iter()
     .collect();
     let resolver = HttpLookupResolver::new(&host);
+    let certifiers = vec!["certifier-a".to_string(), "certifier-b".to_string()];
+    let identity_lookup = server
+        .mock("POST", "/lookup")
+        .match_body(mockito::Matcher::Json(serde_json::json!({
+            "query": {"identityKey": "subject", "certifiers": certifiers},
+            "service": "ls_identity"
+        })))
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"type":"output-list","outputs":[]}"#)
+        .expect(1)
+        .create_async()
+        .await;
     assert!(resolver
-        .lookup_by_attributes(&attributes)
+        .lookup_by_attributes(&attributes, &certifiers)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(resolver
+        .lookup_by_identity_key("subject", &certifiers)
         .await
         .unwrap()
         .is_empty());
     slap.assert_async().await;
     lookup.assert_async().await;
+    identity_lookup.assert_async().await;
 }
 
 #[tokio::test]
