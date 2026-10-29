@@ -19,9 +19,8 @@ async fn test_build_input_beef_empty() {
         None, // chain_tracker - skip verification for this test
         &extended_inputs,
         &change_inputs,
-        None,  // user_input_beef
-        &[],   // known_txids
-        false, // return_txid_only
+        None, // user_input_beef
+        &[],  // known_txids
         false,
         None, // storage - no network fallback
     )
@@ -69,9 +68,8 @@ async fn test_build_input_beef_with_proven_tx() {
         None, // chain_tracker - skip verification for this test
         &extended_inputs,
         &change_inputs,
-        None,  // user_input_beef
-        &[],   // known_txids
-        false, // return_txid_only
+        None, // user_input_beef
+        &[],  // known_txids
         false,
         None, // storage - no network fallback
     )
@@ -139,7 +137,6 @@ async fn test_build_input_beef_with_unproven_tx() {
         &change_inputs,
         None,
         &[],
-        false,
         false,
         None,
     )
@@ -216,7 +213,6 @@ async fn test_build_input_beef_deduplicates_txids() {
         &change_inputs,
         None,
         &[],
-        false,
         false,
         None,
     )

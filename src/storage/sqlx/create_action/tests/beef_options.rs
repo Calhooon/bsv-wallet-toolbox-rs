@@ -7,46 +7,6 @@ use crate::storage::traits::WalletStorageWriter;
 // =============================================================================
 
 #[tokio::test]
-async fn test_build_input_beef_return_txid_only() {
-    // Gap #3: When return_txid_only is true, should return None
-    let storage = StorageSqlx::in_memory().await.unwrap();
-    storage.migrate("test", "000000").await.unwrap();
-    storage.make_available().await.unwrap();
-
-    let txid = "3333333333333333333333333333333333333333333333333333333333333333";
-    let extended_inputs = vec![ExtendedInput {
-        vin: 0,
-        txid: txid.to_string(),
-        vout: 0,
-        satoshis: 1000,
-        locking_script: vec![],
-        unlocking_script_length: 107,
-        input_description: None,
-        output: None,
-    }];
-    let change_inputs: Vec<AllocatedChangeInput> = vec![];
-
-    // With return_txid_only = true, should return None regardless of inputs
-    let mut conn = storage.pool().acquire().await.unwrap();
-    let result = build_input_beef(
-        &mut conn,
-        Some(storage.writer()),
-        None, // chain_tracker - skip verification
-        &extended_inputs,
-        &change_inputs,
-        None,
-        &[],
-        true, // return_txid_only = true
-        false,
-        None,
-    )
-    .await
-    .unwrap();
-
-    assert!(result.is_none());
-}
-
-#[tokio::test]
 async fn test_build_input_beef_with_known_txids() {
     // Gap #2: Known txids should be trimmed to txid-only format
     let storage = StorageSqlx::in_memory().await.unwrap();
@@ -84,7 +44,6 @@ async fn test_build_input_beef_with_known_txids() {
         &change_inputs,
         None,
         &[txid.to_string()], // This txid is known to recipient
-        false,
         false,
         None,
     )
@@ -146,7 +105,6 @@ async fn test_build_input_beef_with_user_input_beef() {
         &change_inputs,
         Some(&user_beef_bytes), // User provides BEEF for external input
         &[],
-        false,
         false,
         None,
     )
@@ -299,7 +257,6 @@ async fn test_build_input_beef_with_valid_chain_tracker() {
         None,
         &[],
         false,
-        false,
         None,
     )
     .await
@@ -354,7 +311,6 @@ async fn test_build_input_beef_refuses_unsourced_body_when_proof_is_malformed() 
         None,
         &[],
         false,
-        false,
         None,
     )
     .await;
@@ -400,7 +356,6 @@ async fn test_build_input_beef_valid_structure_without_tracker() {
         &change_inputs,
         None,
         &[],
-        false,
         false,
         None,
     )

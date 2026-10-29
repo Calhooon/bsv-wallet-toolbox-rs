@@ -650,7 +650,6 @@ impl Door<'_> {
             &change_result.allocated_change_inputs,
             args.input_beef.as_deref(),
             &[],
-            self.return_txid_only(),
             self.trust_self(),
             read_check,
         )
@@ -659,9 +658,11 @@ impl Door<'_> {
             return Ok(Step::Again(Again::NotPrechecked { height, root }));
         }
         // Untrimmed: the store and the signing check read every source the
-        // caller supplied; `knownTxids` trims the caller's copy alone.
+        // caller supplied whatever the caller asks back; `knownTxids` trims
+        // the caller's copy alone, and `returnTXIDOnly` returns none (#463).
         let assembled = built?;
         let input_beef = match &assembled {
+            Some(_) if self.return_txid_only() => None,
             Some(bytes) => Some(trim_known_txids(bytes, &self.known_txids())?),
             None => None,
         };
@@ -707,13 +708,12 @@ impl Door<'_> {
                 // The signed transaction under the node's word before
                 // processAction's writes and the post (#450): local CPU and
                 // reads on this connection, no provider awaited. Its sources
-                // are untrimmed: the assembly, else (`returnTXIDOnly`
-                // assembles none) the caller's inputBEEF as supplied, then
-                // the store.
+                // are untrimmed: the assembly (every option, #463), then the
+                // store.
                 if let Some(tip) = self.own_tip {
                     judge_own_tx(
                         &mut tx,
-                        assembled.as_deref().or(args.input_beef.as_deref()),
+                        assembled.as_deref(),
                         &raw_tx,
                         tip,
                         self.word.network,

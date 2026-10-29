@@ -156,7 +156,6 @@ async fn l2_23_final_bumpless_invalid_assembly_is_an_error() {
             None,
             &[],
             false,
-            false,
             None,
         )
         .await;
