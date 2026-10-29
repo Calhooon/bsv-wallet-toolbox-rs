@@ -6,6 +6,19 @@
 
 ### Fixed
 
+- #453: `internalizeAction` derives a wallet payment's BRC-29 counterparty
+  from the validated sender, as the reference's signer derives from `vargs`
+  (`signer/methods/internalizeAction.ts:86` at ts-stack edf6e03, after
+  validatePublicKey's trim and lowercase at `validationHelpers.ts:920,
+  185-191, 524, 533`). Host BEHAVIOUR change for the CLI replay (CLI #347):
+  a `senderIdentityKey` with surrounding whitespace on a P2PKH output is
+  accepted with the unpadded sender's derivation, where it was refused with
+  `Invalid sender_identity_key: invalid hex string: Invalid character ' ' at position 0`
+  (class `InvalidParameter`); that text is gone. Host stored-data change: the
+  sqlx door stores the sender trimmed and lowercased, on insert and on a
+  basket conversion, the value the reference's storage writes
+  (`storage/methods/internalizeAction.ts:778,804`), where it stored the
+  sender as supplied.
 - #422: The live `internalizeAction` door judges each input of every
   unproven raw transaction, including parents, under the node's word: the
   transaction-level bits of `ScriptFlags::standard` for the spend's era with
