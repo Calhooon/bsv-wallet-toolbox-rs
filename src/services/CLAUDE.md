@@ -88,7 +88,7 @@ lookup's per-request timeouts, issuance headers, and storage settings are unchan
 
 ### Chain (mod.rs)
 
-`Chain` has `Main` (the default), `Test` and `Regtest`; `as_str()` and lowercase serde use `main`, `test` and `regtest`. `Regtest` is the port's extension beyond the reference's two stored values. It uses the Test arm for service options, provider URLs, Genesis/CSV activation heights, discovery resolvers and the wallet Network mapping today; its era constants follow with the per-network activation heights at the bsv-rs #440 re-pin.
+`Chain` has `Main` (the default), `Test` and `Regtest`; `as_str()` and lowercase serde use `main`, `test` and `regtest`. `Regtest` is the port's extension beyond the reference's two stored values. It uses the Test arm for service options, provider URLs, discovery resolvers and the wallet `Network` mapping until its own services follow; the chaintracks verifier tip holds for `Regtest` with a service fault (`REGTEST_TIP_HELD`, `providers/chaintracks_client.rs`) rather than judge under testnet's Genesis 1,344,302 and CSV 770,112, since regtest's heights are a fixture's own (PARAMETERS.md:171: the SV node's 10,000 and 15,000, overridable; Teranode's 100 and 200) until bsv-rs #440's chain parameters carry them.
 
 ### Services (services.rs:71)
 
