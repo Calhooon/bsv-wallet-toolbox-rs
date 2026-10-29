@@ -4,6 +4,37 @@
 
 ### Fixed
 
+- #450: the wallet's own newly signed transaction is judged under the
+  node's word at its signing, as the reference's signer judges it
+  (`signer/methods/createAction.ts:120`, before `processAction` at :138;
+  `signAction.ts:90`, after it at :76; ts-stack edf6e03): each input whose
+  source bytes are in the action's input BEEF or the store, under #422's
+  two words; an input without them is skipped
+  (`verifyUnlockScripts.ts:316-321`), and so is an input the interim era
+  policy places in no era (a mainnet coin mined before Genesis, a tip or
+  network it does not read), left to the node as before. Host TEXT-DIFF for
+  CLI #347's replay: a signing fault in the wallet's own transaction (a
+  caller unlocking script without `SIGHASH_FORKID`, an unclean stack, a
+  non-minimal push, a script that fails) is now refused before the post
+  with `spend refused at offset N, input I of <txid>: <why>`, N the input's
+  offset within the signed transaction, bsv-rs's texts (for example
+  `The signature must use SIGHASH_FORKID.`,
+  `The clean stack rule requires exactly one item to be on the stack after script execution, found 2.`,
+  `Unlocking scripts can only contain push operations, and no other opcodes.`),
+  class `InvalidParameter`, where the call succeeded and the broadcaster's
+  answer carried the refusal. At `createAction` nothing is written or
+  posted. At `signAction` nothing is written or posted and the action is
+  not aborted: it stays `unsigned`, its inputs reserved and its pending
+  transaction cached (the reference posts, then refuses;
+  `docs/ARCHITECTURE.md` D18). Signing now reads the header tip: a tracker
+  with no mining tip or a tracker fault holds `createAction` with
+  `signAndProcess` and `signAction` with
+  `Service error: ChainTracker verification failed: ...` (`WalletError`) or
+  the tracker's transport fault, nothing written and the action kept; a
+  store with no tracker and no services reads no tip and judges nothing.
+  The judgment is the node's mempool word, where the reference's is the
+  consensus word: an unclean stack or a non-minimal push is refused at
+  signing.
 - #453: `internalizeAction` derives a wallet payment's BRC-29 counterparty
   from the validated sender, as the reference's signer derives from `vargs`
   (`signer/methods/internalizeAction.ts:86` at ts-stack edf6e03, after
