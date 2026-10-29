@@ -4,6 +4,31 @@
 
 ### Fixed
 
+- #464: a tracker with no mining tip, or a tip read that faults, no longer
+  holds the node's word: bsv-rs's constants name no activation height
+  still ahead (Chronicle passed at 943,816), so the spend's
+  transaction-level word is the latest era they know, post-Chronicle, the
+  coin's bits still from its proof height and an unproven coin at the same
+  latest era, as the reference reads no tip at `verifyUnlockScripts`
+  (`{ consensus: true, utxoHeight }`, `verifyUnlockScripts.ts:331` at
+  ts-stack edf6e03). This holds at the signer and the doors alike:
+  `createAction`'s signing, `signAction`, `internalizeAction`'s live
+  verifier and `createAction`'s pre-check on a caller's `inputBEEF`. A tip
+  that is present still gives tip+1, and the hold returns only if the
+  constants ever carry an activation height not yet reached. Host
+  TEXT-DIFF for CLI #347's replay: at each of the four places the hold
+  `Service error: ChainTracker verification failed: the header service supplied no mining tip`
+  (`WalletError`), and for a tip read that faults
+  `Service error: ChainTracker verification failed: <the tracker's error>`
+  or the tracker's transport fault, is gone; a host meets the verdict
+  instead: acceptance, or `spend refused at offset N, input I of <txid>: <why>`
+  with bsv-rs's texts (for example `The signature must use SIGHASH_FORKID.`),
+  class `InvalidParameter`. At the two doors a transaction whose mining
+  rule needs the tip (a non-final lock time, a coinbase spend) holds with
+  `Service error: ChainTracker verification failed: the supplied mining context could not answer Finality`
+  or `... could not answer CoinbaseMaturity`, as bsv-rs's verifier reads no
+  tip, and `internalizeAction` still holds when the tracker's root reads
+  fault.
 - #463: `createAction` with `returnTXIDOnly` assembles and stores the
   action's input BEEF as under every other option (the untrimmed assembly,
   `knownTxids` trimming nothing stored) and drops the response's BEEF
@@ -62,8 +87,9 @@
   with no mining tip or a tracker fault holds `createAction` with
   `signAndProcess` and `signAction` with
   `Service error: ChainTracker verification failed: ...` (`WalletError`) or
-  the tracker's transport fault, nothing written and the action kept; a
-  store with no tracker and no services reads no tip and judges nothing.
+  the tracker's transport fault, nothing written and the action kept (#464
+  lifts this hold: the word then takes the latest era); a store with no
+  tracker and no services reads no tip and judges nothing.
   The judgment is the node's mempool word, where the reference's is the
   consensus word: an unclean stack or a non-minimal push is refused at
   signing.
@@ -110,7 +136,7 @@
   holds with
   `Service error: ChainTracker verification failed: the header service supplied no mining tip`
   (`WalletError`) only when a caller transaction the store does not hold is
-  there to judge. At `processAction` a host meets no script refusal and no
+  there to judge (#464 lifts this hold). At `processAction` a host meets no script refusal and no
   mining-tip hold: its answers are those before #426.
 
 - #422: The live `internalizeAction` door judges each input of every
