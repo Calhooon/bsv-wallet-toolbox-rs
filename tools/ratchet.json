@@ -6,7 +6,7 @@
   "measured_at": "2026-10-28",
   "metrics": {
     "files_over_800": 33,
-    "max_file_lines": 7191,
+    "max_file_lines": 7193,
     "unwraps_outside_tests": 61,
     "undocumented_public_items": 308
   },
@@ -97,10 +97,10 @@
     "limit": 800,
     "count": 33,
     "src_files": 218,
-    "src_lines": 116631,
-    "max_lines": 7191,
+    "src_lines": 116682,
+    "max_lines": 7193,
     "files": {
-      "src/wallet/wallet.rs": 7191,
+      "src/wallet/wallet.rs": 7193,
       "src/services/services.rs": 4609,
       "src/storage/sqlx/internalize_action.rs": 4124,
       "src/storage/sqlx/process_action.rs": 3592,
@@ -319,7 +319,7 @@
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
     "count": 6689,
-    "windows": 89112,
+    "windows": 89146,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:37 = src/storage/sqlx/create_action/tests/beef_options.rs:406 (39 lines)",
