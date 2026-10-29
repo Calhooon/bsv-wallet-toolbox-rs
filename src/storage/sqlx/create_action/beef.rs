@@ -307,13 +307,65 @@ pub(super) struct CallerWord<'a> {
     pub(super) network: &'a str,
 }
 
-/// Judge each input of every unproven raw transaction the caller's
-/// `inputBEEF` brings under the node's word (#426), on `assembled`: the
-/// BEEF `build_input_beef` assembled for the pre-check, its structure and
-/// roots already verified and no known txid trimmed, so every judged
-/// transaction's ancestry is whole. A caller transaction the assembly proves
-/// is not judged, nor the wallet's own stored chain.
+/// The judged set of a posting route under the one-door rule (#426, #454).
+/// Every unproven transaction in a chain has one judging door: bytes the
+/// wallet received are judged at internalize under the node's word (#422),
+/// bytes the wallet made at their own signing (#450), and the node judges
+/// each at broadcast. So the posting routes judge nothing a second time:
+///
+/// - `createAction` judges the unproven raw transactions the caller's
+///   `inputBEEF` brings that the assembly does not prove and the store does
+///   not hold (`held`: a transaction with a row in `transactions`,
+///   `proven_tx_reqs` or `proven_txs` was judged at its own door);
+/// - `processAction` judges none: every transaction a post carries is the
+///   store's, the posted roots (the wallet's own) and their stored ancestry
+///   alike (the caller's bytes judged here at create, the wallet's earlier
+///   transactions, what internalize received).
+///
+/// The roots and the structure of each chain stay the routes' structural
+/// passes', unchanged.
+fn judged_set(caller: &Beef, assembled: &Beef, held: &HashSet<String>) -> HashSet<String> {
+    caller
+        .txs
+        .iter()
+        .filter(|tx| !tx.is_txid_only())
+        .map(BeefTx::txid)
+        .filter(|txid| !held.contains(txid))
+        .filter(|txid| {
+            assembled
+                .find_txid(txid)
+                .is_some_and(|tx| !tx.is_txid_only() && tx.bump_index().is_none())
+        })
+        .collect()
+}
+
+/// The txids of `txids` the store holds: a row in `transactions`,
+/// `proven_tx_reqs` or `proven_txs`, read on the pre-check's reader.
+async fn store_holds(conn: &mut SqliteConnection, txids: &[String]) -> Result<HashSet<String>> {
+    let mut held = HashSet::new();
+    for txid in txids {
+        let holds: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM transactions WHERE txid = ?1) \
+             OR EXISTS(SELECT 1 FROM proven_tx_reqs WHERE txid = ?1) \
+             OR EXISTS(SELECT 1 FROM proven_txs WHERE txid = ?1)",
+        )
+        .bind(txid)
+        .fetch_one(&mut *conn)
+        .await?;
+        if holds {
+            held.insert(txid.clone());
+        }
+    }
+    Ok(held)
+}
+
+/// Judge each input of every transaction in create's judged set
+/// (`judged_set`) under the node's word (#426), on `assembled`: the BEEF
+/// `build_input_beef` assembled for the pre-check, its structure and roots
+/// already verified and no known txid trimmed, so every judged
+/// transaction's ancestry is whole. An empty set asks no word and no tip.
 pub(super) async fn judge_caller_beef(
+    conn: &mut SqliteConnection,
     assembled: Option<&[u8]>,
     caller: Option<&[u8]>,
     word: &CallerWord<'_>,
@@ -326,16 +378,14 @@ pub(super) async fn judge_caller_beef(
         return Ok(());
     };
     let beef = Beef::from_binary(assembled)?;
-    let judged: HashSet<String> = caller
-        .txs
-        .iter()
-        .filter(|tx| !tx.is_txid_only())
-        .map(BeefTx::txid)
-        .filter(|txid| {
-            beef.find_txid(txid)
-                .is_some_and(|tx| !tx.is_txid_only() && tx.bump_index().is_none())
-        })
+    let raw: Vec<String> = judged_set(&caller, &beef, &HashSet::new())
+        .into_iter()
         .collect();
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let held = store_holds(conn, &raw).await?;
+    let judged = judged_set(&caller, &beef, &held);
     if judged.is_empty() {
         return Ok(());
     }
