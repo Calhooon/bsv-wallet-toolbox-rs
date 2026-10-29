@@ -27,7 +27,6 @@ use crate::storage::traits::{
     StorageCreateActionResult, StorageCreateTransactionInput, StorageCreateTransactionOutput,
     StorageProcessActionArgs, StorageProvidedBy, WalletStorageReader,
 };
-use bsv_rs::transaction::beef_stream::ChainTip;
 use bsv_rs::transaction::ChainTracker;
 use chrono::Utc;
 
@@ -53,7 +52,7 @@ pub(super) use beef_storage::*;
 pub(super) use beef_walk::*;
 pub(super) use broadcast::rebuild_beef_for_broadcast;
 pub(super) use outputs::find_or_insert_output_basket;
-pub(super) use own_word::{judge_own_tx, own_word_tip};
+pub(super) use own_word::{judge_own_tx, own_word_tip, OwnTip};
 
 #[cfg(test)]
 use super::{internalize_action, reorg_tests, sibling_bump_tests};
@@ -261,7 +260,7 @@ struct Door<'a> {
     word: CallerWord<'a>,
     /// The tip the signed transaction is judged at (#450); `None` without
     /// a sign step or a header source.
-    own_tip: Option<ChainTip>,
+    own_tip: Option<OwnTip>,
     /// The caller passed a tracker: the assembled BEEF's roots are verified.
     verify_roots: bool,
     /// A tracker (the caller's, else the storage's own) reads stored proofs.
