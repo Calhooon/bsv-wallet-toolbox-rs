@@ -149,8 +149,11 @@ fn the_coin_era_comes_from_its_proof_height() {
     ));
 }
 
-/// The interim era policy places no coin mined before Genesis: the input is
-/// left to the node, as before #450.
+/// The interim era policy places no coin mined before Genesis: under the
+/// keeper's reading of #461 the signer skips the input, the node's verdict
+/// at broadcast the backstop, where the doors refuse it; both until bsv-rs
+/// #440 names the pre-Genesis coin. The fork-ID-less signature passes here
+/// for that reason alone.
 #[test]
 fn a_coin_mined_before_genesis_is_left_to_the_node() {
     let (parent, child) = p2pkh_spend(0x01);

@@ -75,9 +75,12 @@ fn source_output(raw: &[u8], vout: u32) -> Result<Option<(u64, &[u8])>> {
 /// Judge `raw_tx`'s inputs whose source transaction `sources` holds (keyed
 /// by display txid) under the word at `tip`; the others are skipped. An
 /// input `input_eras` places in no era (a mainnet coin mined before
-/// Genesis, a tip or network the interim policy does not read) is left to
-/// the node, as before #450, until bsv-rs #440's hook reads it. A refusal
-/// is [`Error::SpendRefused`], its offset within `raw_tx`.
+/// Genesis, a coin bsv-rs cannot yet express; a tip or network the interim
+/// policy does not read) is skipped too, under the keeper's reading of
+/// #461: the signer skips it and the node's verdict at broadcast is the
+/// backstop, while the doors refuse it (a skip there could hold a phantom
+/// coin), both until bsv-rs #440 adds the pre-Genesis era. A refusal is
+/// [`Error::SpendRefused`], its offset within `raw_tx`.
 pub(crate) fn verify_own(
     raw_tx: &[u8],
     sources: &HashMap<String, SourceTx>,
@@ -98,6 +101,7 @@ pub(crate) fn verify_own(
                 why: SpendRefusal::OutputNotAvailable { vout: input.vout },
             });
         };
+        // The signer's skip under #461; the doors refuse the same input.
         let Ok(eras) = input_eras(network, tip, source.proven_height) else {
             continue;
         };
