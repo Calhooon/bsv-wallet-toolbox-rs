@@ -106,7 +106,7 @@ impl Bitails {
     pub fn new(chain: Chain, config: BitailsConfig) -> Result<Self> {
         let base_url = match chain {
             Chain::Main => BITAILS_MAINNET_URL.to_string(),
-            Chain::Test => BITAILS_TESTNET_URL.to_string(),
+            Chain::Test | Chain::Regtest => BITAILS_TESTNET_URL.to_string(),
         };
 
         let timeout = config.timeout_secs.unwrap_or(30);

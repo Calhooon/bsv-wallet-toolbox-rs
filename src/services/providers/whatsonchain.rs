@@ -89,7 +89,7 @@ impl WhatsOnChain {
     pub fn new(chain: Chain, config: WhatsOnChainConfig) -> Result<Self> {
         let base_url = match chain {
             Chain::Main => WOC_MAINNET_URL.to_string(),
-            Chain::Test => WOC_TESTNET_URL.to_string(),
+            Chain::Test | Chain::Regtest => WOC_TESTNET_URL.to_string(),
         };
 
         let timeout = config.timeout_secs.unwrap_or(30);

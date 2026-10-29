@@ -636,7 +636,7 @@ impl Services {
     pub fn new(chain: Chain) -> Result<Self> {
         let options = match chain {
             Chain::Main => ServicesOptions::mainnet(),
-            Chain::Test => ServicesOptions::testnet(),
+            Chain::Test | Chain::Regtest => ServicesOptions::testnet(),
         };
         Self::with_options(chain, options)
     }

@@ -156,7 +156,7 @@ impl Default for TableSettings {
             settings_id: 1,
             storage_identity_key: String::new(),
             storage_name: String::new(),
-            chain: "mainnet".to_string(),
+            chain: "main".to_string(),
             max_output_script: 10_000,
             dbtype: None,
             created_at: Utc::now(),
