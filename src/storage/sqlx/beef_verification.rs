@@ -64,13 +64,8 @@ pub(super) async fn verify_beef_spends(
     tracker: &dyn ChainTracker,
     network: &str,
 ) -> Result<()> {
-    let tip = tracker
-        .mining_tip()
-        .await
-        .map_err(tracker_fault)?
-        .ok_or_else(|| header_fault("the header service supplied no mining tip"))?;
     let mut headers = VerificationHeaders {
-        tip,
+        tip: mining_tip(tracker).await?,
         roots: HashSet::new(),
     };
     let mut asked = HashSet::new();
@@ -103,6 +98,31 @@ pub(super) async fn verify_beef_spends(
         }
         other => verification_result(other),
     }
+}
+
+async fn mining_tip(tracker: &dyn ChainTracker) -> Result<ChainTip> {
+    tracker
+        .mining_tip()
+        .await
+        .map_err(tracker_fault)?
+        .ok_or_else(|| header_fault("the header service supplied no mining tip"))
+}
+
+/// The node's word alone (#426), for a route whose own structural and proof
+/// checks already passed: each input of every unproven raw transaction that
+/// `judge` names is judged as `verify_beef_spends` judges it, with the same
+/// era rule and refusals. The roots are the route's; only the tip is asked.
+pub(super) async fn verify_beef_word(
+    bytes: &[u8],
+    tracker: &dyn ChainTracker,
+    network: &str,
+    judge: &(dyn Fn(&Hash32) -> bool + Sync),
+) -> Result<()> {
+    let headers = VerificationHeaders {
+        tip: mining_tip(tracker).await?,
+        roots: HashSet::new(),
+    };
+    live_word::verify_judging(bytes, &headers, network, judge)
 }
 
 fn verification_result(verdict: Verdict) -> Result<()> {

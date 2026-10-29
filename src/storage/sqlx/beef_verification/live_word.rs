@@ -109,6 +109,7 @@ fn hold_scripts(mut body: TxBody) -> TxBody {
 
 struct WordPass<'a> {
     network: &'a str,
+    judge: &'a (dyn Fn(&Hash32) -> bool + Sync),
     tip: ChainTip,
     heights: HashMap<Hash32, u64>,
     bumps: Vec<u64>,
@@ -129,8 +130,20 @@ fn refused(offset: u64, txid: Hash32, input: Option<u32>, why: SpendRefusal) -> 
 }
 
 pub(super) fn verify(bytes: &[u8], headers: &VerificationHeaders, network: &str) -> Result<()> {
+    verify_judging(bytes, headers, network, &|_| true)
+}
+
+/// `verify` for the unproven transactions `judge` names (#426); the others
+/// are read for their outputs alone, as a proven transaction is.
+pub(super) fn verify_judging(
+    bytes: &[u8],
+    headers: &VerificationHeaders,
+    network: &str,
+    judge: &(dyn Fn(&Hash32) -> bool + Sync),
+) -> Result<()> {
     let mut pass = WordPass {
         network,
+        judge,
         tip: headers.tip,
         heights: HashMap::new(),
         bumps: Vec::new(),
@@ -237,7 +250,7 @@ impl WordPass<'_> {
         if self.entries.get(&txid).is_some_and(|entry| entry.raw) {
             return Ok(());
         }
-        if bump.is_none() {
+        if bump.is_none() && (self.judge)(&txid) {
             self.mining_rules(offset, txid, &body)?;
             self.spends(offset, txid, &body)?;
         }

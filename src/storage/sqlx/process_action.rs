@@ -766,7 +766,17 @@ async fn verify_stored_post_beef(storage: &StorageSqlx, beef: &mut Beef) -> Resu
         &std::collections::HashSet::new(),
     )
     .await?;
-    Ok(())
+    // The post shares raw unproven transactions with the world: each input
+    // of every one is judged under the node's word, as internalize judges a
+    // stranger's (#426), after the structure and roots above; no writer is
+    // held here.
+    super::beef_verification::verify_beef_word(
+        &beef.to_binary(),
+        tracker,
+        &storage.get_settings().chain,
+        &|_| true,
+    )
+    .await
 }
 
 async fn post_stored_actions(
