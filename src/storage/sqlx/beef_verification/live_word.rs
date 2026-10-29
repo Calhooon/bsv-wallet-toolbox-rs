@@ -71,9 +71,9 @@ pub(crate) fn input_word(eras: InputEras) -> std::result::Result<ScriptFlags, St
     ScriptFlags::from_bits(transaction | input).map_err(|error| error.to_string())
 }
 
-struct Coin {
-    satoshis: u64,
-    script: Box<[u8]>,
+pub(super) struct Coin {
+    pub(super) satoshis: u64,
+    pub(super) script: Box<[u8]>,
 }
 
 #[derive(Default)]
@@ -407,43 +407,53 @@ impl WordPass<'_> {
         source: &Coin,
         transaction: Arc<TxSighashCache>,
     ) -> Result<()> {
-        let input = &body.inputs[vin];
-        let refusal = |why| refused(input.at, txid, u32::try_from(vin).ok(), why);
-        let script_error = |message| refusal(SpendRefusal::Script(message));
-        let eras = input_eras(
-            self.network,
-            self.tip,
-            self.heights.get(&input.prev).copied(),
-        )
-        .map_err(|message| script_error(message.into()))?;
-        let word = input_word(eras).map_err(script_error)?;
-        let locking_script = LockingScript::from_binary(&source.script)
-            .map_err(|error| script_error(error.to_string()))?;
-        let unlocking_script = UnlockingScript::from_binary(&body.raw[input.script.clone()])
-            .map_err(|error| script_error(error.to_string()))?;
-        let mut spend = Spend::with_transaction(TxSpendParams {
-            transaction,
-            input_index: vin,
-            source_satoshis: source.satoshis,
-            locking_script,
-            unlocking_script,
-            memory_limit: None,
-            work_limit: None,
-        })
-        .map_err(|error| script_error(error.to_string()))?;
-        spend.set_flags(word);
-        match spend.validate() {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(script_error("the script did not succeed".into())),
-            Err(error) => Err(match error.resource_limit {
-                Some(limit) => refusal(SpendRefusal::Resource(limit)),
-                None => script_error(error.message),
-            }),
-        }
+        let proven = self.heights.get(&body.inputs[vin].prev).copied();
+        let eras = input_eras(self.network, self.tip, proven);
+        judge_input(eras, txid, body, vin, source, transaction)
     }
 }
 
-fn transaction_cache(body: &TxBody) -> Arc<TxSighashCache> {
+/// One input under the node's word for it (`input_word` of `eras`): the
+/// per-input judge every route shares. A refusal names the input's offset.
+pub(super) fn judge_input(
+    eras: std::result::Result<InputEras, &'static str>,
+    txid: Hash32,
+    body: &TxBody,
+    vin: usize,
+    source: &Coin,
+    transaction: Arc<TxSighashCache>,
+) -> Result<()> {
+    let input = &body.inputs[vin];
+    let refusal = |why| refused(input.at, txid, u32::try_from(vin).ok(), why);
+    let script_error = |message| refusal(SpendRefusal::Script(message));
+    let eras = eras.map_err(|message| script_error(message.into()))?;
+    let word = input_word(eras).map_err(script_error)?;
+    let locking_script = LockingScript::from_binary(&source.script)
+        .map_err(|error| script_error(error.to_string()))?;
+    let unlocking_script = UnlockingScript::from_binary(&body.raw[input.script.clone()])
+        .map_err(|error| script_error(error.to_string()))?;
+    let mut spend = Spend::with_transaction(TxSpendParams {
+        transaction,
+        input_index: vin,
+        source_satoshis: source.satoshis,
+        locking_script,
+        unlocking_script,
+        memory_limit: None,
+        work_limit: None,
+    })
+    .map_err(|error| script_error(error.to_string()))?;
+    spend.set_flags(word);
+    match spend.validate() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(script_error("the script did not succeed".into())),
+        Err(error) => Err(match error.resource_limit {
+            Some(limit) => refusal(SpendRefusal::Resource(limit)),
+            None => script_error(error.message),
+        }),
+    }
+}
+
+pub(super) fn transaction_cache(body: &TxBody) -> Arc<TxSighashCache> {
     let inputs = body
         .inputs
         .iter()
