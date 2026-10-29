@@ -413,6 +413,7 @@ without any BRC-104 headers. Used for testing.
 `make_available()` caches `TableSettings` in an `RwLock` to avoid repeated
 server calls. Also caches the server's identity key from settings for future
 request signing. Use `get_settings_async()` for safe async access.
+The remote client passes the server's chain word through unchanged; the local SQLx legacy-word map does not run here.
 
 ### Thread Safety
 

@@ -57,7 +57,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 
 ### `StorageSqlx`
 The main storage provider struct implementing all wallet storage traits.
-`storage::sqlx::StorageSqlxOptions { rng_seed: Option<[u8; 32]> }` configures `new_with_options` and `open_with_options`: `None` uses OS entropy, and `Some(seed)` repeats references and change derivations from the store's shared stream; no environment variable supplies the seed.
+`storage::sqlx::StorageSqlxOptions { chain: Chain, rng_seed: Option<[u8; 32]> }` configures `new_with_options` and `open_with_options`. `chain` defaults to `Chain::Main` and supplies a fresh settings row; an existing row keeps its stored network. `Chain::Regtest` is the port's extension beyond the reference's stored `main` and `test` values. For `rng_seed`, `None` uses OS entropy, and `Some(seed)` repeats references and change derivations from the store's shared stream; no environment variable supplies the seed.
 
 ```rust
 // impl Clone by hand: every field shared, none copied
@@ -907,9 +907,9 @@ fields do not include `providedBy` or `purpose`. The sync export has its own
 query and already selects those two origin columns.
 
 ### Settings Caching
-Settings are loaded once via `make_available()` and cached in an `RwLock`. The `get_settings()` method returns a reference to cached data.
+Settings are loaded via `make_available()` and cached in an `RwLock`. The `get_settings()` method returns an owned copy of cached data.
 
-The settings row's `chain` is written once, when `migrate()` creates the row: a later `migrate()` keeps the stored chain and rewrites the other columns, the name, the identity key, `max_output_script` (back to its default) and `updated_at` (#435; the reference inserts `chain` only in the migration that creates the row, `KnexMigrations.ts` at ts-stack edf6e03). A new row is `mainnet`: no constructor takes a `Chain` yet, so a testnet or regtest store's chain is set only by writing the row (the tests use `UPDATE settings SET chain`). Readers match its prefix (`proof_requests.rs`: `starts_with("main")`).
+When `migrate()` creates the settings row, `chain` comes from `options.chain.as_str()`: `main`, `test` or `regtest` (#435, #439, #440). The default constructors create a mainnet store with the word `main`. Local reads map legacy `mainnet` to `main` and `testnet` to `test`, including `make_available()` and its cached `get_settings()` result; reading alone leaves the database row untouched. The next `migrate()` writes that mapped word back, keeps the existing network even if the constructor chose another, and rewrites the other columns: the name, identity key, `max_output_script` (back to its default) and `updated_at`. A store synced across implementations thus carries the reference's `main` or `test` bytes (ts-stack edf6e03, `KnexMigrations.ts`); `regtest` is the port's extension. The era policy still handles Regtest like Test pending the per-network activation heights at the bsv-rs #440 re-pin. The live-word and proof-request readers remain tolerant of the legacy spellings (`proof_requests.rs`: `starts_with("main")`).
 
 ### MonitorStorage Integration
 All MonitorStorage methods are fully implemented:

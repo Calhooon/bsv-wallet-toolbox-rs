@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- #435: `StorageSqlxOptions` gains `chain: Chain`, defaulting to `Chain::Main`, to configure a fresh store. API break on beta; host change for CLI #347: a `StorageSqlxOptions` literal gains `chain: Chain::Main` or `..Default::default()`.
+- #440: settings store `main` and `test`, matching the reference's bytes in a store synced across implementations. Local reads map legacy `mainnet` and `testnet`; the next `migrate()` rewrites them. Hosts reading the row directly see the new words after migration.
+- #439: `Chain::Regtest` serializes and stores `regtest`, the port's extension. API break for exhaustive matches; Regtest uses the Test arm until its era constants follow at the bsv-rs #440 re-pin.
+
 ### Fixed
 
 - #467: the `createAction` `signAndProcess` answer omits `tx` when
