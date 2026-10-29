@@ -6,7 +6,7 @@
 
 - #435: `StorageSqlxOptions` gains `chain: Chain`, defaulting to `Chain::Main`, to configure a fresh store. API break on beta; host change for CLI #347: a `StorageSqlxOptions` literal gains `chain: Chain::Main` or `..Default::default()`.
 - #440: settings store `main` and `test`, matching the reference's bytes in a store synced across implementations. Local reads map legacy `mainnet` and `testnet`; the next `migrate()` rewrites them. Hosts reading the row directly see the new words after migration.
-- #439: `Chain::Regtest` serializes and stores `regtest`, the port's extension. API break for exhaustive matches; Regtest uses the Test arm until its era constants follow at the bsv-rs #440 re-pin.
+- #439: `Chain::Regtest` serializes and stores `regtest`, the port's extension. API break for exhaustive matches; Regtest uses the Test arm until its era constants follow at the bsv-rs #440 re-pin, except the chaintracks verifier tip, which holds for Regtest with a service fault naming the gap (a regtest host meets `Chaintracks verifier tip: regtest activation heights are not known to this client until bsv-rs #440's chain parameters; the tip is held` where base met a decoding fault) rather than judge under testnet's heights.
 
 ### Fixed
 

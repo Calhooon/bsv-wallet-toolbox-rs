@@ -68,6 +68,10 @@ impl From<CtBlockHeader> for BlockHeader {
 ///
 /// Provides block header lookups via a remote Chaintracks server.
 /// Follows the same provider pattern as `BlockHeaderService` (BHS).
+/// The verifier tip's hold for a regtest chaintracks server: this client has no
+/// regtest activation heights until bsv-rs #440's chain parameters (#439).
+pub const REGTEST_TIP_HELD: &str = "Chaintracks verifier tip: regtest activation heights are not known to this client until bsv-rs #440's chain parameters; the tip is held";
+
 pub struct ChaintracksServiceClient {
     client: Client,
     config: ChaintracksConfig,
@@ -274,6 +278,17 @@ impl ChaintracksServiceClient {
 
     async fn verifier_tip(&self) -> Result<ChainTip> {
         let chain = self.verifier_chain().await?;
+        // bsv-script-lean origin/main:docs/PARAMETERS.md, network table:
+        // node chainparams.cpp:18,20,1046,1342 (Genesis and CSV activation).
+        // Regtest's heights are a fixture's own (PARAMETERS.md:171: the SV
+        // node's 10,000 Genesis and 15,000 Chronicle, overridable; Teranode's
+        // 100 and 200), so the tip is held rather than judged under testnet's
+        // until bsv-rs #440's chain parameters carry them (#439).
+        let (genesis_height, csv_height) = match chain {
+            Chain::Main => (620_538, 419_328),
+            Chain::Test => (1_344_302, 770_112),
+            Chain::Regtest => return Err(Error::ServiceError(REGTEST_TIP_HELD.into())),
+        };
         let tip = self.find_chain_tip_header().await?;
         let start = tip.height.saturating_sub(10);
         let count = tip.height - start + 1;
@@ -292,12 +307,6 @@ impl ChaintracksServiceClient {
                 )
             })?;
         let median_time_past = median_time_past(&bytes, &tip.to_binary(), count as usize)?;
-        // bsv-script-lean origin/main:docs/PARAMETERS.md, network table:
-        // node chainparams.cpp:18,20,1046,1342 (Genesis and CSV activation).
-        let (genesis_height, csv_height) = match chain {
-            Chain::Main => (620_538, 419_328),
-            Chain::Test | Chain::Regtest => (1_344_302, 770_112),
-        };
         Ok(ChainTip {
             height: tip.height,
             median_time_past,
@@ -447,6 +456,16 @@ mod tests {
             tip_read.assert_async().await;
             range.assert_async().await;
         }
+    }
+
+    #[tokio::test]
+    async fn regtest_verifier_tip_is_held_until_the_chain_table() {
+        let mut server = crate::services::mock_server().await;
+        let network = answer(&mut server, "/getChain", serde_json::json!("regtest"), 1).await;
+        let client = ChaintracksServiceClient::from_url(&server.url());
+        let err = client.mining_tip().await.unwrap_err();
+        assert!(err.to_string().contains(REGTEST_TIP_HELD), "{err}");
+        network.assert_async().await;
     }
 
     #[tokio::test]
