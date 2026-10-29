@@ -244,7 +244,7 @@ async fn create_review_reads_no_transaction_row_without_a_request() {
 }
 
 impl Fixture {
-    /// After each of the first `times` review reads, store a new competitor
+    /// After each of the opening `times` review reads, store a new competitor
     /// for the input, as another writer would between the read and the lock.
     /// Returns the read count and the competitors stored, in order.
     fn move_competitor_after_read(

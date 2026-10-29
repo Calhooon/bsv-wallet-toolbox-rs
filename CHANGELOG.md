@@ -60,7 +60,7 @@
   `proven_txs` and served `proven_tx_reqs` rows as the reference's
   `getProvenOrRawTx`, never `transactions.raw_tx`. Create asks no provider, so
   a competitor or ancestor the stores lack yields a txid-only BEEF where the
-  reference would first ask services. The result's own zero `txid` remains
+  reference would ask services before answering. The result's own zero `txid` remains
   the D14 filing (ts-stack #1436).
 
 - #386: `createAction` shares the internalize door's `validateLabel` bound:
