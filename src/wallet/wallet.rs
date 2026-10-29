@@ -2371,8 +2371,9 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<InternalizeActionResult> {
         validate_originator(originator)?;
-        // Validate arguments before the BRC-29 script comparison and storage.
-        super::internalize_args::validate_internalize_action_args(&args)?;
+        // Validate arguments before the BRC-29 script comparison and storage;
+        // each wallet payment's sender is the validated key (#453).
+        let senders = super::internalize_args::validate_internalize_action_args(&args)?;
 
         // Serialize spending operations (creates new spendable outputs).
         let _spend_guard = self.spend_lock.lock().await;
@@ -2380,8 +2381,8 @@ where
         // Validate derivation metadata matches locking scripts (death spiral prevention).
         // If the derived key doesn't match the script, this UTXO can never be signed.
         if let Ok(tx) = bsv_rs::transaction::Transaction::from_beef(&args.tx, None) {
-            for output in &args.outputs {
-                if let Some(ref payment) = output.payment_remittance {
+            for (output, sender) in args.outputs.iter().zip(senders) {
+                if let (Some(payment), Some(sender)) = (&output.payment_remittance, sender) {
                     let vout = output.output_index as usize;
                     if vout >= tx.outputs.len() {
                         return Err(bsv_rs::Error::WalletRefusal {
@@ -2402,16 +2403,9 @@ where
                         && script[23] == 0x88
                         && script[24] == 0xac
                     {
-                        // The validator refused an empty sender; a padded one
-                        // passes it trimmed and is refused here (#420).
-                        let counterparty = Counterparty::Other(
-                            PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
-                                bsv_rs::Error::WalletRefusal {
-                                    class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                                    message: format!("Invalid sender_identity_key: {}", e),
-                                }
-                            })?,
-                        );
+                        // The counterparty is the validated sender, trimmed as
+                        // the reference's vargs carry it (internalizeAction.ts:86).
+                        let counterparty = Counterparty::Other(sender);
                         let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
                         let key_id = format!(
                             "{} {}",

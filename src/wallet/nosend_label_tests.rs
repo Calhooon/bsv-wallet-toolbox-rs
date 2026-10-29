@@ -97,6 +97,11 @@ fn spend_to(outpoint: String, satoshis: u64, lock: &str) -> bsv_rs::transaction:
 /// An `AtomicBEEF` whose subject pays `lock` (hex) and whose parent is
 /// proven by a coinbase-shaped BUMP.
 fn atomic_beef_paying(lock: &str) -> Vec<u8> {
+    atomic_beef_paying_at(lock, 100_001)
+}
+
+/// [`atomic_beef_paying`] with the parent's BUMP at `height`.
+fn atomic_beef_paying_at(lock: &str, height: u32) -> Vec<u8> {
     use bsv_rs::transaction::{Beef, MerklePath};
 
     let parent = spend_to("11".repeat(32), 20_000, "7551");
@@ -104,7 +109,7 @@ fn atomic_beef_paying(lock: &str) -> Vec<u8> {
     let child = spend_to(parent_txid.clone(), 10_000, lock);
     let txid = child.id();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, height));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_transaction(child);
     beef.to_binary_atomic(&txid).unwrap()
@@ -341,21 +346,57 @@ async fn invalid_sender_on_p2pkh_answers_the_argument_text_through_wallet_interf
     }
 }
 
-/// #420: a valid sender padded with whitespace passes the validator, which
-/// trims as validateHexString does (validationHelpers.ts:525), and meets the
-/// wallet's own parse of the untrimmed key on a P2PKH output. The reference
-/// derives from the trimmed key (signer/methods/internalizeAction.ts:86).
+/// The wallet's BRC-29 key under `cHJlZml4 c3VmZml4` for `PAYMENT_SENDER`.
+fn derived_for_sender(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> PublicKey {
+    use bsv_rs::wallet::{Counterparty, KeyDeriverApi, Protocol, SecurityLevel};
+    wallet
+        .proto_wallet
+        .key_deriver()
+        .derive_public_key(
+            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
+            "cHJlZml4 c3VmZml4",
+            &Counterparty::Other(PublicKey::from_hex(PAYMENT_SENDER).unwrap()),
+            true,
+        )
+        .unwrap()
+}
+
+/// #453: a valid sender padded with whitespace is the validated sender the
+/// reference derives from (ts-stack@edf6e03 signer/methods/internalizeAction.ts:86
+/// reads `vargs.outputs` at 56, validateHexString trimmed and lowercased it at
+/// validationHelpers.ts:524, 533). The P2PKH output is locked to the key the
+/// unpadded sender derives, so the padded payment's derivation is the
+/// unpadded one's; the payment is accepted and stored under the validated
+/// sender. Before #453 it was refused with `Invalid sender_identity_key:
+/// invalid hex string: Invalid character ' ' at position 0`.
 #[tokio::test]
-async fn padded_sender_on_p2pkh_meets_the_wallet_sender_parse() {
+async fn padded_sender_on_p2pkh_derives_from_the_validated_sender() {
     let (_dir, wallet) = wallet().await;
-    let sender = format!(" {PAYMENT_SENDER} ");
-    assert_internalize_refused(
-        &wallet,
-        own_payment(&wallet, &sender),
-        WalletRefusalClass::InvalidParameter,
-        "Invalid sender_identity_key: invalid hex string: Invalid character ' ' at position 0",
+    wallet
+        .storage()
+        .set_services(std::sync::Arc::new(MockWalletServices::new()));
+    let derived = derived_for_sender(&wallet);
+    let lock = format!("76a914{}88ac", hex::encode(derived.hash160()));
+    let mut args = payment_of(
+        "cHJlZml4",
+        "c3VmZml4",
+        &format!(" {} ", PAYMENT_SENDER.to_uppercase()),
+    );
+    let genesis = bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT;
+    args.tx = atomic_beef_paying_at(&lock, genesis + 1);
+    let result = wallet
+        .internalize_action(args, Some(ORIGIN))
+        .await
+        .expect("the padded sender's payment is accepted");
+    assert!(result.accepted);
+    let (stored,): (Option<String>,) = sqlx::query_as(
+        "SELECT sender_identity_key FROM outputs WHERE locking_script = ? AND change = 1",
     )
-    .await;
+    .bind(hex::decode(&lock).unwrap())
+    .fetch_one(wallet.storage().pool())
+    .await
+    .unwrap();
+    assert_eq!(stored.as_deref(), Some(PAYMENT_SENDER));
 }
 
 /// #371: a wallet payment with no paymentRemittance, and a basket insertion
@@ -417,20 +458,9 @@ async fn labels_bound_precedes_bad_derivation_through_wallet_interface() {
 /// Valid arguments still reach the BRC-29 comparison after validation.
 #[tokio::test]
 async fn valid_args_still_refuse_bad_derivation_through_wallet_interface() {
-    use bsv_rs::wallet::{Counterparty, KeyDeriverApi, Protocol, SecurityLevel};
-
     let (_dir, wallet) = wallet().await;
     let args = own_payment(&wallet, PAYMENT_SENDER);
-    let derived = wallet
-        .proto_wallet
-        .key_deriver()
-        .derive_public_key(
-            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
-            "cHJlZml4 c3VmZml4",
-            &Counterparty::Other(PublicKey::from_hex(PAYMENT_SENDER).unwrap()),
-            true,
-        )
-        .unwrap();
+    let derived = derived_for_sender(&wallet);
     let text = format!(
         "Derivation mismatch for output 0: derived {} != script {}",
         hex::encode(derived.hash160()),

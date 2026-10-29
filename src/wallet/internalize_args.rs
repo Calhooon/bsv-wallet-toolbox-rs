@@ -2,6 +2,7 @@
 
 use super::label;
 use crate::error::{Error, Result};
+use bsv_rs::primitives::PublicKey;
 use bsv_rs::wallet::{InternalizeActionArgs, WalletPayment};
 
 /// Protocol identifier for wallet payments.
@@ -42,42 +43,23 @@ const BRC177_INCOMING_REFUSAL: &str =
 /// validateInternalizeActionArgs (1046-1074) calls validateArray: `outputs`
 /// (1052) ahead of every output, an insertion's `tags` (948) after its
 /// `customInstructions` (942-946), `labels` (1054) after the outputs.
-pub(crate) fn validate_internalize_action_args(args: &InternalizeActionArgs) -> Result<()> {
+///
+/// Returns, one per output, the wallet payment's `senderIdentityKey` as the
+/// validated args carry it (#453): the key validatePublicKey parsed from the
+/// trimmed value (920, 185-191). The wallet derives the BRC-29 counterparty
+/// from it, as the reference's signer does from `vargs` (signer/methods/
+/// internalizeAction.ts:56, 86), and the sqlx door stores its hex, the
+/// trimmed and lowercased value the reference's storage writes (storage/
+/// methods/internalizeAction.ts:240, 778, 804).
+pub(crate) fn validate_internalize_action_args(
+    args: &InternalizeActionArgs,
+) -> Result<Vec<Option<PublicKey>>> {
     validate_array_bound(
         args.outputs.len(),
         "outputs",
         MAXIMUM_WALLET_COLLECTION_ITEMS,
     )?;
-    // The earliest output refused by its remittance exclusivity, its wallet
-    // payment or its tags bound is refused only once every output reached
-    // before it has passed its customInstructions, as the reference maps the
-    // outputs in order; bsv-rs reads only the outputs. Exclusivity and the
-    // payment run ahead of the output's own customInstructions, the tags
-    // bound after them.
-    let over = args.outputs.iter().enumerate().find_map(|(index, output)| {
-        let payment = output.payment_remittance.as_ref();
-        if let Err(refusal) = validate_remittance_exclusivity(output)
-            .and_then(|()| payment.map_or(Ok(()), validate_wallet_payment))
-        {
-            return Some((index, refusal));
-        }
-        let tags = output.insertion_remittance.as_ref()?.tags.as_ref()?;
-        validate_array_bound(tags.len(), "tags", MAXIMUM_WALLET_COLLECTION_ITEMS)
-            .err()
-            .map(|refusal| (index + 1, refusal))
-    });
-    if let Some((reached, refusal)) = over {
-        let earlier = InternalizeActionArgs {
-            tx: Vec::new(),
-            outputs: args.outputs[..reached].to_vec(),
-            description: String::new(),
-            labels: None,
-            seek_permission: None,
-        };
-        validate_insertion_instructions(&earlier)?;
-        return Err(refusal);
-    }
-    validate_insertion_instructions(args)?;
+    let senders = validate_outputs(args)?;
     validate_description(&args.description)?;
     validate_array_bound(
         args.labels.as_ref().map_or(0, Vec::len),
@@ -97,7 +79,45 @@ pub(crate) fn validate_internalize_action_args(args: &InternalizeActionArgs) -> 
     if has_brc177_no_send_label(args.labels.as_deref()) {
         return Err(Error::ValidationError(BRC177_INCOMING_REFUSAL.to_string()));
     }
-    Ok(())
+    Ok(senders)
+}
+
+/// The outputs' checks in the reference's order, returning each wallet
+/// payment's validated sender.
+fn validate_outputs(args: &InternalizeActionArgs) -> Result<Vec<Option<PublicKey>>> {
+    // The earliest output refused by its remittance exclusivity, its wallet
+    // payment or its tags bound is refused only once every output reached
+    // before it has passed its customInstructions, as the reference maps the
+    // outputs in order; bsv-rs reads only the outputs. Exclusivity and the
+    // payment run ahead of the output's own customInstructions, the tags
+    // bound after them.
+    let mut senders = Vec::with_capacity(args.outputs.len());
+    let over = args.outputs.iter().enumerate().find_map(|(index, output)| {
+        let payment = output.payment_remittance.as_ref();
+        match validate_remittance_exclusivity(output)
+            .and_then(|()| payment.map(validate_wallet_payment).transpose())
+        {
+            Ok(sender) => senders.push(sender),
+            Err(refusal) => return Some((index, refusal)),
+        }
+        let tags = output.insertion_remittance.as_ref()?.tags.as_ref()?;
+        validate_array_bound(tags.len(), "tags", MAXIMUM_WALLET_COLLECTION_ITEMS)
+            .err()
+            .map(|refusal| (index + 1, refusal))
+    });
+    if let Some((reached, refusal)) = over {
+        let earlier = InternalizeActionArgs {
+            tx: Vec::new(),
+            outputs: args.outputs[..reached].to_vec(),
+            description: String::new(),
+            labels: None,
+            seek_permission: None,
+        };
+        validate_insertion_instructions(&earlier)?;
+        return Err(refusal);
+    }
+    validate_insertion_instructions(args)?;
+    Ok(senders)
 }
 
 /// The reference's `validateStringLength` for a description (#380, #383,
@@ -170,8 +190,9 @@ fn validate_remittance_exclusivity(output: &bsv_rs::wallet::InternalizeOutput) -
 /// The reference's validateWalletPayment (#377, ts-stack@edf6e03
 /// validationHelpers.ts:914-923), run after the one-remittance check (972-977)
 /// at 981: the base64 `derivationPrefix`, then `derivationSuffix`, then the
-/// `senderIdentityKey` as a compressed public key, in its texts.
-fn validate_wallet_payment(payment: &WalletPayment) -> Result<()> {
+/// `senderIdentityKey` as a compressed public key, in its texts; returns the
+/// sender's key.
+fn validate_wallet_payment(payment: &WalletPayment) -> Result<PublicKey> {
     validate_base64(&payment.derivation_prefix, "derivationPrefix")?;
     validate_base64(&payment.derivation_suffix, "derivationSuffix")?;
     validate_public_key(&payment.sender_identity_key, "senderIdentityKey")
@@ -198,8 +219,9 @@ fn validate_base64(value: &str, name: &str) -> Result<()> {
 
 /// validatePublicKey (185-191): validateHexString with 66 to 66 (522-534),
 /// then isValidCompressedPublicKey (Secp256k1Validation.ts:15-22); trimmed
-/// as ECMAScript trims (`label.rs`).
-fn validate_public_key(value: &str, name: &str) -> Result<()> {
+/// as ECMAScript trims (`label.rs`). Returns the key parsed from the trimmed
+/// value, whose hex is the lowercased value validateHexString returns (533).
+fn validate_public_key(value: &str, name: &str) -> Result<PublicKey> {
     let value = label::trim_ecmascript(value);
     let length = value.encode_utf16().count();
     let mustbe = if length % 2 == 1 {
@@ -210,12 +232,13 @@ fn validate_public_key(value: &str, name: &str) -> Result<()> {
         "at least 66 length.".to_string()
     } else if length > 66 {
         "no more than 66 length.".to_string()
-    } else if !(value.starts_with("02") || value.starts_with("03"))
-        || bsv_rs::primitives::PublicKey::from_hex(value).is_err()
+    } else if let Some(key) = (value.starts_with("02") || value.starts_with("03"))
+        .then(|| PublicKey::from_hex(value).ok())
+        .flatten()
     {
-        "a valid compressed secp256k1 public key".to_string()
+        return Ok(key);
     } else {
-        return Ok(());
+        "a valid compressed secp256k1 public key".to_string()
     };
     Err(invalid_parameter(name, &mustbe))
 }
