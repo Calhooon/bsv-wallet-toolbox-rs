@@ -247,3 +247,7 @@ pub(super) fn verify_selected(
 #[cfg(test)]
 #[path = "own_word_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "own_word_signing_tests.rs"]
+mod signing_tests;
