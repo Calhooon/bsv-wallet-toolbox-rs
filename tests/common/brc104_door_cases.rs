@@ -76,8 +76,7 @@ impl Case {
     pub(crate) fn headers(&self) -> Vec<(String, String)> {
         let signature = self.signature.clone().unwrap_or_else(|| {
             self.signature_chars
-                .map(|size| "a".repeat(size))
-                .unwrap_or_else(|| "3006020101020101".into())
+                .map_or_else(|| "3006020101020101".into(), |size| "a".repeat(size))
         });
         let mut values = vec![("x-bsv-auth-signature".to_string(), signature)];
         for (name, value) in [
