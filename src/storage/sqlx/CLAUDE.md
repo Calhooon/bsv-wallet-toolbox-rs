@@ -510,6 +510,16 @@ pre-Chronicle coins, the coin era's `OP_2MUL` and `OP_SUBSTR` refusals, and
 the era refusal on a regtest tip between Genesis and Chronicle. D15 is closed
 by #422; create/process script verification stays with #426.
 
+Two witnesses in `script_pin_tests/reader_witnesses.rs` (#396) pin bsv-rs
+0.9.0-beta.2's reader changes at the full door (`internalize_action_internal`,
+mainnet, the parent proven at Chronicle's height): a BEEF with a child ahead
+of its parent is accepted through the stream and the live word with the
+output rows of its in-order twin (bsv-rs #240; beta.1 refused it `InputNamesNoElement`), and
+a spend holding 33,100,000 bytes on its stack is accepted, the stream running
+it under no memory cap (bsv-rs #331; beta.1 declined past 32,000,000 bytes).
+The door passes no figure of its own until #395 (bsv-rs #373's
+`set_memory_limit`); that witness then turns to the door's refusal.
+
 ## Create Action Implementation
 
 The private `create_action/` module provides full transaction creation functionality:
