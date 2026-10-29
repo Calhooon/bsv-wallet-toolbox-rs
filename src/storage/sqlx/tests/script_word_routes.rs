@@ -140,6 +140,7 @@ fn assert_forkid_refusal(error: Error, parent: &Transaction) {
 async fn post(
     bad: bool,
     bad_own: bool,
+    delayed: bool,
 ) -> (
     StorageSqlx,
     Arc<MockWalletServices>,
@@ -189,7 +190,7 @@ async fn post(
     .await
     .unwrap();
     let args = json!({ "isNewTx": false, "isSendWith": true, "isNoSend": false,
-        "isDelayed": false, "sendWith": [txid] });
+        "isDelayed": delayed, "sendWith": [txid] });
     let posted = process_action_internal(&storage, user_id, serde_json::from_value(args).unwrap())
         .await
         .map(|result| result.send_with_results.unwrap()[0].status.clone());
@@ -200,7 +201,7 @@ async fn post(
 /// `SIGHASH_FORKID`. Refused before anything is written or posted.
 #[tokio::test]
 async fn process_post_refuses_an_unproven_parent_without_forkid() {
-    let (storage, services, parent, posted) = post(true, false).await;
+    let (storage, services, parent, posted) = post(true, false, false).await;
     assert_forkid_refusal(posted.unwrap_err(), &parent);
     assert_eq!(services.call_count("post_beef"), 0);
     let statuses: (String, String) = sqlx::query_as(
@@ -212,10 +213,34 @@ async fn process_post_refuses_an_unproven_parent_without_forkid() {
     assert_eq!(statuses, ("nosend".into(), "nosend".into()));
 }
 
+/// The witness on the queued path: a delayed `sendWith` takes the same
+/// verdict before anything is queued.
+#[tokio::test]
+async fn process_post_delayed_refuses_an_unproven_parent_without_forkid() {
+    let (storage, services, parent, posted) = post(true, false, true).await;
+    assert_forkid_refusal(posted.unwrap_err(), &parent);
+    assert_eq!(services.call_count("post_beef"), 0);
+    let statuses: (String, String) = sqlx::query_as(
+        "SELECT t.status, r.status FROM transactions t JOIN proven_tx_reqs r ON r.txid = t.txid",
+    )
+    .fetch_one(storage.pool())
+    .await
+    .unwrap();
+    assert_eq!(statuses, ("nosend".into(), "nosend".into()));
+}
+
+/// Control: the same shape queued, every input passing the word.
+#[tokio::test]
+async fn process_post_delayed_queues_an_unproven_parent_the_word_passes() {
+    let (_, services, _, posted) = post(false, false, true).await;
+    assert_eq!(posted.unwrap(), "sending");
+    assert_eq!(services.call_count("post_beef"), 0);
+}
+
 /// Control: the same shape, every input passing the word, is posted.
 #[tokio::test]
 async fn process_post_accepts_an_unproven_parent_the_word_passes() {
-    let (_, services, _, posted) = post(false, false).await;
+    let (_, services, _, posted) = post(false, false, false).await;
     assert_eq!(posted.unwrap(), "unproven");
     assert_eq!(services.call_count("post_beef"), 1);
 }
@@ -225,7 +250,7 @@ async fn process_post_accepts_an_unproven_parent_the_word_passes() {
 /// the broadcaster's answer being the host's refusal.
 #[tokio::test]
 async fn process_post_leaves_the_posted_actions_inputs_to_the_node() {
-    let (_, services, _, posted) = post(false, true).await;
+    let (_, services, _, posted) = post(false, true, false).await;
     assert_eq!(posted.unwrap(), "unproven");
     assert_eq!(services.call_count("post_beef"), 1);
 }

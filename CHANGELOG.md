@@ -24,8 +24,8 @@
   the create door's pre-check judges each input of every unproven raw
   transaction the caller's `inputBEEF` brings, and `processAction` judges
   every unproven raw transaction of a post-BEEF beside the transactions it
-  posts (a `sendWith` post, and a new signed transaction's post whether sent
-  now or queued), after each route's structure and roots and before anything
+  posts (a `sendWith` post and a new signed transaction's post, each whether
+  sent now or queued with `acceptDelayedBroadcast`), after each route's structure and roots and before anything
   is written or posted. Host
   TEXT-DIFF for CLI #347's replay: at `createAction` and `processAction` a host
   can now meet `spend refused at offset N, input I of <txid>: <why>` with
