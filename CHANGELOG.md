@@ -19,27 +19,29 @@
   basket conversion, the value the reference's storage writes
   (`storage/methods/internalizeAction.ts:778,804`), where it stored the
   sender as supplied.
-- #426: `createAction` and `processAction` judge the unproven transactions
-  they accept under the node's word, as `internalizeAction` does since #422:
-  the create door's pre-check judges each input of every unproven raw
-  transaction the caller's `inputBEEF` brings, and `processAction` judges
-  every unproven raw transaction of a post-BEEF beside the transactions it
-  posts (a `sendWith` post and a new signed transaction's post, each whether
-  sent now or queued with `acceptDelayedBroadcast`), after each route's
-  structure and roots and before anything is written or posted. Host
-  TEXT-DIFF for CLI #347's replay: at `createAction` and `processAction` a host
-  can now meet `spend refused at offset N, input I of <txid>: <why>` with
-  bsv-rs's script texts (for example
-  `The signature must use SIGHASH_FORKID.`,
+- #426, #454: `createAction` judges the unproven transactions the caller's
+  `inputBEEF` brings that the store does not hold under the node's word, as
+  `internalizeAction` judges received bytes since #422, in the create
+  door's pre-check after the BEEF's structure and roots and before anything
+  is written. Under the one-door rule every unproven transaction in a chain
+  is judged at one door (received bytes at internalize, the wallet's own at
+  their signing under #450, each by the node at broadcast), so neither
+  posting route judges anything the store already holds: a caller
+  transaction the store holds (internalized earlier, or the wallet's own) is
+  not judged again at `createAction`, and `processAction` judges no script,
+  since every transaction a post carries is the store's (the posted
+  transactions and their stored ancestry alike). Host TEXT-DIFF for CLI
+  #347's replay: at `createAction` a host can now meet
+  `spend refused at offset N, input I of <txid>: <why>` with bsv-rs's
+  script texts (for example `The signature must use SIGHASH_FORKID.`,
   `The signature must not use SIGHASH_CHRONICLE before Chronicle.`,
   `The mainnet coin height is before Genesis.`) and its other spend
-  refusals, class `InvalidParameter`; a tracker with no mining tip holds with
+  refusals, class `InvalidParameter`, and a tracker with no mining tip
+  holds with
   `Service error: ChainTracker verification failed: the header service supplied no mining tip`
-  (`WalletError`, `process_new_tx_holds_without_a_mining_tip`) when an
-  unproven transaction is there to judge. The transactions a post carries
-  for the wallet (its own signed transactions) are outside the judged set:
-  the node judges them at broadcast and the broadcaster's answer is the
-  host's refusal (#450).
+  (`WalletError`) only when a caller transaction the store does not hold is
+  there to judge. At `processAction` a host meets no script refusal and no
+  mining-tip hold: its answers are those before #426.
 
 - #422: The live `internalizeAction` door judges each input of every
   unproven raw transaction, including parents, under the node's word: the
