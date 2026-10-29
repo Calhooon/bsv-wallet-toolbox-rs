@@ -136,3 +136,59 @@ async fn sign_action_skips_an_input_without_source_bytes() {
     assert_eq!(stored_action(&scene, &reference).await.0, "nosend");
     assert_eq!(stored_action(&scene, &reference).await.1, Some(signed.id()));
 }
+
+/// A tracker that answers roots and height and supplies no mining tip.
+struct NoTip;
+
+#[async_trait::async_trait]
+impl bsv_rs::transaction::ChainTracker for NoTip {
+    async fn is_valid_root_for_height(
+        &self,
+        _root: &str,
+        _height: u32,
+    ) -> Result<bool, bsv_rs::transaction::ChainTrackerError> {
+        Ok(true)
+    }
+
+    async fn current_height(&self) -> Result<u32, bsv_rs::transaction::ChainTrackerError> {
+        Ok(880_000)
+    }
+}
+
+/// The word's tip cannot be read: signAction holds with the service fault,
+/// nothing written or posted, and the action is not aborted, so the same
+/// call succeeds once the header service answers.
+#[tokio::test]
+async fn sign_action_holds_without_a_mining_tip_and_keeps_the_action() {
+    let scene = named_input_scene().await;
+    let signable = defer_named(&scene, 1_000, None).await;
+    let reference = bsv_rs::primitives::to_base64(&signable.reference);
+    let stored = stored_action(&scene, &reference).await;
+    let before = store_snapshot(&scene.wallet).await;
+    let storage = scene.wallet.storage();
+    storage.set_chain_tracker(std::sync::Arc::new(NoTip)).await;
+    let script = caller_script(&scene, &signable);
+    let result = sign_named(
+        &scene,
+        reference.clone(),
+        spend_map(0, script.clone(), None),
+    )
+    .await;
+    match result {
+        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
+            message,
+            "Service error: ChainTracker verification failed: the header service supplied no mining tip"
+        ),
+        other => panic!("expected the header hold, got {other:?}"),
+    }
+    assert_eq!(
+        store_snapshot(&scene.wallet).await,
+        before,
+        "nothing stored"
+    );
+    assert_eq!(stored_action(&scene, &reference).await, stored);
+    assert_eq!(posts(&scene), 0, "nothing posted");
+    storage.clear_chain_tracker().await;
+    let signed = complete(&scene, signable, Some(script)).await;
+    assert_eq!(stored_action(&scene, &reference).await.1, Some(signed.id()));
+}
