@@ -616,6 +616,7 @@ async fn judge_signed_action(
         raw_tx,
         tip,
         &storage.get_settings().chain,
+        storage.script_verifier(),
     )
     .await
 }

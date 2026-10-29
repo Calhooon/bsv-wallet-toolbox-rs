@@ -190,6 +190,7 @@ pub async fn create_action_at_door_internal(
             tracker: chain_tracker.or(storage_tracker.as_deref()),
             services,
             network: &network,
+            verifier: storage.script_verifier(),
         },
         own_tip,
         verify_roots: chain_tracker.is_some(),
@@ -716,6 +717,7 @@ impl Door<'_> {
                         &raw_tx,
                         tip,
                         self.word.network,
+                        self.storage.script_verifier(),
                     )
                     .await
                     .map_err(DoorRefusal::Create)?;

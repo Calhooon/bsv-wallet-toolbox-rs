@@ -298,6 +298,7 @@ pub(super) struct CallerWord<'a> {
     pub(super) tracker: Option<&'a dyn ChainTracker>,
     pub(super) services: Option<std::sync::Arc<dyn crate::services::WalletServices>>,
     pub(super) network: &'a str,
+    pub(super) verifier: Option<&'a dyn crate::SpendVerifier>,
 }
 
 /// The judged set of a posting route under the one-door rule (#426, #454).
@@ -401,7 +402,7 @@ pub(super) async fn judge_caller_beef(
         tracker,
         word.network,
         &|txid| judged.contains(&display_hex(txid)),
-        None,
+        word.verifier,
     )
     .await
 }

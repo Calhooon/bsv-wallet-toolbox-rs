@@ -66,6 +66,7 @@ pub(in crate::storage::sqlx) async fn judge_own_tx(
     raw_tx: &[u8],
     OwnTip(tip): OwnTip,
     network: &str,
+    verifier: Option<&dyn crate::SpendVerifier>,
 ) -> Result<()> {
     // Parsed and dropped before any await: bsv-rs's parsed types are not `Send`.
     let (mut sources, stored) = {
@@ -109,5 +110,5 @@ pub(in crate::storage::sqlx) async fn judge_own_tx(
             Err(error) => return Err(error),
         }
     }
-    verify_own(raw_tx, &sources, tip, network, None)
+    verify_own(raw_tx, &sources, tip, network, verifier)
 }
