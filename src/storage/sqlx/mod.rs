@@ -40,7 +40,7 @@ mod broadcaster_hint_tests;
 mod change_tiebreak_tests;
 mod create_action;
 mod internalize_action;
-use crate::wallet::internalize_args::label;
+use crate::wallet::label;
 mod locked_inputs;
 mod monitor_state;
 mod poisoned_chain;

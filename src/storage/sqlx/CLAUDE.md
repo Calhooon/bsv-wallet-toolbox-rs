@@ -46,7 +46,6 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | `process_action.rs` | Signed transaction processing (1884 lines) |
 | `abort_action.rs` | Transaction abort/cancellation (#165): refuses `unproven` and every stored accepting word; `sending` with no acceptance stays abortable (inputs released, own outputs dead, memory `rejected`, descendants retired); the abort makes no header-service or explorer call (`wallet.md:98`, `tracker.md:25`, broadcaster B4 (d)) |
 | `internalize_action.rs` | External transaction internalization (1343 lines) |
-| `label.rs` | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392) |
 | `sync.rs` | Multi-storage synchronization (2713 lines) |
 | `beef_verification.rs` | BEEF merkle proof verification (989 lines) |
 | `migrations/001_initial.sql` | Initial schema with 16 tables (284 lines) |
