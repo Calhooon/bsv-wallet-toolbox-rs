@@ -594,8 +594,54 @@ fn holds_judged(input: &[u8], posted: &[String]) -> bool {
     })
 }
 
+/// The `sendWith` members a new transaction's call joins to its post, as the
+/// writes find them: a member whose request is already sent, or which has
+/// none, is not posted; the rest are posted with their input BEEF.
+async fn joined_posts(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    send_with: &[String],
+) -> Result<Vec<StoredPost>> {
+    let mut posts = Vec::new();
+    let mut seen = std::collections::HashSet::from([txid]);
+    for member in send_with
+        .iter()
+        .filter(|member| seen.insert(member.as_str()))
+    {
+        let row =
+            sqlx::query("SELECT status, raw_tx, input_beef FROM proven_tx_reqs WHERE txid = ?")
+                .bind(member)
+                .fetch_optional(&mut *conn)
+                .await?;
+        let Some(row) = row else { continue };
+        let status: String = row.try_get("status")?;
+        if matches!(
+            status.as_str(),
+            proven_tx_req_status::UNMINED | "completed" | "unproven"
+        ) {
+            continue;
+        }
+        let (Some(raw_tx), Some(input_beef)) = (
+            row.try_get::<Option<Vec<u8>>, _>("raw_tx")?,
+            row.try_get::<Option<Vec<u8>>, _>("input_beef")?,
+        ) else {
+            continue;
+        };
+        posts.push(StoredPost {
+            txid: member.clone(),
+            transaction_id: None,
+            request_id: None,
+            status: "sending",
+            raw_tx: Some(raw_tx),
+            input_beef: Some(input_beef),
+        });
+    }
+    Ok(posts)
+}
+
 /// A new transaction that will be posted, now or queued, takes the stored
-/// post's verdict on its input BEEF before the writer is taken (#426).
+/// post's verdict on its input BEEF and on the input BEEF of each `sendWith`
+/// member it joins, before the writer is taken (#426).
 async fn judge_new_post(
     storage: &StorageSqlx,
     user_id: i64,
@@ -608,9 +654,10 @@ async fn judge_new_post(
     if args.is_no_send && !args.is_send_with {
         return Ok(());
     }
-    let found = {
+    let (found, joined) = {
         let mut conn = storage.pool().acquire().await?;
-        find_transaction_by_reference(&mut conn, user_id, reference).await?
+        let found = find_transaction_by_reference(&mut conn, user_id, reference).await?;
+        (found, joined_posts(&mut conn, txid, &args.send_with).await?)
     };
     // A missing, incoming or processed action is the writes' to refuse.
     let Some(input) = found
@@ -624,20 +671,26 @@ async fn judge_new_post(
     else {
         return Ok(());
     };
-    if !holds_judged(&input, std::slice::from_ref(txid)) {
-        return Ok(());
-    }
-    let post = StoredPost {
+    let mut posts = vec![StoredPost {
         txid: txid.clone(),
         transaction_id: None,
         request_id: None,
         status: "sending",
         raw_tx: Some(raw_tx.clone()),
         input_beef: Some(input),
-    };
-    stored_post_beef(storage, std::slice::from_ref(&post))
-        .await
-        .map(|_| ())
+    }];
+    posts.extend(joined);
+    // The joined members are the wallet's own signed transactions, posted
+    // beside the new one: excluded as roots, their ancestry judged.
+    let posted: Vec<String> = posts.iter().map(|post| post.txid.clone()).collect();
+    if !posts.iter().any(|post| {
+        post.input_beef
+            .as_deref()
+            .is_some_and(|input| holds_judged(input, &posted))
+    }) {
+        return Ok(());
+    }
+    stored_post_beef(storage, &posts).await.map(|_| ())
 }
 
 // The reference's sendWith path. These are owned bytes and row identifiers;
