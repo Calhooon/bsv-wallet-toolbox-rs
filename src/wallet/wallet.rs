@@ -43,7 +43,6 @@ use crate::storage::entities::{TableCertificate, TableCertificateField, Transact
 use crate::storage::{
     AuthId, FindOutputsArgs, StorageProcessActionArgs, StorageProvidedBy, WalletStorageProvider,
 };
-use crate::wallet::lookup::OverlayLookupResolver;
 
 use super::signer::{SignerInput, WalletSigner};
 
@@ -2850,73 +2849,13 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
         validate_originator(originator)?;
-
-        let auth = self.auth();
-        let identity_key_hex = &args.identity_key;
-
-        // 1. Local discovery: query certificates from storage where subject matches
-        let find_args = crate::storage::FindCertificatesArgs {
-            base: crate::storage::FindSincePagedArgs {
-                paged: Some(crate::storage::Paged {
-                    limit: args.limit,
-                    offset: args.offset,
-                }),
-                ..Default::default()
-            },
-            include_fields: Some(true),
-            ..Default::default()
-        };
-
-        let certs = self.storage.find_certificates(&auth, find_args).await?;
-
-        let local_certs: Vec<bsv_rs::wallet::IdentityCertificate> = certs
-            .into_iter()
-            .filter(|cert| cert.subject == *identity_key_hex)
-            .filter_map(|cert| Some((certifier_info(&cert.certifier)?, cert)))
-            .map(
-                |(certifier_info, cert)| bsv_rs::wallet::IdentityCertificate {
-                    certificate: WalletCertificate {
-                        certificate_type: cert.cert_type.clone(),
-                        serial_number: cert.serial_number.clone(),
-                        subject: cert.subject.clone(),
-                        certifier: cert.certifier.clone(),
-                        revocation_outpoint: cert.revocation_outpoint.clone(),
-                        fields: IndexMap::new(),
-                        signature: cert.signature.clone(),
-                    },
-                    decrypted_fields: IndexMap::new(),
-                    publicly_revealed_keyring: IndexMap::new(),
-                    certifier_info,
-                },
-            )
-            .collect();
-
-        // 2. Overlay discovery: query ls_identity via SLAP resolution
         let resolver = match self.chain {
             Chain::Main => crate::wallet::lookup::HttpLookupResolver::mainnet(),
             Chain::Test | Chain::Regtest => crate::wallet::lookup::HttpLookupResolver::testnet(),
         };
-
-        let overlay_certs = match resolver.lookup_by_identity_key(identity_key_hex).await {
-            Ok(certs) => certs
-                .into_iter()
-                .filter_map(|c| Some(c.to_identity_certificate(certifier_info(&c.certifier)?)))
-                .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::debug!("Overlay lookup failed (using local only): {}", e);
-                vec![]
-            }
-        };
-
-        // 3. Merge and deduplicate
-        let mut all_certs = local_certs;
-        all_certs.extend(overlay_certs);
-        let certificates = crate::wallet::lookup::dedup_certificates(all_certs);
-
-        Ok(DiscoverCertificatesResult {
-            total_certificates: certificates.len() as u32,
-            certificates,
-        })
+        Ok(self
+            .discover_identity_with_resolver(args, &resolver)
+            .await?)
     }
 
     async fn discover_by_attributes(
@@ -2925,28 +2864,13 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
         validate_originator(originator)?;
-
-        // Overlay discovery: query ls_identity via SLAP resolution
         let resolver = match self.chain {
             Chain::Main => crate::wallet::lookup::HttpLookupResolver::mainnet(),
             Chain::Test | Chain::Regtest => crate::wallet::lookup::HttpLookupResolver::testnet(),
         };
-
-        let certificates = match resolver.lookup_by_attributes(&args.attributes).await {
-            Ok(certs) => certs
-                .into_iter()
-                .filter_map(|c| Some(c.to_identity_certificate(certifier_info(&c.certifier)?)))
-                .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::debug!("Overlay attribute lookup failed: {}", e);
-                vec![]
-            }
-        };
-
-        Ok(DiscoverCertificatesResult {
-            total_certificates: certificates.len() as u32,
-            certificates,
-        })
+        Ok(self
+            .discover_attributes_with_resolver(args, &resolver)
+            .await?)
     }
 
     // =========================================================================
@@ -3020,17 +2944,8 @@ where
 // Helper Functions
 // =============================================================================
 
-/// The certifier information BRC-100 requires on every discovered entry
-/// (`0100.md:1401-1411`, bsv-rs #105). The reference reads it from the user's
-/// trust settings and drops a certificate whose certifier is not trusted
-/// (`identityUtils.ts:313-372`); this wallet reads no trust settings yet
-/// (`settings_manager.rs` holds default trusted certifiers the `Wallet` does
-/// not use; #388), so it
-/// builds no entry rather than emit an empty name, icon URL or description,
-/// which the reference's identity client refuses.
-fn certifier_info(_certifier: &str) -> Option<bsv_rs::wallet::IdentityCertifier> {
-    None
-}
+#[path = "discovery_trust.rs"]
+mod discovery_trust;
 
 #[cfg(test)]
 #[path = "discovery_trust_tests.rs"]
