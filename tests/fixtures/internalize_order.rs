@@ -305,3 +305,22 @@ async fn create_output_refused_before_duplicate_input() {
         )
     );
 }
+
+/// The inputBEEF envelope (validationHelpers.ts:775, parseWalletResultBEEF)
+/// answers ahead of the duplicate outpoint loop (784): BEEF V2's version
+/// bytes with nothing after them beside an input that repeats another's
+/// outpoint answer the envelope's refusal.
+#[tokio::test]
+async fn review_input_beef_precedes_duplicate() {
+    let mut args = create_args(None);
+    args.input_beef = Some(vec![0x02, 0x00, 0xbe, 0xef]);
+    args.inputs = Some(vec![create_input(vec![0x00]), create_input(vec![0x00])]);
+    let refusal = refused_before_storage(args).await;
+    assert_eq!(
+        refusal,
+        (
+            WalletRefusalClass::InvalidParameter,
+            "Invalid BEEF at byte 4: BadVarint".to_string()
+        )
+    );
+}
