@@ -195,7 +195,8 @@ pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
 /// Options for constructing a SQLx storage provider.
 #[derive(Debug, Clone, Default)]
 pub struct StorageSqlxOptions {
-    /// Optional host verifier for script checks at the live internalize door.
+    /// Optional host verifier for internalize, the create `inputBEEF` pre-check,
+    /// and the own transaction checks at `createAction` signing and `signAction`.
     /// `None` uses the bsv-rs interpreter under the existing per-input word.
     pub script_verifier: Option<Arc<dyn crate::SpendVerifier>>,
     /// Network written when creating the settings row; defaults to Main.
