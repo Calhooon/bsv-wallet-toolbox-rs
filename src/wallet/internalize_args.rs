@@ -27,9 +27,6 @@ pub(crate) fn validate_array_bound(len: usize, name: &str, maximum: usize) -> Re
     Ok(())
 }
 
-/// BRC-177's module prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:5`).
-const BRC177_NO_SEND_MODULE_PREFIX: &str = "p nosend ";
-
 /// The reference's `WERR_INVALID_PARAMETER` text for a `p nosend ` label on
 /// internalizeAction (`Wallet.ts:1249`, built by `WERR_errors.ts:105`).
 const BRC177_INCOMING_REFUSAL: &str =
@@ -144,7 +141,7 @@ pub(crate) fn validate_label(label: &str) -> Result<()> {
 fn has_brc177_no_send_label(labels: Option<&[String]>) -> bool {
     labels.into_iter().flatten().any(|label| {
         let normalized = label::normalize_label(label);
-        normalized.starts_with(BRC177_NO_SEND_MODULE_PREFIX)
+        label::is_brc177_no_send_label(&normalized)
     })
 }
 

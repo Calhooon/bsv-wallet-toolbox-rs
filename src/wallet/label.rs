@@ -36,6 +36,17 @@ pub(crate) fn normalize_label(label: &str) -> String {
     trim_ecmascript(label).to_lowercase()
 }
 
+/// BRC-177's module prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:5`).
+const BRC177_NO_SEND_MODULE_PREFIX: &str = "p nosend ";
+
+/// Whether a label, as `normalize_label` leaves it, names BRC-177's module:
+/// the `startsWith` of `hasBrc177NoSendExpiryLabel`
+/// (ts-stack@edf6e03 `brc177NoSendExpiry.ts:119`). The create door counts
+/// these labels ahead of its grammar; the internalize door refuses any.
+pub(crate) fn is_brc177_no_send_label(normalized: &str) -> bool {
+    normalized.starts_with(BRC177_NO_SEND_MODULE_PREFIX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

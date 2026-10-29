@@ -7,7 +7,7 @@
 use super::internalize_args::{
     validate_array_bound, validate_description, validate_label, MAXIMUM_WALLET_COLLECTION_ITEMS,
 };
-use super::label::normalize_label;
+use super::label::{is_brc177_no_send_label, normalize_label};
 use crate::error::{Error, Result};
 use bsv_rs::transaction::beef_stream::StreamError;
 use bsv_rs::transaction::BeefStream;
@@ -31,9 +31,6 @@ const MAX_DESCRIPTION_LENGTH: usize = 2000;
 /// `MAXIMUM_SEND_WITH_TRANSACTIONS` at validationHelpers.ts:69, sendWith's
 /// own bound in validateSendWith (137).
 pub(crate) const MAXIMUM_SEND_WITH_TRANSACTIONS: usize = 1000;
-
-/// BRC-177's module prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:5`).
-const BRC177_NO_SEND_MODULE_PREFIX: &str = "p nosend ";
 
 /// BRC-177's expiry prefix (ts-stack@edf6e03 `brc177NoSendExpiry.ts:4`).
 const BRC177_NO_SEND_EXPIRY_PREFIX: &str = "p nosend expiry ";
@@ -296,7 +293,7 @@ fn parse_canonical_unsigned_integer(value: &str) -> Result<u64> {
 fn parse_brc177_no_send_expiry_labels(labels: &[String]) -> Result<bool> {
     let module_labels = labels
         .iter()
-        .filter(|label| label.starts_with(BRC177_NO_SEND_MODULE_PREFIX))
+        .filter(|label| is_brc177_no_send_label(label))
         .count();
     if module_labels == 0 {
         return Ok(false);
