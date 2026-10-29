@@ -1,6 +1,7 @@
 # Discovery under the user's trust settings: the reference's path and the port's shape options (#388)
 
-A design brief for the owner, no public shape change. Labels: `[X]` read at
+Decision and implementation record for #388. Sections 1 to 3 retain the
+pre-change reading; sections 4 to 7 record the settled path. Labels: `[X]` read at
 the pin named here or run; `[D]` told (the issue, its comments, the CLI's
 issues). Pins: the reference ts-stack `edf6e03` (paths under
 `packages/wallet/wallet-toolbox/src/` are written `WT/`, under
@@ -201,7 +202,7 @@ defaults' descriptions are
 social media handles, phone numbers and emails` (`:16`, `:23`), 54 and 56
 bytes. The port's settings manager is Go's, text for text (section 2).
 
-## 2. The port today
+## 2. The port before #388
 
 - `src/wallet/wallet.rs:2814-2887` `discover_by_identity_key`: a local leg
   (`find_certificates`, filtered by subject, `:2825-2841`; the reference has
@@ -270,7 +271,7 @@ and the port's local leg has no reference counterpart.
 | `pub` items that change | `WalletSettingsManager` becomes `WalletSettingsManager<W: WalletInterface + Debug>`; `new(wallet: W, config) -> Result<Self>`, `get() -> Result<WalletSettings>`, `set(&WalletSettings) -> Result<()>`, `delete()`; `new(Option<Config>)`, `reset`, `save`, `load`, `save_to_string`, `load_from_string`, `default_settings` go (breaking on a type no dependent uses) | none | none |
 | `pub` items that appear | a shareable `WalletInterface` handle over `Arc<Wallet<S, V>>` (a newtype with 28 delegations) for a host to build its manager; inside, a crate-private newtype over `&self` so the wallet reads its basket per call without a cycle or `Arc<Self>` | (b1) `WalletOptions.trust_settings: Option<TrustSettings>`, or (b2) `WalletOptions.settings_manager: Option<Arc<WalletSettingsManager>>` with `impl Debug for WalletSettingsManager` (`WalletOptions: Debug + Clone`); one additive field, source-compatible for a host using `..Default::default()` (the CLI does; the by-name sites `src/wallet/rng_tests.rs:22` and `src/storage/sqlx/create_action/tests/seed.rs:142` are ours) | none |
 | where the settings live | a PushDrop token in the `wallet settings` basket of the wallet's own store, encrypted under `[2, 'wallet settings']`, read through `list_outputs` per discovery call, written through `create_action` | in the host's process; the manager's `set` takes effect on the next call (b2) or never (b1) | nowhere; `DEFAULT_SETTINGS` or `TESTNET_DEFAULT_SETTINGS` by `self.chain` |
-| the CLI's call (#347) | at start `get()`, compare with its typed `trust` section, `set` when they differ: a spend of a 1 sat token and its fee, so a daemon over an unfunded store cannot record its settings; the hermetic harness funds before discovery | `WalletOptions { rng_seed, settings_manager: Some(Arc::new(WalletSettingsManager::new(Some(WalletSettingsManagerConfig { default_settings })))), ..Default::default() }` with `default_settings` built from its `trust` section; no spend | nothing; the doors answer the default certifiers' certificates alone |
+| the CLI's call (#347) | at start `get()`, compare with its typed `trust` section, `set` when they differ: a spend of a 1 sat token and its fee, so a daemon over an unfunded store cannot record its settings; the hermetic harness funds before discovery | `WalletOptions { rng_seed, settings_manager: Some(Arc::new(WalletSettingsManager::new(Some(WalletSettingsManagerConfig { default_settings }))?)), ..Default::default() }` with `default_settings` built from its `trust` section; no spend | nothing; the doors answer the default certifiers' certificates alone |
 | divergence rows | none against TS; against Go (in-memory) one | D1 settings not persisted in the wallet's store (TS stores a token; Go does not); D2 a TS wallet over the same store neither sees the host's settings nor is seen; the empty-store default is matched | D1, D2, and D3: no host input at all, where both references take one |
 | test plan | the KV round trip over in-memory storage with `MockWalletServices` (a `set` needs a funded fixture); defaults when the basket is empty; the two witnesses; the threshold, the dedupe, the sort, the cut | the two witnesses; a host set that names a stranger keeps it; a raised threshold drops; two certifiers of one subject sum; the cut and the icon fallback; the defaults by chain when absent | the two witnesses; the defaults by chain |
 | size | large: the handle newtype, the manager rewrite, the basket read in the wallet, funded fixtures; 600 to 900 lines | small: 150 to 250 lines with tests, plus the transform | smallest: the transform and one read of the defaults |
@@ -284,7 +285,18 @@ certifier is the harness's own key, so under (c) fixtures 053, 054, 137 to
 140 and scenario 06 keep recording `[]`. (c) is (b)'s fallback branch, not
 a shape.
 
-## 4. The recommendation
+## 4. The decision
+
+> **Decided, 2026-10-29:** (b2) is built: the host supplies
+> `WalletOptions.settings_manager: Option<Arc<WalletSettingsManager>>`, read
+> fresh for each discovery call, or the chain's defaults apply. The manager's
+> `new`, `get` and `set` return `Result`. (a) is the parity target on 0.14.0:
+> `WalletSettingsManager::over_store(...)` will read the `wallet settings`
+> basket through bsv-rs's key-value store when bsv-rs #441 lands, using the
+> same handle in the options. A restored or synced TypeScript store carries
+> settings in that basket; an in-memory manager cannot recover them. No
+> store-backed constructor or token read is built in this lane.
+
 
 (b2): `WalletOptions.settings_manager: Option<Arc<WalletSettingsManager>>`,
 read fresh on every discovery call, the chain's defaults when absent, the
@@ -298,15 +310,12 @@ transform at `certifier_info`'s place. Why:
 - It keeps the TS rule that a removed certifier or a raised threshold takes
   effect on the next call (`Wallet.ts:988-989`): the manager's `get` is an
   in-memory read, so no cache is needed; Go's two-minute cache is not ported.
-- (a)'s token matters when a TS wallet and this port share one store, which
-  no host does today. It adds later without moving (b2)'s surface: a second
-  constructor of the manager over a store, the same handle in the options,
-  with one cost named now: the manager's `new`, `get` and `set` are
-  infallible in memory (`settings_manager.rs:183,192,197`) and a
-  store-backed form fails on a read or a spend, so question 7 asks for
-  `Result` forms of all three now, and the trust bounds of question 6 are
-  checked where settings enter (`new`'s defaults, `set`) and again on a
-  stored read.
+- (a) follows (b2) as the decided store-backed constructor, with the same
+  handle in the options. It is needed for a migrated TypeScript user whose
+  settings arrived in the wallet's store. The fallible `new`, `get` and `set`
+  forms now reserve that path; the in-memory manager checks its defaults and
+  every `set`, including both JSON load methods. A future stored read must
+  also validate the settings it returns.
 - The default descriptions move to the TS reference's texts in the same
   lane (a value of a `pub static`, not a shape), so the defaults pass
   BRC-100's bound without the cut; the cut still guards a host's text.
@@ -333,43 +342,52 @@ token per change, and the harness would fund the wallet before its
 discovery step. Under (c) alone the CLI keeps `[]` in its scenario and its
 `trust` section has nowhere to go.
 
-## 6. Open questions for the owner
+## 6. The owner's seven answers (answered, 2026-10-29)
 
-1. The settings' home: (b2) now, (a)'s store-backed manager as a later
-   constructor; or (a) now.
-2. `OverlayLookupResolver::lookup_by_identity_key` and `lookup_by_attributes`
-   gaining the sorted trusted keys (a `pub` trait change, `lookup.rs:99-114`;
-   the reference's query at `Wallet.ts:1003-1008`), or the client-side filter
-   alone with a divergence row.
-3. The default description texts: the TS reference's 49-byte texts replacing
-   Go's in `DEFAULT_SETTINGS` (`settings_manager.rs:75,86`).
-4. The port's local leg of `discover_by_identity_key` (`wallet.rs:2825-2841`),
-   absent from both references, kept or dropped.
-5. Testnet defaults by chain (Go, `DefaultManager(chain)`) or the mainnet
-   defaults on every network unless a host supplies others (TS, `Wallet.ts:401`).
-6. `Certifier.trust: u32` and `TrustSettings.trust_level: u32` kept with the
-   reference's bounds checked on entry (1 to 10, 1 to 2560), or narrowed (a
-   `pub` type change).
-7. `WalletSettingsManager::new`, `get` and `set` stay infallible in memory,
-   or become `Result` now so (a)'s store-backed form needs no second
-   signature later; the trust bounds checked where settings enter and on a
-   stored read.
+1. **(b2) now, (a) next.** The shared manager option is built, with a fresh
+   `get` per call, no Go cache, and defaults when absent. The decided
+   `over_store(...)` constructor is the 0.14.0 parity target after bsv-rs #441
+   (section 4). References: `GO/pkg/wallet/wallet_opts.go:24`,
+   `GO/pkg/wallet/wallet.go:184,226,1374`; `WT/Wallet.ts:988-991,1046-1049`.
+2. **Sorted keys in the query.** Both resolver methods take
+   `certifiers: &[String]`. The HTTP query sends that array alongside
+   `identityKey` or `attributes`; the wallet filters its answer too.
+   References: `WT/Wallet.ts:992,1003-1017,1049,1069-1083`.
+3. **TypeScript defaults.** The descriptions are `Registry of protocols,
+   baskets, certificate types` and `Certifies social media handles, phones
+   and emails`; the names, keys, trusts 4 and 3, and threshold 2 are retained.
+   The existing testnet name mapping already matches TS: only SocialCert
+   matches, and its mapped key equals its mainnet key at this pin.
+   Reference: `WT/WalletSettingsManager.ts:160-202`.
+4. **Keep the local leg.** Identity discovery merges the wallet's stored
+   certificates with the overlay, binds the subject case-insensitively, then
+   uses one trust transform and pages the result. Attributes use the overlay.
+   This local leg is absent from both references; ARCHITECTURE D23 records it.
+   References: the pre-change `wallet.rs:2825-2841`;
+   `WT/Wallet.ts:977-1017,1035-1083`.
+5. **Defaults by chain.** Main reads `DEFAULT_SETTINGS`; Test and Regtest read
+   `TESTNET_DEFAULT_SETTINGS`. Regtest is the port's extension, recorded in
+   ARCHITECTURE D25. Reference: `GO/pkg/wallet/internal/wallet_settings_manager/wallet_settings_manager.go:98-124`.
+6. **Keep both `u32` fields, validate on entry.** Threshold 1 to 2560, trust 1
+   to 10, at most 256 unique certifiers, canonical lowercase compressed keys,
+   names 1 to 100 UTF-8 bytes, descriptions 1 to 500, and bounded,
+   credential-free HTTP(S) URLs. Refusals use the reference's text as
+   `Error::ValidationError`. Reference: `WT/WalletSettingsManager.ts:56-136`.
+7. **Fallible manager now.** `new(Option<Config>) -> Result<Self>`,
+   `get() -> Result<WalletSettings>`, `set(WalletSettings) -> Result<()>`.
+   Defaults and writes are checked; in-memory `get` returns `Ok`. The other
+   method shapes are retained. Reference: `WT/WalletSettingsManager.ts:211-245`;
+   the replaced in-memory forms were `settings_manager.rs:183,192,197`.
 
-## 7. The witness in this lane
+## 7. The witnesses
 
-`src/wallet/discovery_trust_tests.rs`, included from `wallet.rs` under
-`#[cfg(test)]` after `certifier_info`; both tests `#[ignore]` with #388 in
-their reason, red on base and on this tip:
-
-- `certifier_info_fills_a_default_certifier_and_drops_a_stranger`: each
-  default certifier's entry carries its name, icon, description through the
-  reference's cut, and trust; a stranger's key has none.
-- `discovery_keeps_a_default_certifiers_certificate_and_drops_a_strangers`:
-  a wallet over in-memory storage with two stored certificates for its own
-  identity, one from `Metanet Trust Services` and one from a stranger;
-  `discover_by_identity_key` answers the one with its `certifierInfo`. The
-  overlay leg is refused by the test transport before any request.
-
-Run with `cargo test --lib discovery_trust -- --ignored` under rule 10's
-proxy prefix; the tails are in the lane report. The feature lane moves the
-seam witness to `certifier_info`'s new signature and drops the `#[ignore]`.
+The two #447 witnesses in `src/wallet/discovery_trust_tests.rs` are enabled.
+They failed on the base: the metadata lookup returned `None`, and local
+identity discovery returned `[]` for a default certifier's stored certificate.
+The additional witnesses cover a host-set certifier, per-call changes to the
+threshold and trusted keys, unique-certifier trust sums, certificate dedupe,
+subject binding, UTF-8 description cuts, icon fallback, chain defaults,
+sorted resolver keys, attributes, the 256-input cap, and paging after merging.
+The manager tests cover the exact bound refusal texts, non-mutating failures,
+JSON entry paths, accepted endpoints of the bounds, and all three `Result`
+forms. The lane report records the red runs and both planted regressions.
