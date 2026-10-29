@@ -107,7 +107,7 @@ timeout; the previous two waits could exceed the webhook sender's 10 s limit
 with the default 5 s store timeout. The host deadline remains CLI #249's job.
 
 **ChainTracker methods:**
-- `set_chain_tracker(tracker)` - Set ChainTracker for BEEF and proof verification. Without one NO merkle proof is stored: `ingest_merkle_proof` returns `ProofIngestOutcome::TrackerUnavailable`, the BEEF walk fetches none, `internalize_action` holds (`ServiceError`, nothing stored): since #103 the door needs the tracker for the verifier's roots and tip, and a missing tracker is could-not-look, never a verdict
+- `set_chain_tracker(tracker)` - Set ChainTracker for BEEF and proof verification. Without one NO merkle proof is stored: `ingest_merkle_proof` returns `ProofIngestOutcome::TrackerUnavailable`, the BEEF walk fetches none, `internalize_action` holds (`ServiceError`, nothing stored): since #103 the door needs the tracker for the verifier's roots (a missing mining tip gives the latest era, #464), and a missing tracker is could-not-look, never a verdict
 - `clear_chain_tracker()` - Remove the ChainTracker (from then on no proof is stored)
 - `get_chain_tracker()` - Internal: get current ChainTracker if set
 
@@ -496,9 +496,28 @@ outputs, shares one sighash cache per transaction, and releases transactions
 waiting for parents in wire order.
 
 The `pub(crate)` `input_eras` helper returns both eras against bsv-rs's
-Genesis and Chronicle constants. On mainnet every spender takes tip+1's era,
-the block it would be mined in; a mined parent's coin takes its proven BUMP
-height's era for the UTXO bits, an unproven parent's coin tip+1's.
+Genesis and Chronicle constants; it is the one place the era is chosen. On
+mainnet every spender takes tip+1's era, the block it would be mined in; a
+mined parent's coin takes its proven BUMP height's era for the UTXO bits, an
+unproven parent's coin the spend's. With no mining tip, or a tip read that
+faults, the keeper's clause of 2026-10-29 (#464, rule 9): the spend's era at
+tip+1 differs from the latest era the constants know only inside an
+activation window, and they name no activation height still ahead (Chronicle
+passed at 943,816), so the spend's era is the latest, post-Chronicle
+(`era_without_tip`), the coin's bits still from its proof height, an
+unproven coin at the same latest era, as the reference reads no tip at
+`verifyUnlockScripts.ts:331`. bsv-rs exposes no notion of an activation
+ahead: `era_without_tip` compares its constants with each other (the era of
+the highest height must be the one Chronicle's constant opens) and matches
+`ProtocolEra` exhaustively, so a new era stops the build there; it answers
+`None` only when an activation height lies ahead, and then `mining_tip`
+holds as before (`Service error: ChainTracker verification failed: the
+header service supplied no mining tip`, or the fault's class), the tip alone
+deciding. Without a tip the word pass reads the mining rules as bsv-rs's
+verifier does: P2SH outputs refused, a non-final lock time or a coinbase
+spend held (`the supplied mining context could not answer Finality`,
+`... CoinbaseMaturity`). Witnesses: `no_tip_word.rs` (create's pre-check and
+the signAction route), `internalize_verifier_judges_at_the_latest_era_without_a_tip`.
 Pre-Genesis mainnet refuses with `The mainnet coin height is before Genesis.`.
 Testnet and regtest use the spend's era for the coin until #440 supplies their
 activation heights; regtest fixtures name the era they model. An unsupported
@@ -528,8 +547,8 @@ ancestry alike, whatever format the caller asks back. The roots and the
 structure of every chain stay the structural passes'. The set is stated once, on `judged_set`
 (`create_action/beef.rs`). Create calls the one verifier through the
 `verify_beef_word` seam (`beef_verification.rs`): the tracker's tip
-(`mining_tip`, a missing tip or a tracker fault holding with `ServiceError`
-as at internalize), the storage's `chain`, then `live_word::verify_judging`,
+(`mining_tip`; a missing tip or a tip fault gives the latest era, #464, as at
+internalize), the storage's `chain`, then `live_word::verify_judging`,
 whose `judge` names the transactions to judge (internalize's `verify` passes
 every unproven one). Same era rule, same bsv-rs refusal texts
 (`Error::SpendRefused`), same class at the boundary (`InvalidParameter`).
@@ -566,8 +585,9 @@ The port judges at the same two places through the one verifier,
 `beef_verification::verify_own` (`beef_verification/own_word.rs`). It reads
 the signed transaction with bsv-rs's streaming reader and judges each
 input with `live_word::judge_input`, the per-input judge internalize's word
-pass uses, under `input_eras` and `input_word`: the spend's era at tip+1,
-the coin's UTXO bits from its proof height, tip+1's for a coin without one.
+pass uses, under `input_eras` and `input_word`: the spend's era at tip+1
+(the latest era with no tip, #464), the coin's UTXO bits from its proof
+height, the spend's era for a coin without one.
 The sources (`create_action/own_word.rs`, `judge_own_tx`) are untrimmed:
 the action's input BEEF as assembled, before `knownTxids` trims the
 caller's copy (the store keeps it whole, as the reference keeps
@@ -604,8 +624,9 @@ rule), where the reference's is the consensus word: a transaction the
 standard word refuses and consensus admits (an unclean stack, a
 non-minimal push) is refused at signing, where the broadcaster's policy
 refused it before. A tracker
-with no mining tip, or a tracker fault, holds the signing with
-`ServiceError`, as at internalize (`process_new_tx_holds_without_a_mining_tip`).
+with no mining tip, or a tip read that faults, gives the spend the latest
+era, as at the doors (#464,
+`process_new_tx_judges_its_own_input_at_the_latest_era_without_a_tip`).
 Witnesses: `own_word_tests.rs` beside each place, the seam's in
 `beef_verification/own_word_tests.rs`.
 

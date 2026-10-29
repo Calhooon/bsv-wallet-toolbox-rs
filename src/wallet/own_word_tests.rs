@@ -397,6 +397,8 @@ async fn create_txid_only_judges_its_own_input_on_the_assembly() {
         "nothing stored"
     );
     assert_eq!(posts(&scene), 0, "nothing posted");
+}
+
 /// A tracker that answers roots and height and supplies no mining tip, or
 /// with `fault` one whose tip read faults.
 #[derive(Clone, Copy, Debug)]
