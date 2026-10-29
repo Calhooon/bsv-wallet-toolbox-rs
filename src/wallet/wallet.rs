@@ -2999,6 +2999,10 @@ fn certifier_info(_certifier: &str) -> Option<bsv_rs::wallet::IdentityCertifier>
     None
 }
 
+#[cfg(test)]
+#[path = "discovery_trust_tests.rs"]
+mod discovery_trust_tests;
+
 /// Validates an in-process originator (`ts-stack@edf6e03`, `validationHelpers.ts:1003-1036`).
 /// `None` is the reference's `undefined` and passes; `Some("")` is a supplied
 /// string and fails its length rule (#284, bsv-rs #329).
