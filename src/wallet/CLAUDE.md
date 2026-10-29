@@ -15,6 +15,15 @@ with no new result field. The reference stores `inputBEEF: storageBeef`
 the signed bytes to `processAction`, whose immediate path reads the stored
 request and calls `attemptToPostReqsToNetwork` (`processAction.ts:315-349`).
 
+The `signAndProcess` answer omits `tx` under `returnTXIDOnly`, including with
+`noSend` or `acceptDelayedBroadcast` (#467). It keeps `txid`, `noSendChange`
+and `sendWithResults`. The field is already optional; with the option false
+or absent the response is unchanged. The reference sets `r.txid`, maps
+`r.noSendChange`, assigns `r.tx` only inside `if (!vargs.options.returnTXIDOnly)`,
+and then sets `r.sendWithResults` (`signer/methods/createAction.ts:101-142`).
+Its storage helper returns `undefined` under the option
+(`storage/methods/createAction.ts:1725-1726`).
+
 `create_action` refuses an empty caller `unlocking_script` or a zero `unlocking_script_length` with `Error::ValidationError` before BEEF parsing or storage (#212), at each input in `create_args`, ahead of its length match (#416); the sqlx door meets the same texts. The texts name the parameters bare: `The unlockingScript parameter must be hexadecimal string.` is the reference's byte for byte (`ts-stack@edf6e03` `validationHelpers.ts:522-530,595,758` and `WERR_INVALID_PARAMETER.ts:14`); `The unlockingScriptLength parameter must be a positive integer.` is the port's own in the reference's sentence shape. Hosts reserving a caller input must omit its script and supply a positive length.
 
 For a caller-named stored input, the create door checks change, then the presence of a locking script and integer satoshis, then the live spendability check, including under `options.no_send = true` (#245). In `ts-stack@edf6e03` `packages/wallet/wallet-toolbox/src/storage/methods/createAction.ts`, the `:982` gate is disabled by default at `:61`; `markKnownInputsSpent` (`:399-436`, called at `:503`) decides. The port re-reads the stored output under the write lock before marking it spent. A spender with a txid requires double-spend review regardless of its status, including failed; it answers `Error::ReviewActions` (#264, the owner's ruling 18.4), the reference's `WERR_REVIEW_ACTIONS` text `Undelayed createAction or signAction results require review.` with one `doubleSpend` `ReviewActionResult` whose `competing_txs` names the spender (`:503-509`); its `txid` is all zeros for the reference's `''`, and `competing_beef` is absent. Through `WalletInterface` it is bsv-rs's `Error::WalletReviewActions`. A spender without a txid falls through to the output's `spendable` flag. Without a competing txid, an unspendable row uses `Error::ValidationError` with the live `:420-423` text: `The inputs[N] parameter must be spendable output. output <txid>:<vout> appears to have been spent (spendable=false).` Refusal preserves the original spender through a later abort. A pruned script can still be recovered from stored transaction bytes; zero satoshis and an empty stored script count as present. Missing data uses `Error::ValidationError` with `The <txid>.<vout> parameter must be output with valid lockingScript and satoshis`, without a trailing period (`:979-980`, `sdk/WERR_errors.ts:105`). The change guard and its `:972-976` text remain, and the failed-creator guard still applies.
@@ -606,7 +615,7 @@ CreateActionArgs → storage.create_action_at_door(args, CreateActionDoor { offe
     │     → processAction's writes → ONE commit
     → services.post_beef() (if not no_send/delayed)
     → storage.update_transaction_status_after_broadcast() (a failure is logged, never the call's error)
-    → CreateActionResult { txid, tx, ... }
+    → CreateActionResult { txid, tx unless returnTXIDOnly, ... }
 ```
 
 For each storage-allocated input: derive the signing key from the BRC-29 protocol/counterparty, compute the BIP-143 sighash, sign and build the unlocking script. Caller-named inputs retain their supplied scripts.

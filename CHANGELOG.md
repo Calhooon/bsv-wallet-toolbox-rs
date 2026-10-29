@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- #467: the `createAction` `signAndProcess` answer omits `tx` when
+  `returnTXIDOnly` is true, as the reference's signer does. Host response
+  change for CLI #347: a host reading `tx` under `returnTXIDOnly` now reads
+  none, including with `noSend` or `acceptDelayedBroadcast`; `txid`,
+  `noSendChange` and `sendWithResults` are retained. The response with the
+  option false or absent is unchanged; the field was already optional.
+
 - #466: `createAction` with `returnTXIDOnly` and an immediate broadcast
   posts the signed transaction with the stored input BEEF, including full
   source transactions named in `knownTxids`. Host TEXT-DIFF for CLI #347:
