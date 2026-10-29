@@ -2135,6 +2135,12 @@ where
             // aborted and the pending transaction cached, so the caller may
             // sign again; bsv-rs's refusal, class InvalidParameter.
             Err(e @ Error::SpendRefused { .. }) => return Err(e.into()),
+            // The word's tip unread (#450): a header hold before the writer,
+            // nothing written; the action is kept for a repeat.
+            Err(
+                e
+                @ (Error::ServiceError(_) | Error::SdkError(bsv_rs::Error::TransportFault { .. })),
+            ) => return Err(e.into()),
             Err(e) => {
                 // Processing failed - abort the transaction to release locked UTXOs
                 tracing::error!(reference = %reference, error = %e, "Process action failed, aborting transaction to release UTXOs");
