@@ -512,8 +512,8 @@ async fn post_unjudged(delayed: bool) -> (Arc<MockWalletServices>, crate::Result
     (services, send_with(&storage, user_id, txid, delayed).await)
 }
 
-/// The witness: nothing unproven beside the posted root, so the judged set
-/// is empty; no mining tip is asked and the post goes out.
+/// The witness: processAction judges nothing (the one-door rule, #454), so
+/// no mining tip is asked and the post goes out.
 #[tokio::test]
 async fn process_post_with_nothing_to_judge_asks_no_tip() {
     let (services, posted) = post_unjudged(false).await;
