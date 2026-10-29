@@ -161,10 +161,6 @@
       "floor": 64,
       "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
     },
-    "src/storage/sqlx/create_action/validation.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
-    },
     "src/storage/sqlx/internalize_action.rs": {
       "floor": 50,
       "_comment": "Measured 50.00% (6/12) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/internalize_action.rs from 50 to 80 (#57 follow-up)."
@@ -172,6 +168,10 @@
     "src/storage/sqlx/process_action.rs": {
       "floor": 61,
       "_comment": "Measured 61.90% (13/21) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/process_action.rs from 61 to 80 (#57 follow-up)."
+    },
+    "src/wallet/create_args.rs": {
+      "floor": 64,
+      "_comment": "Provisional: moved with validate_create_action_args from src/storage/sqlx/create_action/validation.rs (#416), whose floor was carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); the body is the old one plus the two #212 input-script checks and the duplicate pass moved after the options. Confirm from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
     }
   }
 }

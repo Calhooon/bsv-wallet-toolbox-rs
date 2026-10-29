@@ -3,6 +3,7 @@ examine_globs = [
     "src/storage/sqlx/create_action/*.rs",
     "src/storage/sqlx/process_action.rs",
     "src/storage/sqlx/internalize_action.rs",
+    "src/wallet/create_args.rs",
     "src/services/services.rs",
     "src/services/providers/*.rs",
     "src/monitor/tasks/*.rs",
