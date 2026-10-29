@@ -1,4 +1,4 @@
-use super::beef::{build_input_beef, change_coin_gap, judge_caller_beef};
+use super::beef::{build_input_beef, change_coin_gap, judge_caller_beef, judging_assembly};
 use super::change::plan_change;
 use super::inputs::validate_and_extend_inputs;
 use super::outputs::validate_and_extend_outputs;
@@ -618,6 +618,23 @@ impl Door<'_> {
             let refusal = match built {
                 Ok(assembled) => {
                     let caller_beef = self.args.input_beef.as_deref();
+                    // The judged set does not depend on the returned format.
+                    let assembled = match assembled {
+                        None if self.return_txid_only() => {
+                            judging_assembly(
+                                &mut conn,
+                                Some(self.storage.writer()),
+                                caller_beef,
+                                self.trust_self(),
+                                &extended_inputs,
+                                &change_result.allocated_change_inputs,
+                                caller,
+                                own,
+                            )
+                            .await?
+                        }
+                        assembled => assembled,
+                    };
                     judge_caller_beef(&mut conn, assembled.as_deref(), caller_beef, &self.word)
                         .await?;
                     return Ok(reserved.mine().to_vec());

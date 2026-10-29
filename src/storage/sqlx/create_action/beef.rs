@@ -316,7 +316,9 @@ pub(super) struct CallerWord<'a> {
 /// - `createAction` judges the unproven raw transactions the caller's
 ///   `inputBEEF` brings that the assembly does not prove and the store does
 ///   not hold (`held`: a transaction with a row in `transactions`,
-///   `proven_tx_reqs` or `proven_txs` was judged at its own door);
+///   `proven_tx_reqs` or `proven_txs` was judged at its own door), the
+///   same set whatever the caller asks back (with `returnTXIDOnly` the
+///   pre-check assembles it for the word alone, #454);
 /// - `processAction` judges none: every transaction a post carries is the
 ///   store's, the posted roots (the wallet's own) and their stored ancestry
 ///   alike (the caller's bytes judged here at create, the wallet's earlier
@@ -357,6 +359,59 @@ async fn store_holds(conn: &mut SqliteConnection, txids: &[String]) -> Result<Ha
         }
     }
     Ok(held)
+}
+
+/// With `returnTXIDOnly`, the BEEF the pre-check judges and never returns
+/// (#454): the judged set does not depend on the returned format, so when
+/// the caller's `inputBEEF` brings an unproven raw transaction the store
+/// does not hold, the inputs are assembled for the word alone, as the
+/// BEEF-returning call assembles them, the change coins' chains with them.
+/// A change coin's stored gap is not the word's to refuse (the returned
+/// format builds no BEEF for it), so then the caller's inputs are assembled
+/// alone; a refusal of those is the BEEF-returning call's, with its text.
+/// `Ok(None)` when there is nothing to judge.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn judging_assembly(
+    conn: &mut SqliteConnection,
+    writer: Option<&SqlitePool>,
+    user_input_beef: Option<&[u8]>,
+    trust_self: bool,
+    extended_inputs: &[ExtendedInput],
+    change_inputs: &[AllocatedChangeInput],
+    chain_tracker: Option<&dyn ChainTracker>,
+    read_check_tracker: Option<&dyn ChainTracker>,
+) -> Result<Option<Vec<u8>>> {
+    let Some(Ok(caller)) = user_input_beef.map(Beef::from_binary) else {
+        return Ok(None);
+    };
+    let raw: Vec<String> = caller
+        .txs
+        .iter()
+        .filter(|tx| !tx.is_txid_only() && tx.bump_index().is_none())
+        .map(BeefTx::txid)
+        .collect();
+    if store_holds(conn, &raw).await?.len() == raw.len() {
+        return Ok(None);
+    }
+    let mut assemble = async |change_inputs: &[AllocatedChangeInput]| {
+        build_input_beef(
+            &mut *conn,
+            writer,
+            chain_tracker,
+            extended_inputs,
+            change_inputs,
+            user_input_beef,
+            &[],
+            false,
+            trust_self,
+            read_check_tracker,
+        )
+        .await
+    };
+    match assemble(change_inputs).await {
+        Err(_) if !change_inputs.is_empty() => assemble(&[]).await,
+        built => built,
+    }
 }
 
 /// Judge each input of every transaction in create's judged set

@@ -23,8 +23,11 @@
   `inputBEEF` brings that the store does not hold under the node's word, as
   `internalizeAction` judges received bytes since #422, in the create
   door's pre-check after the BEEF's structure and roots and before anything
-  is written. Under the one-door rule every unproven transaction in a chain
-  is judged at one door (received bytes at internalize, the wallet's own at
+  is written, whatever the caller asks back: with `returnTXIDOnly` the
+  pre-check assembles the inputs for the judgment alone when such a
+  transaction is there, so a host can then also meet the BEEF-returning
+  call's `inputBEEF:` structure refusal for them. Under the one-door rule
+  every unproven transaction in a chain is judged at one door (received bytes at internalize, the wallet's own at
   their signing under #450, each by the node at broadcast), so neither
   posting route judges anything the store already holds: a caller
   transaction the store holds (internalized earlier, or the wallet's own) is
