@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-### Changed
-
 ### Fixed
 
 - #453: `internalizeAction` derives a wallet payment's BRC-29 counterparty
