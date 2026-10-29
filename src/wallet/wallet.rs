@@ -2126,20 +2126,17 @@ where
 
         let mut process_result = match self.storage.process_action(&auth, process_args).await {
             Ok(result) => result,
-            // Busy: the store refused before acting and wrote nothing. The
-            // action is not aborted and the pending transaction stays cached,
-            // so the caller may repeat this signAction unchanged.
-            Err(e @ Error::StoreBusy { .. }) => return Err(e.into()),
-            // The node's word refused the signed transaction before the
-            // writer (#450): nothing written or posted, the action not
-            // aborted and the pending transaction cached, so the caller may
-            // sign again; bsv-rs's refusal, class InvalidParameter.
-            Err(e @ Error::SpendRefused { .. }) => return Err(e.into()),
-            // The word's tip unread (#450): a header hold before the writer,
-            // nothing written; the action is kept for a repeat.
+            // Refusals before the writer, nothing written: the action is not
+            // aborted and the pending transaction stays cached, so the caller
+            // may repeat this signAction. Busy: the store refused before
+            // acting. The node's word refused the signed transaction (#450),
+            // bsv-rs's refusal, class InvalidParameter. The word's tip unread
+            // (#450): a header hold.
             Err(
-                e
-                @ (Error::ServiceError(_) | Error::SdkError(bsv_rs::Error::TransportFault { .. })),
+                e @ (Error::StoreBusy { .. }
+                | Error::SpendRefused { .. }
+                | Error::ServiceError(_)
+                | Error::SdkError(bsv_rs::Error::TransportFault { .. })),
             ) => return Err(e.into()),
             Err(e) => {
                 // Processing failed - abort the transaction to release locked UTXOs

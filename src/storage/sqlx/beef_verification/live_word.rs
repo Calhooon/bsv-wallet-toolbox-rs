@@ -391,25 +391,14 @@ impl WordPass<'_> {
         // One sighash cache per transaction, shared by all of its inputs.
         let shared = transaction_cache(body);
         for (vin, source) in sources.into_iter().enumerate() {
-            self.input_script(txid, body, vin, source, Arc::clone(&shared))?;
+            let proven = self.heights.get(&body.inputs[vin].prev).copied();
+            let eras = input_eras(self.network, self.tip, proven);
+            judge_input(eras, txid, body, vin, source, Arc::clone(&shared))?;
         }
         if body.outputs.iter().map(|o| o.satoshis).sum::<u64>() > input_total {
             return Err(refused(offset, txid, None, SpendRefusal::CreatesValue));
         }
         Ok(())
-    }
-
-    fn input_script(
-        &self,
-        txid: Hash32,
-        body: &TxBody,
-        vin: usize,
-        source: &Coin,
-        transaction: Arc<TxSighashCache>,
-    ) -> Result<()> {
-        let proven = self.heights.get(&body.inputs[vin].prev).copied();
-        let eras = input_eras(self.network, self.tip, proven);
-        judge_input(eras, txid, body, vin, source, transaction)
     }
 }
 
