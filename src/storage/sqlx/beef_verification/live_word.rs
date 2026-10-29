@@ -607,6 +607,21 @@ mod tests {
         }
     }
 
+    /// #472: the stored words alone are read; the legacy spellings #471
+    /// rewrites at `migrate()` take the unknown word's refusal.
+    #[test]
+    fn the_stored_words_are_read_and_the_legacy_words_refused() {
+        for network in ["main", "test", "regtest"] {
+            assert!(input_eras(network, Some(tip(CHRONICLE)), None).is_ok());
+        }
+        for network in ["mainnet", "testnet"] {
+            assert_eq!(
+                input_eras(network, Some(tip(CHRONICLE)), None),
+                Err("The storage network has no script era policy.")
+            );
+        }
+    }
+
     /// #464: bsv-rs's constants name no activation height still ahead, so
     /// the latest era they know, post-Chronicle, is the spend's era without
     /// a tip; Chronicle's constant opens it.

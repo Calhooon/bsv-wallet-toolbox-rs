@@ -578,7 +578,7 @@ impl StorageSqlx {
 
         Ok(results)
     }
-    fn proof_attempts_limit(&self) -> i64 {
+    pub(super) fn proof_attempts_limit(&self) -> i64 {
         if self.get_settings().chain.starts_with("main") {
             PROOF_ATTEMPTS_LIMIT_MAIN
         } else {

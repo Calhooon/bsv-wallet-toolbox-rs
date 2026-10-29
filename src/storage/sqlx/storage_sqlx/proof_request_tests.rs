@@ -20,6 +20,29 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// #472: the attempts limit reads the stored words alone; a legacy
+    /// spelling takes the unknown word's path, the test limit.
+    #[tokio::test]
+    async fn the_attempts_limit_reads_the_stored_words_alone() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        for (chain, limit) in [
+            ("main", PROOF_ATTEMPTS_LIMIT_MAIN),
+            ("test", PROOF_ATTEMPTS_LIMIT_TEST),
+            ("regtest", PROOF_ATTEMPTS_LIMIT_TEST),
+            ("mainnet", PROOF_ATTEMPTS_LIMIT_TEST),
+            ("testnet", PROOF_ATTEMPTS_LIMIT_TEST),
+            ("", PROOF_ATTEMPTS_LIMIT_TEST),
+        ] {
+            storage
+                .cache_settings(&TableSettings {
+                    chain: chain.to_string(),
+                    ..TableSettings::default()
+                })
+                .unwrap();
+            assert_eq!(storage.proof_attempts_limit(), limit, "{chain}");
+        }
+    }
+
     #[tokio::test]
     async fn test_tx_synchronized_status_struct() {
         // Test that TxSynchronizedStatus can be created and serialized
