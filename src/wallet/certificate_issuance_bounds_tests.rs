@@ -52,7 +52,7 @@ async fn refused(family: &str, name: &str) {
     match error {
         bsv_rs::Error::WalletError(message) => {
             let text = case.refusal(&origin, "/issue");
-            assert_eq!(message, format!("{ENVELOPE}{text}"))
+            assert_eq!(message, format!("{ENVELOPE}{text}"));
         }
         other => panic!("{name}: expected WalletError, got {other:?}"),
     }
