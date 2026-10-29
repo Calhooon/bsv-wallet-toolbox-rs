@@ -2,11 +2,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bsv_rs::wallet::{DiscoverCertificatesResult, IdentityCertificate, IdentityCertifier};
+use bsv_rs::wallet::{
+    DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs, DiscoverCertificatesResult,
+    IdentityCertificate, IdentityCertifier,
+};
 use indexmap::IndexMap;
 
-use crate::managers::TrustSettings;
-use crate::wallet::lookup::OverlayCertificate;
+use super::Wallet;
+use crate::managers::{TrustSettings, WalletSettings};
+use crate::services::WalletServices;
+use crate::storage::{entities::TableCertificate, FindCertificatesArgs, WalletStorageProvider};
+use crate::wallet::lookup::{OverlayCertificate, OverlayLookupResolver};
 use crate::Result;
 
 /// The reference limits work before grouping, independently of result paging.
@@ -122,13 +128,6 @@ pub(super) fn discovery_page(
     result
 }
 
-use super::Wallet;
-use crate::managers::WalletSettings;
-use crate::services::WalletServices;
-use crate::storage::{entities::TableCertificate, FindCertificatesArgs, WalletStorageProvider};
-use crate::wallet::lookup::OverlayLookupResolver;
-use bsv_rs::wallet::{DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs};
-
 fn local_certificate(cert: TableCertificate) -> OverlayCertificate {
     OverlayCertificate {
         type_id: cert.cert_type,
@@ -149,7 +148,10 @@ where
     V: WalletServices + Send + Sync + 'static,
 {
     async fn discovery_settings(&self) -> Result<WalletSettings> {
-        Ok(WalletSettings::default_settings_for(self.chain).clone())
+        match &self.options.settings_manager {
+            Some(manager) => manager.get().await,
+            None => Ok(WalletSettings::default_settings_for(self.chain).clone()),
+        }
     }
 
     pub(super) async fn discover_identity_with_resolver(
@@ -158,6 +160,7 @@ where
         resolver: &dyn OverlayLookupResolver,
     ) -> Result<DiscoverCertificatesResult> {
         let settings = self.discovery_settings().await?;
+        let certifiers = trusted_keys(&settings.trust_settings);
         // Local discovery is this port's extension. Do not page before merging.
         let find_args = FindCertificatesArgs {
             include_fields: Some(true),
@@ -170,7 +173,10 @@ where
             .into_iter()
             .map(local_certificate)
             .collect();
-        match resolver.lookup_by_identity_key(&args.identity_key).await {
+        match resolver
+            .lookup_by_identity_key(&args.identity_key, &certifiers)
+            .await
+        {
             Ok(overlay) => certificates.extend(overlay),
             Err(error) => tracing::debug!("Overlay lookup failed (using local only): {}", error),
         }
@@ -188,7 +194,11 @@ where
         resolver: &dyn OverlayLookupResolver,
     ) -> Result<DiscoverCertificatesResult> {
         let settings = self.discovery_settings().await?;
-        let certificates = match resolver.lookup_by_attributes(&args.attributes).await {
+        let certifiers = trusted_keys(&settings.trust_settings);
+        let certificates = match resolver
+            .lookup_by_attributes(&args.attributes, &certifiers)
+            .await
+        {
             Ok(certificates) => certificates,
             Err(error) => {
                 tracing::debug!("Overlay attribute lookup failed: {}", error);
@@ -201,4 +211,14 @@ where
             args.limit,
         ))
     }
+}
+
+fn trusted_keys(settings: &TrustSettings) -> Vec<String> {
+    let mut keys: Vec<_> = settings
+        .trusted_certifiers
+        .iter()
+        .map(|c| c.identity_key.clone())
+        .collect();
+    keys.sort();
+    keys
 }
