@@ -2402,18 +2402,16 @@ where
                         && script[23] == 0x88
                         && script[24] == 0xac
                     {
-                        let counterparty = if !payment.sender_identity_key.is_empty() {
-                            Counterparty::Other(
-                                PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
-                                    bsv_rs::Error::WalletRefusal {
-                                        class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                                        message: format!("Invalid sender_identity_key: {}", e),
-                                    }
-                                })?,
-                            )
-                        } else {
-                            Counterparty::Self_
-                        };
+                        // The validator refused an empty sender; a padded one
+                        // passes it trimmed and is refused here (#420).
+                        let counterparty = Counterparty::Other(
+                            PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
+                                bsv_rs::Error::WalletRefusal {
+                                    class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                                    message: format!("Invalid sender_identity_key: {}", e),
+                                }
+                            })?,
+                        );
                         let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
                         let key_id = format!(
                             "{} {}",

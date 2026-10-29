@@ -341,6 +341,23 @@ async fn invalid_sender_on_p2pkh_answers_the_argument_text_through_wallet_interf
     }
 }
 
+/// #420: a valid sender padded with whitespace passes the validator, which
+/// trims as validateHexString does (validationHelpers.ts:525), and meets the
+/// wallet's own parse of the untrimmed key on a P2PKH output. The reference
+/// derives from the trimmed key (signer/methods/internalizeAction.ts:86).
+#[tokio::test]
+async fn padded_sender_on_p2pkh_meets_the_wallet_sender_parse() {
+    let (_dir, wallet) = wallet().await;
+    let sender = format!(" {PAYMENT_SENDER} ");
+    assert_internalize_refused(
+        &wallet,
+        own_payment(&wallet, &sender),
+        WalletRefusalClass::InvalidParameter,
+        "Invalid sender_identity_key: invalid hex string: Invalid character ' ' at position 0",
+    )
+    .await;
+}
+
 /// #371: a wallet payment with no paymentRemittance, and a basket insertion
 /// with no insertionRemittance, answer the door's `output remittance` text
 /// (ts-stack@edf6e03 validationHelpers.ts:972, 975) through the wallet.
