@@ -10,15 +10,13 @@ fn draw(storage: &StorageSqlx) -> [u8; 32] {
 }
 
 async fn seeded_storage() -> StorageSqlx {
-    StorageSqlx::new_with_options(
-        "sqlite::memory:",
-        StorageSqlxOptions {
-            rng_seed: Some(SEED),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap()
+    let options = StorageSqlxOptions {
+        rng_seed: Some(SEED),
+        ..Default::default()
+    };
+    StorageSqlx::new_with_options("sqlite::memory:", options)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -35,15 +33,13 @@ async fn seeded_storage_clones_advance_one_shared_stream() {
 async fn seeded_open_and_new_options_start_the_same_stream() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("seeded.sqlite");
-    let opened = StorageSqlx::open_with_options(
-        path.to_str().unwrap(),
-        StorageSqlxOptions {
-            rng_seed: Some(SEED),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let options = StorageSqlxOptions {
+        rng_seed: Some(SEED),
+        ..Default::default()
+    };
+    let opened = StorageSqlx::open_with_options(path.to_str().unwrap(), options)
+        .await
+        .unwrap();
     let memory = seeded_storage().await;
     assert_eq!(draw(&opened), draw(&memory));
 }

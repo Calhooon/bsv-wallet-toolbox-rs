@@ -1,7 +1,7 @@
 //! #422: required node-word verdicts at the live internalize door.
 
-use super::beef_verification::verify_beef_spends;
-use crate::Error;
+use super::{beef_verification::verify_beef_spends, StorageSqlx, StorageSqlxOptions};
+use crate::{storage::traits::StorageInternalizeActionResult, Error};
 use bsv_rs::primitives::bsv::sighash::{
     compute_sighash_original_for_signing, parse_transaction, SighashParams, TxSighashCache,
 };
@@ -711,10 +711,7 @@ async fn internalize_on(
     network: &str,
     tracker: FixtureTracker,
     tx: Vec<u8>,
-) -> (
-    super::StorageSqlx,
-    crate::Result<crate::storage::traits::StorageInternalizeActionResult>,
-) {
+) -> (StorageSqlx, crate::Result<StorageInternalizeActionResult>) {
     use crate::services::mock::MockWalletServices;
     use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
     use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput, WalletPayment};
@@ -723,20 +720,18 @@ async fn internalize_on(
         .unwrap()
         .public_key()
         .to_hex();
-    let storage = super::StorageSqlx::new_with_options(
-        "sqlite::memory:",
-        super::StorageSqlxOptions {
-            chain: match network {
-                "mainnet" | "main" => crate::services::Chain::Main,
-                "testnet" | "test" => crate::services::Chain::Test,
-                "regtest" => crate::services::Chain::Regtest,
-                _ => panic!("unknown fixture network: {network}"),
-            },
-            ..Default::default()
+    let options = StorageSqlxOptions {
+        chain: match network {
+            "mainnet" | "main" => crate::services::Chain::Main,
+            "testnet" | "test" => crate::services::Chain::Test,
+            "regtest" => crate::services::Chain::Regtest,
+            _ => panic!("unknown fixture network: {network}"),
         },
-    )
-    .await
-    .unwrap();
+        ..Default::default()
+    };
+    let storage = StorageSqlx::new_with_options("sqlite::memory:", options)
+        .await
+        .unwrap();
     storage.migrate("word-fixture", &key).await.unwrap();
     storage.make_available().await.unwrap();
     let (user, _) = storage.find_or_insert_user(&key).await.unwrap();

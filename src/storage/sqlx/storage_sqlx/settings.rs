@@ -268,15 +268,13 @@ mod tests {
     }
 
     async fn configured_storage(chain: Chain) -> StorageSqlx {
-        let storage = StorageSqlx::new_with_options(
-            "sqlite::memory:",
-            StorageSqlxOptions {
-                chain,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        let options = StorageSqlxOptions {
+            chain,
+            ..Default::default()
+        };
+        let storage = StorageSqlx::new_with_options("sqlite::memory:", options)
+            .await
+            .unwrap();
         storage
             .migrate("test-storage", &"0".repeat(64))
             .await
@@ -305,15 +303,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("chain.sqlite");
         let path = path.to_str().unwrap();
-        let storage = StorageSqlx::open_with_options(
-            path,
-            StorageSqlxOptions {
-                chain,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        let options = StorageSqlxOptions {
+            chain,
+            ..Default::default()
+        };
+        let storage = StorageSqlx::open_with_options(path, options).await.unwrap();
         let key = "0".repeat(64);
         storage.migrate("test-storage", &key).await.unwrap();
         assert_eq!(stored_chain(&storage).await, chain.as_str());
