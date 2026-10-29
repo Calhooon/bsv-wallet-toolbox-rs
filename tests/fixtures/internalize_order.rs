@@ -243,3 +243,65 @@ async fn create_input_script_refused_before_output() {
         )
     );
 }
+
+fn create_input(unlocking_script: Vec<u8>) -> CreateActionInput {
+    CreateActionInput {
+        outpoint: Outpoint {
+            txid: [0x11; 32],
+            vout: 0,
+        },
+        input_description: "create input witness".into(),
+        unlocking_script: Some(unlocking_script),
+        unlocking_script_length: None,
+        sequence_number: None,
+    }
+}
+
+/// Every input's own checks (validationHelpers.ts:758,
+/// `.map(i => validateCreateActionInput(i))`) answer ahead of the duplicate
+/// outpoint loop (784): an input 1 that repeats input 0's outpoint does not
+/// hide input 2's empty unlocking script.
+#[tokio::test]
+async fn review_duplicate_cannot_hide_later_empty_script() {
+    let mut args = create_args(None);
+    let mut later = create_input(Vec::new());
+    later.outpoint.vout = 1;
+    args.inputs = Some(vec![
+        create_input(vec![0x00]),
+        create_input(vec![0x00]),
+        later,
+    ]);
+    let refusal = refused_before_storage(args).await;
+    assert_eq!(
+        refusal,
+        (
+            WalletRefusalClass::InvalidParameter,
+            "Validation error: The unlockingScript parameter must be hexadecimal string."
+                .to_string()
+        )
+    );
+}
+
+/// An output's locking script (validationHelpers.ts:759) answers ahead of
+/// the duplicate outpoint loop (784).
+#[tokio::test]
+async fn create_output_refused_before_duplicate_input() {
+    let mut args = create_args(None);
+    args.inputs = Some(vec![create_input(vec![0x00]), create_input(vec![0x00])]);
+    args.outputs = Some(vec![CreateActionOutput {
+        locking_script: Vec::new(),
+        satoshis: 1_000,
+        output_description: "create output witness".into(),
+        basket: None,
+        custom_instructions: None,
+        tags: None,
+    }]);
+    let refusal = refused_before_storage(args).await;
+    assert_eq!(
+        refusal,
+        (
+            WalletRefusalClass::InvalidParameter,
+            "Validation error: outputs[0]: locking script cannot be empty".to_string()
+        )
+    );
+}
