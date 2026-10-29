@@ -873,6 +873,18 @@ async fn post_stored_actions(
         return Ok(stored_post_result(&posts));
     }
     if args.is_delayed {
+        // The monitor posts what is queued here: the same judged set and
+        // verdict before anything is queued (#426).
+        let posted: Vec<String> = posts.iter().map(|post| post.txid.clone()).collect();
+        if posts.iter().any(|post| {
+            post.status == "sending"
+                && post
+                    .input_beef
+                    .as_deref()
+                    .is_some_and(|input| holds_judged(input, &posted))
+        }) {
+            stored_post_beef(storage, &posts).await?;
+        }
         return Ok(stored_post_result(
             &prepare_stored_posts(storage, user_id, &handles).await?,
         ));
