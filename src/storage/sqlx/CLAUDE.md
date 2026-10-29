@@ -509,26 +509,31 @@ pre-Chronicle coins, the coin era's `OP_2MUL` and `OP_SUBSTR` refusals, and
 the era refusal on a regtest tip between Genesis and Chronicle. D15 is closed
 by #422; the create and process routes are below (#426).
 
-### The routes' script verdicts (#426)
+### The routes' script verdicts (#426, the one-door rule #454)
 
-The keeper's rule: a route that accepts a raw unproven transaction into the
-wallet's state judges each of its inputs under the two words; a route that
-only records proofs for already-judged transactions does not re-judge. The
-routes call the one verifier through the `verify_beef_word` seam
-(`beef_verification.rs`): the tracker's tip (`mining_tip`, a missing tip or a
-tracker fault holding with `ServiceError` as at internalize), the storage's
-`chain`, then `live_word::verify_judging`, whose `judge` names the unproven
-transactions to judge (internalize's `verify` passes every one). Same era
-rule, same bsv-rs refusal texts (`Error::SpendRefused`), same class at the
-boundary (`InvalidParameter`). The route's own structural and proof checks
-run ahead of it, unchanged.
+The one-door rule (the keeper's reading of #454, 2026-10-29): every unproven
+transaction in a chain has one judging door. Bytes the wallet received are
+judged at internalize under the node's word (#422); bytes the wallet made are
+judged at their own signing (#450, the reference's `verifyUnlockScripts` on
+the transaction being signed, not its ancestry); the node judges each at
+broadcast. The posting routes judge nothing a second time: the set at create
+is the caller's `inputBEEF` transactions the store does not hold, and at
+process nothing the store holds is judged, the posted roots and their stored
+ancestry alike. The roots and the structure of every chain stay the
+structural passes'. The set is stated once, on `judged_set`
+(`create_action/beef.rs`). Create calls the one verifier through the
+`verify_beef_word` seam (`beef_verification.rs`): the tracker's tip
+(`mining_tip`, a missing tip or a tracker fault holding with `ServiceError`
+as at internalize), the storage's `chain`, then `live_word::verify_judging`,
+whose `judge` names the transactions to judge (internalize's `verify` passes
+every unproven one). Same era rule, same bsv-rs refusal texts
+(`Error::SpendRefused`), same class at the boundary (`InvalidParameter`).
 
 | Route | Judged before #426 | The reference (ts-stack@edf6e03) | The verdict |
 |---|---|---|---|
-| create, the caller's `inputBEEF` | structure (`verify_valid(true)`) and roots (`confirm_caller_beef_roots`, `build_input_beef`); no interpreter | `createAction.ts:909` `beef.verify(chainTracker, true)`: `Beef.ts:1020-1034`, `verifyValid` and `isValidRootForHeight`, no `Spend` | judged: the action stores the caller's unproven transactions in its input BEEF and broadcasts them. The pre-check (no lock held) builds the BEEF without trimming `knownTxids` (its bytes are judged, never returned), then `judge_caller_beef` (`CallerWord`) judges each unproven raw transaction the caller's BEEF brings on it; a caller transaction the assembly proves, and the wallet's own stored chain, are not judged. The write-locked step assembles the same caller bytes without the word. `returnTXIDOnly` builds no BEEF and judges nothing, as before |
-| process, the stored post-BEEF (`sendWith`, `verify_stored_post_beef`) | structure and roots (`verify_beef_merkle_proofs`, `Strict`) | `processAction.ts:257` `r.beef.verify(chainTracker)`, no `Spend` | judged: the post shares the signed transactions and their unproven ancestors with the network and moves them to `sending`. The judged set (`judged_set`) is every unproven raw transaction of the rebuilt BEEF beside the posted ones, after its structure and roots, before `prepare_stored_posts` writes and before `post_beef`; a delayed post builds and judges the same BEEF before it is queued, when an input BEEF holds an unproven raw transaction in the judged set (`holds_judged`); a rebuilt BEEF with an empty judged set (`beef_holds_judged`) asks no word and no mining tip, on either path; no writer held |
-| process, a new signed transaction's post (`signAction`'s `process_action_internal`, `judge_new_post`) | the txid and the requested outputs' scripts (`process_action_writes`) | `processAction.ts:257`, as above | judged when the action will be posted, now or queued (not a `noSend`-only call, which shares nothing until its `sendWith` post): the stored input BEEF with the signed transaction merged, and each `sendWith` member the call joins and posts (`joined_posts`: its request not yet sent, its signed bytes and input BEEF merged), goes through the row above's build and verdict, the new txid and the joined members outside the judged set and their unproven ancestry in it, before `write_tx`. Skipped when no input BEEF holds an unproven raw transaction beside the posted ones, does not parse (the wallet's broadcast refuses it), or the action is one the writes refuse. The create door's `signAndProcess` calls `process_action_writes` inside its write transaction and is not this row: its caller bytes took the create row's verdict |
-| the wallet's own signed transaction (`signer.rs`; the create door's `signAndProcess`, `signAction`'s `process_action_internal`, a `sendWith` post's posted transactions) | `process_action_writes` checks the txid and the requested outputs' scripts; the signer runs no interpreter on what it signed | `signer/methods/createAction.ts:116-121` `verifyUnlockScripts` before `processAction` (:138); `signAction.ts:86-91` after it (:76); `verifyUnlockScripts.ts:316-319,329-331` skips an input whose source is absent and runs the rest under `{ consensus: true, utxoHeight }` | not the door's: the keeper's reading of #450 (2026-10-29 02:5xZ) has the node judge the wallet's own signed transaction at broadcast, the broadcaster's answer reaching the host; outside every judged set above (`process_new_tx_leaves_its_own_inputs_to_the_node`, `process_post_leaves_the_posted_actions_inputs_to_the_node`). A self-check before broadcast is #450's hardening |
+| create, the caller's `inputBEEF` | structure (`verify_valid(true)`) and roots (`confirm_caller_beef_roots`, `build_input_beef`); no interpreter | `createAction.ts:909` `beef.verify(chainTracker, true)`: `Beef.ts:1020-1034`, `verifyValid` and `isValidRootForHeight`, no `Spend` | judged once: the action stores the caller's unproven transactions in its input BEEF and broadcasts them. The pre-check (no lock held) builds the BEEF without trimming `knownTxids` (its bytes are judged, never returned), then `judge_caller_beef` (`CallerWord`) judges the set: each unproven raw transaction the caller's BEEF brings that the assembly does not prove and the store does not hold (`store_holds`: a row in `transactions`, `proven_tx_reqs` or `proven_txs`, read on the pre-check's reader). An empty set asks no word and no tip. The write-locked step assembles the same caller bytes without the word. `returnTXIDOnly` builds no BEEF and judges nothing, as before (`create_refuses_a_caller_unproven_parent_without_forkid`, `create_accepts_a_caller_parent_the_store_holds`) |
+| process, the stored post-BEEF (`sendWith`, `verify_stored_post_beef`), a new signed transaction's post and the `sendWith` members its call joins, sent now or queued | structure and roots (`verify_beef_merkle_proofs`, `Strict`) | `processAction.ts:257` `r.beef.verify(chainTracker)`, no `Spend` | not judged: every transaction a post carries is the store's (the posted roots are the wallet's own, their stored ancestry was judged at create or internalize), so no word and no mining tip is asked; the structure and roots stay (`process_post_accepts_a_stored_unproven_parent_without_forkid`, `process_new_tx_accepts_a_stored_unproven_parent_without_forkid`, `process_new_tx_accepts_a_joined_members_stored_parent_without_forkid`, their queued twins, `process_new_tx_asks_no_mining_tip_for_a_stored_chain`) |
+| the wallet's own signed transaction (`signer.rs`; the create door's `signAndProcess`, `signAction`'s `process_action_internal`, a `sendWith` post's posted transactions) | `process_action_writes` checks the txid and the requested outputs' scripts; the signer runs no interpreter on what it signed | `signer/methods/createAction.ts:116-121` `verifyUnlockScripts` before `processAction` (:138); `signAction.ts:86-91` after it (:76); `verifyUnlockScripts.ts:316-319,329-331` skips an input whose source is absent and runs the rest under `{ consensus: true, utxoHeight }` | not the posting routes': its door is its signing, #450's (the keeper's corrected reading, 2026-10-29 04:0xZ); until that lands the node judges it at broadcast, the broadcaster's answer reaching the host (`process_new_tx_leaves_its_own_inputs_to_the_node`, `process_post_leaves_the_posted_actions_inputs_to_the_node`) |
 | proof recording (the monitor's ingest, review, reorg) | proofs only | proofs only | not re-judged |
 
 
