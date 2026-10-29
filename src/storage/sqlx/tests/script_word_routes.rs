@@ -134,14 +134,39 @@ fn assert_forkid_refusal(error: Error, parent: &Transaction) {
     );
 }
 
+/// Which input the post's fixture spends without `SIGHASH_FORKID`: none,
+/// the unproven parent's, or the posted transaction's own (the parent's
+/// coin then P2PK).
+#[derive(Clone, Copy)]
+enum Bad {
+    None,
+    Parent,
+    Own,
+}
+
+/// The lineage and the transaction the wallet posts, spending the parent's
+/// coin as `bad` says.
+fn posted(bad: Bad) -> (Transaction, Beef, MockChainTracker, Transaction) {
+    let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
+    let parent_lock = match bad {
+        Bad::Own => format!("21{}ac", key.public_key().to_hex()),
+        _ => "51".to_string(),
+    };
+    let (parent, beef, tracker) = lineage(matches!(bad, Bad::Parent), &parent_lock);
+    let mut subject = spend(&parent.id(), "", 8_000, "51");
+    if let Bad::Own = bad {
+        let coin = &parent.outputs[0].locking_script;
+        sign_without_forkid(&mut subject, coin, 9_000, &key);
+    }
+    (parent, beef, tracker, subject)
+}
+
 // processAction: the stored post-BEEF (sendWith)
 
 /// A stored `nosend` action whose input BEEF carries the parent unproven,
-/// posted by `sendWith`. With `bad_own` the action spends a P2PK coin of
-/// the parent without `SIGHASH_FORKID`.
+/// posted by `sendWith`, queued with `delayed`.
 async fn post(
-    bad: bool,
-    bad_own: bool,
+    bad: Bad,
     delayed: bool,
 ) -> (
     StorageSqlx,
@@ -150,18 +175,7 @@ async fn post(
     crate::Result<String>,
 ) {
     let (storage, user_id) = store().await;
-    let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
-    let parent_lock = if bad_own {
-        format!("21{}ac", key.public_key().to_hex())
-    } else {
-        "51".to_string()
-    };
-    let (parent, mut beef, tracker) = lineage(bad, &parent_lock);
-    let mut subject = spend(&parent.id(), "", 8_000, "51");
-    if bad_own {
-        let coin = &parent.outputs[0].locking_script;
-        sign_without_forkid(&mut subject, coin, 9_000, &key);
-    }
+    let (parent, mut beef, tracker, subject) = posted(bad);
     let services = Arc::new(MockWalletServices::new());
     storage.set_services(services.clone());
     storage.set_chain_tracker(Arc::new(tracker)).await;
@@ -199,11 +213,10 @@ async fn post(
     (storage, services, parent, posted)
 }
 
-/// The witness: the post-BEEF's unproven parent spends its coin without
-/// `SIGHASH_FORKID`. Refused before anything is written or posted.
-#[tokio::test]
-async fn process_post_refuses_an_unproven_parent_without_forkid() {
-    let (storage, services, parent, posted) = post(true, false, false).await;
+/// The parent without `SIGHASH_FORKID`, posted now or queued: refused
+/// before anything is written, queued or posted.
+async fn assert_post_refused(delayed: bool) {
+    let (storage, services, parent, posted) = post(Bad::Parent, delayed).await;
     assert_forkid_refusal(posted.unwrap_err(), &parent);
     assert_eq!(services.call_count("post_beef"), 0);
     let statuses: (String, String) = sqlx::query_as(
@@ -213,28 +226,26 @@ async fn process_post_refuses_an_unproven_parent_without_forkid() {
     .await
     .unwrap();
     assert_eq!(statuses, ("nosend".into(), "nosend".into()));
+}
+
+/// The witness: the post-BEEF's unproven parent spends its coin without
+/// `SIGHASH_FORKID`. Refused before anything is written or posted.
+#[tokio::test]
+async fn process_post_refuses_an_unproven_parent_without_forkid() {
+    assert_post_refused(false).await;
 }
 
 /// The witness on the queued path: a delayed `sendWith` takes the same
 /// verdict before anything is queued.
 #[tokio::test]
 async fn process_post_delayed_refuses_an_unproven_parent_without_forkid() {
-    let (storage, services, parent, posted) = post(true, false, true).await;
-    assert_forkid_refusal(posted.unwrap_err(), &parent);
-    assert_eq!(services.call_count("post_beef"), 0);
-    let statuses: (String, String) = sqlx::query_as(
-        "SELECT t.status, r.status FROM transactions t JOIN proven_tx_reqs r ON r.txid = t.txid",
-    )
-    .fetch_one(storage.pool())
-    .await
-    .unwrap();
-    assert_eq!(statuses, ("nosend".into(), "nosend".into()));
+    assert_post_refused(true).await;
 }
 
 /// Control: the same shape queued, every input passing the word.
 #[tokio::test]
 async fn process_post_delayed_queues_an_unproven_parent_the_word_passes() {
-    let (_, services, _, posted) = post(false, false, true).await;
+    let (_, services, _, posted) = post(Bad::None, true).await;
     assert_eq!(posted.unwrap(), "sending");
     assert_eq!(services.call_count("post_beef"), 0);
 }
@@ -242,7 +253,7 @@ async fn process_post_delayed_queues_an_unproven_parent_the_word_passes() {
 /// Control: the same shape, every input passing the word, is posted.
 #[tokio::test]
 async fn process_post_accepts_an_unproven_parent_the_word_passes() {
-    let (_, services, _, posted) = post(false, false, false).await;
+    let (_, services, _, posted) = post(Bad::None, false).await;
     assert_eq!(posted.unwrap(), "unproven");
     assert_eq!(services.call_count("post_beef"), 1);
 }
@@ -252,7 +263,7 @@ async fn process_post_accepts_an_unproven_parent_the_word_passes() {
 /// the broadcaster's answer being the host's refusal.
 #[tokio::test]
 async fn process_post_leaves_the_posted_actions_inputs_to_the_node() {
-    let (_, services, _, posted) = post(false, true, false).await;
+    let (_, services, _, posted) = post(Bad::Own, false).await;
     assert_eq!(posted.unwrap(), "unproven");
     assert_eq!(services.call_count("post_beef"), 1);
 }
@@ -279,46 +290,20 @@ impl ChainTracker for NoTip {
 
 /// An unsigned action whose stored input BEEF carries the parent unproven,
 /// signed as a child spending the parent's coin and processed for a post,
-/// queued with `delayed`. With `bad_own` the parent's coin is P2PK and the
-/// child signs it without `SIGHASH_FORKID`; without `tip` the tracker
-/// supplies no mining tip.
+/// queued with `delayed`; without `tip` the tracker supplies no mining tip.
 async fn sign(
-    bad_parent: bool,
-    bad_own: bool,
+    bad: Bad,
     delayed: bool,
     tip: bool,
 ) -> (StorageSqlx, Transaction, crate::Result<String>) {
     let (storage, user_id) = store().await;
-    let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
-    let parent_lock = if bad_own {
-        format!("21{}ac", key.public_key().to_hex())
-    } else {
-        "51".to_string()
-    };
-    let (parent, mut beef, tracker) = lineage(bad_parent, &parent_lock);
-    let mut child = spend(&parent.id(), "", 8_000, "51");
-    if bad_own {
-        let coin = &parent.outputs[0].locking_script;
-        sign_without_forkid(&mut child, coin, 9_000, &key);
-    }
+    let (parent, mut beef, tracker, child) = posted(bad);
     storage.set_services(Arc::new(MockWalletServices::new()));
     if tip {
         storage.set_chain_tracker(Arc::new(tracker)).await;
     } else {
         storage.set_chain_tracker(Arc::new(NoTip(tracker))).await;
     }
-    let now = chrono::Utc::now();
-    sqlx::query(
-        "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, \
-         lock_time, description, input_beef, created_at, updated_at) \
-         VALUES (?1, 'unsigned', 'script-word-new', 1, -1000, 1, 0, 'script word', ?3, ?2, ?2)",
-    )
-    .bind(user_id)
-    .bind(now)
-    .bind(beef.to_binary())
-    .execute(storage.writer())
-    .await
-    .unwrap();
     let args = StorageProcessActionArgs {
         is_new_tx: true,
         is_send_with: false,
@@ -329,6 +314,17 @@ async fn sign(
         raw_tx: Some(child.to_binary()),
         send_with: vec![],
     };
+    sqlx::query(
+        "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, \
+         lock_time, description, input_beef, created_at, updated_at) \
+         VALUES (?1, 'unsigned', 'script-word-new', 1, -1000, 1, 0, 'script word', ?3, ?2, ?2)",
+    )
+    .bind(user_id)
+    .bind(chrono::Utc::now())
+    .bind(beef.to_binary())
+    .execute(storage.writer())
+    .await
+    .unwrap();
     let processed = process_action_internal(&storage, user_id, args)
         .await
         .map(|result| result.send_with_results.unwrap()[0].status.clone());
@@ -351,7 +347,7 @@ async fn signed_rows(storage: &StorageSqlx) -> (String, i64) {
 /// writer is taken: the action stays unsigned and no request is written.
 #[tokio::test]
 async fn process_new_tx_refuses_an_unproven_parent_without_forkid() {
-    let (storage, parent, processed) = sign(true, false, false, true).await;
+    let (storage, parent, processed) = sign(Bad::Parent, false, true).await;
     assert_forkid_refusal(processed.unwrap_err(), &parent);
     assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
 }
@@ -360,7 +356,7 @@ async fn process_new_tx_refuses_an_unproven_parent_without_forkid() {
 /// before anything is queued.
 #[tokio::test]
 async fn process_new_tx_delayed_refuses_an_unproven_parent_without_forkid() {
-    let (storage, parent, processed) = sign(true, false, true, true).await;
+    let (storage, parent, processed) = sign(Bad::Parent, true, true).await;
     assert_forkid_refusal(processed.unwrap_err(), &parent);
     assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
 }
@@ -371,7 +367,7 @@ async fn process_new_tx_delayed_refuses_an_unproven_parent_without_forkid() {
 /// broadcast, and the broadcaster's answer is the host's refusal.
 #[tokio::test]
 async fn process_new_tx_leaves_its_own_inputs_to_the_node() {
-    let (storage, _, processed) = sign(false, true, false, true).await;
+    let (storage, _, processed) = sign(Bad::Own, false, true).await;
     assert_eq!(processed.unwrap(), "sending");
     assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
@@ -381,7 +377,7 @@ async fn process_new_tx_leaves_its_own_inputs_to_the_node() {
 /// prefix, as the CHANGELOG quotes it.
 #[tokio::test]
 async fn process_new_tx_holds_without_a_mining_tip() {
-    let (storage, _, processed) = sign(true, false, false, false).await;
+    let (storage, _, processed) = sign(Bad::Parent, false, false).await;
     let refusal = bsv_rs::Error::from(processed.unwrap_err());
     eprintln!("host: {refusal:?}");
     let bsv_rs::Error::WalletError(message) = &refusal else {
