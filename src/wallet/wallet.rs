@@ -1631,7 +1631,7 @@ where
 
             return Ok(CreateActionResult {
                 txid: Some(txid_array),
-                tx: Some(signed_tx),
+                tx: (!return_txid_only).then_some(signed_tx),
                 no_send_change: storage_result.no_send_change_output_vouts.map(|vouts| {
                     vouts
                         .into_iter()

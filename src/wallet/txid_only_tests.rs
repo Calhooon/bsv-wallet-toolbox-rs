@@ -10,7 +10,7 @@ use crate::{Result, StorageSqlx};
 use async_trait::async_trait;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::transaction::{Beef, ChainTracker, Transaction};
-use bsv_rs::wallet::{CreateActionArgs, CreateActionResult, WalletInterface};
+use bsv_rs::wallet::{CreateActionArgs, CreateActionResult, SendWithResultStatus, WalletInterface};
 use std::sync::Mutex;
 
 struct Post {
@@ -193,4 +193,96 @@ async fn return_txid_only_immediate_posts_stored_beef() {
     assert_eq!(wallet.services().mock.call_count("post_beef"), 1);
     assert_eq!(wallet.services().mock.call_count("get_beef"), 0);
     assert_eq!(wallet.services().mock.call_count("get_raw_tx"), 0);
+}
+
+async fn assert_side_fields(
+    wallet: &Wallet<StorageSqlx, RecordingServices>,
+    result: &CreateActionResult,
+    no_send: bool,
+    delayed: bool,
+) {
+    let txid = result.txid.expect("the answer retains its txid");
+    assert!(result.signable_transaction.is_none());
+    if no_send {
+        let vouts: Vec<i64> = sqlx::query_scalar(
+            "SELECT vout FROM outputs WHERE txid = ? AND change = 1 ORDER BY vout",
+        )
+        .bind(hex::encode(txid))
+        .fetch_all(wallet.storage().pool())
+        .await
+        .unwrap();
+        let change = result.no_send_change.as_ref().unwrap();
+        assert!(!change.is_empty());
+        assert_eq!(change.len(), vouts.len());
+        for (outpoint, vout) in change.iter().zip(vouts) {
+            assert_eq!(outpoint.txid, txid);
+            assert_eq!(i64::from(outpoint.vout), vout);
+        }
+    } else {
+        assert!(result.no_send_change.is_none());
+    }
+    let sent = result.send_with_results.as_ref().unwrap();
+    if no_send {
+        assert!(sent.is_empty());
+    } else {
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].txid, txid);
+        assert_eq!(
+            sent[0].status,
+            if delayed {
+                SendWithResultStatus::Sending
+            } else {
+                SendWithResultStatus::Unproven
+            }
+        );
+    }
+    assert_eq!(
+        wallet.services().mock.call_count("post_beef"),
+        usize::from(!no_send && !delayed)
+    );
+}
+
+#[tokio::test]
+async fn return_txid_only_answer_omits_tx() {
+    for (no_send, delayed) in [(true, false), (false, true), (false, false), (true, true)] {
+        let (wallet, parent) = funded_wallet().await;
+        let mut args = txid_only_payment(&parent);
+        let options = args.options.as_mut().unwrap();
+        options.no_send = Some(no_send);
+        options.accept_delayed_broadcast = Some(delayed);
+        let result = created(wallet.create_action(args, None).await);
+        assert!(
+            result.tx.is_none(),
+            "returnTXIDOnly answer carried tx (no_send={no_send}, delayed={delayed})"
+        );
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json.get("tx").is_none(), "the JSON answer omits tx");
+        assert!(json.get("txid").is_some());
+        assert_side_fields(&wallet, &result, no_send, delayed).await;
+    }
+}
+
+#[tokio::test]
+async fn other_create_options_keep_tx() {
+    for return_txid_only in [None, Some(false)] {
+        for (no_send, delayed) in [(true, false), (false, true), (false, false), (true, true)] {
+            let (wallet, parent) = funded_wallet().await;
+            let mut args = txid_only_payment(&parent);
+            let options = args.options.as_mut().unwrap();
+            options.return_txid_only = return_txid_only;
+            options.no_send = Some(no_send);
+            options.accept_delayed_broadcast = Some(delayed);
+            let result = created(wallet.create_action(args, None).await);
+            let raw: Vec<u8> =
+                sqlx::query_scalar("SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?")
+                    .bind(hex::encode(result.txid.unwrap()))
+                    .fetch_one(wallet.storage().pool())
+                    .await
+                    .unwrap();
+            assert_eq!(result.tx.as_ref(), Some(&raw));
+            let json = serde_json::to_value(&result).unwrap();
+            assert!(json.get("tx").is_some());
+            assert_side_fields(&wallet, &result, no_send, delayed).await;
+        }
+    }
 }
