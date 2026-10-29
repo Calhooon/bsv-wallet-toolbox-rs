@@ -26,45 +26,59 @@ async fn seed_demoted_coin(
 /// The demoted coin is the best pick (900,000 sats, the only coin at
 /// or above the target), but its BEEF cannot be built: the
 /// pre-check skips it and funds the action from the two proven
-/// 800-sat coins.
+/// 800-sat coins. The same under `returnTXIDOnly`, which assembles and
+/// stores the input BEEF as the other options do (#463).
 #[tokio::test]
 async fn a_precheck_skips_a_coin_whose_beef_cannot_be_built() {
-    let (storage, user_id) = setup().await;
-    want_one_change_coin(&storage).await;
-    let (_, demoted) = seed_demoted_coin(&storage, user_id, 0x71, 900_000).await;
-    let b1 = tx_spending(None, 0x75, 800);
-    let b2 = tx_spending(None, 0x76, 800);
-    seed_change_coin(&storage, user_id, &b1, true).await;
-    seed_change_coin(&storage, user_id, &b2, true).await;
-    // One root per height: b2's proof is in the next block.
-    sqlx::query("UPDATE proven_txs SET height = 901, merkle_path = ? WHERE txid = ?")
-        .bind(bump_for(&b2.id(), 901).to_binary())
-        .bind(b2.id())
-        .execute(storage.writer())
-        .await
-        .unwrap();
+    for return_txid_only in [false, true] {
+        let (storage, user_id) = setup().await;
+        want_one_change_coin(&storage).await;
+        let (_, demoted) = seed_demoted_coin(&storage, user_id, 0x71, 900_000).await;
+        let b1 = tx_spending(None, 0x75, 800);
+        let b2 = tx_spending(None, 0x76, 800);
+        seed_change_coin(&storage, user_id, &b1, true).await;
+        seed_change_coin(&storage, user_id, &b2, true).await;
+        // One root per height: b2's proof is in the next block.
+        sqlx::query("UPDATE proven_txs SET height = 901, merkle_path = ? WHERE txid = ?")
+            .bind(bump_for(&b2.id(), 901).to_binary())
+            .bind(b2.id())
+            .execute(storage.writer())
+            .await
+            .unwrap();
 
-    let tracker = AlwaysValidChainTracker::new(100_000);
-    let result = create_action_internal(&storage, Some(&tracker), user_id, funded_args())
-        .await
-        .expect("the proven coins fund the action");
-    let mut sources: Vec<String> = result
-        .inputs
-        .iter()
-        .map(|i| i.source_txid.clone())
-        .collect();
-    sources.sort();
-    let mut want = vec![b1.id(), b2.id()];
-    want.sort();
-    assert_eq!(
-        sources,
-        want,
-        "the demoted coin {} is not spent",
-        demoted.id()
-    );
-    let beef = Beef::from_binary(result.input_beef.as_ref().unwrap()).unwrap();
-    assert!(beef.find_txid(&demoted.id()).is_none());
-    assert!(storage.in_flight_picks().reserved().is_empty());
+        let tracker = AlwaysValidChainTracker::new(100_000);
+        let mut args = funded_args();
+        args.options = Some(bsv_rs::wallet::CreateActionOptions {
+            return_txid_only: Some(return_txid_only),
+            ..Default::default()
+        });
+        let result = create_action_internal(&storage, Some(&tracker), user_id, args)
+            .await
+            .expect("the proven coins fund the action");
+        let mut sources: Vec<String> = result
+            .inputs
+            .iter()
+            .map(|i| i.source_txid.clone())
+            .collect();
+        sources.sort();
+        let mut want = vec![b1.id(), b2.id()];
+        want.sort();
+        assert_eq!(
+            sources,
+            want,
+            "returnTXIDOnly={return_txid_only}: the demoted coin {} is not spent",
+            demoted.id()
+        );
+        let stored: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT input_beef FROM transactions WHERE reference = ?")
+                .bind(&result.reference)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        let beef = Beef::from_binary(&stored.unwrap()).unwrap();
+        assert!(beef.find_txid(&demoted.id()).is_none());
+        assert!(storage.in_flight_picks().reserved().is_empty());
+    }
 }
 
 /// The demoted coin alone covers the action; the proven 300-sat coin
