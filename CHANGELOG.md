@@ -117,6 +117,10 @@
   storage constructor takes a `Chain` yet, so a testnet or regtest host does
   not yet see its configured chain in settings (the shape is the owner's word).
 
+### Changed
+
+- #420: Refactor, nothing a host sees changes: `Wallet::internalize_action` drops its unreachable empty-sender branch, and the crate-private label normalization moves from `src/storage/sqlx/label.rs` to `src/wallet/label.rs`.
+
 ### CI
 
 - #417: Check the remote-only feature set in the Clippy job; compile RNG state and methods only for their SQL storage and test consumers.
