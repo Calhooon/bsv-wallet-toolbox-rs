@@ -270,12 +270,12 @@ mod doors {
 
     impl RecordingResolver {
         fn new(settings: &TrustSettings, certificates: Vec<OverlayCertificate>) -> Self {
-            let mut keys: Vec<_> = settings
+            let keys: std::collections::BTreeSet<_> = settings
                 .trusted_certifiers
                 .iter()
                 .map(|c| c.identity_key.clone())
                 .collect();
-            keys.sort();
+            let keys = keys.into_iter().collect();
             Self {
                 certificates,
                 keys,
@@ -421,14 +421,12 @@ mod doors {
             &manager.get().await.unwrap().trust_settings,
             vec![certificate(STRANGER, wallet.identity_key(), "overlay")],
         );
-        assert_eq!(
-            wallet
-                .discover_identity_with_resolver(args(&wallet), &resolver)
-                .await
-                .unwrap()
-                .total_certificates,
-            0
-        );
+        let after_removal = wallet
+            .discover_identity_with_resolver(args(&wallet), &resolver)
+            .await
+            .unwrap();
+        assert_eq!(after_removal.total_certificates, 0);
+        assert!(after_removal.certificates.is_empty());
     }
 
     #[tokio::test]

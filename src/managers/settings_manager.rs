@@ -484,13 +484,13 @@ mod tests {
     fn discovery_defaults_match_typescript_and_select_by_chain() {
         use crate::services::Chain;
         assert!(std::ptr::eq(
-            WalletSettings::default_settings_for(Chain::Main),
-            &*DEFAULT_SETTINGS
+            std::ptr::from_ref(WalletSettings::default_settings_for(Chain::Main)),
+            std::ptr::from_ref(&*DEFAULT_SETTINGS)
         ));
         for chain in [Chain::Test, Chain::Regtest] {
             assert!(std::ptr::eq(
-                WalletSettings::default_settings_for(chain),
-                &*TESTNET_DEFAULT_SETTINGS
+                std::ptr::from_ref(WalletSettings::default_settings_for(chain)),
+                std::ptr::from_ref(&*TESTNET_DEFAULT_SETTINGS)
             ));
         }
         let certifiers = &DEFAULT_SETTINGS.trust_settings.trusted_certifiers;
@@ -581,7 +581,7 @@ mod tests {
             invalid("trustedCertifiers must contain at most 256 entries"),
         ));
         for (value, suffix) in [
-            ("".to_string(), "must contain 1-500 UTF-8 bytes"),
+            (String::new(), "must contain 1-500 UTF-8 bytes"),
             ("x".repeat(501), "must contain 1-500 UTF-8 bytes"),
             ("relative/path".into(), "must be an absolute HTTP(S) URL"),
             (
