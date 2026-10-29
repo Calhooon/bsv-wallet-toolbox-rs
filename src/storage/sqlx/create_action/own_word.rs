@@ -20,23 +20,26 @@ use sqlx::SqliteConnection;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// The tip read for the own transaction's word: the tracker's tip, `None`
+/// when it has none (the latest era, `mining_tip`, #464).
+#[derive(Clone, Copy)]
+pub(in crate::storage::sqlx) struct OwnTip(Option<ChainTip>);
+
 /// The tip the own transaction is judged at: the tracker's (the caller's,
 /// else the storage's own), else the services' header service, as the
-/// pre-check's word reads it. A tracker fault or a missing tip holds with
-/// `ServiceError`; with no header source configured there is no tip and the
+/// pre-check's word reads it. A tracker with no mining tip, or a tip read
+/// that faults, gives the latest era; with no header source configured the
 /// word is not read (`None`).
 pub(in crate::storage::sqlx) async fn own_word_tip(
     tracker: Option<&dyn ChainTracker>,
     services: Option<Arc<dyn WalletServices>>,
-) -> Result<Option<ChainTip>> {
-    match (tracker, services.as_deref()) {
-        (Some(tracker), _) => mining_tip(tracker).await.map(Some),
-        (None, Some(services)) => {
-            let tracker = services.get_chain_tracker().await.map_err(header_fault)?;
-            mining_tip(tracker).await.map(Some)
-        }
-        (None, None) => Ok(None),
-    }
+) -> Result<Option<OwnTip>> {
+    let tracker = match (tracker, services.as_deref()) {
+        (Some(tracker), _) => tracker,
+        (None, Some(services)) => services.get_chain_tracker().await.map_err(header_fault)?,
+        (None, None) => return Ok(None),
+    };
+    Ok(Some(OwnTip(mining_tip(tracker).await?)))
 }
 
 /// The source in `beef` when it carries the transaction's bytes, its proof
@@ -55,13 +58,13 @@ fn beef_source(beef: &Beef, txid: &str) -> Option<SourceTx> {
 }
 
 /// Judge `raw_tx`, the wallet's own newly signed transaction, under the
-/// node's word at `tip` on `network`. Bytes that do not parse are left to
-/// processAction's own checks.
+/// node's word at `tip` (with none, the latest era) on `network`. Bytes
+/// that do not parse are left to processAction's own checks.
 pub(in crate::storage::sqlx) async fn judge_own_tx(
     conn: &mut SqliteConnection,
     input_beef: Option<&[u8]>,
     raw_tx: &[u8],
-    tip: ChainTip,
+    OwnTip(tip): OwnTip,
     network: &str,
 ) -> Result<()> {
     // Parsed and dropped before any await: bsv-rs's parsed types are not `Send`.

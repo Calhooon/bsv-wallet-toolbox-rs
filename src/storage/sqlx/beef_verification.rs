@@ -42,7 +42,7 @@ fn tracker_fault(error: ChainTrackerError) -> Error {
 }
 
 struct VerificationHeaders {
-    tip: ChainTip,
+    tip: Option<ChainTip>,
     roots: HashSet<(u64, Hash32)>,
 }
 
@@ -52,7 +52,7 @@ impl Headers for VerificationHeaders {
     }
 
     fn mining_tip(&self) -> Option<ChainTip> {
-        Some(self.tip)
+        self.tip
     }
 }
 
@@ -102,12 +102,18 @@ pub(super) async fn verify_beef_spends(
     }
 }
 
-pub(super) async fn mining_tip(tracker: &dyn ChainTracker) -> Result<ChainTip> {
-    tracker
-        .mining_tip()
-        .await
-        .map_err(tracker_fault)?
-        .ok_or_else(|| header_fault("the header service supplied no mining tip"))
+/// The tracker's mining tip. With none, or a tip read that faults, the word
+/// takes the latest era (`live_word::era_without_tip`, #464) and the mining
+/// rules that need a tip answer as bsv-rs's verifier does without one; the
+/// call holds (a missing tip with `ServiceError`, a fault with its class)
+/// only while bsv-rs's constants carry an activation height not yet reached.
+pub(super) async fn mining_tip(tracker: &dyn ChainTracker) -> Result<Option<ChainTip>> {
+    match tracker.mining_tip().await {
+        Ok(Some(tip)) => Ok(Some(tip)),
+        _ if live_word::era_without_tip().is_some() => Ok(None),
+        Ok(None) => Err(header_fault("the header service supplied no mining tip")),
+        Err(error) => Err(tracker_fault(error)),
+    }
 }
 
 /// The node's word alone (#426), for a route whose own structural and proof

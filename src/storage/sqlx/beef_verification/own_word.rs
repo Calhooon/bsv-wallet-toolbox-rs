@@ -2,8 +2,8 @@
 //! where the reference's `verifyUnlockScripts` judges it at its signing
 //! (ts-stack@edf6e03 `signer/methods/verifyUnlockScripts.ts:297-353`): each
 //! input whose source transaction's bytes are at hand, under the word for
-//! it, the coin's era from the source's proof height (the tip's when it has
-//! none); an input without source bytes is skipped (:316-321). Only the
+//! it, the coin's era from the source's proof height (the spend's when it
+//! has none); an input without source bytes is skipped (:316-321). Only the
 //! scripts are judged: the reference runs no mining or value rule here, and
 //! the signed transaction is read by bsv-rs's streaming reader alone.
 
@@ -73,7 +73,8 @@ fn source_output(raw: &[u8], vout: u32) -> Result<Option<(u64, &[u8])>> {
 }
 
 /// Judge `raw_tx`'s inputs whose source transaction `sources` holds (keyed
-/// by display txid) under the word at `tip`; the others are skipped. An
+/// by display txid) under the word at `tip` (with no tip, the latest era,
+/// `input_eras`); the others are skipped. An
 /// input `input_eras` places in no era (a mainnet coin mined before
 /// Genesis, a coin bsv-rs cannot yet express; a tip or network the interim
 /// policy does not read) is skipped too, under the keeper's reading of
@@ -84,7 +85,7 @@ fn source_output(raw: &[u8], vout: u32) -> Result<Option<(u64, &[u8])>> {
 pub(crate) fn verify_own(
     raw_tx: &[u8],
     sources: &HashMap<String, SourceTx>,
-    tip: ChainTip,
+    tip: Option<ChainTip>,
     network: &str,
 ) -> Result<()> {
     let (txid, body) = read_tx(raw_tx)?;

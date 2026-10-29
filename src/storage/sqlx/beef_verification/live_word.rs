@@ -24,13 +24,45 @@ pub(crate) struct InputEras {
     pub(crate) coin: ProtocolEra,
 }
 
-/// Every spender takes tip+1's era, the block it would be mined in; a mined
-/// parent's coin takes its proven height's era for the UTXO bits and an
-/// unproven parent's coin tip+1's. Other networks use the spend's era for the
-/// coin until #440 exposes their activation heights.
+/// The spend's era when the tracker has no mining tip, or its tip read
+/// faults: the keeper's clause of 2026-10-29 (#464, rule 9). The spend's era
+/// at tip+1 differs from the latest era bsv-rs's constants know only inside
+/// an activation window, and the constants name no activation height still
+/// ahead (Chronicle passed at 943,816), so the spend's transaction-level word
+/// is the latest era, post-Chronicle, which is no guess while no activation
+/// is pending; the reference reads no tip at all (`verifyUnlockScripts.ts:331`,
+/// `{ consensus: true, utxoHeight }`, ts-stack edf6e03). The coin's bits
+/// still come from its proof height, and an unproven coin takes the same
+/// latest era. `None` is the missing-tip hold: it returns only if the
+/// constants ever carry an activation height not yet reached, when the tip
+/// alone decides.
+///
+/// bsv-rs exposes no notion of an activation ahead, so the check compares
+/// its constants with each other: the latest era (the era of the highest
+/// height) must be the one its newest activation constant opens, with the
+/// height below that constant in an earlier era. `ProtocolEra` is not
+/// `non_exhaustive`, so an era bsv-rs adds stops the build at this match;
+/// its arm returns `None` until its activation height has been reached.
+pub(crate) fn era_without_tip() -> Option<ProtocolEra> {
+    let latest = ProtocolEra::mainnet(u32::MAX)?;
+    let activation = match latest {
+        // Reached at 943,816.
+        ProtocolEra::PostChronicle => ProtocolEra::MAINNET_CHRONICLE_HEIGHT,
+        ProtocolEra::PostGenesis => ProtocolEra::MAINNET_GENESIS_HEIGHT,
+    };
+    let opens = ProtocolEra::mainnet(activation) == Some(latest)
+        && ProtocolEra::mainnet(activation.saturating_sub(1)) != Some(latest);
+    opens.then_some(latest)
+}
+
+/// Every spender takes tip+1's era, the block it would be mined in, or
+/// with no tip `era_without_tip`'s; a mined parent's coin takes its proven
+/// height's era for the UTXO bits and an unproven parent's coin the spend's.
+/// Other networks use the spend's era for the coin until #440 exposes their
+/// activation heights. This is the one place the era is chosen.
 pub(crate) fn input_eras(
     network: &str,
-    tip: ChainTip,
+    tip: Option<ChainTip>,
     proven_height: Option<u64>,
 ) -> std::result::Result<InputEras, &'static str> {
     let mainnet = match network {
@@ -38,7 +70,6 @@ pub(crate) fn input_eras(
         "testnet" | "test" | "regtest" => false,
         _ => return Err("The storage network has no script era policy."),
     };
-    let spend_height = tip.height.saturating_add(1);
     let coin = match (mainnet, proven_height) {
         (true, Some(height)) => {
             let height = u32::try_from(height)
@@ -47,11 +78,15 @@ pub(crate) fn input_eras(
         }
         _ => None,
     };
-    let spend = ProtocolEra::mainnet(spend_height).ok_or(if mainnet {
-        "The mainnet coin height is before Genesis."
-    } else {
-        "The tracker tip height is before the supported Genesis era."
-    })?;
+    let spend = match tip {
+        Some(tip) => ProtocolEra::mainnet(tip.height.saturating_add(1)).ok_or(if mainnet {
+            "The mainnet coin height is before Genesis."
+        } else {
+            "The tracker tip height is before the supported Genesis era."
+        })?,
+        // Unreached: `beef_verification::mining_tip` holds before this.
+        None => era_without_tip().ok_or("The tracker supplied no mining tip.")?,
+    };
     Ok(InputEras {
         spend,
         coin: coin.unwrap_or(spend),
@@ -110,7 +145,7 @@ fn hold_scripts(mut body: TxBody) -> TxBody {
 struct WordPass<'a> {
     network: &'a str,
     judge: &'a (dyn Fn(&Hash32) -> bool + Sync),
-    tip: ChainTip,
+    tip: Option<ChainTip>,
     heights: HashMap<Hash32, u64>,
     bumps: Vec<u64>,
     wanted: HashSet<(Hash32, u32)>,
@@ -306,9 +341,12 @@ impl WordPass<'_> {
     }
 
     fn mining_rules(&self, offset: u64, txid: Hash32, body: &TxBody) -> Result<()> {
-        // Same non-script checks and order as BeefIndex::fold_tx at the pin.
-        let next_height = u64::from(self.tip.height) + 1;
-        if next_height >= u64::from(self.tip.genesis_height) {
+        // Same non-script checks and order as BeefIndex::fold_tx at the pin,
+        // and its reading of no tip: P2SH outputs refused, Finality asked.
+        if self
+            .tip
+            .is_none_or(|tip| u64::from(tip.height) + 1 >= u64::from(tip.genesis_height))
+        {
             for (vout, output) in body.outputs.iter().enumerate() {
                 let script = &body.raw[output.script.clone()];
                 if script.len() == 23
@@ -328,14 +366,16 @@ impl WordPass<'_> {
             }
         }
         if body.lock_time != 0 && body.inputs.iter().any(|i| i.sequence != u32::MAX) {
+            let unanswered =
+                || super::header_fault("the supplied mining context could not answer Finality");
+            let tip = self.tip.ok_or_else(unanswered)?;
+            let next_height = u64::from(tip.height) + 1;
             let limit = if body.lock_time < 500_000_000 {
                 next_height
-            } else if next_height >= u64::from(self.tip.csv_height) {
-                u64::from(self.tip.median_time_past)
+            } else if next_height >= u64::from(tip.csv_height) {
+                u64::from(tip.median_time_past)
             } else {
-                u64::from(self.tip.next_block_time.ok_or_else(|| {
-                    super::header_fault("the supplied mining context could not answer Finality")
-                })?)
+                u64::from(tip.next_block_time.ok_or_else(unanswered)?)
             };
             if u64::from(body.lock_time) >= limit {
                 return Err(refused(
@@ -370,7 +410,12 @@ impl WordPass<'_> {
                 .get(&input.vout)
                 .ok_or_else(|| refusal(SpendRefusal::OutputNotAvailable { vout: input.vout }))?;
             if let Some(height) = parent.coinbase_height {
-                if (u64::from(self.tip.height) + 1)
+                let tip = self.tip.ok_or_else(|| {
+                    super::header_fault(
+                        "the supplied mining context could not answer CoinbaseMaturity",
+                    )
+                })?;
+                if (u64::from(tip.height) + 1)
                     .checked_sub(height)
                     .is_none_or(|depth| depth < 100)
                 {
@@ -509,7 +554,7 @@ mod tests {
         ] {
             for network in ["main", "mainnet"] {
                 assert_eq!(
-                    input_eras(network, tip(tip_height), Some(u64::from(height))),
+                    input_eras(network, Some(tip(tip_height)), Some(u64::from(height))),
                     Ok(expected)
                 );
             }
@@ -524,7 +569,10 @@ mod tests {
             (CHRONICLE - 2, eras(PostGenesis, PostGenesis)),
             (CHRONICLE - 1, eras(PostChronicle, PostChronicle)),
         ] {
-            assert_eq!(input_eras("mainnet", tip(tip_height), None), Ok(expected));
+            assert_eq!(
+                input_eras("mainnet", Some(tip(tip_height)), None),
+                Ok(expected)
+            );
         }
     }
 
@@ -533,18 +581,63 @@ mod tests {
         use ProtocolEra::{PostChronicle, PostGenesis};
         for network in ["test", "testnet", "regtest"] {
             assert_eq!(
-                input_eras(network, tip(CHRONICLE), Some(1)),
+                input_eras(network, Some(tip(CHRONICLE)), Some(1)),
                 Ok(eras(PostChronicle, PostChronicle))
             );
             assert_eq!(
-                input_eras(network, tip(GENESIS), Some(u64::from(CHRONICLE))),
+                input_eras(network, Some(tip(GENESIS)), Some(u64::from(CHRONICLE))),
                 Ok(eras(PostGenesis, PostGenesis))
             );
             assert_eq!(
-                input_eras(network, tip(CHRONICLE - 1), None),
+                input_eras(network, Some(tip(CHRONICLE - 1)), None),
                 Ok(eras(PostChronicle, PostChronicle))
             );
         }
+    }
+
+    /// #464: bsv-rs's constants name no activation height still ahead, so
+    /// the latest era they know, post-Chronicle, is the spend's era without
+    /// a tip; Chronicle's constant opens it.
+    #[test]
+    fn the_constants_name_no_activation_ahead_of_the_latest_era() {
+        assert_eq!(era_without_tip(), Some(ProtocolEra::PostChronicle));
+        assert_eq!(ProtocolEra::mainnet(u32::MAX), era_without_tip());
+        assert_eq!(ProtocolEra::mainnet(CHRONICLE), era_without_tip());
+        assert_ne!(ProtocolEra::mainnet(CHRONICLE - 1), era_without_tip());
+    }
+
+    /// Without a tip the spend takes the latest era, a mined coin its
+    /// proof height's and an unproven coin the spend's; other networks the
+    /// spend's for the coin; a pre-Genesis mainnet coin is still refused.
+    #[test]
+    fn no_tip_gives_the_spend_the_latest_era() {
+        use ProtocolEra::{PostChronicle, PostGenesis};
+        for (network, proven, expected) in [
+            ("mainnet", Some(GENESIS), eras(PostChronicle, PostGenesis)),
+            (
+                "main",
+                Some(CHRONICLE - 1),
+                eras(PostChronicle, PostGenesis),
+            ),
+            (
+                "mainnet",
+                Some(CHRONICLE),
+                eras(PostChronicle, PostChronicle),
+            ),
+            ("mainnet", None, eras(PostChronicle, PostChronicle)),
+            ("testnet", Some(1), eras(PostChronicle, PostChronicle)),
+            ("regtest", None, eras(PostChronicle, PostChronicle)),
+        ] {
+            assert_eq!(
+                input_eras(network, None, proven.map(u64::from)),
+                Ok(expected),
+                "{network} {proven:?}"
+            );
+        }
+        assert_eq!(
+            input_eras("mainnet", None, Some(u64::from(GENESIS - 1))),
+            Err("The mainnet coin height is before Genesis.")
+        );
     }
 
     #[test]
@@ -554,7 +647,7 @@ mod tests {
             (GENESIS - 2, None),
         ] {
             assert_eq!(
-                input_eras("mainnet", tip(tip_height), proven),
+                input_eras("mainnet", Some(tip(tip_height)), proven),
                 Err("The mainnet coin height is before Genesis.")
             );
         }
@@ -563,15 +656,15 @@ mod tests {
     #[test]
     fn unsupported_tip_and_network_are_refused() {
         assert_eq!(
-            input_eras("regtest", tip(1), None),
+            input_eras("regtest", Some(tip(1)), None),
             Err("The tracker tip height is before the supported Genesis era.")
         );
         assert_eq!(
-            input_eras("other", tip(CHRONICLE), None),
+            input_eras("other", Some(tip(CHRONICLE)), None),
             Err("The storage network has no script era policy.")
         );
         assert_eq!(
-            input_eras("mainnet", tip(CHRONICLE), Some(u64::MAX)),
+            input_eras("mainnet", Some(tip(CHRONICLE)), Some(u64::MAX)),
             Err("The coin height has no supported script era.")
         );
     }
