@@ -1,4 +1,4 @@
-//! #389: the create refusal carries the stored competing spend through WalletInterface.
+//! #389: the create refusal carries the stored competing spend through `WalletInterface`.
 
 use super::test_support::{covenant_input, p2pkh_output, seed_custom_output, synth_tx};
 use super::*;
@@ -74,8 +74,8 @@ impl Fixture {
             version: None,
             labels: Some(vec!["review-regression".into()]),
             options: Some(CreateActionOptions {
-                no_send: Some(true),
                 sign_and_process: Some(false),
+                no_send: Some(true),
                 ..CreateActionOptions::default()
             }),
         }
@@ -132,6 +132,14 @@ impl Fixture {
         .execute(self.wallet.storage().writer())
         .await
         .unwrap();
+    }
+
+    /// The review carries a BEEF of the competing txid alone.
+    async fn txid_only_beef(&self) {
+        let beef = self.beef().await;
+        assert_eq!(beef.txs.len(), 1);
+        assert!(beef.find_txid(&self.competitor).unwrap().is_txid_only());
+        assert!(beef.bumps.is_empty());
     }
 
     async fn beef(&self) -> Beef {
@@ -213,10 +221,7 @@ async fn create_review_carries_txid_only_beef_when_raw_tx_is_missing() {
         .execute(f.wallet.storage().writer())
         .await
         .unwrap();
-    let beef = f.beef().await;
-    assert_eq!(beef.txs.len(), 1);
-    assert!(beef.find_txid(&f.competitor).unwrap().is_txid_only());
-    assert!(beef.bumps.is_empty());
+    f.txid_only_beef().await;
 }
 
 /// The review's probe: `getProvenOrRawTx` (StorageKnex.ts:189-210) reads
@@ -227,10 +232,7 @@ async fn create_review_carries_txid_only_beef_when_raw_tx_is_missing() {
 async fn create_review_reads_no_transaction_row_beside_a_double_spend_request() {
     let f = fixture().await;
     f.request("doubleSpend", None).await;
-    let beef = f.beef().await;
-    assert_eq!(beef.txs.len(), 1);
-    assert!(beef.find_txid(&f.competitor).unwrap().is_txid_only());
-    assert!(beef.bumps.is_empty());
+    f.txid_only_beef().await;
 }
 
 /// A stored action row with no proven tx and no request answers txid-only:
@@ -238,42 +240,40 @@ async fn create_review_reads_no_transaction_row_beside_a_double_spend_request() 
 #[tokio::test]
 async fn create_review_reads_no_transaction_row_without_a_request() {
     let f = fixture().await;
-    let beef = f.beef().await;
-    assert_eq!(beef.txs.len(), 1);
-    assert!(beef.find_txid(&f.competitor).unwrap().is_txid_only());
+    f.txid_only_beef().await;
 }
 
 impl Fixture {
-    /// After each of the first `moves` review reads, store a new competitor
+    /// After each of the first `times` review reads, store a new competitor
     /// for the input, as another writer would between the read and the lock.
     /// Returns the read count and the competitors stored, in order.
     fn move_competitor_after_read(
         &self,
-        moves: usize,
+        times: usize,
     ) -> (
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
         std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     ) {
         use std::sync::atomic::Ordering;
         let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let moved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let competitors = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (storage, source) = (self.wallet.storage().clone(), self.source.clone());
-        let (hook_reads, hook_moved) = (reads.clone(), moved.clone());
+        let (hook_reads, hook_moved) = (reads.clone(), competitors.clone());
         review_beef::race::set_after_read(Box::new(move || {
-            let read = hook_reads.fetch_add(1, Ordering::SeqCst);
-            let (storage, source, moved) = (storage.clone(), source.clone(), hook_moved.clone());
+            let index = hook_reads.fetch_add(1, Ordering::SeqCst);
+            let (storage, source, stored) = (storage.clone(), source.clone(), hook_moved.clone());
             Box::pin(async move {
-                if read >= moves {
+                if index >= times {
                     return;
                 }
-                let (raw, txid) = synth_tx(&source, 0, 98_000 - read as u64);
+                let (raw, txid) = synth_tx(&source, 0, 98_000 - index as u64);
                 let spender = sqlx::query(
                     "INSERT INTO transactions
                      (user_id, status, reference, is_outgoing, satoshis, description, txid)
                      SELECT user_id, 'unproven', ?, 1, 0, 'Raced spend', ?
                      FROM outputs WHERE txid = ?",
                 )
-                .bind(format!("raced-{read}"))
+                .bind(format!("raced-{index}"))
                 .bind(&txid)
                 .bind(&source)
                 .execute(storage.writer())
@@ -294,10 +294,10 @@ impl Fixture {
                 .execute(storage.writer())
                 .await
                 .unwrap();
-                moved.lock().unwrap().push(txid);
+                stored.lock().unwrap().push(txid);
             })
         }));
-        (reads, moved)
+        (reads, competitors)
     }
 }
 
