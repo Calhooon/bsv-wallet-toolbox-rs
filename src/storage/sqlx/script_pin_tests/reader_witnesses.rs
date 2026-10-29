@@ -9,8 +9,8 @@ use crate::services::mock::MockWalletServices;
 use crate::storage::sqlx::StorageSqlx;
 use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
 use bsv_rs::primitives::{PrivateKey, Writer};
-use bsv_rs::script::ProtocolEra;
-use bsv_rs::transaction::{Beef, BeefTx, Transaction};
+use bsv_rs::script::{LockingScript, ProtocolEra, UnlockingScript};
+use bsv_rs::transaction::{Beef, BeefTx, Transaction, TransactionInput, TransactionOutput};
 use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput, WalletPayment};
 use std::sync::Arc;
 
@@ -120,4 +120,50 @@ async fn internalize_accepts_a_child_written_ahead_of_its_parent() {
     assert!(accepted.unwrap(), "the BEEF with the child ahead");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows, expected);
+}
+
+/// One push of `PUSH` bytes, copied by `OP_DUP` `DUPS` times and dropped
+/// again: 331 elements of 100,000 bytes, 33,100,000 bytes on the stack.
+const PUSH: usize = 100_000;
+const DUPS: usize = 330;
+
+/// bsv-rs #331 (0.9.0-beta.2): the streaming reader runs each input under
+/// `memory_limit: None`, uncapped, where beta.1 declined a stack past
+/// 32,000,000 bytes. The door passes no figure of its own yet, so this spend
+/// is accepted; #395 gives the door its figure (bsv-rs #373's
+/// `set_memory_limit`), and this witness then turns to its refusal.
+#[tokio::test]
+async fn internalize_runs_a_script_past_beta1_memory_cap_until_395() {
+    const { assert!((DUPS + 1) * PUSH > 32_000_000) };
+    let lock = format!("{}{}", "76".repeat(DUPS), "75".repeat(DUPS));
+    let mut parent = Transaction::new();
+    let mut input = TransactionInput::new("11".repeat(32), 0);
+    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    parent.inputs.push(input);
+    parent.outputs.push(TransactionOutput {
+        satoshis: Some(100),
+        locking_script: LockingScript::from_hex(&lock).unwrap(),
+        change: false,
+    });
+    let mut unlock = vec![0x4e];
+    unlock.extend(u32::try_from(PUSH).unwrap().to_le_bytes());
+    unlock.extend(std::iter::repeat_n(0x01, PUSH));
+    let mut child = Transaction::new();
+    let mut input = TransactionInput::new(parent.id(), 0);
+    input.unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
+    child.inputs.push(input);
+    child.outputs.push(TransactionOutput {
+        satoshis: Some(90),
+        locking_script: LockingScript::from_hex("51").unwrap(),
+        change: false,
+    });
+    let bytes = atomic(
+        &child,
+        vec![(parent.clone(), Some(0)), (child.clone(), None)],
+        &parent,
+    );
+
+    let (accepted, rows) = internalize(bytes, &parent).await;
+    assert!(accepted.unwrap(), "uncapped until #395");
+    assert_eq!(rows.len(), 1);
 }
