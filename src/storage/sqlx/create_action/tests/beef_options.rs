@@ -165,46 +165,17 @@ async fn test_build_input_beef_with_user_input_beef() {
     );
 }
 
+/// The door's caller meets the inputBEEF envelope through the create
+/// validator (#416, #451): its version word 0x03020100 is neither BEEF
+/// version, at offset 0.
 #[tokio::test]
-async fn test_build_input_beef_user_beef_invalid() {
-    // Gap #1: Invalid user inputBEEF should return error
-    let storage = StorageSqlx::in_memory().await.unwrap();
-    storage.migrate("test", "000000").await.unwrap();
-    storage.make_available().await.unwrap();
+async fn test_create_action_refuses_invalid_user_beef_at_its_version() {
+    let (storage, user_id) = caller_complete_storage().await;
+    let args = envelope_args(vec![0x00, 0x01, 0x02, 0x03]);
 
-    let extended_inputs = vec![ExtendedInput {
-        vin: 0,
-        txid: "4444444444444444444444444444444444444444444444444444444444444444".to_string(),
-        vout: 0,
-        satoshis: 1000,
-        locking_script: vec![],
-        unlocking_script_length: 107,
-        input_description: None,
-        output: None,
-    }];
-    let change_inputs: Vec<AllocatedChangeInput> = vec![];
-
-    // Provide invalid BEEF bytes
-    let invalid_beef = vec![0x00, 0x01, 0x02, 0x03];
-
-    let mut conn = storage.pool().acquire().await.unwrap();
-    let result = build_input_beef(
-        &mut conn,
-        Some(storage.writer()),
-        None, // chain_tracker - skip verification
-        &extended_inputs,
-        &change_inputs,
-        Some(&invalid_beef),
-        &[],
-        false,
-        false,
-        None,
-    )
-    .await;
-
-    // The streaming reader names the byte: the version word 0x03020100
-    // is neither BEEF version, at offset 0.
-    let err = result.unwrap_err();
+    let err = create_action_internal(&storage, None, user_id, args)
+        .await
+        .expect_err("a BEEF of neither version is invalid bytes");
     assert!(
         matches!(
             err,
@@ -217,17 +188,31 @@ async fn test_build_input_beef_user_beef_invalid() {
     );
 }
 
+/// One caller input beside the caller's `inputBEEF`: the args the door's
+/// envelope witnesses send.
+fn envelope_args(input_beef: Vec<u8>) -> bsv_rs::wallet::CreateActionArgs {
+    bsv_rs::wallet::CreateActionArgs {
+        description: "inputBEEF envelope".to_string(),
+        input_beef: Some(input_beef),
+        inputs: Some(vec![covenant_input(&"44".repeat(32), p2pkh_unlock(0x41))]),
+        outputs: Some(vec![p2pkh_output(1_000, "payment")]),
+        lock_time: None,
+        version: None,
+        labels: None,
+        options: None,
+    }
+}
+
 // =============================================================================
 // Tests for BEEF Verification against ChainTracker (Gap #4)
 // =============================================================================
 
 /// The caller's inputBEEF is a stranger's bytes: a transaction with no
-/// input in it is refused as invalid bytes, at its offset, by kind.
+/// input in it is refused as invalid bytes, at its offset, by kind, by the
+/// create validator the door calls (#416, #451).
 #[tokio::test]
-async fn test_build_input_beef_refuses_a_transaction_with_no_input_at_its_offset() {
-    let storage = StorageSqlx::in_memory().await.unwrap();
-    storage.migrate("test", "000000").await.unwrap();
-    storage.make_available().await.unwrap();
+async fn test_create_action_refuses_a_transaction_with_no_input_at_its_offset() {
+    let (storage, user_id) = caller_complete_storage().await;
 
     // Version 1, no input, one OP_TRUE output, lock time 0.
     let mut raw = 1u32.to_le_bytes().to_vec();
@@ -238,33 +223,10 @@ async fn test_build_input_beef_refuses_a_transaction_with_no_input_at_its_offset
     raw.extend_from_slice(&0u32.to_le_bytes());
     let mut beef = Beef::new();
     beef.merge_raw_tx(raw, None);
-    let bytes = beef.to_binary();
 
-    let extended_inputs = vec![ExtendedInput {
-        vin: 0,
-        txid: "44".repeat(32),
-        vout: 0,
-        satoshis: 1000,
-        locking_script: vec![],
-        unlocking_script_length: 107,
-        input_description: None,
-        output: None,
-    }];
-    let mut conn = storage.pool().acquire().await.unwrap();
-    let err = build_input_beef(
-        &mut conn,
-        Some(storage.writer()),
-        None,
-        &extended_inputs,
-        &[],
-        Some(&bytes),
-        &[],
-        false,
-        false,
-        None,
-    )
-    .await
-    .expect_err("a transaction with no input is invalid bytes");
+    let err = create_action_internal(&storage, None, user_id, envelope_args(beef.to_binary()))
+        .await
+        .expect_err("a transaction with no input is invalid bytes");
     // The version (4), the two counts (1 + 1), the format byte (1).
     assert_eq!(err.to_string(), "Invalid BEEF at byte 7: NoInputs");
     assert!(matches!(
