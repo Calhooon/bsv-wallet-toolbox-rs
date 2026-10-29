@@ -10,6 +10,10 @@ use bsv_rs::transaction::{
 use chrono::Utc;
 use std::sync::Arc;
 
+// A post-Genesis mainnet proof: the post's unproven spends are judged under
+// the node's word at the coin's era (#426), and no era precedes Genesis.
+const PROOF_HEIGHT: u32 = bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT + 100;
+
 fn raw_spending(txid: &str) -> Vec<u8> {
     let mut transaction = Transaction::new();
     transaction
@@ -38,7 +42,7 @@ async fn assert_restored_ancestor_order(trimmed: bool) {
     let child_raw = raw_spending(&parent_txid);
     let child_txid = compute_txid(&child_raw);
     let proof = MerklePath {
-        block_height: 100,
+        block_height: PROOF_HEIGHT,
         path: vec![vec![MerklePathLeaf {
             offset: 0,
             hash: Some(ancestor_txid.clone()),
@@ -49,9 +53,10 @@ async fn assert_restored_ancestor_order(trimmed: bool) {
     let recorded_at = Utc::now();
     sqlx::query(
         "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, \
-         raw_tx, created_at, updated_at) VALUES (?, 100, 0, ?, ?, ?, ?, ?, ?)",
+         raw_tx, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&ancestor_txid)
+    .bind(PROOF_HEIGHT)
     .bind("00".repeat(32))
     .bind(&ancestor_txid)
     .bind(proof.to_binary())
