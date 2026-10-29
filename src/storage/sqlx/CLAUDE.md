@@ -563,8 +563,17 @@ the signed transaction with bsv-rs's streaming reader and judges each
 input with `live_word::judge_input`, the per-input judge internalize's word
 pass uses, under `input_eras` and `input_word`: the spend's era at tip+1,
 the coin's UTXO bits from its proof height, tip+1's for a coin without one.
-The sources (`create_action/own_word.rs`, `judge_own_tx`) are the action's
-input BEEF, else the store's bytes (`get_tx_with_proof`); a source is read
+The sources (`create_action/own_word.rs`, `judge_own_tx`) are untrimmed:
+the action's input BEEF as assembled, before `knownTxids` trims the
+caller's copy (the store keeps it whole, as the reference keeps
+`storageBeef`, `storage/methods/createAction.ts:725`, and trims the
+response alone, `trimInputBeef` at :1725), else under `returnTXIDOnly`,
+which assembles none, the caller's inputBEEF as supplied; then the store's
+bytes (`get_tx_with_proof`). So no response option (`knownTxids`,
+`returnTXIDOnly`, `noSend`, `noSendChange`, `acceptDelayedBroadcast`)
+shrinks the judged set
+(`create_judges_supplied_sources_under_every_response_option`,
+`sign_action_judges_a_supplied_source_named_known`). A source is read
 for its one output, so a mined coinbase without its BUMP still supplies the
 coin. An input with neither is skipped, as the reference skips it, and so
 is an input `input_eras` places in no era (a mainnet coin mined before
@@ -577,7 +586,7 @@ within the signed transaction, bsv-rs's text, class `InvalidParameter`.
 | Place | The port | Order |
 |---|---|---|
 | create (`signAndProcess`) | the tip is read before the lock (`own_word_tip`: the caller's tracker, else the storage's, else the services' header service; none configured, no word); after the door's signer and before `process_action_writes`, inside the write transaction (local CPU and reads on its connection, nothing awaited on a provider) | the reference's: before processAction and the post; a refusal rolls the step back, nothing written, nothing posted (`create_refuses_its_own_fork_id_less_input_before_the_post`) |
-| `signAction` (`process_action_internal`, `is_new_tx`) | before the writer: the tip, the action's stored input BEEF (an `unsigned` or `unprocessed` action this call finds; otherwise processAction's own refusal answers), the store | the reference's is after processAction, so after its post; the port's processAction writes in one transaction and the wallet posts after it, so the refusal precedes both: nothing written, nothing posted, the action still `unsigned` and its inputs reserved, and the wallet answers it without aborting, the caller free to sign again (`process_new_tx_refuses_its_own_input_without_forkid`, `sign_action_refuses_its_own_fork_id_less_input`; `docs/ARCHITECTURE.md` D18) |
+| `signAction` (`process_action_internal`, `is_new_tx`) | before the writer: the tip, the action's stored input BEEF (untrimmed; an `unsigned` or `unprocessed` action this call finds; otherwise processAction's own refusal answers), the store | the reference's is after processAction, so after its post; the port's processAction writes in one transaction and the wallet posts after it, so the refusal precedes both: nothing written, nothing posted, the action still `unsigned` and its inputs reserved, and the wallet answers it without aborting, the caller free to sign again (`process_new_tx_refuses_its_own_input_without_forkid`, `sign_action_refuses_its_own_fork_id_less_input`; `docs/ARCHITECTURE.md` D18) |
 
 The word is the node's mempool word (`ScriptFlags::standard`, the #422
 rule), where the reference's is the consensus word: a transaction the

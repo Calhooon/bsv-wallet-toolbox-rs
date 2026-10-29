@@ -575,8 +575,9 @@ pub async fn process_action_internal(
 
 /// `signAction`'s signed transaction under the node's word (#450), before
 /// the writer: the tip from the storage's tracker, else its header
-/// service, the sources from the action's stored input BEEF, else the
-/// store. The reference judges after `processAction` (`signAction.ts:76`,
+/// service, the sources from the action's stored input BEEF (the untrimmed
+/// assembly: `knownTxids` trims only create's response), else the store.
+/// The reference judges after `processAction` (`signAction.ts:76`,
 /// :90), so after its post; here processAction's writes are one transaction
 /// and the post is the wallet's after it, so a refusal comes before both:
 /// nothing written, nothing posted, the action as it was. An action
