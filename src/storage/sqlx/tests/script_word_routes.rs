@@ -1,5 +1,8 @@
-//! #426: the create and process routes judge the unproven transactions they
-//! accept under the node's word, as the internalize door does since #422.
+//! #426 under the one-door rule (#454): the create route judges the
+//! caller's unproven `inputBEEF` transactions the store does not hold under
+//! the node's word, as the internalize door judges received bytes since
+//! #422; the process route judges nothing the store holds a second time, so
+//! a stored chain's unproven ancestry is accepted as stored.
 //!
 //! Mainnet fixtures: the proven grandparent at Genesis + 100 (post-Genesis,
 //! pre-Chronicle), the tracker tip six blocks on, so every spend takes the
@@ -235,33 +238,23 @@ async fn stored_nosend(
     subject.id()
 }
 
-/// The parent without `SIGHASH_FORKID`, posted now or queued: refused
-/// before anything is written, queued or posted.
-async fn assert_post_refused(delayed: bool) {
-    let (storage, services, parent, posted) = post(Bad::Parent, delayed).await;
-    assert_forkid_refusal(posted.unwrap_err(), &parent);
+/// The one-door rule: the stored post-BEEF's unproven parent spends its
+/// coin without `SIGHASH_FORKID`, and the store holds it (judged at its own
+/// door), so the post judges it no second time: posted, the node's answer
+/// being the host's.
+#[tokio::test]
+async fn process_post_accepts_a_stored_unproven_parent_without_forkid() {
+    let (_, services, _, posted) = post(Bad::Parent, false).await;
+    assert_eq!(posted.unwrap(), "unproven");
+    assert_eq!(services.call_count("post_beef"), 1);
+}
+
+/// The same on the queued path: queued, nothing posted.
+#[tokio::test]
+async fn process_post_delayed_accepts_a_stored_unproven_parent_without_forkid() {
+    let (_, services, _, posted) = post(Bad::Parent, true).await;
+    assert_eq!(posted.unwrap(), "sending");
     assert_eq!(services.call_count("post_beef"), 0);
-    let statuses: (String, String) = sqlx::query_as(
-        "SELECT t.status, r.status FROM transactions t JOIN proven_tx_reqs r ON r.txid = t.txid",
-    )
-    .fetch_one(storage.pool())
-    .await
-    .unwrap();
-    assert_eq!(statuses, ("nosend".into(), "nosend".into()));
-}
-
-/// The witness: the post-BEEF's unproven parent spends its coin without
-/// `SIGHASH_FORKID`. Refused before anything is written or posted.
-#[tokio::test]
-async fn process_post_refuses_an_unproven_parent_without_forkid() {
-    assert_post_refused(false).await;
-}
-
-/// The witness on the queued path: a delayed `sendWith` takes the same
-/// verdict before anything is queued.
-#[tokio::test]
-async fn process_post_delayed_refuses_an_unproven_parent_without_forkid() {
-    assert_post_refused(true).await;
 }
 
 /// Control: the same shape queued, every input passing the word.
@@ -369,23 +362,23 @@ async fn signed_rows(storage: &StorageSqlx) -> (String, i64) {
     .unwrap()
 }
 
-/// The witness: the new transaction's post-BEEF carries an unproven parent
-/// that spends its coin without `SIGHASH_FORKID`. Refused before the
-/// writer is taken: the action stays unsigned and no request is written.
+/// The one-door rule: the new transaction's stored input BEEF carries an
+/// unproven parent that spends its coin without `SIGHASH_FORKID`. The
+/// store holds it (the create door judged the caller's bytes once), so the
+/// process route judges it no second time: signed and sent.
 #[tokio::test]
-async fn process_new_tx_refuses_an_unproven_parent_without_forkid() {
-    let (storage, parent, processed) = sign(Bad::Parent, false, true).await;
-    assert_forkid_refusal(processed.unwrap_err(), &parent);
-    assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
+async fn process_new_tx_accepts_a_stored_unproven_parent_without_forkid() {
+    let (storage, _, processed) = sign(Bad::Parent, false, true).await;
+    assert_eq!(processed.unwrap(), "sending");
+    assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
 
-/// The witness on the queued path: a delayed send takes the same verdict
-/// before anything is queued.
+/// The same on the queued path.
 #[tokio::test]
-async fn process_new_tx_delayed_refuses_an_unproven_parent_without_forkid() {
-    let (storage, parent, processed) = sign(Bad::Parent, true, true).await;
-    assert_forkid_refusal(processed.unwrap_err(), &parent);
-    assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
+async fn process_new_tx_delayed_accepts_a_stored_unproven_parent_without_forkid() {
+    let (storage, _, processed) = sign(Bad::Parent, true, true).await;
+    assert_eq!(processed.unwrap(), "sending");
+    assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
 
 /// The wallet's own transaction is outside the judged set: its input signed
@@ -399,22 +392,14 @@ async fn process_new_tx_leaves_its_own_inputs_to_the_node() {
     assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
 
-/// A tracker with no mining tip holds the post when a transaction is there
-/// to judge; the host meets the `WalletError` text with its `Service error: `
-/// prefix, as the CHANGELOG quotes it.
+/// A tracker with no mining tip does not hold the process route: with the
+/// stored unproven parent outside the judged set, nothing is to be judged
+/// and no tip is asked.
 #[tokio::test]
-async fn process_new_tx_holds_without_a_mining_tip() {
+async fn process_new_tx_asks_no_mining_tip_for_a_stored_chain() {
     let (storage, _, processed) = sign(Bad::Parent, false, false).await;
-    let refusal = bsv_rs::Error::from(processed.unwrap_err());
-    eprintln!("host: {refusal:?}");
-    let bsv_rs::Error::WalletError(message) = &refusal else {
-        panic!("expected WalletError, got {refusal:?}");
-    };
-    assert_eq!(
-        message,
-        "Service error: ChainTracker verification failed: the header service supplied no mining tip"
-    );
-    assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
+    assert_eq!(processed.unwrap(), "sending");
+    assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
 
 // processAction: a new signed transaction's call joining stored members
@@ -475,28 +460,28 @@ async fn joined_rows(storage: &StorageSqlx) -> (String, String, String, i64) {
 }
 
 /// The joined member's parent without `SIGHASH_FORKID`, sent now or
-/// queued: refused before the writer is taken, nothing written or queued.
-async fn assert_joined_refused(delayed: bool) {
-    let (storage, parent, processed) = joined(Bad::Parent, delayed).await;
-    assert_forkid_refusal(processed.unwrap_err(), &parent);
+/// queued: the member and its stored ancestry are the store's, judged at
+/// their own doors, so the call judges them no second time and sends both.
+async fn assert_joined_accepted(delayed: bool) {
+    let (storage, _, processed) = joined(Bad::Parent, delayed).await;
+    assert_eq!(processed.unwrap(), ["sending", "sending"]);
     assert_eq!(
         joined_rows(&storage).await,
-        ("unsigned".into(), "nosend".into(), "nosend".into(), 1)
+        ("sending".into(), "sending".into(), "unsent".into(), 2)
     );
 }
 
-/// The witness: a new transaction's call joins a stored member whose
-/// unproven parent spends its coin without `SIGHASH_FORKID`; the member's
-/// ancestry is judged with the new transaction's.
+/// The one-door rule: a new transaction's call joins a stored member whose
+/// unproven parent spends its coin without `SIGHASH_FORKID`; accepted.
 #[tokio::test]
-async fn process_new_tx_refuses_a_joined_members_parent_without_forkid() {
-    assert_joined_refused(false).await;
+async fn process_new_tx_accepts_a_joined_members_stored_parent_without_forkid() {
+    assert_joined_accepted(false).await;
 }
 
-/// The witness on the queued path.
+/// The same on the queued path.
 #[tokio::test]
-async fn process_new_tx_delayed_refuses_a_joined_members_parent_without_forkid() {
-    assert_joined_refused(true).await;
+async fn process_new_tx_delayed_accepts_a_joined_members_stored_parent_without_forkid() {
+    assert_joined_accepted(true).await;
 }
 
 /// Control: the joined member's parent passes the word; both are sent.
@@ -547,11 +532,15 @@ async fn process_post_delayed_with_nothing_to_judge_asks_no_tip() {
 // createAction: the caller's inputBEEF
 
 /// An action spending the caller's unproven parent, its ancestry in the
-/// caller's `inputBEEF`; the caller signs later.
-async fn create(bad: bool) -> (StorageSqlx, Transaction, crate::Result<()>) {
+/// caller's `inputBEEF`; the caller signs later. With `stored` the store
+/// holds the parent beforehand, as internalize leaves a received transaction.
+async fn create(bad: bool, stored: bool) -> (StorageSqlx, Transaction, crate::Result<()>) {
     let (storage, user_id) = store().await;
     let p2pkh = "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac";
     let (parent, mut beef, tracker) = lineage(bad, p2pkh);
+    if stored {
+        internalized(&storage, user_id, &parent, &mut beef).await;
+    }
     let args = json!({
         "description": "script word create",
         "inputBEEF": beef.to_binary(),
@@ -572,7 +561,7 @@ async fn create(bad: bool) -> (StorageSqlx, Transaction, crate::Result<()>) {
 /// no action is written.
 #[tokio::test]
 async fn create_refuses_a_caller_unproven_parent_without_forkid() {
-    let (storage, parent, created) = create(true).await;
+    let (storage, parent, created) = create(true, false).await;
     assert_forkid_refusal(created.unwrap_err(), &parent);
     let actions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
         .fetch_one(storage.pool())
@@ -584,6 +573,44 @@ async fn create_refuses_a_caller_unproven_parent_without_forkid() {
 /// Control: the same shape, every input passing the word, is created.
 #[tokio::test]
 async fn create_accepts_a_caller_unproven_parent_the_word_passes() {
-    let (_, _, created) = create(false).await;
+    let (_, _, created) = create(false, false).await;
+    created.unwrap();
+}
+
+/// `parent` as internalize stores a received unproven transaction: its
+/// action row and its request, `beef` its input BEEF.
+async fn internalized(storage: &StorageSqlx, user_id: i64, parent: &Transaction, beef: &mut Beef) {
+    let (txid, raw, now) = (parent.id(), parent.to_binary(), chrono::Utc::now());
+    sqlx::query(
+        "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, \
+         lock_time, description, txid, raw_tx, created_at, updated_at) \
+         VALUES (?1, 'unproven', 'script-word-in', 0, 9000, 1, 0, 'received', ?3, ?4, ?2, ?2)",
+    )
+    .bind(user_id)
+    .bind(now)
+    .bind(&txid)
+    .bind(&raw)
+    .execute(storage.writer())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proven_tx_reqs (txid, status, raw_tx, input_beef, history, notify, \
+         created_at, updated_at) VALUES (?1, 'unmined', ?2, ?3, '{}', '{}', ?4, ?4)",
+    )
+    .bind(&txid)
+    .bind(&raw)
+    .bind(beef.to_binary())
+    .bind(now)
+    .execute(storage.writer())
+    .await
+    .unwrap();
+}
+
+/// The one-door rule: the caller's unproven parent without `SIGHASH_FORKID`
+/// is one the store already holds (internalized earlier, judged at that
+/// door), so the create door judges it no second time: created.
+#[tokio::test]
+async fn create_accepts_a_caller_parent_the_store_holds() {
+    let (_, _, created) = create(true, true).await;
     created.unwrap();
 }
