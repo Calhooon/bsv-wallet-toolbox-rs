@@ -60,11 +60,23 @@ impl Headers for VerificationHeaders {
 /// word passes retain only referenced outputs and entries waiting for parents.
 /// Roots were collected during the door's element scan; each distinct root is
 /// asked once, and the synchronous verifier reads that snapshot without I/O.
+#[cfg(test)]
 pub(super) async fn verify_beef_spends(
     bytes: &[u8],
     roots: &[(u64, Hash32)],
     tracker: &dyn ChainTracker,
     network: &str,
+) -> Result<()> {
+    verify_beef_spends_with_verifier(bytes, roots, tracker, network, None).await
+}
+
+/// Live door verification with the storage's optional host script backend.
+pub(super) async fn verify_beef_spends_with_verifier(
+    bytes: &[u8],
+    roots: &[(u64, Hash32)],
+    tracker: &dyn ChainTracker,
+    network: &str,
+    verifier: Option<&dyn crate::SpendVerifier>,
 ) -> Result<()> {
     let mut headers = VerificationHeaders {
         tip: mining_tip(tracker).await?,
@@ -90,13 +102,13 @@ pub(super) async fn verify_beef_spends(
     // hide later structure/proof checks, complete those before the word pass.
     let verdict = verify_stream_two_pass(std::io::Cursor::new(bytes), &headers, None)?;
     match verdict {
-        Verdict::Valid { .. } => live_word::verify(bytes, &headers, network),
+        Verdict::Valid { .. } => live_word::verify(bytes, &headers, network, verifier),
         Verdict::SpendRefused {
             why: SpendRefusal::Script(_),
             ..
         } => {
             verification_result(verify_stream_structure(bytes, &headers, None)?)?;
-            live_word::verify(bytes, &headers, network)
+            live_word::verify(bytes, &headers, network, verifier)
         }
         other => verification_result(other),
     }
@@ -125,12 +137,13 @@ pub(super) async fn verify_beef_word(
     tracker: &dyn ChainTracker,
     network: &str,
     judge: &(dyn Fn(&Hash32) -> bool + Sync),
+    verifier: Option<&dyn crate::SpendVerifier>,
 ) -> Result<()> {
     let headers = VerificationHeaders {
         tip: mining_tip(tracker).await?,
         roots: HashSet::new(),
     };
-    live_word::verify_judging(bytes, &headers, network, judge)
+    live_word::verify_judging(bytes, &headers, network, judge, verifier)
 }
 
 fn verification_result(verdict: Verdict) -> Result<()> {

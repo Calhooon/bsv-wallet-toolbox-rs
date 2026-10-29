@@ -396,9 +396,13 @@ pub(super) async fn judge_caller_beef(
             ))
         }
     };
-    super::beef_verification::verify_beef_word(assembled, tracker, word.network, &|txid| {
-        judged.contains(&display_hex(txid))
-    })
+    super::beef_verification::verify_beef_word(
+        assembled,
+        tracker,
+        word.network,
+        &|txid| judged.contains(&display_hex(txid)),
+        None,
+    )
     .await
 }
 

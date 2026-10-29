@@ -371,6 +371,7 @@ Returned by `balance()` and `balance_and_utxos()`. Both use `#[serde(rename_all 
 
 ```rust
 pub struct WalletOptions {
+    pub script_verifier: Option<Arc<dyn SpendVerifier>>, // Default: None
     pub rng_seed: Option<[u8; 32]>,              // Default: None (OS entropy); separate from the storage seed
     pub include_all_source_transactions: bool,  // Default: true
     pub auto_known_txids: bool,                 // Default: false
@@ -378,6 +379,16 @@ pub struct WalletOptions {
     pub settings_manager: Option<Arc<WalletSettingsManager>>, // Default: None
 }
 ```
+
+`SpendVerifier`, `SpendRequest` and `SpendVerificationContext` are exported
+at the crate root beside `WalletOptions`. The methods are synchronous where
+`SpendVerifierInterface.ts:13-43` at ts-stack@edf6e03 returns promises.
+`create_args.rs` validates argument shape, and `signer.rs` constructs signatures;
+neither evaluates spending scripts. The wallet field has no in-process reader:
+the port's signer check runs in storage, where the reference's runs in the wallet.
+`Wallet` receives an existing generic storage provider and has no verifier
+configuration hook on that trait. Set `StorageSqlxOptions.script_verifier` when
+constructing the store to use the host backend. Both options default to `None`.
 
 Configuration for wallet behavior:
 - `include_all_source_transactions` - Include source transactions for all inputs in signable transactions
