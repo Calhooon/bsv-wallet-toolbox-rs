@@ -19,6 +19,23 @@
   basket conversion, the value the reference's storage writes
   (`storage/methods/internalizeAction.ts:778,804`), where it stored the
   sender as supplied.
+- #426: `createAction` and `processAction` judge the unproven transactions
+  they accept under the node's word, as `internalizeAction` does since #422:
+  the create door's pre-check judges each input of every unproven raw
+  transaction the caller's `inputBEEF` brings, and a `sendWith` post judges
+  every unproven raw transaction of the post-BEEF, after each route's
+  structure and roots and before anything is written or posted. Host
+  TEXT-DIFF for CLI #347's replay: at `createAction` and `processAction` a host
+  can now meet `spend refused at offset N, input I of <txid>: <why>` with
+  bsv-rs's script texts (for example
+  `The signature must use SIGHASH_FORKID.`,
+  `The signature must not use SIGHASH_CHRONICLE before Chronicle.`,
+  `The mainnet coin height is before Genesis.`) and its other spend
+  refusals, class `InvalidParameter`; a tracker with no mining tip holds with
+  `ChainTracker verification failed: the header service supplied no mining tip`
+  (`WalletError`) when an unproven transaction is there to judge. The wallet's
+  own signed transaction is not yet judged before its immediate broadcast.
+
 - #422: The live `internalizeAction` door judges each input of every
   unproven raw transaction, including parents, under the node's word: the
   transaction-level bits of `ScriptFlags::standard` for the spend's era with
