@@ -507,7 +507,29 @@ guessing what a Genesis height means. The `script_pin_tests` witnesses pin the
 fork-ID refusal, version-1 `0x61` acceptance after Chronicle on post- and
 pre-Chronicle coins, the coin era's `OP_2MUL` and `OP_SUBSTR` refusals, and
 the era refusal on a regtest tip between Genesis and Chronicle. D15 is closed
-by #422; create/process script verification stays with #426.
+by #422; the create and process routes are below (#426).
+
+### The routes' script verdicts (#426)
+
+The keeper's rule: a route that accepts a raw unproven transaction into the
+wallet's state judges each of its inputs under the two words; a route that
+only records proofs for already-judged transactions does not re-judge. The
+routes call the one verifier through the `verify_beef_word` seam
+(`beef_verification.rs`): the tracker's tip (`mining_tip`, a missing tip or a
+tracker fault holding with `ServiceError` as at internalize), the storage's
+`chain`, then `live_word::verify_judging`, whose `judge` names the unproven
+transactions to judge (internalize's `verify` passes every one). Same era
+rule, same bsv-rs refusal texts (`Error::SpendRefused`), same class at the
+boundary (`InvalidParameter`). The route's own structural and proof checks
+run ahead of it, unchanged.
+
+| Route | Judged before #426 | The reference (ts-stack@edf6e03) | The verdict |
+|---|---|---|---|
+| create, the caller's `inputBEEF` | structure (`verify_valid(true)`) and roots (`confirm_caller_beef_roots`, `build_input_beef`); no interpreter | `createAction.ts:909` `beef.verify(chainTracker, true)`: `Beef.ts:1020-1034`, `verifyValid` and `isValidRootForHeight`, no `Spend` | judged: the action stores the caller's unproven transactions in its input BEEF and broadcasts them. The pre-check (no lock held) builds the BEEF without trimming `knownTxids` (its bytes are judged, never returned), then `judge_caller_beef` (`CallerWord`) judges each unproven raw transaction the caller's BEEF brings on it; a caller transaction the assembly proves, and the wallet's own stored chain, are not judged. The write-locked step assembles the same caller bytes without the word. `returnTXIDOnly` builds no BEEF and judges nothing, as before |
+| process, the stored post-BEEF (`sendWith`, `verify_stored_post_beef`) | structure and roots (`verify_beef_merkle_proofs`, `Strict`) | `processAction.ts:257` `r.beef.verify(chainTracker)`, no `Spend` | judged: the post shares the signed transactions and their unproven ancestors with the network and moves them to `sending`. Every unproven raw transaction of the rebuilt BEEF, after its structure and roots, before `prepare_stored_posts` writes and before `post_beef`; no writer held |
+| the signer's own transaction (`signer.rs`; the create door's `signAndProcess`, `signAction`'s `process_action_internal`) | `process_action_writes` checks the txid and the requested outputs' scripts; the signer runs no interpreter on what it signed | `signer/methods/createAction.ts:116-121` `verifyUnlockScripts` before `processAction` (:138); `signAction.ts:86-91` after it (:76); `verifyUnlockScripts.ts:329-331` `{ consensus: true, utxoHeight }`, the consensus word | belongs, not applied (#426 blocked): the door signs inside its one write transaction (bsv-wallet-cli #44) and broadcasts from `wallet.rs`; `signAction`'s stored input BEEF can carry `knownTxids` as txid-only entries, which the word cannot judge without the broadcast rebuild (a provider fetch). A later `sendWith` post is judged by the row above |
+| proof recording (the monitor's ingest, review, reorg) | proofs only | proofs only | not re-judged |
+
 
 Two witnesses in `script_pin_tests/reader_witnesses.rs` (#396) pin bsv-rs
 0.9.0-beta.2's reader changes at the full door (`internalize_action_internal`,
