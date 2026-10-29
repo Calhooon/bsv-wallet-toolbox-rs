@@ -169,6 +169,24 @@ fn discovery_groups_subjects_separately_and_rejects_empty_names() {
     assert_eq!(result.certificates[1].certificate.subject, "two");
 }
 
+#[test]
+fn discovery_attributes_reject_non_string_any_at_the_typed_boundary() {
+    use bsv_rs::wallet::DiscoverByAttributesArgs;
+    use serde_json::json;
+
+    for attributes in [
+        json!({"any": 42}),
+        json!({"any": null}),
+        json!([]),
+        json!(null),
+    ] {
+        assert!(serde_json::from_value::<DiscoverByAttributesArgs>(json!({
+            "attributes": attributes
+        }))
+        .is_err());
+    }
+}
+
 #[cfg(feature = "sqlite")]
 mod doors {
     use super::*;
@@ -311,6 +329,184 @@ mod doors {
             self.attributes.lock().unwrap().push(attributes.clone());
             Ok(self.certificates.clone())
         }
+    }
+
+    fn attribute_args(attributes: IndexMap<String, String>) -> DiscoverByAttributesArgs {
+        DiscoverByAttributesArgs {
+            attributes,
+            limit: None,
+            offset: None,
+            seek_permission: None,
+        }
+    }
+
+    async fn attribute_witnesses() -> (TestWallet, RecordingResolver) {
+        let original = settings(vec![host_certifier()], 1);
+        let wallet = wallet(Chain::Main, Some(manager(original.clone()))).await;
+        let mut mismatch = certificate(STRANGER, wallet.identity_key(), "mismatch");
+        mismatch
+            .decrypted_fields
+            .insert("name".into(), "Bob".into());
+        let resolver = RecordingResolver::new(
+            &original.trust_settings,
+            vec![
+                mismatch,
+                certificate(STRANGER, wallet.identity_key(), "match"),
+            ],
+        );
+        (wallet, resolver)
+    }
+
+    #[tokio::test]
+    async fn discovery_attributes_bind_decrypted_fields_before_paging() {
+        let (wallet, mut resolver) = attribute_witnesses().await;
+        // An encrypted field carrying the query is not matching evidence.
+        resolver.certificates[0]
+            .fields
+            .insert("name".into(), "Alice".into());
+        let mut request = attribute_args(IndexMap::from([("name".into(), "Alice".into())]));
+        request.limit = Some(1);
+        let result = wallet
+            .discover_attributes_with_resolver(request.clone(), &resolver)
+            .await
+            .unwrap();
+        assert_eq!(result.total_certificates, 1);
+        assert_eq!(result.certificates[0].certificate.serial_number, "match");
+        request.offset = Some(1);
+        let page = wallet
+            .discover_attributes_with_resolver(request, &resolver)
+            .await
+            .unwrap();
+        assert_eq!(page.total_certificates, 1);
+        assert!(page.certificates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discovery_attributes_any_overrides_named_fields_and_excludes_images() {
+        let (wallet, mut resolver) = attribute_witnesses().await;
+        resolver.certificates[0].decrypted_fields = IndexMap::from([
+            ("name".into(), "Malice".into()),
+            ("profilePhoto".into(), "Alice".into()),
+            ("icon".into(), "Alice".into()),
+        ]);
+        let request = attribute_args(IndexMap::from([
+            ("any".into(), "ALICE".into()),
+            ("name".into(), "ignored named constraint".into()),
+        ]));
+        let result = wallet
+            .discover_attributes_with_resolver(request, &resolver)
+            .await
+            .unwrap();
+        assert_eq!(result.total_certificates, 1);
+        assert_eq!(result.certificates[0].certificate.serial_number, "match");
+    }
+
+    #[tokio::test]
+    async fn discovery_attributes_empty_queries_match_nothing() {
+        let original = settings(vec![host_certifier()], 1);
+        let wallet = wallet(Chain::Main, Some(manager(original.clone()))).await;
+        let resolver = RecordingResolver::new(
+            &original.trust_settings,
+            vec![certificate(STRANGER, wallet.identity_key(), "match")],
+        );
+        for attributes in [
+            IndexMap::new(),
+            IndexMap::from([("name".into(), "\u{feff}\t ".into())]),
+            IndexMap::from([("any".into(), String::new())]),
+            IndexMap::from([("any".into(), "A".into())]),
+        ] {
+            let result = wallet
+                .discover_attributes_with_resolver(attribute_args(attributes.clone()), &resolver)
+                .await
+                .unwrap();
+            assert_eq!(result.total_certificates, 0, "query {attributes:?}");
+            assert!(result.certificates.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_attributes_follow_reference_matching_rules() {
+        let original = settings(vec![host_certifier()], 1);
+        let wallet = wallet(Chain::Main, Some(manager(original.clone()))).await;
+        // identityUtils.ts:142-243 at edf6e03, including legacy /gi casing.
+        for (field, actual, query, matches) in [
+            ("name", "Alice Wonderland", "\u{feff}aLIce\t wonder ", true),
+            ("name", "Wonderland Alice", "Alice wonder", false),
+            ("name", "Alice\nWonderland", "Alice wonder", false),
+            ("name", "Alice\rWonderland", "Alice wonder", false),
+            ("name", "Alice\u{2028}Wonderland", "Alice wonder", false),
+            ("name", "Alice.*", ".*", true),
+            ("name", "Alice", ".*", false),
+            ("name", "ſ", "S", false),
+            ("name", "\u{212a}", "K", false),
+            ("name", "é", "É", true),
+            ("name", "é", "e", false),
+            ("missing", "Alice", "Alice", false),
+            ("Name", "Alice", "Alice", false),
+            ("userName", "Alice Smith", " Alice\tSmith ", true),
+            ("userName", "alice", "Alice", false),
+            ("userName", "Alice Smith", "Alice", false),
+            ("userName", " Alice ", "Alice", false),
+            ("any", "Alice Wonderland", "ali", false),
+            ("any", "Alice Wonderland", "al", true),
+            ("any", "Alice Wonderland", "ALICE", true),
+            ("any", "Alice Wonderland", "Alice Bob", true),
+            ("any", "Alice Wonderland", "Alice -Wonderland", false),
+            ("any", "Alice Wonderland", "Alice -Bob", true),
+            ("any", "Alice Wonderland", "-Bob", false),
+            ("any", "Alice Wonderland", "the and", false),
+            ("any", "Alice Wonderland", "\"Alice Wonderland\"", true),
+            ("any", "Alice Wonderland", "\"Wonderland Alice\"", false),
+            (
+                "any",
+                "Alice Wonderland",
+                "Alice -\"Alice Wonderland\"",
+                false,
+            ),
+            ("any", "O'Neil", "O'Neil", true),
+            ("any", "O'Neil", "Neil", false),
+            ("any", "Alice\u{2014}Wonderland", "Wonderland", true),
+            ("any", "José", "Jose", true),
+            ("any", "Jose\u{301}", "José", true),
+            (
+                "any",
+                "한글",
+                "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}",
+                true,
+            ),
+            ("any", "Alice\u{85}Wonderland", "Wonderland", true),
+            ("name", "Alice", "\u{85}Alice", false),
+        ] {
+            let mut cert = certificate(STRANGER, wallet.identity_key(), "candidate");
+            cert.decrypted_fields = IndexMap::from([("name".into(), actual.into())]);
+            if field == "userName" {
+                cert.decrypted_fields = IndexMap::from([(field.into(), actual.into())]);
+            }
+            let resolver = RecordingResolver::new(&original.trust_settings, vec![cert]);
+            let result = wallet
+                .discover_attributes_with_resolver(
+                    attribute_args(IndexMap::from([(field.into(), query.into())])),
+                    &resolver,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                result.total_certificates,
+                u32::from(matches),
+                "{field}: {actual:?} against {query:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_identity_keeps_both_attribute_witnesses() {
+        let (wallet, resolver) = attribute_witnesses().await;
+        let result = wallet
+            .discover_identity_with_resolver(args(&wallet), &resolver)
+            .await
+            .unwrap();
+        assert_eq!(result.total_certificates, 2);
+        assert_eq!(result.certificates.len(), 2);
     }
 
     #[tokio::test]
