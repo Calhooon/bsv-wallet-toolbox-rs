@@ -10,10 +10,80 @@ use indexmap::IndexMap;
 
 use super::Wallet;
 use crate::managers::{TrustSettings, WalletSettings};
-use crate::services::WalletServices;
+use crate::services::{Chain, WalletServices};
 use crate::storage::{entities::TableCertificate, FindCertificatesArgs, WalletStorageProvider};
-use crate::wallet::lookup::{OverlayCertificate, OverlayLookupResolver};
+use crate::wallet::lookup::{HttpLookupResolver, OverlayCertificate, OverlayLookupResolver};
 use crate::Result;
+
+impl<S, V> Wallet<S, V>
+where
+    S: WalletStorageProvider + Send + Sync + 'static,
+    V: WalletServices + Send + Sync + 'static,
+{
+    pub(super) fn discovery_resolver(&self) -> HttpLookupResolver {
+        match self.chain {
+            Chain::Main => HttpLookupResolver::mainnet(),
+            Chain::Test | Chain::Regtest => HttpLookupResolver::testnet(),
+        }
+    }
+
+    async fn discovery_settings(&self) -> Result<WalletSettings> {
+        match &self.options.settings_manager {
+            Some(manager) => manager.get().await,
+            None => Ok(WalletSettings::default_settings_for(self.chain).clone()),
+        }
+    }
+
+    pub(super) async fn discover_identity_with_resolver(
+        &self,
+        args: DiscoverByIdentityKeyArgs,
+        resolver: &dyn OverlayLookupResolver,
+    ) -> Result<DiscoverCertificatesResult> {
+        let settings = self.discovery_settings().await?;
+        let certifiers = trusted_keys(&settings.trust_settings);
+        // Local discovery is this port's extension. Do not page before merging.
+        let find_args = FindCertificatesArgs {
+            include_fields: Some(true),
+            ..Default::default()
+        };
+        let mut certificates: Vec<_> = self
+            .storage
+            .find_certificates(&self.auth(), find_args)
+            .await?
+            .into_iter()
+            .map(local_certificate)
+            .collect();
+        match resolver
+            .lookup_by_identity_key(&args.identity_key, &certifiers)
+            .await
+        {
+            Ok(overlay) => certificates.extend(overlay),
+            Err(error) => tracing::debug!("Overlay lookup failed (using local only): {}", error),
+        }
+        let certificates = filter_by_identity_key(certificates, &args.identity_key);
+        finish(&settings, certificates, (args.offset, args.limit))
+    }
+
+    pub(super) async fn discover_attributes_with_resolver(
+        &self,
+        args: DiscoverByAttributesArgs,
+        resolver: &dyn OverlayLookupResolver,
+    ) -> Result<DiscoverCertificatesResult> {
+        let settings = self.discovery_settings().await?;
+        let certifiers = trusted_keys(&settings.trust_settings);
+        let certificates = match resolver
+            .lookup_by_attributes(&args.attributes, &certifiers)
+            .await
+        {
+            Ok(certificates) => certificates,
+            Err(error) => {
+                tracing::debug!("Overlay attribute lookup failed: {}", error);
+                vec![]
+            }
+        };
+        finish(&settings, certificates, (args.offset, args.limit))
+    }
+}
 
 /// The reference limits work before grouping, independently of result paging.
 const MAX_IDENTITY_RESULTS: usize = 256;
@@ -142,77 +212,6 @@ fn local_certificate(cert: TableCertificate) -> OverlayCertificate {
     }
 }
 
-impl<S, V> Wallet<S, V>
-where
-    S: WalletStorageProvider + Send + Sync + 'static,
-    V: WalletServices + Send + Sync + 'static,
-{
-    async fn discovery_settings(&self) -> Result<WalletSettings> {
-        match &self.options.settings_manager {
-            Some(manager) => manager.get().await,
-            None => Ok(WalletSettings::default_settings_for(self.chain).clone()),
-        }
-    }
-
-    pub(super) async fn discover_identity_with_resolver(
-        &self,
-        args: DiscoverByIdentityKeyArgs,
-        resolver: &dyn OverlayLookupResolver,
-    ) -> Result<DiscoverCertificatesResult> {
-        let settings = self.discovery_settings().await?;
-        let certifiers = trusted_keys(&settings.trust_settings);
-        // Local discovery is this port's extension. Do not page before merging.
-        let find_args = FindCertificatesArgs {
-            include_fields: Some(true),
-            ..Default::default()
-        };
-        let mut certificates: Vec<_> = self
-            .storage
-            .find_certificates(&self.auth(), find_args)
-            .await?
-            .into_iter()
-            .map(local_certificate)
-            .collect();
-        match resolver
-            .lookup_by_identity_key(&args.identity_key, &certifiers)
-            .await
-        {
-            Ok(overlay) => certificates.extend(overlay),
-            Err(error) => tracing::debug!("Overlay lookup failed (using local only): {}", error),
-        }
-        let certificates = filter_by_identity_key(certificates, &args.identity_key);
-        Ok(discovery_page(
-            transform(&settings.trust_settings, certificates)?,
-            args.offset,
-            args.limit,
-        ))
-    }
-
-    pub(super) async fn discover_attributes_with_resolver(
-        &self,
-        args: DiscoverByAttributesArgs,
-        resolver: &dyn OverlayLookupResolver,
-    ) -> Result<DiscoverCertificatesResult> {
-        let settings = self.discovery_settings().await?;
-        let certifiers = trusted_keys(&settings.trust_settings);
-        let certificates = match resolver
-            .lookup_by_attributes(&args.attributes, &certifiers)
-            .await
-        {
-            Ok(certificates) => certificates,
-            Err(error) => {
-                tracing::debug!("Overlay attribute lookup failed: {}", error);
-                vec![]
-            }
-        };
-        Ok(discovery_page(
-            transform(&settings.trust_settings, certificates)?,
-            args.offset,
-            args.limit,
-        ))
-    }
-}
-
 fn trusted_keys(settings: &TrustSettings) -> Vec<String> {
     let mut keys: Vec<_> = settings
         .trusted_certifiers
@@ -221,4 +220,16 @@ fn trusted_keys(settings: &TrustSettings) -> Vec<String> {
         .collect();
     keys.sort();
     keys
+}
+
+fn finish(
+    settings: &WalletSettings,
+    certificates: Vec<OverlayCertificate>,
+    (offset, limit): (Option<u32>, Option<u32>),
+) -> Result<DiscoverCertificatesResult> {
+    Ok(discovery_page(
+        transform(&settings.trust_settings, certificates)?,
+        offset,
+        limit,
+    ))
 }

@@ -2854,10 +2854,7 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
         validate_originator(originator)?;
-        let resolver = match self.chain {
-            Chain::Main => crate::wallet::lookup::HttpLookupResolver::mainnet(),
-            Chain::Test | Chain::Regtest => crate::wallet::lookup::HttpLookupResolver::testnet(),
-        };
+        let resolver = self.discovery_resolver();
         Ok(self
             .discover_identity_with_resolver(args, &resolver)
             .await?)
@@ -2869,10 +2866,7 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<DiscoverCertificatesResult> {
         validate_originator(originator)?;
-        let resolver = match self.chain {
-            Chain::Main => crate::wallet::lookup::HttpLookupResolver::mainnet(),
-            Chain::Test | Chain::Regtest => crate::wallet::lookup::HttpLookupResolver::testnet(),
-        };
+        let resolver = self.discovery_resolver();
         Ok(self
             .discover_attributes_with_resolver(args, &resolver)
             .await?)
