@@ -8,8 +8,9 @@
   action's input BEEF as under every other option (the untrimmed assembly,
   `knownTxids` trimming nothing stored) and drops the response's BEEF
   alone, as the reference stores `storageBeef` whatever the caller asks
-  back (`storage/methods/createAction.ts:725` at ts-stack edf6e03) and
-  returns none under the option (`trimInputBeef`, :1725-1726). So a
+  back (`storage/methods/createAction.ts:725` at ts-stack edf6e03; under
+  the option without the store's retrieval, :1938) and returns none under
+  the option (`trimInputBeef`, :1725-1726). So a
   `returnTXIDOnly` create with inputs that signs (`signAndProcess` with
   `noSend` or `acceptDelayedBroadcast`, or a later `signAction`) is
   processed and signed, judged on the stored sources as under the other
@@ -22,7 +23,9 @@
   (`WalletError`) in its place. Host BEHAVIOUR change: under
   `returnTXIDOnly` the change coins meet the assembly's rule as under the
   other options, so a coin whose stored chain reaches no proof is picked
-  around, where it was spent; and the assembly's refusals answer every
+  around, where it was spent (the port's funding rule under the option,
+  ARCHITECTURE D19: the reference skips BEEF retrieval there, :1938, and
+  filters no gap); and the assembly's refusals answer every
   such call with inputs, where under the option they answered only when
   the caller's BEEF brought an unproven transaction the store does not
   hold (#454). Host stored-data change: the

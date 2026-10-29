@@ -573,8 +573,10 @@ the action's input BEEF as assembled, before `knownTxids` trims the
 caller's copy (the store keeps it whole, as the reference keeps
 `storageBeef`, `storage/methods/createAction.ts:725`, and trims the
 response alone, `trimInputBeef` at :1725; under every option, the door
-storing it under `returnTXIDOnly` too and returning none, as the reference
-does, #463); then the store's bytes (`get_tx_with_proof`). So no response
+storing it under `returnTXIDOnly` too and returning none, #463; the
+reference stores the caller's BEEF there without the store's retrieval,
+`createAction.ts:1938`, and filters no gap coin, ARCHITECTURE D19); then
+the store's bytes (`get_tx_with_proof`). So no response
 option (`knownTxids`, `returnTXIDOnly`, `noSend`, `noSendChange`,
 `acceptDelayedBroadcast`) shrinks the judged set
 (`create_judges_supplied_sources_under_every_response_option`,
