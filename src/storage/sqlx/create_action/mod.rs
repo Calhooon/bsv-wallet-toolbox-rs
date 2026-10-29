@@ -29,7 +29,7 @@ use crate::storage::traits::{
 use bsv_rs::transaction::ChainTracker;
 use chrono::Utc;
 
-use super::{beef_verification, proof_root_checks, StorageSqlx};
+use super::{proof_root_checks, StorageSqlx};
 use beef::build_input_beef;
 use change::plan_change;
 use fees::P2PKH_UNLOCKING_SCRIPT_LENGTH;

@@ -168,9 +168,8 @@ pub(super) async fn build_input_beef(
     // This contains proofs for external inputs not in our storage
     if let Some(input_beef_bytes) = user_input_beef {
         if !input_beef_bytes.is_empty() {
-            // The caller's bytes: refused only as invalid bytes, at their
-            // offset, by kind; never for a size or a count.
-            super::beef_verification::refuse_invalid_beef_bytes(input_beef_bytes)?;
+            // The caller's envelope was checked by the create validator
+            // before any storage call (#416, #451).
             match Beef::from_binary(input_beef_bytes) {
                 Ok(mut user_beef) => {
                     if trust_self {

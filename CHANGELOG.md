@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- #451: The sqlx door's `build_input_beef` no longer repeats the inputBEEF
+  envelope check the create validator runs ahead of it on every door path
+  (#416). A refactor: nothing a host sees changes, neither a text nor an
+  order; the public `storage::sqlx::refuse_invalid_beef_bytes` stays.
+
 ### Fixed
 
 - #422: The live `internalizeAction` door judges each input of every
