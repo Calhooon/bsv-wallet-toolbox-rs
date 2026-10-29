@@ -1,0 +1,115 @@
+//! The wallet's own newly signed transaction under the node's word (#450),
+//! where the reference's `verifyUnlockScripts` judges it at its signing
+//! (ts-stack@edf6e03 `signer/methods/verifyUnlockScripts.ts:297-353`): each
+//! input whose source transaction's bytes are at hand, under the word for
+//! it, the coin's era from the source's proof height (the tip's when it has
+//! none); an input without source bytes is skipped (:316-321). Only the
+//! scripts are judged: the reference runs no mining or value rule here, and
+//! the signed transaction is read by bsv-rs's streaming reader alone.
+
+use super::live_word::{input_eras, judge_input, transaction_cache, Coin};
+use super::stream_error;
+use crate::{Error, Result};
+use bsv_rs::primitives::Reader;
+use bsv_rs::transaction::beef_stream::{
+    display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
+};
+use bsv_rs::transaction::{Beef, BeefStream, BEEF_V1};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// A source transaction's bytes and, when it is mined, its proof height.
+pub(crate) struct SourceTx {
+    pub(crate) raw: Vec<u8>,
+    pub(crate) proven_height: Option<u64>,
+}
+
+/// `raw` read by bsv-rs's streaming reader, its offsets rebased onto `raw`.
+fn read_tx(raw: &[u8]) -> Result<(Hash32, TxBody)> {
+    let mut beef = Beef::with_version(BEEF_V1);
+    beef.merge_raw_tx(raw.to_vec(), None);
+    let bytes = beef.to_binary();
+    for element in BeefStream::new(&bytes[..]) {
+        if let Element::Tx {
+            offset,
+            txid,
+            mut body,
+            ..
+        } = element.map_err(stream_error)?
+        {
+            for input in &mut body.inputs {
+                input.at -= offset;
+            }
+            for output in &mut body.outputs {
+                output.at -= offset;
+            }
+            return Ok((txid, body));
+        }
+    }
+    Err(Error::Internal(
+        "a signed transaction read no element".into(),
+    ))
+}
+
+/// The output at `vout` of the raw transaction `raw`: its value and its
+/// script bytes as written. A source is read for one output, so no
+/// transaction rule (an unproven coinbase, for one) is asked of it.
+fn source_output(raw: &[u8], vout: u32) -> Result<Option<(u64, &[u8])>> {
+    let mut reader = Reader::new(raw);
+    reader.read_bytes(4)?;
+    for _ in 0..reader.read_var_int()? {
+        reader.read_bytes(36)?;
+        reader.read_var_bytes()?;
+        reader.read_bytes(4)?;
+    }
+    for index in 0..reader.read_var_int()? {
+        let satoshis = reader.read_u64_le()?;
+        let script = reader.read_var_bytes()?;
+        if index == u64::from(vout) {
+            return Ok(Some((satoshis, script)));
+        }
+    }
+    Ok(None)
+}
+
+/// Judge `raw_tx`'s inputs whose source transaction `sources` holds (keyed
+/// by display txid) under the word at `tip`; the others are skipped. An
+/// input `input_eras` places in no era (a mainnet coin mined before
+/// Genesis, a tip or network the interim policy does not read) is left to
+/// the node, as before #450, until bsv-rs #440's hook reads it. A refusal
+/// is [`Error::SpendRefused`], its offset within `raw_tx`.
+pub(crate) fn verify_own(
+    raw_tx: &[u8],
+    sources: &HashMap<String, SourceTx>,
+    tip: ChainTip,
+    network: &str,
+) -> Result<()> {
+    let (txid, body) = read_tx(raw_tx)?;
+    let shared = transaction_cache(&body);
+    for (vin, input) in body.inputs.iter().enumerate() {
+        let Some(source) = sources.get(&display_hex(&input.prev)) else {
+            continue;
+        };
+        let Some((satoshis, script)) = source_output(&source.raw, input.vout)? else {
+            return Err(Error::SpendRefused {
+                offset: input.at,
+                txid: display_hex(&txid),
+                input: u32::try_from(vin).ok(),
+                why: SpendRefusal::OutputNotAvailable { vout: input.vout },
+            });
+        };
+        let Ok(eras) = input_eras(network, tip, source.proven_height) else {
+            continue;
+        };
+        let coin = Coin {
+            satoshis,
+            script: script.into(),
+        };
+        judge_input(Ok(eras), txid, &body, vin, &coin, Arc::clone(&shared))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "own_word_tests.rs"]
+mod tests;

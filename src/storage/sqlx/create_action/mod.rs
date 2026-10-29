@@ -14,6 +14,7 @@ mod fees;
 mod inputs;
 mod must_spend;
 mod outputs;
+mod own_word;
 mod review_beef;
 mod signing;
 mod tracker;
@@ -26,6 +27,7 @@ use crate::storage::traits::{
     StorageCreateActionResult, StorageCreateTransactionInput, StorageCreateTransactionOutput,
     StorageProcessActionArgs, StorageProvidedBy, WalletStorageReader,
 };
+use bsv_rs::transaction::beef_stream::ChainTip;
 use bsv_rs::transaction::ChainTracker;
 use chrono::Utc;
 
@@ -51,6 +53,7 @@ pub(super) use beef_storage::*;
 pub(super) use beef_walk::*;
 pub(super) use broadcast::rebuild_beef_for_broadcast;
 pub(super) use outputs::find_or_insert_output_basket;
+pub(super) use own_word::{judge_own_tx, own_word_tip};
 
 #[cfg(test)]
 use super::{internalize_action, reorg_tests, sibling_bump_tests};
@@ -169,13 +172,27 @@ pub async fn create_action_at_door_internal(
     // the pre-check (#426): the tip from the caller's tracker, else the
     // storage's own, else its services' header service, as internalize's.
     let network = storage.get_settings().chain;
+    let services = storage.get_services().ok();
+    // The tip the wallet's own signed transaction is judged at (#450), read
+    // before the write lock; the word itself awaits nothing.
+    let own_tip = match door_with.sign_and_process {
+        Some(_) => {
+            own_word_tip(
+                chain_tracker.or(storage_tracker.as_deref()),
+                services.clone(),
+            )
+            .await?
+        }
+        None => None,
+    };
     let door = Door {
         storage,
         word: CallerWord {
             tracker: chain_tracker.or(storage_tracker.as_deref()),
-            services: storage.get_services().ok(),
+            services,
             network: &network,
         },
+        own_tip,
         verify_roots: chain_tracker.is_some(),
         reads_proofs: chain_tracker.is_some() || storage_tracker.is_some(),
         answers: &answers,
@@ -242,6 +259,9 @@ struct Door<'a> {
     storage: &'a StorageSqlx,
     /// The node's word for the caller's `inputBEEF`, judged in the pre-check.
     word: CallerWord<'a>,
+    /// The tip the signed transaction is judged at (#450); `None` without
+    /// a sign step or a header source.
+    own_tip: Option<ChainTip>,
     /// The caller passed a tracker: the assembled BEEF's roots are verified.
     verify_roots: bool,
     /// A tracker (the caller's, else the storage's own) reads stored proofs.
@@ -678,6 +698,20 @@ impl Door<'_> {
                     hash.reverse();
                     hex::encode(hash)
                 };
+                // The signed transaction under the node's word before
+                // processAction's writes and the post (#450): local CPU and
+                // reads on this connection, no provider awaited.
+                if let Some(tip) = self.own_tip {
+                    judge_own_tx(
+                        &mut tx,
+                        created.input_beef.as_deref(),
+                        &raw_tx,
+                        tip,
+                        self.word.network,
+                    )
+                    .await
+                    .map_err(DoorRefusal::Create)?;
+                }
                 let process = StorageProcessActionArgs {
                     is_new_tx: true,
                     reference: Some(created.reference.clone()),

@@ -14,6 +14,8 @@ use crate::error::{Error, Result};
 use crate::storage::traits::BeefVerificationMode;
 
 mod live_word;
+mod own_word;
+pub(crate) use own_word::{verify_own, SourceTx};
 
 pub(super) fn stream_error(error: StreamError) -> Error {
     match error {
@@ -100,7 +102,7 @@ pub(super) async fn verify_beef_spends(
     }
 }
 
-async fn mining_tip(tracker: &dyn ChainTracker) -> Result<ChainTip> {
+pub(super) async fn mining_tip(tracker: &dyn ChainTracker) -> Result<ChainTip> {
     tracker
         .mining_tip()
         .await

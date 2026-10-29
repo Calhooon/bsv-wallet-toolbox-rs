@@ -2130,6 +2130,11 @@ where
             // action is not aborted and the pending transaction stays cached,
             // so the caller may repeat this signAction unchanged.
             Err(e @ Error::StoreBusy { .. }) => return Err(e.into()),
+            // The node's word refused the signed transaction before the
+            // writer (#450): nothing written or posted, the action not
+            // aborted and the pending transaction cached, so the caller may
+            // sign again; bsv-rs's refusal, class InvalidParameter.
+            Err(e @ Error::SpendRefused { .. }) => return Err(e.into()),
             Err(e) => {
                 // Processing failed - abort the transaction to release locked UTXOs
                 tracing::error!(reference = %reference, error = %e, "Process action failed, aborting transaction to release UTXOs");
