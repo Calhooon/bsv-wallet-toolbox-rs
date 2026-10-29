@@ -723,13 +723,21 @@ async fn internalize_on(
         .unwrap()
         .public_key()
         .to_hex();
-    let storage = super::StorageSqlx::in_memory().await.unwrap();
+    let storage = super::StorageSqlx::new_with_options(
+        "sqlite::memory:",
+        super::StorageSqlxOptions {
+            chain: match network {
+                "mainnet" | "main" => crate::services::Chain::Main,
+                "testnet" | "test" => crate::services::Chain::Test,
+                "regtest" => crate::services::Chain::Regtest,
+                _ => panic!("unknown fixture network: {network}"),
+            },
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     storage.migrate("word-fixture", &key).await.unwrap();
-    sqlx::query("UPDATE settings SET chain = ?")
-        .bind(network)
-        .execute(storage.writer())
-        .await
-        .unwrap();
     storage.make_available().await.unwrap();
     let (user, _) = storage.find_or_insert_user(&key).await.unwrap();
     storage.set_services(Arc::new(MockWalletServices::new()));

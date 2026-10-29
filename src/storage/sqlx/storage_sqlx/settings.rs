@@ -226,6 +226,8 @@ impl WalletStorageProvider for StorageSqlx {
 #[cfg(test)]
 mod tests {
     use super::super::{StorageSqlx, WalletStorageReader, WalletStorageWriter};
+    use crate::services::Chain;
+    use crate::storage::sqlx::StorageSqlxOptions;
 
     #[tokio::test]
     async fn test_in_memory_storage() {
@@ -244,42 +246,137 @@ mod tests {
         assert!(storage.is_available());
     }
 
-    /// A later `migrate` keeps the stored chain (#435): the reference writes
-    /// `chain` once, in the migration that creates the settings row
-    /// (`KnexMigrations.ts`'s insert), and never rewrites it.
-    async fn remigrate_keeps(chain: &str) {
-        let storage = StorageSqlx::in_memory().await.unwrap();
-        let key = "0".repeat(64);
-        storage.migrate("test-storage", &key).await.unwrap();
-        sqlx::query("UPDATE settings SET chain = ?")
-            .bind(chain)
-            .execute(storage.writer())
+    async fn stored_chain(storage: &StorageSqlx) -> String {
+        sqlx::query_scalar("SELECT chain FROM settings")
+            .fetch_one(storage.pool())
             .await
-            .unwrap();
-
-        storage.migrate("test-storage", &key).await.unwrap();
-
-        assert_eq!(storage.get_settings().chain, chain);
-        assert_eq!(storage.make_available().await.unwrap().chain, chain);
+            .unwrap()
     }
 
     #[tokio::test]
-    async fn remigrate_keeps_a_testnet_row() {
-        remigrate_keeps("testnet").await;
-    }
-
-    #[tokio::test]
-    async fn remigrate_keeps_a_regtest_row() {
-        remigrate_keeps("regtest").await;
-    }
-
-    #[tokio::test]
-    async fn a_new_row_is_mainnet() {
+    async fn a_new_row_stores_main() {
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage
             .migrate("test-storage", &"0".repeat(64))
             .await
             .unwrap();
-        assert_eq!(storage.get_settings().chain, "mainnet");
+        assert_eq!(stored_chain(&storage).await, "main");
+        assert_eq!(storage.get_settings().chain, "main");
+    }
+
+    async fn configured_storage(chain: Chain) -> StorageSqlx {
+        let storage = StorageSqlx::new_with_options(
+            "sqlite::memory:",
+            StorageSqlxOptions {
+                chain,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        storage
+            .migrate("test-storage", &"0".repeat(64))
+            .await
+            .unwrap();
+        storage
+    }
+
+    #[tokio::test]
+    async fn a_new_row_uses_the_configured_test_chain() {
+        let storage = configured_storage(Chain::Test).await;
+        assert_eq!(storage.get_settings().chain, "test");
+        assert_eq!(stored_chain(&storage).await, "test");
+        assert_eq!(storage.make_available().await.unwrap().chain, "test");
+    }
+
+    #[tokio::test]
+    async fn a_new_row_uses_the_configured_regtest_chain() {
+        assert_eq!(Chain::Regtest.as_str(), "regtest");
+        let storage = configured_storage(Chain::Regtest).await;
+        assert_eq!(storage.get_settings().chain, "regtest");
+        assert_eq!(stored_chain(&storage).await, "regtest");
+        assert_eq!(storage.make_available().await.unwrap().chain, "regtest");
+    }
+
+    async fn remigrate_keeps(chain: Chain) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chain.sqlite");
+        let path = path.to_str().unwrap();
+        let storage = StorageSqlx::open_with_options(
+            path,
+            StorageSqlxOptions {
+                chain,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let key = "0".repeat(64);
+        storage.migrate("test-storage", &key).await.unwrap();
+        assert_eq!(stored_chain(&storage).await, chain.as_str());
+        drop(storage);
+
+        // Reopening with the default must keep the existing network.
+        let reopened = StorageSqlx::open(path).await.unwrap();
+        assert_eq!(
+            reopened.make_available().await.unwrap().chain,
+            chain.as_str()
+        );
+        reopened.migrate("renamed-storage", &key).await.unwrap();
+        assert_eq!(reopened.get_settings().chain, chain.as_str());
+        assert_eq!(stored_chain(&reopened).await, chain.as_str());
+    }
+
+    #[tokio::test]
+    async fn remigrate_keeps_a_test_row() {
+        remigrate_keeps(Chain::Test).await;
+    }
+
+    #[tokio::test]
+    async fn remigrate_keeps_a_regtest_row() {
+        remigrate_keeps(Chain::Regtest).await;
+    }
+
+    #[test]
+    fn default_settings_use_main() {
+        assert_eq!(super::TableSettings::default().chain, "main");
+    }
+
+    async fn legacy_word_is_mapped_and_rewritten(legacy: &str, expected: &str) {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        let key = "0".repeat(64);
+        storage.migrate("test-storage", &key).await.unwrap();
+        // Only a legacy-row fixture writes the chain directly.
+        sqlx::query("UPDATE settings SET chain = ?")
+            .bind(legacy)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+
+        assert_eq!(storage.make_available().await.unwrap().chain, expected);
+        assert_eq!(storage.get_settings().chain, expected);
+        assert_eq!(stored_chain(&storage).await, legacy);
+
+        storage.migrate("renamed-storage", &key).await.unwrap();
+        assert_eq!(stored_chain(&storage).await, expected);
+        assert_eq!(storage.get_settings().chain, expected);
+        assert_eq!(storage.get_settings().storage_name, "renamed-storage");
+    }
+
+    #[tokio::test]
+    async fn legacy_mainnet_reads_main_and_migrate_rewrites_it() {
+        legacy_word_is_mapped_and_rewritten("mainnet", "main").await;
+    }
+
+    #[tokio::test]
+    async fn legacy_testnet_reads_test_and_migrate_rewrites_it() {
+        legacy_word_is_mapped_and_rewritten("testnet", "test").await;
+    }
+
+    #[test]
+    fn regtest_chain_serde_word_is_regtest() {
+        let chain: crate::services::Chain = serde_json::from_str("\"regtest\"").unwrap();
+        assert_eq!(chain.as_str(), "regtest");
+        assert_eq!(serde_json::to_string(&chain).unwrap(), "\"regtest\"");
     }
 }

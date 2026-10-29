@@ -11,6 +11,8 @@ use bsv_rs::transaction::{
 };
 use bsv_rs::wallet::{Counterparty, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel};
 use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
+use bsv_wallet_toolbox_rs::services::Chain;
+use bsv_wallet_toolbox_rs::storage::sqlx::StorageSqlxOptions;
 use bsv_wallet_toolbox_rs::storage::{AuthId, MonitorStorage, WalletStorageWriter};
 use bsv_wallet_toolbox_rs::StorageSqlx;
 use serde::de::DeserializeOwned;
@@ -97,7 +99,14 @@ pub(super) async fn setup(inputs: &Inputs) -> Result<Replay> {
         .context("test user name")?;
     let root = PrivateKey::from_hex(user["privateKeyHex"].as_str().context("test private key")?)?;
     let identity = root.public_key().to_hex();
-    let storage = StorageSqlx::in_memory().await?;
+    let storage = StorageSqlx::new_with_options(
+        "sqlite::memory:",
+        StorageSqlxOptions {
+            chain: Chain::Regtest,
+            ..Default::default()
+        },
+    )
+    .await?;
     storage
         .migrate(
             "storage-fixtures",
@@ -105,9 +114,6 @@ pub(super) async fn setup(inputs: &Inputs) -> Result<Replay> {
                 .as_str()
                 .unwrap(),
         )
-        .await?;
-    sqlx::query("UPDATE settings SET chain = 'regtest'")
-        .execute(storage.writer())
         .await?;
     storage.make_available().await?;
     let (user, _) = storage.find_or_insert_user(&identity).await?;

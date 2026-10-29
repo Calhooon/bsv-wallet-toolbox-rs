@@ -17,15 +17,16 @@ use super::reorg_tests::{
     tx_state, txid_of,
 };
 use super::storage_sqlx::{PROOF_ATTEMPTS_LIMIT_MAIN, PROOF_ATTEMPTS_LIMIT_TEST};
-use super::StorageSqlx;
+use super::{StorageSqlx, StorageSqlxOptions};
 use crate::services::broadcast_memory::{
     BROADCAST_STATUS_REJECTED, BROADCAST_STATUS_SEEN, PROVIDER_ARCADE_V2, PROVIDER_GORILLAPOOL_ARC,
 };
 use crate::services::mock::{MockErrorKind, MockResponse, MockWalletServicesBuilder};
 use crate::services::traits::{GetMerklePathResult, GetStatusForTxidsResult, TxStatusDetail};
+use crate::services::Chain;
 use crate::storage::entities::ProvenTxReqStatus;
 use crate::storage::traits::WalletStorageProvider;
-use crate::storage::MonitorStorage;
+use crate::storage::{MonitorStorage, WalletStorageWriter};
 
 const LIMIT: i64 = PROOF_ATTEMPTS_LIMIT_MAIN;
 
@@ -545,22 +546,27 @@ async fn a_second_pass_at_the_same_header_counts_nothing() {
 /// the next header's pass asks for it again, without end.
 #[tokio::test]
 async fn the_145th_proof_attempt_with_no_source_holding_it_writes_no_word_and_is_asked_again() {
-    past_the_count_keeps_its_word("mainnet", LIMIT).await;
+    past_the_count_keeps_its_word(Chain::Main, LIMIT).await;
 }
 
 /// The same off mainnet, at the 11th attempt.
 #[tokio::test]
 async fn the_11th_proof_attempt_off_mainnet_with_no_source_holding_it_writes_no_word() {
-    past_the_count_keeps_its_word("test", PROOF_ATTEMPTS_LIMIT_TEST).await;
+    past_the_count_keeps_its_word(Chain::Test, PROOF_ATTEMPTS_LIMIT_TEST).await;
 }
 
-async fn past_the_count_keeps_its_word(chain: &str, limit: i64) {
-    let s = storage().await;
-    sqlx::query("UPDATE settings SET chain = ?")
-        .bind(chain)
-        .execute(s.writer())
-        .await
-        .unwrap();
+async fn past_the_count_keeps_its_word(chain: Chain, limit: i64) {
+    let s = StorageSqlx::new_with_options(
+        "sqlite::memory:",
+        StorageSqlxOptions {
+            chain,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    s.migrate("test-wallet", &"0".repeat(64)).await.unwrap();
+    let chain = chain.as_str();
     crate::storage::traits::WalletStorageWriter::make_available(&s)
         .await
         .unwrap();
