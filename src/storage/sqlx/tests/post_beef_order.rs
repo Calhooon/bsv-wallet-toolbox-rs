@@ -10,8 +10,9 @@ use bsv_rs::transaction::{
 use chrono::Utc;
 use std::sync::Arc;
 
-// A post-Genesis mainnet proof: the post's unproven spends are judged under
-// the node's word at the coin's era (#426), and no era precedes Genesis.
+// A post-Genesis mainnet proof, where every era of the node's word lies
+// (#426). processAction judges none of the post's unproven spends: they are
+// the store's, judged at their own door (the one-door rule, #454).
 const PROOF_HEIGHT: u32 = bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT + 100;
 
 fn raw_spending(txid: &str) -> Vec<u8> {
