@@ -13,8 +13,8 @@
 
 use super::busy_door_tests::store_snapshot;
 use super::named_input_tests::{
-    caller_script, complete, defer_named, named_input_scene, payment, script_for_create_action,
-    sign_named, spend_map, stored_action, NamedInputScene, ORIGINATOR,
+    caller_script, complete, defer_named, forget_source_bytes, named_input_scene, payment,
+    script_for_create_action, sign_named, spend_map, stored_action, NamedInputScene, ORIGINATOR,
 };
 use bsv_rs::wallet::WalletInterface;
 
@@ -36,7 +36,8 @@ fn assert_spend_refused<T>(result: bsv_rs::Result<T>) -> String {
         }) => {
             assert!(
                 message.starts_with("spend refused at offset ")
-                    && message.contains(", input 0 of "),
+                    && message.contains(", input 0 of ")
+                    && message.ends_with(": The signature must use SIGHASH_FORKID."),
                 "{message}"
             );
             message
@@ -53,8 +54,10 @@ fn posts(scene: &NamedInputScene) -> usize {
 async fn create_with_caller_script(
     scene: &NamedInputScene,
     script: Vec<u8>,
+    no_send: bool,
 ) -> bsv_rs::Result<bsv_rs::wallet::CreateActionResult> {
     let mut args = payment(1_000);
+    args.options.as_mut().unwrap().no_send = Some(no_send);
     args.inputs = Some(vec![scene.caller_input(
         Some(script),
         None,
@@ -65,25 +68,32 @@ async fn create_with_caller_script(
 
 #[tokio::test]
 async fn create_refuses_its_own_fork_id_less_input_before_the_post() {
-    let scene = named_input_scene().await;
-    let before = store_snapshot(&scene.wallet).await;
-    let script = without_fork_id(script_for_create_action(&scene));
-    let result = create_with_caller_script(&scene, script).await;
-    assert_spend_refused(result);
-    assert_eq!(
-        store_snapshot(&scene.wallet).await,
-        before,
-        "nothing stored"
-    );
-    assert_eq!(posts(&scene), 0, "nothing posted");
+    for no_send in [false, true] {
+        let scene = named_input_scene().await;
+        let before = store_snapshot(&scene.wallet).await;
+        let script = without_fork_id(script_for_create_action(&scene));
+        let result = create_with_caller_script(&scene, script, no_send).await;
+        eprintln!("refused: {}", assert_spend_refused(result));
+        assert_eq!(
+            store_snapshot(&scene.wallet).await,
+            before,
+            "nothing stored"
+        );
+        assert_eq!(posts(&scene), 0, "nothing posted");
+    }
 }
 
 #[tokio::test]
 async fn create_accepts_its_own_input_valid_under_the_word() {
-    let scene = named_input_scene().await;
-    let script = script_for_create_action(&scene);
-    let made = create_with_caller_script(&scene, script).await.unwrap();
-    assert!(made.txid.is_some());
+    for no_send in [false, true] {
+        let scene = named_input_scene().await;
+        let script = script_for_create_action(&scene);
+        let made = create_with_caller_script(&scene, script, no_send)
+            .await
+            .unwrap();
+        assert!(made.txid.is_some());
+        assert_eq!(posts(&scene), usize::from(!no_send));
+    }
 }
 
 #[tokio::test]
@@ -107,6 +117,22 @@ async fn sign_action_refuses_its_own_fork_id_less_input() {
     // The action stays unsigned and reserved: the caller may sign again.
     let script = caller_script(&scene, &signable);
     let signed = complete(&scene, signable, Some(script)).await;
+    assert_eq!(stored_action(&scene, &reference).await.0, "nosend");
+    assert_eq!(stored_action(&scene, &reference).await.1, Some(signed.id()));
+}
+
+/// An input whose source bytes are neither in the action's input BEEF nor
+/// in the store is skipped, as `verifyUnlockScripts.ts:316-321` skips it:
+/// the same fork-ID-less script is accepted, the node judging it at
+/// broadcast.
+#[tokio::test]
+async fn sign_action_skips_an_input_without_source_bytes() {
+    let scene = named_input_scene().await;
+    let signable = defer_named(&scene, 1_000, None).await;
+    let reference = bsv_rs::primitives::to_base64(&signable.reference);
+    forget_source_bytes(&scene, &reference).await;
+    let bad = without_fork_id(caller_script(&scene, &signable));
+    let signed = complete(&scene, signable, Some(bad)).await;
     assert_eq!(stored_action(&scene, &reference).await.0, "nosend");
     assert_eq!(stored_action(&scene, &reference).await.1, Some(signed.id()));
 }

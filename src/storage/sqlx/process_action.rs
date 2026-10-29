@@ -561,6 +561,9 @@ pub async fn process_action_internal(
         return post_stored_actions(storage, user_id, &args).await;
     }
     validate_process_action_args(&args)?;
+    if args.is_new_tx {
+        judge_signed_action(storage, user_id, &args).await?;
+    }
 
     // Begin SQL transaction - all DB mutations go through `tx`.
     // On drop without commit, sqlx automatically rolls back.
@@ -568,6 +571,52 @@ pub async fn process_action_internal(
     let results = process_action_writes(storage, &mut tx, user_id, &args).await?;
     super::storage_sqlx::commit(tx).await?;
     Ok(results)
+}
+
+/// `signAction`'s signed transaction under the node's word (#450), before
+/// the writer: the tip from the storage's tracker, else its header
+/// service, the sources from the action's stored input BEEF, else the
+/// store. The reference judges after `processAction` (`signAction.ts:76`,
+/// :90), so after its post; here processAction's writes are one transaction
+/// and the post is the wallet's after it, so a refusal comes before both:
+/// nothing written, nothing posted, the action as it was. An action
+/// this call does not find is left to processAction's own refusal.
+async fn judge_signed_action(
+    storage: &StorageSqlx,
+    user_id: i64,
+    args: &StorageProcessActionArgs,
+) -> Result<()> {
+    let (Some(reference), Some(raw_tx)) = (args.reference.as_deref(), args.raw_tx.as_deref())
+    else {
+        return Ok(());
+    };
+    let input_beef: Option<Option<Vec<u8>>> = {
+        let mut conn = storage.pool().acquire().await?;
+        sqlx::query_scalar(
+            "SELECT input_beef FROM transactions WHERE user_id = ? AND reference = ? AND status IN ('unsigned', 'unprocessed')",
+        )
+        .bind(user_id)
+        .bind(reference)
+        .fetch_optional(&mut *conn)
+        .await?
+    };
+    let Some(input_beef) = input_beef else {
+        return Ok(());
+    };
+    let tracker = storage.get_chain_tracker().await;
+    let tip = super::create_action::own_word_tip(tracker.as_deref(), storage.get_services().ok());
+    let Some(tip) = tip.await? else {
+        return Ok(());
+    };
+    let mut conn = storage.pool().acquire().await?;
+    super::create_action::judge_own_tx(
+        &mut conn,
+        input_beef.as_deref(),
+        raw_tx,
+        tip,
+        &storage.get_settings().chain,
+    )
+    .await
 }
 
 // The reference's sendWith path. These are owned bytes and row identifiers;

@@ -2,7 +2,8 @@
 //! caller's unproven `inputBEEF` transactions the store does not hold under
 //! the node's word, as the internalize door judges received bytes since
 //! #422; the process route judges nothing the store holds a second time, so
-//! a stored chain's unproven ancestry is accepted as stored.
+//! a stored chain's unproven ancestry is accepted as stored. A new signed
+//! transaction's own inputs are judged at its signing (#450).
 //!
 //! Mainnet fixtures: the proven grandparent at Genesis + 100 (post-Genesis,
 //! pre-Chronicle), the tracker tip six blocks on, so every spend takes the
@@ -273,9 +274,9 @@ async fn process_post_accepts_an_unproven_parent_the_word_passes() {
     assert_eq!(services.call_count("post_beef"), 1);
 }
 
-/// The posted action is the wallet's own signed transaction, outside the
-/// judged set as at a new transaction's post (#450): accepted and posted,
-/// the broadcaster's answer being the host's refusal.
+/// The posted action is the wallet's own signed transaction, judged at its
+/// own signing (#450), not at a later post: a stored action's post judges
+/// it no second time, the broadcaster's answer being the host's refusal.
 #[tokio::test]
 async fn process_post_leaves_the_posted_actions_inputs_to_the_node() {
     let (_, services, _, posted) = post(Bad::Own, false).await;
@@ -306,13 +307,14 @@ impl ChainTracker for NoTip {
 /// An unsigned action whose stored input BEEF carries the parent unproven,
 /// signed as a child spending the parent's coin and processed for a post,
 /// queued with `delayed`; without `tip` the tracker supplies no mining tip.
+/// The signed child is returned with the call's answer.
 async fn sign(
     bad: Bad,
     delayed: bool,
     tip: bool,
 ) -> (StorageSqlx, Transaction, crate::Result<String>) {
     let (storage, user_id) = store().await;
-    let (parent, mut beef, tracker, child) = posted(bad);
+    let (_, mut beef, tracker, child) = posted(bad);
     storage.set_services(Arc::new(MockWalletServices::new()));
     if tip {
         storage.set_chain_tracker(Arc::new(tracker)).await;
@@ -333,7 +335,7 @@ async fn sign(
     let processed = process_action_internal(&storage, user_id, args)
         .await
         .map(|result| result.send_with_results.unwrap()[0].status.clone());
-    (storage, parent, processed)
+    (storage, child, processed)
 }
 
 /// The unsigned action `script-word-new`, its input BEEF `beef`.
@@ -381,25 +383,49 @@ async fn process_new_tx_delayed_accepts_a_stored_unproven_parent_without_forkid(
     assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
 
-/// The wallet's own transaction is outside the judged set: its input signed
-/// without `SIGHASH_FORKID` is accepted by the door. Under the keeper's
-/// reading of #450 the node judges the wallet's own signed transaction at
-/// broadcast, and the broadcaster's answer is the host's refusal.
+/// The wallet's own signed transaction is judged at its signing (#450),
+/// before the writer: its input signed without `SIGHASH_FORKID` is refused
+/// with bsv-rs's text, class InvalidParameter, nothing written, the action
+/// still `unsigned`. The reference judges after `processAction`
+/// (`signAction.ts:76`, :90); here the refusal precedes the writes and the
+/// post.
 #[tokio::test]
-async fn process_new_tx_leaves_its_own_inputs_to_the_node() {
-    let (storage, _, processed) = sign(Bad::Own, false, true).await;
-    assert_eq!(processed.unwrap(), "sending");
-    assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
+async fn process_new_tx_refuses_its_own_input_without_forkid() {
+    for delayed in [false, true] {
+        let (storage, child, processed) = sign(Bad::Own, delayed, true).await;
+        let error = processed.unwrap_err();
+        let Error::SpendRefused {
+            txid,
+            input: Some(0),
+            why: SpendRefusal::Script(message),
+            ..
+        } = &error
+        else {
+            panic!("expected the own input's script refusal, got {error:?}");
+        };
+        assert_eq!((txid, message.as_str()), (&child.id(), FORKID));
+        assert!(matches!(
+            bsv_rs::Error::from(error),
+            bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                ..
+            }
+        ));
+        assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
+    }
 }
 
-/// A tracker with no mining tip does not hold the process route: with the
-/// stored unproven parent outside the judged set, nothing is to be judged
-/// and no tip is asked.
+/// The own transaction's word needs the tip (#450): a tracker with no
+/// mining tip holds the new transaction with `ServiceError`, as at
+/// internalize, nothing written. The stored parent is still not judged.
 #[tokio::test]
-async fn process_new_tx_asks_no_mining_tip_for_a_stored_chain() {
+async fn process_new_tx_holds_without_a_mining_tip() {
     let (storage, _, processed) = sign(Bad::Parent, false, false).await;
-    assert_eq!(processed.unwrap(), "sending");
-    assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
+    assert!(
+        matches!(processed, Err(Error::ServiceError(ref text)) if text.contains("no mining tip")),
+        "{processed:?}"
+    );
+    assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
 }
 
 // processAction: a new signed transaction's call joining stored members

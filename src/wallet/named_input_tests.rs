@@ -136,6 +136,8 @@ pub(super) async fn named_input_scene() -> NamedInputScene {
         .execute(wallet.storage().writer())
         .await
         .unwrap();
+    // The scene's own setup is not the calls a test counts.
+    wallet.services().reset_history();
     NamedInputScene {
         _dir: dir,
         wallet,
@@ -290,14 +292,36 @@ fn input_script(tx: &Transaction, vin: usize) -> Vec<u8> {
 
 pub(super) fn caller_script(scene: &NamedInputScene, signable: &SignableTransaction) -> Vec<u8> {
     let raw = subject(&signable.tx).to_binary();
-    let mut script = scene
-        .wallet
-        .signer
-        .sign_input(&raw, 0, &scene.input, &scene.wallet.proto_wallet)
+    let lock = Script::from_binary(scene.input.source_locking_script.as_ref().unwrap()).unwrap();
+    // ALL|ANYONECANPAY|FORKID: valid under the node's word (#450), and never
+    // the bytes of the wallet's own ALL|FORKID signing.
+    P2PKH::unlock(&named_key(scene), SignOutputs::All, true)
+        .sign(&SigningContext::new(&raw, 0, scene.input.satoshis, &lock))
+        .unwrap()
+        .to_binary()
+}
+
+/// The action's sources out of reach (#450): its input BEEF carries none and
+/// the store keeps no bytes of the named coin's transaction, so the word
+/// skips the input, as `verifyUnlockScripts.ts:316-321` skips it.
+pub(super) async fn forget_source_bytes(scene: &NamedInputScene, reference: &str) {
+    let writer = scene.wallet.storage().writer();
+    sqlx::query("UPDATE transactions SET input_beef = ? WHERE reference = ?")
+        .bind(Beef::new().to_binary())
+        .bind(reference)
+        .execute(writer)
+        .await
         .unwrap();
-    // A valid OP_NOP makes the caller's bytes distinguishable from wallet signing.
-    script.push(0x61);
-    script
+    for forget in [
+        "UPDATE transactions SET raw_tx = NULL, input_beef = NULL WHERE txid = ?",
+        "DELETE FROM proven_tx_reqs WHERE txid = ?",
+    ] {
+        sqlx::query(forget)
+            .bind(&scene.input.source_txid)
+            .execute(writer)
+            .await
+            .unwrap();
+    }
 }
 
 pub(super) fn spend_map(
@@ -423,7 +447,10 @@ async fn sign_action_accepts_caller_spend_at_or_below_declared_length() {
         let signable = length_limited_action(&scene).await;
         let reference = bsv_rs::primitives::to_base64(&signable.reference);
         let mut script = caller_script(&scene, &signable);
+        // Padding the node refuses (#450): the length gate is witnessed with
+        // the input's sources out of reach of the word.
         script.resize(length as usize, 0x61);
+        forget_source_bytes(&scene, &reference).await;
         let signed = complete(&scene, signable, Some(script.clone())).await;
         assert_eq!(input_script(&signed, 0), script);
         let (status, txid, raw) = stored_action(&scene, &reference).await;
@@ -448,7 +475,8 @@ pub(super) async fn complete(
     )
     .await
     .unwrap();
-    assert_eq!(scene.wallet.services().total_calls(), 0);
+    // The header tip is read for the word (#450); nothing is posted.
+    assert_eq!(scene.wallet.services().call_count("post_beef"), 0);
     subject(&result.tx.unwrap())
 }
 
@@ -516,13 +544,13 @@ async fn sign_action_preserves_named_script_and_signs_only_allocated_inputs() {
     assert!(!input_script(&signed, 1).is_empty());
 }
 
-pub(super) fn script_for_create_action(scene: &NamedInputScene) -> Vec<u8> {
+fn named_key(scene: &NamedInputScene) -> bsv_rs::primitives::PrivateKey {
     let key_id = format!(
         "{} {}",
         scene.input.derivation_prefix.as_ref().unwrap(),
         scene.input.derivation_suffix.as_ref().unwrap()
     );
-    let key = scene
+    scene
         .wallet
         .proto_wallet
         .key_deriver()
@@ -531,7 +559,11 @@ pub(super) fn script_for_create_action(scene: &NamedInputScene) -> Vec<u8> {
             &key_id,
             &Counterparty::Self_,
         )
-        .unwrap();
+        .unwrap()
+}
+
+pub(super) fn script_for_create_action(scene: &NamedInputScene) -> Vec<u8> {
+    let key = named_key(scene);
     let mut draft = Transaction::new();
     draft.inputs.push(TransactionInput::new(
         scene.input.source_txid.clone(),
