@@ -179,6 +179,23 @@ async fn post(
     let services = Arc::new(MockWalletServices::new());
     storage.set_services(services.clone());
     storage.set_chain_tracker(Arc::new(tracker)).await;
+    let txid = stored_nosend(&storage, user_id, &subject, &mut beef).await;
+    let args = json!({ "isNewTx": false, "isSendWith": true, "isNoSend": false,
+        "isDelayed": delayed, "sendWith": [txid] });
+    let posted = process_action_internal(&storage, user_id, serde_json::from_value(args).unwrap())
+        .await
+        .map(|result| result.send_with_results.unwrap()[0].status.clone());
+    (storage, services, parent, posted)
+}
+
+/// A stored `nosend` action signed as `subject`, its request carrying
+/// `beef` as its input BEEF; its txid.
+async fn stored_nosend(
+    storage: &StorageSqlx,
+    user_id: i64,
+    subject: &Transaction,
+    beef: &mut Beef,
+) -> String {
     let (txid, raw, now) = (subject.id(), subject.to_binary(), chrono::Utc::now());
     let action = sqlx::query(
         "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, \
@@ -205,12 +222,7 @@ async fn post(
     .execute(storage.writer())
     .await
     .unwrap();
-    let args = json!({ "isNewTx": false, "isSendWith": true, "isNoSend": false,
-        "isDelayed": delayed, "sendWith": [txid] });
-    let posted = process_action_internal(&storage, user_id, serde_json::from_value(args).unwrap())
-        .await
-        .map(|result| result.send_with_results.unwrap()[0].status.clone());
-    (storage, services, parent, posted)
+    subject.id()
 }
 
 /// The parent without `SIGHASH_FORKID`, posted now or queued: refused
@@ -314,6 +326,15 @@ async fn sign(
         raw_tx: Some(child.to_binary()),
         send_with: vec![],
     };
+    unsigned_action(&storage, user_id, &mut beef).await;
+    let processed = process_action_internal(&storage, user_id, args)
+        .await
+        .map(|result| result.send_with_results.unwrap()[0].status.clone());
+    (storage, parent, processed)
+}
+
+/// The unsigned action `script-word-new`, its input BEEF `beef`.
+async fn unsigned_action(storage: &StorageSqlx, user_id: i64, beef: &mut Beef) {
     sqlx::query(
         "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, \
          lock_time, description, input_beef, created_at, updated_at) \
@@ -325,10 +346,6 @@ async fn sign(
     .execute(storage.writer())
     .await
     .unwrap();
-    let processed = process_action_internal(&storage, user_id, args)
-        .await
-        .map(|result| result.send_with_results.unwrap()[0].status.clone());
-    (storage, parent, processed)
 }
 
 /// The action's status and its request count after `sign`.
@@ -388,6 +405,99 @@ async fn process_new_tx_holds_without_a_mining_tip() {
         "Service error: ChainTracker verification failed: the header service supplied no mining tip"
     );
     assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
+}
+
+// processAction: a new signed transaction's call joining stored members
+
+/// A transaction proven at `HEIGHT + 1`, its root added to `tracker`, and a
+/// BEEF holding it alone.
+fn proven(tracker: &mut MockChainTracker) -> (Transaction, Beef) {
+    let source = spend(&"22".repeat(32), "00", 5_000, "51");
+    let bump = MerklePath::from_coinbase_txid(&source.id(), HEIGHT + 1);
+    tracker.add_root(HEIGHT + 1, bump.compute_root(None).unwrap());
+    let mut beef = Beef::new();
+    let index = beef.merge_bump(bump);
+    beef.merge_raw_tx(source.to_binary(), Some(index));
+    (source, beef)
+}
+
+/// A new transaction whose input BEEF holds a proven transaction alone, its
+/// call joining the stored `nosend` member of `post` (its parent as `bad`
+/// says) by `sendWith`, queued with `delayed`; the call's statuses.
+async fn joined(bad: Bad, delayed: bool) -> (StorageSqlx, Transaction, crate::Result<Vec<String>>) {
+    let (storage, user_id) = store().await;
+    let (parent, mut beef, mut tracker, member) = posted(bad);
+    let (source, mut input) = proven(&mut tracker);
+    storage.set_services(Arc::new(MockWalletServices::new()));
+    storage.set_chain_tracker(Arc::new(tracker)).await;
+    let member = stored_nosend(&storage, user_id, &member, &mut beef).await;
+    unsigned_action(&storage, user_id, &mut input).await;
+    let child = spend(&source.id(), "", 4_000, "51");
+    let args = StorageProcessActionArgs {
+        is_new_tx: true,
+        is_send_with: true,
+        is_no_send: false,
+        is_delayed: delayed,
+        reference: Some("script-word-new".into()),
+        txid: Some(child.id()),
+        raw_tx: Some(child.to_binary()),
+        send_with: vec![member],
+    };
+    let processed = process_action_internal(&storage, user_id, args)
+        .await
+        .map(|result| {
+            let results = result.send_with_results.unwrap();
+            results.into_iter().map(|sent| sent.status).collect()
+        });
+    (storage, parent, processed)
+}
+
+/// The new action's status, the member's two statuses and the request count.
+async fn joined_rows(storage: &StorageSqlx) -> (String, String, String, i64) {
+    sqlx::query_as(
+        "SELECT n.status, t.status, r.status, (SELECT COUNT(*) FROM proven_tx_reqs) \
+         FROM transactions n, transactions t JOIN proven_tx_reqs r ON r.txid = t.txid \
+         WHERE n.reference = 'script-word-new' AND t.reference = 'script-word'",
+    )
+    .fetch_one(storage.pool())
+    .await
+    .unwrap()
+}
+
+/// The joined member's parent without `SIGHASH_FORKID`, sent now or
+/// queued: refused before the writer is taken, nothing written or queued.
+async fn assert_joined_refused(delayed: bool) {
+    let (storage, parent, processed) = joined(Bad::Parent, delayed).await;
+    assert_forkid_refusal(processed.unwrap_err(), &parent);
+    assert_eq!(
+        joined_rows(&storage).await,
+        ("unsigned".into(), "nosend".into(), "nosend".into(), 1)
+    );
+}
+
+/// The witness: a new transaction's call joins a stored member whose
+/// unproven parent spends its coin without `SIGHASH_FORKID`; the member's
+/// ancestry is judged with the new transaction's.
+#[tokio::test]
+async fn process_new_tx_refuses_a_joined_members_parent_without_forkid() {
+    assert_joined_refused(false).await;
+}
+
+/// The witness on the queued path.
+#[tokio::test]
+async fn process_new_tx_delayed_refuses_a_joined_members_parent_without_forkid() {
+    assert_joined_refused(true).await;
+}
+
+/// Control: the joined member's parent passes the word; both are sent.
+#[tokio::test]
+async fn process_new_tx_sends_a_joined_member_the_word_passes() {
+    let (storage, _, processed) = joined(Bad::None, false).await;
+    assert_eq!(processed.unwrap(), ["sending", "sending"]);
+    assert_eq!(
+        joined_rows(&storage).await,
+        ("sending".into(), "sending".into(), "unsent".into(), 2)
+    );
 }
 
 // createAction: the caller's inputBEEF
