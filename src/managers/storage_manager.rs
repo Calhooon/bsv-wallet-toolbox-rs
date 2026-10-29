@@ -1475,7 +1475,7 @@ mod tests {
         let settings = WalletStorageReader::get_settings(&manager);
         // Should return the OnceLock default rather than panicking
         assert_eq!(settings.settings_id, 1);
-        assert_eq!(settings.chain, "mainnet");
+        assert_eq!(settings.chain, "main");
         assert!(settings.storage_identity_key.is_empty());
     }
 

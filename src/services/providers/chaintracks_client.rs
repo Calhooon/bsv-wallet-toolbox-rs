@@ -296,7 +296,7 @@ impl ChaintracksServiceClient {
         // node chainparams.cpp:18,20,1046,1342 (Genesis and CSV activation).
         let (genesis_height, csv_height) = match chain {
             Chain::Main => (620_538, 419_328),
-            Chain::Test => (1_344_302, 770_112),
+            Chain::Test | Chain::Regtest => (1_344_302, 770_112),
         };
         Ok(ChainTip {
             height: tip.height,

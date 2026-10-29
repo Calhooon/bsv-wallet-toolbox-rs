@@ -25,7 +25,12 @@ impl StorageSqlx {
                 settings_id: row.get("settings_id"),
                 storage_identity_key: row.get("storage_identity_key"),
                 storage_name: row.get("storage_name"),
-                chain: row.get("chain"),
+                chain: match row.get::<String, _>("chain").as_str() {
+                    "mainnet" => "main",
+                    "testnet" => "test",
+                    chain => chain,
+                }
+                .to_string(),
                 max_output_script: row.get("max_output_script"),
                 dbtype: None,
                 created_at: row.get("created_at"),
@@ -109,14 +114,12 @@ impl StorageSqlx {
         // Run migrations
         self.run_migrations().await?;
 
-        // The chain is written once, when the row is created: a later
-        // migrate keeps the stored chain, as the reference writes `chain`
-        // only in the migration that inserts the row (KnexMigrations.ts at
-        // ts-stack edf6e03). No constructor takes a Chain yet (#435), so a
-        // new row is mainnet.
+        // A fresh row takes the configured chain. Existing rows keep their
+        // network, with read_settings mapping legacy words before save_settings
+        // rewrites them to the reference's spelling (ts-stack edf6e03).
         let chain = match self.read_settings().await? {
             Some(existing) => existing.chain,
-            None => "mainnet".to_string(),
+            None => self.options.chain.as_str().to_string(),
         };
 
         // Save settings

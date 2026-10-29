@@ -107,7 +107,7 @@ impl BananaBlocks {
     pub fn new(chain: Chain) -> Result<Self> {
         let base = match chain {
             Chain::Main => BANANABLOCKS_MAINNET_URL,
-            Chain::Test => BANANABLOCKS_TESTNET_URL,
+            Chain::Test | Chain::Regtest => BANANABLOCKS_TESTNET_URL,
         };
         Self::with_base(base, None)
     }

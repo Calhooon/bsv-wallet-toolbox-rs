@@ -14,6 +14,7 @@ async fn seeded_storage() -> StorageSqlx {
         "sqlite::memory:",
         StorageSqlxOptions {
             rng_seed: Some(SEED),
+            ..Default::default()
         },
     )
     .await
@@ -38,6 +39,7 @@ async fn seeded_open_and_new_options_start_the_same_stream() {
         path.to_str().unwrap(),
         StorageSqlxOptions {
             rng_seed: Some(SEED),
+            ..Default::default()
         },
     )
     .await

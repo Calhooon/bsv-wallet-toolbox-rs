@@ -4,10 +4,15 @@ use crate::storage::{AuthId, WalletStorageWriter};
 use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, ProtoWallet};
 
 async fn setup(seed: Option<[u8; 32]>) -> (StorageSqlx, AuthId) {
-    let storage =
-        StorageSqlx::new_with_options("sqlite::memory:", StorageSqlxOptions { rng_seed: seed })
-            .await
-            .unwrap();
+    let storage = StorageSqlx::new_with_options(
+        "sqlite::memory:",
+        StorageSqlxOptions {
+            rng_seed: seed,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     storage.migrate("rng-test", "fixture").await.unwrap();
     storage.make_available().await.unwrap();
     let identity = ProtoWallet::new(None).identity_key_hex();

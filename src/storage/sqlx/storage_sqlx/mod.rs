@@ -80,7 +80,7 @@ use super::locked_inputs::{LOCKED_VERDICT_SPENT_PROVEN, LOCKED_VERDICT_UNKNOWN};
 use crate::error::{Error, Result, StoreBusyReason};
 use crate::lock_utils::{lock_read, lock_write};
 use crate::rng::RandomSource;
-use crate::services::{GetRawTxResult, UtxoVerdict, WalletServices};
+use crate::services::{Chain, GetRawTxResult, UtxoVerdict, WalletServices};
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
@@ -195,6 +195,9 @@ pub const DEFAULT_MAX_OUTPUT_SCRIPT: i32 = 10_000;
 /// Options for constructing a SQLx storage provider.
 #[derive(Debug, Clone, Default)]
 pub struct StorageSqlxOptions {
+    /// Network written when creating the settings row; defaults to Main.
+    /// An existing settings row keeps its stored network.
+    pub chain: Chain,
     /// Optional seed for repeatable test-harness draws. None uses OS entropy.
     pub rng_seed: Option<[u8; 32]>,
 }
@@ -214,6 +217,8 @@ pub struct StorageSqlxOptions {
 /// writers meet in SQLite and wait on its busy handler (`busy_timeout`, then
 /// `StoreBusy`) instead of queueing on one writer, and two reservation sets.
 pub struct StorageSqlx {
+    /// Construction options, shared by every cloned handle.
+    options: Arc<StorageSqlxOptions>,
     /// The store's random stream, shared by every cloned handle.
     pub(super) rng: Arc<RandomSource>,
     /// The reader pool: several connections, each `PRAGMA query_only = ON`,
@@ -285,6 +290,7 @@ pub struct StorageSqlx {
 impl Clone for StorageSqlx {
     fn clone(&self) -> Self {
         Self {
+            options: Arc::clone(&self.options),
             rng: Arc::clone(&self.rng),
             reader: self.reader.clone(),
             writer: self.writer.clone(),
@@ -314,7 +320,7 @@ impl Clone for StorageSqlx {
 }
 
 impl StorageSqlx {
-    /// Create a new SQLite storage provider.
+    /// Create a new SQLite storage provider with the default Main chain.
     ///
     /// # Arguments
     ///
@@ -329,7 +335,7 @@ impl StorageSqlx {
         Self::new_with_options(database_url, StorageSqlxOptions::default()).await
     }
 
-    /// Create a SQLite storage provider with an optional test-harness seed.
+    /// Create a SQLite storage provider with a chain and optional test-harness seed.
     /// Cloned handles share the stream; independently opened stores do not.
     pub async fn new_with_options(database_url: &str, options: StorageSqlxOptions) -> Result<Self> {
         Self::connect_with_options(database_url, READER_POOL_SIZE, None, options).await
@@ -413,6 +419,7 @@ impl StorageSqlx {
 
         Ok(Self {
             rng: Arc::new(RandomSource::new(storage_options.rng_seed)),
+            options: Arc::new(storage_options),
             reader,
             writer,
             settings: Default::default(),
@@ -481,21 +488,21 @@ impl StorageSqlx {
         ct.clone()
     }
 
-    /// Open an in-memory SQLite database.
+    /// Open an in-memory SQLite database with the default Main chain.
     ///
     /// Useful for testing.
     pub async fn in_memory() -> Result<Self> {
         Self::new("sqlite::memory:").await
     }
 
-    /// Open a file-based SQLite database.
+    /// Open a file-based SQLite database with the default Main chain.
     ///
     /// Creates the database file if it doesn't exist.
     pub async fn open(path: &str) -> Result<Self> {
         Self::open_with_options(path, StorageSqlxOptions::default()).await
     }
 
-    /// Open a file-based SQLite database with an optional test-harness seed.
+    /// Open a file-based SQLite database with a chain and optional test-harness seed.
     pub async fn open_with_options(path: &str, options: StorageSqlxOptions) -> Result<Self> {
         let url = format!("sqlite:{}", path);
         Self::new_with_options(&url, options).await

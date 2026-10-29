@@ -112,6 +112,10 @@ pub use broadcast_memory::{
 };
 
 /// Network chain identifier.
+///
+/// `Regtest` is the port's extension beyond the reference's two stored values.
+/// Its era handling uses the Test arm until per-network activation heights
+/// arrive at the bsv-rs #440 re-pin; no Regtest era constants are defined here.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -120,6 +124,8 @@ pub enum Chain {
     #[default]
     Main,
     Test,
+    /// Regression-test network, a port extension with Test's current era handling.
+    Regtest,
 }
 
 impl Chain {
@@ -127,6 +133,7 @@ impl Chain {
         match self {
             Chain::Main => "main",
             Chain::Test => "test",
+            Chain::Regtest => "regtest",
         }
     }
 }
@@ -338,7 +345,7 @@ impl ServicesOptions {
             None => Some(
                 match chain {
                     Chain::Main => providers::BANANABLOCKS_MAINNET_URL,
-                    Chain::Test => providers::BANANABLOCKS_TESTNET_URL,
+                    Chain::Test | Chain::Regtest => providers::BANANABLOCKS_TESTNET_URL,
                 }
                 .to_string(),
             ),

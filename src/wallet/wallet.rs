@@ -2894,7 +2894,7 @@ where
         // 2. Overlay discovery: query ls_identity via SLAP resolution
         let resolver = match self.chain {
             Chain::Main => crate::wallet::lookup::HttpLookupResolver::mainnet(),
-            Chain::Test => crate::wallet::lookup::HttpLookupResolver::testnet(),
+            Chain::Test | Chain::Regtest => crate::wallet::lookup::HttpLookupResolver::testnet(),
         };
 
         let overlay_certs = match resolver.lookup_by_identity_key(identity_key_hex).await {
@@ -2929,7 +2929,7 @@ where
         // Overlay discovery: query ls_identity via SLAP resolution
         let resolver = match self.chain {
             Chain::Main => crate::wallet::lookup::HttpLookupResolver::mainnet(),
-            Chain::Test => crate::wallet::lookup::HttpLookupResolver::testnet(),
+            Chain::Test | Chain::Regtest => crate::wallet::lookup::HttpLookupResolver::testnet(),
         };
 
         let certificates = match resolver.lookup_by_attributes(&args.attributes).await {
@@ -3001,7 +3001,7 @@ where
 
         let network = match self.chain {
             Chain::Main => Network::Mainnet,
-            Chain::Test => Network::Testnet,
+            Chain::Test | Chain::Regtest => Network::Testnet,
         };
 
         Ok(GetNetworkResult { network })
