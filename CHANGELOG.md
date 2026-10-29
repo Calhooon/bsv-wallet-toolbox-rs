@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- #466: `createAction` with `returnTXIDOnly` and an immediate broadcast
+  posts the signed transaction with the stored input BEEF, including full
+  source transactions named in `knownTxids`. Host TEXT-DIFF for CLI #347:
+  `No BEEF available for broadcast of txid <txid>. Transaction aborted and inputs released.`
+  (`WalletError`) is gone on this path; the transaction is posted and the
+  call succeeds. The wallet reads the committed proof request through the
+  existing storage reader because the door's response BEEF is absent.
+
 - #464: a tracker with no mining tip, or a tip read that faults, no longer
   holds the node's word: bsv-rs's constants name no activation height
   still ahead (Chronicle passed at 943,816), so the spend's
@@ -29,6 +37,7 @@
   or `... could not answer CoinbaseMaturity`, as bsv-rs's verifier reads no
   tip, and `internalizeAction` still holds when the tracker's root reads
   fault.
+
 - #463: `createAction` with `returnTXIDOnly` assembles and stores the
   action's input BEEF as under every other option (the untrimmed assembly,
   `knownTxids` trimming nothing stored) and drops the response's BEEF
@@ -42,8 +51,8 @@
   options (#450). Host TEXT-DIFF for CLI #347's replay: that call answered
   `Process action failed: Validation error: transaction with reference (<reference>) has no inputBEEF. This suggests the transaction may have already been processed. Try with (is_new_tx = false). Transaction aborted and UTXOs released.`
   (`WalletError`, from `process_action.rs`), and that refusal is gone on
-  this path; with an immediate broadcast the wallet's post still builds
-  from the response's BEEF, so that call now answers
+  this path; before #466 an immediate broadcast built from the response's
+  BEEF and answered
   `No BEEF available for broadcast of txid <txid>. Transaction aborted and inputs released.`
   (`WalletError`) in its place. Host BEHAVIOUR change: under
   `returnTXIDOnly` the change coins meet the assembly's rule as under the
@@ -98,7 +107,7 @@
   trims only the response (`:1725`), so a stored or delayed post (`sendWith`,
   `acceptDelayedBroadcast`, a later `signAction`) now carries the full source
   bytes of transactions named in `knownTxids`, where it rebuilt them from the
-  store; an immediate post stays trimmed as before.
+  store; outside `returnTXIDOnly`, an immediate post stays trimmed as before.
 - #453: `internalizeAction` derives a wallet payment's BRC-29 counterparty
   from the validated sender, as the reference's signer derives from `vargs`
   (`signer/methods/internalizeAction.ts:86` at ts-stack edf6e03, after
