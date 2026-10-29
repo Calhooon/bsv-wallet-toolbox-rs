@@ -12,7 +12,9 @@ use super::process_action_internal;
 use crate::services::mock::MockWalletServices;
 use crate::storage::sqlx::create_action::create_action_internal;
 use crate::storage::sqlx::StorageSqlx;
-use crate::storage::traits::{WalletStorageProvider, WalletStorageWriter};
+use crate::storage::traits::{
+    StorageProcessActionArgs, WalletStorageProvider, WalletStorageWriter,
+};
 use crate::Error;
 use bsv_rs::primitives::bsv::sighash::{
     compute_sighash_original_for_signing, parse_transaction, SighashParams,
@@ -133,9 +135,11 @@ fn assert_forkid_refusal(error: Error, parent: &Transaction) {
 // processAction: the stored post-BEEF (sendWith)
 
 /// A stored `nosend` action whose input BEEF carries the parent unproven,
-/// posted by `sendWith`.
+/// posted by `sendWith`. With `bad_own` the action spends a P2PK coin of
+/// the parent without `SIGHASH_FORKID`.
 async fn post(
     bad: bool,
+    bad_own: bool,
 ) -> (
     StorageSqlx,
     Arc<MockWalletServices>,
@@ -143,8 +147,18 @@ async fn post(
     crate::Result<String>,
 ) {
     let (storage, user_id) = store().await;
-    let (parent, mut beef, tracker) = lineage(bad, "51");
-    let subject = spend(&parent.id(), "", 8_000, "51");
+    let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
+    let parent_lock = if bad_own {
+        format!("21{}ac", key.public_key().to_hex())
+    } else {
+        "51".to_string()
+    };
+    let (parent, mut beef, tracker) = lineage(bad, &parent_lock);
+    let mut subject = spend(&parent.id(), "", 8_000, "51");
+    if bad_own {
+        let coin = &parent.outputs[0].locking_script;
+        sign_without_forkid(&mut subject, coin, 9_000, &key);
+    }
     let services = Arc::new(MockWalletServices::new());
     storage.set_services(services.clone());
     storage.set_chain_tracker(Arc::new(tracker)).await;
@@ -186,7 +200,7 @@ async fn post(
 /// `SIGHASH_FORKID`. Refused before anything is written or posted.
 #[tokio::test]
 async fn process_post_refuses_an_unproven_parent_without_forkid() {
-    let (storage, services, parent, posted) = post(true).await;
+    let (storage, services, parent, posted) = post(true, false).await;
     assert_forkid_refusal(posted.unwrap_err(), &parent);
     assert_eq!(services.call_count("post_beef"), 0);
     let statuses: (String, String) = sqlx::query_as(
@@ -201,9 +215,114 @@ async fn process_post_refuses_an_unproven_parent_without_forkid() {
 /// Control: the same shape, every input passing the word, is posted.
 #[tokio::test]
 async fn process_post_accepts_an_unproven_parent_the_word_passes() {
-    let (_, services, _, posted) = post(false).await;
+    let (_, services, _, posted) = post(false, false).await;
     assert_eq!(posted.unwrap(), "unproven");
     assert_eq!(services.call_count("post_beef"), 1);
+}
+
+/// The posted action is the wallet's own signed transaction, outside the
+/// judged set as at a new transaction's post (#450): accepted and posted,
+/// the broadcaster's answer being the host's refusal.
+#[tokio::test]
+async fn process_post_leaves_the_posted_actions_inputs_to_the_node() {
+    let (_, services, _, posted) = post(false, true).await;
+    assert_eq!(posted.unwrap(), "unproven");
+    assert_eq!(services.call_count("post_beef"), 1);
+}
+
+// processAction: a new signed transaction's post
+
+/// An unsigned action whose stored input BEEF carries the parent unproven,
+/// signed as a child spending the parent's coin and processed for a post,
+/// queued with `delayed`. With `bad_own` the parent's coin is P2PK and the
+/// child signs it without `SIGHASH_FORKID`.
+async fn sign(
+    bad_parent: bool,
+    bad_own: bool,
+    delayed: bool,
+) -> (StorageSqlx, Transaction, crate::Result<String>) {
+    let (storage, user_id) = store().await;
+    let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
+    let parent_lock = if bad_own {
+        format!("21{}ac", key.public_key().to_hex())
+    } else {
+        "51".to_string()
+    };
+    let (parent, mut beef, tracker) = lineage(bad_parent, &parent_lock);
+    let mut child = spend(&parent.id(), "", 8_000, "51");
+    if bad_own {
+        let coin = &parent.outputs[0].locking_script;
+        sign_without_forkid(&mut child, coin, 9_000, &key);
+    }
+    storage.set_services(Arc::new(MockWalletServices::new()));
+    storage.set_chain_tracker(Arc::new(tracker)).await;
+    let now = chrono::Utc::now();
+    sqlx::query(
+        "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, \
+         lock_time, description, input_beef, created_at, updated_at) \
+         VALUES (?1, 'unsigned', 'script-word-new', 1, -1000, 1, 0, 'script word', ?3, ?2, ?2)",
+    )
+    .bind(user_id)
+    .bind(now)
+    .bind(beef.to_binary())
+    .execute(storage.writer())
+    .await
+    .unwrap();
+    let args = StorageProcessActionArgs {
+        is_new_tx: true,
+        is_send_with: false,
+        is_no_send: false,
+        is_delayed: delayed,
+        reference: Some("script-word-new".into()),
+        txid: Some(child.id()),
+        raw_tx: Some(child.to_binary()),
+        send_with: vec![],
+    };
+    let processed = process_action_internal(&storage, user_id, args)
+        .await
+        .map(|result| result.send_with_results.unwrap()[0].status.clone());
+    (storage, parent, processed)
+}
+
+/// The action's status and its request count after `sign`.
+async fn signed_rows(storage: &StorageSqlx) -> (String, i64) {
+    sqlx::query_as(
+        "SELECT t.status, (SELECT COUNT(*) FROM proven_tx_reqs) FROM transactions t \
+         WHERE t.reference = 'script-word-new'",
+    )
+    .fetch_one(storage.pool())
+    .await
+    .unwrap()
+}
+
+/// The witness: the new transaction's post-BEEF carries an unproven parent
+/// that spends its coin without `SIGHASH_FORKID`. Refused before the
+/// writer is taken: the action stays unsigned and no request is written.
+#[tokio::test]
+async fn process_new_tx_refuses_an_unproven_parent_without_forkid() {
+    let (storage, parent, processed) = sign(true, false, false).await;
+    assert_forkid_refusal(processed.unwrap_err(), &parent);
+    assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
+}
+
+/// The witness on the queued path: a delayed send takes the same verdict
+/// before anything is queued.
+#[tokio::test]
+async fn process_new_tx_delayed_refuses_an_unproven_parent_without_forkid() {
+    let (storage, parent, processed) = sign(true, false, true).await;
+    assert_forkid_refusal(processed.unwrap_err(), &parent);
+    assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
+}
+
+/// The wallet's own transaction is outside the judged set: its input signed
+/// without `SIGHASH_FORKID` is accepted by the door. Under the keeper's
+/// reading of #450 the node judges the wallet's own signed transaction at
+/// broadcast, and the broadcaster's answer is the host's refusal.
+#[tokio::test]
+async fn process_new_tx_leaves_its_own_inputs_to_the_node() {
+    let (storage, _, processed) = sign(false, true, false).await;
+    assert_eq!(processed.unwrap(), "sending");
+    assert_eq!(signed_rows(&storage).await, ("sending".into(), 1));
 }
 
 // createAction: the caller's inputBEEF
