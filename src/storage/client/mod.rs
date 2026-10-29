@@ -49,6 +49,8 @@ pub mod auth;
 #[cfg(test)]
 mod brc104_bounds_tests;
 mod json_rpc;
+#[cfg(test)]
+mod refusal_class_tests;
 mod storage_client;
 #[cfg(test)]
 mod transport_fault_tests;
