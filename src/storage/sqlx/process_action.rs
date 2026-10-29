@@ -1386,6 +1386,10 @@ pub async fn update_transaction_status_after_broadcast_internal(
 mod post_beef_order_tests;
 
 #[cfg(test)]
+#[path = "tests/script_word_routes.rs"]
+mod script_word_route_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
