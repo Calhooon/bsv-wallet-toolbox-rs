@@ -41,7 +41,7 @@ use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
 
-use super::json_rpc::{JsonRpcRequest, JsonRpcResponse};
+use super::json_rpc::{JsonRpcRequest, JsonRpcResponse, WalletError};
 
 // =============================================================================
 // ValidCreateActionArgs
@@ -635,10 +635,19 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
                     message = %rpc_error.message,
                     "JSON-RPC error from storage server"
                 );
-                Err(Error::StorageError(format!(
-                    "RPC error {}: {}",
-                    rpc_error.code, rpc_error.message
-                )))
+                // The reference's client rebuilds the server's WalletError
+                // by name (StorageClient.ts:178-181); outside its whitelist,
+                // or malformed, the generic text.
+                let refusal = serde_json::from_slice::<Value>(body)
+                    .ok()
+                    .and_then(|answer| WalletError::from_rpc_error(answer.get("error")?))
+                    .and_then(WalletError::into_error);
+                Err(refusal.unwrap_or_else(|| {
+                    Error::StorageError(format!(
+                        "RPC error {}: {}",
+                        rpc_error.code, rpc_error.message
+                    ))
+                }))
             }
         }
     }

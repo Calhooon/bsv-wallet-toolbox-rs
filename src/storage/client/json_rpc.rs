@@ -4,7 +4,7 @@
 //! communication with the storage server.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// JSON-RPC 2.0 protocol version.
 pub const JSON_RPC_VERSION: &str = "2.0";
@@ -197,40 +197,216 @@ pub mod wallet_error_codes {
     pub const INVALID_TX: &str = "ERR_INVALID_TX";
 }
 
-/// Wallet error deserialized from JSON-RPC error data.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// The server's WalletError as the reference's `StorageServer.sendRpcError`
+/// puts it: the JSON-RPC `error` object is `WalletError.unknownToJson`'s
+/// object itself (`isError`, `name`, `message`, and a class's own members
+/// beside them; `StorageServer.ts:857-867`, `WalletError.ts:143-169` at
+/// ts-stack edf6e03). Read with the bounds of `WalletErrorFromJson.ts`.
+#[derive(Debug, Clone)]
 pub struct WalletError {
-    /// Error code string (e.g., "ERR_INVALID_OPERATION").
-    pub code: String,
-    /// Human-readable error message.
+    /// The `WERR_*` name (`name`, or a string `code`, its accessor).
+    pub name: String,
+    /// The server's message, byte for byte.
     pub message: String,
-    /// Description of the error.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub description: Option<String>,
-    /// Stack trace (if available).
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub stack: Option<String>,
+    envelope: Map<String, Value>,
+}
+
+/// The reference client's whitelist (`WalletErrorFromJson.ts:157-216`) less
+/// `WERR_INTERNAL`, the server's mask for every fault (`StorageServer.ts:122-127`),
+/// which stays a fault here as the local door's internal error does.
+const REFUSAL_NAMES: [&str; 14] = [
+    "WERR_ACTION_BATCH_STATE",
+    "WERR_NOT_IMPLEMENTED",
+    "WERR_INVALID_OPERATION",
+    "WERR_UTXO_REVIEW_INCONCLUSIVE",
+    "WERR_BROADCAST_UNAVAILABLE",
+    "WERR_INVALID_PARAMETER",
+    "WERR_MISSING_PARAMETER",
+    "WERR_BAD_REQUEST",
+    "WERR_NETWORK_CHAIN",
+    "WERR_UNAUTHORIZED",
+    "WERR_NOT_ACTIVE",
+    "WERR_INSUFFICIENT_FUNDS",
+    "WERR_INVALID_PUBLIC_KEY",
+    "WERR_REVIEW_ACTIONS",
+];
+
+/// `MAX_ERROR_RESULTS` and `MAX_ERROR_BEEF_BYTES` (`WalletErrorFromJson.ts:22-23`).
+const MAX_ERROR_RESULTS: usize = 1001;
+const MAX_ERROR_BEEF_BYTES: usize = 32 * 1024 * 1024;
+
+/// `dataRecord`: a plain object of at most `max_keys` members.
+fn record(value: &Value, max_keys: usize) -> Option<&Map<String, Value>> {
+    value.as_object().filter(|map| map.len() <= max_keys)
+}
+
+/// `boundedString`: at most `maximum` UTF-16 units, no control character
+/// but tab, line feed and carriage return.
+fn bounded(value: &Value, maximum: usize) -> Option<&str> {
+    let text = value.as_str()?;
+    let control = |c: char| {
+        c < '\t'
+            || ('\u{b}'..='\u{c}').contains(&c)
+            || ('\u{e}'..'\u{20}').contains(&c)
+            || c == '\u{7f}'
+    };
+    (text.encode_utf16().count() <= maximum && !text.chars().any(control)).then_some(text)
+}
+
+/// `identifier`: a bounded string of at most 128 in `[A-Za-z0-9._:-]+`.
+fn identifier(value: &Value) -> Option<&str> {
+    bounded(value, 128).filter(|text| {
+        !text.is_empty()
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+    })
+}
+
+fn txid(value: &Value) -> Option<[u8; 32]> {
+    hex::decode(identifier(value)?).ok()?.try_into().ok()
+}
+
+/// `byteArray`: at most 32 MiB of integers 0 to 255.
+fn bytes(value: &Value) -> Option<Vec<u8>> {
+    let items = value
+        .as_array()
+        .filter(|a| a.len() <= MAX_ERROR_BEEF_BYTES)?;
+    items
+        .iter()
+        .map(|item| item.as_u64().and_then(|n| u8::try_from(n).ok()))
+        .collect()
+}
+
+/// `stringArray`: at most `maximum` bounded strings of 256.
+fn strings(value: &Value, maximum: usize) -> Option<Vec<&str>> {
+    let items = value.as_array().filter(|a| a.len() <= maximum)?;
+    items.iter().map(|item| bounded(item, 256)).collect()
+}
+
+/// A member absent is `Some(None)`; present, it must read.
+fn optional<T>(value: Option<&Value>, read: impl FnOnce(&Value) -> Option<T>) -> Option<Option<T>> {
+    match value {
+        None => Some(None),
+        Some(value) => read(value).map(Some),
+    }
+}
+
+/// One of `reviewActionResults` (`WalletErrorFromJson.ts:100-122`).
+fn review_action_result(value: &Value) -> Option<bsv_rs::wallet::ReviewActionResult> {
+    use bsv_rs::wallet::ReviewActionResultStatus as Review;
+    let item = record(value, 8)?;
+    let status = match bounded(item.get("status")?, 32)? {
+        "success" => Review::Success,
+        "doubleSpend" => Review::DoubleSpend,
+        "serviceError" => Review::ServiceError,
+        "invalidTx" => Review::InvalidTx,
+        _ => return None,
+    };
+    let competing_txs = optional(item.get("competingTxs"), |value| {
+        strings(value, 1000)?
+            .into_iter()
+            .map(|text| hex::decode(text).ok()?.try_into().ok())
+            .collect::<Option<Vec<[u8; 32]>>>()
+    })?;
+    let competing_beef = optional(item.get("competingBeef"), bytes)?;
+    if status != Review::DoubleSpend && (competing_txs.is_some() || competing_beef.is_some()) {
+        return None;
+    }
+    Some(bsv_rs::wallet::ReviewActionResult {
+        txid: txid(item.get("txid")?)?,
+        status,
+        competing_txs,
+        competing_beef,
+    })
+}
+
+/// One of `sendWithResults` (`WalletErrorFromJson.ts:127-133`).
+fn send_with_result(value: &Value) -> Option<bsv_rs::wallet::SendWithResult> {
+    use bsv_rs::wallet::SendWithResultStatus as Send;
+    let item = record(value, 4)?;
+    let status = match bounded(item.get("status")?, 32)? {
+        "unproven" => Send::Unproven,
+        "sending" => Send::Sending,
+        "failed" => Send::Failed,
+        _ => return None,
+    };
+    Some(bsv_rs::wallet::SendWithResult {
+        txid: txid(item.get("txid")?)?,
+        status,
+    })
+}
+
+/// A results array of at most `MAX_ERROR_RESULTS`, every entry read.
+fn results<T>(value: Option<&Value>, read: fn(&Value) -> Option<T>) -> Option<Vec<T>> {
+    let items = value?.as_array().filter(|a| a.len() <= MAX_ERROR_RESULTS)?;
+    items.iter().map(read).collect()
+}
+
+/// `reviewActionsEnvelope` (`WalletErrorFromJson.ts:89-143`).
+fn review_actions(
+    obj: &Map<String, Value>,
+    message: &str,
+) -> Option<bsv_rs::wallet::ReviewActionsRefusal> {
+    let no_send_change = optional(obj.get("noSendChange"), |value| {
+        strings(value, MAX_ERROR_RESULTS)?
+            .into_iter()
+            .map(|text| bsv_rs::wallet::Outpoint::from_string(text).ok())
+            .collect::<Option<Vec<_>>>()
+    })?;
+    let mut refusal = bsv_rs::wallet::ReviewActionsRefusal::with_members(
+        results(obj.get("reviewActionResults"), review_action_result)?,
+        results(obj.get("sendWithResults"), send_with_result)?,
+        optional(obj.get("txid"), txid)?,
+        optional(obj.get("tx"), bytes)?,
+        no_send_change,
+    );
+    refusal.message = message.to_string();
+    Some(refusal)
 }
 
 impl WalletError {
-    /// Attempts to parse a WalletError from JSON-RPC error data.
-    #[allow(dead_code)]
-    pub fn from_rpc_error(error: &JsonRpcError) -> Option<Self> {
-        if let Some(ref data) = error.data {
-            serde_json::from_value(data.clone()).ok()
-        } else {
-            // Try to parse the message itself as JSON
-            serde_json::from_str(&error.message).ok()
+    /// Reads the WalletError object a JSON-RPC answer's `error` carries:
+    /// an object of at most 64 members, the name in the identifier grammar
+    /// and the message a bounded string of 4096 (`WalletErrorFromJson.ts:42-59,156`).
+    /// `None` for anything else.
+    pub fn from_rpc_error(error: &Value) -> Option<Self> {
+        let envelope = record(error, 64)?;
+        let name = match envelope.get("name") {
+            Some(name) => identifier(name)?,
+            None => identifier(envelope.get("code")?)?,
+        };
+        let message = bounded(envelope.get("message")?, 4096)?;
+        Some(Self {
+            name: name.to_string(),
+            message: message.to_string(),
+            envelope: envelope.clone(),
+        })
+    }
+
+    /// The toolbox error of a whitelisted name: the refusal with its class
+    /// and the server's message, `ReviewActions` with its results. `None`
+    /// for `WERR_INTERNAL`, a name outside the whitelist, or a review
+    /// envelope outside the reference's shape.
+    pub fn into_error(self) -> Option<crate::Error> {
+        if !REFUSAL_NAMES.contains(&self.name.as_str()) {
+            return None;
         }
+        if self.name == "WERR_REVIEW_ACTIONS" {
+            let refusal = review_actions(&self.envelope, &self.message)?;
+            return Some(crate::Error::ReviewActions(Box::new(refusal)));
+        }
+        let class = bsv_rs::WalletRefusalClass::from_name(&self.name)?;
+        Some(crate::Error::SdkError(bsv_rs::Error::WalletRefusal {
+            class,
+            message: self.message,
+        }))
     }
 }
 
 impl std::fmt::Display for WalletError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.code, self.message)
+        write!(f, "[{}] {}", self.name, self.message)
     }
 }
 
