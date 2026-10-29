@@ -709,3 +709,5 @@ async fn internalize_reads_the_stored_network_before_writing_received_outputs() 
         assert_eq!(rows, i64::from(network != "mainnet"), "{network}");
     }
 }
+
+mod reader_witnesses;
