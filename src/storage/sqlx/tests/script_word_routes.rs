@@ -546,20 +546,28 @@ async fn create(
     if stored {
         internalized(&storage, user_id, &parent, &mut beef).await;
     }
-    let args = json!({
-        "description": "script word create",
-        "inputBEEF": beef.to_binary(),
-        "inputs": [{ "outpoint": format!("{}.0", parent.id()),
-            "inputDescription": "the caller's coin", "unlockingScriptLength": 107 }],
-        "outputs": [{ "lockingScript": p2pkh, "satoshis": 1_000,
-            "outputDescription": "the recipient" }],
-        "options": { "returnTXIDOnly": txid_only },
-    });
-    let args = serde_json::from_value(args).unwrap();
+    let args = caller_args(&parent, &beef.to_binary(), txid_only);
     let created = create_action_internal(&storage, Some(&tracker), user_id, args)
         .await
         .map(|_| ());
     (storage, parent, created)
+}
+
+fn caller_args(
+    parent: &Transaction,
+    bytes: &[u8],
+    txid_only: bool,
+) -> bsv_rs::wallet::CreateActionArgs {
+    serde_json::from_value(json!({
+        "description": "script word create",
+        "inputBEEF": bytes,
+        "inputs": [{ "outpoint": format!("{}.0", parent.id()),
+            "inputDescription": "the caller's coin", "unlockingScriptLength": 107 }],
+        "outputs": [{ "lockingScript": parent.outputs[0].locking_script.to_hex(),
+            "satoshis": 1_000, "outputDescription": "the recipient" }],
+        "options": { "returnTXIDOnly": txid_only },
+    }))
+    .unwrap()
 }
 
 /// The witness: the caller's inputBEEF brings an unproven parent that
@@ -580,11 +588,12 @@ async fn create_txid_only_refuses_a_caller_unproven_parent_without_forkid() {
 
 async fn assert_create_refused(txid_only: bool) {
     let (storage, parent, created) = create(true, false, txid_only).await;
-    assert_forkid_refusal(created.unwrap_err(), &parent);
     let actions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
         .fetch_one(storage.pool())
         .await
         .unwrap();
+    eprintln!("returnTXIDOnly={txid_only}; action rows={actions}");
+    assert_forkid_refusal(created.unwrap_err(), &parent);
     assert_eq!(actions, 0);
 }
 
@@ -645,4 +654,47 @@ async fn create_accepts_a_caller_parent_the_store_holds() {
 async fn create_txid_only_accepts_a_caller_parent_the_store_holds() {
     let (_, _, created) = create(true, true, true).await;
     created.unwrap();
+}
+
+/// An exactly framed caller BEEF can still lack the parent's ancestry.
+/// Both returned formats refuse that chain before writing an action.
+#[tokio::test]
+async fn create_txid_only_refuses_missing_caller_ancestry() {
+    for txid_only in [false, true] {
+        let (storage, user_id) = store().await;
+        let p2pkh = "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac";
+        let (parent, complete, tracker) = lineage(false, p2pkh);
+        let missing = complete
+            .txs
+            .iter()
+            .find(|tx| tx.bump_index().is_some())
+            .unwrap()
+            .txid();
+        let mut incomplete = Beef::new();
+        incomplete.merge_raw_tx(parent.to_binary(), None);
+        let bytes = incomplete.to_binary();
+        let mut parsed = Beef::from_binary(&bytes).unwrap();
+        assert!(!parsed.verify_valid(true).valid);
+        let args = caller_args(&parent, &bytes, txid_only);
+        let result = create_action_internal(&storage, Some(&tracker), user_id, args).await;
+        let error = result.unwrap_err();
+        let Error::ValidationError(message) = &error else {
+            panic!("expected an inputBEEF structure refusal, got {error:?}");
+        };
+        assert!(message.starts_with("inputBEEF: BEEF structure is invalid:"));
+        assert!(message.contains(&missing));
+        let actions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+        eprintln!("returnTXIDOnly={txid_only}: {error}; action rows={actions}");
+        assert_eq!(actions, 0);
+        assert!(matches!(
+            bsv_rs::Error::from(error),
+            bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                ..
+            }
+        ));
+    }
 }
