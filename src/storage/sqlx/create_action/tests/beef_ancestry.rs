@@ -84,7 +84,6 @@ async fn test_build_input_beef_recursive_ancestor() {
         None,
         &[],
         false,
-        false,
         None,
     )
     .await
@@ -192,7 +191,6 @@ async fn test_build_beef_includes_unconfirmed_parent() {
         None,
         &[],
         false,
-        false,
         None,
     )
     .await
@@ -252,7 +250,6 @@ async fn test_build_beef_errors_on_missing_direct_input() {
         &change_inputs,
         None,
         &[],
-        false,
         false,
         None,
     )
@@ -393,7 +390,6 @@ async fn test_build_beef_refuses_missing_deep_ancestor() {
         None,
         &[],
         false,
-        false,
         None,
     )
     .await;
@@ -453,7 +449,6 @@ async fn test_input_beef_with_a_bump_carrying_its_txid_unflagged_is_linked_not_r
             Some(&user_bytes),
             &[],
             false,
-            false,
             None,
         )
         .await;
@@ -501,7 +496,6 @@ async fn test_build_input_beef_trims_known_txids_to_txid_only() {
         None,
         &[],
         false,
-        false,
         None,
     )
     .await
@@ -516,7 +510,6 @@ async fn test_build_input_beef_trims_known_txids_to_txid_only() {
         &[],
         None,
         &[chain[0].1.clone()],
-        false,
         false,
         None,
     )
@@ -588,7 +581,6 @@ async fn test_build_input_beef_ten_hops_stops_at_the_proven_hop() {
         &[],
         None,
         &[],
-        false,
         false,
         None,
     )

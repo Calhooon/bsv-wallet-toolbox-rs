@@ -635,7 +635,6 @@ pub(super) async fn l2_23_assembly(
         None,
         &[],
         false,
-        false,
         None,
     )
     .await
