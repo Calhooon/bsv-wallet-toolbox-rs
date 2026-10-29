@@ -119,8 +119,6 @@
 
 ### Changed
 
-- #420: Refactor, nothing a host sees changes: `Wallet::internalize_action` drops its unreachable empty-sender branch, and the crate-private label normalization moves from `src/storage/sqlx/label.rs` to `src/wallet/label.rs`.
-
 ### CI
 
 - #417: Check the remote-only feature set in the Clippy job; compile RNG state and methods only for their SQL storage and test consumers.
@@ -134,7 +132,6 @@
   run the same tests as before. CI's Test Suite job runs that remote-only
   build and test step last, so a gate a remote-only host needs cannot go
   missing again.
-
 
 ## [0.14.0-beta.3] - 2026-10-28
 
