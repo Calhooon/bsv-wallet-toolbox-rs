@@ -262,7 +262,7 @@
       "src/wallet/certificate_issuance.rs::acquire_certificate_issuance 69",
       "src/wallet/certificate_issuance.rs::store_certificate 97",
       "src/wallet/certificate_issuance_auth.rs::post_authenticated 61",
-      "src/wallet/create_args.rs::validate_create_action_args 185",
+      "src/wallet/create_args.rs::validate_create_action_args 193",
       "src/wallet/lookup.rs::query_overlay 88",
       "src/wallet/lookup.rs::resolve_competent_hosts 73",
       "src/wallet/signer.rs::apply_templates 79",

@@ -57,8 +57,13 @@
   duplicate input outpoint answers `inputs[i]: duplicate outpoint` after every
   input's, output's, label's and option's own check, as the reference's
   duplicate loop runs after them, where it answered ahead of a later input's
-  or any output's, label's or option's refusal; a direct `StorageSqlx` create
-  caller now meets those two refusals too.
+  or any output's, label's or option's refusal; a malformed `inputBEEF`
+  answers `Invalid BEEF at byte {offset}: {kind}` after the options and ahead
+  of the duplicate outpoint, as the reference parses the envelope between
+  them, where it answered after the duplicate and only for an action with
+  inputs to assemble (a create with no inputs, or `returnTXIDOnly`, now meets
+  it too); a direct `StorageSqlx` create caller now meets those two refusals
+  too.
 
 - #430: `relinquishCertificate` now refuses an unknown or non-unique certificate
   before changing storage. Host TEXT-DIFF for CLI #344: success with
