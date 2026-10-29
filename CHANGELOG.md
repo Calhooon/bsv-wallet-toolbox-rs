@@ -4,12 +4,37 @@
 
 ### Fixed
 
+- #463: `createAction` with `returnTXIDOnly` assembles and stores the
+  action's input BEEF as under every other option (the untrimmed assembly,
+  `knownTxids` trimming nothing stored) and drops the response's BEEF
+  alone, as the reference stores `storageBeef` whatever the caller asks
+  back (`storage/methods/createAction.ts:725` at ts-stack edf6e03) and
+  returns none under the option (`trimInputBeef`, :1725-1726). So a
+  `returnTXIDOnly` create with inputs that signs (`signAndProcess` with
+  `noSend` or `acceptDelayedBroadcast`, or a later `signAction`) is
+  processed and signed, judged on the stored sources as under the other
+  options (#450). Host TEXT-DIFF for CLI #347's replay: that call answered
+  `Process action failed: Validation error: transaction with reference (<reference>) has no inputBEEF. This suggests the transaction may have already been processed. Try with (is_new_tx = false). Transaction aborted and UTXOs released.`
+  (`WalletError`, from `process_action.rs`), and that refusal is gone on
+  this path; with an immediate broadcast the wallet's post still builds
+  from the response's BEEF, so that call now answers
+  `No BEEF available for broadcast of txid <txid>. Transaction aborted and inputs released.`
+  (`WalletError`) in its place. Host BEHAVIOUR change: under
+  `returnTXIDOnly` the change coins meet the assembly's rule as under the
+  other options, so a coin whose stored chain reaches no proof is picked
+  around, where it was spent; and the assembly's refusals answer every
+  such call with inputs, where under the option they answered only when
+  the caller's BEEF brought an unproven transaction the store does not
+  hold (#454). Host stored-data change: the
+  action's `input_beef` (and its request's after processAction) holds the
+  assembled BEEF where it was empty. The response is unchanged.
+
 - #450: the wallet's own newly signed transaction is judged under the
   node's word at its signing, as the reference's signer judges it
   (`signer/methods/createAction.ts:120`, before `processAction` at :138;
   `signAction.ts:90`, after it at :76; ts-stack edf6e03): each input whose
-  source bytes are in the action's untrimmed input BEEF (or, under
-  `returnTXIDOnly`, the caller's as supplied) or the store, under #422's
+  source bytes are in the action's untrimmed input BEEF (stored under
+  `returnTXIDOnly` too since #463) or the store, under #422's
   two words, so a source the caller supplied and named in `knownTxids` is
   judged; the action's stored input BEEF is now the untrimmed assembly, as
   the reference stores `storageBeef`, and `knownTxids` trims the returned

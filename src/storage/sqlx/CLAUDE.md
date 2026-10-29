@@ -542,7 +542,7 @@ pass's; no door.
 
 | Route | Judged before #426 | The reference (ts-stack@edf6e03) | The verdict |
 |---|---|---|---|
-| create, the caller's `inputBEEF` | structure (`verify_valid(true)`) and roots (`confirm_caller_beef_roots`, `build_input_beef`); no interpreter | `createAction.ts:909` `beef.verify(chainTracker, true)`: `Beef.ts:1020-1034`, `verifyValid` and `isValidRootForHeight`, no `Spend` | judged once: the action stores the caller's unproven transactions in its input BEEF and broadcasts them. The pre-check (no lock held) builds the BEEF without trimming `knownTxids` (its bytes are judged, never returned), then `judge_caller_beef` (`CallerWord`) judges the set: each unproven raw transaction the caller's BEEF brings that the assembly does not prove and the store does not hold (`store_holds`: a row in `transactions`, `proven_tx_reqs` or `proven_txs`, read on the pre-check's reader). An empty set asks no word and no tip. The write-locked step assembles the same caller bytes without the word. The set is independent of the returned format (#454): with `returnTXIDOnly` the pre-check assembles nothing to return, so when the caller's BEEF brings an unproven raw transaction the store does not hold it assembles the inputs for the word alone (`judging_assembly`, `create_action/beef.rs`: with the change coins, else the caller's inputs alone when a change coin's stored chain has a gap) and judges the same set with the same texts (`create_refuses_a_caller_unproven_parent_without_forkid`, `create_txid_only_refuses_a_caller_unproven_parent_without_forkid`, `create_accepts_a_caller_parent_the_store_holds`) |
+| create, the caller's `inputBEEF` | structure (`verify_valid(true)`) and roots (`confirm_caller_beef_roots`, `build_input_beef`); no interpreter | `createAction.ts:909` `beef.verify(chainTracker, true)`: `Beef.ts:1020-1034`, `verifyValid` and `isValidRootForHeight`, no `Spend` | judged once: the action stores the caller's unproven transactions in its input BEEF and broadcasts them. The pre-check (no lock held) builds the BEEF without trimming `knownTxids` (its bytes are judged, never returned), then `judge_caller_beef` (`CallerWord`) judges the set: each unproven raw transaction the caller's BEEF brings that the assembly does not prove and the store does not hold (`store_holds`: a row in `transactions`, `proven_tx_reqs` or `proven_txs`, read on the pre-check's reader). An empty set asks no word and no tip. The write-locked step assembles the same caller bytes without the word. The set is independent of the returned format (#454): every option assembles the inputs, `returnTXIDOnly` too (#463: the option drops the door's response BEEF alone), so it judges the same set with the same texts (`create_refuses_a_caller_unproven_parent_without_forkid`, `create_txid_only_refuses_a_caller_unproven_parent_without_forkid`, `create_accepts_a_caller_parent_the_store_holds`) |
 | process, the stored post-BEEF (`sendWith`, `verify_stored_post_beef`), a new signed transaction's post and the `sendWith` members its call joins, sent now or queued | structure and roots (`verify_beef_merkle_proofs`, `Strict`) | `processAction.ts:257` `r.beef.verify(chainTracker)`, no `Spend` | not judged: every transaction a post carries is the store's (the posted roots are the wallet's own, their stored ancestry was judged at create or internalize), so no word is asked of them; the structure and roots stay (`process_post_accepts_a_stored_unproven_parent_without_forkid`, `process_new_tx_accepts_a_stored_unproven_parent_without_forkid`, `process_new_tx_accepts_a_joined_members_stored_parent_without_forkid`, their queued twins). A new signed transaction's own inputs are its signing's, the row below |
 | the wallet's own signed transaction (the create door's `signAndProcess`, `signAction`'s `process_action_internal`) | `process_action_writes` checks the txid and the requested outputs' scripts; the signer ran no interpreter on what it signed | `signer/methods/createAction.ts:116-121` `verifyUnlockScripts` before `processAction` (:138); `signAction.ts:86-91` after it (:76); `verifyUnlockScripts.ts:316-321,329-331` skips an input whose source is absent and runs the rest under `{ consensus: true, utxoHeight }` | judged at its signing (#450, the section below): each input whose source bytes are at hand, under the two words; a stored action's later `sendWith` post judges it no second time (`process_post_leaves_the_posted_actions_inputs_to_the_node`) |
 | proof recording (the monitor's ingest, review, reorg) | proofs only | proofs only | not re-judged |
@@ -572,11 +572,11 @@ The sources (`create_action/own_word.rs`, `judge_own_tx`) are untrimmed:
 the action's input BEEF as assembled, before `knownTxids` trims the
 caller's copy (the store keeps it whole, as the reference keeps
 `storageBeef`, `storage/methods/createAction.ts:725`, and trims the
-response alone, `trimInputBeef` at :1725), else under `returnTXIDOnly`,
-which assembles none, the caller's inputBEEF as supplied; then the store's
-bytes (`get_tx_with_proof`). So no response option (`knownTxids`,
-`returnTXIDOnly`, `noSend`, `noSendChange`, `acceptDelayedBroadcast`)
-shrinks the judged set
+response alone, `trimInputBeef` at :1725; under every option, the door
+storing it under `returnTXIDOnly` too and returning none, as the reference
+does, #463); then the store's bytes (`get_tx_with_proof`). So no response
+option (`knownTxids`, `returnTXIDOnly`, `noSend`, `noSendChange`,
+`acceptDelayedBroadcast`) shrinks the judged set
 (`create_judges_supplied_sources_under_every_response_option`,
 `sign_action_judges_a_supplied_source_named_known`). A source is read
 for its one output, so a mined coinbase without its BUMP still supplies the
@@ -751,7 +751,7 @@ SQLite's 32766 they answer `too many SQL variables` (a finding of #309).
 
 ### BEEF Building (1:1 Parity with Go/TypeScript)
 - User inputBEEF merging, recursive ancestor lookup until proven transactions
-- knownTxids trimming to txid-only format, returnTXIDOnly support
+- knownTxids trimming to txid-only format, returnTXIDOnly support (the response's BEEF alone: the input BEEF is assembled and stored under every option, #463)
 
 ## Database Schema
 
