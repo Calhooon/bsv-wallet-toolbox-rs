@@ -44,11 +44,12 @@ async fn verify(parent: Transaction, child: Transaction) -> crate::Result<()> {
     verify_at_height(parent, child, HEIGHT).await
 }
 
-async fn verify_at_height(
-    parent: Transaction,
+/// The `AtomicBEEF` of `child` over `parent` proven at `height`, and the root.
+fn atomic_payment(
+    parent: &Transaction,
     child: Transaction,
     height: u32,
-) -> crate::Result<()> {
+) -> (Vec<u8>, (u64, [u8; 32])) {
     let parent_id = parent.id();
     let child_id = child.id();
     let bump = MerklePath::from_coinbase_txid(&parent_id, height);
@@ -59,17 +60,88 @@ async fn verify_at_height(
     let index = beef.merge_bump(bump);
     beef.merge_raw_tx(parent.to_binary(), Some(index));
     beef.merge_transaction(child);
+    let bytes = beef.to_binary_atomic(&child_id).unwrap();
+    (bytes, (u64::from(height), root_bytes))
+}
+
+async fn verify_at_height(
+    parent: Transaction,
+    child: Transaction,
+    height: u32,
+) -> crate::Result<()> {
+    let (bytes, root) = atomic_payment(&parent, child, height);
     let tracker = FixtureTracker {
-        roots: vec![(u64::from(height), root_bytes)],
+        roots: vec![root],
         tip: height + 6,
     };
-    verify_beef_spends(
-        &beef.to_binary_atomic(&child_id).unwrap(),
-        &tracker.roots,
-        &tracker,
-        "mainnet",
-    )
-    .await
+    verify_beef_spends(&bytes, &tracker.roots, &tracker, "mainnet").await
+}
+
+/// The fixture's roots with no mining tip, or with `fault` a tip read that
+/// faults.
+struct NoTipTracker {
+    roots: FixtureTracker,
+    fault: bool,
+}
+
+#[async_trait::async_trait]
+impl ChainTracker for NoTipTracker {
+    async fn is_valid_root_for_height(
+        &self,
+        root: &str,
+        height: u32,
+    ) -> Result<bool, ChainTrackerError> {
+        self.roots.is_valid_root_for_height(root, height).await
+    }
+    async fn current_height(&self) -> Result<u32, ChainTrackerError> {
+        self.roots.current_height().await
+    }
+    async fn mining_tip(&self) -> Result<Option<ChainTip>, ChainTrackerError> {
+        if self.fault {
+            return Err(ChainTrackerError::NetworkError("tip unavailable".into()));
+        }
+        Ok(None)
+    }
+}
+
+/// `child` over `parent` proven at `HEIGHT`, the tracker without a tip.
+async fn verify_without_tip(
+    parent: Transaction,
+    child: Transaction,
+    fault: bool,
+) -> crate::Result<()> {
+    let (bytes, root) = atomic_payment(&parent, child, HEIGHT);
+    let tracker = NoTipTracker {
+        roots: FixtureTracker {
+            roots: vec![root],
+            tip: 0,
+        },
+        fault,
+    };
+    verify_beef_spends(&bytes, &tracker.roots.roots, &tracker, "mainnet").await
+}
+
+/// #464: bsv-rs's constants name no activation height still ahead, so with
+/// no mining tip (or a tip fault) the door judges the spend under the latest
+/// era's transaction-level word (post-Chronicle) with the coin's UTXO bits
+/// from its proof height (Genesis + 100, post-Genesis), where it held with
+/// `Service error: ChainTracker verification failed: the header service
+/// supplied no mining tip`. A version-1 0x61 signature, which the tip at
+/// `HEIGHT + 6` refuses with the era text, is accepted; one without
+/// `SIGHASH_FORKID` is refused with bsv-rs's text.
+#[tokio::test]
+async fn internalize_verifier_judges_at_the_latest_era_without_a_tip() {
+    for fault in [false, true] {
+        let (parent, child) = signed_payment(0x61);
+        let verdict = verify_without_tip(parent, child, fault).await;
+        eprintln!("fault={fault}: version-1 0x61 on a post-Genesis coin: {verdict:?}");
+        verdict.unwrap();
+        let (parent, child) = signed_payment(0x01);
+        script_words(
+            verify_without_tip(parent, child, fault).await,
+            "The signature must use SIGHASH_FORKID.",
+        );
+    }
 }
 
 fn signed_payment(scope: u8) -> (Transaction, Transaction) {
