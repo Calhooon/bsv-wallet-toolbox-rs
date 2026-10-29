@@ -388,7 +388,10 @@ neither evaluates spending scripts. The wallet field has no in-process reader:
 the port's signer check runs in storage, where the reference's runs in the wallet.
 `Wallet` receives an existing generic storage provider and has no verifier
 configuration hook on that trait. Set `StorageSqlxOptions.script_verifier` when
-constructing the store to use the host backend. Both options default to `None`.
+constructing the store to use the host backend at the live internalize door,
+the createAction caller-inputBEEF pre-check, and own transaction checks at
+createAction signing and signAction. Both options default to `None`; unselected
+inputs and absent verifiers keep the bsv-rs interpreter.
 
 Configuration for wallet behavior:
 - `include_all_source_transactions` - Include source transactions for all inputs in signable transactions

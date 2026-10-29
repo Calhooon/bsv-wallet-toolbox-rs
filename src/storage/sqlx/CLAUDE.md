@@ -582,9 +582,9 @@ has one. `wallet.scriptVerifier` is an optional host verifier
 `verify_spend`, `should_verify_spend` (default true), `is_ready` (default true)
 and `verify_spends_batch` (default per-input calls), where the reference's
 verification methods return promises. `StorageSqlxOptions.script_verifier`
-feeds the live internalize door. The shared own-word and live-word judges
-accept a backend, but both signing routes and the create caller-inputBEEF
-pre-check still pass `None`; their call sites remain to be connected in #450.
+feeds every storage script judgement: the live internalize door, the create
+caller-inputBEEF pre-check, and `verify_own` at createAction signing and the
+signAction route in `process_action_internal`.
 The storage options are shared by every cloned handle. `SpendRequest` carries
 `txid`, `body`, `vin`, `satoshis` and `script`; `SpendVerificationContext` carries
 `word` from `input_word` and `proven_height`. A selected input's host verdict is
@@ -592,7 +592,9 @@ authoritative; false refuses with `host script verifier refused the spend`.
 Selected inputs go through one batch call per verification; an error or wrong
 verdict count refuses the batch. Unselected inputs and `None` keep the existing
 interpreter. `WalletOptions.script_verifier` has no in-process reader because
-the port's signer check runs here; the host configures the storage option.
+the port's signer check runs in storage, where the reference's runs in the
+wallet. `Wallet` accepts an existing generic provider with no verifier
+configuration hook; the host configures the storage option explicitly.
 
 The port judges at the same two places through the one verifier,
 `beef_verification::verify_own` (`beef_verification/own_word.rs`). It reads
