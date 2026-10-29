@@ -53,14 +53,13 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
 
     // ts-stack@edf6e03 validationHelpers.ts validateCreateActionArgs order
     // (749-808): description (755), inputs (758), outputs (759, each
-    // output's tags last at 639), labels (762), options (763). Each array's
-    // validateArray bound (105-114) runs ahead of its items.
+    // output's tags last at 639), labels (762), options (763), then the
+    // duplicate input outpoints (784). Each array's validateArray bound
+    // (105-114) runs ahead of its items.
 
     // Validate inputs
     if let Some(ref inputs) = args.inputs {
         validate_array_bound(inputs.len(), "inputs", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
-        let mut seen_outpoints = std::collections::HashSet::new();
-
         for (i, input) in inputs.iter().enumerate() {
             // Check for unlocking script or length
             if input.unlocking_script.is_none() && input.unlocking_script_length.is_none() {
@@ -95,19 +94,6 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
                         length
                     )));
                 }
-            }
-
-            // Check for duplicate outpoints
-            let outpoint_key = format!(
-                "{}.{}",
-                hex::encode(input.outpoint.txid),
-                input.outpoint.vout
-            );
-            if !seen_outpoints.insert(outpoint_key.clone()) {
-                return Err(Error::ValidationError(format!(
-                    "inputs[{}]: duplicate outpoint {}",
-                    i, outpoint_key
-                )));
             }
         }
     }
@@ -203,6 +189,25 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
         }
         if let Some(ref send_with) = options.send_with {
             validate_array_bound(send_with.len(), "sendWith", MAXIMUM_SEND_WITH_TRANSACTIONS)?;
+        }
+    }
+
+    // Duplicate input outpoints (784-790) after every input's own checks
+    // (758) and the outputs, labels and options (759-763).
+    if let Some(ref inputs) = args.inputs {
+        let mut seen_outpoints = std::collections::HashSet::new();
+        for (i, input) in inputs.iter().enumerate() {
+            let outpoint_key = format!(
+                "{}.{}",
+                hex::encode(input.outpoint.txid),
+                input.outpoint.vout
+            );
+            if !seen_outpoints.insert(outpoint_key.clone()) {
+                return Err(Error::ValidationError(format!(
+                    "inputs[{}]: duplicate outpoint {}",
+                    i, outpoint_key
+                )));
+            }
         }
     }
 

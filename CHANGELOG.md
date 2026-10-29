@@ -53,8 +53,12 @@
   an earlier input's check, beside an input's empty `unlockingScript` or zero
   `unlockingScriptLength` answers the earlier text where it answered
   `The unlockingScript parameter must be hexadecimal string.` or
-  `The unlockingScriptLength parameter must be a positive integer.`; a direct
-  `StorageSqlx` create caller now meets those two refusals too.
+  `The unlockingScriptLength parameter must be a positive integer.`; a
+  duplicate input outpoint answers `inputs[i]: duplicate outpoint` after every
+  input's, output's, label's and option's own check, as the reference's
+  duplicate loop runs after them, where it answered ahead of a later input's
+  or any output's, label's or option's refusal; a direct `StorageSqlx` create
+  caller now meets those two refusals too.
 
 - #430: `relinquishCertificate` now refuses an unknown or non-unique certificate
   before changing storage. Host TEXT-DIFF for CLI #344: success with
