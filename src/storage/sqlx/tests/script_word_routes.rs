@@ -110,9 +110,9 @@ async fn store() -> (StorageSqlx, i64) {
     (storage, user.user_id)
 }
 
-/// The refusal names the parent's input 0 with bsv-rs's text, and the
+/// The refusal names input 0 of `refused` with bsv-rs's text, and the
 /// host meets it as an argument refusal, as at internalize.
-fn assert_forkid_refusal(error: Error, parent: &Transaction) {
+fn assert_forkid_refusal(error: Error, refused: &Transaction) {
     let Error::SpendRefused {
         txid,
         input: Some(0),
@@ -120,9 +120,9 @@ fn assert_forkid_refusal(error: Error, parent: &Transaction) {
         ..
     } = &error
     else {
-        panic!("expected the parent's script refusal, got {error:?}");
+        panic!("expected the input's script refusal, got {error:?}");
     };
-    assert_eq!((txid, message.as_str()), (&parent.id(), FORKID));
+    assert_eq!((txid, message.as_str()), (&refused.id(), FORKID));
     eprintln!("refused: {error}");
     let refusal = bsv_rs::Error::from(error);
     eprintln!("host: {refusal}");
@@ -385,7 +385,7 @@ async fn process_new_tx_delayed_accepts_a_stored_unproven_parent_without_forkid(
 
 /// The wallet's own signed transaction is judged at its signing (#450),
 /// before the writer: its input signed without `SIGHASH_FORKID` is refused
-/// with bsv-rs's text, class InvalidParameter, nothing written, the action
+/// with bsv-rs's text, class `InvalidParameter`, nothing written, the action
 /// still `unsigned`. The reference judges after `processAction`
 /// (`signAction.ts:76`, :90); here the refusal precedes the writes and the
 /// post.
@@ -393,24 +393,7 @@ async fn process_new_tx_delayed_accepts_a_stored_unproven_parent_without_forkid(
 async fn process_new_tx_refuses_its_own_input_without_forkid() {
     for delayed in [false, true] {
         let (storage, child, processed) = sign(Bad::Own, delayed, true).await;
-        let error = processed.unwrap_err();
-        let Error::SpendRefused {
-            txid,
-            input: Some(0),
-            why: SpendRefusal::Script(message),
-            ..
-        } = &error
-        else {
-            panic!("expected the own input's script refusal, got {error:?}");
-        };
-        assert_eq!((txid, message.as_str()), (&child.id(), FORKID));
-        assert!(matches!(
-            bsv_rs::Error::from(error),
-            bsv_rs::Error::WalletRefusal {
-                class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                ..
-            }
-        ));
+        assert_forkid_refusal(processed.unwrap_err(), &child);
         assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
     }
 }

@@ -13,14 +13,25 @@ const GENESIS: u32 = ProtocolEra::MAINNET_GENESIS_HEIGHT;
 const CHRONICLE: u32 = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
 const SATOSHIS: u64 = 10_000;
 
-fn tip(height: u32) -> ChainTip {
-    ChainTip {
-        height,
-        median_time_past: 0,
-        genesis_height: GENESIS,
-        csv_height: 0,
-        next_block_time: None,
-    }
+/// Every judgment here is on mainnet at a tip past Chronicle.
+const TIP: ChainTip = ChainTip {
+    height: CHRONICLE + 100,
+    median_time_past: 0,
+    genesis_height: GENESIS,
+    csv_height: 0,
+    next_block_time: None,
+};
+
+/// `child` judged with `parent` as its source, proven at `proven`.
+fn judge(child: &Transaction, parent: &Transaction, proven: Option<u32>) -> Result<()> {
+    let sources = HashMap::from([(
+        parent.id(),
+        SourceTx {
+            raw: parent.to_binary(),
+            proven_height: proven.map(u64::from),
+        },
+    )]);
+    verify_own(&child.to_binary(), &sources, TIP, "mainnet")
 }
 
 fn source(lock: &[u8]) -> Transaction {
@@ -47,16 +58,6 @@ fn spend(parent: &Transaction, vout: u32, unlock: Option<&[u8]>) -> Transaction 
         change: false,
     });
     tx
-}
-
-fn sources(parent: &Transaction, proven_height: Option<u64>) -> HashMap<String, SourceTx> {
-    HashMap::from([(
-        parent.id(),
-        SourceTx {
-            raw: parent.to_binary(),
-            proven_height,
-        },
-    )])
 }
 
 /// A P2PKH coin and its spend signed ALL|FORKID, with the sighash byte as
@@ -86,14 +87,7 @@ fn p2pkh_spend(sighash: u8) -> (Transaction, Transaction) {
 #[test]
 fn a_fork_id_less_signature_is_refused_at_its_input() {
     let (parent, child) = p2pkh_spend(0x01);
-    let error = verify_own(
-        &child.to_binary(),
-        &sources(&parent, Some(u64::from(GENESIS))),
-        tip(CHRONICLE + 100),
-        "mainnet",
-    )
-    .unwrap_err();
-    match error {
+    match judge(&child, &parent, Some(GENESIS)).unwrap_err() {
         Error::SpendRefused {
             offset,
             txid,
@@ -112,47 +106,28 @@ fn a_fork_id_less_signature_is_refused_at_its_input() {
 #[test]
 fn a_forkid_signature_is_accepted() {
     let (parent, child) = p2pkh_spend(0x41);
-    for proven in [None, Some(u64::from(GENESIS))] {
-        verify_own(
-            &child.to_binary(),
-            &sources(&parent, proven),
-            tip(CHRONICLE + 100),
-            "mainnet",
-        )
-        .unwrap();
+    for proven in [None, Some(GENESIS)] {
+        judge(&child, &parent, proven).unwrap();
     }
 }
 
 #[test]
 fn an_input_without_source_bytes_is_skipped() {
     let (_, child) = p2pkh_spend(0x01);
-    verify_own(
-        &child.to_binary(),
-        &HashMap::new(),
-        tip(CHRONICLE + 100),
-        "mainnet",
-    )
-    .unwrap();
+    verify_own(&child.to_binary(), &HashMap::new(), TIP, "mainnet").unwrap();
 }
 
 #[test]
 fn a_source_without_the_output_is_refused() {
     let parent = source(&[0x51]);
     let child = spend(&parent, 1, Some(&[0x51]));
-    let error = verify_own(
-        &child.to_binary(),
-        &sources(&parent, None),
-        tip(CHRONICLE + 100),
-        "mainnet",
-    )
-    .unwrap_err();
     assert!(matches!(
-        error,
-        Error::SpendRefused {
+        judge(&child, &parent, None),
+        Err(Error::SpendRefused {
             input: Some(0),
             why: SpendRefusal::OutputNotAvailable { vout: 1 },
             ..
-        }
+        })
     ));
 }
 
@@ -162,30 +137,15 @@ fn a_source_without_the_output_is_refused() {
 fn the_coin_era_comes_from_its_proof_height() {
     let parent = source(&[0x8d, 0x52, 0x87]);
     let child = spend(&parent, 0, Some(&[0x51]));
-    let raw = child.to_binary();
-    let at = tip(CHRONICLE + 100);
-    verify_own(&raw, &sources(&parent, None), at, "mainnet").unwrap();
-    verify_own(
-        &raw,
-        &sources(&parent, Some(u64::from(CHRONICLE))),
-        at,
-        "mainnet",
-    )
-    .unwrap();
-    let error = verify_own(
-        &raw,
-        &sources(&parent, Some(u64::from(GENESIS))),
-        at,
-        "mainnet",
-    )
-    .unwrap_err();
+    judge(&child, &parent, None).unwrap();
+    judge(&child, &parent, Some(CHRONICLE)).unwrap();
     assert!(matches!(
-        error,
-        Error::SpendRefused {
+        judge(&child, &parent, Some(GENESIS)),
+        Err(Error::SpendRefused {
             input: Some(0),
             why: SpendRefusal::Script(_),
             ..
-        }
+        })
     ));
 }
 
@@ -194,13 +154,7 @@ fn the_coin_era_comes_from_its_proof_height() {
 #[test]
 fn a_coin_mined_before_genesis_is_left_to_the_node() {
     let (parent, child) = p2pkh_spend(0x01);
-    verify_own(
-        &child.to_binary(),
-        &sources(&parent, Some(u64::from(GENESIS - 1))),
-        tip(CHRONICLE + 100),
-        "mainnet",
-    )
-    .unwrap();
+    judge(&child, &parent, Some(GENESIS - 1)).unwrap();
 }
 
 /// A source is read for its output alone: a mined coinbase's bytes, without
@@ -211,20 +165,10 @@ fn a_coinbase_source_supplies_its_output() {
     parent.inputs[0] = TransactionInput::new(format!("{:064x}", 0), u32::MAX);
     parent.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&[0x51]).unwrap());
     let refused = spend(&parent, 0, Some(&[0x52]));
-    let error = verify_own(
-        &refused.to_binary(),
-        &sources(&parent, Some(u64::from(CHRONICLE))),
-        tip(CHRONICLE + 100),
-        "mainnet",
-    )
-    .unwrap_err();
-    assert!(matches!(error, Error::SpendRefused { input: Some(0), .. }));
+    assert!(matches!(
+        judge(&refused, &parent, Some(CHRONICLE)),
+        Err(Error::SpendRefused { input: Some(0), .. })
+    ));
     let accepted = spend(&parent, 0, Some(&[0x51]));
-    verify_own(
-        &accepted.to_binary(),
-        &sources(&parent, Some(u64::from(CHRONICLE))),
-        tip(CHRONICLE + 100),
-        "mainnet",
-    )
-    .unwrap();
+    judge(&accepted, &parent, Some(CHRONICLE)).unwrap();
 }

@@ -9,17 +9,17 @@
 //! absent; :329-331 judges the others with `{ consensus: true, utxoHeight }`.
 //! The port judges with the two-word rule (#422): the spend's era at tip+1,
 //! the coin's UTXO bits from its proof height. A signature without
-//! SIGHASH_FORKID fails under every post-Genesis word.
+//! `SIGHASH_FORKID` fails under every post-Genesis word.
 
 use super::busy_door_tests::store_snapshot;
 use super::named_input_tests::{
     caller_script, complete, defer_named, forget_source_bytes, named_input_scene, payment,
     script_for_create_action, sign_named, spend_map, stored_action, NamedInputScene, ORIGINATOR,
 };
-use bsv_rs::wallet::WalletInterface;
+use bsv_rs::wallet::{SignableTransaction, WalletInterface};
 
 /// `script` with its leading signature's sighash byte stripped of
-/// SIGHASH_FORKID (0x40); the DER bytes are unchanged.
+/// `SIGHASH_FORKID` (0x40); the DER bytes are unchanged.
 fn without_fork_id(mut script: Vec<u8>) -> Vec<u8> {
     let sighash = usize::from(script[0]);
     assert_ne!(script[sighash] & 0x40, 0, "the wallet signs with FORKID");
@@ -27,7 +27,7 @@ fn without_fork_id(mut script: Vec<u8>) -> Vec<u8> {
     script
 }
 
-/// The refusal is bsv-rs's spend refusal, class InvalidParameter.
+/// The refusal is bsv-rs's spend refusal, class `InvalidParameter`.
 fn assert_spend_refused<T>(result: bsv_rs::Result<T>) -> String {
     match result {
         Err(bsv_rs::Error::WalletRefusal {
@@ -49,6 +49,45 @@ fn assert_spend_refused<T>(result: bsv_rs::Result<T>) -> String {
 
 fn posts(scene: &NamedInputScene) -> usize {
     scene.wallet.services().call_count("post_beef")
+}
+
+/// What a signAction refused before the writer must leave: the store and
+/// the action as they were.
+struct Kept {
+    reference: String,
+    stored: (String, Option<String>, Option<Vec<u8>>),
+    before: Vec<String>,
+}
+
+impl Kept {
+    async fn read(scene: &NamedInputScene, signable: &SignableTransaction) -> Self {
+        let reference = bsv_rs::primitives::to_base64(&signable.reference);
+        let stored = stored_action(scene, &reference).await;
+        assert_eq!(stored.0, "unsigned");
+        let before = store_snapshot(&scene.wallet).await;
+        Kept {
+            reference,
+            stored,
+            before,
+        }
+    }
+
+    /// Nothing stored or posted and the action not aborted, so the caller
+    /// signs it again with `script`.
+    async fn then_signs(
+        self,
+        scene: &NamedInputScene,
+        signable: SignableTransaction,
+        script: Vec<u8>,
+    ) {
+        let after = store_snapshot(&scene.wallet).await;
+        assert_eq!(after, self.before, "nothing stored");
+        assert_eq!(stored_action(scene, &self.reference).await, self.stored);
+        assert_eq!(posts(scene), 0, "nothing posted");
+        let signed = complete(scene, signable, Some(script)).await;
+        let (status, txid, _) = stored_action(scene, &self.reference).await;
+        assert_eq!((status.as_str(), txid), ("nosend", Some(signed.id())));
+    }
 }
 
 async fn create_with_caller_script(
@@ -100,25 +139,12 @@ async fn create_accepts_its_own_input_valid_under_the_word() {
 async fn sign_action_refuses_its_own_fork_id_less_input() {
     let scene = named_input_scene().await;
     let signable = defer_named(&scene, 1_000, None).await;
-    let reference = bsv_rs::primitives::to_base64(&signable.reference);
-    let stored = stored_action(&scene, &reference).await;
-    assert_eq!(stored.0, "unsigned");
-    let before = store_snapshot(&scene.wallet).await;
+    let kept = Kept::read(&scene, &signable).await;
     let bad = without_fork_id(caller_script(&scene, &signable));
-    let result = sign_named(&scene, reference.clone(), spend_map(0, bad, None)).await;
+    let result = sign_named(&scene, kept.reference.clone(), spend_map(0, bad, None)).await;
     assert_spend_refused(result);
-    assert_eq!(
-        store_snapshot(&scene.wallet).await,
-        before,
-        "nothing stored"
-    );
-    assert_eq!(stored_action(&scene, &reference).await, stored);
-    assert_eq!(posts(&scene), 0, "nothing posted");
-    // The action stays unsigned and reserved: the caller may sign again.
     let script = caller_script(&scene, &signable);
-    let signed = complete(&scene, signable, Some(script)).await;
-    assert_eq!(stored_action(&scene, &reference).await.0, "nosend");
-    assert_eq!(stored_action(&scene, &reference).await.1, Some(signed.id()));
+    kept.then_signs(&scene, signable, script).await;
 }
 
 /// An input whose source bytes are neither in the action's input BEEF nor
@@ -162,33 +188,18 @@ impl bsv_rs::transaction::ChainTracker for NoTip {
 async fn sign_action_holds_without_a_mining_tip_and_keeps_the_action() {
     let scene = named_input_scene().await;
     let signable = defer_named(&scene, 1_000, None).await;
-    let reference = bsv_rs::primitives::to_base64(&signable.reference);
-    let stored = stored_action(&scene, &reference).await;
-    let before = store_snapshot(&scene.wallet).await;
+    let kept = Kept::read(&scene, &signable).await;
     let storage = scene.wallet.storage();
     storage.set_chain_tracker(std::sync::Arc::new(NoTip)).await;
     let script = caller_script(&scene, &signable);
-    let result = sign_named(
-        &scene,
-        reference.clone(),
-        spend_map(0, script.clone(), None),
-    )
-    .await;
-    match result {
+    let spends = spend_map(0, script.clone(), None);
+    match sign_named(&scene, kept.reference.clone(), spends).await {
         Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
             message,
             "Service error: ChainTracker verification failed: the header service supplied no mining tip"
         ),
         other => panic!("expected the header hold, got {other:?}"),
     }
-    assert_eq!(
-        store_snapshot(&scene.wallet).await,
-        before,
-        "nothing stored"
-    );
-    assert_eq!(stored_action(&scene, &reference).await, stored);
-    assert_eq!(posts(&scene), 0, "nothing posted");
     storage.clear_chain_tracker().await;
-    let signed = complete(&scene, signable, Some(script)).await;
-    assert_eq!(stored_action(&scene, &reference).await.1, Some(signed.id()));
+    kept.then_signs(&scene, signable, script).await;
 }
