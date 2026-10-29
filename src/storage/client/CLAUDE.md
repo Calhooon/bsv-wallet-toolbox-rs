@@ -32,12 +32,12 @@ marks their #105 changes and the remaining decisions that need the owner.
 |------|-------|---------|
 | `mod.rs` | 61 | Module exports and usage documentation |
 | `auth.rs` | 969 | BRC-31 authentication: nonce creation, request signing, response verification |
-| `json_rpc.rs` | 468 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) and the server's WalletError reader (#436) |
+| `json_rpc.rs` | 520 | JSON-RPC 2.0 protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`) and the server's WalletError reader (#436) |
 | `storage_client.rs` | 2713 | `StorageClient` implementation of `WalletStorageProvider` + `MonitorStorage` |
 | `wire.rs` | 205 | Request field names and reference result aliases |
 | `wire_tests.rs` | 361 | Reference responses and outgoing-name regressions |
 | `brc104_bounds_tests.rs` | 161 | beta.3's BRC-104 response bounds through the authenticated client (#423) |
-| `refusal_class_tests.rs` | 313 | A server refusal per class through loopback mockito, and through a `Wallet` (#436) |
+| `refusal_class_tests.rs` | 352 | A server refusal per class through loopback mockito, and through a `Wallet` (#436) |
 
 ## Key Exports
 
@@ -147,13 +147,16 @@ client rebuilds the class by `name` (`StorageClient.ts:178-181`,
 `json_rpc::WalletError::from_rpc_error` and `into_error`, with the reference's
 bounds: at most 64 members, the name at most 128 in `[A-Za-z0-9._:-]+` (a string
 `code` stands for a missing `name`), the message at most 4096 UTF-16 units with
-no control character but tab, line feed and carriage return.
+no control character but tab, line feed and carriage return. The reference's
+object has no numeric `code` (`WalletError.ts:145-149`): `JsonRpcError.code`
+reads absent, a string or anything but an `i32` as `-32000`, so the object
+parses and the string `code` reaches the mapper.
 
 | Server `name` | Toolbox error | At the boundary |
 |---------------|---------------|-----------------|
 | `WERR_BAD_REQUEST`, `WERR_INVALID_PARAMETER`, `WERR_INVALID_OPERATION`, `WERR_INSUFFICIENT_FUNDS`, `WERR_MISSING_PARAMETER`, `WERR_UNAUTHORIZED`, `WERR_NOT_ACTIVE`, `WERR_NOT_IMPLEMENTED`, `WERR_NETWORK_CHAIN`, `WERR_INVALID_PUBLIC_KEY`, `WERR_BROADCAST_UNAVAILABLE`, `WERR_ACTION_BATCH_STATE`, `WERR_UTXO_REVIEW_INCONCLUSIVE` | `SdkError(WalletRefusal { class, message })`, the class `WalletRefusalClass::from_name` reads, the server's message byte for byte | the same refusal |
 | `WERR_REVIEW_ACTIONS` with the reference's results (`reviewActionsEnvelope`) | `ReviewActions` with its results and the server's message | `WalletReviewActions` |
-| `WERR_INTERNAL`, any other name, a malformed error, a plain JSON-RPC error | `StorageError("RPC error <code>: <message>")` (the code `-32000` when the error has none) | `WalletError` |
+| `WERR_INTERNAL`, any other name, a malformed error, a plain JSON-RPC error | `StorageError("RPC error <code>: <message>")` (the code `-32000` when the error has no numeric one) | `WalletError` |
 
 ## Architecture
 
@@ -483,7 +486,7 @@ The module includes comprehensive unit tests across all three source files:
 
 | Category | File | Count | Coverage |
 |----------|------|-------|----------|
-| JSON-RPC serialization | `json_rpc.rs` | 4 | Request/response format, error codes |
+| JSON-RPC serialization | `json_rpc.rs` | 5 | Request/response format, error codes |
 | Nonce creation | `auth.rs` | 3 | Uniqueness, base64 encoding, bulk uniqueness |
 | Timestamp validation | `auth.rs` | 6 | Current, old, future, edge-of-expiry, slight future, monotonicity |
 | Signing data | `auth.rs` | 8 | Determinism, body/method/path/timestamp/nonce inclusion, empty/large body |

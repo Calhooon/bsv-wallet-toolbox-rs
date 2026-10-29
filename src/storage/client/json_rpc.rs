@@ -3,7 +3,7 @@
 //! This module provides the JSON-RPC request/response types used for
 //! communication with the storage server.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 /// JSON-RPC 2.0 protocol version.
@@ -71,8 +71,9 @@ impl JsonRpcResponse {
 /// server errors (with `isError`, `name` fields).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcError {
-    /// Error code (standard JSON-RPC). Defaults to -32000 if not present.
-    #[serde(default = "default_error_code")]
+    /// Error code (standard JSON-RPC). Defaults to -32000 if not present,
+    /// a string, or not an `i32`.
+    #[serde(default = "default_error_code", deserialize_with = "code_or_default")]
     pub code: i32,
     /// Error message.
     pub message: String,
@@ -89,6 +90,21 @@ pub struct JsonRpcError {
 
 fn default_error_code() -> i32 {
     error_codes::SERVER_ERROR_START // -32000
+}
+
+/// The reference's error object carries no numeric `code` (`isError`,
+/// `name`, `message`; `WalletError.ts:145-149` at ts-stack edf6e03), and a
+/// client may see a string one; the `name`, or the string `code`, carries
+/// the class (`WalletError::from_rpc_error`). Anything but an `i32` reads
+/// as the default.
+fn code_or_default<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i32, D::Error> {
+    Ok(match Value::deserialize(deserializer)? {
+        Value::Number(code) => code
+            .as_i64()
+            .and_then(|code| i32::try_from(code).ok())
+            .unwrap_or_else(default_error_code),
+        _ => default_error_code(),
+    })
 }
 
 impl std::fmt::Display for JsonRpcError {
@@ -457,6 +473,42 @@ mod tests {
         let err = response.into_result().unwrap_err();
         assert_eq!(err.code, error_codes::INVALID_REQUEST);
         assert_eq!(err.message, "Invalid Request");
+    }
+
+    /// The reference's error object has no numeric `code`
+    /// (`WalletError.ts:145-149` at ts-stack edf6e03); absent, a string or
+    /// out of range, it reads as the default.
+    #[test]
+    fn test_json_rpc_error_code_forms() {
+        let read = |error: Value| -> JsonRpcError {
+            let answer = serde_json::json!({"jsonrpc": "2.0", "error": error, "id": 1});
+            serde_json::from_value::<JsonRpcResponse>(answer)
+                .unwrap()
+                .into_result()
+                .unwrap_err()
+        };
+        let absent = read(serde_json::json!({
+            "isError": true, "name": "WERR_BAD_REQUEST", "message": "m"
+        }));
+        assert_eq!(absent.code, error_codes::SERVER_ERROR_START);
+        assert_eq!(absent.name.as_deref(), Some("WERR_BAD_REQUEST"));
+        let numeric =
+            read(serde_json::json!({"name": "WERR_INSUFFICIENT_FUNDS", "message": "m", "code": 7}));
+        assert_eq!(numeric.code, 7);
+        let string = read(serde_json::json!({"code": "WERR_BAD_REQUEST", "message": "m"}));
+        assert_eq!(string.code, error_codes::SERVER_ERROR_START);
+        assert_eq!(string.message, "m");
+        for code in [
+            serde_json::json!(null),
+            serde_json::json!(1u64 << 40),
+            serde_json::json!(1.5),
+        ] {
+            let other = read(serde_json::json!({"code": code, "message": "m"}));
+            assert_eq!(other.code, error_codes::SERVER_ERROR_START);
+        }
+        let plain = read(serde_json::json!({"code": -32601, "message": "Method not found: x"}));
+        assert_eq!(plain.code, error_codes::METHOD_NOT_FOUND);
+        assert_eq!(plain.name, None);
     }
 
     #[test]

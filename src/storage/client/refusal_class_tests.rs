@@ -86,7 +86,8 @@ fn assert_generic(err: Error, code: i32, message: &str) {
     ));
 }
 
-/// #430: relinquishCertificate's `verifyOne` refusal.
+/// #430: relinquishCertificate's `verifyOne` refusal, in the reference's
+/// object exactly: no `code` beside the name (`WalletError.ts:145-149`).
 #[tokio::test]
 async fn bad_request_keeps_its_class_and_text() {
     let message = "Result must exist and be unique.";
@@ -252,6 +253,44 @@ async fn a_malformed_envelope_keeps_the_generic_text() {
 async fn a_plain_rpc_error_keeps_the_generic_text() {
     let err = refused_with(json!({"code": -32601, "message": "Method not found: x"})).await;
     assert_generic(err, -32601, "Method not found: x");
+}
+
+/// The error object's `code` beside the name: absent is
+/// `bad_request_keeps_its_class_and_text` (`WalletError.toJson`,
+/// `WalletError.ts:145-149` at ts-stack edf6e03), numeric here, a string
+/// below; the name carries the class.
+#[tokio::test]
+async fn a_numeric_code_beside_the_name_keeps_its_class() {
+    let message = "Invalid operation: the action is not abortable";
+    let err = refused_with(json!({
+        "isError": true, "name": "WERR_INVALID_OPERATION", "message": message, "code": 400
+    }))
+    .await;
+    assert_class(err, WalletRefusalClass::InvalidOperation, message);
+}
+
+#[tokio::test]
+async fn a_string_code_keeps_its_class() {
+    let message = "Result must exist and be unique.";
+    let err = refused_with(json!({"code": "WERR_BAD_REQUEST", "message": message})).await;
+    assert_class(err, WalletRefusalClass::BadRequest, message);
+    let err = refused_with(json!({
+        "isError": true, "name": "WERR_INVALID_OPERATION", "code": "WERR_INVALID_OPERATION",
+        "message": message
+    }))
+    .await;
+    assert_class(err, WalletRefusalClass::InvalidOperation, message);
+    // Outside the whitelist, the generic text with the default code.
+    let err = refused_with(json!({"code": "WERR_SOMETHING_NEW", "message": message})).await;
+    assert_generic(err, -32000, message);
+}
+
+/// A plain JSON-RPC error with a numeric code and no name keeps its code
+/// in the generic text.
+#[tokio::test]
+async fn a_numeric_code_without_a_name_keeps_the_generic_text() {
+    let err = refused_with(json!({"code": -32602, "message": "Invalid params"})).await;
+    assert_generic(err, -32602, "Invalid params");
 }
 
 /// Through a `Wallet` over `StorageClient`, the host reads the refusal the
