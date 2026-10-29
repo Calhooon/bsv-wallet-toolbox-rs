@@ -195,11 +195,10 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
     }
 
     // The inputBEEF envelope (775-782, parseWalletResultBEEF) after the
-    // options and ahead of the duplicate input outpoints.
+    // options and ahead of the duplicate input outpoints: every supplied
+    // BEEF, an empty one included (`vargs.inputBEEF !== undefined`).
     if let Some(ref input_beef) = args.input_beef {
-        if !input_beef.is_empty() {
-            refuse_invalid_beef_bytes(input_beef)?;
-        }
+        refuse_invalid_beef_bytes(input_beef)?;
     }
 
     // Duplicate input outpoints (784-790) after every input's own checks
