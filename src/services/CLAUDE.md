@@ -86,6 +86,10 @@ lookup's per-request timeouts, issuance headers, and storage settings are unchan
 
 ## Key Types
 
+### Chain (mod.rs)
+
+`Chain` has `Main` (the default), `Test` and `Regtest`; `as_str()` and lowercase serde use `main`, `test` and `regtest`. `Regtest` is the port's extension beyond the reference's two stored values. It uses the Test arm for service options, provider URLs, Genesis/CSV activation heights, discovery resolvers and the wallet Network mapping today; its era constants follow with the per-network activation heights at the bsv-rs #440 re-pin.
+
 ### Services (services.rs:71)
 
 Main orchestrator coordinating all blockchain operations:
