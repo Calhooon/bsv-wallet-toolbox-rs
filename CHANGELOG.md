@@ -25,8 +25,8 @@
   transaction the caller's `inputBEEF` brings, and `processAction` judges
   every unproven raw transaction of a post-BEEF beside the transactions it
   posts (a `sendWith` post and a new signed transaction's post, each whether
-  sent now or queued with `acceptDelayedBroadcast`), after each route's structure and roots and before anything
-  is written or posted. Host
+  sent now or queued with `acceptDelayedBroadcast`), after each route's
+  structure and roots and before anything is written or posted. Host
   TEXT-DIFF for CLI #347's replay: at `createAction` and `processAction` a host
   can now meet `spend refused at offset N, input I of <txid>: <why>` with
   bsv-rs's script texts (for example
@@ -34,11 +34,12 @@
   `The signature must not use SIGHASH_CHRONICLE before Chronicle.`,
   `The mainnet coin height is before Genesis.`) and its other spend
   refusals, class `InvalidParameter`; a tracker with no mining tip holds with
-  `ChainTracker verification failed: the header service supplied no mining tip`
-  (`WalletError`) when an unproven transaction is there to judge. The
-  transactions a post carries for the wallet (its own signed transactions)
-  are outside the judged set: the node judges them at broadcast and the
-  broadcaster's answer is the host's refusal (#450).
+  `Service error: ChainTracker verification failed: the header service supplied no mining tip`
+  (`WalletError`, `process_new_tx_holds_without_a_mining_tip`) when an
+  unproven transaction is there to judge. The transactions a post carries
+  for the wallet (its own signed transactions) are outside the judged set:
+  the node judges them at broadcast and the broadcaster's answer is the
+  host's refusal (#450).
 
 - #422: The live `internalizeAction` door judges each input of every
   unproven raw transaction, including parents, under the node's word: the
