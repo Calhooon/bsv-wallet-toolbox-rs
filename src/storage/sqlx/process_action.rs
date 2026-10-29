@@ -587,11 +587,14 @@ fn judged_set(posted: &[String]) -> impl Fn(&Hash32) -> bool + Sync {
 /// not parse reach no node (the wallet's broadcast refuses them with
 /// `Failed to parse input BEEF`), so they hold none.
 fn holds_judged(input: &[u8], posted: &[String]) -> bool {
-    Beef::from_binary(input).is_ok_and(|beef| {
-        beef.txs
-            .iter()
-            .any(|tx| !tx.is_txid_only() && !tx.has_proof() && !posted.contains(&tx.txid()))
-    })
+    Beef::from_binary(input).is_ok_and(|beef| beef_holds_judged(&beef, posted))
+}
+
+/// Whether a BEEF holds an unproven raw transaction in the judged set.
+fn beef_holds_judged(beef: &Beef, posted: &[String]) -> bool {
+    beef.txs
+        .iter()
+        .any(|tx| !tx.is_txid_only() && !tx.has_proof() && !posted.contains(&tx.txid()))
 }
 
 /// The `sendWith` members a new transaction's call joins to its post, as the
@@ -896,7 +899,11 @@ async fn verify_stored_post_beef(
     // The post shares raw unproven transactions with the world: each input
     // of every one in the judged set is judged under the node's word, as
     // internalize judges a stranger's (#426), after the structure and roots
-    // above; no writer is held here.
+    // above; no writer is held here. An empty judged set asks no word and
+    // no mining tip.
+    if !beef_holds_judged(beef, posted) {
+        return Ok(());
+    }
     super::beef_verification::verify_beef_word(
         &beef.to_binary(),
         tracker,
