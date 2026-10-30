@@ -24,7 +24,7 @@ use crate::services::mock::MockWalletServices;
 use crate::StorageSqlx;
 use bsv_rs::script::template::{SignOutputs, SigningContext};
 use bsv_rs::script::{templates::P2PKH, Script};
-use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput};
+use bsv_rs::transaction::{Beef, Transaction, TransactionInput};
 use bsv_rs::wallet::{
     Counterparty, CreateActionArgs, CreateActionInput, CreateActionOptions, CreateActionOutput,
     KeyDeriverApi, Outpoint, Protocol, SecurityLevel, SignActionArgs, SignActionResult,
@@ -63,22 +63,10 @@ impl NamedInputScene {
     }
 }
 
+/// A wallet change coin for `tag`, proven past Genesis (`fund_tagged`), so
+/// the signer judges the input (#490).
 async fn fund_wallet_change(wallet: &Wallet<StorageSqlx, MockWalletServices>, tag: u32) {
-    let output_id = fund_tagged(wallet, &own_lock(wallet), tag).await;
-    let txid: String = sqlx::query_scalar("SELECT txid FROM outputs WHERE output_id = ?")
-        .bind(output_id)
-        .fetch_one(wallet.storage().pool())
-        .await
-        .unwrap();
-    // Independent coinbase proofs belong at different heights in one BEEF.
-    let height = 100_000 + tag;
-    sqlx::query("UPDATE proven_txs SET height = ?, merkle_path = ? WHERE txid = ?")
-        .bind(height)
-        .bind(MerklePath::from_coinbase_txid(&txid, height).to_binary())
-        .bind(txid)
-        .execute(wallet.storage().writer())
-        .await
-        .unwrap();
+    fund_tagged(wallet, &own_lock(wallet), tag).await;
 }
 
 pub(super) fn payment(satoshis: u64) -> CreateActionArgs {
