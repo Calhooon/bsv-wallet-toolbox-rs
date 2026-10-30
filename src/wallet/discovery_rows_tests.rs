@@ -8,7 +8,7 @@
 //! refusal is bsv-rs's `invalid(call, field, expected)`, `Invalid <call>
 //! result <field>: expected <expected>`, byte for byte.
 
-use super::*;
+use super::super::*;
 use crate::managers::{
     Certifier, TrustSettings, WalletSettings, WalletSettingsManager, WalletSettingsManagerConfig,
 };

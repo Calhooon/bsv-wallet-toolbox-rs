@@ -5,9 +5,9 @@
 //! loopback mock as a host's JSON daemon would serve it; each expected
 //! refusal is bsv-rs's `Invalid <call> result <field>: expected <expected>`.
 
-use super::busy_door_tests::{fund_tagged, own_lock, wallet};
-use super::direct_acquire_tests::signed_args;
-use super::*;
+use super::super::direct_acquire_tests::signed_args;
+use super::super::*;
+use super::{fund_tagged, own_lock, wallet};
 use bsv_rs::primitives::sha256;
 use bsv_rs::wallet::substrates::HttpWalletJson;
 

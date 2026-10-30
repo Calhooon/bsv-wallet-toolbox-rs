@@ -1580,3 +1580,9 @@ async fn a_retirement_cut_between_its_two_writes_is_finished_by_the_next_pass() 
         .unwrap();
     assert_eq!(again.log, "No status mismatches found\n", "converged");
 }
+
+#[path = "hmac_key_tests.rs"]
+mod hmac_key_tests;
+
+#[path = "result_rows_tests.rs"]
+mod result_rows_tests;
