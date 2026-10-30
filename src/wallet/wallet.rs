@@ -77,6 +77,10 @@ mod direct_refusal_tests;
 #[path = "direct_acquire_tests.rs"]
 mod direct_acquire_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "discovery_rows_tests.rs"]
+mod discovery_rows_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
