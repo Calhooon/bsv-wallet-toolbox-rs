@@ -131,7 +131,7 @@ pub(super) async fn verify_beef_spends_with_verifier(
 fn default_pass(bytes: &[u8], headers: &VerificationHeaders) -> Result<Verdict> {
     let referenced = referenced_outpoints(bytes).map_err(stream_error)?;
     StreamVerifier::retaining(bytes, headers, None, referenced)
-        .with_work_budget(Some(live_word::work_per_input()))
+        .with_work_budget(Some(live_word::work_budgets().0))
         .run()
         .map_err(Error::IoError)
 }

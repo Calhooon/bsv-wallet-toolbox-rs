@@ -4,10 +4,12 @@
 //! (`live_word::WORK_OVERRIDE`); no test could exhaust 2^31.
 
 use super::*;
-use crate::storage::sqlx::beef_verification::live_word::WORK_OVERRIDE;
+use crate::storage::sqlx::beef_verification::{
+    self, live_word::WORK_OVERRIDE, VerificationHeaders,
+};
 use bsv_rs::script::NotJudgedCause;
 use bsv_rs::transaction::beef_stream::Verdict;
-use bsv_rs::transaction::{MerklePath, MockChainTracker};
+use bsv_rs::transaction::MockChainTracker;
 
 /// Runs `f` under the budgets `(per input, per transaction)`.
 fn with_work<T>(budgets: (u64, u64), f: impl FnOnce() -> T) -> T {
@@ -45,42 +47,31 @@ fn p2pkh_spends(count: u32) -> (Transaction, Transaction) {
     (parent, child)
 }
 
-/// The live door's word pass over `child` with its proven `parent`.
-fn word_pass(parent: &Transaction, child: &Transaction) -> Result<()> {
-    let bump = MerklePath::from_coinbase_txid(&parent.id(), GENESIS);
-    let mut beef = Beef::new();
-    let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent.to_binary(), Some(index));
-    beef.merge_raw_tx(child.to_binary(), None);
-    let headers = crate::storage::sqlx::beef_verification::VerificationHeaders {
+/// `proven_frame`'s bytes and tracker, and its headers' snapshot.
+fn frame(
+    parent: &Transaction,
+    child: &Transaction,
+) -> (Vec<u8>, MockChainTracker, VerificationHeaders) {
+    let (mut beef, tracker) = proven_frame(parent, child);
+    let headers = VerificationHeaders {
         tip: Some(tip()),
         roots: beef_roots(&beef).into_iter().collect(),
     };
-    crate::storage::sqlx::beef_verification::live_word::verify(
-        &beef.to_binary(),
-        &headers,
-        "main",
-        None,
-    )
+    (beef.to_binary(), tracker, headers)
+}
+
+/// The live door's word pass over `child` with its proven `parent`.
+fn word_pass(parent: &Transaction, child: &Transaction) -> Result<()> {
+    let (bytes, _, headers) = frame(parent, child);
+    beef_verification::live_word::verify(&bytes, &headers, "main", None)
 }
 
 /// The door's whole verification, the default-mode stream pass first.
 async fn door(parent: &Transaction, child: &Transaction) -> Result<()> {
-    let bump = MerklePath::from_coinbase_txid(&parent.id(), GENESIS);
-    let mut tracker = MockChainTracker::new(tip().height);
-    tracker.add_root(GENESIS, bump.compute_root(None).unwrap());
-    let mut beef = Beef::new();
-    let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent.to_binary(), Some(index));
-    beef.merge_raw_tx(child.to_binary(), None);
-    crate::storage::sqlx::beef_verification::verify_beef_spends_with_verifier(
-        &beef.to_binary(),
-        &beef_roots(&beef),
-        &tracker,
-        "main",
-        None,
-    )
-    .await
+    let (bytes, tracker, headers) = frame(parent, child);
+    let roots: Vec<_> = headers.roots.into_iter().collect();
+    beef_verification::verify_beef_spends_with_verifier(&bytes, &roots, &tracker, "main", None)
+        .await
 }
 
 /// The cause of a not-judged refusal at `input`.
@@ -147,17 +138,8 @@ fn the_word_pass_refuses_an_input_past_its_work_budget() {
 #[tokio::test]
 async fn the_door_stream_pass_carries_the_per_input_budget() {
     let (parent, child) = p2pkh_spends(1);
-    let bump = MerklePath::from_coinbase_txid(&parent.id(), GENESIS);
-    let mut beef = Beef::new();
-    let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent.to_binary(), Some(index));
-    beef.merge_raw_tx(child.to_binary(), None);
-    let headers = crate::storage::sqlx::beef_verification::VerificationHeaders {
-        tip: Some(tip()),
-        roots: beef_roots(&beef).into_iter().collect(),
-    };
-    let bytes = beef.to_binary();
-    let pass = || crate::storage::sqlx::beef_verification::default_pass(&bytes, &headers);
+    let (bytes, _, headers) = frame(&parent, &child);
+    let pass = || beef_verification::default_pass(&bytes, &headers);
     assert!(matches!(pass().unwrap(), Verdict::Valid { .. }));
     assert!(matches!(
         with_work((3, u64::MAX), pass).unwrap(),
@@ -172,16 +154,15 @@ async fn the_door_stream_pass_carries_the_per_input_budget() {
         }
     ));
     door(&parent, &child).await.unwrap();
+    // The override is the test thread's; the door's synchronous passes run
+    // on it under the current-thread runtime.
     WORK_OVERRIDE.with(|cell| cell.set(Some((3, u64::MAX))));
     let result = door(&parent, &child).await;
     WORK_OVERRIDE.with(|cell| cell.set(None));
+    let cause = work_cause(result, 0);
     assert!(matches!(
-        work_cause(result, 0),
-        NotJudgedCause::WorkBudgetExceeded {
-            input: 0,
-            budget: 3,
-            ..
-        }
+        cause,
+        NotJudgedCause::WorkBudgetExceeded { budget: 3, .. }
     ));
 }
 
