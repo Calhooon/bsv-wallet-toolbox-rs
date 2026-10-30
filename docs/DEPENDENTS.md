@@ -105,6 +105,18 @@ plain dispatch on beta a101a10c against the CLI's beta at 6e1a7bc): green.
 The beta.2 row's red above closed with this pin, as #313 said it would. The
 CLI's mainnet gate passed at 21:17Z on 6e1a7bc (24 of 24).
 
+The toolbox's beta.4 re-pin (#488, the tag at `56d12075`) moves this tree to
+`bsv-rs =0.9.0-beta.4`. Against it the CLI's beta (c1f7cd3, still
+`=0.14.0-beta.3` with `bsv-rs` and `bsv-tracker` `=0.9.0-beta.3`) is red by
+construction, as the beta.2 row was behind its tag: `tools/dependents-check.sh
+--only bsv-wallet-cli` on the lane (2026-10-30) answers `build: FAIL, test:
+not run`, cargo's resolver refusing the two exact pins (`failed to select a
+version for bsv-rs ... previously selected package bsv-rs v0.9.0-beta.3`).
+Nothing compiled, so no CLI source is implicated. The row turns green when
+the CLI takes the toolbox's next prerelease with `bsv-rs` and `bsv-tracker`
+`=0.9.0-beta.4` (its pin lane, after the toolbox's), with the `[Unreleased]`
+host lines (CLI #347).
+
 ### Re-pin plan
 
 The toolbox's #419 pin moves this tree to `bsv-rs =0.9.0-beta.3` in both
