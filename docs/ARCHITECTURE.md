@@ -564,7 +564,7 @@ wallet's own requests (a competitor's checked proof is the one evidence for
 (`adopt_unproven_transactions`, at most `ADOPT_UNPROVEN_TX_LIMIT` a pass), then
 asks the courier for every `unmined`, `unknown`, `callback`, `sending` and
 `unconfirmed` request. Every pass that finds no proof is an attempt; past
-`PROOF_ATTEMPTS_LIMIT_MAIN` (144 on mainnet, 10 elsewhere) the count writes no
+`PROOF_ATTEMPTS_LIMIT_MAIN` (144 on mainnet, 100 elsewhere, the reference's testnet limit, #481) the count writes no
 word and the request is asked again every pass.
 
 A `proven_txs` row with no `proof_root_checks` record (written before migration
