@@ -46,7 +46,7 @@ async fn the_proof_keyring_is_exactly_the_requested_fields() {
     for reveal in [vec![], vec!["name"], vec!["role"], vec!["name", "role"]] {
         let args = ProveCertificateArgs {
             certificate: certificate.clone(),
-            fields_to_reveal: reveal.iter().map(|f| f.to_string()).collect(),
+            fields_to_reveal: reveal.iter().map(ToString::to_string).collect(),
             verifier: verifier.clone(),
             privileged: None,
             privileged_reason: None,
@@ -101,12 +101,12 @@ async fn an_unsigned_input_without_its_script_is_refused_by_the_client() {
         .unwrap();
     assert!(created.signable_transaction.is_some());
     let args = ListActionsArgs {
+        include_input_unlocking_scripts: Some(true),
+        include_inputs: Some(true),
         labels: vec!["rows".into()],
         label_query_mode: None,
         include_labels: None,
-        include_inputs: Some(true),
         include_input_source_locking_scripts: None,
-        include_input_unlocking_scripts: Some(true),
         include_outputs: None,
         include_output_locking_scripts: None,
         limit: None,
