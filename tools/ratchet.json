@@ -6,7 +6,7 @@
   "measured_at": "2026-10-30",
   "metrics": {
     "files_over_800": 33,
-    "max_file_lines": 7149,
+    "max_file_lines": 7153,
     "unwraps_outside_tests": 61,
     "undocumented_public_items": 308
   },
@@ -96,11 +96,11 @@
   "files_over_800": {
     "limit": 800,
     "count": 33,
-    "src_files": 243,
-    "src_lines": 125618,
-    "max_lines": 7149,
+    "src_files": 245,
+    "src_lines": 126113,
+    "max_lines": 7153,
     "files": {
-      "src/wallet/wallet.rs": 7149,
+      "src/wallet/wallet.rs": 7153,
       "src/services/services.rs": 4609,
       "src/storage/sqlx/internalize_action.rs": 4176,
       "src/storage/sqlx/process_action.rs": 3651,
@@ -113,14 +113,14 @@
       "src/services/providers/arcade.rs": 1917,
       "src/services/rule_28_tests.rs": 1872,
       "src/services/providers/arc.rs": 1780,
-      "src/wallet/busy_door_tests.rs": 1588,
+      "src/wallet/busy_door_tests.rs": 1590,
       "src/storage/traits.rs": 1550,
       "src/services/traits.rs": 1536,
       "src/managers/storage_manager.rs": 1525,
       "src/services/providers/bananablocks.rs": 1475,
       "src/wallet/certificate_issuance.rs": 1396,
       "src/services/providers/whatsonchain.rs": 1382,
-      "src/storage/sqlx/beef_verification.rs": 1267,
+      "src/storage/sqlx/beef_verification.rs": 1254,
       "src/services/providers/bitails.rs": 1152,
       "src/wallet/signer.rs": 1081,
       "src/services/broadcast_memory.rs": 1060,
@@ -318,7 +318,7 @@
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
     "count": 6661,
-    "windows": 96414,
+    "windows": 96778,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:324 (38 lines)",
