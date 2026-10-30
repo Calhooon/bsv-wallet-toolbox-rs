@@ -275,7 +275,8 @@ reference drops, `OverlayCertificate::is_reference_record`, is dropped from
 the answer, so an unsigned one, an empty keyring value or a value
 `Certificate.verify()` refuses before it verifies (an empty or non-canonical
 DER signature, a malformed outpoint, type, serial or field name; D28) no
-longer reaches R74 or R80; the door still verifies no overlay signature) and `result_rows_tests.rs` (R86's keyring,
+longer reaches R74 or R80; since #495 the door also verifies each overlay
+signature and decrypts the fields, see Discovery trust) and `result_rows_tests.rs` (R86's keyring,
 the `createSignature` data form, and CLI #371's unsigned input recorded in
 today's words).
 
@@ -341,7 +342,10 @@ today's words).
 | `direct_acquire.rs` | ~210 | Direct `acquire_certificate` argument validation and normalization, signature verification and keyring decryption proof before storage (#311, #374) |
 | `label.rs` | ~70 | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392), and the BRC-177 module-label matcher both doors call (#363); declared without a feature gate, the sqlx folder imports it as `label` (#420) |
 | `discovery_search.rs` | ~320 | The reference's attribute matcher (`identityUtils.ts:140-280`): search normalization, legacy `/gi` literals, the five-class tokenizer and stop words, the NFD and Mn fold (#474) |
-| `lookup.rs` | ~610 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication |
+| `lookup.rs` | ~760 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, SLAP host parsing, deduplication |
+| `lookup_decode.rs` | ~175 | The overlay output read as the reference's `decodeIdentityOutput` (`decode_identity_output`), and the door's signature check and decryption (`OverlayCertificate::verified_and_decrypted`) (#495) |
+| `lookup_record.rs` | ~230 | The reference's bounds on the overlay record (`certificateRecord`, `is_reference_record`) |
+| `lookup_fixture.rs` | ~130 | Test only: the reference's identity record, its keyring for `anyone` and its token, as `publicly_reveal_attributes` builds them |
 
 ## Key Exports
 
@@ -532,7 +536,7 @@ The `lookup.rs` module provides trait-based overlay service lookups for `discove
 
 ### OverlayCertificate
 
-Wire format for certificates returned from overlay SLAP/SHIP services. Fields: `type_id`, `serial_number`, `subject`, `certifier`, `revocation_outpoint`, `fields`, `keyring`, `signature`, `decrypted_fields`. Provides:
+Wire format for certificates returned from overlay SLAP/SHIP services. Fields: `type_id`, `serial_number`, `subject`, `certifier`, `revocation_outpoint`, `fields`, `keyring`, `signature`, `decrypted_fields`. The overlay record is the leading eight; `decrypted_fields` is filled by the discovery door from the keyring's decryption, never from the wire (a record carrying `decryptedFields` is dropped by the parser) nor from a resolver (#495, #494). Provides:
 - `to_identity_certificate()` - Convert to SDK's `IdentityCertificate` format
 - `dedup_key()` - Returns `(type_id, serial_number)` tuple for deduplication
 
@@ -566,14 +570,15 @@ Default implementation that queries overlay `/lookup` endpoints via HTTP POST. F
 - `new(endpoint)` / `with_endpoints(endpoints)` - Single or multi-endpoint
 - `for_network(preset)` / `mainnet()` / `testnet()` - Network preset constructors
 - Endpoint failover: tries each endpoint in order, skips on error
-- Parses BEEF-encoded PushDrop transaction outputs into `OverlayCertificate` structs
+- Decodes each BEEF-encoded identity token as the reference's `decodeIdentityOutput` (`lookup_decode.rs`), dropping an output that fails
 - Default hosts: `https://lookup.babbage.systems` (mainnet), `https://staging-lookup.babbage.systems` (testnet)
 - 10-second request timeout per endpoint
 
 ### Helper Functions
 
-- `parse_overlay_answer(answer)` - Parse `LookupAnswer` into certificates (handles `OutputList` variant)
-- `parse_single_output(beef, output_index)` - Parse single BEEF output via PushDrop decode
+- `parse_overlay_answer(answer)` - Parse `LookupAnswer` into certificates (handles `OutputList` variant; `lookup_decode.rs`)
+- `parse_single_output(beef, output_index)` - Parse single BEEF output through `decode_identity_output`
+- `decode_identity_output(script)` - The reference's checks on the token: two fields in their bounds, five chunks with each push opcode its length asks and `OP_2DROP`, the record's bounds, the locking key and the field signature (#495)
 - `dedup_certificates(certs)` - Deduplicate by `(type_id, serial_number)`, keeping first occurrence
 
 ## WalletInterface Methods
@@ -858,6 +863,28 @@ its threshold or certifiers applies on the next call. With no manager the
 chain defaults still discover trusted certificates. Attributes use only the
 overlay, so a proxy-isolated CLI fixture needs an overlay fixture to answer
 that call; host trust settings alone enable its local identity leg.
+
+Every overlay entry is the reference's decode before either path reads it
+(#495; `identityUtils.ts:493-557` at ts-stack@edf6e03). `HttpLookupResolver`
+reads the identity token (`decode_identity_output`): the PushDrop's two
+fields, the record of 1 byte to 256 KiB and the field signature of 8 to 80,
+exactly five chunks (the 33-byte key, `OP_CHECKSIG`, each field under the
+push opcode its length asks, `OP_2DROP`), the record's eight properties and
+bounds, the locking key equal to the one an `anyone` `ProtoWallet` derives
+for the subject under `[1, 'identity']` key `1`, and the subject's field
+signature over the record's bytes. Then the door, for every resolver's
+entry (`OverlayCertificate::verified_and_decrypted`): bsv-rs's
+`VerifiableCertificate::verify`, then `decrypt_fields` with the `anyone`
+wallet, its keyring values canonical base64 of 1 to 2048 bytes, each field
+opened under the certificate field protocol with the subject as
+counterparty. A failure, or an empty decryption, drops the entry;
+`decrypted_fields` is the decryption's. Before #495 the door matched the
+`decrypted_fields` a resolver supplied, which no real overlay entry fills, so
+attribute discovery against a real overlay found nothing (#494). A host's
+own resolver answers records whose fields are encrypted and whose keyring
+opens for `anyone`; its records meet no locking-key or field-signature check,
+and no path verifies the output's chain evidence (`docs/ARCHITECTURE.md`
+D29). Witnesses: `discovery_decrypt_tests.rs`, `lookup_decode_tests.rs`.
 
 The attribute path binds the overlay's answer to the query before the
 transform, as `Wallet.ts:1078` does: `filter_certificates_by_attributes`
