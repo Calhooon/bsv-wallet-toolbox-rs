@@ -24,7 +24,6 @@ mod tests {
     /// spelling takes the unknown word's path, the test limit.
     #[tokio::test]
     async fn the_attempts_limit_reads_the_stored_words_alone() {
-        let storage = StorageSqlx::in_memory().await.unwrap();
         for (chain, limit) in [
             ("main", PROOF_ATTEMPTS_LIMIT_MAIN),
             ("test", PROOF_ATTEMPTS_LIMIT_TEST),
@@ -33,13 +32,47 @@ mod tests {
             ("testnet", PROOF_ATTEMPTS_LIMIT_TEST),
             ("", PROOF_ATTEMPTS_LIMIT_TEST),
         ] {
-            storage
-                .cache_settings(&TableSettings {
-                    chain: chain.to_string(),
-                    ..TableSettings::default()
-                })
-                .unwrap();
-            assert_eq!(storage.proof_attempts_limit(), limit, "{chain}");
+            assert_eq!(limit_for(chain).await, limit, "{chain}");
+        }
+    }
+
+    /// #481: one witness per stored word, in numbers. `main` 144 and `test`
+    /// 100 are the reference's (ts-stack edf6e03, wallet-toolbox
+    /// src/monitor/Monitor.ts:125-126, selected main against other at
+    /// src/monitor/tasks/TaskCheckForProofs.ts:138-140); `regtest` takes the
+    /// test limit as the port's extension for its regtest hosts (#439).
+    async fn limit_for(chain: &str) -> i64 {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .cache_settings(&TableSettings {
+                chain: chain.to_string(),
+                ..TableSettings::default()
+            })
+            .unwrap();
+        storage.proof_attempts_limit()
+    }
+
+    #[tokio::test]
+    async fn a_main_store_stops_counting_at_144() {
+        assert_eq!(limit_for("main").await, 144);
+    }
+
+    #[tokio::test]
+    async fn a_test_store_stops_counting_at_the_references_100() {
+        assert_eq!(limit_for("test").await, 100);
+    }
+
+    #[tokio::test]
+    async fn a_regtest_store_takes_the_test_limit_100() {
+        assert_eq!(limit_for("regtest").await, 100);
+    }
+
+    /// An unknown word keeps its path: the test arm, as the reference's
+    /// main-against-other selection gives every word but `main`.
+    #[tokio::test]
+    async fn an_unknown_word_takes_the_test_arm() {
+        for chain in ["mainnet", "testnet", "stn", ""] {
+            assert_eq!(limit_for(chain).await, PROOF_ATTEMPTS_LIMIT_TEST, "{chain}");
         }
     }
 

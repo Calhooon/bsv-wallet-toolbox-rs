@@ -165,7 +165,7 @@ async fn age_req(s: &StorageSqlx, txid: &str, hours: i64) {
 #[test]
 fn the_limits_are_the_references() {
     assert_eq!(PROOF_ATTEMPTS_LIMIT_MAIN, 144);
-    assert_eq!(PROOF_ATTEMPTS_LIMIT_TEST, 10);
+    assert_eq!(PROOF_ATTEMPTS_LIMIT_TEST, 100);
 }
 
 /// The #368 shape replayed from attempts 0: no broadcaster refused it, no
@@ -549,9 +549,10 @@ async fn the_145th_proof_attempt_with_no_source_holding_it_writes_no_word_and_is
     past_the_count_keeps_its_word(Chain::Main, LIMIT).await;
 }
 
-/// The same off mainnet, at the 11th attempt.
+/// The same off mainnet, at the 101st attempt (the reference's testnet
+/// limit, #481).
 #[tokio::test]
-async fn the_11th_proof_attempt_off_mainnet_with_no_source_holding_it_writes_no_word() {
+async fn the_101st_proof_attempt_off_mainnet_with_no_source_holding_it_writes_no_word() {
     past_the_count_keeps_its_word(Chain::Test, PROOF_ATTEMPTS_LIMIT_TEST).await;
 }
 
