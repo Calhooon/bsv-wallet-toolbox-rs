@@ -1,4 +1,4 @@
-//! TS `identityUtils.ts:247-255,313-384`: bind, group and weight discovery.
+//! TS `identityUtils.ts:247-255,283-293,313-384`: bind, group and weight discovery.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,6 +14,9 @@ use crate::services::{Chain, WalletServices};
 use crate::storage::{entities::TableCertificate, FindCertificatesArgs, WalletStorageProvider};
 use crate::wallet::lookup::{HttpLookupResolver, OverlayCertificate, OverlayLookupResolver};
 use crate::Result;
+
+#[path = "discovery_search.rs"]
+mod discovery_search;
 
 impl<S, V> Wallet<S, V>
 where
@@ -81,6 +84,8 @@ where
                 vec![]
             }
         };
+        // TS `Wallet.ts:1078`: bind the answer to the query before the transform.
+        let certificates = filter_certificates_by_attributes(certificates, &args.attributes)?;
         finish(&settings, certificates, (args.offset, args.limit))
     }
 }
@@ -129,6 +134,35 @@ pub(super) fn filter_by_identity_key(
         .into_iter()
         .filter(|c| c.subject.eq_ignore_ascii_case(identity_key))
         .collect()
+}
+
+/// TS `identityUtils.ts:283-293` `filterCertificatesByAttributes`. The typed
+/// map is an object of strings, so the reference's non-object and non-string
+/// `any` refusals are the typed boundary's. With `any` present its search
+/// alone decides; otherwise every usable pair must match, and none is none.
+pub(super) fn filter_certificates_by_attributes(
+    certificates: Vec<OverlayCertificate>,
+    attributes: &IndexMap<String, String>,
+) -> Result<Vec<OverlayCertificate>> {
+    let any = attributes.get("any").map(String::as_str);
+    let expected = match any {
+        None => discovery_search::usable_identity_attributes(attributes),
+        Some(_) => vec![],
+    };
+    if any.is_none() && expected.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut kept = Vec::new();
+    for certificate in certificates {
+        if discovery_search::certificate_matches_attributes(
+            &certificate.decrypted_fields,
+            any,
+            &expected,
+        )? {
+            kept.push(certificate);
+        }
+    }
+    Ok(kept)
 }
 
 #[derive(Default)]
