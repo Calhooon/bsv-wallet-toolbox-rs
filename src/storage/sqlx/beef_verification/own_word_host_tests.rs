@@ -393,3 +393,7 @@ async fn host_live_batch_spans_all_selected_transactions() {
     assert_eq!(batches[0][1].1.proven_height, None);
     eprintln!("live batch: one call for two transactions, both coin contexts retained");
 }
+
+#[cfg(test)]
+#[path = "work_budget_tests.rs"]
+mod work_budget;
