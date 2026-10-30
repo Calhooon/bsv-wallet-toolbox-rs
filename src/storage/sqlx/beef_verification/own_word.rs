@@ -8,7 +8,7 @@
 //! the signed transaction is read by bsv-rs's streaming reader alone.
 
 use super::live_word::{
-    input_word, judge_input, no_word_refusal, transaction_cache, work_per_input, Coin, NoWord,
+    input_word, judge_input, no_word_refusal, transaction_cache, work_budgets, Coin, NoWord,
 };
 use super::stream_error;
 use crate::{Error, Result, SpendRequest, SpendVerificationContext, SpendVerifier};
@@ -127,7 +127,7 @@ pub(crate) fn verify_own(
                         ..
                     },
                 ..
-            }) => continue,
+            }) => {}
             other => other?,
         }
     }
@@ -203,12 +203,11 @@ impl<'a> InputJudgements<'a> {
             }
         }
         // Each input runs under the smaller of its own budget and what the
-        // transaction's total leaves; exhausting the latter is the total's
-        // refusal, the input that carries the sum past it named.
+        // transaction's total leaves.
+        let per_input = work_budgets().0;
         let left = self
             .transaction_work
             .map_or(u64::MAX, |total| total.saturating_sub(self.work_spent));
-        let per_input = work_per_input();
         let limit = per_input.min(left);
         let judged = judge_input(
             word,
@@ -219,11 +218,16 @@ impl<'a> InputJudgements<'a> {
             Arc::clone(&self.transaction),
             limit,
         );
+        let spent = self.charge_total(judged, limit < per_input)?;
+        self.work_spent += spent;
+        Ok(())
+    }
+
+    /// An input stopped by what the total left (`by_total`) is the total's
+    /// refusal: the input that carries the sum past it, the total named as
+    /// the budget and the work done the sum.
+    fn charge_total(&self, judged: Result<u64>, by_total: bool) -> Result<u64> {
         match (judged, self.transaction_work) {
-            (Ok(spent), _) => {
-                self.work_spent += spent;
-                Ok(())
-            }
             (
                 Err(Error::SpendRefused {
                     offset,
@@ -236,7 +240,7 @@ impl<'a> InputJudgements<'a> {
                         },
                 }),
                 Some(total),
-            ) if limit < per_input => Err(Error::SpendRefused {
+            ) if by_total => Err(Error::SpendRefused {
                 offset,
                 txid,
                 input,
@@ -249,7 +253,7 @@ impl<'a> InputJudgements<'a> {
                     },
                 },
             }),
-            (Err(error), _) => Err(error),
+            (judged, _) => judged,
         }
     }
 

@@ -436,7 +436,7 @@ impl WordPass<'_> {
         let (sources, input_total) = self.sources(txid, body)?;
         // One sighash cache per transaction, shared by all of its inputs.
         let mut judgements = super::own_word::InputJudgements::new(txid, body, self.verifier)
-            .with_transaction_work(work_per_transaction());
+            .with_transaction_work(work_budgets().1);
         for (vin, source) in sources.into_iter().enumerate() {
             let proven = self.heights.get(&body.inputs[vin].prev).copied();
             let word = input_word(self.network, self.tip, proven);
@@ -472,22 +472,14 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// [`WORK_PER_INPUT`], or a witness's override in a test build.
-pub(crate) fn work_per_input() -> u64 {
-    #[cfg(test)]
-    if let Some((per_input, _)) = WORK_OVERRIDE.with(std::cell::Cell::get) {
-        return per_input;
-    }
-    WORK_PER_INPUT
-}
-
+/// The budgets `(per input, per transaction)`: [`WORK_PER_INPUT`] and
 /// [`WORK_PER_TRANSACTION`], or a witness's override in a test build.
-pub(crate) fn work_per_transaction() -> u64 {
+pub(crate) fn work_budgets() -> (u64, u64) {
     #[cfg(test)]
-    if let Some((_, per_transaction)) = WORK_OVERRIDE.with(std::cell::Cell::get) {
-        return per_transaction;
+    if let Some(budgets) = WORK_OVERRIDE.with(std::cell::Cell::get) {
+        return budgets;
     }
-    WORK_PER_TRANSACTION
+    (WORK_PER_INPUT, WORK_PER_TRANSACTION)
 }
 
 /// The refusal of an input with no word, at the input's offset: a door
@@ -715,11 +707,16 @@ mod tests {
         }
         assert_eq!(
             input_word("main", None, Some(u64::from(GENESIS - 1))),
-            not_judged(NotJudgedCause::PreGenesisCoin {
-                height: GENESIS - 1,
-                genesis_height: GENESIS
-            })
+            pre_genesis_coin()
         );
+    }
+
+    /// A mainnet coin proven one block before Genesis, not judged.
+    fn pre_genesis_coin() -> std::result::Result<ScriptFlags, NoWord> {
+        not_judged(NotJudgedCause::PreGenesisCoin {
+            height: GENESIS - 1,
+            genesis_height: GENESIS,
+        })
     }
 
     /// Before #440 both were `The mainnet coin height is before Genesis.`,
@@ -728,10 +725,7 @@ mod tests {
     fn mainnet_pre_genesis_coin_and_spend_are_not_judged() {
         assert_eq!(
             input_word("main", Some(tip(CHRONICLE)), Some(u64::from(GENESIS - 1))),
-            not_judged(NotJudgedCause::PreGenesisCoin {
-                height: GENESIS - 1,
-                genesis_height: GENESIS
-            })
+            pre_genesis_coin()
         );
         assert_eq!(
             input_word("main", Some(tip(GENESIS - 2)), None),

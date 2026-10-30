@@ -264,9 +264,19 @@ fn host_options_default_to_none_and_clone_the_same_backend() {
 }
 
 fn proven_beef() -> (Transaction, Beef, bsv_rs::transaction::MockChainTracker) {
-    use bsv_rs::transaction::{MerklePath, MockChainTracker};
     let parent = source(&[0x51]);
     let child = spend(&parent, 0, Some(&[]));
+    let (beef, tracker) = proven_frame(&parent, &child);
+    (child, beef, tracker)
+}
+
+/// `child` and its `parent` proven at Genesis, as one frame, with the
+/// tracker that knows the root.
+fn proven_frame(
+    parent: &Transaction,
+    child: &Transaction,
+) -> (Beef, bsv_rs::transaction::MockChainTracker) {
+    use bsv_rs::transaction::{MerklePath, MockChainTracker};
     let bump = MerklePath::from_coinbase_txid(&parent.id(), GENESIS);
     let mut tracker = MockChainTracker::new(tip().height);
     tracker.add_root(GENESIS, bump.compute_root(None).unwrap());
@@ -274,7 +284,7 @@ fn proven_beef() -> (Transaction, Beef, bsv_rs::transaction::MockChainTracker) {
     let index = beef.merge_bump(bump);
     beef.merge_raw_tx(parent.to_binary(), Some(index));
     beef.merge_raw_tx(child.to_binary(), None);
-    (child, beef, tracker)
+    (beef, tracker)
 }
 
 async fn host_store(host: Arc<dyn SpendVerifier>) -> (crate::StorageSqlx, i64) {
