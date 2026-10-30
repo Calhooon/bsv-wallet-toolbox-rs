@@ -85,6 +85,10 @@ mod hmac_key_tests;
 #[path = "discovery_rows_tests.rs"]
 mod discovery_rows_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "result_rows_tests.rs"]
+mod result_rows_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
