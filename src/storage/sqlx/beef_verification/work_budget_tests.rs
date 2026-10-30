@@ -66,7 +66,7 @@ fn word_pass(parent: &Transaction, child: &Transaction) -> Result<()> {
     beef_verification::live_word::verify(&bytes, &headers, "main", None)
 }
 
-/// The door's whole verification, the default-mode stream pass first.
+/// The door's whole verification, the structure pass ahead of the word pass.
 async fn door(parent: &Transaction, child: &Transaction) -> Result<()> {
     let (bytes, tracker, headers) = frame(parent, child);
     let roots: Vec<_> = headers.roots.into_iter().collect();
@@ -94,7 +94,7 @@ fn work_cause(result: Result<()>, input: u32) -> NotJudgedCause {
 }
 
 /// The signer SKIPS an input past its budget (#461 as amended): a fork-ID-less
-/// signature it refuses under the budget passes when the budget stops first.
+/// signature it refuses under the budget passes when the budget stops the judgement.
 #[test]
 fn the_signer_skips_an_input_past_its_work_budget() {
     let (parent, child) = p2pkh_spend(0x01);
