@@ -768,7 +768,7 @@ mod tests {
     }
 
     /// #488 surface 9 (bsv-rs #434, #453): `ScriptFlags::check` refuses a
-    /// word without SIGHASH_FORKID, GENESIS or UTXO_AFTER_GENESIS, and its
+    /// word without `SIGHASH_FORKID`, `GENESIS` or `UTXO_AFTER_GENESIS`, and its
     /// reason texts moved; every word this module hands `Spend::set_flags`
     /// carries all three on each network at each era boundary, so no door
     /// reaches that refusal and no toolbox text quotes it.

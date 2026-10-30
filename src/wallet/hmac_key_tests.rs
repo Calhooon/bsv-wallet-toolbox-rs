@@ -34,27 +34,21 @@ const ROWS: [(Option<&str>, &str, &str, &str); 2] = [
     ),
 ];
 
-async fn wallet() -> (tempfile::TempDir, Wallet<StorageSqlx, MockWalletServices>) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("hmac.db").to_string_lossy().to_string();
-    let storage = StorageSqlx::open(&path).await.unwrap();
+async fn wallet() -> Wallet<StorageSqlx, MockWalletServices> {
     let root = PrivateKey::from_hex(ROOT_KEY).unwrap();
-    storage
-        .migrate("hmac-key-tests", &root.public_key().to_hex())
-        .await
-        .unwrap();
+    let identity = root.public_key().to_hex();
+    let storage = StorageSqlx::in_memory().await.unwrap();
+    storage.migrate("hmac-key-tests", &identity).await.unwrap();
     storage.make_available().await.unwrap();
-    let wallet = Wallet::new(Some(root), storage, MockWalletServices::new())
-        .await
-        .unwrap();
-    (dir, wallet)
+    let services = MockWalletServices::new();
+    Wallet::new(Some(root), storage, services).await.unwrap()
 }
 
-fn counterparty(row: Option<&str>) -> Option<Counterparty> {
-    Some(match row {
+fn counterparty(row: Option<&str>) -> Counterparty {
+    match row {
         None => Counterparty::Self_,
         Some(key) => Counterparty::Other(PublicKey::from_hex(key).unwrap()),
-    })
+    }
 }
 
 fn protocol() -> Protocol {
@@ -63,46 +57,37 @@ fn protocol() -> Protocol {
 
 #[tokio::test]
 async fn the_wallet_issues_the_minimal_length_key_tag() {
-    let (_dir, wallet) = wallet().await;
+    let wallet = wallet().await;
     for (party, key_id, minimal, legacy) in ROWS {
-        let result = wallet
-            .create_hmac(
-                CreateHmacArgs {
-                    protocol_id: protocol(),
-                    key_id: key_id.into(),
-                    counterparty: counterparty(party),
-                    data: from_hex(DATA).unwrap(),
-                    ..Default::default()
-                },
-                Some(ORIGINATOR),
-            )
-            .await
-            .unwrap();
-        assert_eq!(to_hex(&result.hmac), minimal, "{key_id}");
-        assert_ne!(to_hex(&result.hmac), legacy, "{key_id}");
+        let args = CreateHmacArgs {
+            protocol_id: protocol(),
+            key_id: key_id.into(),
+            counterparty: Some(counterparty(party)),
+            data: from_hex(DATA).unwrap(),
+            ..Default::default()
+        };
+        let result = wallet.create_hmac(args, Some(ORIGINATOR)).await.unwrap();
+        let tag = to_hex(&result.hmac);
+        assert_eq!(tag, minimal, "{key_id}");
+        assert_ne!(tag, legacy, "{key_id}");
     }
 }
 
 #[tokio::test]
 async fn the_wallet_verifies_both_tags() {
-    let (_dir, wallet) = wallet().await;
+    let wallet = wallet().await;
     for (party, key_id, minimal, legacy) in ROWS {
         for tag in [minimal, legacy] {
-            let result = wallet
-                .verify_hmac(
-                    VerifyHmacArgs {
-                        protocol_id: protocol(),
-                        key_id: key_id.into(),
-                        counterparty: counterparty(party),
-                        data: from_hex(DATA).unwrap(),
-                        hmac: from_hex(tag).unwrap().try_into().unwrap(),
-                        ..Default::default()
-                    },
-                    Some(ORIGINATOR),
-                )
-                .await
-                .unwrap();
-            assert!(result.valid, "{key_id} {tag}");
+            let args = VerifyHmacArgs {
+                hmac: from_hex(tag).unwrap().try_into().unwrap(),
+                data: from_hex(DATA).unwrap(),
+                protocol_id: protocol(),
+                key_id: key_id.into(),
+                counterparty: Some(counterparty(party)),
+                ..Default::default()
+            };
+            let verdict = wallet.verify_hmac(args, Some(ORIGINATOR)).await.unwrap();
+            assert!(verdict.valid, "{key_id} {tag}");
         }
     }
 }
