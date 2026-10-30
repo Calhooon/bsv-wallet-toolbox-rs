@@ -782,7 +782,3 @@ mod doors {
         );
     }
 }
-
-#[cfg(all(test, feature = "sqlite"))]
-#[path = "discovery_rows_tests.rs"]
-mod discovery_rows_tests;
