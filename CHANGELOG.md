@@ -64,6 +64,16 @@
   - At signing, a coin before Genesis is still skipped (#461, now matched on
     `PreGenesisCoin`); a tip before Genesis or an overflowing height, skipped
     before, is refused as at the doors.
+  - The work budget (bsv-rs #472, the keeper's word on #487): every judged
+    input runs under `work_limit: Some(2147483648)` (2^31 units) at the doors
+    and the signer, and the doors bound each transaction's total at the same
+    2^31. Past either, a door answers `spend refused at offset N, input I of
+    <txid>: input I not judged: exceeded work budget B units after W units of
+    work.` (`SpendRefusal::NotJudged` with `WorkBudgetExceeded { input,
+    budget, work_done }`, `budget` the total when the total stops it); the
+    signer skips the input, as a pre-Genesis coin. Before, no bound, and an
+    exhausted `set_work_limit` was `SpendRefusal::Resource`. No input of the
+    test corpus spends more than 661 units.
   - The chaintracks verifier tip answers for `Chain::Regtest` (CSV 576) where
     it held with `REGTEST_TIP_HELD` (#439); the constant is removed.
 

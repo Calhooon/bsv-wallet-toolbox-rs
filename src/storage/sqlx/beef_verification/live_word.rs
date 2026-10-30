@@ -12,8 +12,8 @@ use crate::{SpendRequest, SpendVerificationContext, SpendVerifier};
 use bsv_rs::block::ChainParams;
 use bsv_rs::primitives::bsv::sighash::{TxInput, TxOutput, TxSighashCache};
 use bsv_rs::script::{
-    input_script_flags, LockingScript, NotJudgedCause, ProtocolEra, ScriptFlags, Spend,
-    TxSpendParams, UnlockingScript,
+    input_script_flags, LockingScript, NotJudgedCause, ProtocolEra, ScriptFlags, ScriptResource,
+    ScriptResourceLimit, Spend, TxSpendParams, UnlockingScript,
 };
 use bsv_rs::transaction::beef_stream::{
     display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
@@ -435,7 +435,8 @@ impl WordPass<'_> {
     fn spends(&mut self, offset: u64, txid: Hash32, body: &TxBody) -> Result<()> {
         let (sources, input_total) = self.sources(txid, body)?;
         // One sighash cache per transaction, shared by all of its inputs.
-        let mut judgements = super::own_word::InputJudgements::new(txid, body, self.verifier);
+        let mut judgements = super::own_word::InputJudgements::new(txid, body, self.verifier)
+            .with_transaction_work(work_per_transaction());
         for (vin, source) in sources.into_iter().enumerate() {
             let proven = self.heights.get(&body.inputs[vin].prev).copied();
             let word = input_word(self.network, self.tip, proven);
@@ -447,6 +448,46 @@ impl WordPass<'_> {
         }
         Ok(())
     }
+}
+
+/// The work budget per input, in bsv-rs's `SpendParams::work_limit` units (one
+/// per opcode reached and one per byte fed to a hash, charged only under a
+/// limit), at the doors and the signer: 2^31, the keeper's word of 2026-10-30
+/// on #487, anchored on the node's 1 s validation limit. The corpus's
+/// costliest input spends 661 units; a P2PKH input of a 10 MB standard
+/// transaction 10,000,235.
+pub(crate) const WORK_PER_INPUT: u64 = 1 << 31;
+
+/// The work budget per transaction at the doors (internalize's word pass and
+/// the create pre-check), summed over its inputs: the same 2^31, the node's
+/// limit being per transaction (the keeper's amendment on #487). The signer
+/// keeps the per-input bound alone.
+pub(crate) const WORK_PER_TRANSACTION: u64 = 1 << 31;
+
+#[cfg(test)]
+thread_local! {
+    /// The witnesses' budgets `(per input, per transaction)` in place of the
+    /// constants, which no test could exhaust; test builds only.
+    pub(crate) static WORK_OVERRIDE: std::cell::Cell<Option<(u64, u64)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// [`WORK_PER_INPUT`], or a witness's override in a test build.
+pub(crate) fn work_per_input() -> u64 {
+    #[cfg(test)]
+    if let Some((per_input, _)) = WORK_OVERRIDE.with(std::cell::Cell::get) {
+        return per_input;
+    }
+    WORK_PER_INPUT
+}
+
+/// [`WORK_PER_TRANSACTION`], or a witness's override in a test build.
+pub(crate) fn work_per_transaction() -> u64 {
+    #[cfg(test)]
+    if let Some((_, per_transaction)) = WORK_OVERRIDE.with(std::cell::Cell::get) {
+        return per_transaction;
+    }
+    WORK_PER_TRANSACTION
 }
 
 /// The refusal of an input with no word, at the input's offset: a door
@@ -461,7 +502,9 @@ pub(super) fn no_word_refusal(txid: Hash32, body: &TxBody, vin: usize, why: NoWo
 }
 
 /// One input under the node's word for it (`input_word`): the per-input
-/// judge every route shares. A refusal names the input's offset.
+/// judge every route shares, under `work_limit` units of work. Answers the
+/// work it spent. A refusal names the input's offset; exhausted work is not
+/// judged (`NotJudgedCause::WorkBudgetExceeded`, bsv-rs #472), never invalid.
 pub(super) fn judge_input(
     word: std::result::Result<ScriptFlags, NoWord>,
     txid: Hash32,
@@ -469,7 +512,8 @@ pub(super) fn judge_input(
     vin: usize,
     source: &Coin,
     transaction: Arc<TxSighashCache>,
-) -> Result<()> {
+    work_limit: u64,
+) -> Result<u64> {
     let input = &body.inputs[vin];
     let refusal = |why| refused(input.at, txid, u32::try_from(vin).ok(), why);
     let script_error = |message| refusal(SpendRefusal::Script(message));
@@ -485,14 +529,27 @@ pub(super) fn judge_input(
         locking_script,
         unlocking_script,
         memory_limit: None,
-        work_limit: None,
+        work_limit: Some(work_limit),
     })
     .map_err(|error| script_error(error.to_string()))?;
     spend.set_flags(word);
     match spend.validate() {
-        Ok(true) => Ok(()),
+        Ok(true) => Ok(spend.work_spent()),
         Ok(false) => Err(script_error("the script did not succeed".into())),
         Err(error) => Err(match error.resource_limit {
+            Some(ScriptResourceLimit {
+                resource: ScriptResource::Work,
+                limit,
+                work_spent: Some(work_done),
+                ..
+            }) => refusal(SpendRefusal::NotJudged {
+                input: u32::try_from(vin).unwrap_or(u32::MAX),
+                cause: NotJudgedCause::WorkBudgetExceeded {
+                    input: u32::try_from(vin).unwrap_or(u32::MAX),
+                    budget: limit,
+                    work_done,
+                },
+            }),
             Some(limit) => refusal(SpendRefusal::Resource(limit)),
             None => script_error(error.message),
         }),

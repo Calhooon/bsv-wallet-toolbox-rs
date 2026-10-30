@@ -7,7 +7,9 @@
 //! scripts are judged: the reference runs no mining or value rule here, and
 //! the signed transaction is read by bsv-rs's streaming reader alone.
 
-use super::live_word::{input_word, judge_input, no_word_refusal, transaction_cache, Coin, NoWord};
+use super::live_word::{
+    input_word, judge_input, no_word_refusal, transaction_cache, work_per_input, Coin, NoWord,
+};
 use super::stream_error;
 use crate::{Error, Result, SpendRequest, SpendVerificationContext, SpendVerifier};
 use bsv_rs::primitives::bsv::sighash::TxSighashCache;
@@ -115,7 +117,19 @@ pub(crate) fn verify_own(
             satoshis,
             script: script.into(),
         };
-        judgements.judge(word, vin, &coin, source.proven_height)?;
+        match judgements.judge(word, vin, &coin, source.proven_height) {
+            // The signer's skip of an input past its work budget, as of a
+            // pre-Genesis coin (#461 as amended): the node is the backstop.
+            Err(Error::SpendRefused {
+                why:
+                    SpendRefusal::NotJudged {
+                        cause: NotJudgedCause::WorkBudgetExceeded { .. },
+                        ..
+                    },
+                ..
+            }) => continue,
+            other => other?,
+        }
     }
     judgements.finish()
 }
@@ -130,6 +144,9 @@ pub(super) struct InputJudgements<'a> {
     verifier: Option<&'a dyn SpendVerifier>,
     host_body: Option<Arc<TxBody>>,
     selected: Vec<(SpendRequest, SpendVerificationContext)>,
+    /// The transaction's work bound at a door and the work its inputs spent.
+    transaction_work: Option<u64>,
+    work_spent: u64,
 }
 
 impl<'a> InputJudgements<'a> {
@@ -145,7 +162,16 @@ impl<'a> InputJudgements<'a> {
             verifier,
             host_body: None,
             selected: Vec::new(),
+            transaction_work: None,
+            work_spent: 0,
         }
+    }
+
+    /// Bound the transaction's total work, summed over the inputs the
+    /// interpreter judges (a door's bound; the signer has none).
+    pub(super) fn with_transaction_work(mut self, total: u64) -> Self {
+        self.transaction_work = Some(total);
+        self
     }
 
     pub(super) fn judge(
@@ -176,14 +202,55 @@ impl<'a> InputJudgements<'a> {
                 return Ok(());
             }
         }
-        judge_input(
+        // Each input runs under the smaller of its own budget and what the
+        // transaction's total leaves; exhausting the latter is the total's
+        // refusal, the input that carries the sum past it named.
+        let left = self
+            .transaction_work
+            .map_or(u64::MAX, |total| total.saturating_sub(self.work_spent));
+        let per_input = work_per_input();
+        let limit = per_input.min(left);
+        let judged = judge_input(
             word,
             self.txid,
             self.body,
             vin,
             source,
             Arc::clone(&self.transaction),
-        )
+            limit,
+        );
+        match (judged, self.transaction_work) {
+            (Ok(spent), _) => {
+                self.work_spent += spent;
+                Ok(())
+            }
+            (
+                Err(Error::SpendRefused {
+                    offset,
+                    txid,
+                    input,
+                    why:
+                        SpendRefusal::NotJudged {
+                            input: index,
+                            cause: NotJudgedCause::WorkBudgetExceeded { work_done, .. },
+                        },
+                }),
+                Some(total),
+            ) if limit < per_input => Err(Error::SpendRefused {
+                offset,
+                txid,
+                input,
+                why: SpendRefusal::NotJudged {
+                    input: index,
+                    cause: NotJudgedCause::WorkBudgetExceeded {
+                        input: index,
+                        budget: total,
+                        work_done: self.work_spent + work_done,
+                    },
+                },
+            }),
+            (Err(error), _) => Err(error),
+        }
     }
 
     pub(super) fn finish(self) -> Result<()> {

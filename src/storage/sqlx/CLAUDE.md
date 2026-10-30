@@ -514,6 +514,18 @@ context could not answer Finality`, `... CoinbaseMaturity`). Witnesses:
 `no_tip_word.rs` (create's pre-check and the signAction route),
 `internalize_verifier_judges_at_the_latest_era_without_a_tip`.
 
+The judge passes `memory_limit: None`, uncapped (beta.1's 32,000,000-byte
+decline undone by bsv-rs #331), and `work_limit: Some(2^31)` units per input
+(#487: one unit per opcode reached plus each byte hashed; at the beta.3 pin
+the costliest corpus input spends 661, and a P2PKH input of a 10 MB standard
+transaction 10,000,235); at the doors the transaction's inputs share a total
+of the same 2^31, summed from each input's `work_spent`, the input that
+carries the sum past it not judged with the total named. An input past
+either is `NotJudgedCause::WorkBudgetExceeded`, refused at a door and skipped
+at the signer, which keeps the per-input bound alone. The door's default-mode
+stream pass (`default_pass`) carries the per-input bound too: bsv-rs's stream
+verifier sets none by default (ARCHITECTURE P1).
+
 An input bsv-rs cannot judge is `Error::SpendRefused` with
 `SpendRefusal::NotJudged { input, cause }` (bsv-rs #452), never a script
 verdict: `PreGenesisCoin { height, genesis_height }` (a coin proven before the

@@ -4,8 +4,8 @@
 //! Extended Format) merkle proofs against a ChainTracker.
 
 use bsv_rs::transaction::beef_stream::{
-    display_hex, verify_stream_structure, verify_stream_two_pass, ChainTip, Hash32, Headers,
-    SpendRefusal, StreamError, Verdict,
+    display_hex, referenced_outpoints, verify_stream_structure, ChainTip, Hash32, Headers,
+    SpendRefusal, StreamError, StreamVerifier, Verdict,
 };
 use bsv_rs::transaction::{Beef, ChainTracker, ChainTrackerError};
 use std::collections::{HashMap, HashSet};
@@ -111,7 +111,7 @@ pub(super) async fn verify_beef_spends_with_verifier(
     // The port's per-input word pass judges the scripts under bsv-rs's word
     // (#440). Only the typed default-mode script refusal is set aside. Because it can
     // hide later structure/proof checks, complete those before the word pass.
-    let verdict = verify_stream_two_pass(std::io::Cursor::new(bytes), &headers, None)?;
+    let verdict = default_pass(bytes, &headers)?;
     match verdict {
         Verdict::Valid { .. } => live_word::verify(bytes, &headers, network, verifier),
         Verdict::SpendRefused {
@@ -123,6 +123,17 @@ pub(super) async fn verify_beef_spends_with_verifier(
         }
         other => verification_result(other),
     }
+}
+
+/// bsv-rs's two-pass default-mode verdict (`verify_stream_two_pass`'s two
+/// passes) under the per-input work budget (bsv-rs #472): the stream
+/// verifier sets none by default, and this pass runs every unproven script.
+fn default_pass(bytes: &[u8], headers: &VerificationHeaders) -> Result<Verdict> {
+    let referenced = referenced_outpoints(bytes).map_err(stream_error)?;
+    StreamVerifier::retaining(bytes, headers, None, referenced)
+        .with_work_budget(Some(live_word::work_per_input()))
+        .run()
+        .map_err(Error::IoError)
 }
 
 /// The tracker's mining tip. With none, or a tip read that faults, the word
@@ -165,6 +176,17 @@ fn verification_result(verdict: Verdict) -> Result<()> {
             txid: display_hex(&txid),
             input,
             why,
+        }),
+        Verdict::NotJudged {
+            offset,
+            txid,
+            input,
+            cause,
+        } => Err(Error::SpendRefused {
+            offset,
+            txid: display_hex(&txid),
+            input: Some(input),
+            why: SpendRefusal::NotJudged { input, cause },
         }),
         Verdict::Unverifiable { check, .. } => Err(header_fault(format!(
             "the supplied mining context could not answer {check:?}"
