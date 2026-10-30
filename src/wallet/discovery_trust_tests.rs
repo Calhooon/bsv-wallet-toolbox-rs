@@ -782,3 +782,7 @@ mod doors {
         );
     }
 }
+
+#[cfg(feature = "sqlite")]
+#[path = "discovery_rows_tests.rs"]
+mod discovery_rows_tests;

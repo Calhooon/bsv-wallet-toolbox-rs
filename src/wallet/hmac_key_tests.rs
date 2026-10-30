@@ -6,7 +6,7 @@
 //! `tests/vectors/wallet_hmac_key_379.json` at v0.9.0-beta.4 (recorded from
 //! ts-stack PR 1423's test table): the two keys with a leading zero octet.
 
-use super::*;
+use super::super::*;
 use crate::services::mock::MockWalletServices;
 use crate::storage::WalletStorageWriter;
 use crate::StorageSqlx;

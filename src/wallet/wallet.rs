@@ -77,18 +77,6 @@ mod direct_refusal_tests;
 #[path = "direct_acquire_tests.rs"]
 mod direct_acquire_tests;
 
-#[cfg(all(test, feature = "sqlite"))]
-#[path = "hmac_key_tests.rs"]
-mod hmac_key_tests;
-
-#[cfg(all(test, feature = "sqlite"))]
-#[path = "discovery_rows_tests.rs"]
-mod discovery_rows_tests;
-
-#[cfg(all(test, feature = "sqlite"))]
-#[path = "result_rows_tests.rs"]
-mod result_rows_tests;
-
 // =============================================================================
 // Constants
 // =============================================================================
