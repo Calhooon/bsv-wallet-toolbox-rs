@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- #495, #494: the discovery doors decode, verify and decrypt each overlay
+  entry as the reference's `decodeIdentityOutput` does (ts-stack@edf6e03
+  `identityUtils.ts:493-557`, `VerifiableCertificate.ts:150-219`).
+  `HttpLookupResolver` drops an identity token that is not the reference's
+  shape (two PushDrop fields in their bounds, five chunks, minimal pushes,
+  `OP_2DROP`), whose locking key is not the one derived for the record's
+  subject under `[1, 'identity']` key `1`, or whose field signature is not
+  the subject's; a token with no field, which panicked the parser, is
+  dropped. The door then verifies every resolver entry's certificate
+  signature and decrypts its fields with the keyring for `anyone`; an entry
+  that fails either is dropped, and `decryptedFields` in the answer is the
+  decryption's. What a host sees: attribute discovery against a real
+  overlay now finds what the reference finds, where it found nothing (the
+  door matched a `decrypted_fields` no overlay entry fills); identity
+  discovery may answer fewer overlay certificates (a forged signature, a
+  keyring that does not open). No public shape moves: `OverlayCertificate`
+  keeps its nine public fields, and its `decrypted_fields` is now filled by
+  the door alone. Host behaviour change for CLI #347: a host's own
+  `OverlayLookupResolver` or overlay mock answers the reference's record,
+  its fields encrypted by the certifier and its keyring revealed to
+  `anyone` (bsv-rs's `MasterCertificate::create_keyring_for_verifier` with
+  the anyone key as verifier, as `publicly_reveal_attributes` builds it);
+  plaintext in `decrypted_fields` is replaced by the decryption, and an
+  entry whose keyring does not open is dropped. Still open
+  (`docs/ARCHITECTURE.md` D29): the overlay output's chain evidence is not
+  verified, and a host resolver's records meet no locking-key or
+  field-signature check.
+
 ## [0.14.0-beta.4] - 2026-10-30
 
 ### Added

@@ -17,9 +17,9 @@ use crate::Result;
 
 /// Parse a `LookupAnswer` into a list of `OverlayCertificate`s.
 ///
-/// Iterates over output-list results, decodes PushDrop from each transaction
-/// output, and deserializes the first field as a JSON certificate.
-/// Invalid outputs are silently skipped (matching TypeScript behavior).
+/// Iterates over output-list results and decodes each output's identity token
+/// (`decode_identity_output`). Invalid outputs are silently skipped, as the
+/// reference's `decodeIdentityOutput` answers `null` for them.
 pub(super) fn parse_overlay_answer(answer: &LookupAnswer) -> Result<Vec<OverlayCertificate>> {
     match answer {
         LookupAnswer::OutputList { outputs } => {
