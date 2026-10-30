@@ -7,11 +7,12 @@
 //! scripts are judged: the reference runs no mining or value rule here, and
 //! the signed transaction is read by bsv-rs's streaming reader alone.
 
-use super::live_word::{input_eras, input_word, judge_input, transaction_cache, Coin, InputEras};
+use super::live_word::{input_word, judge_input, no_word_refusal, transaction_cache, Coin, NoWord};
 use super::stream_error;
 use crate::{Error, Result, SpendRequest, SpendVerificationContext, SpendVerifier};
 use bsv_rs::primitives::bsv::sighash::TxSighashCache;
 use bsv_rs::primitives::Reader;
+use bsv_rs::script::{NotJudgedCause, ScriptFlags};
 use bsv_rs::transaction::beef_stream::{
     display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
 };
@@ -74,15 +75,14 @@ fn source_output(raw: &[u8], vout: u32) -> Result<Option<(u64, &[u8])>> {
 }
 
 /// Judge `raw_tx`'s inputs whose source transaction `sources` holds (keyed
-/// by display txid) under the word at `tip` (with no tip, the latest era,
-/// `input_eras`); the others are skipped. An
-/// input `input_eras` places in no era (a mainnet coin mined before
-/// Genesis, a coin bsv-rs cannot yet express; a tip or network the interim
-/// policy does not read) is skipped too, under the keeper's reading of
-/// #461: the signer skips it and the node's verdict at broadcast is the
-/// backstop, while the doors refuse it (a skip there could hold a phantom
-/// coin), both until bsv-rs #440 adds the pre-Genesis era. A refusal is
-/// [`Error::SpendRefused`], its offset within `raw_tx`.
+/// by display txid) under the word at `tip` (with no tip, the latest
+/// activation, `input_word`); the others are skipped. An input whose coin
+/// bsv-rs places before Genesis (`NotJudgedCause::PreGenesisCoin`) is skipped
+/// too, under the keeper's amended reading of #461: the signer skips it and
+/// the node's verdict at broadcast is the backstop, while the doors refuse it
+/// (a skip there could hold a phantom coin). A refusal is
+/// [`Error::SpendRefused`], its offset within `raw_tx`; an input bsv-rs
+/// cannot judge for another cause is `SpendRefusal::NotJudged`.
 pub(crate) fn verify_own(
     raw_tx: &[u8],
     sources: &HashMap<String, SourceTx>,
@@ -104,15 +104,18 @@ pub(crate) fn verify_own(
                 why: SpendRefusal::OutputNotAvailable { vout: input.vout },
             });
         };
-        // The signer's skip under #461; the doors refuse the same input.
-        let Ok(eras) = input_eras(network, tip, source.proven_height) else {
+        // The signer's skip under the keeper's amended #461 rule: a coin
+        // bsv-rs places before Genesis is left to the node; the doors refuse
+        // the same input. Every other cause is refused here as at a door.
+        let word = input_word(network, tip, source.proven_height);
+        if let Err(NoWord::NotJudged(NotJudgedCause::PreGenesisCoin { .. })) = word {
             continue;
-        };
+        }
         let coin = Coin {
             satoshis,
             script: script.into(),
         };
-        judgements.judge(Ok(eras), vin, &coin, source.proven_height)?;
+        judgements.judge(word, vin, &coin, source.proven_height)?;
     }
     judgements.finish()
 }
@@ -145,25 +148,15 @@ impl<'a> InputJudgements<'a> {
         }
     }
 
-    fn refusal(&self, vin: usize, message: String) -> Error {
-        Error::SpendRefused {
-            offset: self.body.inputs[vin].at,
-            txid: display_hex(&self.txid),
-            input: u32::try_from(vin).ok(),
-            why: SpendRefusal::Script(message),
-        }
-    }
-
     pub(super) fn judge(
         &mut self,
-        eras: std::result::Result<InputEras, &'static str>,
+        word: std::result::Result<ScriptFlags, NoWord>,
         vin: usize,
         source: &Coin,
         proven_height: Option<u64>,
     ) -> Result<()> {
         if let Some(verifier) = self.verifier {
-            let eras = eras.map_err(|message| self.refusal(vin, message.into()))?;
-            let word = input_word(eras).map_err(|message| self.refusal(vin, message))?;
+            let word = word.map_err(|why| no_word_refusal(self.txid, self.body, vin, why))?;
             let context = SpendVerificationContext {
                 word,
                 proven_height,
@@ -184,7 +177,7 @@ impl<'a> InputJudgements<'a> {
             }
         }
         judge_input(
-            eras,
+            word,
             self.txid,
             self.body,
             vin,

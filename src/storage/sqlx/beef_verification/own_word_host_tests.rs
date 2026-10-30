@@ -133,11 +133,8 @@ fn host_true_receives_the_input_and_both_words() {
     assert_eq!(context.proven_height, Some(u64::from(GENESIS)));
     assert_eq!(
         context.word,
-        input_word(InputEras {
-            spend: ProtocolEra::PostChronicle,
-            coin: ProtocolEra::PostGenesis,
-        })
-        .unwrap()
+        bsv_rs::script::ScriptFlags::standard(ProtocolEra::PostChronicle)
+            .without(bsv_rs::script::ScriptFlags::UTXO_AFTER_CHRONICLE)
     );
     eprintln!("host true: input 0, spend PostChronicle, coin PostGenesis, height {GENESIS}");
 }

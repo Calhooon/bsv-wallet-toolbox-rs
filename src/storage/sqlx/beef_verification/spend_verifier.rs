@@ -22,7 +22,8 @@ pub struct SpendRequest {
     pub script: Box<[u8]>,
 }
 
-/// The authoritative word for an input, chosen by `input_eras` and `input_word`.
+/// The authoritative word for an input, composed by bsv-rs's
+/// `input_script_flags` from the store network's `ChainParams` (#440).
 #[derive(Clone, Copy, Debug)]
 pub struct SpendVerificationContext {
     /// Spend-era transaction bits joined with coin-era UTXO bits.
