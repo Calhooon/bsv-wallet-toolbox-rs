@@ -138,6 +138,27 @@ impl Chain {
     }
 }
 
+/// A mining tip whose deprecated `genesis_height` copy (since bsv-rs
+/// 0.9.0-beta.4) is `chain`'s: the one place this crate fills it. Every
+/// verifier here passes `ChainParams`, which alone decide Genesis (bsv-rs
+/// #451); the copy is set only because the field still exists.
+pub(crate) fn chain_tip(
+    chain: &bsv_rs::block::ChainParams,
+    height: u32,
+    median_time_past: u32,
+    csv_height: u32,
+    next_block_time: Option<u32>,
+) -> bsv_rs::transaction::beef_stream::ChainTip {
+    #[allow(deprecated)] // the compatibility copy, read by no path of ours
+    bsv_rs::transaction::beef_stream::ChainTip {
+        height,
+        median_time_past,
+        genesis_height: chain.genesis_height,
+        csv_height,
+        next_block_time,
+    }
+}
+
 // Re-export main types
 pub use traits::{
     BlockHeader, BoundSpender, BsvExchangeRate, FiatCurrency, FiatExchangeRates, GetBeefResult,

@@ -354,9 +354,12 @@ impl WordPass<'_> {
     fn mining_rules(&self, offset: u64, txid: Hash32, body: &TxBody) -> Result<()> {
         // Same non-script checks and order as BeefIndex::fold_tx at the pin,
         // and its reading of no tip: P2SH outputs refused, Finality asked.
+        // Genesis from the network's ChainParams, which alone decide it since
+        // bsv-rs 0.9.0-beta.4 (#451); an unknown network refuses at the word.
+        let genesis = super::chain_params(self.network).map_or(0, |chain| chain.genesis_height);
         if self
             .tip
-            .is_none_or(|tip| u64::from(tip.height) + 1 >= u64::from(tip.genesis_height))
+            .is_none_or(|tip| u64::from(tip.height) + 1 >= u64::from(genesis))
         {
             for (vout, output) in body.outputs.iter().enumerate() {
                 let script = &body.raw[output.script.clone()];
@@ -533,13 +536,7 @@ mod tests {
     const CHRONICLE: u32 = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
 
     fn tip(height: u32) -> ChainTip {
-        ChainTip {
-            height,
-            median_time_past: 0,
-            genesis_height: GENESIS,
-            csv_height: 0,
-            next_block_time: None,
-        }
+        crate::services::chain_tip(&bsv_rs::block::ChainParams::mainnet(), height, 0, 0, None)
     }
 
     fn eras(spend: ProtocolEra, coin: ProtocolEra) -> InputEras {

@@ -17,6 +17,17 @@ mod live_word;
 mod own_word;
 pub(crate) use own_word::{verify_own, SourceTx};
 
+/// The store's `chain` word's activation heights (`main`, `test`,
+/// `regtest`; #471); `None` for a word the script policy does not read.
+pub(super) fn chain_params(network: &str) -> Option<bsv_rs::block::ChainParams> {
+    match network {
+        "main" => Some(bsv_rs::block::ChainParams::mainnet()),
+        "test" => Some(bsv_rs::block::ChainParams::testnet()),
+        "regtest" => Some(bsv_rs::block::ChainParams::regtest()),
+        _ => None,
+    }
+}
+
 pub(super) fn stream_error(error: StreamError) -> Error {
     match error {
         StreamError::Refused(r) => Error::InvalidBeef {

@@ -3689,13 +3689,13 @@ mod tests {
         > {
             self.requests
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(Some(bsv_rs::transaction::beef_stream::ChainTip {
-                height: self.inner.height,
-                median_time_past: 1_700_000_000,
-                genesis_height: 620_538,
-                csv_height: 419_328,
-                next_block_time: None,
-            }))
+            Ok(Some(crate::services::chain_tip(
+                &bsv_rs::block::ChainParams::mainnet(),
+                self.inner.height,
+                1_700_000_000,
+                419_328,
+                None,
+            )))
         }
     }
 

@@ -50,13 +50,17 @@ impl ChainTracker for StoredRoots {
     async fn mining_tip(
         &self,
     ) -> Result<Option<bsv_rs::transaction::beef_stream::ChainTip>, ChainTrackerError> {
-        Ok(Some(bsv_rs::transaction::beef_stream::ChainTip {
+        #[allow(deprecated)]
+        let tip = bsv_rs::transaction::beef_stream::ChainTip {
             height: HEIGHT,
             median_time_past: 1_700_000_000,
-            genesis_height: 620_538,
+            // The deprecated copy (bsv-rs 0.9.0-beta.4) from ChainParams; the
+            // verifiers read ChainParams alone (#451).
+            genesis_height: bsv_rs::block::ChainParams::mainnet().genesis_height,
             csv_height: 419_328,
             next_block_time: None,
-        }))
+        };
+        Ok(Some(tip))
     }
 }
 
