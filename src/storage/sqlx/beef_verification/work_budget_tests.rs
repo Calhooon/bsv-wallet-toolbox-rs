@@ -6,6 +6,7 @@
 use super::*;
 use crate::storage::sqlx::beef_verification::live_word::WORK_OVERRIDE;
 use bsv_rs::script::NotJudgedCause;
+use bsv_rs::transaction::beef_stream::Verdict;
 use bsv_rs::transaction::{MerklePath, MockChainTracker};
 
 /// Runs `f` under the budgets `(per input, per transaction)`.
@@ -141,10 +142,35 @@ fn the_word_pass_refuses_an_input_past_its_work_budget() {
 }
 
 /// The door's default-mode stream pass carries the per-input budget too
-/// (bsv-rs sets none by default), so it is bounded before the word pass.
+/// (bsv-rs sets none by default), so it is bounded before the word pass: its
+/// own verdict is bsv-rs's `Verdict::NotJudged`, and the door answers it.
 #[tokio::test]
 async fn the_door_stream_pass_carries_the_per_input_budget() {
     let (parent, child) = p2pkh_spends(1);
+    let bump = MerklePath::from_coinbase_txid(&parent.id(), GENESIS);
+    let mut beef = Beef::new();
+    let index = beef.merge_bump(bump);
+    beef.merge_raw_tx(parent.to_binary(), Some(index));
+    beef.merge_raw_tx(child.to_binary(), None);
+    let headers = crate::storage::sqlx::beef_verification::VerificationHeaders {
+        tip: Some(tip()),
+        roots: beef_roots(&beef).into_iter().collect(),
+    };
+    let bytes = beef.to_binary();
+    let pass = || crate::storage::sqlx::beef_verification::default_pass(&bytes, &headers);
+    assert!(matches!(pass().unwrap(), Verdict::Valid { .. }));
+    assert!(matches!(
+        with_work((3, u64::MAX), pass).unwrap(),
+        Verdict::NotJudged {
+            input: 0,
+            cause: NotJudgedCause::WorkBudgetExceeded {
+                input: 0,
+                budget: 3,
+                ..
+            },
+            ..
+        }
+    ));
     door(&parent, &child).await.unwrap();
     WORK_OVERRIDE.with(|cell| cell.set(Some((3, u64::MAX))));
     let result = door(&parent, &child).await;
