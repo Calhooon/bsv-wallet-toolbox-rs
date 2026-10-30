@@ -212,7 +212,7 @@ impl StorageSqlx {
         // THE ATTEMPT BACKSTOP (Calgooon/zanaadu-v2#368)
         // The reference counts a proof attempt for ANY req its proof task
         // checks and finds no proof for, and writes the req off once
-        // `attempts > unprovenAttemptsLimitMain` (144; 10 off mainnet):
+        // `attempts > unprovenAttemptsLimitMain` (144; 100 off mainnet):
         // wallet-toolbox src/monitor/tasks/TaskCheckForProofs.ts:154-165,235
         // and src/monitor/Monitor.ts:105-106. Before this pass only reqs the
         // triage called mined were counted, so a transaction nobody holds and
@@ -581,7 +581,8 @@ impl StorageSqlx {
     pub(super) fn proof_attempts_limit(&self) -> i64 {
         match self.get_settings().chain.as_str() {
             "main" => PROOF_ATTEMPTS_LIMIT_MAIN,
-            // `test`, `regtest` and an unknown word (#472).
+            // `test`, `regtest` (the port's extension) and an unknown word
+            // (#472, #481).
             _ => PROOF_ATTEMPTS_LIMIT_TEST,
         }
     }

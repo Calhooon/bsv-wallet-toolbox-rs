@@ -769,10 +769,12 @@ pub(crate) fn same_proof_anchor(
 }
 
 /// The reference's `unprovenAttemptsLimitMain` / `unprovenAttemptsLimitTest`
-/// (wallet-toolbox src/monitor/Monitor.ts:105-106). The reference writes a
+/// (ts-stack edf6e03, wallet-toolbox src/monitor/Monitor.ts:125-126, chosen
+/// main against other at src/monitor/tasks/TaskCheckForProofs.ts:138-140);
+/// `regtest` takes the test limit as the port's extension (#481). The reference writes a
 /// req off once `attempts` is GREATER than the limit
 /// (src/monitor/tasks/TaskCheckForProofs.ts:158); here, since 0.7.4
 /// (bsv-stack-lean #66), past the limit is only a log line: a count is no
 /// evidence and writes no word.
 pub(crate) const PROOF_ATTEMPTS_LIMIT_MAIN: i64 = 144;
-pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 10;
+pub(crate) const PROOF_ATTEMPTS_LIMIT_TEST: i64 = 100;
