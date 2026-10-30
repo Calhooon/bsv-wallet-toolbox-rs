@@ -294,6 +294,7 @@ linkage cryptography; the returned counterparty keys remain compressed.
 | `certificate_issuance_auth.rs` | ~130 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
 | `direct_acquire.rs` | ~210 | Direct `acquire_certificate` argument validation and normalization, signature verification and keyring decryption proof before storage (#311, #374) |
 | `label.rs` | ~70 | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392), and the BRC-177 module-label matcher both doors call (#363); declared without a feature gate, the sqlx folder imports it as `label` (#420) |
+| `discovery_search.rs` | ~320 | The reference's attribute matcher (`identityUtils.ts:140-280`): search normalization, legacy `/gi` literals, the five-class tokenizer and stop words, the NFD and Mn fold (#474) |
 | `lookup.rs` | ~610 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication |
 
 ## Key Exports
@@ -575,7 +576,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 | Method | Description |
 |--------|-------------|
 | `discover_by_identity_key` | Merge stored and overlay certificates, bind the subject, apply current trust settings, then page |
-| `discover_by_attributes` | Query the overlay with trusted keys, apply current trust settings, then page |
+| `discover_by_attributes` | Query the overlay with trusted keys, keep the certificates whose decrypted fields match the attributes, apply current trust settings, then page |
 
 ### Chain/Status Operations
 
@@ -811,6 +812,22 @@ its threshold or certifiers applies on the next call. With no manager the
 chain defaults still discover trusted certificates. Attributes use only the
 overlay, so a proxy-isolated CLI fixture needs an overlay fixture to answer
 that call; host trust settings alone enable its local identity leg.
+
+The attribute path binds the overlay's answer to the query before the
+transform, as `Wallet.ts:1078` does: `filter_certificates_by_attributes`
+(`identityUtils.ts:283-293`) keeps a certificate only when its decrypted
+fields satisfy the search. Its helpers are `discovery_search.rs`, each
+ported at its reference line (`:140-280`): `any` is the overlay's
+all-fields search (two UTF-16 units: in-order literals; longer: complete
+tokens outside `\p{Dash}`, `\p{Pattern_Syntax}`, `\p{Quotation_Mark}`,
+`\p{Terminal_Punctuation}` and `\p{White_Space}` with the ASCII apostrophe
+kept, stop words dropped, `-term` and `"phrase"` parts), `userName` matches
+exactly after normalization, other fields as in-order literals on one line
+under legacy `RegExp` `/gi` case folding (per character `to_uppercase`,
+kept when the uppercase is two units or maps non-ASCII to ASCII). The text
+search runs `foldIdentityText` on both sides (`:218-223`): NFD
+(`unicode-normalization`), every `\p{Mn}` removed (regex `unicode-gencat`),
+lowercase. An empty query answers nothing.
 
 ### Pending Transaction Cache
 

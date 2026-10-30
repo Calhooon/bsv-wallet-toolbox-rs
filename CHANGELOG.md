@@ -53,6 +53,24 @@
 
 ### Fixed
 
+- #474: a host's attribute discovery no longer returns certificates the
+  overlay matched on other grounds. `discoverByAttributes` re-runs the
+  reference's search on each certificate's decrypted fields before the trust
+  transform and the paging, as `Wallet.ts:1078` applies
+  `filterCertificatesByAttributes` (`identityUtils.ts:140-293` at ts-stack
+  edf6e03, ported in `src/wallet/discovery_search.rs`): `any` as the
+  overlay's all-fields text search, `userName` exactly, other named fields
+  as in-order literals on one line. An empty query answers nothing. Host
+  response change for CLI #347: `discoverByAttributes` may answer fewer
+  certificates and a smaller `totalCertificates`; the shapes are
+  unchanged. Two normal dependencies carry the rule's Unicode text:
+  `regex` with exactly `std`, `unicode-bool`, `unicode-perl` and
+  `unicode-gencat` (the five boolean classes the reference's tokenizer is
+  defined on, `Dash`, `Pattern_Syntax`, `Quotation_Mark`,
+  `Terminal_Punctuation` and `White_Space`, and the `Mn` category its fold
+  removes), and `unicode-normalization` 0.1 (the NFD the fold runs on both
+  sides; already in the graph through bsv-rs, so no new crate name).
+
 - #467: the `createAction` `signAndProcess` answer omits `tx` when
   `returnTXIDOnly` is true, as the reference's signer does. Host response
   change for CLI #347: a host reading `tx` under `returnTXIDOnly` now reads
