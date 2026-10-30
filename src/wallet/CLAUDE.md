@@ -270,9 +270,10 @@ A JSON or wire client of the wallet (bsv-rs's `HttpWalletJson` and
 `WalletWireTransceiver`, the CLI's daemon among the hosts) applies the
 reference client's result rows since beta.4 (bsv-rs #487, #495). The
 wallet's answers read back through `HttpWalletJson` against a loopback mock:
-`discovery_rows_tests.rs` (the nine discovery rows; the door passes overlay
-certificates through unverified, so an unsigned one breaks R74 and an empty
-keyring value R80, both findings) and `result_rows_tests.rs` (R86's keyring,
+`discovery_rows_tests.rs` (the nine discovery rows; an overlay entry the
+reference drops, `OverlayCertificate::is_reference_record`, is dropped from
+the answer, so an unsigned one or an empty keyring value no longer reaches
+R74 or R80; the door still verifies no overlay signature) and `result_rows_tests.rs` (R86's keyring,
 the `createSignature` data form, and CLI #371's unsigned input recorded in
 today's words).
 
