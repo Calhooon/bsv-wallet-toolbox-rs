@@ -31,7 +31,8 @@ fn certificate(certifier: &str, subject: &str, serial: &str) -> OverlayCertifica
         revocation_outpoint: Some(format!("{}.0", "0".repeat(64))),
         signature: Some("3044".into()),
         fields: IndexMap::from([("name".into(), "encrypted".into())]),
-        keyring: IndexMap::from([("name".into(), "key".into())]),
+        // A keyring value is canonical base64, as the reference drops another.
+        keyring: IndexMap::from([("name".into(), "a2V5".into())]),
         decrypted_fields: IndexMap::from([("name".into(), "Alice".into())]),
     }
 }

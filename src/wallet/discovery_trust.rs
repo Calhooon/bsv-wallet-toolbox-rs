@@ -60,7 +60,8 @@ where
             .lookup_by_identity_key(&args.identity_key, &certifiers)
             .await
         {
-            Ok(overlay) => certificates.extend(overlay),
+            // The reference drops a malformed overlay entry (`is_reference_record`).
+            Ok(overlay) => certificates.extend(overlay_records(overlay)),
             Err(error) => tracing::debug!("Overlay lookup failed (using local only): {}", error),
         }
         let certificates = filter_by_identity_key(certificates, &args.identity_key);
@@ -78,7 +79,7 @@ where
             .lookup_by_attributes(&args.attributes, &certifiers)
             .await
         {
-            Ok(certificates) => certificates,
+            Ok(certificates) => overlay_records(certificates),
             Err(error) => {
                 tracing::debug!("Overlay attribute lookup failed: {}", error);
                 vec![]
@@ -88,6 +89,14 @@ where
         let certificates = filter_certificates_by_attributes(certificates, &args.attributes)?;
         finish(&settings, certificates, (args.offset, args.limit))
     }
+}
+
+/// The resolver's entries the reference keeps (`decodeIdentityOutput`).
+fn overlay_records(certificates: Vec<OverlayCertificate>) -> Vec<OverlayCertificate> {
+    certificates
+        .into_iter()
+        .filter(OverlayCertificate::is_reference_record)
+        .collect()
 }
 
 /// The reference limits work before grouping, independently of result paging.

@@ -21,6 +21,9 @@ use crate::Result;
 #[path = "lookup_network_isolation_tests.rs"]
 mod network_isolation_tests;
 
+#[path = "lookup_record.rs"]
+mod record; // the reference's overlay certificate bounds
+
 // =============================================================================
 // OverlayCertificate
 // =============================================================================
@@ -484,8 +487,7 @@ fn parse_single_output(beef: &[u8], output_index: u32) -> Result<OverlayCertific
     let cert_json = String::from_utf8(decoded.fields[0].clone())
         .map_err(|e| crate::Error::ServiceError(format!("Invalid UTF-8 in certificate: {}", e)))?;
 
-    let cert: OverlayCertificate = serde_json::from_str(&cert_json)?;
-    Ok(cert)
+    record::parse(&cert_json)
 }
 
 /// Deduplicate certificates by (type_id, serial_number), keeping the first occurrence.
