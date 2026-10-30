@@ -379,3 +379,44 @@ async fn wallet_with_icon(icon: String) -> TestWallet {
     assert_eq!(icon.len(), 500);
     wallet(Some(icon)).await
 }
+
+/// A value present but one `Certificate.verify()` refuses before it verifies
+/// (`toBinary(false)` and the signature's parse, ts-sdk `Certificate.ts:233,
+/// 260-270,289,434` at ts-stack@edf6e03, caught at :436-439), so
+/// `decodeIdentityOutput` drops the entry (`identityUtils.ts:550,555-557`);
+/// before the fix each reached the answer and the client refused it whole.
+#[tokio::test]
+async fn a_malformed_overlay_value_is_dropped() {
+    let wallet = wallet(None).await;
+    let good = overlay_certificate(3).await;
+    let base = overlay_certificate(2).await;
+    let mut cases: Vec<(&str, OverlayCertificate)> = Vec::new();
+    let mut c = base.clone();
+    c.signature = Some(String::new());
+    cases.push(("an empty signature", c));
+    let mut c = base.clone();
+    c.revocation_outpoint = Some(String::new());
+    cases.push(("an empty revocation outpoint", c));
+    let mut c = base.clone();
+    c.type_id = "bad".into();
+    cases.push(("a type not base64 of 32 bytes", c));
+    let mut c = base.clone();
+    let value = c.fields.shift_remove("name").unwrap();
+    let key = c.keyring.shift_remove("name").unwrap();
+    c.fields.insert(String::new(), value);
+    c.keyring.insert(String::new(), key);
+    cases.push(("an empty field name", c));
+    let mut reached = Vec::new();
+    for (case, bad) in cases {
+        let (answer, read) = identity_read(
+            &wallet,
+            vec![bad.clone(), good.clone()],
+            wallet.identity_key().into(),
+        )
+        .await;
+        if bad.is_reference_record() || answer.total_certificates != 1 || read.is_err() {
+            reached.push(case);
+        }
+    }
+    assert!(reached.is_empty(), "reached the answer: {reached:?}");
+}

@@ -28,7 +28,8 @@ impl OverlayCertificate {
     /// signature present, 1 to 100 fields and keyring entries, every keyring
     /// name a field and every value at most 2048 long; `decryptFields` wants
     /// each keyring value canonical base64 of 1 to 2048 bytes
-    /// (`VerifiableCertificate.ts:41-52,182-186`).
+    /// (`VerifiableCertificate.ts:41-52,182-186`); `verify()` (:550) wants
+    /// the values `toBinary` writes ([`Self::is_reference_binary`]).
     pub(crate) fn is_reference_record(&self) -> bool {
         use base64::{engine::general_purpose::STANDARD, Engine};
         let cardinality = |n: usize| (1..=MAX_IDENTITY_FIELDS).contains(&n);
@@ -46,6 +47,102 @@ impl OverlayCertificate {
                 .keyring
                 .iter()
                 .all(|(name, value)| self.fields.contains_key(name) && key(value))
+            && self.is_reference_binary()
+    }
+
+    /// `Certificate.verify()` answers false on any throw of `toBinary(false)`
+    /// or of the signature's parse (ts-sdk `Certificate.ts:425-441` at
+    /// ts-stack@edf6e03), and `decodeIdentityOutput` then drops the entry.
+    /// The port verifies no signature yet (#495); these are the values the
+    /// reference refuses before it verifies.
+    fn is_reference_binary(&self) -> bool {
+        let (Some(outpoint), Some(signature)) = (&self.revocation_outpoint, &self.signature) else {
+            return false;
+        };
+        let mut length = 32 * 3 + 33 * 2;
+        let Some(index) = revocation_index(outpoint) else {
+            return false;
+        };
+        length += compact_size(index as usize) + compact_size(self.fields.len());
+        for (name, value) in &self.fields {
+            // :73-81,117-126,288-289: a name of 1 to 50 bytes, not an object's
+            // own structure; a value of at most 1 MiB.
+            if !(1..=50).contains(&name.len())
+                || matches!(name.as_str(), "__proto__" | "constructor" | "prototype")
+                || value.len() > MAX_CERTIFICATE_FIELD_VALUE_BYTES
+            {
+                return false;
+            }
+            length += compact_size(name.len()) + name.len();
+            length += compact_size(value.len()) + value.len();
+        }
+        let Some(signature) = signature_bytes(signature) else {
+            return false;
+        };
+        base64_32(&self.type_id)
+            && base64_32(&self.serial_number)
+            && compressed_key(&self.subject)
+            && compressed_key(&self.certifier)
+            // :315: the written binary's bound.
+            && length + signature.len() <= MAX_CERTIFICATE_BINARY_BYTES
+    }
+}
+
+/// `MAX_CERTIFICATE_FIELD_VALUE_BYTES` (`Certificate.ts:27`).
+const MAX_CERTIFICATE_FIELD_VALUE_BYTES: usize = 1024 * 1024;
+/// `MAX_CERTIFICATE_BINARY_BYTES` (`Certificate.ts:25`).
+const MAX_CERTIFICATE_BINARY_BYTES: usize = 16 * 1024 * 1024;
+
+/// `type` and `serialNumber`: canonical base64 of 32 bytes
+/// (`Certificate.ts:30-43,233,237`; `base64ToBytes`,
+/// `WalletByteEncoding.ts:39-52`).
+fn base64_32(value: &str) -> bool {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    STANDARD
+        .decode(value)
+        .is_ok_and(|bytes| bytes.len() == 32 && STANDARD.encode(bytes) == value)
+}
+
+/// `subject` and `certifier`: a compressed public key (`Certificate.ts:241-254`).
+fn compressed_key(value: &str) -> bool {
+    value.len() == 66
+        && (value.starts_with("02") || value.starts_with("03"))
+        && bsv_rs::primitives::PublicKey::from_hex(value).is_ok()
+}
+
+/// `<txid>[.<index>]` (`Certificate.ts:260-274`): 64 hex digits, then an
+/// index in canonical decimal of at most `0xffffffff`, `0` when absent.
+fn revocation_index(value: &str) -> Option<u32> {
+    let mut parts = value.split('.');
+    let txid = parts.next()?;
+    let index = parts.next().unwrap_or("0");
+    if parts.next().is_some()
+        || txid.len() != 64
+        || !txid.bytes().all(|b| b.is_ascii_hexdigit())
+        || index.is_empty()
+        || !index.bytes().all(|b| b.is_ascii_digit())
+        || (index.len() > 1 && index.starts_with('0'))
+    {
+        return None;
+    }
+    index.parse().ok()
+}
+
+/// The signature `verify()` parses (`Certificate.ts:434`): hex of a DER
+/// signature (`Signature.fromDER`, `Signature.ts:44-97`), at most 72 bytes
+/// as `toBinary` writes it (:300-311). An empty signature fails the parse.
+fn signature_bytes(value: &str) -> Option<Vec<u8>> {
+    let bytes = hex::decode(value).ok()?;
+    (bytes.len() <= 72 && bsv_rs::primitives::ec::Signature::from_der(&bytes).is_ok())
+        .then_some(bytes)
+}
+
+fn compact_size(value: usize) -> usize {
+    match value {
+        0..=252 => 1,
+        253..=0xffff => 3,
+        0x1_0000..=0xffff_ffff => 5,
+        _ => 9,
     }
 }
 
@@ -69,4 +166,32 @@ pub(super) fn parse(json: &str) -> Result<OverlayCertificate> {
         ));
     }
     Ok(cert)
+}
+
+#[cfg(test)]
+mod tests {
+    /// An overlay output's record with every value well formed; the
+    /// signature is the smallest canonical DER one (r = s = 1).
+    fn record() -> serde_json::Value {
+        serde_json::json!({
+            "type": "A".repeat(43) + "=",
+            "serialNumber": "B".repeat(42) + "A=",
+            "subject": format!("02{}", "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+            "certifier": format!("02{}", "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+            "revocationOutpoint": format!("{}.0", "00".repeat(32)),
+            "fields": {"name": "AA=="},
+            "keyring": {"name": "AA=="},
+            "signature": "3006020101020101",
+        })
+    }
+
+    /// The wire parser drops an empty signature as `verify()` does
+    /// (`Certificate.ts:434,436-439`); before the fix it parsed.
+    #[test]
+    fn the_wire_parser_drops_an_empty_signature() {
+        let mut wire = record();
+        super::parse(&wire.to_string()).unwrap();
+        wire["signature"] = serde_json::Value::String(String::new());
+        assert!(super::parse(&wire.to_string()).is_err());
+    }
 }
