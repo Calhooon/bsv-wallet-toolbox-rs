@@ -2,6 +2,7 @@
 //! output-list answer decoded, an entry that fails dropped
 //! (`decodeIdentityOutput`, ts-stack@edf6e03 `identityUtils.ts:493-557`).
 
+use bsv_rs::auth::VerifiableCertificate;
 use bsv_rs::overlay::LookupAnswer;
 use bsv_rs::primitives::PublicKey;
 use bsv_rs::script::templates::PushDrop;
@@ -126,6 +127,36 @@ pub(super) fn decode_identity_output(script: &LockingScript) -> Result<OverlayCe
         return Err(dropped("a field signature not the subject's"));
     }
     Ok(record)
+}
+
+impl OverlayCertificate {
+    /// `decodeIdentityOutput`'s checks on the certificate
+    /// (`identityUtils.ts:546-554`): its signature verified
+    /// (`verifiableCert.verify()`), its fields decrypted with the keyring by
+    /// an `anyone` wallet (`decryptFields`, `VerifiableCertificate.ts:150-219`:
+    /// each keyring value canonical base64 of 1 to 2048 bytes, each field
+    /// opened under the certificate field protocol with the subject as
+    /// counterparty), and a failure or an empty result `None`, the entry
+    /// dropped. `decrypted_fields` is the decryption's, whatever the entry
+    /// carried. Any resolver's entries pass here: only the HTTP resolver
+    /// holds the output its key and field signature are read from.
+    pub(crate) async fn verified_and_decrypted(mut self) -> Option<Self> {
+        let mut record = serde_json::to_value(&self).ok()?;
+        record.as_object_mut()?.remove("decryptedFields");
+        let mut certificate: VerifiableCertificate = serde_json::from_value(record).ok()?;
+        if !matches!(certificate.verify(), Ok(true)) {
+            return None;
+        }
+        let decrypted = certificate
+            .decrypt_fields(&ProtoWallet::anyone(), None, None, None)
+            .await
+            .ok()?;
+        if decrypted.is_empty() {
+            return None;
+        }
+        self.decrypted_fields = decrypted;
+        Some(self)
+    }
 }
 
 /// `pushOpcode` (`identityUtils.ts:80-85`).

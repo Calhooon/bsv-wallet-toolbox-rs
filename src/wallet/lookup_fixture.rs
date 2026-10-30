@@ -23,12 +23,11 @@ pub(crate) fn key(n: u8) -> PrivateKey {
 }
 
 /// The record `certifier` issues `subject` with `fields` in plaintext, its
-/// type `[1; 32]` and serial `[serial; 32]`, every field revealed to
-/// `anyone`. Its `decrypted_fields` are empty: only the door fills them.
+/// type `[1; 32]` and serial `serial`, every field revealed to `anyone`. Its `decrypted_fields` are empty: only the door fills them.
 pub(crate) async fn revealed(
     certifier: &PrivateKey,
     subject: &PrivateKey,
-    serial: u8,
+    serial: [u8; 32],
     fields: &[(&str, &str)],
 ) -> OverlayCertificate {
     let plain: IndexMap<String, String> = fields
@@ -41,7 +40,7 @@ pub(crate) async fn revealed(
         subject.public_key(),
         plain.clone(),
         [1; 32],
-        Some([serial; 32]),
+        Some(serial),
         None,
     )
     .await
@@ -59,7 +58,7 @@ pub(crate) async fn revealed(
         &signed.fields,
         &names,
         &master.master_keyring,
-        &[serial; 32],
+        &serial,
         None,
         None,
         None,

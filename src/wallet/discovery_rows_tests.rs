@@ -14,18 +14,14 @@ use crate::managers::{
 use crate::services::mock::MockWalletServices;
 use crate::storage::entities::TableCertificate;
 use crate::storage::WalletStorageWriter;
+use crate::wallet::lookup::fixture::{key, revealed};
 use crate::wallet::lookup::{OverlayCertificate, OverlayLookupResolver};
-use bsv_rs::auth::MasterCertificate;
 use bsv_rs::wallet::substrates::HttpWalletJson;
 
 type TestWallet = Wallet<crate::StorageSqlx, MockWalletServices>;
 
 const CERTIFIER: u8 = 9;
 const SUBJECT: u8 = 8;
-
-fn key(n: u8) -> PrivateKey {
-    PrivateKey::from_bytes(&[n; 32]).unwrap()
-}
 
 fn certifier(icon_url: Option<String>) -> Certifier {
     Certifier {
@@ -74,37 +70,14 @@ async fn wallet(icon_url: Option<String>) -> TestWallet {
 }
 
 /// A certificate of the wallet's identity by the trusted certifier, signed,
-/// its `name` field encrypted, as an overlay carries it.
+/// its `fields` encrypted and revealed to `anyone`, as an overlay carries it
+/// (the door decrypts `name`, `Alice`).
 async fn overlay_certificate(serial: u8) -> OverlayCertificate {
-    let master = MasterCertificate::issue_for_subject(
-        &ProtoWallet::new(Some(key(CERTIFIER))),
-        &key(CERTIFIER),
-        key(SUBJECT).public_key(),
-        [("name".to_string(), "Alice".to_string())].into(),
-        [1; 32],
-        Some([serial; 32]),
-        Some("rows.test"),
-    )
-    .await
-    .unwrap();
-    // Signed again over a revocation outpoint, which issuance leaves unset.
-    let mut signed = master.certificate;
-    signed.set_revocation_outpoint(Some(bsv_rs::wallet::Outpoint::new([0xaa; 32], 0)));
-    signed.set_signature(None);
-    signed.sign(&key(CERTIFIER)).unwrap();
-    assert!(signed.verify().unwrap());
-    let certificate = signed.to_wallet_certificate();
-    OverlayCertificate {
-        type_id: certificate.certificate_type,
-        serial_number: certificate.serial_number,
-        subject: certificate.subject.to_hex(),
-        certifier: certificate.certifier.to_hex(),
-        revocation_outpoint: certificate.revocation_outpoint.map(|o| o.to_string()),
-        signature: certificate.signature.map(hex::encode),
-        fields: certificate.fields,
-        keyring: master.master_keyring,
-        decrypted_fields: [("name".to_string(), "Alice".to_string())].into(),
-    }
+    overlay_with(serial, &[("name", "Alice")]).await
+}
+
+async fn overlay_with(serial: u8, fields: &[(&str, &str)]) -> OverlayCertificate {
+    revealed(&key(CERTIFIER), &key(SUBJECT), [serial; 32], fields).await
 }
 
 struct Overlay(Vec<OverlayCertificate>);
@@ -243,9 +216,7 @@ async fn the_identity_answer_passes_the_rows() {
 #[tokio::test]
 async fn the_attribute_answers_pass_the_rows() {
     let wallet = wallet(None).await;
-    let mut user = overlay_certificate(4).await;
-    user.decrypted_fields
-        .insert("userName".into(), "alice.smith".into());
+    let user = overlay_with(4, &[("name", "Alice"), ("userName", "alice.smith")]).await;
     for attributes in [
         &[("any", "Alice")][..],
         &[("any", "Al")][..],

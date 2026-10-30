@@ -31,6 +31,8 @@ fn sn(label: &str) -> String {
 /// The smallest canonical DER signature (r = s = 1); none is verified here.
 const SIGNATURE: &str = "3006020101020101";
 
+/// An entry as the door holds it after decryption; the unit tests here read
+/// the transform and the matcher, which see only that.
 fn certificate(certifier: &str, subject: &str, serial: &str) -> OverlayCertificate {
     OverlayCertificate {
         type_id: sn("type"),

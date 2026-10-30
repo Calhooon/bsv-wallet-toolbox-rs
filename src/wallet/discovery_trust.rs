@@ -61,7 +61,7 @@ where
             .await
         {
             // The reference drops a malformed overlay entry (`is_reference_record`).
-            Ok(overlay) => certificates.extend(overlay_records(overlay)),
+            Ok(overlay) => certificates.extend(overlay_records(overlay).await),
             Err(error) => tracing::debug!("Overlay lookup failed (using local only): {}", error),
         }
         let certificates = filter_by_identity_key(certificates, &args.identity_key);
@@ -79,7 +79,7 @@ where
             .lookup_by_attributes(&args.attributes, &certifiers)
             .await
         {
-            Ok(certificates) => overlay_records(certificates),
+            Ok(certificates) => overlay_records(certificates).await,
             Err(error) => {
                 tracing::debug!("Overlay attribute lookup failed: {}", error);
                 vec![]
@@ -91,12 +91,19 @@ where
     }
 }
 
-/// The resolver's entries the reference keeps (`decodeIdentityOutput`).
-fn overlay_records(certificates: Vec<OverlayCertificate>) -> Vec<OverlayCertificate> {
-    certificates
-        .into_iter()
-        .filter(OverlayCertificate::is_reference_record)
-        .collect()
+/// The resolver's entries the reference keeps (`decodeIdentityOutput`): the
+/// record's bounds, then its signature and its fields decrypted.
+async fn overlay_records(certificates: Vec<OverlayCertificate>) -> Vec<OverlayCertificate> {
+    let mut kept = Vec::new();
+    for certificate in certificates {
+        if !certificate.is_reference_record() {
+            continue;
+        }
+        if let Some(certificate) = certificate.verified_and_decrypted().await {
+            kept.push(certificate);
+        }
+    }
+    kept
 }
 
 /// The reference limits work before grouping, independently of result paging.
@@ -276,3 +283,7 @@ fn finish(
         limit,
     ))
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "discovery_decrypt_tests.rs"]
+mod decrypt_tests;

@@ -6,6 +6,7 @@ use crate::managers::{
 };
 use crate::services::{mock::MockWalletServices, Chain};
 use crate::storage::{entities::TableCertificate, WalletStorageWriter};
+use crate::wallet::lookup::fixture::revealed;
 use crate::wallet::{OverlayLookupResolver, Wallet, WalletOptions};
 use bsv_rs::{
     primitives::PrivateKey,
@@ -15,8 +16,43 @@ use std::sync::{Arc, Mutex};
 
 type TestWallet = Wallet<crate::StorageSqlx, MockWalletServices>;
 
+fn scalar(n: u32) -> PrivateKey {
+    PrivateKey::from_hex(&format!("{n:064x}")).unwrap()
+}
+
+/// An overlay record by `certifier` of `subject` (the wallet's key, 388,
+/// or `STRANGER`'s, 1), its fields encrypted for `anyone`: what a resolver
+/// answers, which the door verifies and decrypts.
+async fn sealed(
+    certifier: u32,
+    subject: u32,
+    serial: &str,
+    fields: &[(&str, &str)],
+) -> OverlayCertificate {
+    let mut label = [0u8; 32];
+    label[..serial.len()].copy_from_slice(serial.as_bytes());
+    let record = revealed(&scalar(certifier), &scalar(subject), label, fields).await;
+    assert_eq!(record.serial_number, sn(serial));
+    record
+}
+
+/// The default settings with each certifier's key one this test holds
+/// (21 and 22), so its records verify; names, trust and threshold kept.
+fn held_defaults() -> WalletSettings {
+    let mut settings = DEFAULT_SETTINGS.clone();
+    for (certifier, n) in settings
+        .trust_settings
+        .trusted_certifiers
+        .iter_mut()
+        .zip(21..)
+    {
+        certifier.identity_key = scalar(n).public_key().to_hex();
+    }
+    settings
+}
+
 async fn wallet(chain: Chain, manager: Option<Arc<WalletSettingsManager>>) -> TestWallet {
-    let key = PrivateKey::from_hex(&format!("{:064x}", 388)).unwrap();
+    let key = scalar(388);
     let storage = crate::StorageSqlx::in_memory().await.unwrap();
     storage
         .migrate("discovery-trust", &key.public_key().to_hex())
@@ -42,7 +78,8 @@ async fn insert(wallet: &TestWallet, certifier: &str, serial: &str) {
     let certificate = TableCertificate {
         certificate_id: 0,
         user_id: wallet.auth().user_id.unwrap(),
-        cert_type: sn("type"),
+        // The overlay records' type, so a stored row and its record dedup.
+        cert_type: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [1; 32]),
         serial_number: sn(serial),
         certifier: certifier.into(),
         subject: wallet.identity_key().into(),
@@ -153,15 +190,11 @@ fn attribute_args(attributes: IndexMap<String, String>) -> DiscoverByAttributesA
 async fn attribute_witnesses() -> (TestWallet, RecordingResolver) {
     let original = settings(vec![host_certifier()], 1);
     let wallet = wallet(Chain::Main, Some(manager(original.clone()))).await;
-    let mut mismatch = certificate(STRANGER, wallet.identity_key(), "mismatch");
-    mismatch
-        .decrypted_fields
-        .insert("name".into(), "Bob".into());
     let resolver = RecordingResolver::new(
         &original.trust_settings,
         vec![
-            mismatch,
-            certificate(STRANGER, wallet.identity_key(), "match"),
+            sealed(1, 388, "mismatch", &[("name", "Bob")]).await,
+            sealed(1, 388, "match", &[("name", "Alice")]).await,
         ],
     );
     (wallet, resolver)
@@ -169,11 +202,7 @@ async fn attribute_witnesses() -> (TestWallet, RecordingResolver) {
 
 #[tokio::test]
 async fn discovery_attributes_bind_decrypted_fields_before_paging() {
-    let (wallet, mut resolver) = attribute_witnesses().await;
-    // An encrypted field carrying the query is not matching evidence.
-    resolver.certificates[0]
-        .fields
-        .insert("name".into(), "Alice".into());
+    let (wallet, resolver) = attribute_witnesses().await;
     let mut request = attribute_args(IndexMap::from([("name".into(), "Alice".into())]));
     request.limit = Some(1);
     let result = wallet
@@ -197,11 +226,12 @@ async fn discovery_attributes_bind_decrypted_fields_before_paging() {
 #[tokio::test]
 async fn discovery_attributes_any_overrides_named_fields_and_excludes_images() {
     let (wallet, mut resolver) = attribute_witnesses().await;
-    resolver.certificates[0].decrypted_fields = IndexMap::from([
-        ("name".into(), "Malice".into()),
-        ("profilePhoto".into(), "Alice".into()),
-        ("icon".into(), "Alice".into()),
-    ]);
+    let fields = [
+        ("name", "Malice"),
+        ("profilePhoto", "Alice"),
+        ("icon", "Alice"),
+    ];
+    resolver.certificates[0] = sealed(1, 388, "mismatch", &fields).await;
     let request = attribute_args(IndexMap::from([
         ("any".into(), "ALICE".into()),
         ("name".into(), "ignored named constraint".into()),
@@ -221,7 +251,7 @@ async fn discovery_attributes_empty_queries_match_nothing() {
     let wallet = wallet(Chain::Main, Some(manager(original.clone()))).await;
     let resolver = RecordingResolver::new(
         &original.trust_settings,
-        vec![certificate(STRANGER, wallet.identity_key(), "match")],
+        vec![sealed(1, 388, "match", &[("name", "Alice")]).await],
     );
     for attributes in [
         IndexMap::new(),
@@ -291,11 +321,8 @@ async fn discovery_attributes_follow_reference_matching_rules() {
         ("any", "Alice\u{85}Wonderland", "Wonderland", true),
         ("name", "Alice", "\u{85}Alice", false),
     ] {
-        let mut cert = certificate(STRANGER, wallet.identity_key(), "candidate");
-        cert.decrypted_fields = IndexMap::from([("name".into(), actual.into())]);
-        if field == "userName" {
-            cert.decrypted_fields = IndexMap::from([(field.into(), actual.into())]);
-        }
+        let name = if field == "userName" { field } else { "name" };
+        let cert = sealed(1, 388, "candidate", &[(name, actual)]).await;
         let resolver = RecordingResolver::new(&original.trust_settings, vec![cert]);
         let result = wallet
             .discover_attributes_with_resolver(
@@ -429,7 +456,7 @@ async fn discovery_reads_removed_certifiers_on_the_next_call() {
     manager.set(settings(vec![], 2)).await.unwrap();
     let resolver = RecordingResolver::new(
         &manager.get().await.unwrap().trust_settings,
-        vec![certificate(STRANGER, wallet.identity_key(), "overlay")],
+        vec![sealed(1, 388, "overlay", &[("name", "Alice")]).await],
     );
     let after_removal = wallet
         .discover_identity_with_resolver(args(&wallet), &resolver)
@@ -441,19 +468,18 @@ async fn discovery_reads_removed_certifiers_on_the_next_call() {
 
 #[tokio::test]
 async fn discovery_identity_and_attributes_share_sorted_keys_and_trust() {
-    let original = DEFAULT_SETTINGS.clone();
+    let original = held_defaults();
     let manager = manager(original.clone());
     let wallet = wallet(Chain::Main, Some(manager.clone())).await;
     let a = &original.trust_settings.trusted_certifiers[0].identity_key;
-    let b = &original.trust_settings.trusted_certifiers[1].identity_key;
     insert(&wallet, a, "local").await;
     let resolver = RecordingResolver::new(
         &original.trust_settings,
         vec![
-            certificate(a, wallet.identity_key(), "local"),
-            certificate(b, wallet.identity_key(), "overlay"),
-            certificate(STRANGER, wallet.identity_key(), "stranger"),
-            certificate(a, STRANGER, "wrong subject"),
+            sealed(21, 388, "local", &[("name", "Alice")]).await,
+            sealed(22, 388, "overlay", &[("name", "Alice")]).await,
+            sealed(1, 388, "stranger", &[("name", "Alice")]).await,
+            sealed(21, 1, "wrong subject", &[("name", "Alice")]).await,
         ],
     );
     let identity = wallet
@@ -491,7 +517,7 @@ async fn discovery_identity_and_attributes_share_sorted_keys_and_trust() {
 
 #[tokio::test]
 async fn discovery_pages_after_merging_and_deduplicating_both_legs() {
-    let mut original = DEFAULT_SETTINGS.clone();
+    let mut original = held_defaults();
     original.trust_settings.trust_level = 7;
     let manager = manager(original.clone());
     let wallet = wallet(Chain::Main, Some(manager)).await;
@@ -501,10 +527,10 @@ async fn discovery_pages_after_merging_and_deduplicating_both_legs() {
     let resolver = RecordingResolver::new(
         &original.trust_settings,
         vec![
-            certificate(a, wallet.identity_key(), "same"),
-            certificate(a, wallet.identity_key(), "two"),
-            certificate(b, wallet.identity_key(), "same"),
-            certificate(b, wallet.identity_key(), "three"),
+            sealed(21, 388, "same", &[("name", "Alice")]).await,
+            sealed(21, 388, "two", &[("name", "Alice")]).await,
+            sealed(22, 388, "same", &[("name", "Alice")]).await,
+            sealed(22, 388, "three", &[("name", "Alice")]).await,
         ],
     );
     let mut request = args(&wallet);
