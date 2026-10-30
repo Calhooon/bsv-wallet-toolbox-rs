@@ -81,6 +81,10 @@ mod direct_acquire_tests;
 #[path = "hmac_key_tests.rs"]
 mod hmac_key_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "discovery_rows_tests.rs"]
+mod discovery_rows_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
