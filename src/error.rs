@@ -278,7 +278,8 @@ fn sdk_error_display(error: &bsv_rs::Error) -> String {
     }
 }
 
-#[cfg(any(feature = "sqlite", test))]
+// Both methods' callers are the SQL store's abort guards (`storage::sqlx`).
+#[cfg(any(feature = "sqlite", feature = "mysql"))]
 impl Error {
     /// An abort refused because acceptance is stored (bsv-rs #439): the
     /// guard's own `class` and its whole Display as the message, so the

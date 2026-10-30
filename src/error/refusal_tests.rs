@@ -58,6 +58,8 @@ string_refusal!(
     "Invalid transaction status: "
 );
 
+// `into_invalid_parameter` is the SQL store's, as its callers are.
+#[cfg(any(feature = "sqlite", feature = "mysql"))]
 #[test]
 fn abort_reference_status_uses_its_site_class_and_preserves_the_text() {
     for words in ["probe", "changed detail without a class name"] {
