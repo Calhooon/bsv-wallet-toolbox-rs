@@ -314,7 +314,20 @@ jobs:
             git fetch -q origin "${GITHUB_BASE_REF}"
             base="origin/${GITHUB_BASE_REF}"
           else
-            base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^)"
+            # No release tag reachable from HEAD^ in a full clone is a line
+            # without releases: the baseline is none and the check reads
+            # nothing. In a shallow clone it is a fetch shape and stays red
+            # (#489, bsv-rs #517's lesson).
+            base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ || true)"
+            if [ -z "$base" ]; then
+              shallow="$(git rev-parse --is-shallow-repository)"
+              if [ "$shallow" != "false" ]; then
+                echo "::error title=semver baseline::no release tag reachable from HEAD^ in a shallow clone (is-shallow-repository: ${shallow}); the baseline needs the full history"
+                exit 1
+              fi
+              echo "baseline none: no release tag reachable from HEAD^ on ${GITHUB_REF_NAME}; the public API check reads nothing" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
           fi
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             since="$(git log -1 --format=%cI "$base")"
