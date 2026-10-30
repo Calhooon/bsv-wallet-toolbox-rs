@@ -491,11 +491,12 @@ The port keeps its own per-input pass (`live_word.rs`) beside bsv-rs's
 streaming verifier: the host `SpendVerifier` (D27), the create pre-check's
 judged set (#426) and the door's per-transaction work total (below) each need
 the inputs one at a time, which `StreamVerifier::with_chain_params` does not
-expose. The SDK's `verify_stream_two_pass` retains the structural/proof
-verdict; only `SpendRefusal::Script` is set aside. A default script refusal
-can stop that scan early, so `verify_stream_structure` must then finish
-cleanly before the word pass. The word pass preserves the later mining,
-outpoint, resource and value checks that such a refusal can mask; its P2SH
+expose. The door's preliminary pass is bsv-rs's `verify_stream_structure`
+(`structure_pass`: the bytes, the graph, the roots, the proofs), which runs
+no script: the SDK's default script mode is a parity mode, never a live
+verdict (the keeper's word of 2026-10-30, structure-only, rule 22), so every
+input is judged once, by the word pass. The word pass keeps the mining,
+outpoint, resource and value checks the structure pass leaves; its P2SH
 output check reads Genesis from the network's `ChainParams`, which alone
 decide it since beta.4 (bsv-rs #451). It retains only referenced outputs,
 shares one sighash cache per transaction, and releases transactions waiting
@@ -522,9 +523,9 @@ transaction 10,000,235); at the doors the transaction's inputs share a total
 of the same 2^31, summed from each input's `work_spent`, the input that
 carries the sum past it not judged with the total named. An input past
 either is `NotJudgedCause::WorkBudgetExceeded`, refused at a door and skipped
-at the signer, which keeps the per-input bound alone. The door's default-mode
-stream pass (`default_pass`) carries the per-input bound too: bsv-rs's stream
-verifier sets none by default (ARCHITECTURE P1).
+at the signer, which keeps the per-input bound alone. The door's structure
+pass runs no script and spends no budget (ARCHITECTURE P1); before the
+review of #493 it was a default-mode script pass under the per-input bound.
 
 An input bsv-rs cannot judge is `Error::SpendRefused` with
 `SpendRefusal::NotJudged { input, cause }` (bsv-rs #452), never a script

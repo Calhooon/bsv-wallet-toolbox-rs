@@ -74,6 +74,16 @@
     signer skips the input, as a pre-Genesis coin. Before, no bound, and an
     exhausted `set_work_limit` was `SpendRefusal::Resource`. No input of the
     test corpus spends more than 661 units.
+  - Internalize's preliminary stream pass (the review of #493, the keeper's
+    word of 2026-10-30: structure-only, rule 22) is bsv-rs's structure pass,
+    the bytes, the graph, the roots and the proofs, and runs no script; the
+    word pass judges every input once, under `ChainParams` and both budgets.
+    Before, it was bsv-rs's default-mode two-pass verdict, which judged the
+    scripts a second time without `ChainParams` or the transaction total.
+    For a BEEF with one fault no refusal moves (the word pass keeps the
+    same non-script checks with the same refusals); a BEEF with a structural
+    fault behind an earlier spend refusal now answers the structural fault
+    (`Invalid BEEF at byte N: <kind>`), where it answered the spend refusal.
   - Typed faults (bsv-rs #439): every fault at the `WalletInterface`
     boundary that was `bsv_rs::Error::WalletError(message)` is
     `bsv_rs::Error::WalletFault(WalletFault { family, message })`, family
@@ -125,13 +135,21 @@
     the description, which the door cuts to 50 bytes and replaces below 5,
     so any setting passes; an icon URL of 1-500 bytes, the settings' bound),
     R80, R81 and R82; `proveCertificate`'s keyring is exactly the requested
-    fields (R86); `createSignature` takes the `data` form. Two overlay
-    inputs break a row, the door passing overlay certificates through
-    unverified: an overlay certificate with no signature (`Invalid <call>
-    result certificates[i]: expected a canonical signed wallet
-    certificate`) and an empty overlay keyring value (`Invalid <call>
-    result certificates[i].publiclyRevealedKeyring.<name>: expected 1+
-    UTF-8 bytes`). CLI #371, unchanged: under
+    fields (R86); `createSignature` takes the `data` form. A malformed
+    overlay entry is dropped from both discovery answers, as the reference
+    drops it (ts-stack@edf6e03 `identityUtils.ts:87-129,493-552`,
+    `VerifiableCertificate.ts:41-52`): no revocation outpoint or no
+    signature, fields or keyring outside 1 to 100 entries, a keyring name
+    with no field, a keyring value that is not canonical base64 of 1 to 2048
+    bytes, or (at the overlay parser) properties other than the reference's
+    eight. Before the review of #493 such an entry reached the answer with
+    `""` filled in and the client refused the whole answer (`Invalid <call>
+    result certificates[i]: expected a canonical signed wallet certificate`,
+    or `Invalid <call> result certificates[i].publiclyRevealedKeyring.<name>:
+    expected 1+ UTF-8 bytes`). Host behaviour change for CLI #347: discovery
+    may answer fewer certificates, `totalCertificates` counting the kept
+    ones alone. The door still verifies no overlay signature and decrypts
+    no field, where the reference does both. CLI #371, unchanged: under
     `includeInputUnlockingScripts` an unsigned action's input carries no
     `unlockingScript` (the faithful port of `listActionsIdb.ts:77,91`), and
     the client refuses it with `Invalid listActions result
