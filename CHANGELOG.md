@@ -53,6 +53,13 @@
 
 ### Fixed
 
+- #481: a `test` or `regtest` store's proof-attempt limit is 100 where it
+  was 10, the reference's testnet limit (`Monitor.ts:125-126` at ts-stack
+  edf6e03); a `main` store keeps 144. Host behaviour for CLI #347: on testnet
+  the past-the-count hold check and its `proof_backstop_past_count` or
+  `proof_backstop_held` log line start after 100 attempts, not 10; the count
+  still writes no word (no `failed` status), as since 0.7.4.
+
 - #474: a host's attribute discovery no longer returns certificates the
   overlay matched on other grounds. `discoverByAttributes` re-runs the
   reference's search on each certificate's decrypted fields before the trust
