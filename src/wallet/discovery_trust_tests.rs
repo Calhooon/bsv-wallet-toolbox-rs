@@ -1,6 +1,9 @@
 //! #388: trust filtering, subject binding and paging at the discovery doors.
 
-use super::discovery_trust::{certifier_info, discovery_page, filter_by_identity_key, transform};
+use super::discovery_trust::{
+    certifier_info, discovery_page, filter_by_identity_key, filter_certificates_by_attributes,
+    transform,
+};
 use crate::managers::{Certifier, TrustSettings, DEFAULT_SETTINGS};
 use crate::wallet::lookup::OverlayCertificate;
 use indexmap::IndexMap;
@@ -185,6 +188,71 @@ fn discovery_attributes_reject_non_string_any_at_the_typed_boundary() {
         }))
         .is_err());
     }
+}
+
+#[test]
+fn discovery_attributes_fold_case_split_and_drop_as_the_reference() {
+    // Each answer read from identityUtils.ts:140-244 at edf6e03 in node.
+    for (field, actual, query, matches) in [
+        // Legacy /gi: one-unit uppercase folds; ß's is two units, ı's is
+        // ASCII, and a non-BMP letter is two surrogates.
+        ("name", "\u{ff}", "\u{178}", true),
+        ("name", "\u{3c2}", "\u{3a3}", true),
+        ("name", "\u{df}", "\u{1e9e}", false),
+        ("name", "\u{131}", "I", false),
+        ("name", "\u{10428}", "\u{10400}", false),
+        // The fold removes Mn after NFD; a Devanagari vowel sign is Mc.
+        ("any", "Zo\u{eb} \u{c5}ngstr\u{f6}m", "zoe angstrom", true),
+        (
+            "any",
+            "Zo\u{eb} \u{c5}ngstr\u{f6}m",
+            "\"zoe angstrom\"",
+            true,
+        ),
+        (
+            "any",
+            "\u{915}\u{93f}\u{924}\u{93e}\u{92c}",
+            "\u{915}\u{924}\u{92c}",
+            false,
+        ),
+        (
+            "any",
+            "\u{915}\u{93f}\u{924}\u{93e}\u{92c}",
+            "\u{915}\u{93f}\u{924}\u{93e}\u{92c}",
+            true,
+        ),
+        // Terminal_Punctuation (U+3002) and Dash (U+2010) split tokens.
+        ("any", "Alice\u{3002}Wonderland", "Wonderland", true),
+        ("any", "Alice\u{2010}Wonderland", "Wonderland", true),
+        ("any", "the", "the", false),
+        ("any", "Bob", "Bob the", true),
+        ("any", "Jos\u{e9} Wonderland", "Wonderland -jose", false),
+        ("any", "Alice Wonderland", "Alice -\"Bob Smith\"", true),
+    ] {
+        let mut cert = certificate(STRANGER, STRANGER, "candidate");
+        cert.decrypted_fields = IndexMap::from([("name".into(), actual.into())]);
+        let attributes = IndexMap::from([(field.to_string(), query.to_string())]);
+        assert_eq!(
+            filter_certificates_by_attributes(vec![cert], &attributes)
+                .unwrap()
+                .len(),
+            usize::from(matches),
+            "{field}: {actual:?} against {query:?}"
+        );
+    }
+    // Object.entries puts array-index keys first when joining `any`'s text.
+    let mut cert = certificate(STRANGER, STRANGER, "candidate");
+    cert.decrypted_fields = IndexMap::from([
+        ("name".into(), "Wonderland".into()),
+        ("1".into(), "Alice".into()),
+    ]);
+    let attributes = IndexMap::from([("any".into(), "\"alice wonderland\"".into())]);
+    assert_eq!(
+        filter_certificates_by_attributes(vec![cert], &attributes)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[cfg(feature = "sqlite")]
