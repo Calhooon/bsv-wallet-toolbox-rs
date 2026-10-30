@@ -420,3 +420,55 @@ async fn a_malformed_overlay_value_is_dropped() {
     }
     assert!(reached.is_empty(), "reached the answer: {reached:?}");
 }
+
+/// The divergence row in `docs/ARCHITECTURE.md` section 7: `Signature.fromDER`
+/// (ts-sdk `Signature.ts:44-97` at ts-stack@edf6e03) reads an integer whose
+/// high bit is set without its zero pad, so the reference's decode keeps the
+/// entry, while its own client row wants canonical DER
+/// (`WalletResultValidation.ts:1529-1531`, `isCanonicalDERSignature`,
+/// `Secp256k1Validation.ts:33-51`) and refuses the answer. The toolbox drops
+/// it: the client's canon is what reaches a host.
+#[tokio::test]
+async fn a_signature_without_its_zero_pad_is_dropped() {
+    let wallet = wallet(None).await;
+    let mut bad = None;
+    for serial in 2..40 {
+        let mut c = overlay_certificate(serial).await;
+        let der = hex::decode(c.signature.as_ref().unwrap()).unwrap();
+        if let Some(unpadded) = without_a_zero_pad(&der) {
+            assert!(bsv_rs::primitives::ec::Signature::from_der(&unpadded).is_ok());
+            c.signature = Some(hex::encode(unpadded));
+            bad = Some(c);
+            break;
+        }
+    }
+    let bad = bad.expect("a signature with a padded integer");
+    let (answer, read) = identity_read(
+        &wallet,
+        vec![bad.clone(), overlay_certificate(1).await],
+        wallet.identity_key().into(),
+    )
+    .await;
+    assert!(read.is_ok(), "the client refused the answer");
+    assert_eq!(answer.total_certificates, 1);
+    assert!(!bad.is_reference_record());
+}
+
+/// The DER signature with the zero pad of r (or else of s) removed and the
+/// lengths adjusted, or `None` when neither integer is padded.
+fn without_a_zero_pad(der: &[u8]) -> Option<Vec<u8>> {
+    let r_len = usize::from(der[3]);
+    let s_at = 4 + r_len;
+    let (at, len) = if der[4] == 0 {
+        (3, r_len)
+    } else if der[s_at + 2] == 0 {
+        (s_at + 1, usize::from(der[s_at + 1]))
+    } else {
+        return None;
+    };
+    let mut out = der.to_vec();
+    out.remove(at + 1);
+    out[at] = u8::try_from(len - 1).ok()?;
+    out[1] -= 1;
+    Some(out)
+}

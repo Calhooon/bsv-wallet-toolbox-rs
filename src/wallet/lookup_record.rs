@@ -131,10 +131,44 @@ fn revocation_index(value: &str) -> Option<u32> {
 /// The signature `verify()` parses (`Certificate.ts:434`): hex of a DER
 /// signature (`Signature.fromDER`, `Signature.ts:44-97`), at most 72 bytes
 /// as `toBinary` writes it (:300-311). An empty signature fails the parse.
+/// The toolbox wants the reference client's canon, strict DER with each
+/// integer minimally encoded and in 1..n (`isCanonicalDERSignature`,
+/// `Secp256k1Validation.ts:33-51`, applied at
+/// `WalletResultValidation.ts:1529-1531`): `fromDER` also reads an integer
+/// whose high bit lacks its zero pad, an entry the reference keeps and its
+/// client refuses (`docs/ARCHITECTURE.md` section 7).
 fn signature_bytes(value: &str) -> Option<Vec<u8>> {
     let bytes = hex::decode(value).ok()?;
-    (bytes.len() <= 72 && bsv_rs::primitives::ec::Signature::from_der(&bytes).is_ok())
-        .then_some(bytes)
+    let canonical = bytes.len() >= 8
+        && bytes.len() <= 72
+        && bytes[0] == 0x30
+        && usize::from(bytes[1]) == bytes.len() - 2
+        && der_integer(&bytes, 2).and_then(|at| der_integer(&bytes, at)) == Some(bytes.len());
+    canonical.then_some(bytes)
+}
+
+/// One canonical DER integer at `at`: tag, a length of 1 to 33, no sign bit,
+/// no needless zero pad, a value in 1..n. Answers the offset past it.
+fn der_integer(bytes: &[u8], at: usize) -> Option<usize> {
+    if *bytes.get(at)? != 0x02 {
+        return None;
+    }
+    let length = usize::from(*bytes.get(at + 1)?);
+    let scalar = bytes.get(at + 2..at + 2 + length)?;
+    if !(1..=33).contains(&length)
+        || scalar[0] & 0x80 != 0
+        || (length > 1 && scalar[0] == 0 && scalar[1] & 0x80 == 0)
+    {
+        return None;
+    }
+    let digits = &scalar[scalar.iter().position(|&b| b != 0)?..];
+    let mut padded = [0u8; 32];
+    padded
+        .get_mut(32usize.checked_sub(digits.len())?..)?
+        .copy_from_slice(digits);
+    // A secret key's range is the scalar's, 1..n.
+    bsv_rs::primitives::PrivateKey::from_bytes(&padded).ok()?;
+    Some(at + 2 + length)
 }
 
 fn compact_size(value: usize) -> usize {
