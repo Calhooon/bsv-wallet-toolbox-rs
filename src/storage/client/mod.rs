@@ -54,6 +54,8 @@ mod refusal_class_tests;
 mod storage_client;
 #[cfg(test)]
 mod transport_fault_tests;
+#[cfg(test)]
+mod volunteered_certificate_tests;
 mod wire;
 #[cfg(test)]
 mod wire_tests;
