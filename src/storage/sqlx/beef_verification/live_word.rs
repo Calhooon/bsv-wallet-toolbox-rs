@@ -766,4 +766,29 @@ mod tests {
             assert_eq!(word(era, era), ScriptFlags::standard(era));
         }
     }
+
+    /// #488 surface 9 (bsv-rs #434, #453): `ScriptFlags::check` refuses a
+    /// word without SIGHASH_FORKID, GENESIS or UTXO_AFTER_GENESIS, and its
+    /// reason texts moved; every word this module hands `Spend::set_flags`
+    /// carries all three on each network at each era boundary, so no door
+    /// reaches that refusal and no toolbox text quotes it.
+    #[test]
+    fn every_judged_word_passes_the_flags_check() {
+        for network in ["main", "test", "regtest"] {
+            let chain = super::super::chain_params(network).unwrap();
+            let (g, c) = (chain.genesis_height, chain.chronicle_height);
+            let tip = |h| crate::services::chain_tip(&chain, h, 0, 0, None);
+            for spend_tip in [None, Some(g), Some(c - 2), Some(c - 1), Some(c + 100)] {
+                for coin in [None, Some(g), Some(c - 1), Some(c)] {
+                    let word = input_word(network, spend_tip.map(tip), coin.map(u64::from));
+                    let Ok(word) = word else { continue };
+                    assert!(word.check().is_ok(), "{network} {spend_tip:?} {coin:?}");
+                    let required = ScriptFlags::SIGHASH_FORKID
+                        | ScriptFlags::GENESIS
+                        | ScriptFlags::UTXO_AFTER_GENESIS;
+                    assert!(word.contains(required), "{network} {spend_tip:?} {coin:?}");
+                }
+            }
+        }
+    }
 }
