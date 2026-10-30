@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.4] - 2026-10-30
+
 ### Added
 
 - #450: add the synchronous `SpendVerifier` trait, `SpendRequest` and
