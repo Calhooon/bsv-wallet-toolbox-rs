@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::services::mock::MockWalletServices;
-use crate::storage::WalletStorageWriter;
+use crate::storage::{WalletStorageReader, WalletStorageWriter};
 use crate::StorageSqlx;
 use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
@@ -67,8 +67,26 @@ async fn fund_with(wallet: &Wallet<StorageSqlx, MockWalletServices>, lock: &[u8]
     fund_tagged(wallet, lock, 0).await
 }
 
+/// The proof height of `fund_tagged`'s coin for `tag`: past the Genesis
+/// activation of the store's network, read from bsv-rs's `ChainParams`, so
+/// the signer judges the input (a pre-Genesis coin it skips, #490). Each
+/// tag its own height: independent coinbase proofs sit apart in one BEEF.
+/// Below the Chronicle activation, the era of the mock services' tip.
+pub(super) fn above_genesis(wallet: &Wallet<StorageSqlx, MockWalletServices>, tag: u32) -> u32 {
+    let chain = match wallet.storage().get_settings().chain.as_str() {
+        "main" => bsv_rs::block::ChainParams::mainnet(),
+        "test" => bsv_rs::block::ChainParams::testnet(),
+        "regtest" => bsv_rs::block::ChainParams::regtest(),
+        other => panic!("no ChainParams for the store's network {other}"),
+    };
+    let height = chain.genesis_height + 1 + tag;
+    assert!(height < chain.chronicle_height, "a post-Genesis coin");
+    height
+}
+
 /// `fund_with`, the coin's parent spending outpoint `tag:0` (its own txid
-/// per tag), so a wallet can be funded with many coins.
+/// per tag), so a wallet can be funded with many coins; its proof at
+/// [`above_genesis`].
 pub(super) async fn fund_tagged(
     wallet: &Wallet<StorageSqlx, MockWalletServices>,
     lock: &[u8],
@@ -91,13 +109,15 @@ pub(super) async fn fund_tagged(
     });
     let txid = parent.id();
     let raw = parent.to_binary();
-    let bump = MerklePath::from_coinbase_txid(&txid, 100_000);
+    let height = above_genesis(wallet, tag);
+    let bump = MerklePath::from_coinbase_txid(&txid, height);
     let now = Utc::now();
     sqlx::query(
         "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) \
-         VALUES (?, 100000, 0, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&txid)
+    .bind(height)
     .bind("aa".repeat(32))
     .bind(&txid)
     .bind(bump.to_binary())
