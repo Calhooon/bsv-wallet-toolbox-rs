@@ -16,6 +16,7 @@ ignore = []
 
 # https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
 [bans]
+# Direct dependency: regex for the reference identity tokenizer's five Unicode boolean classes (#474).
 # multiple-versions: warn while ecosystem major versions coexist; no skips.
 multiple-versions = "warn"
 # wildcards: require an explicit version requirement.
