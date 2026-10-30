@@ -79,13 +79,21 @@ an invalid requested identifier or an operation unavailable in the wallet's
 state. They do not provide distinct host status codes for those subcases.
 `InvalidBeef` and `SpendRefused` are argument refusals, not separate BEEF classes.
 
-`NetworkError`, `ServiceError`, `StorageError`, `DatabaseError`, `SqlxError`,
-`HttpError`, `LockTimeout`, `Internal`, `RateLimited`, `NoExplorerAnswered`,
-`NoServicesAvailable`, `SyncError`, `SyncConflict`, `MigrationError`, `IoError`
-and `JsonError` stay faults in `WalletError`, with their existing payloads.
-`BroadcastFailed`, `TransactionError` and `SigningError` also stay faults:
-these variants do not establish a classed request refusal. A provider outage
-must not become a refusal by matching a phrase in its detail.
+Faults are bsv-rs's typed `WalletFault { family, message }` (#439, since the
+beta.4 re-pin), the message the toolbox Display unchanged; its display and
+its wire frame (code 1) equal the `WalletError` of the same message, byte for
+byte, so no host text moves. `WalletFaultFamily` is non-exhaustive: a host
+match carries a wildcard arm.
+
+| Family | Toolbox variants |
+|---|---|
+| `Transport` | `NetworkError`, `HttpError` |
+| `Service` | `ServiceError`, `BroadcastFailed`, `NoServicesAvailable`, `RateLimited`, `NoExplorerAnswered` |
+| `Storage` | `StorageError`, `DatabaseError`, `SqlxError`, `MigrationError`, `SyncError`, `SyncConflict`, `LockTimeout` |
+| `Internal` | `TransactionError`, `SigningError`, `JsonError`, `IoError`, `Internal`, and the wallet's 28 direct sites below (`internal_fault`) |
+
+These variants do not establish a classed request refusal. A provider
+outage must not become a refusal by matching a phrase in its detail.
 
 `StoreBusy` keeps `WalletBusy { detail, retry_after_ms: None }` for every
 `StoreBusyReason`, and `ReviewActions` keeps `WalletReviewActions` with its
@@ -117,14 +125,27 @@ The service-factory lookup in the internalize door still wraps errors from a
 custom `WalletServices::get_chain_tracker`; built-in Services only reports
 missing configuration there. That custom-provider erasure remains under #185.
 
-The four reference/status guards in `validate_transaction_for_abort` use
-`Error::into_invalid_parameter`: it wraps the variant's unchanged Display in
-`SdkError(WalletRefusal { class: InvalidParameter, message })`. This is a
+Three of the four reference/status guards in `validate_transaction_for_abort`
+use `Error::into_invalid_parameter`: it wraps the variant's unchanged Display
+in `SdkError(WalletRefusal { class: InvalidParameter, message })`. This is a
 site-specific override, not a change to every `InvalidTransactionStatus`.
-Storage-level hosts receive that SDK wrapper where these four guards returned
-`Error::InvalidTransactionStatus(text)`. Stored-acceptance guards, including
-retirement, still return `Error::InvalidTransactionStatus(text)` and become
-`InvalidOperation` at the wallet boundary.
+Storage-level hosts receive that SDK wrapper where these guards returned
+`Error::InvalidTransactionStatus(text)`. The fourth, the unproven-status
+guard, carries the same class and text in the acceptance record below.
+
+An abort refused because acceptance is stored carries bsv-rs's typed record
+(#439, the owner's 20.4 (a)): `Error::SdkError(bsv_rs::Error::AbortAccepted(
+Box<AbortAcceptance>))` with `reference` (the caller's), `class` (the
+guard's own), `message` (the guard's whole Display), and `txid`, `status` and
+`accepting_word` when the guard knows them (`Error::abort_accepted`). The
+unproven-status guard keeps `InvalidParameter` (wire code 6), its status
+`unproven`; the shared stored-acceptance guard (`refuse_if_accepted`'s text)
+keeps `InvalidOperation` (wire code 1, `Wallet operation failed`), its
+accepting word named. The record displays the guard's text at the storage
+level and through the SDK, exactly as the `WalletRefusal` of the same class
+and message, and never reaches the wire. Retirement guards keep
+`Error::InvalidTransactionStatus(text)` (`InvalidOperation` at the wallet
+boundary) and build no record.
 The `SdkError` Display is transparent for an SDK `WalletRefusal`, so the
 storage caller sees the same message too; other SDK errors retain their
 `SDK error: ` prefix.
@@ -154,11 +175,13 @@ prefix, as for the variant mapping above:
 - `prove_certificate`'s absent and ambiguous certificate matches are
   `InvalidParameter` (`signer/methods/proveCertificate.ts:28-29`).
 
-The remaining 31 direct `WalletError` constructors are faults or the SDK
-reference's plain `Error`/`TypeError` paths. They carry no WERR class to
-preserve. This table accounts for every retained site in `wallet.rs`:
+The remaining direct constructors are faults or the SDK reference's plain
+`Error`/`TypeError` paths. They carry no WERR class to preserve. Since the
+beta.4 re-pin they are `WalletFault` of family `Internal` (`internal_fault`,
+the former `WalletError` with the same text). This table accounts for every
+retained site in `wallet.rs` (line numbers as of beta.3):
 
-| Site in `wallet.rs` | Fault and reason for retaining `WalletError` |
+| Site in `wallet.rs` | Fault and reason for an `Internal` fault |
 |---|---|
 | `create_action_at`, signing and processing (1390, 1402) | The wallet's atomic build failed and rolled back; not a caller-argument guard. |
 | `create_action_at`, missing broadcast BEEF (1635) | The wallet failed to assemble its own broadcast bytes. |

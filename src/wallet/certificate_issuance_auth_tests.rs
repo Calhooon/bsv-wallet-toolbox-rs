@@ -154,9 +154,12 @@ async fn a_bad_response_signature_is_refused_with_the_body_unread() {
     .await;
     // Peer.ts:1303-1305; bsv-rs's verifier errs rather than answer false.
     match issue(&server).await {
-        Err(bsv_rs::Error::WalletError(message)) => assert_eq!(
-            message,
-            "Network error: Failed to send request: wallet error: Signature is not valid"
+        Err(bsv_rs::Error::WalletFault(fault)) => assert_eq!(
+            (fault.family, fault.message.as_str()),
+            (
+                bsv_rs::WalletFaultFamily::Transport,
+                "Network error: Failed to send request: wallet error: Signature is not valid"
+            )
         ),
         other => panic!("expected a signature transport fault, got {other:?}"),
     }

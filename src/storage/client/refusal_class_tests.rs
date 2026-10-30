@@ -80,9 +80,10 @@ fn assert_generic(err: Error, code: i32, message: &str) {
         Error::StorageError(text) => assert_eq!(text, &format!("RPC error {code}: {message}")),
         other => panic!("expected the generic RPC text, got {other:?}"),
     }
+    // A Storage fault at the boundary (bsv-rs #439), the former WalletError.
     assert!(matches!(
         bsv_rs::Error::from(err),
-        bsv_rs::Error::WalletError(_)
+        bsv_rs::Error::WalletFault(fault) if fault.family == bsv_rs::WalletFaultFamily::Storage
     ));
 }
 

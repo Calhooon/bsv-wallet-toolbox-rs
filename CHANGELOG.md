@@ -74,6 +74,26 @@
     signer skips the input, as a pre-Genesis coin. Before, no bound, and an
     exhausted `set_work_limit` was `SpendRefusal::Resource`. No input of the
     test corpus spends more than 661 units.
+  - Typed faults (bsv-rs #439): every fault at the `WalletInterface`
+    boundary that was `bsv_rs::Error::WalletError(message)` is
+    `bsv_rs::Error::WalletFault(WalletFault { family, message })`, family
+    `Transport` (`NetworkError`, `HttpError`), `Service`, `Storage` or
+    `Internal` (the wallet's own build, parse and signing failures, and its
+    28 direct sites), the message unchanged; Display and wire frame equal the
+    former `WalletError`'s (`wallet error: <message>`, code 1). A host match
+    on `WalletError` for these moves to `WalletFault` (non-exhaustive family).
+  - Abort acceptance (bsv-rs #439, the owner's 20.4 (a)): `abortAction`
+    refused because acceptance is stored is `Error::SdkError(bsv_rs::Error::
+    AbortAccepted(Box<AbortAcceptance>))` with `reference`, `class`,
+    `message`, and `txid`, `status`, `accepting_word` when known: the
+    unproven-status guard `InvalidParameter` (was `WalletRefusal` of that
+    class), the shared stored-acceptance guard `InvalidOperation` (was
+    `Error::InvalidTransactionStatus` at the storage level and
+    `WalletRefusal { InvalidOperation }` at the boundary). Texts unchanged,
+    for example `Invalid transaction status: cannot abort action: transaction
+    <txid> has a recorded acceptance (<word>); only a transaction never
+    accepted can be retired`; wire codes unchanged (6, and 1 `Wallet
+    operation failed`). Retirement refusals are unchanged.
   - The chaintracks verifier tip answers for `Chain::Regtest` (CSV 576) where
     it held with `REGTEST_TIP_HELD` (#439); the constant is removed.
 

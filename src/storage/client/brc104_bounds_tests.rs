@@ -3,7 +3,8 @@
 //! session; the others answer a general message on a seeded session, as
 //! `transport_fault_tests.rs` seeds it. Each refusal is bsv-rs's text inside
 //! the client's envelope, a `NetworkError` that reaches the wallet boundary as
-//! `WalletError`, as the client's other non-transport refusals do.
+//! a Transport `WalletFault` (the former `WalletError`), as the client's
+//! other non-transport refusals do.
 
 use super::StorageClient;
 use crate::services::providers::http_client::brc104_door_cases::{case, header_limit_fault, Case};
@@ -71,15 +72,19 @@ async fn refusal(case: &Case) -> (Error, String) {
     (error, server.url())
 }
 
-/// `text` inside the envelope, a `NetworkError` here and `WalletError`
-/// through the boundary.
+/// `text` inside the envelope, a `NetworkError` here and a Transport
+/// `WalletFault` through the boundary (bsv-rs #439), displayed as the
+/// `WalletError` of the same message.
 fn assert_enveloped(name: &str, error: Error, text: &str) {
     let expected = format!("{ENVELOPE}{text}");
     assert!(matches!(error, Error::NetworkError(_)), "{name}: {error:?}");
     assert_eq!(error.to_string(), expected, "{name}");
     assert_eq!(
         bsv_rs::Error::from(error),
-        bsv_rs::Error::WalletError(expected),
+        bsv_rs::Error::WalletFault(bsv_rs::WalletFault::new(
+            bsv_rs::WalletFaultFamily::Transport,
+            expected
+        )),
         "{name}"
     );
 }

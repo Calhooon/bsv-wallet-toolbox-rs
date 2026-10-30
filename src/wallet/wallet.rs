@@ -1335,7 +1335,7 @@ where
             Err(crate::storage::DoorRefusal::Sign(e)) => {
                 // Signing failed inside the door: rolled back, nothing written.
                 tracing::error!(error = %e, "Signing failed in create_action; the action was not written");
-                return Err(bsv_rs::Error::WalletError(format!(
+                return Err(internal_fault(format!(
                     "Signing failed: {}. Transaction aborted and UTXOs released.",
                     e
                 )));
@@ -1347,7 +1347,7 @@ where
             }
             Err(crate::storage::DoorRefusal::Process(e)) => {
                 tracing::error!(error = %e, "Process action failed in create_action; the action was not written");
-                return Err(bsv_rs::Error::WalletError(format!(
+                return Err(internal_fault(format!(
                     "Process action failed: {}. Transaction aborted and UTXOs released.",
                     e
                 )));
@@ -1600,7 +1600,7 @@ where
                     {
                         tracing::error!(txid = %txid, error = %abort_err, "Failed to abort transaction after a broadcast it could not build");
                     }
-                    return Err(bsv_rs::Error::WalletError(format!(
+                    return Err(internal_fault(format!(
                         "No BEEF available for broadcast of txid {}. Transaction aborted and inputs released.",
                         txid
                     )));
@@ -1634,8 +1634,8 @@ where
             }
 
             // Convert txid string to [u8; 32]
-            let txid_bytes = hex::decode(&txid)
-                .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid txid: {}", e)))?;
+            let txid_bytes =
+                hex::decode(&txid).map_err(|e| internal_fault(format!("Invalid txid: {}", e)))?;
             let mut txid_array = [0u8; 32];
             txid_array.copy_from_slice(&txid_bytes);
 
@@ -1689,12 +1689,12 @@ where
             args.inputs.as_deref(),
             args.outputs.as_deref(),
         )
-        .map_err(|e| bsv_rs::Error::WalletError(format!("Failed to build transaction: {}", e)))?;
+        .map_err(|e| internal_fault(format!("Failed to build transaction: {}", e)))?;
         let reference = storage_result.reference.clone();
         // Storage and signAction use base64 text; the SDK result carries the
         // decoded bytes, as does the reference's binary wallet wire.
         let reference_bytes = bsv_rs::primitives::from_base64(&reference)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid storage reference: {e}")))?;
+            .map_err(|e| internal_fault(format!("Invalid storage reference: {e}")))?;
 
         // Convert storage inputs to signer inputs for caching
         let signer_inputs: Vec<SignerInput> = storage_result
@@ -1794,10 +1794,7 @@ where
         let mut beef = match storage_result.input_beef.as_deref() {
             Some(input_beef) if !input_beef.is_empty() => {
                 bsv_rs::transaction::Beef::from_binary(input_beef).map_err(|e| {
-                    bsv_rs::Error::WalletError(format!(
-                        "create_action: failed to parse input_beef: {}",
-                        e
-                    ))
+                    internal_fault(format!("create_action: failed to parse input_beef: {}", e))
                 })?
             }
             _ => bsv_rs::transaction::Beef::new(),
@@ -1805,7 +1802,7 @@ where
         beef.merge_raw_tx(unsigned_tx.clone(), None);
         let unsigned_txid = compute_txid(&unsigned_tx);
         let atomic_beef = beef.to_binary_atomic(&unsigned_txid).map_err(|e| {
-            bsv_rs::Error::WalletError(format!(
+            internal_fault(format!(
                 "create_action: failed to encode AtomicBEEF for signableTransaction.tx: {}",
                 e
             ))
@@ -2086,7 +2083,7 @@ where
             if let Some(sequence) = spend.sequence_number {
                 raw_tx = crate::wallet::signer::set_input_sequence(&raw_tx, *vin, sequence)
                     .map_err(|e| {
-                        bsv_rs::Error::WalletError(format!(
+                        internal_fault(format!(
                             "signAction spend {vin}: cannot set sequence {sequence:#x}: {e}"
                         ))
                     })?;
@@ -2119,7 +2116,7 @@ where
                 {
                     tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after signing error");
                 }
-                return Err(bsv_rs::Error::WalletError(format!(
+                return Err(internal_fault(format!(
                     "Signing failed: {}. Transaction aborted and UTXOs released.",
                     e
                 )));
@@ -2193,7 +2190,7 @@ where
                 {
                     tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after process error");
                 }
-                return Err(bsv_rs::Error::WalletError(format!(
+                return Err(internal_fault(format!(
                     "Process action failed: {}. Transaction aborted and UTXOs released.",
                     e
                 )));
@@ -2288,7 +2285,7 @@ where
                     {
                         tracing::error!(txid = %txid, error = %abort_err, "Failed to abort transaction after a broadcast it could not build (sign_action)");
                     }
-                    return Err(bsv_rs::Error::WalletError(format!(
+                    return Err(internal_fault(format!(
                         "{} for txid {}. Transaction aborted and inputs released.",
                         fault, txid
                     )));
@@ -2323,8 +2320,8 @@ where
         }
 
         // Convert txid string to [u8; 32]
-        let txid_bytes = hex::decode(&txid)
-            .map_err(|e| bsv_rs::Error::WalletError(format!("Invalid txid: {}", e)))?;
+        let txid_bytes =
+            hex::decode(&txid).map_err(|e| internal_fault(format!("Invalid txid: {}", e)))?;
         let mut txid_array = [0u8; 32];
         txid_array.copy_from_slice(&txid_bytes);
 
@@ -2342,7 +2339,7 @@ where
             let mut beef = match pending_tx.input_beef.as_deref() {
                 Some(input_beef) if !input_beef.is_empty() => {
                     bsv_rs::transaction::Beef::from_binary(input_beef).map_err(|e| {
-                        bsv_rs::Error::WalletError(format!(
+                        internal_fault(format!(
                             "sign_action: failed to parse cached input_beef: {}",
                             e
                         ))
@@ -2352,7 +2349,7 @@ where
             };
             beef.merge_raw_tx(signed_tx.clone(), None);
             beef.to_binary_atomic(&txid).map_err(|e| {
-                bsv_rs::Error::WalletError(format!(
+                internal_fault(format!(
                     "sign_action: failed to encode AtomicBEEF for result.tx: {}",
                     e
                 ))
@@ -2468,10 +2465,7 @@ where
                             .key_deriver()
                             .derive_public_key(&protocol, &key_id, &counterparty, true)
                             .map_err(|e| {
-                                bsv_rs::Error::WalletError(format!(
-                                    "BRC-29 key derivation failed: {}",
-                                    e
-                                ))
+                                internal_fault(format!("BRC-29 key derivation failed: {}", e))
                             })?;
                         if derived.hash160()[..] != script[3..23] {
                             return Err(bsv_rs::Error::WalletRefusal {
@@ -2809,9 +2803,7 @@ where
 
         // Get the master keyring from storage
         let master_keyring = storage_cert.keyring.as_ref().ok_or_else(|| {
-            bsv_rs::Error::WalletError(
-                "Certificate does not have a master keyring stored".to_string(),
-            )
+            internal_fault("Certificate does not have a master keyring stored".to_string())
         })?;
 
         // Create keyring for verifier
@@ -2955,6 +2947,14 @@ mod discovery_trust;
 #[cfg(test)]
 #[path = "discovery_trust_tests.rs"]
 mod discovery_trust_tests;
+
+/// A fault the wallet raises itself (bsv-rs #439): its own build, parse or
+/// signing failed, or the SDK reference's plain `Error` path. The family is
+/// `Internal`; the message, its display and its wire frame are the former
+/// `WalletError`'s, byte for byte.
+fn internal_fault(message: impl Into<String>) -> bsv_rs::Error {
+    crate::error::direct_fault(bsv_rs::WalletFaultFamily::Internal, message)
+}
 
 /// Validates an in-process originator (`ts-stack@edf6e03`, `validationHelpers.ts:1003-1036`).
 /// `None` is the reference's `undefined` and passes; `Some("")` is a supplied
@@ -3267,7 +3267,7 @@ fn validate_certificate_field_name(name: &str) -> bsv_rs::Result<()> {
         || name.len() > 50
         || matches!(name, "__proto__" | "constructor" | "prototype")
     {
-        return Err(bsv_rs::Error::WalletError(
+        return Err(internal_fault(
             "Certificate field name must be a safe UTF-8 string of 1–50 bytes".to_string(),
         ));
     }
@@ -3276,7 +3276,7 @@ fn validate_certificate_field_name(name: &str) -> bsv_rs::Result<()> {
 
 fn validate_certificate_reveal_names(names: &[String]) -> bsv_rs::Result<()> {
     if names.len() > MAX_CERTIFICATE_FIELDS {
-        return Err(bsv_rs::Error::WalletError(format!(
+        return Err(internal_fault(format!(
             "fieldsToReveal must be an array of at most {MAX_CERTIFICATE_FIELDS} strings"
         )));
     }
@@ -3284,7 +3284,7 @@ fn validate_certificate_reveal_names(names: &[String]) -> bsv_rs::Result<()> {
     for name in names {
         validate_certificate_field_name(name)?;
         if !seen.insert(name) {
-            return Err(bsv_rs::Error::WalletError(format!(
+            return Err(internal_fault(format!(
                 "fieldsToReveal contains duplicate field: {name}"
             )));
         }
@@ -3297,7 +3297,7 @@ fn validate_certificate_record(
     label: &str,
 ) -> bsv_rs::Result<()> {
     if record.len() > MAX_CERTIFICATE_FIELDS {
-        return Err(bsv_rs::Error::WalletError(format!(
+        return Err(internal_fault(format!(
             "{label} cannot contain more than {MAX_CERTIFICATE_FIELDS} entries"
         )));
     }
@@ -3317,10 +3317,10 @@ fn validate_certificate_base64_values(
         // STANDARD requires padding and zero trailing bits, as does the
         // reference's base64ToBytes. Value size caps remain with #223.
         let decoded = BASE64.decode(value).map_err(|_| {
-            bsv_rs::Error::WalletError(format!("{label} {name} must use canonical base64 encoding"))
+            internal_fault(format!("{label} {name} must use canonical base64 encoding"))
         })?;
         if decoded.is_empty() {
-            return Err(bsv_rs::Error::WalletError(format!(
+            return Err(internal_fault(format!(
                 "{label} {name} is empty, oversized, or non-canonical"
             )));
         }
@@ -3655,23 +3655,20 @@ fn create_keyring_for_verifier(
     // canonical32ByteBase64 at MasterCertificate.ts:76-78,365 checks the
     // encoding and length before the subset loop or any verifier key IDs.
     let serial_bytes = BASE64.decode(serial_number).map_err(|_| {
-        bsv_rs::Error::WalletError(
-            "Certificate serial number must use canonical base64 encoding".to_string(),
-        )
+        internal_fault("Certificate serial number must use canonical base64 encoding".to_string())
     })?;
     if serial_bytes.is_empty() || serial_bytes.len() > 32 {
-        return Err(bsv_rs::Error::WalletError(
+        return Err(internal_fault(
             "Certificate serial number is empty, oversized, or non-canonical".to_string(),
         ));
     }
     if serial_bytes.len() != 32 {
-        return Err(bsv_rs::Error::WalletError(
+        return Err(internal_fault(
             "Certificate serial number must encode exactly 32 bytes".to_string(),
         ));
     }
 
-    let decryption_error =
-        || bsv_rs::Error::WalletError("Failed to decrypt certificate field!".to_string());
+    let decryption_error = || internal_fault("Failed to decrypt certificate field!".to_string());
 
     let protocol = Protocol::new(
         SecurityLevel::Counterparty,
@@ -3684,7 +3681,7 @@ fn create_keyring_for_verifier(
         // Match the subset check at MasterCertificate.ts:370-379, including
         // its empty-value arm (refused by the earlier value validation).
         if fields.get(field_name).is_none_or(String::is_empty) {
-            return Err(bsv_rs::Error::WalletError(format!(
+            return Err(internal_fault(format!(
                 "Fields to reveal must be a subset of the certificate fields. Missing the \"{field_name}\" field."
             )));
         }
@@ -4242,17 +4239,19 @@ mod tests {
         const FIELD_NAME_ERROR: &str =
             "Certificate field name must be a safe UTF-8 string of 1–50 bytes";
 
-        // The reference throws plain Error; the wallet boundary uses WalletError.
+        // The reference throws plain Error; the wallet boundary answers an
+        // Internal WalletFault (bsv-rs #439), its text the former WalletError's.
         fn assert_wallet_error<T: std::fmt::Debug>(
             scenario: &str,
             result: bsv_rs::Result<T>,
             expected: &str,
         ) {
             match result {
-                Err(bsv_rs::Error::WalletError(message)) => {
-                    assert_eq!(message, expected, "{scenario}");
+                Err(bsv_rs::Error::WalletFault(fault)) => {
+                    assert_eq!(fault.family, bsv_rs::WalletFaultFamily::Internal);
+                    assert_eq!(fault.message, expected, "{scenario}");
                 }
-                other => panic!("{scenario}: expected WalletError({expected:?}), got {other:?}"),
+                other => panic!("{scenario}: expected WalletFault({expected:?}), got {other:?}"),
             }
         }
 

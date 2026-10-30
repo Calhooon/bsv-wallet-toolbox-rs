@@ -128,9 +128,19 @@ pub async fn abort_action_internal(
     })?;
 
     // Step 2: Validate the transaction can be aborted
-    let kind = validate_transaction_for_abort(&tx)?;
+    let kind = validate_transaction_for_abort(&tx, reference)?;
     if let Some(txid) = tx.txid.as_deref() {
-        refuse_if_accepted(&mut db_tx, txid, "abort action").await?;
+        // The shared guard's text and class (`InvalidOperation`), its
+        // stored acceptance typed for the host (bsv-rs #439).
+        if let Some(word) = accepting_word_for(&mut db_tx, txid).await? {
+            return Err(accepted("abort action", txid, &word).abort_accepted(
+                reference,
+                bsv_rs::WalletRefusalClass::InvalidOperation,
+                Some(txid),
+                Some(&tx.status),
+                Some(&word),
+            ));
+        }
     }
 
     match kind {
@@ -265,11 +275,17 @@ pub(crate) async fn refuse_if_accepted(
     operation: &str,
 ) -> Result<()> {
     if let Some(word) = accepting_word_for(conn, txid).await? {
-        return Err(Error::InvalidTransactionStatus(format!(
-            "cannot {operation}: transaction {txid} has a recorded acceptance ({word}); only a transaction never accepted can be retired"
-        )));
+        return Err(accepted(operation, txid, &word));
     }
     Ok(())
+}
+
+/// The shared guard's refusal of `operation` on a transaction whose
+/// acceptance is stored.
+fn accepted(operation: &str, txid: &str, word: &str) -> Error {
+    Error::InvalidTransactionStatus(format!(
+        "cannot {operation}: transaction {txid} has a recorded acceptance ({word}); only a transaction never accepted can be retired"
+    ))
 }
 
 /// Reads only stored words, including acceptance kept after a later refusal
@@ -571,7 +587,7 @@ fn parse_status(status: &str) -> Option<TransactionStatus> {
 }
 
 /// Validate that the transaction can be aborted, and how.
-fn validate_transaction_for_abort(tx: &TransactionRecord) -> Result<AbortKind> {
+fn validate_transaction_for_abort(tx: &TransactionRecord, reference: &str) -> Result<AbortKind> {
     // ts-stack@edf6e03 StorageProvider.ts:716-720 classes these reference refusals.
     // Must be an outgoing transaction
     if !tx.is_outgoing {
@@ -586,11 +602,20 @@ fn validate_transaction_for_abort(tx: &TransactionRecord) -> Result<AbortKind> {
         Error::InvalidTransactionStatus(format!("unknown transaction status: {}", tx.status))
     })?;
 
+    // The status guard keeps its reference class, `InvalidParameter`; the
+    // acceptance it reads is the status itself (bsv-rs #439).
     if status == TransactionStatus::Unproven {
         return Err(Error::InvalidTransactionStatus(format!(
             "cannot abort action: action with status '{}' records an acceptance and cannot be aborted",
             tx.status
-        )).into_invalid_parameter());
+        ))
+        .abort_accepted(
+            reference,
+            bsv_rs::WalletRefusalClass::InvalidParameter,
+            tx.txid.as_deref(),
+            Some(&tx.status),
+            None,
+        ));
     }
 
     // Check if status is abortable
@@ -706,12 +731,21 @@ mod tests {
     use crate::storage::traits::AuthId;
     use crate::storage::WalletStorageWriter;
 
+    /// The message of an `InvalidParameter` refusal: a reference guard's
+    /// `WalletRefusal`, or the unproven-status guard's typed acceptance
+    /// (bsv-rs #439), which keeps the same class and text.
     fn invalid_parameter_message(error: Error) -> String {
         match error {
             Error::SdkError(bsv_rs::Error::WalletRefusal {
                 class: bsv_rs::WalletRefusalClass::InvalidParameter,
                 message,
             }) => message,
+            Error::SdkError(bsv_rs::Error::AbortAccepted(acceptance))
+                if acceptance.class == bsv_rs::WalletRefusalClass::InvalidParameter =>
+            {
+                assert_eq!(acceptance.status.as_deref(), Some("unproven"));
+                acceptance.message
+            }
             other => panic!("Expected InvalidParameter error, got: {other:?}"),
         }
     }
@@ -850,10 +884,26 @@ mod tests {
         )
         .await
         .unwrap_err();
-        match bsv_rs::Error::from(err) {
-            bsv_rs::Error::WalletRefusal { class, message } => {
-                assert_eq!(class, expected_class);
-                assert!(message.contains(expected), "{message}");
+        // The typed record (bsv-rs #439): the guard's class and text, the
+        // caller's reference, and the accepting word when the shared guard
+        // read one; its display is the guard's text.
+        let sdk = bsv_rs::Error::from(err);
+        let text = sdk.to_string();
+        match sdk {
+            bsv_rs::Error::AbortAccepted(acceptance) => {
+                assert_eq!(acceptance.class, expected_class);
+                assert!(
+                    acceptance.message.contains(expected),
+                    "{}",
+                    acceptance.message
+                );
+                assert_eq!(text, acceptance.message);
+                assert_eq!(acceptance.reference, reference);
+                if expected_class == bsv_rs::WalletRefusalClass::InvalidOperation {
+                    let word = acceptance.accepting_word.as_deref().unwrap();
+                    assert!(acceptance.message.contains(word), "{}", acceptance.message);
+                    assert!(acceptance.txid.is_some());
+                }
             }
             other => panic!("Expected {expected_class:?}, got: {other:?}"),
         }
