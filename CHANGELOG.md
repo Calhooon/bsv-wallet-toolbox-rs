@@ -94,18 +94,53 @@
     <txid> has a recorded acceptance (<word>); only a transaction never
     accepted can be retired`; wire codes unchanged (6, and 1 `Wallet
     operation failed`). Retirement refusals are unchanged.
-  - Re-read with no toolbox change at this pin: the minimal-length HMAC
-    (bsv-rs #379; the toolbox names neither `HmacKeyEncoding` nor
-    `HmacVerifyPolicy`, and its issuance witnesses keep their bytes); the
-    wire originator, header and result-row words (bsv-rs #338, #458, #471,
-    #473, #487, #495, #496: the toolbox's in-process originator refusal
-    keeps its `Validation error: ` prefix before the transceiver's words);
-    the key-value store (bsv-rs #441 and its follow-ups, not a toolbox
-    surface); `ScriptFlags::check` reasons (bsv-rs #453, #434: no toolbox
-    witness quotes one). A trusted certifier's description is accepted by
-    the settings at 1-500 bytes while bsv-rs's discovery result row (R79)
-    takes 5-50: a host setting outside 5-50 makes the discovery answer one a
-    bsv-rs client refuses; the defaults (49 bytes) pass.
+  - A certificateResponse a server volunteers to the authenticated
+    `StorageClient` (its Peer has no certificate policy) is refused as the
+    reference refuses it (bsv-rs #445): `Network error: Failed to send
+    request: authentication error: Handshake timeout` (the certificate
+    validated, the handshake waited out) becomes `Network error: Failed to
+    send request: authentication error: Certificates do not match a locally
+    requested set for this session.` Nothing live volunteers one.
+  - HMAC (bsv-rs #379): `createHmac` issues the amended BRC-56 tag, keyed by
+    the ECDH X coordinate without its leading zero octets; for a key with
+    leading zeros (about 1 in 256) the tag differs from beta.3's 32-byte-key
+    tag. `verifyHmac` accepts both forms; at beta.3 it refused the
+    minimal-length tag of such a key with `HMAC is not valid: the tag was made
+    under a minimal-length key (the sender drops the N leading zero byte(s) of
+    the 32-byte X coordinate; BRC-56)` (`HmacMinimalLengthKey`), now `valid:
+    true`. The toolbox names neither `HmacKeyEncoding` nor `HmacVerifyPolicy`;
+    a host matching `HmacMinimalLengthKey` moves to `HmacLegacyKey`, emitted
+    only under `HmacVerifyPolicy::MinimalLengthOnly`.
+  - `ScriptFlags::check` reasons (bsv-rs #434, #453): no toolbox text quotes
+    one, and no door reaches the refusal: every word the doors and the signer
+    set carries `SIGHASH_FORKID`, `GENESIS` and `UTXO_AFTER_GENESIS`.
+  - The key-value store (bsv-rs #441 and its follow-ups, the beta.4 entries
+    #340 to #344, #454, #470, #477 to #479, #483, #489): not a toolbox surface; the toolbox writes and reads no
+    local or global key-value tokens.
+  - The wallet's answers against bsv-rs's result rows (#487, #495), as a JSON
+    or wire client of the wallet (the CLI's daemon among them) now reads them,
+    each an uncoded `WalletError` `Invalid <call> result <field>: expected
+    <expected>` that beta.3's clients accepted: the discovery answers pass
+    R74, R76, R79 (the certifier name at 1-100 bytes, the settings' bound;
+    the description, which the door cuts to 50 bytes and replaces below 5,
+    so any setting passes; an icon URL of 1-500 bytes, the settings' bound),
+    R80, R81 and R82; `proveCertificate`'s keyring is exactly the requested
+    fields (R86); `createSignature` takes the `data` form. Two overlay
+    inputs break a row, the door passing overlay certificates through
+    unverified: an overlay certificate with no signature (`Invalid <call>
+    result certificates[i]: expected a canonical signed wallet
+    certificate`) and an empty overlay keyring value (`Invalid <call>
+    result certificates[i].publiclyRevealedKeyring.<name>: expected 1+
+    UTF-8 bytes`). CLI #371, unchanged: under
+    `includeInputUnlockingScripts` an unsigned action's input carries no
+    `unlockingScript` (the faithful port of `listActionsIdb.ts:77,91`), and
+    the client refuses it with `Invalid listActions result
+    actions[i].inputs[j].unlockingScript: expected the explicitly requested
+    unlocking script`.
+  - Re-read with no toolbox change: the wire originator, header and frame
+    words (bsv-rs #338, #458, #471, #473, #496; the toolbox's in-process
+    originator refusal keeps its `Validation error: ` prefix before the
+    transceiver's words).
   - The chaintracks verifier tip answers for `Chain::Regtest` (CSV 576) where
     it held with `REGTEST_TIP_HELD` (#439); the constant is removed.
 

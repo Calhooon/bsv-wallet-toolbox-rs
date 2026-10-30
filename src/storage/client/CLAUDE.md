@@ -37,6 +37,7 @@ marks their #105 changes and the remaining decisions that need the owner.
 | `wire.rs` | 205 | Request field names and reference result aliases |
 | `wire_tests.rs` | 361 | Reference responses and outgoing-name regressions |
 | `brc104_bounds_tests.rs` | 161 | beta.3's BRC-104 response bounds through the authenticated client (#423) |
+| `volunteered_certificate_tests.rs` | 178 | A certificateResponse volunteered to the policyless client, refused in bsv-rs's words (#488) |
 | `refusal_class_tests.rs` | 352 | A server refusal per class through loopback mockito, and through a `Wallet` (#436) |
 
 ## Key Exports
@@ -349,7 +350,13 @@ session, the rest on a seeded session's general message, with the
 issuance door's cases past each bound (a 2,050-character signature, a
 33-byte request id). An answer typed
 `certificateRequest` without a requested-certificates header is refused by
-the Peer with `requestedCertificates must be an object.`. The signed-header
+the Peer at its nonce, `certificateRequest.nonce must be canonical base64.`
+(bsv-rs #445; at beta.3 `requestedCertificates must be an object.`). The
+client's Peer carries no certificate policy, so a certificateResponse a
+server volunteers on its session is refused before any listener,
+`Certificates do not match a locally requested set for this session.`
+(bsv-rs #445, `Peer.ts:1229-1241`; at beta.3 the certificate was validated
+and the handshake waited out): `volunteered_certificate_tests.rs`. The signed-header
 count bound is not reached over the client's HTTP/1 transport: hyper's
 100-header limit answers before it, as the `MAY_HAVE_BEEN_RECEIVED` transport
 fault above.

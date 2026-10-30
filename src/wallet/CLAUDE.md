@@ -256,6 +256,26 @@ validator. The inherent argument types omit those fields. Missing, short
 and long reasons use the same three refusal texts above, before any
 linkage cryptography; the returned counterparty keys remain compressed.
 
+## HMAC and the result rows at beta.4 (#488)
+
+`create_hmac` and `verify_hmac` delegate to bsv-rs's `ProtoWallet`, so since
+the beta.4 re-pin (bsv-rs #379) the wallet issues the amended BRC-56 tag,
+keyed by the ECDH X coordinate without its leading zero octets, and accepts
+both that tag and the 32-byte-key tag (the named, counted legacy form). At
+beta.3 it issued the 32-byte-key tag and refused the minimal-length one with
+`HmacMinimalLengthKey`. Witness: `hmac_key_tests.rs` (bsv-rs's two
+leading-zero vectors).
+
+A JSON or wire client of the wallet (bsv-rs's `HttpWalletJson` and
+`WalletWireTransceiver`, the CLI's daemon among the hosts) applies the
+reference client's result rows since beta.4 (bsv-rs #487, #495). The
+wallet's answers read back through `HttpWalletJson` against a loopback mock:
+`discovery_rows_tests.rs` (the nine discovery rows; the door passes overlay
+certificates through unverified, so an unsigned one breaks R74 and an empty
+keyring value R80, both findings) and `result_rows_tests.rs` (R86's keyring,
+the `createSignature` data form, and CLI #371's unsigned input recorded in
+today's words).
+
 ## Architecture
 
 ```
