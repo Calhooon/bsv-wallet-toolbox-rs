@@ -18,7 +18,7 @@ use crate::wallet::lookup::fixture::{key, revealed};
 use crate::wallet::lookup::{OverlayCertificate, OverlayLookupResolver};
 use bsv_rs::wallet::substrates::HttpWalletJson;
 
-type TestWallet = Wallet<crate::StorageSqlx, MockWalletServices>;
+pub(super) type TestWallet = Wallet<crate::StorageSqlx, MockWalletServices>;
 
 const CERTIFIER: u8 = 9;
 const SUBJECT: u8 = 8;
@@ -36,7 +36,7 @@ fn certifier(icon_url: Option<String>) -> Certifier {
     }
 }
 
-async fn wallet(icon_url: Option<String>) -> TestWallet {
+pub(super) async fn wallet(icon_url: Option<String>) -> TestWallet {
     let settings = WalletSettings {
         trust_settings: TrustSettings {
             trust_level: 1,
@@ -80,7 +80,7 @@ async fn overlay_with(serial: u8, fields: &[(&str, &str)]) -> OverlayCertificate
     revealed(&key(CERTIFIER), &key(SUBJECT), [serial; 32], fields).await
 }
 
-struct Overlay(Vec<OverlayCertificate>);
+pub(super) struct Overlay(pub(super) Vec<OverlayCertificate>);
 
 #[async_trait]
 impl OverlayLookupResolver for Overlay {
@@ -117,7 +117,7 @@ fn client(server: &mockito::ServerGuard) -> HttpWalletJson {
     HttpWalletJson::new(Some("rows.test".into()), Some(server.url())).unwrap()
 }
 
-async fn identity_read(
+pub(super) async fn identity_read(
     wallet: &TestWallet,
     overlay: Vec<OverlayCertificate>,
     requested: String,
