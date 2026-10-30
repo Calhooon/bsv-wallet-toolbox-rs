@@ -142,7 +142,19 @@
     signature, fields or keyring outside 1 to 100 entries, a keyring name
     with no field, a keyring value that is not canonical base64 of 1 to 2048
     bytes, or (at the overlay parser) properties other than the reference's
-    eight. Before the review of #493 such an entry reached the answer with
+    eight. A present but malformed value is dropped as the reference's
+    `Certificate.verify()` drops it before it verifies
+    (`Certificate.ts:30-43,73-81,117-126,233-321,425-441`): a `type` or
+    `serialNumber` not canonical base64 of 32 bytes, a subject or certifier
+    not a compressed key, a revocation outpoint not `<64 hex>[.<index>]`, a
+    field name empty, over 50 bytes or `__proto__`, `constructor` or
+    `prototype`, a field value over 1 MiB, or a signature empty or not
+    canonical DER of at most 72 bytes; the canonical DER rule is the
+    reference client's, stricter than the reference's decode
+    (`docs/ARCHITECTURE.md` D28). Before the re-read of #493 (`606e0618`):
+    an entry with any such value reached the answer and the client refused
+    the whole answer. Now: the entry is dropped and the rest are answered.
+    Before the review of #493 such an entry reached the answer with
     `""` filled in and the client refused the whole answer (`Invalid <call>
     result certificates[i]: expected a canonical signed wallet certificate`,
     or `Invalid <call> result certificates[i].publiclyRevealedKeyring.<name>:
