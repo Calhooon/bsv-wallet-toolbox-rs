@@ -28,6 +28,10 @@ mod record; // the reference's overlay certificate bounds
 mod decode; // the reference's overlay output decode
 use decode::parse_overlay_answer;
 
+#[cfg(test)]
+#[path = "lookup_fixture.rs"]
+pub(crate) mod fixture; // the reference's identity record and token, built
+
 // =============================================================================
 // OverlayCertificate
 // =============================================================================
