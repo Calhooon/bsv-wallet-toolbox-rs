@@ -132,27 +132,12 @@ fn the_word_pass_refuses_an_input_past_its_work_budget() {
     ));
 }
 
-/// The door's default-mode stream pass carries the per-input budget too
-/// (bsv-rs sets none by default), so it is bounded before the word pass: its
-/// own verdict is bsv-rs's `Verdict::NotJudged`, and the door answers it.
+/// The door's structure pass runs no script, so it carries no budget: the
+/// word pass alone refuses the input past its per-input budget, and the door
+/// answers that refusal (the keeper's word of 2026-10-30, structure-only).
 #[tokio::test]
-async fn the_door_stream_pass_carries_the_per_input_budget() {
+async fn the_door_refuses_an_input_past_its_work_budget() {
     let (parent, child) = p2pkh_spends(1);
-    let (bytes, _, headers) = frame(&parent, &child);
-    let pass = || beef_verification::default_pass(&bytes, &headers);
-    assert!(matches!(pass().unwrap(), Verdict::Valid { .. }));
-    assert!(matches!(
-        with_work((3, u64::MAX), pass).unwrap(),
-        Verdict::NotJudged {
-            input: 0,
-            cause: NotJudgedCause::WorkBudgetExceeded {
-                input: 0,
-                budget: 3,
-                ..
-            },
-            ..
-        }
-    ));
     door(&parent, &child).await.unwrap();
     // The override is the test thread's; the door's synchronous passes run
     // on it under the current-thread runtime.
@@ -184,3 +169,7 @@ fn the_word_pass_bounds_the_transactions_total_work() {
         other => panic!("expected the total's refusal, got {other:?}"),
     }
 }
+
+#[cfg(test)]
+#[path = "structure_pass_tests.rs"]
+mod structure_pass;

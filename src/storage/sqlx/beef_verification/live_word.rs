@@ -1,8 +1,8 @@
 //! The port's per-input word pass under bsv-rs's word (#440): the host
 //! `SpendVerifier`, the create pre-check's judged set and the door's
 //! per-transaction work total need the inputs one at a time, which bsv-rs's
-//! stream verifier does not expose. The SDK can stop at a default-mode script
-//! refusal, so this pass also keeps its later mining, outpoint and value
+//! stream verifier does not expose. The door's structure pass before it
+//! judges no spend, so this pass also keeps the mining, outpoint and value
 //! checks. Only referenced outputs stay resident; a transaction waiting for a
 //! parent is released in wire order.
 
