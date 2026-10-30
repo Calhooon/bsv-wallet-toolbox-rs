@@ -4,8 +4,8 @@
 //! Extended Format) merkle proofs against a ChainTracker.
 
 use bsv_rs::transaction::beef_stream::{
-    display_hex, referenced_outpoints, verify_stream_structure, ChainTip, Hash32, Headers,
-    SpendRefusal, StreamError, StreamVerifier, Verdict,
+    display_hex, verify_stream_structure, ChainTip, Hash32, Headers, SpendRefusal, StreamError,
+    Verdict,
 };
 use bsv_rs::transaction::{Beef, ChainTracker, ChainTrackerError};
 use std::collections::{HashMap, HashSet};
@@ -108,32 +108,19 @@ pub(super) async fn verify_beef_spends_with_verifier(
             }
         }
     }
-    // The port's per-input word pass judges the scripts under bsv-rs's word
-    // (#440). Only the typed default-mode script refusal is set aside. Because it can
-    // hide later structure/proof checks, complete those before the word pass.
-    let verdict = default_pass(bytes, &headers)?;
-    match verdict {
-        Verdict::Valid { .. } => live_word::verify(bytes, &headers, network, verifier),
-        Verdict::SpendRefused {
-            why: SpendRefusal::Script(_),
-            ..
-        } => {
-            verification_result(verify_stream_structure(bytes, &headers, None)?)?;
-            live_word::verify(bytes, &headers, network, verifier)
-        }
-        other => verification_result(other),
-    }
+    // The structure pass reads the graph, the roots and the proofs and runs
+    // no script: bsv-rs's default script mode is a parity mode, never a live
+    // verdict (the keeper's word of 2026-10-30, structure-only). The one word
+    // pass then judges every input once, under the network's ChainParams and
+    // both work budgets, with the mining, outpoint and value checks (#440).
+    verification_result(structure_pass(bytes, &headers)?)?;
+    live_word::verify(bytes, &headers, network, verifier)
 }
 
-/// bsv-rs's two-pass default-mode verdict (`verify_stream_two_pass`'s two
-/// passes) under the per-input work budget (bsv-rs #472): the stream
-/// verifier sets none by default, and this pass runs every unproven script.
-fn default_pass(bytes: &[u8], headers: &VerificationHeaders) -> Result<Verdict> {
-    let referenced = referenced_outpoints(bytes).map_err(stream_error)?;
-    StreamVerifier::retaining(bytes, headers, None, referenced)
-        .with_work_budget(Some(live_word::work_budgets().0))
-        .run()
-        .map_err(Error::IoError)
+/// bsv-rs's structure pass (`verify_stream_structure`): the bytes, the
+/// graph, the roots and the proofs, with no spend judged and no script run.
+fn structure_pass(bytes: &[u8], headers: &VerificationHeaders) -> Result<Verdict> {
+    verify_stream_structure(bytes, headers, None).map_err(Error::IoError)
 }
 
 /// The tracker's mining tip. With none, or a tip read that faults, the word
