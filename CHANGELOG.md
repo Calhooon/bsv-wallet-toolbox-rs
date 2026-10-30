@@ -94,6 +94,18 @@
     <txid> has a recorded acceptance (<word>); only a transaction never
     accepted can be retired`; wire codes unchanged (6, and 1 `Wallet
     operation failed`). Retirement refusals are unchanged.
+  - Re-read with no toolbox change at this pin: the minimal-length HMAC
+    (bsv-rs #379; the toolbox names neither `HmacKeyEncoding` nor
+    `HmacVerifyPolicy`, and its issuance witnesses keep their bytes); the
+    wire originator, header and result-row words (bsv-rs #338, #458, #471,
+    #473, #487, #495, #496: the toolbox's in-process originator refusal
+    keeps its `Validation error: ` prefix before the transceiver's words);
+    the key-value store (bsv-rs #441 and its follow-ups, not a toolbox
+    surface); `ScriptFlags::check` reasons (bsv-rs #453, #434: no toolbox
+    witness quotes one). A trusted certifier's description is accepted by
+    the settings at 1-500 bytes while bsv-rs's discovery result row (R79)
+    takes 5-50: a host setting outside 5-50 makes the discovery answer one a
+    bsv-rs client refuses; the defaults (49 bytes) pass.
   - The chaintracks verifier tip answers for `Chain::Regtest` (CSV 576) where
     it held with `REGTEST_TIP_HELD` (#439); the constant is removed.
 
