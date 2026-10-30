@@ -91,6 +91,16 @@ fn auth_protocol() -> Protocol {
     Protocol::new(SecurityLevel::Counterparty, AUTH_PROTOCOL_ID)
 }
 
+/// A 48-byte session nonce derived from `seed`, the reference's length
+/// (`createNonce`: 16 bytes and their 32-byte HMAC); since bsv-rs
+/// 0.9.0-beta.4 (#445) a Peer refuses another length at intake. A general
+/// message's nonce stays 32 bytes (`Random(32)`).
+fn derived_nonce(seed: &str) -> String {
+    let mut nonce = sha256(seed.as_bytes()).to_vec();
+    nonce.extend_from_slice(&sha256(nonce.as_slice())[..16]);
+    to_base64(&nonce)
+}
+
 fn header(request: &Request, name: &str) -> String {
     request
         .header(name)
@@ -172,7 +182,7 @@ impl PeerCertifier {
     fn initial_response(&self, request: &Request) -> Vec<u8> {
         let asked: AuthMessage = serde_json::from_slice(request.body().unwrap()).unwrap();
         let client_nonce = asked.initial_nonce.clone().unwrap_or_default();
-        let nonce = to_base64(&sha256(format!("certifier {client_nonce}").as_bytes()));
+        let nonce = derived_nonce(&format!("certifier {client_nonce}"));
         let mut data = from_base64(&client_nonce).unwrap();
         data.extend(from_base64(&nonce).unwrap());
         let mut answer = AuthMessage::new(MessageType::InitialResponse, self.key.public_key());

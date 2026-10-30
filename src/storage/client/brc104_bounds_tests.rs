@@ -108,19 +108,24 @@ async fn a_signature_past_2048_characters_is_refused_by_the_client() {
 
 #[tokio::test]
 async fn a_certificate_request_answer_keeps_its_type_through_the_client() {
-    // The type kept: the Peer reads a certificateRequest and asks for its set.
+    // The type kept: the Peer reads a certificateRequest. Since bsv-rs
+    // 0.9.0-beta.4 (#445) its intake checks the nonces first, in the
+    // reference's order (`AuthMessageValidation.ts:64-79,355-389`), so the
+    // vector's frame, which carries none, is refused on its nonce; before,
+    // `requestedCertificates must be an object.`
     let name = "type_certificateRequest";
     let (error, _) = refusal(&case("message_type", name)).await;
-    assert_enveloped(name, error, "requestedCertificates must be an object.");
-    // The vector's other spelling is a general message: the Peer's nonce
-    // check refuses the answer, which carries none.
+    assert_enveloped(
+        name,
+        error,
+        "certificateRequest.nonce must be canonical base64.",
+    );
+    // The vector's other spelling is a general message: the Peer's intake
+    // refuses the answer, which carries no nonce (#445); before,
+    // `Unable to verify nonce for general message from: <server key>`.
     let name = "type_CertificateRequest";
     let (error, _) = refusal(&case("message_type", name)).await;
-    let text = format!(
-        "Unable to verify nonce for general message from: {}",
-        server_key().public_key().to_hex()
-    );
-    assert_enveloped(name, error, &text);
+    assert_enveloped(name, error, "general.nonce must be canonical base64.");
 }
 
 #[tokio::test]
