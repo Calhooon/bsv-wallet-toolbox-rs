@@ -44,27 +44,32 @@ async fn refusal(case: &Case) -> (bsv_rs::Error, String) {
     (error, server.url())
 }
 
-/// The door's refusal is `WalletError` with bsv-rs's recorded text inside the
-/// envelope, byte for byte.
+/// The message of the door's Transport `WalletFault` (bsv-rs #439; the
+/// former `WalletError`, the same text).
+fn transport_message(name: &str, error: bsv_rs::Error) -> String {
+    match error {
+        bsv_rs::Error::WalletFault(fault)
+            if fault.family == bsv_rs::WalletFaultFamily::Transport =>
+        {
+            fault.message
+        }
+        other => panic!("{name}: expected a Transport WalletFault, got {other:?}"),
+    }
+}
+
+/// The door's refusal is a Transport fault with bsv-rs's recorded text
+/// inside the envelope, byte for byte.
 async fn refused(family: &str, name: &str) {
     let case = case(family, name);
     let (error, origin) = refusal(&case).await;
-    match error {
-        bsv_rs::Error::WalletError(message) => {
-            let text = case.refusal(&origin, "/issue");
-            assert_eq!(message, format!("{ENVELOPE}{text}"));
-        }
-        other => panic!("{name}: expected WalletError, got {other:?}"),
-    }
+    let text = case.refusal(&origin, "/issue");
+    assert_eq!(transport_message(name, error), format!("{ENVELOPE}{text}"));
 }
 
 /// The text the Peer answers a delivery with, inside the envelope.
 async fn peer_refused(family: &str, name: &str, text: &str) {
     let (error, _) = refusal(&case(family, name)).await;
-    match error {
-        bsv_rs::Error::WalletError(message) => assert_eq!(message, format!("{ENVELOPE}{text}")),
-        other => panic!("{name}: expected WalletError, got {other:?}"),
-    }
+    assert_eq!(transport_message(name, error), format!("{ENVELOPE}{text}"));
 }
 
 #[tokio::test]

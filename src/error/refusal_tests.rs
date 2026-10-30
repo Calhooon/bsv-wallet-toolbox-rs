@@ -2,6 +2,7 @@
 
 use super::{Error, StoreBusyReason};
 use bsv_rs::transaction::{beef_stream::SpendRefusal, Kind};
+use bsv_rs::WalletFaultFamily;
 use bsv_rs::WalletRefusalClass;
 
 fn assert_refusal(error: Error, expected_class: WalletRefusalClass, expected_text: &str) {
@@ -230,56 +231,80 @@ fn duplicate_entity() {
     );
 }
 
-fn assert_fault(error: Error) {
+/// A fault is bsv-rs's typed `WalletFault` (#439) of `family`, its message
+/// the toolbox Display, its display and wire text the `WalletError`'s of the
+/// same message, byte for byte.
+fn assert_fault(error: Error, family: WalletFaultFamily) {
     let expected = error.to_string();
-    match bsv_rs::Error::from(error) {
-        bsv_rs::Error::WalletError(message) => assert_eq!(message, expected),
+    let sdk = bsv_rs::Error::from(error);
+    assert_eq!(
+        sdk.to_string(),
+        bsv_rs::Error::WalletError(expected.clone()).to_string()
+    );
+    match sdk {
+        bsv_rs::Error::WalletFault(fault) => {
+            assert_eq!(fault.family, family);
+            assert_eq!(fault.message, expected);
+        }
         other => panic!("expected a fault, got {other:?}"),
     }
 }
 
 macro_rules! string_fault {
-    ($name:ident, $variant:ident) => {
+    ($name:ident, $variant:ident, $family:ident) => {
         #[test]
         fn $name() {
             for words in ["probe", "Validation error: not a refusal"] {
-                assert_fault(Error::$variant(words.to_string()));
+                assert_fault(
+                    Error::$variant(words.to_string()),
+                    WalletFaultFamily::$family,
+                );
             }
         }
     };
 }
 
-string_fault!(network_fault, NetworkError);
-string_fault!(service_fault, ServiceError);
-string_fault!(storage_fault, StorageError);
-string_fault!(database_fault, DatabaseError);
-string_fault!(http_fault, HttpError);
-string_fault!(lock_fault, LockTimeout);
-string_fault!(internal_fault, Internal);
-string_fault!(sync_fault, SyncError);
-string_fault!(sync_conflict, SyncConflict);
-string_fault!(migration_fault, MigrationError);
-string_fault!(broadcast_fault, BroadcastFailed);
-string_fault!(transaction_fault, TransactionError);
-string_fault!(signing_fault, SigningError);
+string_fault!(network_fault, NetworkError, Transport);
+string_fault!(service_fault, ServiceError, Service);
+string_fault!(storage_fault, StorageError, Storage);
+string_fault!(database_fault, DatabaseError, Storage);
+string_fault!(http_fault, HttpError, Transport);
+string_fault!(lock_fault, LockTimeout, Storage);
+string_fault!(internal_fault, Internal, Internal);
+string_fault!(sync_fault, SyncError, Storage);
+string_fault!(sync_conflict, SyncConflict, Storage);
+string_fault!(migration_fault, MigrationError, Storage);
+string_fault!(broadcast_fault, BroadcastFailed, Service);
+string_fault!(transaction_fault, TransactionError, Internal);
+string_fault!(signing_fault, SigningError, Internal);
 #[cfg(feature = "sqlite")]
-string_fault!(sqlx_fault, SqlxError);
+string_fault!(sqlx_fault, SqlxError, Storage);
 
 #[test]
 fn structured_faults() {
-    for error in [
-        Error::RateLimited {
-            provider: "fixture".to_string(),
-            retry_after_secs: 3,
-        },
-        Error::NoExplorerAnswered {
-            faults: vec![("fixture".to_string(), "could not look".to_string())],
-        },
-        Error::NoServicesAvailable,
-        Error::IoError(std::io::Error::other("fixture")),
-        Error::JsonError(serde_json::from_str::<bool>("invalid").unwrap_err()),
+    use WalletFaultFamily::{Internal, Service};
+    for (error, family) in [
+        (
+            Error::RateLimited {
+                provider: "fixture".to_string(),
+                retry_after_secs: 3,
+            },
+            Service,
+        ),
+        (
+            Error::NoExplorerAnswered {
+                faults: vec![("fixture".to_string(), "could not look".to_string())],
+            },
+            Service,
+        ),
+        (Error::NoServicesAvailable, Service),
+        (Error::IoError(std::io::Error::other("fixture")), Internal),
+        (
+            Error::JsonError(serde_json::from_str::<bool>("invalid").unwrap_err()),
+            Internal,
+        ),
     ] {
-        assert_fault(error);
+        assert_fault(error, family);
     }
 }
 

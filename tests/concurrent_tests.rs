@@ -592,11 +592,14 @@ mod concurrent {
                 assert!(result.aborted);
                 true
             }
-            Err(bsv_wallet_toolbox_rs::Error::SdkError(bsv_rs::Error::WalletRefusal {
-                class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                message,
-            })) => {
-                assert!(message.contains("acceptance"), "{message}");
+            Err(bsv_wallet_toolbox_rs::Error::SdkError(bsv_rs::Error::AbortAccepted(
+                acceptance,
+            ))) if acceptance.class == bsv_rs::WalletRefusalClass::InvalidParameter => {
+                assert!(
+                    acceptance.message.contains("acceptance"),
+                    "{}",
+                    acceptance.message
+                );
                 false
             }
             Err(other) => panic!("unexpected abort error: {other:?}"),

@@ -457,12 +457,15 @@ async fn sign_action_on_another_process_action_error_still_aborts() {
         .await
         .unwrap_err();
     match &err {
-        bsv_rs::Error::WalletError(text) => assert!(
-            text.starts_with("Process action failed: ")
-                && text.ends_with("Transaction aborted and UTXOs released."),
-            "{text}"
+        bsv_rs::Error::WalletFault(fault) => assert!(
+            fault.family == bsv_rs::WalletFaultFamily::Internal
+                && fault.message.starts_with("Process action failed: ")
+                && fault
+                    .message
+                    .ends_with("Transaction aborted and UTXOs released."),
+            "{fault:?}"
         ),
-        other => panic!("expected the abort's WalletError, got {other:?}"),
+        other => panic!("expected the abort's Internal WalletFault, got {other:?}"),
     }
     assert_eq!(
         action_and_coin(&wallet, "sign-other", coin).await,

@@ -190,10 +190,33 @@ impl Seeded {
     }
 }
 
+/// The shared guard's refusal: a retirement's `InvalidTransactionStatus`, or
+/// an abort's typed acceptance (bsv-rs #439) with the same class at the
+/// boundary (`InvalidOperation`), the same text and the accepting word.
 fn assert_acceptance_refusal<T: std::fmt::Debug>(result: bsv_wallet_toolbox_rs::Result<T>) {
     match result.expect_err("an accepting word must refuse retirement") {
         Error::InvalidTransactionStatus(message) => {
             assert!(message.contains("accept"), "{message}");
+        }
+        error @ Error::SdkError(bsv_rs::Error::AbortAccepted(_)) => {
+            let text = error.to_string();
+            let Error::SdkError(bsv_rs::Error::AbortAccepted(acceptance)) = error else {
+                unreachable!()
+            };
+            assert_eq!(
+                acceptance.class,
+                bsv_rs::WalletRefusalClass::InvalidOperation
+            );
+            assert_eq!(text, acceptance.message);
+            assert!(
+                text.starts_with("Invalid transaction status: cannot abort action"),
+                "{text}"
+            );
+            let word = acceptance
+                .accepting_word
+                .as_deref()
+                .expect("the accepting word");
+            assert!(text.contains(word), "{text}");
         }
         other => panic!("expected InvalidTransactionStatus, got {other:?}"),
     }
@@ -204,11 +227,19 @@ async fn abort_unproven_without_chain_evidence_is_refused_without_writes_or_call
     let s = Seeded::new("unproven").await;
     let before = s.snapshot().await;
     match s.abort().await.unwrap_err() {
-        Error::SdkError(bsv_rs::Error::WalletRefusal {
-            class: bsv_rs::WalletRefusalClass::InvalidParameter,
-            message,
-        }) => assert!(message.contains("accept"), "{message}"),
-        other => panic!("expected InvalidParameter refusal, got {other:?}"),
+        Error::SdkError(bsv_rs::Error::AbortAccepted(acceptance)) => {
+            assert_eq!(
+                acceptance.class,
+                bsv_rs::WalletRefusalClass::InvalidParameter
+            );
+            assert!(
+                acceptance.message.contains("accept"),
+                "{}",
+                acceptance.message
+            );
+            assert_eq!(acceptance.status.as_deref(), Some("unproven"));
+        }
+        other => panic!("expected the unproven guard's acceptance, got {other:?}"),
     }
     assert_eq!(s.snapshot().await, before);
     s.assert_no_chain_calls();

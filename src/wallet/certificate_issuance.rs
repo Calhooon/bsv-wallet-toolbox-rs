@@ -1182,8 +1182,9 @@ mod tests {
             // The reference throws Error, not WERR_INVALID_PARAMETER, at
             // MasterCertificate.ts:621-622 (ts-stack@edf6e03).
             assert!(
-                matches!(&result, Err(bsv_rs::Error::WalletError(message))
-                    if message == "Failed to decrypt certificate field!"),
+                matches!(&result, Err(bsv_rs::Error::WalletFault(fault))
+                    if fault.family == bsv_rs::WalletFaultFamily::Internal
+                        && fault.message == "Failed to decrypt certificate field!"),
                 "prove_certificate must refuse the corrupt master entry: {result:?}"
             );
         }

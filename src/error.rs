@@ -272,12 +272,33 @@ pub enum Error {
 fn sdk_error_display(error: &bsv_rs::Error) -> String {
     match error {
         bsv_rs::Error::WalletRefusal { message, .. } => message.clone(),
+        // The record displays the guard's string, as `WalletRefusal` does.
+        bsv_rs::Error::AbortAccepted(acceptance) => acceptance.message.clone(),
         _ => format!("SDK error: {error}"),
     }
 }
 
 #[cfg(any(feature = "sqlite", test))]
 impl Error {
+    /// An abort refused because acceptance is stored (bsv-rs #439): the
+    /// guard's own `class` and its whole Display as the message, so the
+    /// boundary class, text and wire frame are the guard's as before, the
+    /// typed record beside them. Retirement guards never build it.
+    pub(crate) fn abort_accepted(
+        self,
+        reference: &str,
+        class: bsv_rs::WalletRefusalClass,
+        txid: Option<&str>,
+        status: Option<&str>,
+        accepting_word: Option<&str>,
+    ) -> Self {
+        let mut record = bsv_rs::AbortAcceptance::new(reference, class, self.to_string());
+        record.txid = txid.map(Into::into);
+        record.status = status.map(Into::into);
+        record.accepting_word = accepting_word.map(Into::into);
+        Self::SdkError(bsv_rs::Error::AbortAccepted(Box::new(record)))
+    }
+
     /// Preserve the text when a site's reference class differs from the variant's default.
     pub(crate) fn into_invalid_parameter(self) -> Self {
         Self::SdkError(bsv_rs::Error::WalletRefusal {
@@ -371,7 +392,7 @@ impl From<sqlx::Error> for Error {
 /// failure is never classified as a refusal by its text.
 impl From<Error> for bsv_rs::Error {
     fn from(err: Error) -> Self {
-        use bsv_rs::WalletRefusalClass;
+        use bsv_rs::{WalletFaultFamily, WalletRefusalClass};
 
         let class = match err {
             Error::ValidationError(_)
@@ -399,32 +420,51 @@ impl From<Error> for bsv_rs::Error {
             }
             Error::SdkError(e) => return e,
             Error::ReviewActions(refusal) => return bsv_rs::Error::WalletReviewActions(refusal),
-            #[cfg(feature = "sqlite")]
-            Error::SqlxError(_) => return bsv_rs::Error::WalletError(err.to_string()),
-            Error::StorageError(_)
-            | Error::DatabaseError(_)
-            | Error::MigrationError(_)
-            | Error::ServiceError(_)
-            | Error::NetworkError(_)
+            Error::NetworkError(_) | Error::HttpError(_) => {
+                return wallet_fault(WalletFaultFamily::Transport, &err)
+            }
+            Error::ServiceError(_)
             | Error::BroadcastFailed(_)
             | Error::NoServicesAvailable
             | Error::RateLimited { .. }
-            | Error::NoExplorerAnswered { .. }
-            | Error::TransactionError(_)
-            | Error::SigningError(_)
+            | Error::NoExplorerAnswered { .. } => {
+                return wallet_fault(WalletFaultFamily::Service, &err)
+            }
+            #[cfg(feature = "sqlite")]
+            Error::SqlxError(_) => return wallet_fault(WalletFaultFamily::Storage, &err),
+            Error::StorageError(_)
+            | Error::DatabaseError(_)
+            | Error::MigrationError(_)
             | Error::SyncError(_)
             | Error::SyncConflict(_)
-            | Error::LockTimeout(_)
+            | Error::LockTimeout(_) => return wallet_fault(WalletFaultFamily::Storage, &err),
+            Error::TransactionError(_)
+            | Error::SigningError(_)
             | Error::JsonError(_)
             | Error::IoError(_)
-            | Error::HttpError(_)
-            | Error::Internal(_) => return bsv_rs::Error::WalletError(err.to_string()),
+            | Error::Internal(_) => return wallet_fault(WalletFaultFamily::Internal, &err),
         };
         bsv_rs::Error::WalletRefusal {
             class,
             message: err.to_string(),
         }
     }
+}
+
+/// A fault at the boundary (bsv-rs #439): its family typed, its message the
+/// toolbox Display unchanged, displayed and framed exactly as the
+/// `WalletError` of the same message (wire code 1).
+fn wallet_fault(family: bsv_rs::WalletFaultFamily, err: &Error) -> bsv_rs::Error {
+    bsv_rs::Error::WalletFault(bsv_rs::WalletFault::new(family, err.to_string()))
+}
+
+/// A direct fault the wallet raises itself, in `family`, `message` unchanged
+/// (the former `bsv_rs::Error::WalletError(message)`).
+pub(crate) fn direct_fault(
+    family: bsv_rs::WalletFaultFamily,
+    message: impl Into<String>,
+) -> bsv_rs::Error {
+    bsv_rs::Error::WalletFault(bsv_rs::WalletFault::new(family, message))
 }
 
 impl From<reqwest::Error> for Error {

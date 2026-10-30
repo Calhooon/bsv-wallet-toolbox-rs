@@ -144,7 +144,21 @@ async fn abort_reference_refusals_keep_their_site_class_without_writes() {
             .abort_action(AbortActionArgs { reference }, Some(ORIGINATOR))
             .await
             .unwrap_err();
-        assert_refusal(&error, class, &format!("Invalid transaction status: {detail}"));
+        let text = format!("Invalid transaction status: {detail}");
+        match &error {
+            // The status guard's stored acceptance, typed (bsv-rs #439): the
+            // guard's class and whole text, the status beside them.
+            bsv_rs::Error::AbortAccepted(acceptance) => {
+                assert_eq!(status, "unproven");
+                assert_eq!(acceptance.class, class);
+                assert_eq!(acceptance.message, text);
+                assert_eq!(acceptance.reference, format!("refusal-{status}"));
+                assert_eq!(acceptance.status.as_deref(), Some("unproven"));
+                assert_eq!(acceptance.accepting_word, None);
+                assert_eq!(error.to_string(), text);
+            }
+            _ => assert_refusal(&error, class, &text),
+        }
         assert_eq!(store_snapshot(&wallet).await, before);
     }
     assert_eq!(wallet.services().total_calls(), 0);
@@ -236,8 +250,9 @@ async fn prove_lookup_refusals_and_missing_keyring_fault_keep_class_and_text() {
                 WalletRefusalClass::InvalidParameter,
                 "Multiple certificates match the provided arguments, expected unique match",
             ),
-            _ => assert!(matches!(error, bsv_rs::Error::WalletError(message)
-                if message == "Certificate does not have a master keyring stored")),
+            _ => assert!(matches!(error, bsv_rs::Error::WalletFault(fault)
+                if fault.family == bsv_rs::WalletFaultFamily::Internal
+                    && fault.message == "Certificate does not have a master keyring stored")),
         }
         user_call.assert_async().await;
         lookup.assert_async().await;
