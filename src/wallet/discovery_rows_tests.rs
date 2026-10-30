@@ -4,9 +4,8 @@
 //! (`WalletWireTransceiver.ts:1796,1842` at ts-stack@edf6e03; bsv-rs
 //! `src/wallet/substrates/result_values/certificates.rs` at v0.9.0-beta.4).
 //! The answer is the door's (`discover_*_with_resolver`), served unchanged by
-//! a loopback mock as a host's JSON daemon would serve it. Every expected
-//! refusal is bsv-rs's `invalid(call, field, expected)`, `Invalid <call>
-//! result <field>: expected <expected>`, byte for byte.
+//! a loopback mock as a host's JSON daemon would serve it. A malformed
+//! overlay entry is dropped from the answer, as the reference drops it.
 
 use super::*;
 use crate::managers::{
@@ -198,12 +197,6 @@ fn json(result: &DiscoverCertificatesResult) -> serde_json::Value {
     serde_json::to_value(result).unwrap()
 }
 
-fn refusal(call: &str, field: &str, expected: &str) -> bsv_rs::Error {
-    bsv_rs::Error::WalletError(format!(
-        "Invalid {call} result {field}: expected {expected}"
-    ))
-}
-
 /// R03, R74, R76, R79 (name, icon URL, description) and R80 on an answer
 /// with a stored certificate and an overlay one: the settings' 100-byte name
 /// passes, the 500-byte description is cut to 50 and the absent icon is the
@@ -267,36 +260,87 @@ async fn the_attribute_answers_pass_the_rows() {
     }
 }
 
-/// R74: the door passes an overlay certificate through without verifying
-/// it, an absent signature as `""` (`OverlayCertificate::to_identity_certificate`);
-/// the reference's `parseResults` keeps only a verified certificate. A JSON
-/// client of the wallet refuses the whole answer. Today's verdict, a finding.
+/// `answer` holds the well-formed overlay certificate alone, and bsv-rs's
+/// client reads it back unchanged.
+async fn only_the_good_entry(wallet: &TestWallet, bad: OverlayCertificate) {
+    let good = overlay_certificate(3).await;
+    let overlay = vec![bad, good.clone()];
+    let (answer, read) = identity_read(wallet, overlay, wallet.identity_key().into()).await;
+    assert_eq!(answer.total_certificates, 1);
+    assert_eq!(
+        answer.certificates[0].certificate.serial_number,
+        good.serial_number
+    );
+    assert_eq!(json(&read.unwrap()), json(&answer));
+}
+
+/// R74: an overlay certificate with no signature is dropped, as the
+/// reference drops it (`certificateRecord` throws on the absent property,
+/// `decodeIdentityOutput` answers `null`, ts-stack@edf6e03
+/// `identityUtils.ts:105,549-552`); before the fix the door filled `""` and
+/// bsv-rs's client refused the whole answer.
 #[tokio::test]
-async fn an_unsigned_overlay_certificate_breaks_r74() {
+async fn an_unsigned_overlay_certificate_is_dropped() {
     let wallet = wallet(None).await;
     let mut unsigned = overlay_certificate(2).await;
     unsigned.signature = None;
-    let call = "discoverByIdentityKey";
-    let (answer, read) = identity_read(&wallet, vec![unsigned], wallet.identity_key().into()).await;
-    assert_eq!(answer.certificates[0].certificate.signature, "");
-    let expected = "a canonical signed wallet certificate";
-    assert_eq!(
-        read.unwrap_err(),
-        refusal(call, "certificates[0]", expected)
-    );
+    only_the_good_entry(&wallet, unsigned).await;
 }
 
-/// R80: an overlay keyring value that is empty reaches the answer as given;
-/// a JSON client refuses it. Today's verdict, a finding.
+/// R80: an overlay keyring value that is empty is dropped, as the reference
+/// drops it (`decryptFields`' canonical base64 of 1 to 2048 bytes,
+/// `VerifiableCertificate.ts:48`, caught at `identityUtils.ts:549-552`);
+/// before the fix it reached the answer and the client refused it.
 #[tokio::test]
-async fn an_empty_overlay_keyring_value_breaks_r80() {
+async fn an_empty_overlay_keyring_value_is_dropped() {
     let wallet = wallet(None).await;
     let mut certificate = overlay_certificate(2).await;
     certificate.keyring.insert("name".into(), String::new());
-    let call = "discoverByIdentityKey";
-    let (_, read) = identity_read(&wallet, vec![certificate], wallet.identity_key().into()).await;
-    let field = "certificates[0].publiclyRevealedKeyring.name";
-    assert_eq!(read.unwrap_err(), refusal(call, field, "1+ UTF-8 bytes"));
+    only_the_good_entry(&wallet, certificate).await;
+}
+
+/// Each of the reference's other drops (`certificateRecord`, :87-129, and
+/// the keyring value's base64): the door's answer never carries the entry,
+/// by identity key or by attributes.
+#[tokio::test]
+async fn the_reference_drops_are_dropped_from_both_answers() {
+    let wallet = wallet(None).await;
+    let good = overlay_certificate(2).await;
+    let mut cases: Vec<(&str, OverlayCertificate)> = Vec::new();
+    let mut c = good.clone();
+    c.revocation_outpoint = None;
+    cases.push(("no revocation outpoint", c));
+    let mut c = good.clone();
+    c.fields.clear();
+    c.keyring.clear();
+    cases.push(("no fields", c));
+    let mut c = good.clone();
+    c.keyring.clear();
+    cases.push(("no keyring", c));
+    let mut c = good.clone();
+    for n in 0..100 {
+        c.fields.insert(format!("f{n}"), "AA==".into());
+    }
+    cases.push(("101 fields", c));
+    let mut c = good.clone();
+    c.keyring.insert("absent".into(), "AA==".into());
+    cases.push(("a keyring name with no field", c));
+    let mut c = good.clone();
+    c.keyring.insert("name".into(), "A".repeat(2052));
+    cases.push(("a keyring value over 2048", c));
+    let mut c = good.clone();
+    c.keyring.insert("name".into(), "not base64".into());
+    cases.push(("a keyring value not base64", c));
+    for (case, bad) in cases {
+        assert!(!bad.is_reference_record(), "{case}");
+        let (answer, read) =
+            identity_read(&wallet, vec![bad.clone()], wallet.identity_key().into()).await;
+        assert_eq!(answer.total_certificates, 0, "{case}");
+        assert_eq!(json(&read.unwrap()), json(&answer), "{case}");
+        let (answer, _) = attributes_read(&wallet, vec![bad], &[("any", "Alice")]).await;
+        assert_eq!(answer.total_certificates, 0, "{case}");
+    }
+    assert!(good.is_reference_record());
 }
 
 /// R79 (icon URL): the settings bound the icon URL at 1-500 bytes and an
