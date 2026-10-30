@@ -87,7 +87,7 @@ fn host_judge(
     verify_own(
         &child.to_binary(),
         &sources,
-        Some(TIP),
+        Some(tip()),
         "main",
         Some(verifier),
     )
@@ -242,7 +242,7 @@ fn host_receives_no_input_when_own_word_skips_it() {
     verify_own(
         &child.to_binary(),
         &HashMap::new(),
-        Some(TIP),
+        Some(tip()),
         "main",
         Some(&host),
     )
@@ -271,7 +271,7 @@ fn proven_beef() -> (Transaction, Beef, bsv_rs::transaction::MockChainTracker) {
     let parent = source(&[0x51]);
     let child = spend(&parent, 0, Some(&[]));
     let bump = MerklePath::from_coinbase_txid(&parent.id(), GENESIS);
-    let mut tracker = MockChainTracker::new(TIP.height);
+    let mut tracker = MockChainTracker::new(tip().height);
     tracker.add_root(GENESIS, bump.compute_root(None).unwrap());
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);

@@ -30,13 +30,13 @@ impl bsv_rs::transaction::ChainTracker for L2MiningHeaders {
         Option<bsv_rs::transaction::beef_stream::ChainTip>,
         bsv_rs::transaction::ChainTrackerError,
     > {
-        Ok(Some(bsv_rs::transaction::beef_stream::ChainTip {
-            height: self.0.height,
-            median_time_past: 1_700_000_000,
-            genesis_height: 620_538,
-            csv_height: 419_328,
-            next_block_time: None,
-        }))
+        Ok(Some(crate::services::chain_tip(
+            &bsv_rs::block::ChainParams::mainnet(),
+            self.0.height,
+            1_700_000_000,
+            419_328,
+            None,
+        )))
     }
 }
 

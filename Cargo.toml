@@ -29,7 +29,7 @@ bench-support = ["sqlite"]
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits
-bsv-rs = { version = "=0.9.0-beta.3", features = ["full", "http"] }
+bsv-rs = { version = "=0.9.0-beta.4", features = ["full", "http"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

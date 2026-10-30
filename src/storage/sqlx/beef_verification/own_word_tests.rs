@@ -18,13 +18,15 @@ const CHRONICLE: u32 = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
 const SATOSHIS: u64 = 10_000;
 
 /// Every judgment here is on mainnet at a tip past Chronicle.
-const TIP: ChainTip = ChainTip {
-    height: CHRONICLE + 100,
-    median_time_past: 0,
-    genesis_height: GENESIS,
-    csv_height: 0,
-    next_block_time: None,
-};
+fn tip() -> ChainTip {
+    crate::services::chain_tip(
+        &bsv_rs::block::ChainParams::mainnet(),
+        CHRONICLE + 100,
+        0,
+        0,
+        None,
+    )
+}
 
 /// `child` judged with `parent` as its source, proven at `proven`.
 fn judge(child: &Transaction, parent: &Transaction, proven: Option<u32>) -> Result<()> {
@@ -35,7 +37,7 @@ fn judge(child: &Transaction, parent: &Transaction, proven: Option<u32>) -> Resu
             proven_height: proven.map(u64::from),
         },
     )]);
-    verify_own(&child.to_binary(), &sources, Some(TIP), "main", None)
+    verify_own(&child.to_binary(), &sources, Some(tip()), "main", None)
 }
 
 fn source(lock: &[u8]) -> Transaction {
@@ -118,7 +120,14 @@ fn a_forkid_signature_is_accepted() {
 #[test]
 fn an_input_without_source_bytes_is_skipped() {
     let (_, child) = p2pkh_spend(0x01);
-    verify_own(&child.to_binary(), &HashMap::new(), Some(TIP), "main", None).unwrap();
+    verify_own(
+        &child.to_binary(),
+        &HashMap::new(),
+        Some(tip()),
+        "main",
+        None,
+    )
+    .unwrap();
 }
 
 #[test]

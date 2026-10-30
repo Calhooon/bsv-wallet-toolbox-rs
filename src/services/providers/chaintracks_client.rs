@@ -284,9 +284,9 @@ impl ChaintracksServiceClient {
         // node's 10,000 Genesis and 15,000 Chronicle, overridable; Teranode's
         // 100 and 200), so the tip is held rather than judged under testnet's
         // until bsv-rs #440's chain parameters carry them (#439).
-        let (genesis_height, csv_height) = match chain {
-            Chain::Main => (620_538, 419_328),
-            Chain::Test => (1_344_302, 770_112),
+        let (params, csv_height) = match chain {
+            Chain::Main => (bsv_rs::block::ChainParams::mainnet(), 419_328),
+            Chain::Test => (bsv_rs::block::ChainParams::testnet(), 770_112),
             Chain::Regtest => return Err(Error::ServiceError(REGTEST_TIP_HELD.into())),
         };
         let tip = self.find_chain_tip_header().await?;
@@ -307,15 +307,15 @@ impl ChaintracksServiceClient {
                 )
             })?;
         let median_time_past = median_time_past(&bytes, &tip.to_binary(), count as usize)?;
-        Ok(ChainTip {
-            height: tip.height,
+        // A historical pre-CSV timestamp lock requires a candidate block
+        // time. A header service cannot supply that future fact; hold it.
+        Ok(crate::services::chain_tip(
+            &params,
+            tip.height,
             median_time_past,
-            genesis_height,
             csv_height,
-            // A historical pre-CSV timestamp lock requires a candidate block
-            // time. A header service cannot supply that future fact; hold it.
-            next_block_time: None,
-        })
+            None,
+        ))
     }
 }
 
@@ -425,9 +425,10 @@ mod tests {
 
     #[tokio::test]
     async fn mining_context_uses_one_tip_and_one_range_with_cached_network() {
-        for (chain, genesis_height, csv_height) in
-            [("main", 620_538, 419_328), ("test", 1_344_302, 770_112)]
-        {
+        for (chain, params, csv_height) in [
+            ("main", bsv_rs::block::ChainParams::mainnet(), 419_328),
+            ("test", bsv_rs::block::ChainParams::testnet(), 770_112),
+        ] {
             let mut server = crate::services::mock_server().await;
             let (tip, bytes) = header_range();
             let network = answer(&mut server, "/getChain", serde_json::json!(chain), 1).await;
@@ -443,13 +444,13 @@ mod tests {
             for _ in 0..2 {
                 assert_eq!(
                     client.mining_tip().await.unwrap(),
-                    Some(ChainTip {
-                        height: tip.height,
-                        median_time_past: 1_700_000_005,
-                        genesis_height,
+                    Some(crate::services::chain_tip(
+                        &params,
+                        tip.height,
+                        1_700_000_005,
                         csv_height,
-                        next_block_time: None
-                    })
+                        None
+                    ))
                 );
             }
             network.assert_async().await;

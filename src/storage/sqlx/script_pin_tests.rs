@@ -315,13 +315,13 @@ impl ChainTracker for FixtureTracker {
         Ok(self.tip)
     }
     async fn mining_tip(&self) -> Result<Option<ChainTip>, ChainTrackerError> {
-        Ok(Some(ChainTip {
-            height: self.tip,
-            median_time_past: 1_700_000_000,
-            genesis_height: ProtocolEra::MAINNET_GENESIS_HEIGHT,
-            csv_height: 419_328,
-            next_block_time: None,
-        }))
+        Ok(Some(crate::services::chain_tip(
+            &bsv_rs::block::ChainParams::mainnet(),
+            self.tip,
+            1_700_000_000,
+            419_328,
+            None,
+        )))
     }
 }
 
