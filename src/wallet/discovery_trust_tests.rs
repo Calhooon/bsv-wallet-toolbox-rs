@@ -240,7 +240,7 @@ fn discovery_attributes_fold_case_split_and_drop_as_the_reference() {
             "{field}: {actual:?} against {query:?}"
         );
     }
-    // Object.entries puts array-index keys first when joining `any`'s text.
+    // Object.entries puts array-index keys ahead of the rest when joining `any`'s text.
     let mut cert = certificate(STRANGER, STRANGER, "candidate");
     cert.decrypted_fields = IndexMap::from([
         ("name".into(), "Wonderland".into()),
