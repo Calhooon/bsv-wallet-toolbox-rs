@@ -114,7 +114,7 @@ async fn a_signature_past_2048_characters_is_refused_by_the_client() {
 #[tokio::test]
 async fn a_certificate_request_answer_keeps_its_type_through_the_client() {
     // The type kept: the Peer reads a certificateRequest. Since bsv-rs
-    // 0.9.0-beta.4 (#445) its intake checks the nonces first, in the
+    // 0.9.0-beta.4 (#445) its intake checks the nonces before the rest, in the
     // reference's order (`AuthMessageValidation.ts:64-79,355-389`), so the
     // vector's frame, which carries none, is refused on its nonce; before,
     // `requestedCertificates must be an object.`
