@@ -22,14 +22,23 @@ fn host_certifier() -> Certifier {
     }
 }
 
+/// A label as base64 of 32 bytes, a type or serial the door keeps.
+fn sn(label: &str) -> String {
+    let mut bytes = [0u8; 32];
+    bytes[..label.len()].copy_from_slice(label.as_bytes());
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+}
+/// The smallest canonical DER signature (r = s = 1); none is verified here.
+const SIGNATURE: &str = "3006020101020101";
+
 fn certificate(certifier: &str, subject: &str, serial: &str) -> OverlayCertificate {
     OverlayCertificate {
-        type_id: "dHlwZQ==".into(),
-        serial_number: serial.into(),
+        type_id: sn("type"),
+        serial_number: sn(serial),
         subject: subject.into(),
         certifier: certifier.into(),
         revocation_outpoint: Some(format!("{}.0", "0".repeat(64))),
-        signature: Some("3044".into()),
+        signature: Some(SIGNATURE.into()),
         fields: IndexMap::from([("name".into(), "encrypted".into())]),
         // A keyring value is canonical base64, as the reference drops another.
         keyring: IndexMap::from([("name".into(), "a2V5".into())]),
@@ -100,9 +109,9 @@ fn discovery_sums_distinct_certifiers_once_and_deduplicates_per_subject() {
         result
             .certificates
             .iter()
-            .map(|c| (c.certificate.serial_number.as_str(), c.certifier_info.trust))
+            .map(|c| (c.certificate.serial_number.clone(), c.certifier_info.trust))
             .collect::<Vec<_>>(),
-        vec![("one", 3), ("one", 2), ("two", 2)]
+        vec![(sn("one"), 3), (sn("one"), 2), (sn("two"), 2)]
     );
     assert_eq!(result.certificates[1].certificate.fields, one.fields);
     assert_eq!(
@@ -113,7 +122,7 @@ fn discovery_sums_distinct_certifiers_once_and_deduplicates_per_subject() {
         result.certificates[1].publicly_revealed_keyring,
         one.keyring
     );
-    assert_eq!(result.certificates[1].certificate.signature, "3044");
+    assert_eq!(result.certificates[1].certificate.signature, SIGNATURE);
     trust.trust_level = 6;
     assert_eq!(
         transform(&trust, certificates).unwrap().total_certificates,
@@ -131,7 +140,7 @@ fn discovery_binds_subject_case_insensitively_before_the_input_cap() {
     assert_eq!(filtered.len(), 1);
     let result = transform(&DEFAULT_SETTINGS.trust_settings, filtered).unwrap();
     assert_eq!(result.total_certificates, 1);
-    assert_eq!(result.certificates[0].certificate.serial_number, "kept");
+    assert_eq!(result.certificates[0].certificate.serial_number, sn("kept"));
 }
 
 #[test]
@@ -148,7 +157,7 @@ fn discovery_caps_inputs_and_pages_without_changing_the_total() {
     let last = discovery_page(all.clone(), Some(255), Some(2));
     assert_eq!(last.total_certificates, 256);
     assert_eq!(last.certificates.len(), 1);
-    assert_eq!(last.certificates[0].certificate.serial_number, "255");
+    assert_eq!(last.certificates[0].certificate.serial_number, sn("255"));
     assert!(discovery_page(all, Some(u32::MAX), Some(10))
         .certificates
         .is_empty());
@@ -301,13 +310,13 @@ mod doors {
         let certificate = TableCertificate {
             certificate_id: 0,
             user_id: wallet.auth().user_id.unwrap(),
-            cert_type: "dHlwZQ==".into(),
-            serial_number: serial.into(),
+            cert_type: sn("type"),
+            serial_number: sn(serial),
             certifier: certifier.into(),
             subject: wallet.identity_key().into(),
             verifier: None,
             revocation_outpoint: format!("{}.0", "0".repeat(64)),
-            signature: "3044".into(),
+            signature: SIGNATURE.into(),
             created_at: now,
             updated_at: now,
         };
@@ -440,7 +449,10 @@ mod doors {
             .await
             .unwrap();
         assert_eq!(result.total_certificates, 1);
-        assert_eq!(result.certificates[0].certificate.serial_number, "match");
+        assert_eq!(
+            result.certificates[0].certificate.serial_number,
+            sn("match")
+        );
         request.offset = Some(1);
         let page = wallet
             .discover_attributes_with_resolver(request, &resolver)
@@ -467,7 +479,8 @@ mod doors {
             .await
             .unwrap();
         assert_eq!(result.total_certificates, 1);
-        assert_eq!(result.certificates[0].certificate.serial_number, "match");
+        let kept = &result.certificates[0].certificate;
+        assert_eq!(kept.serial_number, sn("match"));
     }
 
     #[tokio::test]
@@ -776,10 +789,10 @@ mod doors {
                 .iter()
                 .map(|c| (
                     c.certificate.certifier.as_str(),
-                    c.certificate.serial_number.as_str()
+                    c.certificate.serial_number.clone()
                 ))
                 .collect::<Vec<_>>(),
-            vec![(a.as_str(), "two"), (b.as_str(), "same")]
+            vec![(a.as_str(), sn("two")), (b.as_str(), sn("same"))]
         );
     }
 }
