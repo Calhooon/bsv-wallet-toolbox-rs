@@ -477,59 +477,67 @@ pub async fn verify_txid_merkle_proof(
 The live `internalize_action` door passes `get_settings().chain` to
 `verify_beef_spends`. Each input of each unique unproven raw transaction,
 including parents, runs through `Spend::set_flags(word)`, where the word is
-two words joined by `ScriptFlags::from_bits` (`input_word`): the
-transaction-level bits of `ScriptFlags::standard(spend)` (`GENESIS`,
-`CHRONICLE`, the mandatory and standard-only bits, `SIGPUSHONLY`) and the
-`UTXO_AFTER_GENESIS` and `UTXO_AFTER_CHRONICLE` bits of
-`ScriptFlags::standard(coin)`. The 0x61 hash-type gate reads `CHRONICLE`; the
-Chronicle opcodes and the number bound read `UTXO_AFTER_CHRONICLE`.
-Proven raw entries supply outputs; txid-only entries supply proof identity.
-Neither has its own scripts rejudged, and duplicate raw entries are not rejudged.
+bsv-rs's `script::input_script_flags` (#440) from the store network's
+`ChainParams` (`beef_verification::chain_params`: `main` mainnet, `test`
+testnet, `regtest` the SV node's regtest, 10,000 and 15,000): the
+transaction-level bits of the spend's era and the coin era's
+`UTXO_AFTER_GENESIS` and `UTXO_AFTER_CHRONICLE` bits. The 0x61 hash-type gate
+reads `CHRONICLE`; the Chronicle opcodes and the number bound read
+`UTXO_AFTER_CHRONICLE`. Proven raw entries supply outputs; txid-only entries
+supply proof identity. Neither has its own scripts rejudged, and duplicate
+raw entries are not rejudged.
 
-This is an interim second evaluation until bsv-rs #440 supplies its per-input
-hook. The SDK's `verify_stream_two_pass` retains the structural/proof verdict;
-only `SpendRefusal::Script` is set aside. A default script refusal can stop
-that scan early, so `verify_stream_structure` must then finish cleanly before
-the word pass. The word pass preserves the later mining, outpoint, resource
-and value checks that such a refusal can mask. It retains only referenced
-outputs, shares one sighash cache per transaction, and releases transactions
-waiting for parents in wire order.
+The port keeps its own per-input pass (`live_word.rs`) beside bsv-rs's
+streaming verifier: the host `SpendVerifier` (D27), the create pre-check's
+judged set (#426) and the door's per-transaction work total (below) each need
+the inputs one at a time, which `StreamVerifier::with_chain_params` does not
+expose. The SDK's `verify_stream_two_pass` retains the structural/proof
+verdict; only `SpendRefusal::Script` is set aside. A default script refusal
+can stop that scan early, so `verify_stream_structure` must then finish
+cleanly before the word pass. The word pass preserves the later mining,
+outpoint, resource and value checks that such a refusal can mask; its P2SH
+output check reads Genesis from the network's `ChainParams`, which alone
+decide it since beta.4 (bsv-rs #451). It retains only referenced outputs,
+shares one sighash cache per transaction, and releases transactions waiting
+for parents in wire order.
 
-The `pub(crate)` `input_eras` helper returns both eras against bsv-rs's
-Genesis and Chronicle constants; it is the one place the era is chosen. On
-mainnet every spender takes tip+1's era, the block it would be mined in; a
-mined parent's coin takes its proven BUMP height's era for the UTXO bits, an
-unproven parent's coin the spend's. With no mining tip, or a tip read that
-faults, the keeper's clause of 2026-10-29 (#464, rule 9): the spend's era at
-tip+1 differs from the latest era the constants know only inside an
-activation window, and they name no activation height still ahead (Chronicle
-passed at 943,816), so the spend's era is the latest, post-Chronicle
-(`era_without_tip`), the coin's bits still from its proof height, an
-unproven coin at the same latest era, as the reference reads no tip at
-`verifyUnlockScripts.ts:331`. bsv-rs exposes no notion of an activation
-ahead: `era_without_tip` compares its constants with each other (the era of
-the highest height must be the one Chronicle's constant opens) and matches
-`ProtocolEra` exhaustively, so a new era stops the build there; it answers
-`None` only when an activation height lies ahead, and then `mining_tip`
-holds as before (`Service error: ChainTracker verification failed: the
-header service supplied no mining tip`, or the fault's class), the tip alone
-deciding. Without a tip the word pass reads the mining rules as bsv-rs's
-verifier does: P2SH outputs refused, a non-final lock time or a coinbase
-spend held (`the supplied mining context could not answer Finality`,
-`... CoinbaseMaturity`). Witnesses: `no_tip_word.rs` (create's pre-check and
-the signAction route), `internalize_verifier_judges_at_the_latest_era_without_a_tip`.
-Pre-Genesis mainnet refuses with `The mainnet coin height is before Genesis.`.
-Testnet and regtest use the spend's era for the coin until #440 supplies their
-activation heights; regtest fixtures name the era they model. An unsupported
-network or tip also refuses. The network comes from settings, never from
-guessing what a Genesis height means, and is read as the stored `main`,
-`test` or `regtest` alone (a legacy `mainnet`/`testnet` refuses as unknown,
-and the proof attempts limit takes the test limit for it; no change for a
-store that has run `migrate()` once since #471, #472). The `script_pin_tests` witnesses pin the
-fork-ID refusal, version-1 `0x61` acceptance after Chronicle on post- and
-pre-Chronicle coins, the coin era's `OP_2MUL` and `OP_SUBSTR` refusals, and
-the era refusal on a regtest tip between Genesis and Chronicle. D15 is closed
-by #422; the create and process routes are below (#426).
+`live_word::input_word(network, tip, proven_height)` is the one place the word
+is chosen, and bsv-rs composes it: every spender takes tip+1, the block it
+would be mined in; a mined parent's coin its verified BUMP height, an unproven
+parent's coin the spend's. With no mining tip, or a tip read that faults, the
+spend takes the latest activation the parameters know (bsv-rs's no-tip rule,
+the keeper's clause of 2026-10-29, #464; the reference reads no tip at
+`verifyUnlockScripts.ts:331`), so `mining_tip` never holds; the mining rules
+that need a tip then answer as bsv-rs's verifier does without one: P2SH outputs
+refused, a non-final lock time or a coinbase spend held (`the supplied mining
+context could not answer Finality`, `... CoinbaseMaturity`). Witnesses:
+`no_tip_word.rs` (create's pre-check and the signAction route),
+`internalize_verifier_judges_at_the_latest_era_without_a_tip`.
+
+An input bsv-rs cannot judge is `Error::SpendRefused` with
+`SpendRefusal::NotJudged { input, cause }` (bsv-rs #452), never a script
+verdict: `PreGenesisCoin { height, genesis_height }` (a coin proven before the
+network's Genesis), `PreGenesisSpend` (a tip before it), `TipHeightOverflow`,
+`SourceHeightOverflow`, `ZeroActivationHeight`, and the work budget's
+`WorkBudgetExceeded`. bsv-rs keeps its typed composition crate-private and its
+public `input_script_flags` answers a text, so `input_word` names the cause
+from bsv-rs's own era table (`ProtocolEra::at_height`) in bsv-rs's order,
+never from the text. `NotJudgedCause` is non-exhaustive: every match carries a
+wildcard arm. Before beta.4 these were script refusals (`The mainnet coin
+height is before Genesis.`, `The tracker tip height is before the supported
+Genesis era.`, `The coin height has no supported script era.`). A network the
+policy does not read keeps its script refusal, `The storage network has no
+script era policy.`; the network is read as the stored `main`, `test` or
+`regtest` alone (a legacy `mainnet`/`testnet` refuses as unknown, and the
+proof attempts limit takes the test limit for it; no change for a store that
+has run `migrate()` once since #471, #472). Before beta.4 testnet and regtest
+read mainnet's heights and gave the coin the spend's era. The
+`script_pin_tests` witnesses pin the fork-ID refusal, version-1 `0x61`
+acceptance after Chronicle on post- and pre-Chronicle coins, the coin era's
+`OP_2MUL` and `OP_SUBSTR` refusals, the era refusal on a regtest tip between
+its Genesis and Chronicle, each network's own heights, and the stored network
+read before any write. D15 is closed by #422; the create and process routes
+are below (#426).
 
 ### The routes' script verdicts (#426, the one-door rule #454)
 
@@ -538,12 +546,12 @@ transaction in a chain has one judging door. Bytes the wallet received are
 judged at internalize under the node's word (#422); bytes the wallet made are
 judged at their own signing (#450, the reference's `verifyUnlockScripts` on
 the transaction being signed, not its ancestry); the node judges each at
-broadcast. An input the era policy cannot place today (a pre-Genesis
-mainnet coin bsv-rs cannot yet express, a tip or network the context does
-not read) is the one difference between the two kinds of door (the
-keeper's reading of #461): the signer skips it, the node's verdict at
-broadcast the backstop; a door that judges bytes it did not make refuses
-it; both until bsv-rs #440. The posting routes judge nothing a second time: the set at create
+broadcast. An input bsv-rs does not judge for its coin's era
+(`NotJudgedCause::PreGenesisCoin`) or for the work budget
+(`WorkBudgetExceeded`) is the one difference between the two kinds of door
+(the keeper's reading of #461 as amended at the beta.4 re-pin, CLAUDE.md rule
+22): the signer skips it, the node's verdict at broadcast the backstop; a door
+that judges bytes it did not make refuses it, not judged, never invalid. The posting routes judge nothing a second time: the set at create
 is the caller's `inputBEEF` transactions the store does not hold, and at
 process nothing the store holds is judged, the posted roots and their stored
 ancestry alike, whatever format the caller asks back. The roots and the
@@ -590,7 +598,7 @@ caller-inputBEEF pre-check, and `verify_own` at createAction signing and the
 signAction route in `process_action_internal`.
 The storage options are shared by every cloned handle. `SpendRequest` carries
 `txid`, `body`, `vin`, `satoshis` and `script`; `SpendVerificationContext` carries
-`word` from `input_word` and `proven_height`. A selected input's host verdict is
+`word` from `input_word` (bsv-rs's composition) and `proven_height`. A selected input's host verdict is
 authoritative; false refuses with `host script verifier refused the spend`.
 Selected inputs go through one batch call per verification; an error or wrong
 verdict count refuses the batch. Unselected inputs and `None` keep the existing
@@ -603,9 +611,9 @@ The port judges at the same two places through the one verifier,
 `beef_verification::verify_own` (`beef_verification/own_word.rs`). It reads
 the signed transaction with bsv-rs's streaming reader and judges each
 input with `live_word::judge_input`, the per-input judge internalize's word
-pass uses, under `input_eras` and `input_word`: the spend's era at tip+1
-(the latest era with no tip, #464), the coin's UTXO bits from its proof
-height, the spend's era for a coin without one.
+pass uses, under `input_word` (bsv-rs's `input_script_flags`): the spend at
+tip+1 (the latest activation with no tip, #464), the coin's UTXO bits from
+its proof height, the spend's era for a coin without one.
 The sources (`create_action/own_word.rs`, `judge_own_tx`) are untrimmed:
 the action's input BEEF as assembled, before `knownTxids` trims the
 caller's copy (the store keeps it whole, as the reference keeps
@@ -621,13 +629,15 @@ option (`knownTxids`, `returnTXIDOnly`, `noSend`, `noSendChange`,
 `sign_action_judges_a_supplied_source_named_known`). A source is read
 for its one output, so a mined coinbase without its BUMP still supplies the
 coin. An input with neither is skipped, as the reference skips it, and so
-is an input `input_eras` places in no era (a mainnet coin mined before
-Genesis, a tip or network the interim policy does not read): under the
-keeper's reading of #461 (2026-10-29) the signer skips it and the node's
-verdict at broadcast is the backstop, as the reference skips what it cannot
-verify, while the doors refuse it (a skip there could hold a phantom coin);
-both until bsv-rs #440 adds the pre-Genesis era and the context, after
-which both judge (`a_coin_mined_before_genesis_is_left_to_the_node`).
+is an input whose coin bsv-rs places before Genesis (the match is on
+`NotJudgedCause::PreGenesisCoin`, no height test of the port's own): under the
+keeper's reading of #461 (2026-10-29, amended at the beta.4 re-pin) the
+signer skips it and the node's verdict at broadcast is the backstop, as the
+reference skips what it cannot verify, while the doors refuse it (a skip
+there could hold a phantom coin)
+(`a_coin_mined_before_genesis_is_left_to_the_node`). Any other not-judged
+cause at the signer (a tip before Genesis, an overflow) is refused as at a
+door; before beta.4 the signer skipped those too.
 Only scripts are judged: no mining, finality or value rule, as the
 reference runs none there. A refusal is `Error::SpendRefused`, its offset
 within the signed transaction, bsv-rs's text, class `InvalidParameter`.

@@ -67,8 +67,8 @@ impl Headers for VerificationHeaders {
     }
 }
 
-/// The bytes already reside in the caller's argument. The stream and interim
-/// word passes retain only referenced outputs and entries waiting for parents.
+/// The bytes already reside in the caller's argument. The stream and the
+/// per-input word passes retain only referenced outputs and entries waiting for parents.
 /// Roots were collected during the door's element scan; each distinct root is
 /// asked once, and the synchronous verifier reads that snapshot without I/O.
 #[cfg(test)]
@@ -108,8 +108,8 @@ pub(super) async fn verify_beef_spends_with_verifier(
             }
         }
     }
-    // Interim second evaluation until bsv-rs #440 provides a per-input hook.
-    // Only the typed default-mode script refusal is set aside. Because it can
+    // The port's per-input word pass judges the scripts under bsv-rs's word
+    // (#440). Only the typed default-mode script refusal is set aside. Because it can
     // hide later structure/proof checks, complete those before the word pass.
     let verdict = verify_stream_two_pass(std::io::Cursor::new(bytes), &headers, None)?;
     match verdict {
@@ -126,17 +126,11 @@ pub(super) async fn verify_beef_spends_with_verifier(
 }
 
 /// The tracker's mining tip. With none, or a tip read that faults, the word
-/// takes the latest era (`live_word::era_without_tip`, #464) and the mining
-/// rules that need a tip answer as bsv-rs's verifier does without one; the
-/// call holds (a missing tip with `ServiceError`, a fault with its class)
-/// only while bsv-rs's constants carry an activation height not yet reached.
+/// takes the latest activation the network's `ChainParams` know (bsv-rs's
+/// no-tip rule, the keeper's clause of 2026-10-29, #464), and the mining
+/// rules that need a tip answer as bsv-rs's verifier does without one.
 pub(super) async fn mining_tip(tracker: &dyn ChainTracker) -> Result<Option<ChainTip>> {
-    match tracker.mining_tip().await {
-        Ok(Some(tip)) => Ok(Some(tip)),
-        _ if live_word::era_without_tip().is_some() => Ok(None),
-        Ok(None) => Err(header_fault("the header service supplied no mining tip")),
-        Err(error) => Err(tracker_fault(error)),
-    }
+    Ok(tracker.mining_tip().await.ok().flatten())
 }
 
 /// The node's word alone (#426), for a route whose own structural and proof
@@ -197,7 +191,7 @@ pub fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
 /// This function validates that all merkle proofs in a BEEF are valid
 /// according to the provided ChainTracker. No door calls it since #103:
 /// internalize runs the stream verifier for structure and roots, plus the
-/// interim per-input script word; this helper stays public for BEEF holders.
+/// per-input script word; this helper stays public for BEEF holders.
 ///
 /// # Arguments
 ///

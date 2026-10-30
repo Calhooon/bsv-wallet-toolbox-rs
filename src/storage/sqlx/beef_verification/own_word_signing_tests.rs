@@ -504,11 +504,8 @@ async fn batched_signing(defer: bool) {
         assert_eq!(context.proven_height, Some(u64::from(HEIGHT)));
         assert_eq!(
             context.word,
-            super::super::live_word::input_word(super::super::live_word::InputEras {
-                spend: ProtocolEra::PostChronicle,
-                coin: ProtocolEra::PostGenesis,
-            })
-            .unwrap()
+            bsv_rs::script::ScriptFlags::standard(ProtocolEra::PostChronicle)
+                .without(bsv_rs::script::ScriptFlags::UTXO_AFTER_CHRONICLE)
         );
         assert_eq!(spend.satoshis, SATOSHIS);
         assert_eq!(

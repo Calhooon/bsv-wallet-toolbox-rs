@@ -114,8 +114,8 @@ pub use broadcast_memory::{
 /// Network chain identifier.
 ///
 /// `Regtest` is the port's extension beyond the reference's two stored values.
-/// Its era handling uses the Test arm until per-network activation heights
-/// arrive at the bsv-rs #440 re-pin; no Regtest era constants are defined here.
+/// Its script era is bsv-rs's `ChainParams::regtest()` (Genesis 10,000,
+/// Chronicle 15,000) since the beta.4 re-pin; its services use the Test arm.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -124,7 +124,7 @@ pub enum Chain {
     #[default]
     Main,
     Test,
-    /// Regression-test network, a port extension with Test's current era handling.
+    /// Regression-test network, a port extension: `ChainParams::regtest()`'s eras.
     Regtest,
 }
 

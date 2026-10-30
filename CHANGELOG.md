@@ -28,6 +28,45 @@
 
 ### Changed
 
+- #488: Pin both workspaces to `bsv-rs =0.9.0-beta.4` (the tag at
+  `56d12075`), retaining `full` and `http`. Host migration notes for the
+  CLI's beta.4 pin (CLI #347):
+  - `ChainTip.genesis_height` is deprecated (bsv-rs #451): a literal naming it
+    fails `-D warnings`; the toolbox fills it from `ChainParams` in one scoped
+    helper, and its verifiers read `ChainParams` alone.
+  - Peer session nonces (bsv-rs #445): a 32-byte `initialNonce`/`yourNonce`
+    accepted becomes `<type>.<field> must encode exactly 48 bytes.`; the
+    toolbox sends 48. A certificateRequest answer with no nonce:
+    `requestedCertificates must be an object.` becomes
+    `certificateRequest.nonce must be canonical base64.`; a general message
+    with no nonce: `Unable to verify nonce for general message from: <key>`
+    becomes `general.nonce must be canonical base64.` (inside the client's
+    `Network error: Failed to send request: authentication error: ` envelope).
+  - The live script word (#440) is bsv-rs's `input_script_flags` from the
+    store's `chain` (`main`, `test`, `regtest`): testnet and regtest judge at
+    their own Genesis and Chronicle heights (1,344,302 / 1,713,168; 10,000 /
+    15,000) where they read mainnet's, and a proven coin's UTXO bits follow
+    its own proof height where they followed the spend's. The port's
+    `input_eras`, `input_word` composition and `era_without_tip` are retired.
+  - Not judged (bsv-rs #452), at internalize and the create pre-check:
+    `spend refused at offset N, input 0 of <txid>: The mainnet coin height is
+    before Genesis.` becomes `spend refused at offset N, input 0 of <txid>:
+    input 0 not judged: coin height 620537 is before Genesis height 620538.`
+    (`Error::SpendRefused` with `SpendRefusal::NotJudged { input, cause:
+    PreGenesisCoin { height, genesis_height } }`, class `InvalidParameter`);
+    a tip before Genesis, `The tracker tip height is before the supported
+    Genesis era.` (or the mainnet coin text), becomes `input 0 not judged:
+    spend height H is before Genesis height G.`; a proof height past u32,
+    `The coin height has no supported script era.`, becomes `input 0 not
+    judged: coin height H exceeds the supported maximum height 4294967295.`
+    Hosts match `SpendRefusal::NotJudged` and `NotJudgedCause` (non-exhaustive:
+    a wildcard arm), never the text.
+  - At signing, a coin before Genesis is still skipped (#461, now matched on
+    `PreGenesisCoin`); a tip before Genesis or an overflowing height, skipped
+    before, is refused as at the doors.
+  - The chaintracks verifier tip answers for `Chain::Regtest` (CSV 576) where
+    it held with `REGTEST_TIP_HELD` (#439); the constant is removed.
+
 - #388 (api-break on beta): both `OverlayLookupResolver` methods add
   `certifiers: &[String]`. A host implementing the trait adds the parameter;
   the CLI implements none today. HTTP queries include the sorted trusted keys.
