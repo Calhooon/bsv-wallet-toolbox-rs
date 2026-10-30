@@ -19,9 +19,11 @@
 //! requests it serves, in order; the route's last answer serves every
 //! request after. `delay_ms` holds the answer back past the explorers'
 //! client timeout ([`CLIENT_TIMEOUT_SECS`]): a timeout. `cut` sends the body and
-//! drops the connection before the end: a body cut short. A request no
-//! route scripts is answered 501 and counted as `UNSCRIPTED <method>
-//! <path>`, so a request the fixture did not expect is a difference too.
+//! drops the connection before the end: a body cut short, its head always
+//! out before the fault, in the order `ladder_cut.rs` settles without a
+//! clock (#479). A request no route scripts is answered 501 and counted as
+//! `UNSCRIPTED <method> <path>`, so a request the fixture did not expect is
+//! a difference too.
 //!
 //! The results name each local server `<Provider>`; a fixture never holds
 //! a port. The results lose the wall clock: merkle path notes their `when`,
@@ -69,6 +71,9 @@ mod lock;
 
 #[path = "ladder_arcade.rs"]
 mod arcade;
+
+#[path = "ladder_cut.rs"]
+mod cut;
 
 /// The explorers' client timeout in a replay: a `delay_ms` past it is a
 /// timeout.
@@ -547,10 +552,7 @@ fn mock_answer(
         mock = mock.with_header(name.as_str(), value);
     }
     mock = if answer.cut {
-        mock.with_chunked_body(move |w| {
-            w.write_all(&body)?;
-            Err(std::io::Error::other("the body cut short"))
-        })
+        mock.with_chunked_body(move |w| cut::cut_short(w, &body))
     } else {
         mock.with_body(body)
     };
