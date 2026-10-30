@@ -41,7 +41,7 @@ pub(super) fn parse_overlay_answer(answer: &LookupAnswer) -> Result<Vec<OverlayC
 /// Parse a single BEEF output into an `OverlayCertificate`.
 fn parse_single_output(beef: &[u8], output_index: u32) -> Result<OverlayCertificate> {
     let tx = Transaction::from_beef(beef, None)
-        .map_err(|e| crate::Error::ServiceError(format!("Failed to parse BEEF: {}", e)))?;
+        .map_err(|e| crate::Error::ServiceError(format!("Failed to parse BEEF: {e}")))?;
     let output = tx
         .outputs
         .get(output_index as usize)
@@ -66,7 +66,7 @@ fn dropped(why: &str) -> crate::Error {
 }
 
 /// `decodeIdentityOutput`'s checks on the output (`identityUtils.ts:496-545`):
-/// two PushDrop fields, the record of 1 byte to 256 KiB and the field
+/// two `PushDrop` fields, the record of 1 byte to 256 KiB and the field
 /// signature of 8 to 80; exactly five chunks, the 33-byte locking key,
 /// `OP_CHECKSIG`, each field under the push opcode its length asks
 /// (`pushOpcode`, :80-85) and `OP_2DROP`; the record as `certificateRecord`
@@ -76,7 +76,7 @@ fn dropped(why: &str) -> crate::Error {
 /// are the door's (`OverlayCertificate::verified_and_decrypted`).
 pub(super) fn decode_identity_output(script: &LockingScript) -> Result<OverlayCertificate> {
     let decoded = PushDrop::decode(script)
-        .map_err(|e| crate::Error::ServiceError(format!("Failed to decode PushDrop: {}", e)))?;
+        .map_err(|e| crate::Error::ServiceError(format!("Failed to decode PushDrop: {e}")))?;
     let [certificate, field_signature] = decoded.fields.as_slice() else {
         return Err(dropped("not two fields"));
     };
@@ -98,7 +98,7 @@ pub(super) fn decode_identity_output(script: &LockingScript) -> Result<OverlayCe
     }
     // `toUTF8Strict`, then `certificateRecord`.
     let json = std::str::from_utf8(certificate)
-        .map_err(|e| crate::Error::ServiceError(format!("Invalid UTF-8 in certificate: {}", e)))?;
+        .map_err(|e| crate::Error::ServiceError(format!("Invalid UTF-8 in certificate: {e}")))?;
     let record = record::parse(json)?;
     let subject = Counterparty::Other(
         PublicKey::from_hex(&record.subject).map_err(|_| dropped("a subject not a key"))?,

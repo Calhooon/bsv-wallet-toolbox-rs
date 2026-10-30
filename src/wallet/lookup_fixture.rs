@@ -3,7 +3,7 @@
 //! `IdentityClient.ts:451-509`; bsv-rs v0.9.0-beta.4
 //! `src/identity/client.rs:451-500`, `reveal.rs` `identity_token`): a
 //! certificate the certifier signs over encrypted fields, a keyring for the
-//! `anyone` verifier, and the PushDrop the subject locks and signs under
+//! `anyone` verifier, and the `PushDrop` the subject locks and signs under
 //! `[1, 'identity']` key `1`.
 
 use bsv_rs::auth::MasterCertificate;

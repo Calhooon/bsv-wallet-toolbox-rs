@@ -5,67 +5,17 @@
 //! red before: the door matched the `decrypted_fields` a resolver supplied,
 //! which no real overlay entry fills, and verified no signature.
 
-use std::sync::Arc;
-
-use bsv_rs::wallet::{DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs};
+use bsv_rs::wallet::DiscoverByAttributesArgs;
 use indexmap::IndexMap;
 
-use super::{OverlayCertificate, OverlayLookupResolver, Wallet};
-use crate::managers::{
-    Certifier, TrustSettings, WalletSettings, WalletSettingsManager, WalletSettingsManagerConfig,
-};
-use crate::services::mock::MockWalletServices;
-use crate::storage::WalletStorageWriter;
+use super::super::discovery_rows_tests::{identity_read, wallet, Overlay, TestWallet};
+use super::OverlayCertificate;
 use crate::wallet::lookup::fixture::{beef, key, record_json, revealed, token};
-use crate::wallet::{HttpLookupResolver, WalletOptions};
+use crate::wallet::HttpLookupResolver;
 
-type TestWallet = Wallet<crate::StorageSqlx, MockWalletServices>;
-
+// The rows tests' wallet: `SUBJECT`'s key, trusting `CERTIFIER` alone.
 const CERTIFIER: u8 = 9;
 const SUBJECT: u8 = 8;
-
-/// A wallet of `SUBJECT`'s key trusting `CERTIFIER` alone, at threshold 1.
-async fn wallet() -> TestWallet {
-    let certifier = Certifier {
-        name: "Fixture certifier".into(),
-        description: "The fixture's certifier".into(),
-        identity_key: key(CERTIFIER).public_key().to_hex(),
-        trust: 5,
-        icon_url: None,
-        base_url: None,
-    };
-    let settings = WalletSettings {
-        trust_settings: TrustSettings {
-            trust_level: 1,
-            trusted_certifiers: vec![certifier],
-        },
-        theme: None,
-        currency: None,
-        permission_mode: None,
-    };
-    let manager = WalletSettingsManager::new(Some(WalletSettingsManagerConfig {
-        default_settings: settings,
-    }))
-    .unwrap();
-    let storage = crate::StorageSqlx::in_memory().await.unwrap();
-    storage
-        .migrate("discovery-decrypt", &key(SUBJECT).public_key().to_hex())
-        .await
-        .unwrap();
-    storage.make_available().await.unwrap();
-    let options = WalletOptions {
-        settings_manager: Some(Arc::new(manager)),
-        ..Default::default()
-    };
-    Wallet::with_options(
-        Some(key(SUBJECT)),
-        storage,
-        MockWalletServices::new(),
-        options,
-    )
-    .await
-    .unwrap()
-}
 
 async fn record(serial: u8, name: &str) -> OverlayCertificate {
     revealed(
@@ -75,27 +25,6 @@ async fn record(serial: u8, name: &str) -> OverlayCertificate {
         &[("name", name)],
     )
     .await
-}
-
-struct Overlay(Vec<OverlayCertificate>);
-
-#[async_trait::async_trait]
-impl OverlayLookupResolver for Overlay {
-    async fn lookup_by_identity_key(
-        &self,
-        _: &str,
-        _: &[String],
-    ) -> crate::Result<Vec<OverlayCertificate>> {
-        Ok(self.0.clone())
-    }
-
-    async fn lookup_by_attributes(
-        &self,
-        _: &IndexMap<String, String>,
-        _: &[String],
-    ) -> crate::Result<Vec<OverlayCertificate>> {
-        Ok(self.0.clone())
-    }
 }
 
 fn by_name(name: &str) -> DiscoverByAttributesArgs {
@@ -109,21 +38,9 @@ fn by_name(name: &str) -> DiscoverByAttributesArgs {
 
 /// The serials the identity door answers for the wallet's own key.
 async fn identity_serials(wallet: &TestWallet, overlay: Vec<OverlayCertificate>) -> Vec<String> {
-    let args = DiscoverByIdentityKeyArgs {
-        identity_key: wallet.identity_key().into(),
-        limit: None,
-        offset: None,
-        seek_permission: None,
-    };
-    let answer = wallet
-        .discover_identity_with_resolver(args, &Overlay(overlay))
-        .await
-        .unwrap();
-    answer
-        .certificates
-        .into_iter()
-        .map(|c| c.certificate.serial_number)
-        .collect()
+    let (answer, _) = identity_read(wallet, overlay, wallet.identity_key().into()).await;
+    let certificates = answer.certificates.into_iter();
+    certificates.map(|c| c.certificate.serial_number).collect()
 }
 
 /// #494's finding: the reference's record, served by an overlay on the
@@ -131,7 +48,7 @@ async fn identity_serials(wallet: &TestWallet, overlay: Vec<OverlayCertificate>)
 /// it reveals, its decrypted field in the answer.
 #[tokio::test]
 async fn attribute_discovery_finds_a_reference_record_through_the_overlay() {
-    let wallet = wallet().await;
+    let wallet = wallet(None).await;
     let alice = record(2, "Alice").await;
     let mut server = mockito::Server::new_async().await;
     let host = server.url();
@@ -178,7 +95,7 @@ async fn attribute_discovery_finds_a_reference_record_through_the_overlay() {
 /// door's are the decryption's.
 #[tokio::test]
 async fn a_resolvers_plaintext_is_replaced_by_the_decryption() {
-    let wallet = wallet().await;
+    let wallet = wallet(None).await;
     let mut bob = record(2, "Bob").await;
     bob.decrypted_fields = IndexMap::from([("name".to_string(), "Alice".to_string())]);
     for (query, expected) in [("Alice", 0), ("Bob", 1)] {
@@ -194,7 +111,7 @@ async fn a_resolvers_plaintext_is_replaced_by_the_decryption() {
 /// canonical signature over this one's values is dropped.
 #[tokio::test]
 async fn a_bad_certificate_signature_is_dropped() {
-    let wallet = wallet().await;
+    let wallet = wallet(None).await;
     let good = record(3, "Alice").await;
     let mut forged = record(2, "Alice").await;
     forged.signature = good.signature.clone();
@@ -211,7 +128,7 @@ async fn a_bad_certificate_signature_is_dropped() {
 /// keyring, so it still verifies.
 #[tokio::test]
 async fn an_undecryptable_keyring_value_is_dropped() {
-    let wallet = wallet().await;
+    let wallet = wallet(None).await;
     let good = record(3, "Alice").await;
     let mut locked = record(2, "Alice").await;
     locked.keyring = good.keyring.clone();
