@@ -4,13 +4,14 @@
 
 ## Overview
 
-Two standalone examples demonstrating configuration and initialization of the main subsystems: Services (blockchain providers) and Monitor (background task scheduler). All examples are synchronous print-based demos (no async runtime required) that show builder patterns and default configurations.
+Three examples. Two are standalone demos of configuration and initialization of the main subsystems: Services (blockchain providers) and Monitor (background task scheduler), synchronous and print-based (no async runtime required), showing builder patterns and default configurations. The third, `a8_census.rs`, is a profiling harness: it runs a tokio runtime and drives the wallet's doors against an in-memory SQLite store and the mock services.
 
 ## Running
 
 ```bash
 cargo run --example basic_wallet       # Services + ServicesOptions configuration
 cargo run --example monitor_demo       # Monitor daemon task scheduling
+cargo run --release --example a8_census -- <scene> <size> <iterations>  # One census scene in a loop
 ```
 
 ## Files
@@ -19,7 +20,7 @@ cargo run --example monitor_demo       # Monitor daemon task scheduling
 |------|-------|---------|
 | `basic_wallet.rs` | 62 | Services creation for mainnet/testnet, `ServicesOptions` builder pattern |
 | `monitor_demo.rs` | 95 | `MonitorOptions` defaults, all 11 `TaskConfig` intervals, custom/disabled tasks |
-| `a8_census.rs` | 300 | The A8 census scenes for a profiler: createAction, the post, internalize and the large BEEF path in a loop (`benches/README.md`) |
+| `a8_census.rs` | 302 | The A8 census scenes for a profiler: createAction, the post, internalize and the large BEEF path in a loop (`benches/README.md`) |
 
 ## basic_wallet.rs
 
@@ -49,13 +50,14 @@ Each `TaskConfig` exposes: `enabled`, `interval` (Duration), `start_immediately`
 
 ## Cargo.toml Registration
 
-All three examples are declared as `[[example]]` entries in the root `Cargo.toml` (lines 80-90).
+`basic_wallet` and `monitor_demo` are declared as `[[example]]` entries in the root `Cargo.toml`; `a8_census.rs` is found by Cargo's example discovery (no entry, so `Cargo.toml` is unchanged).
 
 ## Notes
 
-- These examples are configuration-only demos; they do not perform I/O or require a database
+- `basic_wallet.rs` and `monitor_demo.rs` are configuration-only demos; they do not perform I/O or require a database
+- `a8_census.rs` does: it seeds an in-memory SQLite store through the bench fixture (`benches/common`, by `#[path]`), runs a tokio runtime, and posts only to `MockWalletServices`
 - `basic_wallet.rs` returns `Result` (Services creation is fallible); the other two use plain `fn main()`
-- None require the async tokio runtime since they only inspect configuration structs
+- The two demos need no async runtime since they only inspect configuration structs
 - The examples use public API types re-exported from `bsv_wallet_toolbox` (see `src/lib.rs`)
 
 ## Related

@@ -142,5 +142,8 @@ python3 benches/a8_census_rows.py DIR OUT MACHINE.json
 `a8_census_profile.py` keeps the samples inside the windows, drops samples
 whose leaf is a blocking kernel wait, and counts self time per native symbol.
 `a8_census_rows.py` takes the median of three runs per scene and size and
-writes `census.json` and `census.md`. The fixture's proofs sit at height
+writes `census.json` (the rows), `census-full.json` (the rows with the
+machine, the scenes and the scene totals) and `census.md`. An address samply's
+sidecar does not symbolize (every `libsystem_malloc` address) counts as its
+library's one `LIB (unsymbolized)` row, so the allocator is a row. The fixture's proofs sit at height
 900,000, past mainnet Genesis, so the door judges every spend.
