@@ -9,11 +9,10 @@
 use super::{stream_error, VerificationHeaders};
 use crate::{Error, Result};
 use crate::{SpendRequest, SpendVerificationContext, SpendVerifier};
-use bsv_rs::block::ChainParams;
 use bsv_rs::primitives::bsv::sighash::{TxInput, TxOutput, TxSighashCache};
 use bsv_rs::script::{
-    input_script_flags, LockingScript, NotJudgedCause, ProtocolEra, ScriptFlags, ScriptResource,
-    ScriptResourceLimit, Spend, TxSpendParams, UnlockingScript,
+    LockingScript, NotJudgedCause, ScriptFlags, ScriptResource, ScriptResourceLimit, Spend,
+    TxSpendParams, UnlockingScript, Word,
 };
 use bsv_rs::transaction::beef_stream::{
     display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
@@ -33,18 +32,15 @@ pub(crate) enum NoWord {
 /// The text of [`NoWord::Network`], a script refusal as before #440.
 pub(crate) const NO_NETWORK_POLICY: &str = "The storage network has no script era policy.";
 
-/// The node's word for one unmined input, composed by bsv-rs's
-/// `input_script_flags` from the store network's `ChainParams` (#440): the
-/// spend at tip+1, the block it would be mined in, with no tip the latest
-/// activation the parameters know (bsv-rs's no-tip rule, the keeper's clause
-/// of 2026-10-29); the coin's UTXO bits from its verified proof height, an
-/// unproven coin at the spend's. This is the one place the word is chosen.
-///
-/// bsv-rs keeps its typed composition crate-private (`verification_flags`,
-/// `checked_input_script_flags`) and its public one answers a text, so the
-/// cause of a refusal is named here in the same order from bsv-rs's own era
-/// table (`ProtocolEra::at_height`), never from the text: the tip's overflow,
-/// the coin height's, then a zero activation, the spend's era, the coin's.
+/// The node's word for one unmined input, bsv-rs's
+/// `ChainParams::word_for_input(Word::Standard, ..)` (bsv-rs #520) from the
+/// store network's `ChainParams` (#440): the spend at tip+1, the block it
+/// would be mined in, with no tip the latest activation the parameters know
+/// (bsv-rs's no-tip rule, the keeper's clause of 2026-10-29); the coin's UTXO
+/// bits from its verified proof height, an unproven coin at the spend's. This
+/// is the one place the word is chosen; bsv-rs names the cause of a refusal
+/// (a zero activation, the spend's era, the coin's), and the port only the
+/// two conversions ahead of it: the tip's overflow, then the coin height's.
 pub(crate) fn input_word(
     network: &str,
     tip: Option<ChainTip>,
@@ -52,46 +48,24 @@ pub(crate) fn input_word(
 ) -> std::result::Result<ScriptFlags, NoWord> {
     let chain = super::chain_params(network).ok_or(NoWord::Network)?;
     let not_judged = NoWord::NotJudged;
-    let spend = match tip {
-        Some(tip) => {
+    let spend = tip
+        .map(|tip| {
             tip.height
                 .checked_add(1)
                 .ok_or(not_judged(NotJudgedCause::TipHeightOverflow {
                     tip: tip.height,
-                }))?
-        }
-        None => chain.genesis_height.max(chain.chronicle_height),
-    };
+                }))
+        })
+        .transpose()?;
     let source = proven_height
         .map(|height| {
             u32::try_from(height)
                 .map_err(|_| not_judged(NotJudgedCause::SourceHeightOverflow { height }))
         })
         .transpose()?;
-    input_script_flags(&chain, spend, source, false)
-        .map_err(|_| not_judged(refusal_cause(&chain, spend, source)))
-}
-
-/// The cause of `input_script_flags`'s refusal of these facts.
-fn refusal_cause(chain: &ChainParams, spend: u32, source: Option<u32>) -> NotJudgedCause {
-    use bsv_rs::block::ActivationHeightsError;
-    if chain.genesis_height == 0 {
-        return NotJudgedCause::ZeroActivationHeight(ActivationHeightsError::ZeroGenesis);
-    }
-    if chain.chronicle_height == 0 {
-        return NotJudgedCause::ZeroActivationHeight(ActivationHeightsError::ZeroChronicle);
-    }
-    let era = |height| ProtocolEra::at_height(height, chain.genesis_height, chain.chronicle_height);
-    match era(spend) {
-        None => NotJudgedCause::PreGenesisSpend {
-            height: spend,
-            genesis_height: chain.genesis_height,
-        },
-        Some(_) => NotJudgedCause::PreGenesisCoin {
-            height: source.unwrap_or(spend),
-            genesis_height: chain.genesis_height,
-        },
-    }
+    chain
+        .word_for_input(Word::Standard, spend, source)
+        .map_err(not_judged)
 }
 
 pub(super) struct Coin {
@@ -578,6 +552,8 @@ pub(super) fn transaction_cache(body: &TxBody) -> Arc<TxSighashCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bsv_rs::block::ChainParams;
+    use bsv_rs::script::ProtocolEra;
     use ProtocolEra::{PostChronicle, PostGenesis};
     const GENESIS: u32 = ProtocolEra::MAINNET_GENESIS_HEIGHT;
     const CHRONICLE: u32 = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
