@@ -107,7 +107,7 @@ timeout; the previous two waits could exceed the webhook sender's 10 s limit
 with the default 5 s store timeout. The host deadline remains CLI #249's job.
 
 **ChainTracker methods:**
-- `set_chain_tracker(tracker)` - Set ChainTracker for BEEF and proof verification. Without one NO merkle proof is stored: `ingest_merkle_proof` returns `ProofIngestOutcome::TrackerUnavailable`, the BEEF walk fetches none, `internalize_action` holds (`ServiceError`, nothing stored): since #103 the door needs the tracker for the verifier's roots (a missing mining tip gives the latest era, #464), and a missing tracker is could-not-look, never a verdict
+- `set_chain_tracker(tracker)` - Set ChainTracker for BEEF and proof verification. Without one NO merkle proof is stored: `ingest_merkle_proof` returns `ProofIngestOutcome::TrackerUnavailable`, the BEEF walk fetches none, `internalize_action` holds (`ServiceError`, nothing stored): since #103 the door needs the tracker for the verifier's roots (a missing mining tip gives the latest era, #464), and a missing tracker is could-not-look, never a verdict; with no tracker and services built with no `chaintracks_url`, or no services, it holds with `no_header_source`'s text, the proofs' want of headers (#509)
 - `clear_chain_tracker()` - Remove the ChainTracker (from then on no proof is stored)
 - `get_chain_tracker()` - Internal: get current ChainTracker if set
 
@@ -568,7 +568,13 @@ that judges bytes it did not make refuses it, not judged, never invalid. The pos
 is the caller's `inputBEEF` transactions the store does not hold, and at
 process nothing the store holds is judged, the posted roots and their stored
 ancestry alike, whatever format the caller asks back. The roots and the
-structure of every chain stay the structural passes'. The set is stated once, on `judged_set`
+structure of every chain stay the structural passes'. A BEEF the wallet did not
+sign needs headers for its proofs (T2): with no header source (no tracker on the
+caller or the storage and services built with no `chaintracks_url`, or no
+services) the pre-check holds with `no_header_source`'s text
+(`beef_verification::proofs_tracker`, #509), and `build_input_beef` holds a
+caller root no tracker reaches rather than skip it (#511); the store's own
+proofs, checked when stored, are not asked again. The set is stated once, on `judged_set`
 (`create_action/beef.rs`). Create calls the one verifier through the
 `verify_beef_word` seam (`beef_verification.rs`): the tracker's tip
 (`mining_tip`; a missing tip or a tip fault gives the latest era, #464, as at
