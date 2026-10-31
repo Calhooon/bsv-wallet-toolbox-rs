@@ -117,6 +117,18 @@ the CLI takes the toolbox's next prerelease with `bsv-rs` and `bsv-tracker`
 `=0.9.0-beta.4` (its pin lane, after the toolbox's), with the `[Unreleased]`
 host lines (CLI #347).
 
+The toolbox's beta.5 re-pin (the tag at `3bad238c`) moves this tree to
+`bsv-rs =0.9.0-beta.5`. Against it the CLI's beta (e5bf424, `0.19.0-beta.4`,
+with `bsv-rs` and `bsv-tracker` `=0.9.0-beta.4`) is red by construction, as
+the beta.4 row was behind its tag: `tools/dependents-check.sh --only
+bsv-wallet-cli --line beta` on the lane (2026-10-31) answers `build: FAIL,
+test: not run`, cargo's resolver refusing the two exact pins (`failed to
+select a version for bsv-rs ... previously selected package bsv-rs
+v0.9.0-beta.4`). Nothing compiled, so no CLI source is implicated. The row
+turns green when the CLI takes the toolbox's next prerelease with `bsv-rs`
+and `bsv-tracker` `=0.9.0-beta.5` (its pin lane, after the toolbox's), with
+the `[Unreleased]` host lines (bsv-wallet-cli#376).
+
 ### Re-pin plan
 
 The toolbox's #419 pin moves this tree to `bsv-rs =0.9.0-beta.3` in both
