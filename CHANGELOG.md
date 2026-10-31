@@ -101,8 +101,16 @@
   `Wallet::reverify_stored_certificates` counts a certificate whose key text
   is an odd-length or hybrid form as failed, as the reference's
   `Certificate.verify` answers false; with `from_hex` alone at beta.5 it
-  verified. At the issuance door the texts equal the request's validated
-  keys before the decode, so no door answer moves.
+  verified. The same pattern refuses an uncompressed `04` text, which
+  `from_hex` read at beta.4 as at beta.5: the reference's verdict, not the
+  pin's. Host line for bsv-wallet-cli#376: old, a stored certificate whose
+  subject or certifier text is `04` and 128 hex digits verified; new, the
+  reverify counts it in `failed` and logs `stored certificate does not
+  verify under the derived key`, as the reference's `toBinary`
+  (`Certificate.ts:241-251`) throws and `verify` answers false (:425-441).
+  Test: `an_uncompressed_key_text_does_not_verify_as_the_reference_refuses_it`.
+  At the issuance door the texts equal the request's validated keys before
+  the decode, so no door answer moves.
 - bsv-rs #498 at the beta.5 pin: the compressed-key validators
   (`validate_public_key_arg` for proveCertificate's and the certificate
   gates' keys, the internalize sender, the overlay record's keys) refuse an

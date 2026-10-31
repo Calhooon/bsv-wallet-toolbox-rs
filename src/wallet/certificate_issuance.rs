@@ -705,6 +705,8 @@ fn decode_issued_certificate(raw: &CertificateResponse) -> Result<Certificate> {
 /// 0.9.0-beta.5 `PublicKey::from_hex` reads the reference's lenient
 /// `fromString` forms (bsv-rs #498: an odd-length string padded, a hybrid
 /// key), which toBinary's pattern refuses, so the text is read strictly here.
+/// The pattern also refuses an uncompressed `04` text, which `from_hex` read
+/// at beta.4 as at beta.5: the reference's verdict, not the pin's.
 fn certificate_key(key_hex: &str) -> Option<PublicKey> {
     let shaped = key_hex.len() == 66
         && matches!(key_hex.get(..2), Some("02" | "03"))
