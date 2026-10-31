@@ -45,6 +45,20 @@
 
 ### Fixed
 
+- #521, bsv-wallet-cli#376: a header-service fault in discovery was
+  answered as no overlay certificates. Old: any `get_chain_tracker` error
+  made `discoverByIdentityKey` and `discoverByAttributes` answer an empty
+  overlay part (with the identity call's local records). New: only the
+  services' not-configured answer (services built with no
+  `chaintracks_url`) gives the empty overlay part, as the reference's
+  `queryOverlay` answers `[]` with no services; any other error is the
+  discover call's answer with the services' own class and text, as the
+  reference's uncaught `getChainTracker()` is (ts-stack@edf6e03
+  `Wallet.ts:894-901`), and the identity call's local records are not
+  answered alongside it. Host note: `CHAINTRACKS_URL=off` is the
+  not-configured case and answers as before; a host whose header service
+  faults now reads that fault from both discover calls, never "no
+  certificates".
 - #509, bsv-wallet-cli#376 and bsv-wallet-cli#372: the create pre-check of
   the caller's unproven `inputBEEF` transactions and `internalizeAction`
   with no header source hold with a text naming the proofs' want of headers

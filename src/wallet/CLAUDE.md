@@ -874,8 +874,12 @@ Every overlay output's chain evidence is verified before its token is read
 (#502; `IdentityEvidenceVerifier.parse`, `identityUtils.ts:600-635` at
 ts-stack@edf6e03). The door reads the services' chain tracker
 (`overlay_tracker`, as `Wallet.ts:894-911` reads `getChainTracker()`); with
-none it asks no resolver and both paths answer no overlay certificate, as
-`queryOverlay` answers `[]` (`:399-400`). Every resolver answers outputs
+none (the services' not-configured answer, `NO_HEADER_SERVICE`) it asks no
+resolver and both paths answer no overlay certificate, as `queryOverlay`
+answers `[]` (`:399-400`). Any other `get_chain_tracker` error is the
+discover call's answer, class and text unchanged, as the reference's
+uncaught `getChainTracker()` is; the identity path's local records are not
+answered alongside it (#521). Every resolver answers outputs
 with their BEEF; for each (`lookup_evidence.rs`): the BEEF's transaction,
 the Atomic subject or else its last, holds the output index; its
 unconfirmed graph is inside the BEEF, its inputs and scripts inside
