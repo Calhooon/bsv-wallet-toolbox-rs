@@ -1,7 +1,7 @@
 //! #502: each overlay output's chain evidence verified with the tracker
 //! before its token is read and fenced after the certificate's crypto, as
 //! the reference's `IdentityEvidenceVerifier.parse` verifies it
-//! (ts-stack@edf6e03 `identityUtils.ts:598-614`); before #502 the door read
+//! (ts-stack@edf6e03 `identityUtils.ts:600-635`); before #502 the door read
 //! the token from any BEEF and asked no tracker.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -86,7 +86,7 @@ async fn only_the_good_output(bad: OutputListItem, tracker: &Tracker) {
     assert_eq!(answer, vec![good.serial_number]);
 }
 
-/// The coordinator's `isValidRootForHeight` (`TransactionEvidenceCoordinator.ts:417-428`):
+/// The coordinator's `isValidRootForHeight` (`TransactionEvidenceCoordinator.ts:317-327`):
 /// the subject's own token, proven at a height whose root the tracker does
 /// not hold, is dropped.
 #[tokio::test]
@@ -99,7 +99,7 @@ async fn an_output_whose_root_the_tracker_refuses_is_dropped() {
     only_the_good_output(at(proven(&tx, HEIGHT + 1), 0), &tracker).await;
 }
 
-/// `assertUnconfirmedGraph` (`TransactionEvidence.ts:164-180`): the token's
+/// `assertUnconfirmedGraph` (`TransactionEvidence.ts:155-177`): the token's
 /// transaction unproven and its parent not in the BEEF, or an unproven
 /// transaction with no input and no proof (the base's fixture), is no
 /// evidence; before #502 each was decoded.
@@ -116,7 +116,7 @@ async fn an_output_without_its_chain_in_its_beef_is_dropped() {
     only_the_good_output(at(vec![], 0), &tracker()).await;
 }
 
-/// `loadEvidenceTransaction` (`TransactionEvidence.ts:115-118`): an Atomic
+/// `loadEvidenceTransaction` (`TransactionEvidence.ts:118-121`): an Atomic
 /// BEEF naming the token's transaction, which it does not carry, is dropped.
 #[tokio::test]
 async fn an_output_whose_transaction_is_not_in_its_beef_is_dropped() {
@@ -129,7 +129,7 @@ async fn an_output_whose_transaction_is_not_in_its_beef_is_dropped() {
     only_the_good_output(at(atomic, 0), &tracker()).await;
 }
 
-/// `loadEvidenceTransaction` (:124): an output index past the transaction's
+/// `loadEvidenceTransaction` (:126): an output index past the transaction's
 /// outputs is dropped.
 #[tokio::test]
 async fn an_output_index_past_the_outputs_is_dropped() {
@@ -138,8 +138,8 @@ async fn an_output_index_past_the_outputs_is_dropped() {
     only_the_good_output(at(past, 1), &tracker()).await;
 }
 
-/// The fence after the certificate's crypto (`identityUtils.ts:608-609`,
-/// the coordinator's `recheck`, :556-582): a root the tracker held on the
+/// The fence after the certificate's crypto (`identityUtils.ts:611-612`,
+/// the coordinator's `recheck`, :505-533): a root the tracker held on the
 /// first pass and no longer holds drops the output.
 #[tokio::test]
 async fn an_output_whose_root_is_gone_at_the_fence_is_dropped() {
@@ -184,7 +184,7 @@ async fn a_coinbase_output_is_kept_only_100_blocks_deep() {
     }
 }
 
-/// `queryOverlayEvidence`'s intake (`identityUtils.ts:423-437`): an answer
+/// `queryOverlayEvidence`'s intake (`identityUtils.ts:422-437`): an answer
 /// of 513 outputs is refused whole, the lookup's `limit`.
 #[tokio::test]
 async fn an_answer_past_the_output_limit_is_refused() {
@@ -199,7 +199,7 @@ async fn an_answer_past_the_output_limit_is_refused() {
 }
 
 /// The unproven spend judged under the network's word (`tx.verify`,
-/// `TransactionEvidenceCoordinator.ts:437`): the token's transaction
+/// `TransactionEvidenceCoordinator.ts:345-350`): the token's transaction
 /// spending its proven parent's `OP_EQUAL` with `1 1` is kept, with `1 2`
 /// dropped.
 #[tokio::test]
