@@ -4,6 +4,7 @@
 use crate::Result;
 use bsv_rs::script::ScriptFlags;
 use bsv_rs::transaction::beef_stream::{Hash32, TxBody};
+use bsv_rs::transaction::WorkBudget;
 use std::sync::Arc;
 
 /// One input and its source output, as read by the script judge.
@@ -79,4 +80,34 @@ impl std::fmt::Debug for dyn SpendVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SpendVerifier")
     }
+}
+
+/// The work budget at the doors, bsv-rs's one policy type (`WorkBudget`,
+/// bsv-rs #519 and #527), in bsv-rs's `SpendParams::work_limit` units (one
+/// per opcode reached and one per byte fed to a hash, charged only under a
+/// limit): 2^31 per input, the keeper's word of 2026-10-30 on #487, anchored
+/// on the node's 1 s validation limit, and the same 2^31 per transaction (the
+/// keeper's amendment on #487, the node's limit being per transaction). The
+/// signer reads `per_input` alone. The corpus's costliest input spends 661
+/// units; a P2PKH input of a 10 MB standard transaction 10,000,235. Defined
+/// here, outside the storage's feature gate, so every reader shares it.
+pub(crate) const DOOR_WORK_BUDGET: WorkBudget = WorkBudget::new()
+    .with_per_input(Some(1 << 31))
+    .with_per_transaction(Some(1 << 31));
+
+#[cfg(test)]
+thread_local! {
+    /// The witnesses' budget in place of [`DOOR_WORK_BUDGET`], which no test
+    /// could exhaust; test builds only.
+    pub(crate) static WORK_OVERRIDE: std::cell::Cell<Option<WorkBudget>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// [`DOOR_WORK_BUDGET`], or a witness's override in a test build.
+pub(crate) fn work_budget() -> WorkBudget {
+    #[cfg(test)]
+    if let Some(budget) = WORK_OVERRIDE.with(std::cell::Cell::get) {
+        return budget;
+    }
+    DOOR_WORK_BUDGET
 }

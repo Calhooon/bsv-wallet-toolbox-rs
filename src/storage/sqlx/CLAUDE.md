@@ -522,7 +522,7 @@ decline undone by bsv-rs #331), and `work_limit: Some(2^31)` units per input
 the costliest corpus input spends 661, and a P2PKH input of a 10 MB standard
 transaction 10,000,235); at the doors the transaction's inputs share a total
 of the same 2^31. Both bounds are bsv-rs's one policy type since the beta.5
-re-pin, `live_word::DOOR_WORK_BUDGET =
+re-pin, `spend_verifier::DOOR_WORK_BUDGET =
 WorkBudget::new().with_per_input(Some(2^31)).with_per_transaction(Some(2^31))`
 (bsv-rs #519, #527), charged by bsv-rs's rule: each input runs under the
 per-input bound alone, its `work_spent` is then added to the total, and a
