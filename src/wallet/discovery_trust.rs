@@ -13,12 +13,13 @@ use indexmap::IndexMap;
 
 use super::Wallet;
 use crate::managers::{TrustSettings, WalletSettings};
+use crate::services::services::NO_HEADER_SERVICE;
 use crate::services::{Chain, WalletServices};
 use crate::storage::{entities::TableCertificate, FindCertificatesArgs, WalletStorageProvider};
 use crate::wallet::lookup::{
     overlay_certificates, HttpLookupResolver, OverlayCertificate, OverlayLookupResolver,
 };
-use crate::Result;
+use crate::{Error, Result};
 
 #[path = "discovery_search.rs"]
 mod discovery_search;
@@ -39,16 +40,17 @@ where
     /// services' header service, as the reference's
     /// `requireOverlayChainTracker` reads `services.getChainTracker()`
     /// (ts-stack@edf6e03 `Wallet.ts:894-901`). With none (`Services` built
-    /// with no `chaintracks_url`), or a fault reaching it, the door asks no
-    /// resolver and answers no overlay certificates, as `queryOverlay`
-    /// answers `[]` (`identityUtils.ts:399`).
-    async fn overlay_tracker(&self) -> Option<&dyn ChainTracker> {
+    /// with no `chaintracks_url`, the not-configured answer
+    /// `NO_HEADER_SERVICE`), the door asks no resolver and answers no
+    /// overlay certificates, as `queryOverlay` answers `[]`
+    /// (`identityUtils.ts:399`). Any other error is the services' fault and
+    /// is the discover call's answer, as the reference's uncaught
+    /// `getChainTracker()` is (#521).
+    async fn overlay_tracker(&self) -> Result<Option<&dyn ChainTracker>> {
         match self.services.get_chain_tracker().await {
-            Ok(tracker) => Some(tracker),
-            Err(error) => {
-                tracing::debug!("No chain tracker for overlay evidence: {}", error);
-                None
-            }
+            Ok(tracker) => Ok(Some(tracker)),
+            Err(Error::ServiceError(text)) if text == NO_HEADER_SERVICE => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
@@ -101,7 +103,7 @@ where
             .into_iter()
             .map(local_certificate)
             .collect();
-        if let Some(tracker) = self.overlay_tracker().await {
+        if let Some(tracker) = self.overlay_tracker().await? {
             let outputs = resolver
                 .lookup_by_identity_key(&args.identity_key, &certifiers)
                 .await;
@@ -118,7 +120,7 @@ where
     ) -> Result<DiscoverCertificatesResult> {
         let settings = self.discovery_settings().await?;
         let certifiers = trusted_keys(&settings.trust_settings);
-        let certificates = match self.overlay_tracker().await {
+        let certificates = match self.overlay_tracker().await? {
             Some(tracker) => {
                 let outputs = resolver
                     .lookup_by_attributes(&args.attributes, &certifiers)
