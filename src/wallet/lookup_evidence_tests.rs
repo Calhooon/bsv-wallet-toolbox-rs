@@ -204,7 +204,7 @@ async fn an_unproven_output_is_kept_only_when_its_spend_verifies() {
     assert_eq!(answer, vec![1, 0]);
 }
 
-/// Alice's token in a transaction spending the first `inputs` outputs of
+/// Alice's token in a transaction spending outputs 0 to `inputs - 1` of
 /// `parent` (each `OP_EQUAL`) with `1 1`, unproven, beside its proven parent.
 async fn spending(parent: &bsv_rs::transaction::Transaction, inputs: u32) -> OutputListItem {
     let mut child = transaction(alices_token(&alice(2).await));
