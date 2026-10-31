@@ -1,7 +1,8 @@
 //! The work budget (bsv-rs #472, the keeper's word on #487): 2^31 units per
 //! input at the doors and the signer, and 2^31 per transaction at the doors,
-//! summed over the inputs. The witnesses lower both through the test seam
-//! (`live_word::WORK_OVERRIDE`); no test could exhaust 2^31.
+//! bsv-rs's `WorkBudget` (#519, #527) charged by bsv-rs's rule. The witnesses
+//! lower both through the test seam (`live_word::WORK_OVERRIDE`); no test
+//! could exhaust 2^31.
 
 use super::*;
 use crate::storage::sqlx::beef_verification::{
@@ -9,14 +10,26 @@ use crate::storage::sqlx::beef_verification::{
 };
 use bsv_rs::script::NotJudgedCause;
 use bsv_rs::transaction::beef_stream::Verdict;
-use bsv_rs::transaction::MockChainTracker;
+use bsv_rs::transaction::{MockChainTracker, WorkBudget};
 
-/// Runs `f` under the budgets `(per input, per transaction)`.
-fn with_work<T>(budgets: (u64, u64), f: impl FnOnce() -> T) -> T {
-    WORK_OVERRIDE.with(|cell| cell.set(Some(budgets)));
+/// The budget `(per input, per transaction)` as bsv-rs's one type.
+fn budget((per_input, per_transaction): (u64, u64)) -> WorkBudget {
+    WorkBudget::new()
+        .with_per_input(Some(per_input))
+        .with_per_transaction(Some(per_transaction))
+}
+
+/// Runs `f` under `budget`.
+fn with_budget<T>(budget: WorkBudget, f: impl FnOnce() -> T) -> T {
+    WORK_OVERRIDE.with(|cell| cell.set(Some(budget)));
     let out = f();
     WORK_OVERRIDE.with(|cell| cell.set(None));
     out
+}
+
+/// Runs `f` under the budgets `(per input, per transaction)`.
+fn with_work<T>(budgets: (u64, u64), f: impl FnOnce() -> T) -> T {
+    with_budget(budget(budgets), f)
 }
 
 /// A P2PKH coin with `count` outputs, proven at Genesis, and a spend of all
@@ -141,7 +154,7 @@ async fn the_door_refuses_an_input_past_its_work_budget() {
     door(&parent, &child).await.unwrap();
     // The override is the test thread's; the door's synchronous passes run
     // on it under the current-thread runtime.
-    WORK_OVERRIDE.with(|cell| cell.set(Some((3, u64::MAX))));
+    WORK_OVERRIDE.with(|cell| cell.set(Some(budget((3, u64::MAX)))));
     let result = door(&parent, &child).await;
     WORK_OVERRIDE.with(|cell| cell.set(None));
     let cause = work_cause(result, 0);
@@ -151,23 +164,48 @@ async fn the_door_refuses_an_input_past_its_work_budget() {
     ));
 }
 
-/// The doors bound the transaction's total: the input that carries the sum
-/// past it is not judged, the total named as the budget, the work done the
-/// sum over both inputs. A P2PKH input spends a few hundred units (#487's
-/// corpus: 546 at most), so 600 admits one and not two.
+/// The doors bound the transaction's total with bsv-rs's per-transaction
+/// budget and cause (#519): the input whose charge carries the total past the
+/// bound is not judged, `TransactionWorkBudgetExceeded` naming it, the bound
+/// and the total including its whole charge. A P2PKH input spends a few
+/// hundred units (#487's corpus: 546 at most), so 600 admits one and not two.
+/// Before the beta.5 re-pin the port's own sum answered `WorkBudgetExceeded`
+/// with the total as its budget, the crossing input run under what was left.
 #[test]
 fn the_word_pass_bounds_the_transactions_total_work() {
     let (parent, child) = p2pkh_spends(2);
     with_work((u64::MAX, 1_200), || word_pass(&parent, &child)).unwrap();
-    let cause = work_cause(with_work((u64::MAX, 600), || word_pass(&parent, &child)), 1);
-    match cause {
-        NotJudgedCause::WorkBudgetExceeded {
+    let result = with_work((u64::MAX, 600), || word_pass(&parent, &child));
+    let text = result.as_ref().unwrap_err().to_string();
+    match work_cause(result, 1) {
+        NotJudgedCause::TransactionWorkBudgetExceeded {
             input: 1,
-            budget: 600,
-            work_done,
-        } => assert!((300..=600).contains(&work_done), "{work_done}"),
+            limit: 600,
+            total,
+        } => {
+            assert!((601..=1_200).contains(&total), "{total}");
+            assert!(
+                text.contains(&format!(
+                    "exceeded transaction work budget 600 units after {total} units of work."
+                )),
+                "{text}"
+            );
+        }
         other => panic!("expected the total's refusal, got {other:?}"),
     }
+}
+
+/// bsv-rs's rule with a transaction bound alone: the inputs run unbounded and
+/// are charged, the crossing input named (`WorkBudget::input_limit`'s rule).
+#[test]
+fn a_transaction_bound_alone_still_charges_each_input() {
+    let (parent, child) = p2pkh_spends(2);
+    let only_total = WorkBudget::new().with_per_transaction(Some(600));
+    let cause = work_cause(with_budget(only_total, || word_pass(&parent, &child)), 1);
+    let NotJudgedCause::TransactionWorkBudgetExceeded { input, limit, .. } = cause else {
+        panic!("expected the total's refusal, got {cause:?}");
+    };
+    assert_eq!((input, limit), (1, 600));
 }
 
 #[cfg(test)]
