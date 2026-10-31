@@ -506,3 +506,48 @@ async fn issuance_uses_fresh_keys_for_equal_and_empty_plaintexts() {
         }
     }
 }
+
+/// The key's text in the reference's lenient `fromString` forms that
+/// toBinary's `^(02|03)[0-9a-fA-F]{64}$` refuses: the odd-length string
+/// (the compressed text without its leading `0`) and the hybrid key.
+fn lenient_forms(key: &bsv_rs::primitives::PublicKey) -> [String; 2] {
+    let uncompressed = key.to_hex_uncompressed();
+    let y_odd = u8::from_str_radix(&uncompressed[128..], 16).unwrap() & 1 == 1;
+    let hybrid = format!("{}{}", if y_odd { "07" } else { "06" }, &uncompressed[2..]);
+    [key.to_hex()[1..].to_string(), hybrid]
+}
+
+/// bsv-rs 0.9.0-beta.5's `from_hex` reads the reference's lenient key forms
+/// (bsv-rs #498); the reference's `Certificate.verify` answers false for a
+/// certificate whose subject or certifier text is one of them, its
+/// `toBinary` refusing the text (Certificate.ts:240-254, :425-441), and so
+/// does the port's verify at the issuance door and the stored-certificate
+/// audit (`issued_certificate_verifies`). Red at the beta.5 pin before the
+/// strict read: the certifier's hybrid and odd-length texts verified. A
+/// `05` tag (bsv-rs #550) is refused as before.
+#[test]
+fn a_lenient_key_text_does_not_verify_as_the_reference_refuses_it() {
+    let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
+    let issued = fixture.reference_issued;
+    let parsed = parse_issued(&issued);
+    assert!(issued.reference_verify);
+    assert!(issued_certificate_verifies(&parsed.certificate));
+    let certifier = key(issued.keys.certifier).public_key();
+    let subject = key(issued.keys.subject).public_key();
+    for (role, key) in [("certifier", &certifier), ("subject", &subject)] {
+        let compressed = key.to_hex();
+        let tag_05 = format!("05{}", &compressed[2..]);
+        for text in lenient_forms(key).into_iter().chain([tag_05]) {
+            let mut raw = parsed.certificate.clone();
+            if role == "certifier" {
+                raw.certifier = text.clone();
+            } else {
+                raw.subject = text.clone();
+            }
+            assert!(
+                !issued_certificate_verifies(&raw),
+                "{role} {text} verified; the reference's toBinary refuses it"
+            );
+        }
+    }
+}
