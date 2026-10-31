@@ -14,7 +14,7 @@ use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::services::traits::BlockHeader;
 use bsv_wallet_toolbox_rs::{AuthId, MonitorStorage, StorageSqlx, Wallet, WalletStorageWriter};
 
-pub const HEIGHT: u32 = 100_000;
+pub const HEIGHT: u32 = 900_000;
 pub const SATOSHIS: u64 = 100_000;
 pub const ORIGINATOR: &str = "bench.local";
 const PREFIX: &str = "YmVuY2gtcHJlZml4";
