@@ -8,7 +8,7 @@
 //! the signed transaction is read by bsv-rs's streaming reader alone.
 
 use super::live_word::{
-    input_word, judge_input, no_word_refusal, transaction_cache, work_budgets, Coin, NoWord,
+    input_word, judge_input, no_word_refusal, transaction_cache, work_budget, Coin, NoWord,
 };
 use super::stream_error;
 use crate::{Error, Result, SpendRequest, SpendVerificationContext, SpendVerifier};
@@ -144,7 +144,8 @@ pub(super) struct InputJudgements<'a> {
     verifier: Option<&'a dyn SpendVerifier>,
     host_body: Option<Arc<TxBody>>,
     selected: Vec<(SpendRequest, SpendVerificationContext)>,
-    /// The transaction's work bound at a door and the work its inputs spent.
+    /// The transaction's work bound at a door (`WorkBudget::per_transaction`)
+    /// and the work its inputs spent.
     transaction_work: Option<u64>,
     work_spent: u64,
 }
@@ -167,10 +168,10 @@ impl<'a> InputJudgements<'a> {
         }
     }
 
-    /// Bound the transaction's total work, summed over the inputs the
-    /// interpreter judges (a door's bound; the signer has none).
-    pub(super) fn with_transaction_work(mut self, total: u64) -> Self {
-        self.transaction_work = Some(total);
+    /// Bound the transaction's total work over the inputs the interpreter
+    /// judges (a door's `WorkBudget::per_transaction`; the signer has none).
+    pub(super) fn with_transaction_work(mut self, limit: Option<u64>) -> Self {
+        self.transaction_work = limit;
         self
     }
 
@@ -202,14 +203,16 @@ impl<'a> InputJudgements<'a> {
                 return Ok(());
             }
         }
-        // Each input runs under the smaller of its own budget and what the
-        // transaction's total leaves.
-        let per_input = work_budgets().0;
-        let left = self
-            .transaction_work
-            .map_or(u64::MAX, |total| total.saturating_sub(self.work_spent));
-        let limit = per_input.min(left);
-        let judged = judge_input(
+        // bsv-rs's rule (`WorkBudget`, bsv-rs #519): each input runs under the
+        // per-input bound alone (unbounded with a transaction bound only) and
+        // its work is charged after it; a total above the transaction's bound
+        // is `TransactionWorkBudgetExceeded` at the crossing input.
+        let budget = work_budget();
+        let limit = budget
+            .per_input
+            .or(self.transaction_work.map(|_| u64::MAX))
+            .unwrap_or(u64::MAX);
+        let spent = judge_input(
             word,
             self.txid,
             self.body,
@@ -217,43 +220,31 @@ impl<'a> InputJudgements<'a> {
             source,
             Arc::clone(&self.transaction),
             limit,
-        );
-        let spent = self.charge_total(judged, limit < per_input)?;
-        self.work_spent += spent;
-        Ok(())
+        )?;
+        self.charge(vin, spent)
     }
 
-    /// An input stopped by what the total left (`by_total`) is the total's
-    /// refusal: the input that carries the sum past it, the total named as
-    /// the budget and the work done the sum.
-    fn charge_total(&self, judged: Result<u64>, by_total: bool) -> Result<u64> {
-        match (judged, self.transaction_work) {
-            (
-                Err(Error::SpendRefused {
-                    offset,
-                    txid,
-                    input,
-                    why:
-                        SpendRefusal::NotJudged {
-                            input: index,
-                            cause: NotJudgedCause::WorkBudgetExceeded { work_done, .. },
-                        },
-                }),
-                Some(total),
-            ) if by_total => Err(Error::SpendRefused {
-                offset,
-                txid,
-                input,
-                why: SpendRefusal::NotJudged {
-                    input: index,
-                    cause: NotJudgedCause::WorkBudgetExceeded {
-                        input: index,
-                        budget: total,
-                        work_done: self.work_spent + work_done,
-                    },
-                },
-            }),
-            (judged, _) => judged,
+    /// The work an input spent added to the transaction's total, saturating,
+    /// as bsv-rs's verifier charges it: past the door's bound the crossing
+    /// input is not judged, the bound and the total named.
+    fn charge(&mut self, vin: usize, spent: u64) -> Result<()> {
+        let next = self.work_spent.checked_add(spent);
+        self.work_spent = next.unwrap_or(u64::MAX);
+        match self.transaction_work {
+            Some(limit) if next.is_none() || self.work_spent > limit => {
+                let cause = NotJudgedCause::TransactionWorkBudgetExceeded {
+                    input: u32::try_from(vin).unwrap_or(u32::MAX),
+                    limit,
+                    total: self.work_spent,
+                };
+                Err(no_word_refusal(
+                    self.txid,
+                    self.body,
+                    vin,
+                    NoWord::NotJudged(cause),
+                ))
+            }
+            _ => Ok(()),
         }
     }
 

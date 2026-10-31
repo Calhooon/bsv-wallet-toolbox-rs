@@ -1,7 +1,8 @@
 //! The port's per-input word pass under bsv-rs's word (#440): the host
-//! `SpendVerifier`, the create pre-check's judged set and the door's
-//! per-transaction work total need the inputs one at a time, which bsv-rs's
-//! stream verifier does not expose. The door's structure pass before it
+//! `SpendVerifier` and the create pre-check's judged set need the inputs one
+//! at a time, which bsv-rs's stream verifier does not expose (it has no host
+//! hook), so the door charges bsv-rs's `WorkBudget` here, input by input, by
+//! bsv-rs's rule. The door's structure pass before it
 //! judges no spend, so this pass also keeps the mining, outpoint and value
 //! checks. Only referenced outputs stay resident; a transaction waiting for a
 //! parent is released in wire order.
@@ -17,7 +18,7 @@ use bsv_rs::script::{
 use bsv_rs::transaction::beef_stream::{
     display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
 };
-use bsv_rs::transaction::BeefStream;
+use bsv_rs::transaction::{BeefStream, WorkBudget};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -410,7 +411,7 @@ impl WordPass<'_> {
         let (sources, input_total) = self.sources(txid, body)?;
         // One sighash cache per transaction, shared by all of its inputs.
         let mut judgements = super::own_word::InputJudgements::new(txid, body, self.verifier)
-            .with_transaction_work(work_budgets().1);
+            .with_transaction_work(work_budget().per_transaction);
         for (vin, source) in sources.into_iter().enumerate() {
             let proven = self.heights.get(&body.inputs[vin].prev).copied();
             let word = input_word(self.network, self.tip, proven);
@@ -424,36 +425,33 @@ impl WordPass<'_> {
     }
 }
 
-/// The work budget per input, in bsv-rs's `SpendParams::work_limit` units (one
+/// The work budget at the doors, bsv-rs's one policy type (`WorkBudget`,
+/// bsv-rs #519 and #527), in bsv-rs's `SpendParams::work_limit` units (one
 /// per opcode reached and one per byte fed to a hash, charged only under a
-/// limit), at the doors and the signer: 2^31, the keeper's word of 2026-10-30
-/// on #487, anchored on the node's 1 s validation limit. The corpus's
-/// costliest input spends 661 units; a P2PKH input of a 10 MB standard
-/// transaction 10,000,235.
-pub(crate) const WORK_PER_INPUT: u64 = 1 << 31;
-
-/// The work budget per transaction at the doors (internalize's word pass and
-/// the create pre-check), summed over its inputs: the same 2^31, the node's
-/// limit being per transaction (the keeper's amendment on #487). The signer
-/// keeps the per-input bound alone.
-pub(crate) const WORK_PER_TRANSACTION: u64 = 1 << 31;
+/// limit): 2^31 per input, the keeper's word of 2026-10-30 on #487, anchored
+/// on the node's 1 s validation limit, and the same 2^31 per transaction (the
+/// keeper's amendment on #487, the node's limit being per transaction). The
+/// signer reads `per_input` alone. The corpus's costliest input spends 661
+/// units; a P2PKH input of a 10 MB standard transaction 10,000,235.
+pub(crate) const DOOR_WORK_BUDGET: WorkBudget = WorkBudget::new()
+    .with_per_input(Some(1 << 31))
+    .with_per_transaction(Some(1 << 31));
 
 #[cfg(test)]
 thread_local! {
-    /// The witnesses' budgets `(per input, per transaction)` in place of the
-    /// constants, which no test could exhaust; test builds only.
-    pub(crate) static WORK_OVERRIDE: std::cell::Cell<Option<(u64, u64)>> =
+    /// The witnesses' budget in place of [`DOOR_WORK_BUDGET`], which no test
+    /// could exhaust; test builds only.
+    pub(crate) static WORK_OVERRIDE: std::cell::Cell<Option<WorkBudget>> =
         const { std::cell::Cell::new(None) };
 }
 
-/// The budgets `(per input, per transaction)`: [`WORK_PER_INPUT`] and
-/// [`WORK_PER_TRANSACTION`], or a witness's override in a test build.
-pub(crate) fn work_budgets() -> (u64, u64) {
+/// [`DOOR_WORK_BUDGET`], or a witness's override in a test build.
+pub(crate) fn work_budget() -> WorkBudget {
     #[cfg(test)]
-    if let Some(budgets) = WORK_OVERRIDE.with(std::cell::Cell::get) {
-        return budgets;
+    if let Some(budget) = WORK_OVERRIDE.with(std::cell::Cell::get) {
+        return budget;
     }
-    (WORK_PER_INPUT, WORK_PER_TRANSACTION)
+    DOOR_WORK_BUDGET
 }
 
 /// The refusal of an input with no word, at the input's offset: a door
