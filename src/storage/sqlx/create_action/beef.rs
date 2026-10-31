@@ -157,6 +157,9 @@ pub(super) async fn build_input_beef(
 
     // Create BEEF structure (V2 format)
     let mut beef = Beef::new();
+    // The roots of the caller's own BUMPs: proofs of a BEEF the wallet did
+    // not sign, which need headers (T2, #511).
+    let mut caller_roots: HashSet<(u32, String)> = HashSet::new();
 
     // Gap #1: Merge user-provided inputBEEF FIRST
     // This contains proofs for external inputs not in our storage
@@ -184,6 +187,10 @@ pub(super) async fn build_input_beef(
                     // sibling hash is linked here; the walk never revisits
                     // a txid the caller's BEEF supplied.
                     merge_beef_linked(&mut beef, &user_beef);
+                    caller_roots.extend(user_beef.bumps.iter().filter_map(|bump| {
+                        let root = bump.compute_root(None).ok()?;
+                        Some((bump.block_height, root))
+                    }));
                     // Mark txids from user BEEF as already processed
                     for tx in &user_beef.txs {
                         processed_txids.insert(tx.txid());
@@ -245,6 +252,21 @@ pub(super) async fn build_input_beef(
             not_stored,
             describe_invalid_beef(&mut beef, &root_txids)
         )));
+    }
+
+    // With no tracker at all the caller's proofs cannot be checked: the
+    // call holds rather than admit unchecked roots, as the reference's
+    // `beef.verify(chainTracker, true)` never skips (createAction.ts:909;
+    // T2, #511). The store's own proofs were checked when stored, and a
+    // BEEF with no caller root has nothing here to verify.
+    if chain_tracker.is_none()
+        && read_check_tracker.is_none()
+        && validation
+            .roots
+            .iter()
+            .any(|(height, root)| caller_roots.contains(&(*height, root.clone())))
+    {
+        return Err(super::beef_verification::no_header_source());
     }
 
     if let Some(tracker) = chain_tracker {

@@ -78,7 +78,10 @@ async fn test_build_input_beef_with_user_input_beef() {
 
     // Build user's BEEF
     let mut user_beef = Beef::new();
-    let idx = user_beef.merge_bump(synth_bump(100_000, user_txid));
+    let bump = synth_bump(100_000, user_txid);
+    let mut tracker = bsv_rs::transaction::MockChainTracker::new(100_000);
+    tracker.add_root(100_000, bump.compute_root(None).unwrap());
+    let idx = user_beef.merge_bump(bump);
     user_beef.merge_raw_tx(user_raw_tx, Some(idx));
     let user_beef_bytes = user_beef.to_binary();
 
@@ -100,7 +103,7 @@ async fn test_build_input_beef_with_user_input_beef() {
     let result = build_input_beef(
         &mut conn,
         Some(storage.writer()),
-        None, // chain_tracker - skip verification
+        Some(&tracker), // the caller's root is checked (#511)
         &extended_inputs,
         &change_inputs,
         Some(&user_beef_bytes), // User provides BEEF for external input
