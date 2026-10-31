@@ -11,6 +11,8 @@ use bsv_rs::transaction::{Beef, ChainTracker, ChainTrackerError};
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
+use crate::services::services::NO_HEADER_SERVICE;
+use crate::services::WalletServices;
 use crate::storage::traits::BeefVerificationMode;
 
 mod live_word;
@@ -41,6 +43,41 @@ pub(super) fn stream_error(error: StreamError) -> Error {
 /// A header fault is a retryable hold, never a verdict about a payment.
 pub(super) fn header_fault(error: impl std::fmt::Display) -> Error {
     Error::ServiceError(format!("ChainTracker verification failed: {error}"))
+}
+
+/// The hold where no header source reaches a door that judges a BEEF the
+/// wallet did not sign (T2, the keeper's reading of 2026-10-31 on #509 and
+/// #511): its merkle proofs are checked against headers, and with no
+/// tracker on the caller or the storage and services built with no header
+/// service (the CLI's `CHAINTRACKS_URL=off`), or no services at all, they
+/// cannot be, so the door holds whatever the era. The create pre-check of
+/// the caller's `inputBEEF` and internalize hold with it; the wallet's own
+/// spends of its proven coins need no headers (#506, `own_word_tip`).
+pub(super) fn no_header_source() -> Error {
+    header_fault(
+        "the merkle proofs of a BEEF the wallet did not sign need headers, \
+         and no header service is configured (no chain tracker, no chaintracks_url)",
+    )
+}
+
+/// The tracker a door judging a BEEF the wallet did not sign reads: the
+/// caller's or the storage's `tracker`, else the `services`' header
+/// service. The services' not-configured answer (`NO_HEADER_SERVICE`) and
+/// no services at all hold with `no_header_source`; any other error holds
+/// with `header_fault`'s text.
+pub(super) async fn proofs_tracker<'a>(
+    tracker: Option<&'a dyn ChainTracker>,
+    services: Option<&'a dyn WalletServices>,
+) -> Result<&'a dyn ChainTracker> {
+    match (tracker, services) {
+        (Some(tracker), _) => Ok(tracker),
+        (None, Some(services)) => match services.get_chain_tracker().await {
+            Ok(tracker) => Ok(tracker),
+            Err(Error::ServiceError(text)) if text == NO_HEADER_SERVICE => Err(no_header_source()),
+            Err(error) => Err(header_fault(error)),
+        },
+        (None, None) => Err(no_header_source()),
+    }
 }
 
 /// Keep a tracker's transport class, status and detail for the host.

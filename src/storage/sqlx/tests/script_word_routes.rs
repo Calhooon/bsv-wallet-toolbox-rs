@@ -735,3 +735,7 @@ async fn create_txid_only_refuses_missing_caller_ancestry() {
 
 #[path = "no_tip_word.rs"]
 mod no_tip_word;
+
+#[cfg(test)]
+#[path = "no_header_source.rs"]
+mod no_header_source;

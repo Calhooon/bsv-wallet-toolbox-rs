@@ -385,18 +385,10 @@ pub(super) async fn judge_caller_beef(
     if judged.is_empty() {
         return Ok(());
     }
-    let tracker = match (word.tracker, word.services.as_deref()) {
-        (Some(tracker), _) => tracker,
-        (None, Some(services)) => services
-            .get_chain_tracker()
-            .await
-            .map_err(super::beef_verification::header_fault)?,
-        (None, None) => {
-            return Err(super::beef_verification::header_fault(
-                "no header service configured",
-            ))
-        }
-    };
+    // A BEEF the wallet did not sign needs headers for its proofs (T2,
+    // #509): with no header source the pre-check holds whatever the era.
+    let tracker =
+        super::beef_verification::proofs_tracker(word.tracker, word.services.as_deref()).await?;
     super::beef_verification::verify_beef_word(
         assembled,
         tracker,
