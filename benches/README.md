@@ -119,3 +119,28 @@ allows; the captain decides when `bench` becomes required.
 These choices measure T3 and make the check executable (T6). Local, bounded
 fixtures exercise T1; stored proofs against a header oracle exercise T2 and
 T4; byte-bound answers and separate unknown/hint/proved cases support T5.
+
+## The A8 census scenes
+
+`examples/a8_census.rs` drives one door scene in a loop for a sampling
+profiler (the auto-research charter's speed cell): `create N` and `process N`
+(createAction over N coins of one shared proven parent, `seed_shared`, without
+and with the post to the mock services), `internalize 1` (this bench's proven
+basket insertion), and `beef-internalize MB` and `beef-create MB` (an atomic
+BEEF of a proven parent and an unproven child of about MB megabytes with one
+signed P2PKH input, through internalize and through createAction's caller BEEF
+pre-check). It prints each door call's window in epoch milliseconds.
+
+```sh
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --release --example a8_census
+samply record --save-only --unstable-presymbolicate --rate 2000 -o DIR/create-10-r1.json.gz \
+  -- "$CARGO_TARGET_DIR/release/examples/a8_census" create 10 500 > DIR/create-10-r1.out
+python3 benches/a8_census_profile.py DIR/create-10-r1.json.gz DIR/create-10-r1.out
+python3 benches/a8_census_rows.py DIR OUT MACHINE.json
+```
+
+`a8_census_profile.py` keeps the samples inside the windows, drops samples
+whose leaf is a blocking kernel wait, and counts self time per native symbol.
+`a8_census_rows.py` takes the median of three runs per scene and size and
+writes `census.json` and `census.md`. The fixture's proofs sit at height
+900,000, past mainnet Genesis, so the door judges every spend.
