@@ -657,7 +657,7 @@ within the signed transaction, bsv-rs's text, class `InvalidParameter`.
 
 | Place | The port | Order |
 |---|---|---|
-| create (`signAndProcess`) | the tip is read before the lock (`own_word_tip`: the caller's tracker, else the storage's, else the services' header service; none configured, no word); after the door's signer and before `process_action_writes`, inside the write transaction (local CPU and reads on its connection, nothing awaited on a provider) | the reference's: before processAction and the post; a refusal rolls the step back, nothing written, nothing posted (`create_refuses_its_own_fork_id_less_input_before_the_post`) |
+| create (`signAndProcess`) | the tip is read before the lock (`own_word_tip`: the caller's tracker, else the storage's, else the services' header service; services with no header service, `Services` built with no `chaintracks_url`, take the latest era as a tracker with no tip does, #506; no services object at all, no word; any other `get_chain_tracker` error holds); after the door's signer and before `process_action_writes`, inside the write transaction (local CPU and reads on its connection, nothing awaited on a provider) | the reference's: before processAction and the post; a refusal rolls the step back, nothing written, nothing posted (`create_refuses_its_own_fork_id_less_input_before_the_post`) |
 | `signAction` (`process_action_internal`, `is_new_tx`) | before the writer: the tip, the action's stored input BEEF (untrimmed; an `unsigned` or `unprocessed` action this call finds; otherwise processAction's own refusal answers), the store | the reference's is after processAction, so after its post; the port's processAction writes in one transaction and the wallet posts after it, so the refusal precedes both: nothing written, nothing posted, the action still `unsigned` and its inputs reserved, and the wallet answers it without aborting, the caller free to sign again (`process_new_tx_refuses_its_own_input_without_forkid`, `sign_action_refuses_its_own_fork_id_less_input`; `docs/ARCHITECTURE.md` D18) |
 
 The word is the node's mempool word (`ScriptFlags::standard`, the #422
@@ -667,7 +667,11 @@ non-minimal push) is refused at signing, where the broadcaster's policy
 refused it before. A tracker
 with no mining tip, or a tip read that faults, gives the spend the latest
 era, as at the doors (#464,
-`process_new_tx_judges_its_own_input_at_the_latest_era_without_a_tip`).
+`process_new_tx_judges_its_own_input_at_the_latest_era_without_a_tip`),
+and so do services with no header service (#506, `Header::Off` in
+`create_refuses_its_own_fork_id_less_input_before_the_post`,
+`create_accepts_its_own_input_valid_under_the_word`,
+`sign_action_refuses_its_own_fork_id_less_input`).
 Witnesses: `own_word_tests.rs` beside each place, the seam's in
 `beef_verification/own_word_tests.rs`.
 
