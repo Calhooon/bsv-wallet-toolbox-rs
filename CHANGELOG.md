@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- #506, bsv-wallet-cli#372: the create door's own-word tip read with
+  services but no header service. 0.14.0-beta.4 held there, a defect
+  against `own_word_tip`'s own doc. Old: with services built with no
+  `chaintracks_url` (the CLI's `CHAINTRACKS_URL=off`) and no tracker, every
+  signed `createAction` and `signAction` was refused with `Service error:
+  ChainTracker verification failed: Service error: ChainTracker not
+  configured in Services (no chaintracks_url)`. New: the wallet's own signed
+  transaction is judged at the latest era, as a spend under a tracker with
+  no mining tip or a faulting tip read is (#464, rule 22). Host note for
+  CLI #347: a host's offline setting reaches allocation again; with no
+  header service the word is the latest era's, so a pre-Chronicle coin's
+  spend is judged post-Chronicle, as #464 says. No error text moves: the
+  door matches `Services::get_chain_tracker`'s existing not-configured
+  answer; any other `get_chain_tracker` error still holds with the text
+  above's `ChainTracker verification failed:` prefix.
 - #495, #494: the discovery doors decode, verify and decrypt each overlay
   entry as the reference's `decodeIdentityOutput` does (ts-stack@edf6e03
   `identityUtils.ts:493-557`, `VerifiableCertificate.ts:150-219`).
