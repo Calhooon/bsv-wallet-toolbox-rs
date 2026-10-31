@@ -21,6 +21,7 @@ use bsv_rs::transaction::{Beef, BeefStream, ChainTracker, MerklePath};
 
 use super::decode::decode_identity_output;
 use super::OverlayCertificate;
+use crate::spend_verifier::work_budget;
 use crate::Result;
 
 /// `defaultTransactionEvidenceLimits.candidateBytes`
@@ -40,10 +41,6 @@ const SCRIPT_BYTES: usize = 256 * 1024;
 const SCRIPT_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 /// `queryOverlayEvidence`'s `limits.outputs ?? 512` (`identityUtils.ts:423`).
 const OUTPUTS: usize = 512;
-/// The doors' work budget per input, 2^31 units (the storage's
-/// `WORK_PER_INPUT`, the keeper's word of 2026-10-30 on #487); the
-/// reference's `verify` bounds no work.
-const WORK_PER_INPUT: u64 = 1 << 31;
 /// `MerklePath.verify`'s depth for a transaction at offset 0, the block's
 /// coinbase (`MerklePath.ts:488-497`).
 const COINBASE_DEPTH: u32 = 100;
@@ -180,7 +177,7 @@ async fn verify(
     let referenced = referenced_outpoints(bytes).map_err(|_| Dropped("its BEEF refused"))?;
     let mut verifier = StreamVerifier::retaining(bytes, &headers, None, referenced)
         .with_chain_params(chain.clone())
-        .with_work_budget(Some(WORK_PER_INPUT));
+        .with_work_budget(work_budget().per_input);
     verifier.set_memory_limit(Some(SCRIPT_MEMORY_BYTES));
     match verifier.run() {
         Ok(Verdict::Valid { roots, .. }) if !roots.is_empty() => Ok(Verified {
