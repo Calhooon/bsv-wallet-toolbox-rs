@@ -470,7 +470,7 @@ The HMAC nonce format is: `base64(random_16_bytes || hmac_16_bytes)` where HMAC 
 | Export | Description |
 |--------|-------------|
 | `AuthHeaders` | Struct containing all auth header values |
-| `ResponseAuthHeaders` | Parsed auth headers from server response |
+| `ResponseAuthHeaders` | Parsed auth headers from server response; `get_identity_key()` reads the identity-key header strictly (hex, then `PublicKey::from_bytes`), refusing the lenient `fromString` forms bsv-rs 0.9.0-beta.5's `from_hex` reads (bsv-rs #498), as the reference's `assertAuthIdentityKey` does |
 | `AuthVerificationResult` | Result of response verification |
 | `create_auth_headers()` | Create signed auth headers for a request (async) |
 | `create_nonce()` | Create HMAC-verified nonce for BRC-31 (async) |
