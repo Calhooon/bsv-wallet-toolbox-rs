@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.5] - 2026-10-31
+
 ### Added
 
 - #505 (the owner's word 22.5 of 2026-10-31): `normalize_label` and
