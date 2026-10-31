@@ -1,52 +1,17 @@
-//! The overlay's identity outputs read as certificates: each output of an
-//! output-list answer decoded, an entry that fails dropped
-//! (`decodeIdentityOutput`, ts-stack@edf6e03 `identityUtils.ts:493-557`).
+//! The overlay's identity outputs read as certificates: each output whose
+//! evidence `lookup_evidence.rs` verified decoded, an entry that fails
+//! dropped (`decodeIdentityOutput`, ts-stack@edf6e03 `identityUtils.ts:493-557`).
 
 use bsv_rs::auth::VerifiableCertificate;
-use bsv_rs::overlay::OutputListItem;
 use bsv_rs::primitives::PublicKey;
 use bsv_rs::script::templates::PushDrop;
 use bsv_rs::script::LockingScript;
-use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{
     Counterparty, GetPublicKeyArgs, ProtoWallet, Protocol, SecurityLevel, VerifySignatureArgs,
 };
 
 use super::{record, OverlayCertificate};
 use crate::Result;
-
-/// The door's overlay certificates from any resolver's outputs: each
-/// output's identity token decoded (`decode_identity_output`), then its
-/// certificate verified and decrypted (`verified_and_decrypted`); an output
-/// that fails is dropped, as the reference's `decodeIdentityOutput` answers
-/// `null` for it.
-pub(crate) async fn overlay_certificates(outputs: Vec<OutputListItem>) -> Vec<OverlayCertificate> {
-    let mut kept = Vec::new();
-    for output in outputs {
-        let decoded = match parse_single_output(&output.beef, output.output_index) {
-            Ok(decoded) => decoded,
-            Err(e) => {
-                tracing::debug!("Skipping invalid overlay output: {}", e);
-                continue;
-            }
-        };
-        if let Some(certificate) = decoded.verified_and_decrypted().await {
-            kept.push(certificate);
-        }
-    }
-    kept
-}
-
-/// Parse a single BEEF output into an `OverlayCertificate`.
-fn parse_single_output(beef: &[u8], output_index: u32) -> Result<OverlayCertificate> {
-    let tx = Transaction::from_beef(beef, None)
-        .map_err(|e| crate::Error::ServiceError(format!("Failed to parse BEEF: {e}")))?;
-    let output = tx
-        .outputs
-        .get(output_index as usize)
-        .ok_or_else(|| crate::Error::ServiceError("Output index out of bounds".into()))?;
-    decode_identity_output(&output.locking_script)
-}
 
 /// `MAX_IDENTITY_CERTIFICATE_BYTES` (`identityUtils.ts:23`).
 const MAX_IDENTITY_CERTIFICATE_BYTES: usize = 256 * 1024;

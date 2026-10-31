@@ -2,6 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use bsv_rs::block::ChainParams;
+use bsv_rs::overlay::OutputListItem;
+use bsv_rs::transaction::ChainTracker;
 use bsv_rs::wallet::{
     DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs, DiscoverCertificatesResult,
     IdentityCertificate, IdentityCertifier,
@@ -32,6 +35,46 @@ where
         }
     }
 
+    /// The chain tracker the overlay's evidence is verified with: the
+    /// services' header service, as the reference's
+    /// `requireOverlayChainTracker` reads `services.getChainTracker()`
+    /// (ts-stack@edf6e03 `Wallet.ts:894-901`). With none (`Services` built
+    /// with no `chaintracks_url`), or a fault reaching it, the door asks no
+    /// resolver and answers no overlay certificates, as `queryOverlay`
+    /// answers `[]` (`identityUtils.ts:399`).
+    async fn overlay_tracker(&self) -> Option<&dyn ChainTracker> {
+        match self.services.get_chain_tracker().await {
+            Ok(tracker) => Some(tracker),
+            Err(error) => {
+                tracing::debug!("No chain tracker for overlay evidence: {}", error);
+                None
+            }
+        }
+    }
+
+    /// The resolver's outputs whose evidence verifies, decoded, verified
+    /// and decrypted (`overlay_certificates`); a lookup failure or an answer
+    /// past the evidence limits answers none.
+    async fn verified_overlay(
+        &self,
+        outputs: Result<Vec<OutputListItem>>,
+        tracker: &dyn ChainTracker,
+    ) -> Vec<OverlayCertificate> {
+        let chain = match self.chain {
+            Chain::Main => ChainParams::mainnet(),
+            Chain::Test => ChainParams::testnet(),
+            Chain::Regtest => ChainParams::regtest(),
+        };
+        let verified = match outputs {
+            Ok(outputs) => overlay_certificates(outputs, tracker, &chain).await,
+            Err(error) => Err(error),
+        };
+        verified.unwrap_or_else(|error| {
+            tracing::debug!("Overlay lookup failed (no overlay certificates): {}", error);
+            vec![]
+        })
+    }
+
     async fn discovery_settings(&self) -> Result<WalletSettings> {
         match &self.options.settings_manager {
             Some(manager) => manager.get().await,
@@ -58,13 +101,11 @@ where
             .into_iter()
             .map(local_certificate)
             .collect();
-        match resolver
-            .lookup_by_identity_key(&args.identity_key, &certifiers)
-            .await
-        {
-            // The reference drops an output that fails its decode.
-            Ok(overlay) => certificates.extend(overlay_certificates(overlay).await),
-            Err(error) => tracing::debug!("Overlay lookup failed (using local only): {}", error),
+        if let Some(tracker) = self.overlay_tracker().await {
+            let outputs = resolver
+                .lookup_by_identity_key(&args.identity_key, &certifiers)
+                .await;
+            certificates.extend(self.verified_overlay(outputs, tracker).await);
         }
         let certificates = filter_by_identity_key(certificates, &args.identity_key);
         finish(&settings, certificates, (args.offset, args.limit))
@@ -77,15 +118,14 @@ where
     ) -> Result<DiscoverCertificatesResult> {
         let settings = self.discovery_settings().await?;
         let certifiers = trusted_keys(&settings.trust_settings);
-        let certificates = match resolver
-            .lookup_by_attributes(&args.attributes, &certifiers)
-            .await
-        {
-            Ok(outputs) => overlay_certificates(outputs).await,
-            Err(error) => {
-                tracing::debug!("Overlay attribute lookup failed: {}", error);
-                vec![]
+        let certificates = match self.overlay_tracker().await {
+            Some(tracker) => {
+                let outputs = resolver
+                    .lookup_by_attributes(&args.attributes, &certifiers)
+                    .await;
+                self.verified_overlay(outputs, tracker).await
             }
+            None => vec![],
         };
         // TS `Wallet.ts:1078`: bind the answer to the query before the transform.
         let certificates = filter_certificates_by_attributes(certificates, &args.attributes)?;
@@ -274,3 +314,7 @@ fn finish(
 #[cfg(all(test, feature = "sqlite"))]
 #[path = "discovery_decrypt_tests.rs"]
 mod decrypt_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "discovery_evidence_tests.rs"]
+mod evidence_tests;

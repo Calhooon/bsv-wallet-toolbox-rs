@@ -3,11 +3,14 @@
 //! output dropped from the answer; #494: a record carrying `decryptedFields`
 //! is not the reference's eight properties and is dropped.
 
+use bsv_rs::block::ChainParams;
 use bsv_rs::overlay::OutputListItem;
 use bsv_rs::script::{LockingScript, ScriptChunk};
+use bsv_rs::transaction::MockChainTracker;
 
-use super::super::fixture::{beef, key, record_json, revealed, token};
-use super::{decode_identity_output, overlay_certificates, OverlayCertificate};
+use super::super::fixture::{beef, key, record_json, revealed, token, HEIGHT};
+use super::super::overlay_certificates;
+use super::{decode_identity_output, OverlayCertificate};
 
 const CERTIFIER: u8 = 9;
 const SUBJECT: u8 = 8;
@@ -22,8 +25,10 @@ async fn answered(scripts: Vec<LockingScript>) -> Vec<String> {
             context: None,
         })
         .collect();
-    overlay_certificates(outputs)
+    let tracker = MockChainTracker::always_valid(HEIGHT);
+    overlay_certificates(outputs, &tracker, &ChainParams::mainnet())
         .await
+        .unwrap()
         .into_iter()
         .map(|c| c.serial_number)
         .collect()
