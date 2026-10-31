@@ -43,10 +43,9 @@ impl OverlayLookupResolver for Host {
     async fn lookup_by_attributes(
         &self,
         _attributes: &IndexMap<String, String>,
-        _certifiers: &[String],
+        certifiers: &[String],
     ) -> crate::Result<Vec<OutputListItem>> {
-        self.asked.fetch_add(1, Ordering::SeqCst);
-        Ok(self.outputs.clone())
+        self.lookup_by_identity_key("", certifiers).await
     }
 }
 
