@@ -29,15 +29,15 @@ still unmeasured. Pin endpoints describe direct dependents' toolbox requirements
 | Verify 10 MB BEEF, peak memory (bytes) | not yet measured | Flat memory as input grows; #58 | `beef_10mb_peak_bytes` |
 | Door with monitor beside it, p99 (ms) | not yet measured | Unchanged from door baseline; #69 | `writer_door_p99_ms` |
 | Explorer calls per block | not yet measured | Bounded by re-ask schedule; #72 | `explorer_calls_per_block` |
-| Rust files over 800 lines (count) | measured 2026-10-30: 33 | 0; #55, #61, #62 | `files_over_800` |
-| Largest Rust file (lines) | measured 2026-10-30: 7153 | <= 800; #55, #61, #62 | `max_file_lines` |
-| Unwrap/expect outside tests (count) | measured 2026-10-30: 61 | 0; #55, #56 | `unwraps_outside_tests` |
+| Rust files over 800 lines (count) | measured 2026-10-31: 33 | 0; #55, #61, #62 | `files_over_800` |
+| Largest Rust file (lines) | measured 2026-10-31: 7153 | <= 800; #55, #61, #62 | `max_file_lines` |
+| Unwrap/expect outside tests (count) | measured 2026-10-31: 61 | 0; #55, #56 | `unwraps_outside_tests` |
 | Door and ladders mutation score (%) | not yet measured | >= 80; #57 | `mutation_score_pct` |
-| Undocumented public items (count) | measured 2026-10-30: 308 | 0; #55 | `undocumented_public_items` |
+| Undocumented public items (count) | measured 2026-10-31: 308 | 0; #55 | `undocumented_public_items` |
 | Direct dependents, oldest toolbox pin | measured 2026-10-23: 0.3.38 | Current minor or dated plan; #59 | `dependent_pin_min` |
 | Direct dependents, newest toolbox pin | measured 2026-10-23: 0.12.1 | Current minor or dated plan; #59 | `dependent_pin_max` |
 
-<!-- scoreboard:sha256 fa70162db05904dea399db431abf4717d8735df98587cfbf8640e7129bb60c16 -->
+<!-- scoreboard:sha256 e66513846207179d405dd5841a99ef76011a805c5e5b18ff1bbef7033a5ec7ca -->
 <!-- scoreboard:end -->
 
 ### Feeding the table
