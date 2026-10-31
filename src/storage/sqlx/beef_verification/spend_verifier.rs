@@ -23,7 +23,7 @@ pub struct SpendRequest {
 }
 
 /// The authoritative word for an input, composed by bsv-rs's
-/// `input_script_flags` from the store network's `ChainParams` (#440).
+/// `ChainParams::word_for_input` from the store network's parameters (#440, bsv-rs #520).
 #[derive(Clone, Copy, Debug)]
 pub struct SpendVerificationContext {
     /// Spend-era transaction bits joined with coin-era UTXO bits.
