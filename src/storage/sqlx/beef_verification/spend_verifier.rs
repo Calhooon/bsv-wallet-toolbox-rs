@@ -111,3 +111,16 @@ pub(crate) fn work_budget() -> WorkBudget {
     }
     DOOR_WORK_BUDGET
 }
+
+#[cfg(test)]
+mod tests {
+    use super::DOOR_WORK_BUDGET;
+
+    /// The keeper's #487 figures, 2^31 per input and 2^31 per transaction: a
+    /// drift in either fails here, where no witness could exhaust them.
+    #[test]
+    fn the_door_work_budget_is_the_keepers_two_figures() {
+        assert_eq!(DOOR_WORK_BUDGET.per_input, Some(2_147_483_648));
+        assert_eq!(DOOR_WORK_BUDGET.per_transaction, Some(2_147_483_648));
+    }
+}
