@@ -16,7 +16,6 @@ use bsv_rs::wallet::{
 };
 
 const ORIGINATOR: &str = "busy.example.com";
-const GENESIS: u32 = bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT;
 
 /// An unrelated P2PKH locking script.
 fn pay_lock() -> Vec<u8> {
@@ -71,6 +70,7 @@ async fn fund_with(wallet: &Wallet<StorageSqlx, MockWalletServices>, lock: &[u8]
 /// activation of the store's network, read from bsv-rs's `ChainParams`, so
 /// the signer judges the input (a pre-Genesis coin it skips, #490). Each
 /// tag its own height: independent coinbase proofs sit apart in one BEEF.
+/// Every proof height in this file is read here, the one source (#503).
 /// Below the Chronicle activation, the era of the mock services' tip.
 pub(super) fn above_genesis(wallet: &Wallet<StorageSqlx, MockWalletServices>, tag: u32) -> u32 {
     let chain = match wallet.storage().get_settings().chain.as_str() {
@@ -270,7 +270,8 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
     });
     let txid = tx.id();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, GENESIS + 1));
+    let proof_height = above_genesis(&wallet, 0);
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, proof_height));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_transaction(tx);
     let atomic = beef.to_binary_atomic(&txid).unwrap();
@@ -1090,7 +1091,8 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
     });
     let txid = tx.id();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, GENESIS + 2));
+    let parent_height = above_genesis(&wallet, 1);
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, parent_height));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_transaction(tx);
     let atomic = beef.to_binary_atomic(&txid).unwrap();
